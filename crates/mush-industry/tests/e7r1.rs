@@ -203,6 +203,45 @@ fn god_accounts(tw: &TestWorld) -> Vec<u64> {
         .collect()
 }
 
+/// The material source [`scene`] seeds.
+///
+/// ---- WS02-S5 ----
+///
+/// A work order's `source`, `destination` and `account` are no longer free text:
+/// `wo_draft` refuses any that is not a member of the drafter's own
+/// server-authored endpoint/account book, because `wo_submit` reserves material
+/// out of `source` and `wo_deliver` mints into `destination` with no ownership
+/// test of their own. So this corridor's endpoints are REAL vaults now instead of
+/// two numbers typed into the command. Vault ids are handed out from 0 and id 0 is
+/// the crate's own "absent" spelling, so `scene` opens a pad first and then these
+/// two — and asserts it got them.
+const SCENE_SOURCE: u64 = 1;
+/// The delivery destination [`scene`] seeds. See [`SCENE_SOURCE`].
+const SCENE_DEST: u64 = 2;
+
+/// A real container-backed E3 vault owned by `who`, and the endpoint it is.
+fn make_endpoint(tw: &mut TestWorld, name: &str, who: ObjId) -> EndpointRef {
+    let object = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, name, who, Some(mush_core::LIMBO))
+        .expect("a backing object");
+    let before: Vec<u64> = snap(tw).vaults().map(|vault| vault.id.0).collect();
+    ok(
+        tw,
+        GOD,
+        &format!(
+            "@vault/create {name}=container:#{} owner=#{}",
+            object.0, who.0
+        ),
+    );
+    let fresh = snap(tw)
+        .vaults()
+        .map(|vault| vault.id.0)
+        .find(|id| !before.contains(id))
+        .expect("a fresh vault");
+    EndpointRef(VaultId(fresh))
+}
+
 /// The whole fixture: an instrument, GOD's budget and operating accounts, `funds`
 /// minted into the budget, and a two-slot `smelt` facility on object #7.
 fn scene(funds: i64) -> (TestWorld, IndustryFamilies, AccountId, AccountId) {
@@ -232,6 +271,16 @@ fn scene(funds: i64) -> (TestWorld, IndustryFamilies, AccountId, AccountId) {
     }
     ok(&mut tw, GOD, "@facility/open 7=2 smelt");
     let _ = tw.engine_mut().take_authoritative_submit();
+    // WS02-S5: the corridor's two endpoints, as real vaults GOD owns, so
+    // `live_endpoints` answers them and the draft's endpoint book carries them.
+    let _pad = make_endpoint(&mut tw, "pad", GOD);
+    let source = make_endpoint(&mut tw, "feed", GOD);
+    let destination = make_endpoint(&mut tw, "yard", GOD);
+    assert_eq!(
+        (source.vault().0, destination.vault().0),
+        (SCENE_SOURCE, SCENE_DEST),
+        "the fixture's endpoint ids are the ones the corridor names"
+    );
     (tw, families, budget, payee)
 }
 
@@ -256,9 +305,9 @@ fn seed_order(
         pinned,
         quantity,
         budget,
-        Some(endpoint(500)),
+        Some(endpoint(SCENE_SOURCE)),
         DeliveryTarget::Endpoint {
-            endpoint: endpoint(600),
+            endpoint: endpoint(SCENE_DEST),
         },
         EconomicVisibility::Parties,
     )
@@ -723,7 +772,7 @@ fn e7r1_r1_the_accounts_are_resolved_at_the_draft_not_at_the_settlement() {
     let refusal = err(
         &mut tw,
         GOD,
-        "@wo/draft tacsim.core/alloy_smelt/1=7 1 999999 500 600",
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 999999 {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(
         refusal.contains("budget account that does not exist"),
@@ -737,7 +786,7 @@ fn e7r1_r1_the_accounts_are_resolved_at_the_draft_not_at_the_settlement() {
     ok(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(tw.engine_mut().take_authoritative_submit().is_some());
 }
@@ -769,7 +818,7 @@ fn e7r1_r1_a_closed_budget_and_a_missing_payee_both_refuse_at_the_draft() {
     let refusal = err(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {third} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {third} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(
         refusal.contains("not active"),
@@ -781,7 +830,7 @@ fn e7r1_r1_a_closed_budget_and_a_missing_payee_both_refuse_at_the_draft() {
     ok(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(tw.engine_mut().take_authoritative_submit().is_some());
     // And with the budget closed as well the owner holds nothing payable at all, so
@@ -793,7 +842,7 @@ fn e7r1_r1_a_closed_budget_and_a_missing_payee_both_refuse_at_the_draft() {
     let refusal = err(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(
         refusal.contains("not active"),
@@ -1146,9 +1195,9 @@ fn seed_order_at(
         pinned,
         1,
         budget,
-        Some(endpoint(500)),
+        Some(endpoint(SCENE_SOURCE)),
         DeliveryTarget::Endpoint {
-            endpoint: endpoint(600),
+            endpoint: endpoint(SCENE_DEST),
         },
         EconomicVisibility::Parties,
     )
@@ -1165,7 +1214,7 @@ fn seed_metals(tw: &mut TestWorld, families: &IndustryFamilies, units: u64) {
     apply(engine, families, |txn| {
         families
             .inventory
-            .credit(txn, endpoint(500), &metals, units)
+            .credit(txn, endpoint(SCENE_SOURCE), &metals, units)
             .map(|_| ())
             .map_err(IndustryError::Inventory)
     })
@@ -1298,7 +1347,7 @@ fn vf_c1b_a_one_account_owner_drafts_and_settles() {
     ok(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     let _ = tw.engine_mut().take_authoritative_submit();
 
@@ -1370,12 +1419,12 @@ fn vf_c1d_the_draft_is_not_an_account_census_of_a_stranger() {
     let real = err(
         &mut tw,
         stranger,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=8 1 {mine} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=8 1 {mine} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     let phantom = err(
         &mut tw,
         stranger,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=4242 1 {mine} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=4242 1 {mine} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert_eq!(
         real, phantom,
@@ -1745,7 +1794,7 @@ fn vf_c13a_staff_may_not_name_a_players_account_as_a_work_orders_budget() {
     let refusal = err(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {theirs} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {theirs} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert_eq!(
         refusal,
@@ -2009,7 +2058,7 @@ fn vf_z2a_every_wo_command_submission_resolves_through_the_real_offer_route() {
     ok(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     land(&mut tw, 0x51).expect("@wo/draft resolves");
     let id = seed_order(&mut tw, &families, 0xB15, budget, 1);
@@ -2101,13 +2150,20 @@ fn vf_z4a_one_drafted_order_runs_the_whole_corridor_and_mints_the_recipes_own_un
     seed_metals(&mut tw, &families, 40);
     let (_, pinned) = alloy_recipe();
     let quantity: u32 = 2;
-    let metals_before = pool_units(&mut tw, &families, endpoint(500), "metals");
-    let alloys_before = pool_units(&mut tw, &families, endpoint(600), "structural_alloys");
+    let metals_before = pool_units(&mut tw, &families, endpoint(SCENE_SOURCE), "metals");
+    let alloys_before = pool_units(
+        &mut tw,
+        &families,
+        endpoint(SCENE_DEST),
+        "structural_alloys",
+    );
 
     ok(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 {quantity} {budget} 500 600"),
+        &format!(
+            "@wo/draft tacsim.core/alloy_smelt/1=7 {quantity} {budget} {SCENE_SOURCE} {SCENE_DEST}"
+        ),
     );
     land(&mut tw, 0x61).expect("@wo/draft resolves through the real offer route");
     // `wo_draft` derives the id from the request it was invoked with, so the test
@@ -2123,12 +2179,12 @@ fn vf_z4a_one_drafted_order_runs_the_whole_corridor_and_mints_the_recipes_own_un
     assert_eq!(drafted.quantity(), quantity, "the quantity it was told");
     assert_eq!(
         drafted.material_source(),
-        Some(endpoint(500)),
+        Some(endpoint(SCENE_SOURCE)),
         "the source the command sent survives the round trip"
     );
     assert_eq!(
         drafted.destination().endpoint(),
-        endpoint(600),
+        endpoint(SCENE_DEST),
         "and so does the destination — the Z4 type fix, observed"
     );
 
@@ -2170,7 +2226,7 @@ fn vf_z4a_one_drafted_order_runs_the_whole_corridor_and_mints_the_recipes_own_un
     let delivered = lot_record(&mut tw, &families, lot).expect("the delivery minted its lot");
     assert_eq!(
         delivered.endpoint(),
-        endpoint(600),
+        endpoint(SCENE_DEST),
         "the output landed at the NAMED endpoint"
     );
     assert_eq!(delivered.commodity().as_str(), "structural_alloys");
@@ -2180,12 +2236,17 @@ fn vf_z4a_one_drafted_order_runs_the_whole_corridor_and_mints_the_recipes_own_un
         "in the recipe's honest units, times the quantity"
     );
     assert_eq!(
-        pool_units(&mut tw, &families, endpoint(600), "structural_alloys"),
+        pool_units(
+            &mut tw,
+            &families,
+            endpoint(SCENE_DEST),
+            "structural_alloys"
+        ),
         alloys_before,
         "and it is a parcel, so the destination's pool scalar did not move"
     );
     assert_eq!(
-        pool_units(&mut tw, &families, endpoint(500), "metals"),
+        pool_units(&mut tw, &families, endpoint(SCENE_SOURCE), "metals"),
         metals_before - per_input * u64::from(quantity),
         "while the source pool scalar fell by the recipe's inputs, times the quantity"
     );
@@ -2207,7 +2268,7 @@ fn vf_z4b_a_draft_with_no_budget_account_refuses_and_stages_nothing() {
     let absent = err(
         &mut tw,
         GOD,
-        "@wo/draft tacsim.core/alloy_smelt/1=7 1 999999 500 600",
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 999999 {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(
         absent.contains("budget account that does not exist"),
@@ -2223,7 +2284,7 @@ fn vf_z4b_a_draft_with_no_budget_account_refuses_and_stages_nothing() {
     let zero = err(
         &mut tw,
         GOD,
-        "@wo/draft tacsim.core/alloy_smelt/1=7 1 0 500 600",
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 0 {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(
         zero.contains("budget is a reservation on the requester's own account"),
@@ -2234,7 +2295,7 @@ fn vf_z4b_a_draft_with_no_budget_account_refuses_and_stages_nothing() {
         "and that staged nothing either"
     );
     assert_eq!(
-        pool_units(&mut tw, &families, endpoint(500), "metals"),
+        pool_units(&mut tw, &families, endpoint(SCENE_SOURCE), "metals"),
         40,
         "nothing was reserved, so the source pool is untouched"
     );

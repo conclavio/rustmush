@@ -1163,7 +1163,7 @@ fn cmd_wo(
             .next()
             .map(str::to_owned)
             .unwrap_or_else(|| format!("obj:{}", ctx.actor.0));
-        let Some((recipe_ref, pinned)) = recipes.resolve(ctx.w, &pack, version, &recipe_id) else {
+        let Some((_recipe_ref, pinned)) = recipes.resolve(ctx.w, &pack, version, &recipe_id) else {
             // Fog + fail-closed: an unknown or retired recipe is indistinguishable.
             return Err(CmdError::msg("No such recipe."));
         };
@@ -1224,15 +1224,17 @@ fn cmd_wo(
         }
         let pinned_json = serde_json::to_string(&pinned)
             .map_err(|_| CmdError::msg("that recipe could not be pinned"))?;
+        // WS02-S5: `facility_slots`, `capacity_revision`, `policy_revision` and
+        // `digest` are gone. `IndustryVerb::WoDraft`'s projection no longer
+        // declares them, so `ProjectedParameterSchema::validate` would refuse this
+        // submission for naming a key the offer does not carry — and the provider
+        // reads all four out of the offer's own books, which is the point: this
+        // command's copy of them was only ever a suggestion.
         let params = json!({
             "facility": facility.0,
-            "facility_slots": facility_rec.maximum_slots(),
-            "capacity_revision": facility_rec.capacity_revision(),
-            "policy_revision": facility_rec.policy_revision(),
             "pack": pack.as_str(),
             "version": version,
             "recipe": recipe_id.as_str(),
-            "digest": recipe_ref.digest().to_hex(),
             "quantity": quantity,
             "account": account,
             "source": source,

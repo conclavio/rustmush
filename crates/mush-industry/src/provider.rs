@@ -108,11 +108,17 @@ pub const MAX_WO_OFFER_ACCOUNTS: usize = 16;
 /// `MAX_PROJECTED_ACTION_CHOICES` (256) and, at 96 rows, inside
 /// [`MAX_WO_OFFER_BOOK_BYTES`] for any key a pack can spell.
 pub const MAX_OFFERED_RECIPES: usize = 96;
-/// Largest the recipe book may grow, in bytes of key + hash. The whole fixed
-/// object still has to canonicalize inside `MAX_ACTION_PARAMETER_BYTES` and the
-/// offer inside `MAX_PROJECTED_LEGAL_ACTION_BYTES`; this is the crate's own,
-/// much tighter bound, so the book is never what breaks either.
-pub const MAX_WO_OFFER_BOOK_BYTES: usize = 8 * 1024;
+/// Largest the recipe book may grow, in bytes of key + pinned hash + pack
+/// digest. The whole fixed object still has to canonicalize inside
+/// `MAX_ACTION_PARAMETER_BYTES` and the offer inside
+/// `MAX_PROJECTED_LEGAL_ACTION_BYTES`; this is the crate's own, much tighter
+/// bound, so the book is never what breaks either.
+///
+/// WS02-S5 doubled it because each row grew the 64-hex pack digest: the digest
+/// is no longer a client parameter, so the book is the only place `wo_draft` can
+/// read it from. At 96 rows the count cap still bites first for any key a real
+/// pack spells; the byte cap is what catches a pathological one.
+pub const MAX_WO_OFFER_BOOK_BYTES: usize = 16 * 1024;
 /// Largest curve text one parameter may carry (`c:y,c:y,…`).
 pub const MAX_CURVE_BYTES: usize = 256;
 
@@ -1015,6 +1021,9 @@ pub struct CatalogEntry {
     pub key: String,
     /// The 32-hex prefix of the pinned lines' canonical hash.
     pub hash: String,
+    /// The pack digest the authority publishes for it — the value `wo_draft`
+    /// pins on the `RecipeRef`, read from here and never from the client.
+    pub digest: DefinitionDigest,
     /// What a facility must offer to run it.
     pub requires: std::collections::BTreeSet<CanonicalId>,
 }
@@ -1029,7 +1038,8 @@ pub struct WoOfferBooks {
     pub endpoints: Vec<u64>,
     /// The drafter's own active accounts, ascending.
     pub accounts: Vec<u64>,
-    /// `"<pack>/<version>/<id>" → 32-hex pinned hash`.
+    /// `"<pack>/<version>/<id>" → {hash, digest}` — the 32-hex pinned hash and
+    /// the 64-hex pack digest, both the authority's.
     pub recipes: serde_json::Map<String, Value>,
     /// Whether a cap bit — [`MAX_OFFERED_RECIPES`] or
     /// [`MAX_WO_OFFER_BOOK_BYTES`].
@@ -1072,6 +1082,7 @@ pub fn catalog_entries(
             Some(CatalogEntry {
                 key: recipe_key(&reference),
                 hash: pinned_hash(&pinned).ok()?,
+                digest: reference.digest(),
                 requires: pinned.requires().clone(),
             })
         })
@@ -1084,12 +1095,16 @@ pub fn catalog_entries(
 /// The book key one recipe reference is spelled under.
 #[must_use]
 pub fn recipe_key(reference: &RecipeRef) -> String {
-    format!(
-        "{}/{}/{}",
-        reference.pack().as_str(),
-        reference.version(),
-        reference.id().as_str()
-    )
+    recipe_book_key(reference.pack(), reference.version(), reference.id())
+}
+
+/// The same key, spelled from the parts a submission carries — `wo_draft` has no
+/// [`RecipeRef`] to ask until it has read the digest out of the book this key
+/// finds. One function so the projection's spelling and the prepare's cannot
+/// drift apart.
+#[must_use]
+fn recipe_book_key(pack: &CanonicalId, version: u32, id: &CanonicalId) -> String {
+    format!("{}/{version}/{}", pack.as_str(), id.as_str())
 }
 
 /// **The facilities this actor may draft at right now**: staff, the owner, or a
@@ -1176,15 +1191,17 @@ pub fn wo_offer_books(
         }
         // The row's own weight, quotes and separators included — cheap, and it
         // bounds the book on the axis the offer's canonical limit cares about.
-        let weight = entry.key.len() + entry.hash.len() + 6;
+        let digest = entry.digest.to_hex();
+        let weight = entry.key.len() + entry.hash.len() + digest.len() + 24;
         if bytes + weight > MAX_WO_OFFER_BOOK_BYTES {
             books.truncated = true;
             break;
         }
         bytes += weight;
-        books
-            .recipes
-            .insert(entry.key.clone(), json!(entry.hash.clone()));
+        books.recipes.insert(
+            entry.key.clone(),
+            json!({ "hash": entry.hash.clone(), "digest": digest }),
+        );
     }
     books
 }
@@ -1211,24 +1228,56 @@ fn drafter_accounts(world: &World, actor: ObjId) -> Vec<u64> {
     out
 }
 
+/// Everything one `WoDraft` submission's **books** say about the facility and the
+/// recipe it names — every number the order goes on to pin, read off the offer
+/// the projection minted rather than off the parameters beside it.
+#[derive(Clone, Debug)]
+struct DraftAuthority {
+    /// The facility's own concurrent-slot cap.
+    facility_slots: u32,
+    /// The facility's capacity staleness stamp.
+    capacity_revision: u64,
+    /// The facility's policy staleness stamp.
+    policy_revision: u64,
+    /// What the facility can run, for the `requires` subset test.
+    capabilities: std::collections::BTreeSet<CanonicalId>,
+    /// The authority's published pack digest for the named recipe.
+    digest: DefinitionDigest,
+    /// The 32-hex canonical hash of the authority's pinned lines.
+    pinned_hash: String,
+}
+
 /// **The draft's structural gate** — `file()`'s shape, for the facility instead
 /// of the issuer: re-derive the drafter's authority from the offer that produced
 /// this invocation rather than from the parameters beside it.
 ///
 /// A `prepare_authoritative` provider gets no world, so it cannot ask `acts_for`
-/// anything. What it can do is refuse a facility, a revision pair or a recipe the
-/// projection that minted this offer did not publish — and a submitter cannot
-/// reach those, because `merge_parameters` refuses a supplied key that collides
-/// with a fixed one. Every refusal is the byte-identical `WO_REFUSED`.
-fn wo_draft_authorized(
+/// anything. What it can do is refuse a facility or a recipe the projection that
+/// minted this offer did not publish, and **read the numbers out of the books
+/// instead of off the wire** — a submitter cannot reach either, because
+/// `merge_parameters` refuses a supplied key that collides with a fixed one.
+/// Every refusal is the byte-identical `WO_REFUSED`.
+///
+/// ---- WS02-S5: the books are the source, not a cross-check ----
+///
+/// S4 published these books and compared them against client-supplied
+/// `facility_slots`, `capacity_revision`, `policy_revision` and `digest`. That
+/// left the one line nobody compared — `pinned` — free, and `pinned` is what
+/// `wo_deliver` mints from. Those four parameters are gone from the projection
+/// now (so `ProjectedParameterSchema::validate` refuses a submission that even
+/// mentions one) and this function *returns* them, so the only way a number
+/// reaches a `WorkOrder` is through a book the server wrote.
+///
+/// The staff shortcut went with them. It could only ever have skipped straight
+/// past values that no longer exist to skip to; staff authority is expressed by
+/// `draftable_facilities` putting **every** facility in a staff drafter's book,
+/// which is where it belonged.
+fn wo_draft_authority(
     parameters: &serde_json::Map<String, Value>,
     actor: ObjId,
     facility: ObjId,
-    facility_slots: u32,
-    capacity_revision: u64,
-    policy_revision: u64,
-    recipe: &RecipeRef,
-) -> Result<(), ActionError> {
+    recipe_key: &str,
+) -> Result<DraftAuthority, ActionError> {
     let refused = || error(ActionErrorCode::Unauthorized, WO_REFUSED);
     // The offer was projected to *this* actor: a replayed invocation cannot carry
     // one drafter's books under another drafter's name.
@@ -1240,39 +1289,67 @@ fn wo_draft_authorized(
     if drafter != Some(actor) {
         return Err(refused());
     }
-    // Staff may draft at any facility by id, exactly as they may contest any
-    // claim by id. Their book is a convenience bounded at
-    // `MAX_WO_OFFER_FACILITIES`, never the whole of their authority.
-    if parameters
-        .get(WO_DRAFT_STAFF)
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return Ok(());
-    }
     let row = parameters
         .get(WO_FACILITIES)
         .and_then(Value::as_object)
         .and_then(|book| book.get(&facility.0.to_string()))
         .and_then(Value::as_object)
         .ok_or_else(refused)?;
-    // The pinned staleness stamps are the record's, not the client's: an offer
+    // The staleness stamps and the slot cap are the record's, full stop: an offer
     // route could otherwise pin a 1-slot facility as an 8-slot one, or pin
     // revisions that never existed so the submit's drift check could not fire.
-    let agrees = row.get("slots").and_then(Value::as_u64) == Some(u64::from(facility_slots))
-        && row.get("capacity_revision").and_then(Value::as_u64) == Some(capacity_revision)
-        && row.get("policy_revision").and_then(Value::as_u64) == Some(policy_revision);
-    if !agrees {
-        return Err(refused());
-    }
-    if !parameters
+    let facility_slots = row
+        .get("slots")
+        .and_then(Value::as_u64)
+        .and_then(|slots| u32::try_from(slots).ok())
+        .filter(|slots| *slots >= 1 && *slots <= crate::facility::MAX_FACILITY_SLOTS)
+        .ok_or_else(refused)?;
+    let capacity_revision = row
+        .get("capacity_revision")
+        .and_then(Value::as_u64)
+        .filter(|revision| *revision >= 1)
+        .ok_or_else(refused)?;
+    let policy_revision = row
+        .get("policy_revision")
+        .and_then(Value::as_u64)
+        .filter(|revision| *revision >= 1)
+        .ok_or_else(refused)?;
+    let capabilities = row
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .ok_or_else(refused)?
+        .iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .and_then(|id| CanonicalId::new(id).ok())
+                .ok_or_else(refused)
+        })
+        .collect::<Result<std::collections::BTreeSet<CanonicalId>, ActionError>>()?;
+    let recipe = parameters
         .get(WO_RECIPES)
         .and_then(Value::as_object)
-        .is_some_and(|book| book.contains_key(&recipe_key(recipe)))
-    {
-        return Err(refused());
-    }
-    Ok(())
+        .and_then(|book| book.get(recipe_key))
+        .and_then(Value::as_object)
+        .ok_or_else(refused)?;
+    let pinned_hash = recipe
+        .get("hash")
+        .and_then(Value::as_str)
+        .ok_or_else(refused)?
+        .to_owned();
+    let digest = recipe
+        .get("digest")
+        .and_then(Value::as_str)
+        .and_then(|hex| DefinitionDigest::from_hex(hex).ok())
+        .ok_or_else(refused)?;
+    Ok(DraftAuthority {
+        facility_slots,
+        capacity_revision,
+        policy_revision,
+        capabilities,
+        digest,
+        pinned_hash,
+    })
 }
 
 impl IndustryProvider {
@@ -1576,22 +1653,22 @@ impl ActionProvider for IndustryProvider {
                 }
                 wo_books = Some(books);
                 // The draft command (world available) resolves the recipe from the
-                // authority and pins the facility policy, then submits these as
-                // parameters; the provider re-checks the shapes and writes the
-                // Draft work order. `pinned` carries the resolved lines as a JSON
-                // blob and `digest` the pack digest.
+                // authority, then submits these as parameters; the provider
+                // re-derives every pinned number from the books above and writes
+                // the Draft work order. `pinned` carries the resolved lines as a
+                // JSON blob, which the provider hashes against the book's.
+                //
+                // WS02-S5: `facility_slots`, `capacity_revision`,
+                // `policy_revision` and `digest` are **not** declared here any
+                // more. `ProjectedParameterSchema::validate` refuses a supplied
+                // key the projection does not name, so their absence is itself the
+                // fence: a submission that so much as mentions `capacity_revision`
+                // is refused before the provider runs, and `wo_draft` reads all
+                // four out of `wo_facilities`/`wo_recipes` instead.
                 parameters.push(integer("facility", 0, i64::from(u32::MAX))?);
-                parameters.push(integer(
-                    "facility_slots",
-                    1,
-                    i64::from(crate::facility::MAX_FACILITY_SLOTS),
-                )?);
-                parameters.push(integer("capacity_revision", 1, i64::MAX)?);
-                parameters.push(integer("policy_revision", 1, i64::MAX)?);
                 parameters.push(text("pack", 64)?);
                 parameters.push(integer("version", 1, i64::from(u32::MAX))?);
                 parameters.push(text("recipe", 64)?);
-                parameters.push(text("digest", 64)?);
                 parameters.push(integer(
                     "quantity",
                     1,
@@ -1714,6 +1791,11 @@ impl ActionProvider for IndustryProvider {
             && let Some(map) = fixed.as_object_mut()
         {
             map.insert(WO_DRAFTER.to_owned(), json!(actor.0));
+            // WS02-S5: diagnostic, not a gate. It records that this book was
+            // built with staff reach (every facility, not just the drafter's);
+            // `wo_draft_authority` no longer shortcuts on it, because there is
+            // nothing left to shortcut past — the numbers it used to wave
+            // through are read out of the books themselves now.
             map.insert(WO_DRAFT_STAFF.to_owned(), json!(staff));
             map.insert(WO_FACILITIES.to_owned(), Value::Object(books.facilities));
             map.insert(WO_ENDPOINTS.to_owned(), json!(books.endpoints));
@@ -2250,8 +2332,30 @@ impl IndustryProvider {
 
     // ---- E7c4: the work-order lifecycle ----
 
-    /// B3 — write one Draft work order from the resolved, pinned inputs the draft
-    /// command computed (world available there; the provider has no world).
+    /// B3 — write one Draft work order from the resolved inputs the draft command
+    /// computed (world available there; the provider has no world), with every
+    /// number that governs production read back out of the offer's own books.
+    ///
+    /// ---- WS02-S5: `pinned` was the line nobody compared ----
+    ///
+    /// `wo_deliver` mints `order.pinned().outputs()` straight into the destination
+    /// endpoint. Upstream grew two digest re-checks — one at `@wo/submit`, one at
+    /// the plan-stage advance — and both compare the **digest**, so a forged
+    /// digest fails closed. Neither has ever looked at the pinned lines. An honest
+    /// `pack`/`version`/`recipe`/`digest` carried beside a `pinned` whose output
+    /// units are multiplied passes both and mints the inflated amount: free
+    /// matter, from a parameter the client wrote.
+    ///
+    /// So the pinned lines are checked against the authority here, at the only
+    /// seam that has the book: decode, re-serialize through `serde_json::to_value`
+    /// and hash under the same `industry.pinned` domain the projection used.
+    /// Re-ordered keys and re-spaced JSON therefore hash identically and are
+    /// accepted; anything that moves a unit count is a different hash and refuses.
+    /// The refusal is [`ActionErrorCode::Stale`], because the honest cause is a
+    /// pack republished between the projection and the submission and a driver
+    /// should discard-and-redraft rather than treat it as a malformed request —
+    /// and the player-visible text is the byte-identical `WO_REFUSED`, so a
+    /// forgery and a drift read the same.
     fn wo_draft(
         &self,
         txn: &mut ActionTxn<'_>,
@@ -2260,21 +2364,17 @@ impl IndustryProvider {
         actor: ObjId,
         data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
+        let refused = || error(ActionErrorCode::Unauthorized, WO_REFUSED);
         let facility = obj_field(parameters, "facility")?;
-        let facility_slots = u32::try_from(u64_field(
-            parameters,
-            "facility_slots",
-            u64::from(crate::facility::MAX_FACILITY_SLOTS),
-        )?)
-        .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
-        let capacity_revision = u64_field(parameters, "capacity_revision", u64::MAX)?;
-        let policy_revision = u64_field(parameters, "policy_revision", u64::MAX)?;
         let pack = canonical_field(parameters, "pack", 64)?;
         let version = u32::try_from(u64_field(parameters, "version", u64::from(u32::MAX))?)
             .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
         let recipe_id = canonical_field(parameters, "recipe", 64)?;
-        let digest = DefinitionDigest::from_hex(&text_field(parameters, "digest")?)
-            .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
+        // The book key is spelled from the submitted parameters and looked up; an
+        // unpublished recipe refuses with the byte-identical line, so the book is
+        // no catalog oracle either.
+        let key = recipe_book_key(&pack, version, &recipe_id);
+        let authority = wo_draft_authority(parameters, actor, facility, &key)?;
         let quantity = u32::try_from(u64_field(
             parameters,
             "quantity",
@@ -2287,29 +2387,64 @@ impl IndustryProvider {
             // Z4: read as the integer it is declared and staged as, never as text.
             endpoint: required_endpoint(parameters, "destination")?,
         };
+        // `wo_submit` reserves every material input out of the order's `source`
+        // and `wo_deliver` mints every output into its `destination`, neither with
+        // an ownership test — free text here let a submission drain a rival's
+        // endpoint or dump lots into one. Both, and the budget account, are
+        // members of the drafter's own server-authored books or nothing.
+        let endpoints = parameters
+            .get(WO_ENDPOINTS)
+            .and_then(Value::as_array)
+            .ok_or_else(refused)?;
+        let member = |wanted: u64| {
+            endpoints
+                .iter()
+                .filter_map(Value::as_u64)
+                .any(|id| id == wanted)
+        };
+        if !member(destination.endpoint().0.0) {
+            return Err(refused());
+        }
+        if let Some(from) = source
+            && !member(from.0.0)
+        {
+            return Err(refused());
+        }
+        if !parameters
+            .get(WO_ACCOUNTS)
+            .and_then(Value::as_array)
+            .is_some_and(|book| {
+                book.iter()
+                    .filter_map(Value::as_u64)
+                    .any(|id| id == account.0)
+            })
+        {
+            return Err(refused());
+        }
         let beneficiary = principal_field(parameters, "beneficiary")?;
+        // Decoding is itself a gate: `PinnedRecipe`'s deserializer runs `new`, so a
+        // zero-input recipe with output still refuses at `RecipeMintsFromNothing`.
         let pinned: PinnedRecipe = serde_json::from_str(&text_field(parameters, "pinned")?)
             .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
-        let recipe = RecipeRef::new(pack, version, recipe_id, digest)
+        if pinned_hash(&pinned)? != authority.pinned_hash {
+            return Err(error(ActionErrorCode::Stale, WO_REFUSED));
+        }
+        // The capability test the command has always run, applied on the route the
+        // command does not stand in front of, against the book's capabilities.
+        if !pinned.requires().is_subset(&authority.capabilities) {
+            return Err(refused());
+        }
+        let recipe = RecipeRef::new(pack, version, recipe_id, authority.digest)
             .map_err(|source| error(ActionErrorCode::InvalidRequest, source.to_string()))?;
-        wo_draft_authorized(
-            parameters,
-            actor,
-            facility,
-            facility_slots,
-            capacity_revision,
-            policy_revision,
-            &recipe,
-        )?;
         let id = derive_work_order_id(invocation.request(), 0).map_err(|source| refuse(&source))?;
         let order = WorkOrder::draft(
             id,
             PrincipalId::Object(actor),
             beneficiary,
             facility,
-            facility_slots,
-            capacity_revision,
-            policy_revision,
+            authority.facility_slots,
+            authority.capacity_revision,
+            authority.policy_revision,
             recipe,
             pinned,
             quantity,
