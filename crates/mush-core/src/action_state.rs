@@ -14,6 +14,8 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::ops::Bound;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread::{self, ThreadId};
 
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -995,15 +997,118 @@ impl fmt::Debug for StoredStateRecord {
     }
 }
 
+/// The one commit reservation a store can hold, shared by pointer with the
+/// [`PreparedTxn`]/[`PreparedInstallation`] minted from it.
+///
+/// It is one allocation doing two jobs that used to be two: it *is* the store
+/// identity [`ActionStateStore::check_installation`] proves with
+/// `Arc::ptr_eq`, and it carries the outstanding reservation itself, so the
+/// prepared value can release what it reserved when it dies unstaged
+/// (core-action-8). `pending == 0` means unreserved; reservations start at 1
+/// because [`ActionTxn::prepare`] increments before it stores, so zero is a
+/// sentinel no live reservation can collide with.
+struct ReservationSlot {
+    pending: AtomicU64,
+    dropped: AtomicU64,
+    lost: AtomicBool,
+}
+
+impl ReservationSlot {
+    fn new() -> Self {
+        Self {
+            pending: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            lost: AtomicBool::new(false),
+        }
+    }
+
+    fn pending(&self) -> Option<u64> {
+        match self.pending.load(Ordering::Relaxed) {
+            0 => None,
+            reservation => Some(reservation),
+        }
+    }
+}
+
+/// How far the reservation this guard holds has travelled. Only the first
+/// stage releases on drop: a [`PreparedTxn`] that dies never staged anything
+/// durable, so its reservation is pure leaked bookkeeping. Once
+/// [`PreparedTxn::into_parts`] has handed the module ops out, a durable write
+/// may already be in flight, and silently freeing the slot would let the next
+/// transaction prepare against RAM the acknowledged write was never installed
+/// into — so the installation stage stays fail-closed and wedged, which is
+/// the witness WS03-S11 gives teeth to.
+enum ReservationStage {
+    Prepared,
+    Installation,
+    Settled,
+}
+
+/// The store-side reservation, owned by whichever prepared value currently
+/// stands for the pending commit.
+///
+/// Its `Drop` is the whole point of core-action-8: it runs on the world task,
+/// so it may never panic (docs/PLAN.md), and it is loud rather than silent —
+/// a leaked reservation is a coordinator bug, not a gameplay outcome, and the
+/// counter plus the `tracing::error!` are how it stops being invisible.
+struct ReservationGuard {
+    slot: Arc<ReservationSlot>,
+    reservation: u64,
+    /// The thread that armed the guard — the single world-owning task. A drop
+    /// anywhere else cannot be ordered against the store, so it poisons
+    /// instead of releasing.
+    armed_on: ThreadId,
+    stage: ReservationStage,
+}
+
+impl ReservationGuard {
+    fn arm(slot: Arc<ReservationSlot>, reservation: u64) -> Self {
+        Self {
+            slot,
+            reservation,
+            armed_on: thread::current().id(),
+            stage: ReservationStage::Prepared,
+        }
+    }
+
+    /// Clear the slot for a commit that reached its definitive end — an
+    /// install or an abort. Disarms, so the guard's own `Drop` stays quiet.
+    fn settle(&mut self) {
+        self.slot.pending.store(0, Ordering::Relaxed);
+        self.stage = ReservationStage::Settled;
+    }
+}
+
+impl Drop for ReservationGuard {
+    fn drop(&mut self) {
+        if !matches!(self.stage, ReservationStage::Prepared) {
+            return;
+        }
+        if thread::current().id() != self.armed_on {
+            self.slot.lost.store(true, Ordering::Release);
+            tracing::error!(
+                reservation = self.reservation,
+                "prepared action-state transaction was dropped off the world task; the reservation is poisoned rather than released"
+            );
+            return;
+        }
+        self.slot.pending.store(0, Ordering::Relaxed);
+        self.slot.dropped.fetch_add(1, Ordering::Relaxed);
+        tracing::error!(
+            reservation = self.reservation,
+            "prepared action-state transaction was dropped without being staged or aborted; its store reservation was released"
+        );
+    }
+}
+
 /// Engine-owned live authoritative state. It has no unrestricted mutable map
 /// accessor; all gameplay mutation goes through [`ActionTxn`].
 pub struct ActionStateStore {
     registry: StateFamilyRegistry,
     records: BTreeMap<StateKey, StoredStateRecord>,
-    identity: Arc<()>,
+    slot: Arc<ReservationSlot>,
     revision: u64,
     next_reservation: u64,
-    pending_reservation: Option<u64>,
 }
 
 /// One immutable entry in a bounded typed-family scan.
@@ -1052,7 +1157,8 @@ impl fmt::Debug for ActionStateStore {
             .field("families", &self.registry.len())
             .field("records", &self.records.len())
             .field("revision", &self.revision)
-            .field("pending_reservation", &self.pending_reservation)
+            .field("pending_reservation", &self.pending_reservation())
+            .field("dropped_reservations", &self.dropped_reservations())
             .finish()
     }
 }
@@ -1073,10 +1179,9 @@ impl ActionStateStore {
         Self {
             registry,
             records: BTreeMap::new(),
-            identity: Arc::new(()),
+            slot: Arc::new(ReservationSlot::new()),
             revision: 0,
             next_reservation: 0,
-            pending_reservation: None,
         }
     }
 
@@ -1095,9 +1200,37 @@ impl ActionStateStore {
         self.records.is_empty()
     }
 
+    /// Whether a prepared commit currently owns this store.
+    ///
+    /// WS03-S2: no longer `const`. The reservation moved into an
+    /// `Arc<ReservationSlot>` so a dropped [`PreparedTxn`] can release it from
+    /// its own `Drop`, and an `AtomicU64` cannot be read in a `const fn`.
     #[must_use]
-    pub const fn has_prepared(&self) -> bool {
-        self.pending_reservation.is_some()
+    pub fn has_prepared(&self) -> bool {
+        self.slot.pending().is_some()
+    }
+
+    fn pending_reservation(&self) -> Option<u64> {
+        self.slot.pending()
+    }
+
+    /// How many prepared transactions died on this store without ever being
+    /// staged or aborted. Every count is a coordinator bug that used to wedge
+    /// the store with [`ActionStateError::CommitPending`] forever
+    /// (core-action-8); releasing keeps the writer usable, and this is the
+    /// number that says it happened at all.
+    #[must_use]
+    pub fn dropped_reservations(&self) -> u64 {
+        self.slot.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Whether a prepared value was dropped somewhere other than the world
+    /// task that armed it. Such a drop cannot be ordered against the store, so
+    /// it poisons the reservation instead of releasing it and the store stays
+    /// deliberately wedged. WS03-S11 owns what the engine does about it.
+    #[must_use]
+    pub fn reservation_lost(&self) -> bool {
+        self.slot.lost.load(Ordering::Acquire)
     }
 
     /// Atomically hydrate every discovered persisted record through its exact
@@ -1112,7 +1245,7 @@ impl ActionStateStore {
         &mut self,
         records: impl IntoIterator<Item = ActionStateBootRecord>,
     ) -> Result<(), ActionStateError> {
-        if !self.records.is_empty() || self.pending_reservation.is_some() || self.revision != 0 {
+        if !self.records.is_empty() || self.pending_reservation().is_some() || self.revision != 0 {
             return Err(ActionStateError::HydrationStoreNotEmpty);
         }
         let mut hydrated = BTreeMap::new();
@@ -1425,7 +1558,7 @@ impl ActionStateStore {
             .owner_readiness
             .require_ready(&owner)
             .map_err(ActionStateError::OwnerNotReady)?;
-        if let Some(reservation) = self.pending_reservation {
+        if let Some(reservation) = self.pending_reservation() {
             return Err(ActionStateError::CommitPending { reservation });
         }
         let limits = ActionTxnLimits::default();
@@ -1464,10 +1597,16 @@ impl ActionStateStore {
     /// persistence instead of taking the writer down with it.
     ///
     /// The whole check happens before the first mutation, so a refusal leaves
-    /// `records`, `revision` and `pending_reservation` exactly as they were.
+    /// `records`, `revision` and the reservation exactly as they were.
     pub fn install(&mut self, installation: PreparedInstallation) -> Result<(), ActionStateError> {
         self.check_installation(&installation)?;
-        for (key, mutation) in installation.mutations {
+        let PreparedInstallation {
+            new_revision,
+            mutations,
+            mut guard,
+            ..
+        } = installation;
+        for (key, mutation) in mutations {
             match mutation {
                 InstallMutation::Put { value, canonical } => {
                     self.records
@@ -1479,8 +1618,8 @@ impl ActionStateStore {
                 }
             }
         }
-        self.revision = installation.new_revision;
-        self.pending_reservation = None;
+        self.revision = new_revision;
+        guard.settle();
         Ok(())
     }
 
@@ -1491,7 +1630,8 @@ impl ActionStateStore {
     /// bug, and the single writer may not panic over one.
     pub fn abort(&mut self, installation: PreparedInstallation) -> Result<(), ActionStateError> {
         self.check_installation(&installation)?;
-        self.pending_reservation = None;
+        let PreparedInstallation { mut guard, .. } = installation;
+        guard.settle();
         Ok(())
     }
 
@@ -1502,13 +1642,14 @@ impl ActionStateStore {
         &self,
         installation: &PreparedInstallation,
     ) -> Result<(), ActionStateError> {
-        if !Arc::ptr_eq(&self.identity, &installation.store_identity) {
+        if !Arc::ptr_eq(&self.slot, &installation.guard.slot) {
             return Err(ActionStateError::ForeignStoreIdentity);
         }
-        if self.pending_reservation != Some(installation.reservation) {
+        let pending = self.pending_reservation();
+        if pending != Some(installation.guard.reservation) {
             return Err(ActionStateError::ReservationMismatch {
-                expected: installation.reservation,
-                found: self.pending_reservation,
+                expected: installation.guard.reservation,
+                found: pending,
             });
         }
         if self.revision != installation.base_revision {
@@ -1878,7 +2019,6 @@ impl ActionTxn<'_> {
             .checked_add(1)
             .ok_or(ActionStateError::RevisionExhausted)?;
         let base_revision = self.store.revision;
-        let store_identity = Arc::clone(&self.store.identity);
         let owner = self.owner;
         let provider_ordinal = self.provider_ordinal;
         let operation_count = self.operation_count;
@@ -1922,16 +2062,18 @@ impl ActionTxn<'_> {
             });
         }
         self.store.next_reservation = reservation;
-        self.store.pending_reservation = Some(reservation);
+        self.store
+            .slot
+            .pending
+            .store(reservation, Ordering::Relaxed);
         Ok(PreparedTxn {
             owner,
             provider_ordinal,
             operation_count,
             canonical_bytes,
-            reservation,
             base_revision,
             new_revision,
-            store_identity,
+            guard: ReservationGuard::arm(Arc::clone(&self.store.slot), reservation),
             records,
         })
     }
@@ -2087,16 +2229,20 @@ impl PreparedRecord {
 
 /// One-shot transaction materialization. It intentionally does not implement
 /// `Clone` or serialization.
+///
+/// It owns the store's commit reservation through [`ReservationGuard`], so a
+/// coordinator that gives up between `prepare` and staging hands the slot back
+/// on the way out instead of wedging every later transaction with
+/// [`ActionStateError::CommitPending`] (core-action-8).
 #[must_use = "a prepared transaction must be staged for persistence or explicitly aborted"]
 pub struct PreparedTxn {
     owner: OwnerId,
     provider_ordinal: Option<u32>,
     operation_count: usize,
     canonical_bytes: usize,
-    reservation: u64,
     base_revision: u64,
     new_revision: u64,
-    store_identity: Arc<()>,
+    guard: ReservationGuard,
     records: Vec<PreparedRecord>,
 }
 
@@ -2107,7 +2253,7 @@ impl fmt::Debug for PreparedTxn {
             .field("provider_ordinal", &self.provider_ordinal)
             .field("operation_count", &self.operation_count)
             .field("canonical_bytes", &self.canonical_bytes)
-            .field("reservation", &self.reservation)
+            .field("reservation", &self.guard.reservation)
             .field("base_revision", &self.base_revision)
             .field("new_revision", &self.new_revision)
             .field("records", &self.records)
@@ -2172,20 +2318,31 @@ impl PreparedTxn {
     /// Split store writes from the non-cloneable install images. Both were
     /// derived from the same validated typed values before this call.
     pub fn into_parts(self) -> (Vec<ModuleOp>, PreparedInstallation) {
-        let mut module_ops = Vec::with_capacity(self.records.len());
+        let PreparedTxn {
+            base_revision,
+            new_revision,
+            mut guard,
+            records,
+            ..
+        } = self;
+        let mut module_ops = Vec::with_capacity(records.len());
         let mut mutations = BTreeMap::new();
-        for record in self.records {
+        for record in records {
             module_ops.push(record.module_op);
             let previous = mutations.insert(record.key, record.installation);
             debug_assert!(previous.is_none());
         }
+        // The module ops are about to leave for the store, so from here a
+        // durable write may already be in flight: the guard stops releasing on
+        // drop and the reservation stays held, fail-closed, until an install or
+        // an abort settles it.
+        guard.stage = ReservationStage::Installation;
         (
             module_ops,
             PreparedInstallation {
-                reservation: self.reservation,
-                base_revision: self.base_revision,
-                new_revision: self.new_revision,
-                store_identity: self.store_identity,
+                base_revision,
+                new_revision,
+                guard,
                 mutations,
             },
         )
@@ -2204,17 +2361,16 @@ enum InstallMutation {
 /// It is deliberately non-cloneable and has no public field access.
 #[must_use = "a prepared installation must be installed after exact acknowledgement or aborted"]
 pub struct PreparedInstallation {
-    reservation: u64,
     base_revision: u64,
     new_revision: u64,
-    store_identity: Arc<()>,
+    guard: ReservationGuard,
     mutations: BTreeMap<StateKey, InstallMutation>,
 }
 
 impl fmt::Debug for PreparedInstallation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PreparedInstallation")
-            .field("reservation", &self.reservation)
+            .field("reservation", &self.guard.reservation)
             .field("base_revision", &self.base_revision)
             .field("new_revision", &self.new_revision)
             .field("mutations", &self.mutations.len())
@@ -3033,7 +3189,7 @@ mod tests {
     fn live_state(store: &ActionStateStore) -> LiveState {
         (
             store.revision,
-            store.pending_reservation,
+            store.pending_reservation(),
             store
                 .records
                 .iter()
@@ -3133,10 +3289,10 @@ mod tests {
     fn a_second_install_of_one_reservation_is_refused_not_asserted() {
         let (mut store, handle) = bare_store();
         let installation = prepare_counter(&mut store, &handle, 9, 1);
-        let reservation = installation.reservation;
+        let reservation = installation.guard.reservation;
         let base_revision = installation.base_revision;
         let new_revision = installation.new_revision;
-        let store_identity = Arc::clone(&installation.store_identity);
+        let slot = Arc::clone(&installation.guard.slot);
         store
             .install(installation)
             .expect("the first install lands");
@@ -3147,11 +3303,12 @@ mod tests {
             .next()
             .expect("the first install left one record")
             .clone();
+        let mut guard = ReservationGuard::arm(slot, reservation);
+        guard.stage = ReservationStage::Installation;
         let replay = PreparedInstallation {
-            reservation,
             base_revision,
             new_revision,
-            store_identity,
+            guard,
             mutations: BTreeMap::from([(live_key, InstallMutation::Delete)]),
         };
         let before = live_state(&store);
@@ -3163,5 +3320,134 @@ mod tests {
             })
         ));
         assert_eq!(live_state(&store), before);
+    }
+    /// What a coordinator early return actually looks like: it prepares, then
+    /// bails on something else before the transaction is ever staged, and the
+    /// `PreparedTxn` dies on the stack.
+    fn coordinator_early_return(
+        store: &mut ActionStateStore,
+        handle: &CounterHandle,
+        key: u64,
+    ) -> Result<(), ActionStateError> {
+        let mut txn = store.transaction(handle)?;
+        txn.insert(handle, &key, CounterState { amount: 7 })?;
+        let _prepared = txn.prepare()?;
+        // The give-up. `_prepared` is still alive here and is dropped on the
+        // way out — the exact shape core-action-8 is about.
+        Err(ActionStateError::EmptyTransaction)
+    }
+
+    /// core-action-8: `pending_reservation` used to be cleared only by
+    /// `install` and `abort`, so a coordinator that dropped its `PreparedTxn`
+    /// wedged the store — every later `begin_for_owner` refused with
+    /// `CommitPending` for the life of the process. The guard's `Drop` hands
+    /// the slot back.
+    #[test]
+    fn a_dropped_prepared_txn_releases_the_reservation() {
+        let (mut store, handle) = bare_store();
+
+        assert!(matches!(
+            coordinator_early_return(&mut store, &handle, 9),
+            Err(ActionStateError::EmptyTransaction)
+        ));
+        assert!(!store.has_prepared());
+
+        // The wedge: this used to be Err(CommitPending { reservation: 1 }).
+        let recovered = prepare_counter(&mut store, &handle, 9, 3);
+        store
+            .install(recovered)
+            .expect("the store commits after the leak");
+        assert_eq!(store.revision, 1);
+        assert_eq!(store.len(), 1);
+    }
+
+    /// The release is bookkeeping only: nothing durable was staged for a
+    /// `PreparedTxn`, so the post-images die with it and live state is exactly
+    /// where the failed coordinator found it.
+    #[test]
+    fn a_dropped_prepared_txn_leaves_ram_and_revision_untouched() {
+        let (mut store, handle) = bare_store();
+        let seeded = prepare_counter(&mut store, &handle, 1, 1);
+        store.install(seeded).expect("the seed installs");
+        let before = live_state(&store);
+
+        assert!(matches!(
+            coordinator_early_return(&mut store, &handle, 2),
+            Err(ActionStateError::EmptyTransaction)
+        ));
+
+        assert_eq!(live_state(&store), before);
+        assert!(!store.reservation_lost());
+        // The prepared post-image never reached the live map.
+        assert_eq!(store.len(), 1);
+    }
+
+    /// A released reservation is still a bug, so it is counted rather than
+    /// swallowed.
+    #[test]
+    fn the_drop_counter_reports_the_leak() {
+        let (mut store, handle) = bare_store();
+        assert_eq!(store.dropped_reservations(), 0);
+
+        assert!(matches!(
+            coordinator_early_return(&mut store, &handle, 4),
+            Err(ActionStateError::EmptyTransaction)
+        ));
+        assert_eq!(store.dropped_reservations(), 1);
+
+        // A clean commit is not a leak.
+        let clean = prepare_counter(&mut store, &handle, 4, 2);
+        store.install(clean).expect("the clean commit installs");
+        assert_eq!(store.dropped_reservations(), 1);
+    }
+
+    /// `PreparedTxn` is `Send`, and a drop off the world task cannot be
+    /// ordered against the store it would be releasing. So it poisons instead:
+    /// the reservation stays held, the store stays deliberately wedged, and
+    /// the leak counter does not move. WS03-S11 owns what the engine does with
+    /// the `lost` flag.
+    #[test]
+    fn a_prepared_txn_dropped_off_the_world_task_poisons_instead_of_releasing() {
+        let (mut store, handle) = bare_store();
+        let prepared = {
+            let mut txn = store.transaction(&handle).expect("the store is unreserved");
+            txn.insert(&handle, &5, CounterState { amount: 1 })
+                .expect("the counter value is valid");
+            txn.prepare().expect("the transaction prepares")
+        };
+
+        std::thread::spawn(move || drop(prepared))
+            .join()
+            .expect("the dropping thread does not panic");
+
+        assert!(store.reservation_lost());
+        assert!(store.has_prepared());
+        assert_eq!(store.dropped_reservations(), 0);
+        assert!(matches!(
+            store.transaction(&handle).err(),
+            Some(ActionStateError::CommitPending { reservation: 1 })
+        ));
+    }
+
+    /// Regression for the identity half of the refactor: the store identity
+    /// used to be its own `Arc<()>` and is now the reservation slot itself, so
+    /// an installation minted elsewhere must still fail `Arc::ptr_eq` — and
+    /// must not release the target store's own reservation on its way out.
+    #[test]
+    fn install_after_prepare_still_asserts_ownership() {
+        let (mut first, first_handle) = bare_store();
+        let (mut second, second_handle) = bare_store();
+        let local = prepare_counter(&mut second, &second_handle, 3, 1);
+
+        let foreign = prepare_counter(&mut first, &first_handle, 3, 2);
+        assert!(matches!(
+            second.install(foreign),
+            Err(ActionStateError::ForeignStoreIdentity)
+        ));
+        assert_eq!(second.pending_reservation(), Some(1));
+        assert_eq!(second.dropped_reservations(), 0);
+
+        second.abort(local).expect("the local reservation releases");
+        assert!(!second.has_prepared());
     }
 }
