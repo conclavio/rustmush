@@ -29,7 +29,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use std::time::Duration;
 
@@ -865,6 +865,37 @@ impl ServerInputClaims {
         }
         Some(held.request)
     }
+
+    /// One consistent custody reading: held claims and held bytes taken under
+    /// the same guard, so a log line can never pair a count from one instant
+    /// with a byte total from another.
+    fn capacity_snapshot(&self) -> (usize, usize) {
+        (self.entries.len(), self.bytes)
+    }
+}
+
+/// The crate's single mutex-poison policy for the IPC claim table.
+///
+/// A panic anywhere in a claim path used to poison this mutex and then abort
+/// the reader loop for *every* connection on the next lock. Claim mutations
+/// are short, non-reentrant, and already reconciled by [`ServerInputClaims::release`]'s
+/// saturating arithmetic, so a poisoned table is recovered rather than
+/// escalated — the same policy the writer mailbox already chose in
+/// [`crate::world_task`].
+pub(crate) fn claims_guard(claims: &Mutex<ServerInputClaims>) -> MutexGuard<'_, ServerInputClaims> {
+    claims.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Admit one request and read the resulting custody in a single lock
+/// acquisition, so the overload log reports a snapshot that actually existed.
+pub(crate) fn admit_with_custody_snapshot(
+    claims: &Mutex<ServerInputClaims>,
+    request: GatewayRequest,
+) -> (ServerClaimAdmission, usize, usize) {
+    let mut claims = claims_guard(claims);
+    let admission = claims.admit(request);
+    let (held, bytes) = claims.capacity_snapshot();
+    (admission, held, bytes)
 }
 
 fn request_disposition(
@@ -882,10 +913,7 @@ fn release_input_claim(
     claims: &Arc<Mutex<ServerInputClaims>>,
     request: RequestUid,
 ) -> Option<GatewayRequest> {
-    claims
-        .lock()
-        .expect("server input claims poisoned")
-        .release(request)
+    claims_guard(claims).release(request)
 }
 
 async fn handle_authoritative_input(
@@ -1205,10 +1233,8 @@ async fn reader_loop(
                         );
                     }
                     GatewayInput::Cmd { .. } => {
-                        let admission = input_claims
-                            .lock()
-                            .expect("server input claims poisoned")
-                            .admit(request);
+                        let (admission, held, bytes) =
+                            admit_with_custody_snapshot(&input_claims, request);
                         match admission {
                             ServerClaimAdmission::New | ServerClaimAdmission::Duplicate => {
                                 request_disposition(
@@ -1221,15 +1247,8 @@ async fn reader_loop(
                                 if warn {
                                     tracing::warn!(
                                         request = %uid,
-                                        held = input_claims
-                                            .lock()
-                                            .expect("server input claims poisoned")
-                                            .entries
-                                            .len(),
-                                        bytes = input_claims
-                                            .lock()
-                                            .expect("server input claims poisoned")
-                                            .bytes,
+                                        held,
+                                        bytes,
                                         "server legacy-claim custody full; refusing request"
                                     );
                                 }
@@ -1252,10 +1271,7 @@ async fn reader_loop(
                         }
                     }
                     GatewayInput::Action(_) => {
-                        let admission = input_claims
-                            .lock()
-                            .expect("server input claims poisoned")
-                            .admit(request.clone());
+                        let admission = claims_guard(&input_claims).admit(request.clone());
                         match admission {
                             ServerClaimAdmission::New => {
                                 let world = world.clone();
@@ -1304,11 +1320,7 @@ async fn reader_loop(
                 }
             }
             ToServer::GatewayReleased { request } => {
-                let Some(claim) = input_claims
-                    .lock()
-                    .expect("server input claims poisoned")
-                    .release(request)
-                else {
+                let Some(claim) = claims_guard(&input_claims).release(request) else {
                     tracing::debug!(
                         request = %request,
                         "duplicate or stale legacy release ignored"
@@ -1501,12 +1513,14 @@ fn create_player_response(result: Result<mush_core::ObjId, CreatePlayerErr>) -> 
 #[cfg(test)]
 mod service_request_tests {
     use super::{
-        CreatePlayerErr, GatewayInput, GatewayRequest, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
-        MAX_IN_FLIGHT_SERVICE_REQUESTS, ServerClaimAdmission, ServerInputClaims,
-        ServiceRequestLimiter, ServiceResp, WorldReadError, barrier_response,
-        create_player_response,
+        Arc, CreatePlayerErr, GatewayInput, GatewayRequest,
+        MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_SERVICE_REQUESTS, Mutex,
+        ServerClaimAdmission, ServerInputClaims, ServiceRequestLimiter, ServiceResp,
+        WorldReadError, admit_with_custody_snapshot, barrier_response, claims_guard,
+        create_player_response, release_input_claim,
     };
     use mush_core::ObjId;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn failed_world_barrier_is_never_promoted_to_an_ack() {
@@ -1617,6 +1631,117 @@ mod service_request_tests {
             ServerClaimAdmission::New,
             "release must restore exactly one slot"
         );
+    }
+
+    /// Every claim below costs the same custody, so `bytes == held * UNIT` is
+    /// an invariant of the table that only a torn two-lock read can break.
+    const UNIFORM_CLAIM_BYTES: usize = 16 + "say 00000000".len();
+
+    fn uniform_request(sequence: u64, conn: u64) -> GatewayRequest {
+        GatewayRequest::new(
+            19,
+            sequence,
+            GatewayInput::Cmd {
+                conn,
+                actor: ObjId(7),
+                line: format!("say {sequence:08}"),
+            },
+        )
+    }
+
+    /// A panic inside any claim path poisons this mutex. The six IPC reader
+    /// call sites used to `.expect` on it, so one poisoned lock tore the reader
+    /// loop down for *every* connection. The claim table is short-lived,
+    /// non-reentrant state reconciled by `release`'s saturating arithmetic, so
+    /// the policy is recovery — the retained claims stay usable.
+    #[test]
+    fn a_poisoned_claim_table_keeps_serving_every_connection() {
+        let claims = Arc::new(Mutex::new(ServerInputClaims::default()));
+        let first = uniform_request(1, 9);
+        assert_eq!(
+            claims_guard(&claims).admit(first.clone()),
+            ServerClaimAdmission::New
+        );
+
+        let poisoner = Arc::clone(&claims);
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked = std::panic::catch_unwind(move || {
+            let _held = poisoner.lock().expect("the table starts unpoisoned");
+            panic!("a claim path panicked mid-update");
+        });
+        std::panic::set_hook(hook);
+        assert!(panicked.is_err());
+        assert!(
+            claims.lock().is_err(),
+            "the mutex must really be poisoned for this proof to mean anything"
+        );
+
+        // All three entry points still see the state the panicking writer left.
+        let second = uniform_request(2, 9);
+        assert_eq!(
+            claims_guard(&claims).admit(second.clone()),
+            ServerClaimAdmission::New
+        );
+        let (admission, held, bytes) = admit_with_custody_snapshot(&claims, first.clone());
+        assert_eq!(
+            admission,
+            ServerClaimAdmission::Duplicate,
+            "the retained claim survives the poisoning, so a replay is still exact"
+        );
+        assert_eq!((held, bytes), (2, 2 * UNIFORM_CLAIM_BYTES));
+
+        assert_eq!(release_input_claim(&claims, first.uid), Some(first));
+        assert_eq!(release_input_claim(&claims, second.uid), Some(second));
+        assert_eq!(claims_guard(&claims).capacity_snapshot(), (0, 0));
+    }
+
+    /// The overload log used to re-lock twice for `held` and `bytes`, pairing a
+    /// count from one instant with a byte total from another. One guard now
+    /// covers admit + snapshot, so the pair always describes a table that
+    /// actually existed.
+    #[test]
+    fn custody_overload_snapshot_is_taken_under_one_guard() {
+        let claims = Arc::new(Mutex::new(ServerInputClaims::default()));
+        for sequence in 0..MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION as u64 {
+            assert_eq!(
+                claims_guard(&claims).admit(uniform_request(sequence, 9)),
+                ServerClaimAdmission::New
+            );
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let churn = {
+            let claims = Arc::clone(&claims);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut sequence = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    let request = uniform_request(1_000 + (sequence % 16), 2);
+                    let uid = request.uid;
+                    claims_guard(&claims).admit(request);
+                    claims_guard(&claims).release(uid);
+                    sequence = sequence.wrapping_add(1);
+                }
+            })
+        };
+
+        for sequence in 0..20_000u64 {
+            let (admission, held, bytes) =
+                admit_with_custody_snapshot(&claims, uniform_request(50_000 + sequence, 9));
+            assert!(
+                matches!(admission, ServerClaimAdmission::Full { .. }),
+                "the connection is at its cap for the whole run"
+            );
+            assert_eq!(
+                bytes,
+                held * UNIFORM_CLAIM_BYTES,
+                "held and bytes were read from two different instants"
+            );
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        churn.join().expect("churn thread");
     }
 }
 
