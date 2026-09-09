@@ -68,15 +68,25 @@ pub(crate) mod tests {
     /// `AssertUnwindSafe` is the point rather than a wart — the whole claim
     /// under test is that the gateway keeps running over state a panic left
     /// half-written.
+    ///
+    /// The panic HOOK is deliberately left alone (W1-B8-FIX). Silencing it
+    /// around the `catch_unwind` reads as tidier, but the hook is
+    /// process-global while `cargo test` runs a binary's tests on parallel
+    /// threads: two poisonings that overlap interleave their
+    /// take/set/set-back (A takes the real hook and installs the silencer, B
+    /// takes the SILENCER and installs its own, A restores the real one, B
+    /// restores the silencer) and the binary finishes the run with a hook that
+    /// prints nothing — so every later panic, in tests that have nothing to do
+    /// with poisoning, fails with no message. The cost of not swapping is one
+    /// deliberate panic line per call, which libtest captures and only prints
+    /// for a test that actually failed; the benefit is that this helper leaves
+    /// no process-global state behind at all.
     pub(crate) fn poison<T>(lock: &Mutex<T>) {
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if let Ok(_guard) = lock.lock() {
-                panic!("a task panicked while holding the lock");
+                panic!("a task panicked while holding the lock (expected: this test poisons it)");
             }
         }));
-        std::panic::set_hook(hook);
         assert!(unwound.is_err(), "the closure must really have panicked");
         assert!(
             lock.lock().is_err(),

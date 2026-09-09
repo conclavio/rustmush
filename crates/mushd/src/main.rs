@@ -247,7 +247,14 @@ fn main() -> ExitCode {
         println!("{}", CLI.usage);
         return ExitClass::Ok.exit_code();
     }
-    if cli.repl {
+    // `--check-config` outranks `--repl` (W1-B8-FIX). This branch used to
+    // return before the preflight below, so `mushd --repl --check-config`
+    // started the REPL and dropped the check on the floor — precisely the
+    // silent-token failure the shared parser exists to abolish, reappearing one
+    // level up as a silently-ignored FLAG. The check needs the loaded config,
+    // so it is still answered below; all that happens here is that the REPL no
+    // longer gets to return first. `--repl` alone is untouched.
+    if cli.repl && !cli.check_config {
         repl::run();
         return ExitClass::Ok.exit_code();
     }

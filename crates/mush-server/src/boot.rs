@@ -569,12 +569,17 @@ pub async fn build_engine(
     })
 }
 
-/// The world half's `--check-config` preflight: every config refusal
-/// [`build_engine`] and [`spawn_ledger_archive`] would raise before either
-/// touches the store, a socket or the quarantine lifetime lock (WS04-S3).
+/// The world half's `--check-config` preflight: the config refusals
+/// [`build_engine`] and [`spawn_ledger_archive`] raise from the parsed config
+/// alone, before either touches the store, a socket or the quarantine lifetime
+/// lock (WS04-S3).
 ///
-/// [`mush_config::preflight::check`] covers the `[store]` stanza every binary
-/// reads; the two added here need crates the gateway half does not depend on:
+/// Named rather than implied, because the earlier wording ("every config
+/// refusal") was a promise this function did not keep — `[game].ic_epoch` was
+/// boot-fatal here and unchecked there (W1-B8-FIX):
+/// [`mush_config::preflight::check`] covers `[store].store`,
+/// `[store].receipt_policy` and `[game].ic_epoch`, which all three binaries
+/// read; the two added here need crates the gateway half does not depend on:
 ///
 /// - `[tacsim]`, whose pack block is read and digest-verified host-side, so an
 ///   unreadable or mismatched pack is found by an operator rather than by a

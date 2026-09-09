@@ -126,6 +126,72 @@ fn a_flag_from_another_binary_is_refused() {
     assert_refused(&["--ipc", "127.0.0.1:6791"], "--ipc");
 }
 
+/// A config whose `[store].receipt_policy` is a typo — the boot-fatal value
+/// `--check-config` exists to catch before a supervisor does.
+fn typod_receipt_policy_config(dir: &Path) -> PathBuf {
+    let path = throwaway_config(dir);
+    let text = std::fs::read_to_string(&path).expect("read config");
+    // Inside `[store]`, not appended to the tail — a stray key under the last
+    // stanza would be ignored and the test would pass for no reason.
+    let spiked = text.replace(
+        "store = \"memory\"",
+        "store = \"memory\"\nreceipt_policy = \"hostpowerloss\"",
+    );
+    assert_ne!(spiked, text, "the [store] stanza moved: {text}");
+    std::fs::write(&path, spiked).expect("rewrite config");
+    path
+}
+
+/// `--check-config` outranks `--repl` (W1-B8-FIX).
+///
+/// The two flags used to be answered in declaration order, and `--repl`
+/// returned first: `mushd --repl --check-config` started the REPL and dropped
+/// the preflight silently — a flag that looks honoured and is not, which is the
+/// exact failure the shared parser exists to abolish, one level up. So the
+/// check has to run, name the bad key, and exit non-zero even when `--repl`
+/// is on the same line. (The child's stdin is `/dev/null`, so a regression
+/// would exit 0 at the REPL's first EOF rather than hang — both assertions
+/// below still catch it.)
+#[test]
+fn check_config_beats_repl() {
+    let dir = scratch("repl-check");
+    let config = typod_receipt_policy_config(&dir);
+    let (status, log) = run(&[
+        "--repl",
+        "--check-config",
+        "--config",
+        &config.display().to_string(),
+    ]);
+    assert!(
+        !status.success(),
+        "mushd --repl --check-config exited {status} — the preflight must refuse this config; \
+         output:\n{log}"
+    );
+    assert!(
+        log.contains("hostpowerloss"),
+        "the preflight finding must name the offending value:\n{log}"
+    );
+    assert!(
+        !log.contains("offline REPL"),
+        "the REPL must not have started:\n{log}"
+    );
+}
+
+/// ...and `--repl` on its own is untouched: with stdin at EOF the REPL prints
+/// its banner and exits zero, so the precedence above is a rule about the
+/// COMBINATION, not a `--repl` that stopped working.
+#[test]
+fn repl_alone_still_runs() {
+    let dir = scratch("repl-alone");
+    let config = throwaway_config(&dir);
+    let (status, log) = run(&["--repl", "--config", &config.display().to_string()]);
+    assert!(
+        status.success(),
+        "mushd --repl exited {status}; output:\n{log}"
+    );
+    assert!(log.contains("offline REPL"), "output:\n{log}");
+}
+
 /// `--help` still works, and still exits zero.
 #[test]
 fn help_exits_zero_with_the_usage() {

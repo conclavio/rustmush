@@ -11,29 +11,46 @@
 //! come up.
 //!
 //! So each binary can be asked the same question ahead of time. The flag loads
-//! the config and runs every validation that needs neither a socket, nor the
+//! the config and runs the validations that need neither a socket, nor the
 //! store, nor the quarantine spool's exclusive lifetime lock — which is what
 //! makes it safe to run against a config a LIVE instance is already serving.
 //!
-//! What lives here is the part every binary can check: the `[store]` stanza,
-//! which all three read. The world half's extra checks (the TacSim pack block,
-//! the `[store.archive]` window) need crates the gateway does not depend on, so
-//! they hang off `mush_server::boot::check_config`, which calls [`check`] first.
-//! One [`verdict`] then turns either set into the process's ending, so the three
+//! What lives here is the part every binary can check, named rather than
+//! implied: `[store].store`, `[store].receipt_policy` and `[game].ic_epoch`.
+//! The world half's extra checks (the TacSim pack block, the `[store.archive]`
+//! window) need crates the gateway does not depend on, so they hang off
+//! `mush_server::boot::check_config`, which calls [`check`] first. One
+//! [`verdict`] then turns either set into the process's ending, so the three
 //! binaries cannot drift into reporting the same finding three different ways.
+//!
+//! The list is deliberately explicit, because the previous wording — "every
+//! validation" — was a promise the code did not keep: `[game].ic_epoch` is
+//! boot-fatal in `build_engine` and was not checked here at all (W1-B8-FIX).
+//! A preflight that claims completeness has to be read as a claim about a
+//! specific set of keys; anything boot-fatal outside that set is a bug in this
+//! list, and belongs on it.
 
 use std::path::Path;
 
 use crate::config::Config;
 use crate::exit::ExitClass;
 
-/// Every `[store]` refusal a boot would raise, collected rather than
-/// short-circuited: an operator fixing a config wants the whole list, not the
-/// first line of it.
+/// The boot refusals every binary can raise from the parsed config alone,
+/// collected rather than short-circuited: an operator fixing a config wants the
+/// whole list, not the first line of it.
 ///
-/// Neither call opens anything — [`Config::store_backend`] and
-/// [`Config::store_receipt_policy`] are pure readings of the parsed stanza — so
-/// this is safe beside a running instance.
+/// Three keys, and the list is the contract:
+///
+/// - `[store].store`, via [`Config::store_backend`];
+/// - `[store].receipt_policy`, via [`Config::store_receipt_policy`];
+/// - `[game].ic_epoch`, via [`crate::config::GameCfg::game_clock`] — a
+///   malformed epoch is boot-fatal in the world half's `build_engine` (a
+///   silently-wrong calendar being worse than not starting), so an operator
+///   must be able to find it here rather than from a supervisor watching a boot
+///   loop (W1-B8-FIX).
+///
+/// None of the three opens anything — each is a pure reading of the parsed
+/// stanza — so this is safe beside a running instance.
 #[must_use]
 pub fn check(config: &Config) -> Vec<String> {
     let mut refusals = Vec::new();
@@ -41,6 +58,9 @@ pub fn check(config: &Config) -> Vec<String> {
         refusals.push(error.to_string());
     }
     if let Err(error) = config.store_receipt_policy() {
+        refusals.push(error.to_string());
+    }
+    if let Err(error) = config.game.game_clock() {
         refusals.push(error.to_string());
     }
     refusals
@@ -106,6 +126,30 @@ mod tests {
         assert_eq!(refusals.len(), 2, "{refusals:?}");
         assert!(refusals.iter().any(|r| r.contains("postgres")));
         assert!(refusals.iter().any(|r| r.contains("eventually")));
+    }
+
+    /// `[game].ic_epoch` is boot-fatal in `build_engine` — a malformed epoch
+    /// refuses the boot rather than running a silently-wrong calendar — so a
+    /// preflight that let it through would hand an operator a "usable" verdict
+    /// for a config that cannot start (W1-B8-FIX). The refusal has to name the
+    /// KEY as well as the value: `[store]` and `[game]` can both hold a string
+    /// nobody recognises, and "invalid" alone does not say which line to edit.
+    #[test]
+    fn an_unparseable_ic_epoch_is_named_by_its_key() {
+        let mut config = Config::default();
+        config.game.ic_epoch = "yesterday".to_owned();
+        let refusals = check(&config);
+        assert_eq!(refusals.len(), 1, "{refusals:?}");
+        assert!(
+            refusals
+                .iter()
+                .any(|r| r.contains("[game].ic_epoch") && r.contains("yesterday")),
+            "{refusals:?}"
+        );
+        assert_eq!(
+            verdict("mushd", std::path::Path::new("mushd.toml"), &refusals),
+            ExitClass::Failure
+        );
     }
 
     /// ...and the shipped defaults pass, so the flag is usable as a gate.
