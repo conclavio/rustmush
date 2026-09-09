@@ -116,6 +116,55 @@ impl FacilityQuarantine {
     }
 }
 
+/// **WS02-S5b** — why one *drafted* work order no longer matches the recipe
+/// authority, and what a staffer reading the sweep's log line is looking at.
+///
+/// A `Draft` pins the recipe's lines at draft time (`PinnedRecipe`), and every
+/// arithmetic step downstream — the reservation, the production plan,
+/// `wo_deliver`'s mint — runs off that pin rather than off the pack. So a pin
+/// that disagrees with what the pack publishes *now* is either a pack that was
+/// republished under the draft, or a pin that was never the pack's; the sweep
+/// cannot tell the two apart and refuses both, which is the fail-closed
+/// direction.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DraftDrift {
+    /// The pack version publishes no such recipe any more — a retirement, or a
+    /// republish that dropped it. `RecipeAuthority::resolve` answers `None`.
+    Unpublished,
+    /// The recipe still resolves, but under a **different pack digest**: an
+    /// ordinary republication. `@wo/submit`'s own digest re-check catches this
+    /// one too, and tells the requester to redraft.
+    DigestMoved,
+    /// The pack digest still agrees and the **pinned lines do not**. Either the
+    /// pack republished lines its digest does not cover, or the draft's lines
+    /// were never the authority's — the shape WS02-S5 closed at draft. Nothing
+    /// on the submit path compares lines, so this is the arm that matters.
+    LinesDiffer,
+}
+
+impl DraftDrift {
+    /// The one line the sweep logs beside the order, for an operator who has to
+    /// tell a republication from a forgery.
+    #[must_use]
+    pub const fn runbook(self) -> &'static str {
+        match self {
+            Self::Unpublished => {
+                "its pack version no longer publishes this recipe (retired, or republished \
+                 without it); the draft can never be priced again"
+            }
+            Self::DigestMoved => {
+                "its pack republished this recipe under a new digest; this is the ordinary \
+                 drift, and the requester is told to redraft"
+            }
+            Self::LinesDiffer => {
+                "its pack digest still agrees but its PINNED LINES do not — either a \
+                 republication the digest does not cover, or lines that were never the \
+                 authority's. Both mint off the pin, so both are refused"
+            }
+        }
+    }
+}
+
 impl Quarantine {
     /// The one line a staff surface prints, with the order filled in. Staff
     /// intervention is the last resort: this names a decision, never a chore
@@ -226,6 +275,23 @@ pub struct IndustryStore {
     /// by `mush_economy::principal_token`, the canonical spelling the claim gate
     /// already compares principals by — `PrincipalId` itself is not `Ord`.
     open_orders: BTreeMap<SmolStr, BTreeSet<crate::workorder::WorkOrderId>>,
+    /// **WS02-S5b** — `Draft` orders the last complete sweep found no longer
+    /// matching the recipe authority, and why.
+    ///
+    /// A pack republication is a legitimate operator act, and it silently leaves
+    /// every draft pinned against the old lines behind: the draft still submits,
+    /// still produces and still mints `order.pinned().outputs()`, because nothing
+    /// on the submit path compares the LINES (both upstream re-checks compare the
+    /// digest). [`reconcile`] rebuilds this map from the family on every sweep, so
+    /// a draft that goes non-`Draft` drops out of it and a repaired pack clears it.
+    ///
+    /// It is a refusal, never a durable transition: a module tick holds a `Ctx`,
+    /// whose typed-family capability is read-only by construction, and one
+    /// `submit_authoritative` per drifted order is what cut 2's fold C4 forbids
+    /// this arm outright (`money::sweep` records the same wall). So the state stays
+    /// `Draft` on the record, `@wo/submit` refuses it, and `@wo/cancel` — which the
+    /// requester can always type — is the exit that actually writes `Cancelled`.
+    drifted_drafts: BTreeMap<crate::workorder::WorkOrderId, DraftDrift>,
 }
 
 impl IndustryStore {
@@ -322,6 +388,19 @@ impl IndustryStore {
     #[must_use]
     pub fn open_requesters(&self) -> usize {
         self.open_orders.len()
+    }
+
+    /// **WS02-S5b** — why the last complete sweep found this `Draft` no longer
+    /// matching the recipe authority, if it did.
+    #[must_use]
+    pub fn drift_cancelled(&self, order: crate::workorder::WorkOrderId) -> Option<DraftDrift> {
+        self.drifted_drafts.get(&order).copied()
+    }
+
+    /// How many drafts the last complete sweep cancelled (the arm's observable).
+    #[must_use]
+    pub fn drift_cancelled_len(&self) -> usize {
+        self.drifted_drafts.len()
     }
 
     /// Whether one body is quarantined.
@@ -546,7 +625,17 @@ pub fn persist_survey(out: &mut Outbox, doc: &SurveyDoc) {
 /// Bounded on records **visited**, never on records matched (D-LBK-5), and
 /// deliberately **off the command path** — boot and the coarse sweep keep the
 /// mirror, which is exactly what 08i answer 15 grants.
-pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryFamilies) {
+///
+/// **WS02-S5b**: `recipes` is the recipe authority the module was composed with,
+/// and it is what lets the work-order walk this function already makes ask the
+/// one question no ingress asks — whether a `Draft`'s pinned lines are still the
+/// ones the pack publishes. `None` (a server that composed no authority, which
+/// can draft nothing anyway) marks nothing rather than guessing.
+pub fn reconcile(
+    ctx: &mut mush_core::ModuleCtx<'_>,
+    families: &crate::IndustryFamilies,
+    recipes: Option<&dyn crate::workorder::RecipeAuthority>,
+) {
     let mut quarantined: BTreeMap<OreDepositId, Quarantine> = BTreeMap::new();
     let mut applied: BTreeMap<SmolStr, AppliedMarker> = BTreeMap::new();
     let mut complete = true;
@@ -722,6 +811,9 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
     // silently stops being read.
     let mut open_orders: BTreeMap<SmolStr, BTreeSet<crate::workorder::WorkOrderId>> =
         BTreeMap::new();
+    // WS02-S5b: the drafts whose pinned lines the authority no longer publishes,
+    // gathered on the same walk and under the same page budget.
+    let mut drifted: BTreeMap<crate::workorder::WorkOrderId, DraftDrift> = BTreeMap::new();
     let mut orders_complete = true;
     let mut cursor: Option<String> = None;
     let mut pages = 0;
@@ -755,6 +847,17 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
                     .entry(mush_economy::principal_token(order.requester()))
                     .or_default()
                     .insert(order.id());
+            }
+            // WS02-S5b: only a `Draft` is asked. Past the submit the pin is what
+            // the reservation, the production plan and the delivery mint all ran
+            // off, and re-pricing a live order against a republished pack would be
+            // a second, worse fail-open; a drifted *running* order is the
+            // schedule's own `Stale` problem, which the kernel already skips.
+            if let Some(authority) = recipes
+                && *order.state() == crate::workorder::WorkOrderState::Draft
+                && let Some(why) = draft_drift(authority, ctx.w, &order)
+            {
+                drifted.insert(order.id(), why);
             }
             if !order.state().holds_resources() {
                 continue;
@@ -793,6 +896,27 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
             "industry: a facility is quarantined — a live work order's capacity book is gone"
         );
     }
+    // WS02-S5b: one loud line per cancelled draft and a summary count, because a
+    // republication and a forgery are indistinguishable here and only an operator
+    // can tell them apart — from the pack history, not from this record.
+    for (order, why) in &drifted {
+        tracing::error!(
+            target: "industry",
+            order = %order,
+            runbook = why.runbook(),
+            "industry: a drafted work order is cancelled — its pinned recipe is no longer \
+             the one its pack publishes; `@wo/submit` refuses it and the requester must \
+             `@wo/cancel` it and redraft"
+        );
+    }
+    if !drifted.is_empty() {
+        tracing::error!(
+            target: "industry",
+            orders = drifted.len(),
+            "industry: the sweep cancelled drafted work orders whose pinned recipes have \
+             drifted from their packs"
+        );
+    }
 
     let Some(store) = ctx.w.module_state_mut::<IndustryStore>() else {
         return;
@@ -818,6 +942,10 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
     store.facility_quarantined = facility_quarantined;
     if orders_complete {
         store.open_orders = open_orders;
+        // Same rule, same reason: a truncated walk under-marks, and an
+        // under-marking set is a refusal that silently stops being made. Keep the
+        // last complete answer rather than installing a partial one.
+        store.drifted_drafts = drifted;
     }
     store.applied = applied;
     store.wo_applied = wo_applied;
@@ -894,6 +1022,30 @@ impl WorldObserver for WorkOrderIndex {
             }
         }
     }
+}
+
+/// **WS02-S5b** — whether one `Draft`'s pinned recipe still is the one its pack
+/// publishes, and if not, which way it moved.
+///
+/// The comparison is on the decoded [`PinnedRecipe`] values, not on their JSON:
+/// both sides are structs the authority and the record each hold, so a
+/// re-ordered or re-spaced blob is not even a representable difference here, and
+/// a moved unit count always is.
+fn draft_drift(
+    recipes: &dyn crate::workorder::RecipeAuthority,
+    world: &World,
+    order: &crate::workorder::WorkOrder,
+) -> Option<DraftDrift> {
+    let reference = order.recipe();
+    let Some((published, pinned)) =
+        recipes.resolve(world, reference.pack(), reference.version(), reference.id())
+    else {
+        return Some(DraftDrift::Unpublished);
+    };
+    if published.digest() != reference.digest() {
+        return Some(DraftDrift::DigestMoved);
+    }
+    (pinned != *order.pinned()).then_some(DraftDrift::LinesDiffer)
 }
 
 /// The three cross-cutting shapes, asked of one deposit.

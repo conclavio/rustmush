@@ -2112,3 +2112,264 @@ fn ws02_s5_a_facility_of_hers_that_cannot_run_the_recipe_refuses() {
     );
     assert!(all_work_orders(&mut rig.world, &rig.families).is_empty());
 }
+
+// ============================================================================
+// ---- WS02-S5b: the sweep's `Draft`-drift pass ----
+//
+// WS02-S5 binds the pin to the offer's own books at DRAFT. Nothing binds it
+// afterwards: both re-checks on the submit path compare the pack DIGEST
+// (`commands.rs`'s `digest_of` and the plan-stage advance), and `wo_deliver`
+// mints `order.pinned().outputs()`. So a `Draft` whose lines stop being the
+// pack's — because the pack was republished under it, or because the lines were
+// never the authority's — passes every check on the way to the mint.
+//
+// The closure is the walk `reconcile` already makes: for each `Draft`, re-resolve
+// the recipe and compare the decoded `PinnedRecipe`s. It cannot write
+// `Cancelled` — a module tick holds a `Ctx`, whose typed-family capability is
+// read-only by construction, and one `submit_authoritative` per drifted order is
+// what cut 2's fold C4 forbids this arm (`money::sweep` records the same wall) —
+// so it marks, logs one loud line per order with the reason an operator needs to
+// tell a republication from a forgery, and `@wo/submit` refuses the mark.
+// ============================================================================
+
+/// A recipe authority whose one recipe can be republished under the test's feet:
+/// the same lines (0), new lines under the SAME digest (1), a new digest (2), or
+/// retired altogether (3).
+#[derive(Debug)]
+struct DriftRecipes {
+    mode: Arc<std::sync::atomic::AtomicU8>,
+}
+
+impl DriftRecipes {
+    fn published(&self) -> Option<(RecipeRef, PinnedRecipe)> {
+        let mode = self.mode.load(std::sync::atomic::Ordering::Relaxed);
+        if mode == 3 {
+            return None;
+        }
+        let digest = if mode == 2 { 0x22 } else { 0x11 };
+        let outputs = if mode == 1 { 9 } else { 1 };
+        let recipe = RecipeRef::new(
+            commodity("tacsim.core"),
+            1,
+            commodity("alloy_smelt"),
+            DefinitionDigest::from_bytes([digest; 32]),
+        )
+        .expect("recipe ref");
+        let pinned = PinnedRecipe::new(
+            vec![RecipeLine::new(commodity("metals"), 4).expect("input line")],
+            vec![RecipeLine::new(commodity("structural_alloys"), outputs).expect("output line")],
+            capabilities(&["smelt"]),
+            3,
+        )
+        .expect("pinned recipe");
+        Some((recipe, pinned))
+    }
+}
+
+impl mush_industry::RecipeAuthority for DriftRecipes {
+    fn digest_of(&self, _world: &World, recipe: &RecipeRef) -> Option<DefinitionDigest> {
+        let (published, _) = self.published()?;
+        (recipe.pack() == published.pack()
+            && recipe.version() == published.version()
+            && recipe.id() == published.id())
+        .then(|| published.digest())
+    }
+    fn resolve(
+        &self,
+        _world: &World,
+        pack: &CanonicalId,
+        version: u32,
+        id: &CanonicalId,
+    ) -> Option<(RecipeRef, PinnedRecipe)> {
+        let (published, pinned) = self.published()?;
+        (pack == published.pack() && version == published.version() && id == published.id())
+            .then_some((published, pinned))
+    }
+    fn catalog_revision(&self, _world: &World) -> u64 {
+        u64::from(self.mode.load(std::sync::atomic::Ordering::Relaxed))
+    }
+    fn catalog(&self, _world: &World) -> Vec<(RecipeRef, PinnedRecipe)> {
+        self.published().into_iter().collect()
+    }
+}
+
+/// The same `draft_order`, with the pin written by the caller — the one field no
+/// check on the submit path ever compares.
+fn draft_order_pinned(
+    id: u64,
+    facility: ObjId,
+    source: u64,
+    dest: u64,
+    pinned: PinnedRecipe,
+) -> WorkOrder {
+    let (recipe, _) = alloy_recipe();
+    WorkOrder::draft(
+        WorkOrderId(id),
+        PrincipalId::Object(GOD),
+        PrincipalId::Object(GOD),
+        facility,
+        2,
+        1,
+        1,
+        recipe,
+        pinned,
+        1,
+        AccountId(1),
+        Some(endpoint(source)),
+        DeliveryTarget::Endpoint {
+            endpoint: endpoint(dest),
+        },
+        EconomicVisibility::Parties,
+    )
+    .expect("draft a work order")
+}
+
+/// A pin whose output line is multiplied by a thousand — the shape that mints out
+/// of nothing at `wo_deliver`.
+fn inflated_pin() -> PinnedRecipe {
+    PinnedRecipe::new(
+        vec![RecipeLine::new(commodity("metals"), 4).expect("input line")],
+        vec![RecipeLine::new(commodity("structural_alloys"), 1_000).expect("output line")],
+        capabilities(&["smelt"]),
+        3,
+    )
+    .expect("an inflated pin is perfectly well-formed — that is the whole problem")
+}
+
+fn seed_draft(world: &mut TestWorld, families: &IndustryFamilies, order: WorkOrder) -> WorkOrderId {
+    let id = order.id();
+    let engine = world.engine_mut();
+    apply(engine, families, |txn| families.open_work_order(txn, order))
+        .expect("seed a drafted work order");
+    id
+}
+
+fn drift_of(world: &TestWorld, order: WorkOrderId) -> Option<mush_industry::DraftDrift> {
+    world
+        .world()
+        .module_state::<IndustryStore>()
+        .expect("industry store")
+        .drift_cancelled(order)
+}
+
+fn drift_count(world: &TestWorld) -> usize {
+    world
+        .world()
+        .module_state::<IndustryStore>()
+        .expect("industry store")
+        .drift_cancelled_len()
+}
+
+#[test]
+fn ws02_s5b_the_sweep_cancels_a_drafted_order_whose_pin_is_not_the_authoritys() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let (mut world, families) = boot_with_authority(Arc::new(DriftRecipes {
+        mode: Arc::clone(&mode),
+    }));
+    let honest = seed_draft(
+        &mut world,
+        &families,
+        draft_order(0x5B0, ObjId(7), 1, 500, 600),
+    );
+    // The pack, the version, the recipe id and the DIGEST are all honest on this
+    // one too: the two re-checks on the submit path compare exactly those.
+    let forged = seed_draft(
+        &mut world,
+        &families,
+        draft_order_pinned(0x5B1, ObjId(7), 500, 600, inflated_pin()),
+    );
+    assert_eq!(
+        drift_count(&world),
+        0,
+        "nothing is marked until a sweep walks the family"
+    );
+
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        drift_of(&world, forged),
+        Some(mush_industry::DraftDrift::LinesDiffer),
+        "the ONE thing nobody compares: the pinned lines"
+    );
+    assert_eq!(
+        drift_of(&world, honest),
+        None,
+        "an honest draft is untouched"
+    );
+    assert_eq!(drift_count(&world), 1, "and exactly one order was named");
+
+    // The mark is rebuilt from the family every sweep, never accumulated: the
+    // requester's own `@wo/cancel` — the exit the refusal leaves open, and the one
+    // thing that really writes `Cancelled` — takes it out of the set.
+    {
+        let engine = world.engine_mut();
+        apply(engine, &families, |txn| {
+            let order = families
+                .work_order(txn, forged)?
+                .expect("the order is there")
+                .clone();
+            let next = order.with_state(WorkOrderState::Cancelled)?;
+            families.put_work_order(txn, order.revision(), next)
+        })
+        .expect("cancel it");
+    }
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        drift_of(&world, forged),
+        None,
+        "a cancelled order is no longer a drifted DRAFT"
+    );
+}
+
+#[test]
+fn ws02_s5b_a_republication_cancels_the_drafts_pinned_against_the_old_pack() {
+    // The live-game half, and the reason this is fail-closed rather than clever: a
+    // staffer republishing a pack is a legitimate act that looks identical, on the
+    // record, to a forged pin. Every drift is refused and the operator's log line
+    // is where the two are told apart.
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let (mut world, families) = boot_with_authority(Arc::new(DriftRecipes {
+        mode: Arc::clone(&mode),
+    }));
+    let order = seed_draft(
+        &mut world,
+        &families,
+        draft_order(0x5B2, ObjId(7), 1, 500, 600),
+    );
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(drift_of(&world, order), None, "as drafted, it matches");
+
+    // (1) republished with new lines under the SAME digest — the drift both
+    // upstream re-checks are structurally unable to see.
+    mode.store(1, std::sync::atomic::Ordering::Relaxed);
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        drift_of(&world, order),
+        Some(mush_industry::DraftDrift::LinesDiffer),
+        "new lines, same digest: only a line comparison catches it"
+    );
+
+    // (2) the ordinary republication, under a new digest.
+    mode.store(2, std::sync::atomic::Ordering::Relaxed);
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        drift_of(&world, order),
+        Some(mush_industry::DraftDrift::DigestMoved),
+        "a moved digest is named as the ordinary drift it is"
+    );
+
+    // (3) retired: the pack version publishes no such recipe at all. Fail-closed —
+    // an unresolvable recipe is not a reason to trust the pin.
+    mode.store(3, std::sync::atomic::Ordering::Relaxed);
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        drift_of(&world, order),
+        Some(mush_industry::DraftDrift::Unpublished),
+        "a retired recipe cancels the drafts pinned against it"
+    );
+
+    // And the pack coming back exactly as it was clears the mark: this is a
+    // refusal derived from the world, not a durable brand on the record.
+    mode.store(0, std::sync::atomic::Ordering::Relaxed);
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(drift_of(&world, order), None, "restored, and cleared");
+}

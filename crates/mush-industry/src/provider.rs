@@ -345,7 +345,7 @@ pub const WO_RECIPES: &str = "wo_recipes";
 pub const WO_RECIPES_TRUNCATED: &str = "wo_recipes_truncated";
 
 /// The one line every work-order refusal a viewer may not distinguish renders.
-const WO_REFUSED: &str = "You cannot do that with that work order.";
+pub(crate) const WO_REFUSED: &str = "You cannot do that with that work order.";
 /// The line a replayed delivery renders (a marker HIT).
 const WO_ALREADY: &str = "That work order has already been delivered.";
 

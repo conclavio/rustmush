@@ -1290,6 +1290,27 @@ fn cmd_wo(
                     "that work order's recipe has drifted; redraft it.",
                 ));
             }
+            // ---- WS02-S5b: the drift the digest check cannot see ----
+            //
+            // Both re-checks above compare the DIGEST, and `wo_deliver` mints
+            // `order.pinned().outputs()`. A draft whose pack was republished with
+            // lines its digest does not cover — and a draft written before
+            // WS02-S5 bound the pin to the offer's books — carries an honest
+            // digest beside lines the authority never published, so it passes
+            // every check on this path and mints off the pin. The comparison
+            // needs the authority AND the record together, which is `reconcile`'s
+            // walk: it marks such drafts (loudly, one line each) and this is where
+            // the mark bites. The refusal is the byte-identical `WO_REFUSED` a
+            // forged pin gets at the prepare, so a forgery and an uncovered
+            // republication read the same to the player; the operator's log line
+            // is where they are told apart, and `@wo/cancel` is the exit.
+            if ctx
+                .w
+                .module_state::<IndustryStore>()
+                .is_some_and(|store| store.drift_cancelled(order.id()).is_some())
+            {
+                return Err(CmdError::msg(crate::provider::WO_REFUSED));
+            }
             // ---- E7r1: R1 — the budget hold, placed BEFORE the submit ----
             //
             // A `prepare_authoritative` provider has no `&World`, `Ctx` or `Outbox`

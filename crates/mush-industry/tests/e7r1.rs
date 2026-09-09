@@ -2350,3 +2350,140 @@ fn vf_z1a_no_shipped_player_string_carries_a_double_space() {
         offenders.join("\n")
     );
 }
+
+// ---- WS02-S5b: the drifted draft, on the corridor that mints ----------------
+
+/// The same [`seed_order`], with the pin written by the caller. Every other field
+/// — pack, version, recipe id and **digest** — is the authority's own, which is
+/// exactly what makes this the live shape: the two re-checks on the submit path
+/// compare those four and nothing else.
+fn seed_order_pinned(
+    tw: &mut TestWorld,
+    families: &IndustryFamilies,
+    id: u64,
+    budget: AccountId,
+    pinned: PinnedRecipe,
+) -> WorkOrderId {
+    let (recipe, _) = alloy_recipe();
+    let order = WorkOrder::draft(
+        WorkOrderId(id),
+        PrincipalId::Object(GOD),
+        PrincipalId::Object(GOD),
+        ObjId(7),
+        2,
+        1,
+        1,
+        recipe,
+        pinned,
+        1,
+        budget,
+        Some(endpoint(SCENE_SOURCE)),
+        DeliveryTarget::Endpoint {
+            endpoint: endpoint(SCENE_DEST),
+        },
+        EconomicVisibility::Parties,
+    )
+    .expect("draft a work order");
+    let engine = tw.engine_mut();
+    apply(engine, families, |txn| families.open_work_order(txn, order)).expect("seed the order");
+    WorkOrderId(id)
+}
+
+/// A pin whose output line is multiplied by a thousand.
+fn inflated_pin() -> PinnedRecipe {
+    PinnedRecipe::new(
+        vec![RecipeLine::new(commodity("metals"), 4).expect("input line")],
+        vec![RecipeLine::new(commodity("structural_alloys"), 1_000).expect("output line")],
+        capabilities(&["smelt"]),
+        3,
+    )
+    .expect("an inflated pin is perfectly well-formed — that is the whole problem")
+}
+
+fn drift_of(tw: &TestWorld, order: WorkOrderId) -> Option<mush_industry::DraftDrift> {
+    tw.world()
+        .module_state::<mush_industry::IndustryStore>()
+        .expect("industry store")
+        .drift_cancelled(order)
+}
+
+/// **The sweep is the only thing on this corridor that looks at the pinned
+/// LINES** (WS02-S5b).
+///
+/// The failure mode, run forwards: a `Draft` carrying the authority's own pack,
+/// version, recipe id and digest beside lines the authority never published is
+/// waved through by both digest re-checks — `@wo/submit` takes it, places the
+/// budget hold and stages the submission — and `wo_deliver` would then mint
+/// `order.pinned().outputs()`. One sweep later the same command refuses it.
+#[test]
+fn ws02_s5b_the_sweep_is_what_stops_a_forged_pin_the_digest_checks_wave_through() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    let forged = seed_order_pinned(&mut tw, &families, 0x5B1, budget, inflated_pin());
+
+    // Before the sweep: every check this path makes passes.
+    ok(&mut tw, GOD, &format!("@wo/submit {forged}"));
+    assert!(
+        budget_hold(&tw, forged).is_some_and(|hold| hold.status.is_held()),
+        "the money leg ran, so nothing upstream refused the pin"
+    );
+    assert!(
+        tw.engine_mut().take_authoritative_submit().is_some(),
+        "and the submission was staged: the digest re-checks cannot see the lines"
+    );
+
+    fire(&mut tw);
+    assert_eq!(
+        drift_of(&tw, forged),
+        Some(mush_industry::DraftDrift::LinesDiffer),
+        "the sweep's walk is what compares the lines"
+    );
+
+    let refusal = err(&mut tw, GOD, &format!("@wo/submit {forged}"));
+    assert!(
+        refusal.contains("You cannot do that with that work order."),
+        "the byte-identical non-oracle a forged pin gets at the prepare: {refusal}"
+    );
+    assert!(
+        !refusal.contains("has drifted"),
+        "and NOT the digest check's redraft line, which never fired: {refusal}"
+    );
+    assert!(
+        tw.engine_mut().take_authoritative_submit().is_none(),
+        "nothing is staged, so no material and no slot are reserved a second time"
+    );
+    assert_eq!(
+        order_state(&mut tw, &families, forged),
+        WorkOrderState::Draft,
+        "the record itself is untouched — the sweep marks, it does not write"
+    );
+    // The exit the refusal leaves open, and the only thing that really writes
+    // `Cancelled`: the requester's own command.
+    ok(&mut tw, GOD, &format!("@wo/cancel {forged}"));
+}
+
+/// **An honest draft survives the same sweep and still delivers** — the sweep
+/// refuses drift, not drafts.
+#[test]
+fn ws02_s5b_an_honest_draft_survives_the_sweep_and_still_delivers() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    let id = seed_order(&mut tw, &families, 0x5B0, budget, 1);
+
+    fire(&mut tw);
+    assert_eq!(drift_of(&tw, id), None, "an honest pin is not marked");
+
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    land(&mut tw, 0x31).expect("the submission resolves and installs");
+    assert_eq!(order_state(&mut tw, &families, id), WorkOrderState::Running);
+    run_production(&mut tw, &families, id);
+    ok(&mut tw, GOD, &format!("@wo/deliver {id}"));
+    land(&mut tw, 0x32).expect("the delivery resolves");
+    assert!(
+        matches!(
+            order_state(&mut tw, &families, id),
+            WorkOrderState::Completed { .. }
+        ),
+        "the whole corridor still runs"
+    );
+}
