@@ -1178,6 +1178,17 @@ pub struct IpcCfg {
     /// The high-water threshold (percent of a queue's cap) at which a crossing
     /// logs an edge-gated warn. Default `80`.
     pub high_water_warn_pct: u8,
+    /// Whether the gateway EXITS (non-zero) once its supervisor has given up on
+    /// the server half (WS22-S17). Default `true`.
+    ///
+    /// An abandoned supervisor leaves the worst state the split can be in: the
+    /// gateway process is healthy and idle, every held player is still
+    /// connected, and every line they type is refused for ever. Exiting trades
+    /// connections that are already useless for a `Restart=on-failure` that
+    /// brings the whole game back. Set it `false` on a dev box to keep the
+    /// corpse attached for inspection — the gauge and the log marker are
+    /// published either way.
+    pub exit_on_abandoned_supervision: bool,
 }
 
 impl Default for IpcCfg {
@@ -1188,6 +1199,7 @@ impl Default for IpcCfg {
             to_gw_cap: 8192,
             write_timeout_ms: 5000,
             high_water_warn_pct: 80,
+            exit_on_abandoned_supervision: true,
         }
     }
 }
@@ -1460,6 +1472,12 @@ impl Config {
     #[must_use]
     pub fn ipc_high_water_warn_pct(&self) -> u8 {
         self.ipc.high_water_warn_pct.clamp(1, 100)
+    }
+
+    /// Whether an abandoned gateway supervisor exits the process (WS22-S17).
+    #[must_use]
+    pub fn ipc_exit_on_abandoned_supervision(&self) -> bool {
+        self.ipc.exit_on_abandoned_supervision
     }
 
     /// The validated `[store].store` backend selection.
@@ -1765,6 +1783,9 @@ scene_turn_dedline_secs = 30
         assert_eq!(cfg.ipc_to_gw_cap(), 8192);
         assert_eq!(cfg.ipc_write_timeout_ms(), 5000);
         assert_eq!(cfg.ipc_high_water_warn_pct(), 80);
+        // WS22-S17: an abandoned supervisor is fatal unless an operator says
+        // otherwise. The default is the production posture, not the dev one.
+        assert!(cfg.ipc_exit_on_abandoned_supervision());
 
         // Back-compat: an old [ipc] with only `listen` (no M18 keys) still
         // parses and yields the defaults.
@@ -1774,6 +1795,7 @@ scene_turn_dedline_secs = 30
         assert_eq!(cfg.ipc_to_gw_cap(), 8192);
         assert_eq!(cfg.ipc_write_timeout_ms(), 5000);
         assert_eq!(cfg.ipc_high_water_warn_pct(), 80);
+        assert!(cfg.ipc_exit_on_abandoned_supervision());
 
         // Explicit overrides parse.
         let cfg: Config = toml::from_str(
@@ -1784,6 +1806,10 @@ scene_turn_dedline_secs = 30
         assert_eq!(cfg.ipc_to_gw_cap(), 32);
         assert_eq!(cfg.ipc_write_timeout_ms(), 250);
         assert_eq!(cfg.ipc_high_water_warn_pct(), 90);
+
+        // The dev-box opt-out parses, and is the only way to keep the corpse.
+        let cfg: Config = toml::from_str("[ipc]\nexit_on_abandoned_supervision = false").unwrap();
+        assert!(!cfg.ipc_exit_on_abandoned_supervision());
 
         // An out-of-range warn pct clamps into 1..=100.
         let cfg: Config = toml::from_str("[ipc]\nhigh_water_warn_pct = 0").unwrap();

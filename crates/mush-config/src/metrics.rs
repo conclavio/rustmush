@@ -129,6 +129,14 @@ pub struct Metrics {
     /// above zero means the single writer was thrown out of its own state
     /// machine and the world is frozen; it is an alert, not a trend.
     world_panics_total: AtomicU64,
+    /// Set once the gateway supervisor has GIVEN UP on the server half
+    /// (WS22-S17): the crash-loop guard tripped, an old instance's exit could
+    /// not be established, or the supervisor task itself died. A latch, not a
+    /// counter — there is no second abandonment to count, because nothing is
+    /// supervising any more. Read by `/healthz` (`supervision_ok`) and
+    /// `/metrics`, and set only in the split gateway (the all-in-one has no
+    /// supervisor, so it reads false for ever).
+    supervision_abandoned: AtomicBool,
 
     // -- world loop (published each sample) --
     loop_lag_last_ms: AtomicU64,
@@ -317,6 +325,21 @@ impl Metrics {
         self.world_panics_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Latch the supervision-abandoned gauge (WS22-S17).
+    ///
+    /// The gateway calls this at the ONE site that gives up on the server
+    /// half. It is idempotent on purpose: the point of the gauge is that a
+    /// scraper can see the state at all, not how many ways it was reached.
+    pub fn abandon_supervision(&self) {
+        self.supervision_abandoned.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the gateway supervisor has given up on the server half.
+    #[must_use]
+    pub fn supervision_abandoned(&self) -> bool {
+        self.supervision_abandoned.load(Ordering::Relaxed)
+    }
+
     // -- world-loop sampling ----------------------------------------------
 
     /// Record one loop-iteration lag observation (feeds last/max + histogram).
@@ -365,6 +388,7 @@ impl Metrics {
             "world_loop_unixtime": self.world_loop_last_iter_unix.load(Ordering::Relaxed),
             "store_ok": !self.store_read_only.load(Ordering::Relaxed),
             "integrity_ok": !self.integrity_frozen.load(Ordering::Relaxed),
+            "supervision_ok": !self.supervision_abandoned.load(Ordering::Relaxed),
         })
     }
 
@@ -707,6 +731,7 @@ impl Metrics {
             connections_current: self.connections_current.load(Ordering::Relaxed),
             commands_total: self.commands_total.load(Ordering::Relaxed),
             world_panics_total: self.world_panics_total.load(Ordering::Relaxed),
+            supervision_abandoned: self.supervision_abandoned.load(Ordering::Relaxed),
             loop_lag_last_ms: self.loop_lag_last_ms.load(Ordering::Relaxed),
             loop_lag_max_ms: self.loop_lag_max_ms.load(Ordering::Relaxed),
             lag_buckets: std::array::from_fn(|i| self.lag_buckets[i].load(Ordering::Relaxed)),
@@ -895,6 +920,9 @@ pub struct MetricsSnapshot {
     pub commands_total: u64,
     /// Panics caught at the world task's dispatch boundary since boot.
     pub world_panics_total: u64,
+    /// Whether the gateway supervisor has given up on the server half — see
+    /// [`Metrics::abandon_supervision`].
+    pub supervision_abandoned: bool,
     /// Most recent loop lag, ms.
     pub loop_lag_last_ms: u64,
     /// Worst loop lag since boot, ms.
@@ -1138,6 +1166,13 @@ impl MetricsSnapshot {
             "counter",
             "Panics caught at the world task's dispatch boundary since boot.",
             &[(&[], self.world_panics_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_supervision_abandoned",
+            "gauge",
+            "1 when the gateway supervisor gave up on the server half: players are connected, every input is refused, and no restart is coming.",
+            &[(&[], f64::from(u8::from(self.supervision_abandoned)))],
         );
 
         // Loop lag: last/max gauges + a native histogram.
@@ -2098,6 +2133,37 @@ mod tests {
         assert_eq!(j["world_loop_unixtime"], 1_700_000_000);
         assert_eq!(j["store_ok"], true);
         assert_eq!(j["integrity_ok"], true);
+        assert_eq!(j["supervision_ok"], true);
+    }
+
+    /// WS22-S17: the gauge a scraper alerts on when the gateway supervisor has
+    /// given up. The failure it exists to prevent is a gateway that is up,
+    /// serving `/healthz`, holding every player — and refusing every input
+    /// they type, with nothing anywhere saying so. It is a latch: unset until
+    /// abandonment, set for ever afterwards, and visible on BOTH surfaces.
+    #[test]
+    fn abandoned_supervision_shows_on_healthz_and_metrics() {
+        let m = Metrics::new();
+        assert!(!m.supervision_abandoned());
+        assert_eq!(m.health_json(1, "9.9.9")["supervision_ok"], true);
+        assert!(
+            m.snapshot()
+                .to_prometheus(1)
+                .contains("mush_supervision_abandoned 0")
+        );
+
+        m.abandon_supervision();
+        assert!(m.supervision_abandoned());
+        assert_eq!(m.health_json(1, "9.9.9")["supervision_ok"], false);
+        assert!(
+            m.snapshot()
+                .to_prometheus(1)
+                .contains("mush_supervision_abandoned 1")
+        );
+
+        // Idempotent: a second call cannot un-set it or double it.
+        m.abandon_supervision();
+        assert!(m.supervision_abandoned());
     }
 
     #[test]
@@ -2172,6 +2238,8 @@ mod tests {
         assert!(text.contains("mush_objects{kind=\"room\"} 5"));
         assert!(text.contains("mush_store_read_only 0"));
         assert!(text.contains("mush_integrity_frozen 0"));
+        assert!(text.contains("# TYPE mush_supervision_abandoned gauge"));
+        assert!(text.contains("mush_supervision_abandoned 0"));
         assert!(text.contains("mush_store_write_queue_depth 6"));
         assert!(text.contains("mush_store_write_lane_depth{lane=\"legacy\"} 3"));
         assert!(text.contains("mush_store_write_lane_depth{lane=\"authoritative\"} 2"));

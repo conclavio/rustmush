@@ -31,6 +31,8 @@ listen = "/run/rustmush/dev1.sock"       # dev1's private boundary (unix socket)
 # to_gw_cap = 8192            # server->gateway queue; over cap, the boundary is torn down (re-attach heals)
 # write_timeout_ms = 5000     # per-frame IPC write timeout; a wedged peer past this tears the boundary down
 # high_water_warn_pct = 80    # edge-gated high-water warn threshold (percent of a queue's cap)
+# exit_on_abandoned_supervision = true  # gateway exits non-zero once its supervisor gives up
+#                             #   on the server half (false keeps the corpse on a dev box)
 
 [web]
 listen = "__EXTERNAL_IP__:6790"          # external IP only (off tailscale)

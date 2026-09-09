@@ -1392,7 +1392,33 @@ listen = "/run/rustmush/dev1.sock"   # Linux prod: a Unix-domain socket path
 # write_timeout_ms = 5000     # per-frame IPC write timeout; a connected-but-not-draining
 #                             #   ("wedged") peer past this tears the boundary down.
 # high_water_warn_pct = 80    # edge-gated high-water warn threshold, percent of a queue's cap.
+
+# WS22-S17: what the gateway does when its supervisor GIVES UP on the server half.
+# exit_on_abandoned_supervision = true   # exit non-zero after a ~3 s grace, so
+#                             #   Restart=on-failure brings the whole gateway back.
+#                             #   Set false on a dev box to keep the corpse attached
+#                             #   for inspection; the gauge and the marker below are
+#                             #   published either way.
 ```
+
+**When the supervisor gives up.** The gateway abandons supervision when the
+crash-loop guard trips, when an old server instance's exit cannot be
+established (it will never launch a replacement over an instance that might
+still be writing the store), or if the supervisor task itself dies. That state
+used to be invisible: the process stayed healthy and idle, every held session
+stayed connected, and every line those players typed was refused for ever.
+Now it:
+
+- logs one ERROR carrying the fixed marker `SUPERVISION-ABANDONED`, with a
+  `reason` field (`crash-loop`, `uncertain-exit`, `supervisor-died`) —
+  `journalctl -u dev1mush-gateway | grep SUPERVISION-ABANDONED`;
+- latches the `mush_supervision_abandoned` gauge on `/metrics`, which
+  `/healthz` also reports as `"supervision_ok": false` (alert on either);
+- tells the connected players once ("the server is down and could not be
+  restarted");
+- and then, unless `exit_on_abandoned_supervision = false`, exits **1** after a
+  short grace window so the init system restarts the pair. Connections that
+  refuse every input are worth less than a working game.
 
 Every shed, teardown, protocol violation, and write timeout logs and increments a counter
 surfaced on `/metrics` (`mush_ipc_frames_shed_total`, `mush_ipc_write_timeouts_total`,
