@@ -505,10 +505,14 @@ impl Splat for Vampire {
 
     fn finalize_starting(&self, _config: &WodConfig, doc: &mut SheetDoc) {
         // Generation: the Generation background buys a lower one (0 dots = 13th,
-        // 5 = 8th); take the lower of that and any directly-set generation.
+        // 5 = 8th), and that background is the ONLY thing it is derived from.
+        // Reading the `generation` field back and taking the lower of the two
+        // made finalize honour whatever was already sitting in the sheet, so a
+        // value that reached the field before submit — a `+stat` spelling that
+        // slipped the chargen lock, a staff pre-set — survived approval for
+        // free. The field is written here, never read here.
         let gen_bg = background_dots(doc, "Generation");
-        let gen_field = doc.number("generation").unwrap_or(13) as i32;
-        let generation = (13 - gen_bg).min(gen_field).clamp(4, 15);
+        let generation = (13 - gen_bg).clamp(4, 15);
         doc.set_number("generation", i64::from(generation));
 
         // Blood Pool starts full.
@@ -1207,5 +1211,35 @@ mod tests {
         Vampire.finalize_starting(&WodConfig::default(), &mut doc);
         assert_eq!(doc.number("generation"), Some(10));
         assert_eq!(doc.number("bloodpool"), Some(13), "10th-gen Blood Pool max");
+    }
+
+    #[test]
+    fn a_generation_already_in_the_field_does_not_survive_finalize() {
+        // The residue behind the chargen lock: whatever put 4th generation into
+        // the field before submit — a `+stat` spelling the lock missed, a staff
+        // pre-set — finalize used to keep, because it took the lower of the
+        // background's generation and the field's. It derives from the
+        // background alone now, so an injected 4 finalizes back to 13 and the
+        // 50-point Blood Pool with it.
+        let mut doc = vampire_doc();
+        doc.set_number("generation", 4);
+        Vampire.finalize_starting(&WodConfig::default(), &mut doc);
+        assert_eq!(
+            doc.number("generation"),
+            Some(13),
+            "0 dots of Generation is a 13th-generation fledgling"
+        );
+        assert_eq!(doc.number("bloodpool"), Some(10), "13th-gen Blood Pool max");
+    }
+
+    #[test]
+    fn the_background_still_wins_over_a_higher_injected_generation() {
+        // The reverse direction is the same rule: the field is written, never
+        // read. Three dots is 10th whether the field said 4th or 15th.
+        let mut doc = vampire_doc();
+        doc.set_number("generation", 15);
+        doc.map_set("backgrounds", "Generation", serde_json::json!(3));
+        Vampire.finalize_starting(&WodConfig::default(), &mut doc);
+        assert_eq!(doc.number("generation"), Some(10));
     }
 }

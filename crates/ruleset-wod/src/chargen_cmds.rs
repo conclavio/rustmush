@@ -263,6 +263,20 @@ pub(crate) fn apply_stat(
     }
     let mut doc = cmd.read_or_default(ctx.w, actor);
     let splat = cmd.splat_for_doc(&doc);
+    // Resolve the field to its schema id BEFORE any gate reads it. Everything
+    // below — the settable list, the splat's locked list, the chargen ceiling —
+    // is written in canonical lowercase ids, and `chargen_locked_fields` is
+    // compared with `contains`, which is exact. Tested against the raw text,
+    // `+stat GENERATION=4` sailed past a lock that only ever saw "generation".
+    // `SheetSchema::field` matches ids case-insensitively and matches nothing
+    // else (no aliases), so canonicalising here is exactly a case fold — and
+    // `store.set_field` already wrote `f.id` regardless of the spelling typed.
+    let schema = cmd.schema_for_doc(&doc);
+    let fdef = schema
+        .field(field)
+        .ok_or_else(|| CmdError::msg(format!("No such sheet field: {field}")))?
+        .clone();
+    let field = fdef.id.as_str();
     if !chargen_settable(field) || splat.chargen_locked_fields().contains(&field) {
         return Err(CmdError::msg(format!(
             "{field} is not a chargen-allocatable trait. XP, health, derived, and \
@@ -277,11 +291,6 @@ pub(crate) fn apply_stat(
             "{field} caps at {cap} during chargen; raise it further with XP after approval."
         )));
     }
-    let schema = cmd.schema_for_doc(&doc);
-    let fdef = schema
-        .field(field)
-        .ok_or_else(|| CmdError::msg(format!("No such sheet field: {field}")))?
-        .clone();
 
     let store = cmd.store_for_doc(&doc);
     let audit = match (&fdef.ty, key) {
