@@ -413,10 +413,12 @@ the lot works with `[llm].enabled = false`; the interface abilities are §4.6:
 - **Aaron Samuels** — the tour bus's driver, aboard `room.bus`: the carrier's declared NPC
   fallback at its one station (C30A); fronts nothing; drives the bus Regina is watching for
   (owner, 2026-09-09: decided). Fallback: "Next stop, the lobby. Please stay seated."
-- **Bench** (owner-supplied names, proposed assignments; no new rooms): **Sharon Norbury** as the
-  OOC Area's docent in the Welcome Hall (extra tier; walks newcomers through the tutorial rooms;
-  fronts `help`); **Ron Duvall** in the Lobby as the front for filing a request with staff
+- **Sharon Norbury** — the OOC Area's docent, Welcome Hall (extra tier): walks newcomers
+  through the tutorial rooms and fronts `help` (`help.topic`). Fallback: "The tutorial is through
+  there. I'll be here when you have questions. Raise your hand."
+- **Ron Duvall** — the front office, Lobby: the front for filing a request with staff
   (`request.file`, `request.status` over `+request` and `+job`, the asker's own tickets only).
+  Fallback: "Put it in writing. `+request`. I read every one." (Both decided, owner, 2026-09-09.)
 
 **Hooks**: `hook.open_house` — Susie's set at the coffee shop, an invitation and a place
 strangers meet, no mechanic. **Items**: the tutorial pamphlet (readable), the shooting-schedule
@@ -656,8 +658,8 @@ a ruleset sheet, registered through the same seam and invoked the same way:
 | `market.quote(…)`, `market.list(…)` | the economist | `+market`'s public projection (`crates/mush-market/src/commands.rs`), never the book beneath it (doc 10 §14's safe projection) |
 | `build.propose(brief)`, `build.status(id)`, `build.answer(q, a)` | the set designer | the authoring agent (4.1); the conversation *is* the proposal record's question loop; the NPC never applies |
 | `chargen.explain(topic)`, `rules.lookup(topic)` | the off-duty gamemaster | the help topics and the loaded ruleset's chargen schema |
-| `request.file(text)`, `request.status()` | the front office (proposed: Ron Duvall) | `+request` and `+job` (`crates/mush-jobs/src/api.rs` `open_job`), the asker's own tickets only |
-| `help.topic(name)` | the docent (proposed: Sharon Norbury) | the help topics, verbatim |
+| `request.file(text)`, `request.status()` | the front office (Ron Duvall) | `+request` and `+job` (`crates/mush-jobs/src/api.rs` `open_job`), the asker's own tickets only |
+| `help.topic(name)` | the docent (Sharon Norbury) | the help topics, verbatim |
 
 Four rules keep an interface NPC exactly as powerful as the person talking to it:
 
@@ -817,5 +819,5 @@ pins both fine tile sets and the background; a hyphenated id is refused at load 
   lands (cut 2 chooses the record; the layer may absorb it).
 - The pedestrian encounter policy for unwatched hazard bands in city campaigns (a ruleset
   decision; the engine only exposes the band).
-- The bench's remaining proposed assignments (Norbury, Duvall) await the owner's nod; every
-  named role is cast and Aaron drives the bus.
+- None on the owner's side: every role is cast (ten NPCs) and the plan's decisions are
+  acknowledged.

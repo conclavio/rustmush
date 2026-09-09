@@ -394,8 +394,8 @@ advertised only), `mush-weather` (`weather.report`, `weather.forecast`), `mush-m
 Fallback lines name the command. Audit rows carry `(npc, asker, ability)`.
 
 **Content.** The starter packs' NPC entries gain `interfaces`; Susie, Karen Smith, Regina, Cady
-Heron, Janis Ian, Phil and (if the bench is accepted) Duvall and Norbury front the abilities of
-doc 14 §2.6; Aaron drives and fronts nothing.
+Heron, Janis Ian, Phil, Duvall and Norbury front the abilities of doc 14 §2.6; Aaron drives and
+fronts nothing.
 
 **Commands.** `@agent/set <npc>/interfaces=<a; b>` (staff). No new player verbs: talking is
 the interface.
@@ -468,11 +468,11 @@ square root of its pinned distance.
 - **14c presence** will read `who.nearby`'s eligibility set from S6; nothing in S1–S7 emits
   a presence feed.
 
-## 6. Decisions taken by this plan (defaults; ★ marks an owner call)
+## 6. Decisions taken by this plan (acknowledged by the owner 2026-09-09; ★ marked the owner calls, now decided)
 
 | # | Decision |
 |---|---|
-| D-P-1 ★ | `ruleset-tacsim` keeps its own seed latch through S1–S6 and folds onto `mush-content`'s in S7 |
+| D-P-1 ★ | `ruleset-tacsim` keeps its own seed latch through S1–S6 and folds onto `mush-content`'s in S7 — **decided** |
 | D-P-2 | `mush-content` before `mush-sim`, `mush-atlas` after it, in `server_modules_with` |
 | D-P-3 | Starter packs are `include_str!` fixtures in `mush-atlas` with digest-pinning tests |
 | D-P-4 | The journey document moves under the `atlas` family; `route.rs` is deleted in S2, not deprecated |
@@ -481,7 +481,7 @@ square root of its pinned distance.
 | D-P-7 | `+move` is a generic atlas verb gated by the scene turn, not a ruleset verb |
 | D-P-8 | The composite stays at `mod:tactics:map:<domain-id>` (doc 06 §9.1's key) with owner `atlas` |
 | D-P-9 | Feature-state write-back rides the domain tick's commit, never a second timer |
-| D-P-10 ★ | Aaron Samuels drives the bus from S2 (decided); Norbury and Duvall ship in S6 if the owner nods, otherwise the packs carry the eight cast members |
+| D-P-10 ★ | Aaron Samuels drives the bus from S2; Norbury (docent) and Duvall (front office) ship in S6 — **decided**: the packs carry ten cast members |
 
 ## 7. Constants
 
@@ -513,7 +513,7 @@ square root of its pinned distance.
   if S4 measures the composite over a few milliseconds on the lot.
 - **Scene-turn gating of `+move` in freeform scenes**: default free (no gate) outside a
   turn-based scene, so a walk across a window is not a fight.
-- ★ **D-P-1** and ★ **D-P-10** above.
+- D-P-1 and D-P-10 were the owner's calls; both are decided (§6).
 
 ## 9. What this plan hands back
 
@@ -526,4 +526,4 @@ square root of its pinned distance.
 
 ## 10. Changelog
 
-- 0.1 (2026-09-09): first draft, from doc 14 Draft 0.1; S7 gains the campaign ephemeris (doc 10 T17) the same day.
+- 0.1 (2026-09-09): first draft, from doc 14 Draft 0.1; S7 gains the campaign ephemeris (doc 10 T17) the same day; §6's decisions acknowledged by the owner the same day.
