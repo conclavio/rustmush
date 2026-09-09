@@ -209,6 +209,15 @@ mush-server = { path = "crates/mush-server" }
 [workspace.lints.rust]
 unsafe_code = "deny"
 
+# WS01-S12: the panic-shaped restriction lints (`unwrap_used`, `expect_used`,
+# `indexing_slicing`, `panic`, `unreachable`, `panic_in_result_fn`) are NOT here
+# and must not be added here. `.github/workflows/ci.yml` runs `cargo clippy
+# --workspace --all-targets -- -D warnings`, so a `warn` in this table is a hard
+# error in every crate and on every target — and none of the six is at zero
+# across the whole tree. They are enabled per crate, at the crate root, exactly
+# where the measured production count is zero; the measurement, the enabling
+# rule and the counts of what stays off are in
+# crates/mush-contract-tests/tests/restriction_lints.rs.
 [workspace.lints.clippy]
 dbg_macro = "warn"
 todo = "warn"

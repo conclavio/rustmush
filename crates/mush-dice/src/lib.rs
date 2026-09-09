@@ -38,6 +38,18 @@
 //! assert_eq!(out.net, 1); // two successes (7,8) minus one 1
 //! ```
 
+// WS01-S12: the panic-shaped restriction lints this crate measures zero of,
+// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// the measurement this set was cut from — including the counts of the lints
+// NOT named here — and fails if this attribute loses one of them.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::panic_in_result_fn
+)]
+
 pub mod error;
 pub mod expr;
 pub mod owod20;

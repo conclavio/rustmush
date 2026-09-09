@@ -74,6 +74,12 @@
 //!   more than one custody effect is refused before any provider runs: custody moves
 //!   one provider call at a time, so a refusal on the second would strand the first.
 
+// WS01-S12: the panic-shaped restriction lints this crate measures zero of,
+// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// the measurement this set was cut from — including the counts of the lints
+// NOT named here — and fails if this attribute loses one of them.
+#![deny(clippy::unwrap_used, clippy::panic_in_result_fn)]
+
 // E2a — the pure library.
 mod amount;
 mod engine;

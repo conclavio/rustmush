@@ -97,6 +97,17 @@
 //! - **Ambient timers** (`Stimulus::AmbientTimer`) are modeled but not yet
 //!   scheduled; the tick fires only on real stimuli / pending summaries.
 
+// WS01-S12: the panic-shaped restriction lints this crate measures zero of,
+// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// the measurement this set was cut from — including the counts of the lints
+// NOT named here — and fails if this attribute loses one of them.
+#![deny(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::panic_in_result_fn
+)]
+
 mod action;
 pub mod decision;
 mod intel;

@@ -89,6 +89,18 @@
 //! Everything in this crate is `Send + Sync`; interior mutability is DashMap
 //! shards plus per-connection atomics/mutexes.
 
+// WS01-S12: the panic-shaped restriction lints this crate measures zero of,
+// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// the measurement this set was cut from — including the counts of the lints
+// NOT named here — and fails if this attribute loses one of them.
+#![deny(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::panic_in_result_fn
+)]
+
 mod conn;
 mod flood;
 mod manager;

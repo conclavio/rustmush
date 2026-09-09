@@ -108,6 +108,15 @@ jobs:
       # says which contract failed.
       - name: The production panic surface and the panic=abort firewall
         run: cargo test -p mush-contract-tests --test panic_budget
+      # WS01-S12: the other half of the same rule. Where a crate's production
+      # count for one of the six panic-shaped restriction lints is already zero,
+      # its crate root denies that lint and the compiler holds it there. This
+      # target carries the measurement the per-crate sets were cut from, and
+      # fails if a root drops a deny, if a deny appears that the record does not
+      # back, if an `#[allow]` under src/ takes an enabled lint back, or if a new
+      # crate arrives unmeasured.
+      - name: The per-crate restriction lints
+        run: cargo test -p mush-contract-tests --test restriction_lints
       # 10b §14.3 criterion 4 (E7 cut 11 independent verify fold, G5/F7): every
       # E7k lane's proof must run in a package that can SEE the crate that owns
       # the lane. `mush-contract-tests` declares no `mush-industry` dependency,

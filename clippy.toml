@@ -36,6 +36,14 @@
 # the majority. Any per-crate enable must therefore still be measured with
 # `--all-targets`; the number from a `--lib`-only run is not the number CI
 # enforces.
+#
+# WHAT THE ALLOWANCES NOW SERVE (WS01-S12). The re-measurement landed and the
+# lints are on, per crate, at each crate root — `crates/mush-contract-tests/
+# tests/restriction_lints.rs` holds the whole table, including the count of
+# every candidate that stayed off. These four keys have stopped being an input
+# to a future decision and become load-bearing: flipping one to `false` now
+# red-lights CI immediately, in every crate that denies that lint, over
+# `#[cfg(test)]` code no production build compiles.
 
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true

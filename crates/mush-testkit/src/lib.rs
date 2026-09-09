@@ -26,6 +26,17 @@
 //! \"hi\"", "Alice grins."). It is deliberately simple; the real ANSI
 //! renderer lands in `mush-ansi` later and owns niceties like You-vs-Name.
 
+// WS01-S12: the panic-shaped restriction lints this crate measures zero of,
+// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// the measurement this set was cut from — including the counts of the lints
+// NOT named here — and fails if this attribute loses one of them.
+#![deny(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::unreachable,
+    clippy::panic_in_result_fn
+)]
+
 use std::collections::HashMap;
 
 use mush_core::{

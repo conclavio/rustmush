@@ -66,6 +66,19 @@
 //! There is no ordering requirement against any other module: this one reads wall
 //! time and `mush-core`'s own staff predicate and asks nothing of anybody.
 
+// WS01-S12: the panic-shaped restriction lints this crate measures zero of,
+// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// the measurement this set was cut from — including the counts of the lints
+// NOT named here — and fails if this attribute loses one of them.
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::panic_in_result_fn
+)]
+
 mod api;
 mod boot;
 mod commands;

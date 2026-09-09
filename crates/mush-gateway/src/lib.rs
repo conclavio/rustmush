@@ -25,6 +25,17 @@
 //! [`ToGateway`]: mush_ipc::ToGateway
 //! [`ServiceReq`]: mush_ipc::ServiceReq
 
+// WS01-S12: the panic-shaped restriction lints this crate measures zero of,
+// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// the measurement this set was cut from — including the counts of the lints
+// NOT named here — and fails if this attribute loses one of them.
+#![deny(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::panic_in_result_fn
+)]
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;

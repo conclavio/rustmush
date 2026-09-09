@@ -30,6 +30,12 @@
 //! Real hex math (`hexx`), heat curves, and hit tables stay entirely out of
 //! scope until the real module lands.
 
+// WS01-S12: the panic-shaped restriction lints this crate measures zero of,
+// held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
+// the measurement this set was cut from — including the counts of the lints
+// NOT named here — and fails if this attribute loses one of them.
+#![deny(clippy::panic, clippy::panic_in_result_fn)]
+
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
