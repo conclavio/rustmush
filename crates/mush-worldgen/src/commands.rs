@@ -603,7 +603,12 @@ impl mush_core::CommandHandler for LlmStaffCmd {
                     }
                 ),
             );
-            for route in ["worldgen_room", "worldgen_brief", "npc_dialogue_major"] {
+            for route in [
+                "worldgen_room",
+                "worldgen_brief",
+                "worldgen_plan",
+                "npc_dialogue_major",
+            ] {
                 let c = self.llm.ledger().feature(route);
                 if c.input_tokens + c.output_tokens > 0 || c.cost_usd > 0.0 {
                     ctx.out.info(

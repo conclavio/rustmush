@@ -54,6 +54,10 @@ pub enum LlmFeature {
     WorldgenRoom,
     /// Whole-building worldgen brief.
     WorldgenBrief,
+    /// The building agent's planning run (S3, 14-spatial-implementation-plan
+    /// §3.4): a bounded tool loop that turns a brief into a validating content
+    /// pack (route `worldgen_plan`, a strong model).
+    WorldgenPlan,
     /// Ambient flavor text.
     Ambience,
     /// The WoD Storyteller adjudication pass (M13): judge a freeform action
@@ -79,6 +83,7 @@ impl LlmFeature {
             LlmFeature::NpcDecision => "npc_decision",
             LlmFeature::WorldgenRoom => "worldgen_room",
             LlmFeature::WorldgenBrief => "worldgen_brief",
+            LlmFeature::WorldgenPlan => "worldgen_plan",
             LlmFeature::Ambience => "ambience",
             LlmFeature::StAdjudicate => "st_adjudicate",
             LlmFeature::StInterpret => "st_interpret",

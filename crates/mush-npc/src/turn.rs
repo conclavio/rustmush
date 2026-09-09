@@ -4,7 +4,8 @@
 //! worldgen re-entry shape (treaty ruling 3).
 //!
 //! It runs the bounded tool loop (max [`MAX_ROUND_TRIPS`] round-trips, max
-//! [`MAX_ACTIONS`] actions), supports a JSON-actions fallback with one repair
+//! [`MAX_ACTIONS`] actions) on `mush_llm::agent` — the one loop the worldgen
+//! planner runs on too (S3) — supports a JSON-actions fallback with one repair
 //! for weak-tool models, resolves `LookAt` from the scene snapshot into a real
 //! tool result, and degrades to a profile fallback line on any budget trip /
 //! refusal / disabled service — never an error to players.
@@ -13,9 +14,10 @@
 //! on the world loop (it needs the sheet, the shared RNG, and the outbox), so an
 //! ability call is recorded as a typed action and executed during re-entry.
 
+use mush_llm::agent::{self, RunBudget, RunLimits, RunSpec, StopCause, TextVerdict, ToolHost, ToolReply};
 use mush_llm::{
-    BudgetLimit, CallCtx, ChatMessage, CompletionRequest, ContentBlock, LlmError, LlmService,
-    Priority, Role, Sampling, ToolDef,
+    BudgetLimit, CallCtx, ChatMessage, CompletionRequest, CompletionResponse, LlmError,
+    LlmService, Sampling, ToolDef, Priority,
 };
 
 use crate::action::NpcAction;
@@ -62,7 +64,9 @@ async fn run_turn(llm: &LlmService, snap: &TurnSnapshot) -> TurnOutcome {
     }
 }
 
-/// A dialogue/action deliberation with the bounded tool loop.
+/// A dialogue/action deliberation on the shared bounded tool loop
+/// (`mush_llm::agent`, S3): the loop owns the rounds, the answered-only echo and
+/// the one repair; [`DialogueHost`] owns what each tool means to an NPC.
 async fn run_dialogue(llm: &LlmService, snap: &TurnSnapshot) -> TurnOutcome {
     let feature = snap.profile.tier.dialogue_feature();
     let mut ctx = CallCtx::new(feature, Priority::Interactive).with_npc(snap.npc);
@@ -75,142 +79,98 @@ async fn run_dialogue(llm: &LlmService, snap: &TurnSnapshot) -> TurnOutcome {
         ctx = ctx.with_npc_limit(BudgetLimit::tokens(tokens));
     }
 
-    let system = system_prompt(snap);
-    let tools = all_tools(snap);
-    let mut messages = vec![ChatMessage::user(user_prompt(snap))];
-
-    let mut collected: Vec<AppliedAction> = Vec::new();
-    let mut repaired = false;
-
-    for round in 0..MAX_ROUND_TRIPS {
-        let req = CompletionRequest {
-            model: String::new(),
-            system: Some(system.clone()),
-            messages: messages.clone(),
-            tools: tools.clone(),
-            tool_choice: tool_choice(),
+    let spec = RunSpec {
+        ctx,
+        system: system_prompt(snap),
+        opening: user_prompt(snap),
+        tools: all_tools(snap),
+        tool_choice: tool_choice(),
+        limits: RunLimits {
+            max_rounds: MAX_ROUND_TRIPS,
+            // An NPC turn is bounded by its daily budgets, not a per-run cap.
+            budget: RunBudget::default(),
             max_tokens: 1024,
-            sampling: Sampling::default(),
-            stop_sequences: Vec::new(),
-            reasoning: None,
-        };
+        },
+    };
+    let mut host = DialogueHost {
+        snap,
+        collected: Vec::new(),
+    };
+    let report = agent::run(llm, spec, &mut host).await;
+    match report.stopped {
+        // Any budget trip / refusal / disabled / transport failure → a
+        // graceful fallback line (design 03 §6.6 / §7 rule 6).
+        StopCause::Error(error) => degrade(snap, &error),
+        StopCause::Done | StopCause::NoTool | StopCause::Rounds | StopCause::Cap => {
+            finalize(snap, host.collected)
+        }
+    }
+}
 
-        let resp = match llm.call(ctx, req).await {
-            Ok(r) => r,
-            // Any budget trip / refusal / disabled / transport failure → a
-            // graceful fallback line (design 03 §6.6 / §7 rule 6).
-            Err(e) => return degrade(snap, &e),
-        };
+/// What the tools mean to an NPC turn: a built-in tool is its typed action, any
+/// other name is a ruleset ability, and only `look_at` returns something worth
+/// another round.
+struct DialogueHost<'a> {
+    snap: &'a TurnSnapshot,
+    collected: Vec<AppliedAction>,
+}
 
-        // --- Tool-calling path -------------------------------------------
-        let tool_uses: Vec<(String, String, serde_json::Value)> = resp
-            .content
-            .iter()
-            .filter_map(|b| match b {
-                ContentBlock::ToolUse { id, name, input } => {
-                    Some((id.clone(), name.clone(), input.clone()))
-                }
-                _ => None,
-            })
-            .collect();
-
-        if !tool_uses.is_empty() {
-            let mut results: Vec<ContentBlock> = Vec::new();
-            let mut round_has_result = false;
-            let mut round_only_results = true;
-            for (id, name, input) in &tool_uses {
-                if collected.len() >= MAX_ACTIONS {
-                    break;
-                }
-                for raw in actions_from_tool(name, input) {
-                    let Some(action) = clean_action(raw) else {
-                        continue;
-                    };
-                    if collected.len() >= MAX_ACTIONS {
-                        break;
-                    }
-                    let (result_text, is_error) = tool_result_for(snap, &action);
-                    if action.returns_result() {
-                        round_has_result = true;
-                    } else {
-                        round_only_results = false;
-                    }
-                    results.push(ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: result_text,
-                        is_error,
-                    });
-                    collected.push(AppliedAction { action });
-                }
+impl ToolHost for DialogueHost<'_> {
+    fn call(&mut self, name: &str, input: &serde_json::Value) -> Option<ToolReply> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut is_error = false;
+        let mut more = true;
+        for raw in actions_from_tool(name, input) {
+            if self.collected.len() >= MAX_ACTIONS {
+                break;
             }
-
-            // Continue only for a pure information-gathering round (LookAt)
-            // with room to spare; otherwise the turn is done.
-            let more = round_has_result
-                && round_only_results
-                && round + 1 < MAX_ROUND_TRIPS
-                && collected.len() < MAX_ACTIONS;
-            if more {
-                // Echo back ONLY the tool_use blocks that produced a matching
-                // tool_result. A block dropped by `clean_action` (empty target)
-                // or by the MAX_ACTIONS cap has no result; echoing it whole
-                // would leave an unmatched tool_use id and 400 the next call,
-                // needlessly degrading the turn. Keep every non-tool_use block
-                // (text) and only the answered tool_use ids.
-                let answered: Vec<&str> = results
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                let echo: Vec<ContentBlock> = resp
-                    .content
-                    .iter()
-                    .filter(|b| match b {
-                        ContentBlock::ToolUse { id, .. } => answered.contains(&id.as_str()),
-                        _ => true,
-                    })
-                    .cloned()
-                    .collect();
-                messages.push(ChatMessage {
-                    role: Role::Assistant,
-                    content: echo,
-                });
-                messages.push(ChatMessage {
-                    role: Role::User,
-                    content: results,
-                });
+            let Some(action) = clean_action(raw) else {
                 continue;
-            }
-            break;
+            };
+            let (text, failed) = tool_result_for(self.snap, &action);
+            // Continue only for a pure information-gathering call (LookAt);
+            // anything else ends the turn once the round is answered.
+            more &= action.returns_result();
+            is_error |= failed;
+            lines.push(text);
+            self.collected.push(AppliedAction { action });
         }
-
-        // --- JSON fallback path ------------------------------------------
-        let (actions, needs_repair) = parse_actions(&resp);
-        if !actions.is_empty() {
-            for a in actions {
-                if collected.len() >= MAX_ACTIONS {
-                    break;
-                }
-                collected.push(AppliedAction { action: a });
-            }
-            break;
-        }
-        if needs_repair && !repaired {
-            repaired = true;
-            messages.push(ChatMessage::assistant(resp.text()));
-            messages.push(ChatMessage::user(
-                "That was not a valid action. Reply by calling a tool (say/pose/move/look_at/\
-                 remember/do_nothing), or with ONLY a JSON array like \
-                 [{\"action\":\"say\",\"text\":\"...\"}].",
-            ));
-            continue;
-        }
-        break;
+        // A call whose every action was dropped (an empty target) has no
+        // result: leaving it out of the echo keeps the next request valid.
+        (!lines.is_empty()).then(|| ToolReply {
+            content: lines.join("\n"),
+            is_error,
+            more,
+        })
     }
 
-    finalize(snap, collected)
+    fn on_text(&mut self, reply: &CompletionResponse) -> TextVerdict {
+        // The JSON fallback for weak-tool models, with one repair.
+        let (actions, needs_repair) = parse_actions(reply);
+        if !actions.is_empty() {
+            for action in actions {
+                if self.collected.len() >= MAX_ACTIONS {
+                    break;
+                }
+                self.collected.push(AppliedAction { action });
+            }
+            return TextVerdict::Done;
+        }
+        if needs_repair {
+            TextVerdict::Repair(
+                "That was not a valid action. Reply by calling a tool (say/pose/move/look_at/\
+                 remember/do_nothing), or with ONLY a JSON array like \
+                 [{\"action\":\"say\",\"text\":\"...\"}]."
+                    .to_string(),
+            )
+        } else {
+            TextVerdict::Done
+        }
+    }
+
+    fn finished(&self) -> bool {
+        self.collected.len() >= MAX_ACTIONS
+    }
 }
 
 /// Build the final outcome from the collected actions.

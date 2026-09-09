@@ -20,6 +20,9 @@
 //!   config structs.
 //! - [`mock`] — a network-free [`MockProvider`](mock::MockProvider) for tests
 //!   (feature `mock`, default-on).
+//! - [`agent`] — the bounded tool loop ([`agent::run`]) an NPC turn and the
+//!   worldgen planner both run on: rounds, the answered-only echo, one repair,
+//!   and a per-run cost ceiling (S3).
 //!
 //! ## Invariants
 //!
@@ -43,6 +46,7 @@
     clippy::panic_in_result_fn
 )]
 
+pub mod agent;
 pub mod audit;
 pub mod budget;
 pub mod config;
@@ -64,6 +68,9 @@ pub mod mock;
 
 // -- curated re-exports (the surface worldgen/npc import) ------------------
 
+pub use agent::{
+    RunBudget, RunLimits, RunReport, RunSpec, StopCause, TextVerdict, ToolHost, ToolReply,
+};
 pub use audit::{AuditRecord, AuditSink, DaySlice, FeatureTotals, Outcome};
 pub use budget::{BudgetLedger, BudgetLimit, Counters, ScopeLimits};
 pub use config::{
