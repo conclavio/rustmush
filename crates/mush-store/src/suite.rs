@@ -2493,15 +2493,18 @@ pub async fn authoritative_retention_generation_contract(store: &dyn Authoritati
 /// JSON routes at once — a module document and an object document (through
 /// an `AttrValue::Json`) — because both are written with `JSON.SET` and read
 /// back with `JSON.GET`.
-struct NumberShapedPostImages {
-    owner: OwnerId,
-    shapes: serde_json::Value,
-    carrier: Obj,
-    module_key: AuthoritativeKey,
-    bundle: AuthoritativeBundle,
+pub(crate) struct NumberShapedPostImages {
+    pub(crate) owner: OwnerId,
+    pub(crate) shapes: serde_json::Value,
+    pub(crate) carrier: Obj,
+    pub(crate) module_key: AuthoritativeKey,
+    pub(crate) bundle: AuthoritativeBundle,
 }
 
-fn number_shaped_post_images(token_byte: u8, request_byte: u8) -> NumberShapedPostImages {
+pub(crate) fn number_shaped_post_images(
+    token_byte: u8,
+    request_byte: u8,
+) -> NumberShapedPostImages {
     let owner = OwnerId::new("store_contract").expect("contract owner");
     let shapes = serde_json::json!({
         "one_point_zero": 1.0,
@@ -2610,6 +2613,93 @@ pub async fn authoritative_number_shaped_post_image_round_trips(store: &dyn Auth
             .await
             .expect("post-checkpoint shape document"),
         Some(shapes)
+    );
+}
+
+/// Checkpointing must not refuse a post-image the backend merely respelled.
+///
+/// This is the readback with a real clobber to catch: checkpoint releases the
+/// full intent, the last repair witness, and other writers have had time to
+/// touch its targets since finalize wrote them. So the script still compares
+/// bytes — and a refusal it cannot explain would be permanent, because the
+/// bytes never change on a retry and the intent is never released. The way out
+/// is a re-read compared as a *document* and one bounded retry, in Rust, where
+/// `9007199254740993` is not `...992` and `{}` is not `[]`.
+///
+/// Here that path is only reached if the backend actually respells something,
+/// which the fake cannot do — so on the fake this is the parity assertion that
+/// a number-shaped bundle checkpoints and releases like any other, and on a
+/// live RedisJSON it is the question. The bundle carries three JSON writes on
+/// purpose: a relaxation that forgave only the one index the script names would
+/// spend its retry reaching the second and refuse there.
+pub async fn authoritative_checkpoint_accepts_a_renormalised_post_image(
+    store: &dyn AuthoritativeStore,
+) {
+    seed_authoritative_world(store).await;
+    let NumberShapedPostImages {
+        owner,
+        shapes,
+        carrier,
+        module_key,
+        bundle,
+    } = number_shaped_post_images(23, 33);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve number-shaped intent");
+    let receipt = store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("finalize number-shaped intent");
+    let checkpoint = match store.checkpoint_authoritative(token, hash).await {
+        Ok(checkpoint) => checkpoint,
+        Err(StoreError::AuthoritativeReadbackMismatch { key, phase }) => {
+            panic!("checkpoint refused the right document at {key:?} ({phase} readback)")
+        }
+        Err(other) => panic!("checkpoint refused a number-shaped bundle: {other}"),
+    };
+    assert!(!checkpoint.resumed);
+    assert_eq!(checkpoint.receipt, receipt);
+    assert!(
+        checkpoint.released_intent_bytes > 0,
+        "a checkpoint that ran must release the intent it retained"
+    );
+    assert_eq!(
+        store
+            .authoritative_status(token, hash)
+            .await
+            .expect("status after checkpoint"),
+        BundleStatus::FinalizedExact(Box::new(receipt)),
+        "a respelled post-image must leave an ordinarily checkpointed action"
+    );
+    assert!(
+        store
+            .scan_authoritative_intents(None, 16)
+            .await
+            .expect("scan retained intents")
+            .intents
+            .is_empty(),
+        "the repair witness must be released, not stranded behind a refusal"
+    );
+    assert_eq!(
+        store
+            .module_json_get(owner.as_str(), module_key.as_str())
+            .await
+            .expect("materialized shape document"),
+        Some(shapes),
+        "the checkpointed write is the one that landed"
+    );
+    let snapshot = store
+        .load_world()
+        .await
+        .expect("load materialized world")
+        .expect("non-empty world");
+    assert_eq!(
+        snapshot.objects.iter().find(|o| o.id == ObjId(1)),
+        Some(&carrier)
     );
 }
 

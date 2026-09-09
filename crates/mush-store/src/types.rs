@@ -1367,6 +1367,40 @@ impl std::fmt::Display for AuthoritativeReadbackPhase {
     }
 }
 
+/// Whether two JSON texts are the same **document**, whatever their spelling.
+///
+/// This is how a refused checkpoint readback is re-verified. Both scripts prove
+/// a write by comparing bytes, which is the strongest check available inside
+/// one EVAL and the only one worth having there: Redis's `cjson` turns every
+/// number into a double, so 9007199254740993 and ...992 decode equal — exactly
+/// the ledger and idempotency-epoch range — and it cannot tell `{}` from `[]`.
+/// A deep compare in Lua would trade one false refusal for those two false
+/// accepts. So the comparison happens here instead, once, on the one key that
+/// disagreed.
+///
+/// Both sides are decoded and re-serialized by `serde_json`, and the canonical
+/// texts compared. That is blind to everything a backend may legitimately
+/// change on the way out — object key order (`serde_json::Map` is a `BTreeMap`
+/// here, so both sides come back sorted), whitespace, which characters are
+/// `\u`-escaped — and exact about everything else: `Value::Number` keeps `u64`,
+/// `i64` and `f64` apart, so the low bits above 2^53 survive and `1.0` is never
+/// `1`; the canonical text keeps `-0.0` from collapsing into `0.0`, which `f64`
+/// equality alone would accept; and an object is never an array.
+///
+/// Anything that does not decode is not equal. A document that cannot be read
+/// cannot be proven to match, and this comparison only ever *relaxes* a
+/// refusal, so it fails closed.
+#[must_use]
+pub(crate) fn json_documents_agree(observed: &str, expected: &str) -> bool {
+    fn canonical(text: &str) -> Option<String> {
+        serde_json::to_string(&serde_json::from_str::<serde_json::Value>(text).ok()?).ok()
+    }
+    match (canonical(observed), canonical(expected)) {
+        (Some(observed), Some(expected)) => observed == expected,
+        _ => false,
+    }
+}
+
 /// Everything that can go wrong in the persistence layer.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -1753,6 +1787,69 @@ mod tests {
             debug.contains("SHA256:pub"),
             "ssh_keys should show: {debug}"
         );
+    }
+
+    /// The comparison a refused checkpoint readback is re-verified with, and
+    /// every shape it has to get right.
+    ///
+    /// The two that matter most are the ones a `cjson` deep compare inside the
+    /// Lua script would get wrong — it would call them equal, turning a false
+    /// refusal into a false accept, which is the whole reason this lives in
+    /// Rust.
+    #[test]
+    fn json_documents_agree_on_spelling_never_on_value() {
+        for (observed, expected, why) in [
+            (r#"{"a":1,"b":2}"#, r#"{"b":2,"a":1}"#, "object key order"),
+            (r#"{ "a" : [ 1 , 2 ] }"#, r#"{"a":[1,2]}"#, "whitespace"),
+            (
+                r#"{"a":"A"}"#,
+                r#"{"a":"A"}"#,
+                "which characters are escaped",
+            ),
+            (
+                r#"{"a":9007199254740993}"#,
+                r#"{"a":9007199254740993}"#,
+                "itself",
+            ),
+        ] {
+            assert!(
+                json_documents_agree(observed, expected),
+                "a document must survive {why}"
+            );
+        }
+
+        for (observed, expected, why) in [
+            // cjson decodes both of these into one double.
+            (
+                r#"{"a":9007199254740992}"#,
+                r#"{"a":9007199254740993}"#,
+                "the low bits of an integer above 2^53",
+            ),
+            // cjson decodes both of these into one empty table.
+            (
+                r#"{"a":[]}"#,
+                r#"{"a":{}}"#,
+                "an empty array against an empty object",
+            ),
+            (r#"{"a":1.0}"#, r#"{"a":1}"#, "a float against an integer"),
+            (r#"{"a":0.0}"#, r#"{"a":-0.0}"#, "the sign of a zero"),
+            (r#"{"a":1}"#, r#"{"a":-1}"#, "a sign"),
+            (
+                r#"{"a":1}"#,
+                r#"{"a":1,"b":2}"#,
+                "a field that is not there",
+            ),
+            // Unreadable is never provably equal: this comparison only ever
+            // relaxes a refusal, so it fails closed.
+            (r#"{"a":"#, r#"{"a":1}"#, "a truncated document"),
+            (r#"{"a":1}"#, r#"{"a":"#, "an undecodable expectation"),
+            ("", "", "nothing at all"),
+        ] {
+            assert!(
+                !json_documents_agree(observed, expected),
+                "{why} is a different document"
+            );
+        }
     }
 
     #[test]

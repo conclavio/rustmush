@@ -155,6 +155,11 @@ async fn authoritative_contract_finalize_survives_renormalisation() {
 }
 
 #[tokio::test]
+async fn authoritative_contract_checkpoint_accepts_renormalisation() {
+    suite::authoritative_checkpoint_accepts_a_renormalised_post_image(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn module_kv_round_trip() {
     suite::module_kv_round_trip(&InMemoryStore::new()).await;
 }

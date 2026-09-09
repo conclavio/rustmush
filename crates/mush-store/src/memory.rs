@@ -40,8 +40,8 @@ use crate::types::{
     DiscordLinkRec, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
     MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
-    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
-    validate_module_ns, validate_module_op, validate_token_hash,
+    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, json_documents_agree,
+    validate_module_key, validate_module_ns, validate_module_op, validate_token_hash,
 };
 
 /// See the [module docs](self).
@@ -767,28 +767,76 @@ fn apply_replay(inner: &mut Inner, planned: &[PlannedReplayWrite]) {
 /// The fake stores the exact `String` it was handed, so this can only ever
 /// catch a genuinely clobbered target — never a backend renormalizing its own
 /// serialization, which is the live server's failure mode, not this one's.
+///
+/// This is the byte-exact question finalize asks;
+/// [`first_checkpoint_readback_refusal`] is the one checkpoint asks.
 fn first_replay_mismatch<'a>(
     inner: &Inner,
     planned: &'a [PlannedReplayWrite],
 ) -> Option<&'a PlannedReplayWrite> {
-    planned.iter().find(|write| match write {
-        PlannedReplayWrite::ObjectSet { id, doc } => inner.objects.get(id) != Some(doc),
-        PlannedReplayWrite::ObjectDelete { id } => inner.objects.contains_key(id),
-        PlannedReplayWrite::ObjectAllocatorSet { next_id } => inner.next_id != Some(*next_id),
+    planned
+        .iter()
+        .find(|write| !replay_write_landed(inner, write, false))
+}
+
+/// The first planned write a **checkpoint** must refuse, which is not quite
+/// the same question.
+///
+/// The live script proves a write by comparing readback bytes, and on a
+/// checkpoint — unlike a finalize — those bytes were written by an earlier
+/// script, so a disagreement is either a real clobber or the backend having
+/// respelled a document it stored perfectly. `RedisStore` tells those apart by
+/// re-reading the key and comparing *documents*; this mirrors that, so the
+/// contract reads the same on both backends. The fake stores the exact `String`
+/// it was handed and can never respell anything itself, so here the relaxation
+/// only ever forgives a plant.
+fn first_checkpoint_readback_refusal<'a>(
+    inner: &Inner,
+    planned: &'a [PlannedReplayWrite],
+) -> Option<&'a PlannedReplayWrite> {
+    planned
+        .iter()
+        .find(|write| !replay_write_landed(inner, write, true))
+}
+
+/// Whether the store now holds what `write` says it should.
+///
+/// `reverify_json` is the checkpoint relaxation: with it, a `json_set` target
+/// whose stored text is a different *spelling* of the same document has landed.
+/// It never applies to the exact writes — the allocator `SET` and the deletes
+/// are byte-exact and existence-exact, and there is no spelling in either.
+fn replay_write_landed(inner: &Inner, write: &PlannedReplayWrite, reverify_json: bool) -> bool {
+    match write {
+        PlannedReplayWrite::ObjectSet { id, doc } => {
+            stored_doc_landed(inner.objects.get(id), doc, reverify_json)
+        }
+        PlannedReplayWrite::ObjectDelete { id } => !inner.objects.contains_key(id),
+        PlannedReplayWrite::ObjectAllocatorSet { next_id } => inner.next_id == Some(*next_id),
         PlannedReplayWrite::ModuleJsonSet {
             namespace,
             key,
             doc,
-        } => inner.module_kv.get(&(namespace.clone(), key.clone())) != Some(doc),
+        } => stored_doc_landed(
+            inner.module_kv.get(&(namespace.clone(), key.clone())),
+            doc,
+            reverify_json,
+        ),
         PlannedReplayWrite::ModuleDelete { namespace, key } => {
-            inner
+            !(inner
                 .module_kv
                 .contains_key(&(namespace.clone(), key.clone()))
                 || inner
                     .module_streams
-                    .contains_key(&(namespace.clone(), key.clone()))
+                    .contains_key(&(namespace.clone(), key.clone())))
         }
-    })
+    }
+}
+
+/// One JSON post-image against what the store holds: the same bytes, or — when
+/// the caller re-verifies — the same document under another spelling.
+fn stored_doc_landed(stored: Option<&String>, doc: &str, reverify_json: bool) -> bool {
+    stored
+        .is_some_and(|stored| stored == doc || (reverify_json && json_documents_agree(stored, doc)))
 }
 
 /// Which finalize readback disagreements are still refusals.
@@ -1374,7 +1422,7 @@ impl AuthoritativeStore for InMemoryStore {
             let receipt = validate_retained_intent(&inner, token, &bundle)?
                 .ok_or(StoreError::AuthoritativeNotFinalized)?;
             let planned = plan_replay(&bundle)?;
-            if let Some(write) = first_replay_mismatch(&inner, &planned) {
+            if let Some(write) = first_checkpoint_readback_refusal(&inner, &planned) {
                 return Err(StoreError::AuthoritativeReadbackMismatch {
                     key: planned_write_key(write),
                     phase: AuthoritativeReadbackPhase::Checkpoint,
@@ -3539,6 +3587,196 @@ mod tests {
                 .len(),
             1,
             "failed checkpoint must retain the exact repair witness"
+        );
+    }
+
+    /// Seed, reserve and finalize [`crate::suite::number_shaped_post_images`],
+    /// answering what a test needs to doctor one of its materialized JSON
+    /// post-images: the token, the bundle hash, and the module document's
+    /// `(namespace, key)` in the shape `Inner::module_kv` holds it.
+    ///
+    /// That document is the one worth doctoring: it is the bundle's `shapes`
+    /// value verbatim, so a test edits the JSON the bundle wrote rather than
+    /// whatever spelling `Obj`'s `Serialize` produced.
+    async fn finalized_number_shaped(
+        store: &InMemoryStore,
+        token_byte: u8,
+        request_byte: u8,
+    ) -> (CommitToken, CanonicalHash, (String, String)) {
+        seed_minimal_world(store).await;
+        let shaped = crate::suite::number_shaped_post_images(token_byte, request_byte);
+        let token = shaped.bundle.token();
+        let hash = shaped.bundle.bundle_hash();
+        store
+            .reserve_authoritative_intent(shaped.bundle.clone())
+            .await
+            .expect("reserve number-shaped intent");
+        store
+            .reconcile_authoritative(token, hash)
+            .await
+            .expect("finalize number-shaped intent");
+        (
+            token,
+            hash,
+            (
+                shaped.owner.as_str().to_owned(),
+                shaped.module_key.as_str().to_owned(),
+            ),
+        )
+    }
+
+    /// Rewrite the document stored at `slot`, and answer what it used to be.
+    /// Panics when `edit` changed nothing, so a test can never pass because its
+    /// substitution silently missed.
+    fn doctor_module_doc(
+        store: &InMemoryStore,
+        slot: &(String, String),
+        edit: impl FnOnce(&str) -> String,
+    ) -> String {
+        let mut inner = store.lock().unwrap();
+        let held = inner
+            .module_kv
+            .get_mut(slot)
+            .expect("the finalized module post-image is materialized");
+        let original = held.clone();
+        let doctored = edit(&original);
+        assert_ne!(doctored, original, "the plant must change the stored bytes");
+        *held = doctored;
+        original
+    }
+
+    /// The same document, spelled differently — which is the one thing a
+    /// backend is allowed to do to a post-image behind the store's back.
+    fn respelled(text: &str) -> String {
+        let value: serde_json::Value = serde_json::from_str(text).expect("stored text is JSON");
+        serde_json::to_string_pretty(&value).expect("re-serialize the same document")
+    }
+
+    /// A checkpoint readback that disagrees on bytes but not on documents must
+    /// not refuse.
+    ///
+    /// The live script compares the bytes it reads back against the exact
+    /// post-image, which is the only comparison one EVAL can make honestly, and
+    /// a backend that respells JSON on its way out would fail it forever: the
+    /// bytes do not change on a retry, so the intent would never be released
+    /// and the repair witness would pile up behind a refusal naming a
+    /// perfectly materialized key. `RedisStore` re-reads and compares
+    /// documents; the fake mirrors that, so the contract reads the same on both
+    /// — and the fake is where it can be planted at all, since here a
+    /// respelling is a plant rather than a live server's habit.
+    #[tokio::test]
+    async fn authoritative_checkpoint_accepts_a_respelled_json_post_image() {
+        let store = InMemoryStore::new();
+        let (token, hash, slot) = finalized_number_shaped(&store, 91, 92).await;
+        let original = doctor_module_doc(&store, &slot, respelled);
+
+        let checkpoint = store
+            .checkpoint_authoritative(token, hash)
+            .await
+            .expect("a respelled post-image is the same document");
+        assert!(!checkpoint.resumed);
+        assert!(checkpoint.released_intent_bytes > 0);
+        assert!(
+            store
+                .scan_authoritative_intents(None, 1)
+                .await
+                .unwrap()
+                .intents
+                .is_empty(),
+            "the repair witness must be released, not stranded behind a refusal"
+        );
+        assert_eq!(
+            store.module_json_get(&slot.0, &slot.1).await.unwrap(),
+            Some(serde_json::from_str::<serde_json::Value>(&original).unwrap()),
+            "the document that survived is the one the bundle wrote"
+        );
+    }
+
+    /// The first false accept a `cjson` deep compare inside the script would
+    /// make: every number becomes a double there, so 9007199254740993 and
+    /// ...992 are one value — and that is the ledger's and the idempotency
+    /// epoch's own range. Re-verifying in Rust keeps `u64` low bits, so this is
+    /// a clobber and stays a refusal.
+    #[tokio::test]
+    async fn authoritative_checkpoint_refuses_a_large_integer_that_differs_in_the_low_bits() {
+        let store = InMemoryStore::new();
+        let (token, hash, slot) = finalized_number_shaped(&store, 93, 94).await;
+        doctor_module_doc(&store, &slot, |text| {
+            text.replace("9007199254740993", "9007199254740992")
+        });
+
+        let expected = format!("{MOD_PREFIX}{}:{}", slot.0, slot.1);
+        assert!(
+            matches!(
+                store.checkpoint_authoritative(token, hash).await,
+                Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                    if *key == expected && phase == AuthoritativeReadbackPhase::Checkpoint
+            ),
+            "a low-bit difference above 2^53 is a different document"
+        );
+        assert_eq!(
+            store
+                .scan_authoritative_intents(None, 1)
+                .await
+                .unwrap()
+                .intents
+                .len(),
+            1,
+            "failed checkpoint must retain the exact repair witness"
+        );
+    }
+
+    /// The second false accept `cjson` would make: it decodes both `{}` and
+    /// `[]` into the same empty table. `serde_json` never calls an object an
+    /// array.
+    #[tokio::test]
+    async fn authoritative_checkpoint_refuses_an_object_replaced_by_an_empty_array() {
+        let store = InMemoryStore::new();
+        let (token, hash, slot) = finalized_number_shaped(&store, 95, 96).await;
+        doctor_module_doc(&store, &slot, |text| {
+            text.replace("\"empty_object\":{}", "\"empty_object\":[]")
+        });
+
+        let expected = format!("{MOD_PREFIX}{}:{}", slot.0, slot.1);
+        assert!(
+            matches!(
+                store.checkpoint_authoritative(token, hash).await,
+                Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                    if *key == expected && phase == AuthoritativeReadbackPhase::Checkpoint
+            ),
+            "an empty object is not an empty array"
+        );
+    }
+
+    /// Re-verification is per target, not a mood the checkpoint gets into.
+    ///
+    /// One post-image respelled and another genuinely clobbered: forgiving the
+    /// first must not carry the second. On the live server the same statement
+    /// is the `verified` ARGV list — a proof about one replay index, never a
+    /// blanket skip of the readback.
+    #[tokio::test]
+    async fn authoritative_checkpoint_reverification_is_per_target() {
+        let store = InMemoryStore::new();
+        let (token, hash, slot) = finalized_number_shaped(&store, 97, 98).await;
+        {
+            // The carrier object holds the same shapes through an
+            // `AttrValue::Json`, and comes earlier in the plan.
+            let mut inner = store.lock().unwrap();
+            let held = inner.objects.get_mut(&1).expect("materialized carrier");
+            *held = respelled(held);
+        }
+        doctor_module_doc(&store, &slot, |text| {
+            text.replace("9007199254740993", "9007199254740992")
+        });
+
+        let expected = format!("{MOD_PREFIX}{}:{}", slot.0, slot.1);
+        assert!(
+            matches!(
+                store.checkpoint_authoritative(token, hash).await,
+                Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                    if *key == expected && phase == AuthoritativeReadbackPhase::Checkpoint
+            ),
+            "accepting the respelled carrier must not excuse the clobbered document"
         );
     }
 
