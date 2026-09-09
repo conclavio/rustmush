@@ -339,8 +339,12 @@ pub async fn boot_module_server(dir: &Path, server_name: &str, boss_password: &s
 
     let mut world = mush_core::World::new_minimal();
     world.set_now(mushd::unix_now_s());
-    let mut engine =
-        mush_core::Engine::with_modules(world, registry, mushd::modules::server_modules()).unwrap();
+    // S1/S2b: the content module composes LAST, as main.rs boots it, so the
+    // starter lot (the OOC Area and the Staff lot) is applied at first boot and
+    // the weather journey has a place to key on.
+    let mut mods = mushd::modules::server_modules();
+    mods.push(mushd::modules::content_module(true).unwrap());
+    let mut engine = mush_core::Engine::with_modules(world, registry, mods).unwrap();
     mushd::modules::boot_modules(&mut engine, &*store)
         .await
         .unwrap();

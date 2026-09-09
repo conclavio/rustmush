@@ -3233,7 +3233,9 @@ mod tests {
             ]
         );
         assert!(tw.registry().spec_of("@gen").is_some());
-        assert!(tw.registry().spec_of("@theme").is_some());
+        // S2b: the theme moved onto the atlas (`@atlas/theme`); `@theme` is gone.
+        assert!(tw.registry().spec_of("@theme").is_none());
+        assert!(tw.registry().spec_of("@atlas").is_some());
         assert!(tw.registry().spec_of("@llm").is_some());
         assert!(
             tw.registry()

@@ -144,8 +144,12 @@ async fn boot_module_rig(
     let staff = Arc::new(StaffQueue::new());
     let mut registry = world_task::base_registry();
     register_server_commands(&mut registry, &staff).unwrap();
-    let mut engine = Engine::with_modules(world, registry, mushd::modules::server_modules())
-        .expect("module registration");
+    // S1/S2b: the content module composes LAST, as main.rs boots it, so the
+    // starter lot is applied on the first boot (and latched, so the second boot
+    // rebuilds it from the store rather than applying it again).
+    let mut mods = mushd::modules::server_modules();
+    mods.push(mushd::modules::content_module(true).expect("content module"));
+    let mut engine = Engine::with_modules(world, registry, mods).expect("module registration");
     mushd::modules::boot_modules(&mut engine, &**store)
         .await
         .expect("module boot");

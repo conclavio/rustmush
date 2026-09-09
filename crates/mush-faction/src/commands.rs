@@ -1217,7 +1217,9 @@ fn region_atlas(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let updated = {
         let st = state(ctx);
-        let region = st.regions.get_mut(&r.id).expect("resolved above");
+        let Some(region) = st.regions.get_mut(&r.id) else {
+            return Err(CmdError::msg("That region is gone."));
+        };
         region.atlas = place.as_ref().map(|(id, _)| id.clone());
         region.clone()
     };

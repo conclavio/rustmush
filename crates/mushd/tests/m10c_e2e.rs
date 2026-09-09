@@ -40,8 +40,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{
-    Audience, Effect, Effects, Engine, GOD, Inbound, ModuleWrite, ObjId, ObjKind, Outbox, World,
-    WorldCommand,
+    Audience, Effect, Effects, Engine, GOD, GameModule, Inbound, ModuleWrite, ObjId, ObjKind,
+    Outbox, World, WorldCommand,
 };
 use mush_llm::{
     BudgetConfig, BudgetLimit, CompletionResponse, ContentBlock, LlmProvider, LlmService,
@@ -551,6 +551,63 @@ fn seed_rng(tw: &mut TestWorld, s: u64) {
         .rng = WxRng::seeded(s);
 }
 
+/// A content pack with its digest computed over its canonical form.
+fn signed_pack(mut doc: serde_json::Value) -> mush_content::Pack {
+    doc["manifest"]["digest"] = serde_json::Value::String("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = mush_content::parse_pack(&unsigned)
+        .expect("parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    doc["manifest"]["digest"] = serde_json::Value::String(digest);
+    mush_content::parse_pack(&serde_json::to_string(&doc).expect("json")).expect("parses")
+}
+
+/// S2b: weather cells key on atlas places, so the weather module needs a map
+/// under it. One region with one neighborhood holding one outdoor room (the
+/// Plaza) is the whole map this test needs; the atlas and the content module
+/// apply it at boot.
+fn atlas_with_a_plaza(weather: WeatherModule) -> Vec<Box<dyn GameModule>> {
+    let region = signed_pack(json!({
+        "manifest": { "id": "region.coast", "version": 1, "kind": "region", "digest": "", "requires": [] },
+        "entries": {
+            "region.coast": { "kind": "region", "def": {
+                "name": "Coast", "kind": "surface", "body": "earth",
+                "extent": [[0, 0], [400, 400]], "datum_m": 0.0,
+                "background": { "surface": "paved", "mix": [["grass", 8]], "relief_cm": 0,
+                                "relief_period_cm": 800, "seed": 1 },
+                "ground_resolution_cm": 1000 } },
+            "locality.coast": { "kind": "locality", "def": {
+                "region": "region.coast", "name": "The Coast", "kind": "district",
+                "footprint": [[0, 0], [400, 0], [400, 400], [0, 400]] } }
+        }
+    }));
+    let downtown = signed_pack(json!({
+        "manifest": { "id": "neighborhood.downtown", "version": 1, "kind": "neighborhood", "digest": "",
+                      "requires": [{ "id": "region.coast", "version": 1 }] },
+        "entries": {
+            "neighborhood": { "kind": "neighborhood", "def": {
+                "region": "region.coast", "locality": "locality.coast", "name": "Downtown",
+                "setting": "urban", "footprint": [[0, 0], [200, 0], [200, 200], [0, 200]],
+                "room_budget": { "target": 1, "maximum": 4 } } },
+            "room.plaza": { "kind": "room", "def": { "name": "Plaza", "surface": "ground",
+                "footprint": { "rect": [[10, 10], [50, 50]] }, "desc": "A wide plaza." } }
+        }
+    }));
+    let mut appliers = mush_content::Appliers::new();
+    mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+    vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(
+            mush_content::ContentModule::new()
+                .with_appliers(appliers)
+                .with_boot_packs(vec![region, downtown]),
+        ),
+        Box::new(weather),
+    ]
+}
+
 #[tokio::test]
 async fn weather_flavor_generate_approve_and_tick_draws_approved() {
     const APPROVED: &str = "Rain sheets off the tin awnings in the dark.";
@@ -564,19 +621,19 @@ async fn weather_flavor_generate_approve_and_tick_draws_approved() {
             ..WeatherConfig::default()
         },
     );
-    let mut tw = TestWorld::with_modules(vec![Box::new(module)]);
+    let mut tw = TestWorld::with_modules(atlas_with_a_plaza(module));
 
-    // A zone + one OUTDOORS room on the barren climate; pin to rain so no
-    // transition steals the tick. S2b: the cell keys on the starter lot's OOC
-    // Area, and the audience stands at its outdoor bus stop.
+    // One outdoor room on the barren climate; pin to rain so no transition
+    // steals the tick. S2b: the cell keys on the neighborhood the Plaza stands
+    // in, and the audience stands in the Plaza.
     let room = tw
         .world()
         .iter()
-        .find(|o| o.kind == ObjKind::Room && o.name == "Bus Stop (OOC)")
-        .expect("the starter lot is applied")
+        .find(|o| o.kind == ObjKind::Room && o.name == "Plaza")
+        .expect("the fixture pack is applied")
         .id;
-    tw.run(GOD, "@weather/climate OOC Area=barren");
-    tw.run(GOD, "@weather OOC Area=rain");
+    tw.run(GOD, "@weather/climate neighborhood.downtown=barren");
+    tw.run(GOD, "@weather neighborhood.downtown=rain");
 
     // A player in the room so the tick has an audience.
     let player = tw.spawn_player("Rae");
