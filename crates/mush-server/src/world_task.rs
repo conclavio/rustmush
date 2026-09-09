@@ -190,6 +190,30 @@ pub type Gateway = std::sync::Arc<dyn GatewaySink>;
 pub const MAX_RELAY_LINE_CHARS: usize = 1_000;
 use mush_config::{unix_now_ms, unix_now_s};
 
+/// How long the world loop gives an already-dequeued exact commit to reach its
+/// receipt after a shutdown was requested, before it preserves the retained
+/// seals and stops anyway (`Wake::ShutdownDeadline`).
+///
+/// Public because it is half of a *caller's* bound: whoever joins the world
+/// task has to wait at least this long or it will report a healthy world as a
+/// hung one. It was written inline twice below and nowhere else, so the two
+/// bounds could drift apart in silence — see [`WORLD_JOIN_TIMEOUT`].
+pub const WORLD_SHUTDOWN_GRACE: Duration = Duration::from_secs(15);
+
+/// What a joiner allows the world task ON TOP of its own grace: the post-loop
+/// work between the last `break` and the task returning (seal preservation, the
+/// final metrics publish, dropping the engine).
+pub const WORLD_JOIN_SLACK: Duration = Duration::from_secs(15);
+
+/// The bound every join of the world task uses.
+///
+/// Strictly longer than the world's own grace, because a joiner that expired
+/// first would classify the *designed* slow path — a shutdown that waited out
+/// its commit grace — as a hung world, and an operator would page on a box that
+/// was doing exactly the right thing. The slack above it is the post-loop tail.
+pub const WORLD_JOIN_TIMEOUT: Duration =
+    Duration::from_secs(WORLD_SHUTDOWN_GRACE.as_secs() + WORLD_JOIN_SLACK.as_secs());
+
 /// Capacity of the world task's inbound channel.
 const INBOUND_CAPACITY: usize = 1024;
 
@@ -5059,7 +5083,7 @@ async fn run(
                     }
                     deferred_world_msg =
                         Some(WorldMsg::Inbound(Inbound::Control(ControlMsg::Shutdown)));
-                    shutdown_deadline = Some(Instant::now() + Duration::from_secs(15));
+                    shutdown_deadline = Some(Instant::now() + WORLD_SHUTDOWN_GRACE);
                     StepOutcome::Continue
                 } else {
                     guarded!(
@@ -5113,7 +5137,7 @@ async fn run(
                 shutdown_requested = true;
                 if let Some(pending) = pending_commit.as_mut() {
                     pending.exit_after_ack = true;
-                    shutdown_deadline = Some(Instant::now() + Duration::from_secs(15));
+                    shutdown_deadline = Some(Instant::now() + WORLD_SHUTDOWN_GRACE);
                     tracing::warn!(
                         "world inbound channel closed with a commit pending; waiting a bounded grace period for exact custody"
                     );

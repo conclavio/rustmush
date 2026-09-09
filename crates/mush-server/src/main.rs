@@ -16,6 +16,7 @@
 use std::process::ExitCode;
 
 use mush_config::cli::CliSpec;
+use mush_config::exit::{ExitClass, ExitFailure};
 
 /// This binary's half of the one command line the three binaries share
 /// (WS22-S1). `--ipc <addr>` overrides `[ipc].listen` — the supervisor picks
@@ -27,24 +28,37 @@ const CLI: CliSpec = CliSpec {
     repl: false,
 };
 
+/// This binary's ending, in the one exit vocabulary both halves speak
+/// (`mush_config::exit`): 0 clean, 1 a fatal error including a world fault, 3 a
+/// world task that never joined. Split out from `main` so the mapping is
+/// testable — `ExitCode` itself is opaque, and an exit code that silently
+/// changed meaning between the split and the all-in-one would be found by an
+/// operator, in an incident.
+fn exit_class(result: &Result<(), ExitFailure>) -> ExitClass {
+    match result {
+        Ok(()) => ExitClass::Ok,
+        Err(failure) => failure.class,
+    }
+}
+
 fn main() -> ExitCode {
     let cli = match mush_config::cli::parse_env(&CLI) {
         Ok(cli) => cli,
         Err(e) => {
             eprintln!("{}: {e}", CLI.program);
             eprintln!("{}", CLI.usage);
-            return ExitCode::FAILURE;
+            return ExitClass::Failure.exit_code();
         }
     };
     if cli.help {
         println!("{}", CLI.usage);
-        return ExitCode::SUCCESS;
+        return ExitClass::Ok.exit_code();
     }
     let config = match cli.load_config() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{}: {e}", CLI.program);
-            return ExitCode::FAILURE;
+            return ExitClass::Failure.exit_code();
         }
     };
 
@@ -57,7 +71,7 @@ fn main() -> ExitCode {
         Ok(spool) => spool,
         Err(error) => {
             eprintln!("mush-server: quarantine spool preflight failed: {error}");
-            return ExitCode::FAILURE;
+            return ExitClass::Failure.exit_code();
         }
     };
 
@@ -70,19 +84,60 @@ fn main() -> ExitCode {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("mush-server: tokio runtime: {e}");
-            return ExitCode::FAILURE;
+            return ExitClass::Failure.exit_code();
         }
     };
-    match runtime.block_on(mush_server::serve_with_quarantine_spool(
+    let result = runtime.block_on(mush_server::serve_classified(
         config,
         None,
         None,
         quarantine_spool,
-    )) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("mush-server: {e}");
-            ExitCode::FAILURE
-        }
+    ));
+    if let Err(failure) = &result {
+        eprintln!("mush-server: {failure}");
+    }
+    exit_class(&result).exit_code()
+}
+
+#[cfg(test)]
+mod tests {
+    use mush_config::exit::{ExitClass, ExitFailure};
+
+    /// This binary's half of the shared exit table. The numbers are asserted as
+    /// literals because they are what leaves the process: a supervisor's
+    /// classifier and a systemd unit encode them out of tree, and the whole
+    /// point of one vocabulary is that `mush-server` and `mushd` cannot drift
+    /// into meaning different things by the same number.
+    #[test]
+    fn the_exit_codes_are_the_shared_vocabulary() {
+        assert_eq!(super::exit_class(&Ok(())).code(), 0);
+        assert_eq!(
+            super::exit_class(&Err(ExitFailure::failure("store unreachable"))).code(),
+            1
+        );
+        assert_eq!(
+            super::exit_class(&Err(ExitFailure::new(
+                ExitClass::WorldJoinTimeout,
+                "world task did not join within 30s"
+            )))
+            .code(),
+            3
+        );
+        // Reserved by WS22-S3, produced by WS22-S18.
+        assert_eq!(ExitClass::QuarantineLockHeld.code(), 2);
+    }
+
+    /// A world fault is a `1`, not a class of its own: it shares the catch-all
+    /// with every other fatal error and the log says which. The pin is that it
+    /// is NOT the timeout code — that distinction is the reason the table
+    /// exists.
+    #[test]
+    fn a_world_fault_is_the_catch_all_and_not_the_timeout() {
+        let faulted = ExitFailure::failure("world task faulted at engine.step: the sky fell");
+        assert_eq!(super::exit_class(&Err(faulted)), ExitClass::Failure);
+        assert_ne!(
+            ExitClass::Failure.code(),
+            ExitClass::WorldJoinTimeout.code()
+        );
     }
 }

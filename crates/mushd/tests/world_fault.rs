@@ -405,9 +405,14 @@ async fn a_faulted_world_exits_non_zero_and_skips_the_shutdown_bgsave() {
         "the one-shot arming never fired — is `mush-server/fault-injection` on for \
          `cargo test -p mushd`?\n--- log ---\n{log}"
     );
-    assert!(
-        !status.success(),
-        "a faulted world must be a FAILURE exit, got {status:?}\n--- log ---\n{log}"
+    // WS22-S3: not merely non-zero — exactly `1`, the shared vocabulary's
+    // catch-all (`mush_config::exit`). The code an operator's supervisor reads
+    // has to separate a dead world (1) from a world that would not stop (3),
+    // and a test that accepts any failure would not notice the two collapsing.
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "a faulted world must exit 1, got {status:?}\n--- log ---\n{log}"
     );
 
     // (d) the fault was logged at ERROR, naming the turn that died.
@@ -483,8 +488,9 @@ async fn an_in_game_shutdown_still_exits_zero_with_one_bgsave() {
     drop(handle);
 
     let log = read_log(&dir);
-    assert!(
-        status.success(),
+    assert_eq!(
+        status.code(),
+        Some(0),
         "an in-game @shutdown is an ordinary exit, got {status:?}\n--- log ---\n{log}"
     );
     assert!(

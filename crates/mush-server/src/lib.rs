@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use mush_config::config::{Config, StoreBackend};
+use mush_config::exit::{ExitClass, ExitFailure};
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::{ControlMsg, Inbound, OfferRouteTable, OfferSubmission};
@@ -236,8 +237,32 @@ pub async fn serve_with_quarantine_spool(
     config: Config,
     bound: Option<oneshot::Sender<IpcEndpoint>>,
     store: Option<Arc<dyn ObjectStore>>,
-    mut quarantine_spool: QuarantineSpool,
+    quarantine_spool: QuarantineSpool,
 ) -> Result<(), String> {
+    serve_classified(config, bound, store, quarantine_spool)
+        .await
+        .map_err(|failure| failure.detail)
+}
+
+/// [`serve_with_quarantine_spool`], keeping the exit CLASS of the failure.
+///
+/// The binary's `main` uses this one: a `String` says the process failed and
+/// nothing else, and the two endings an operator most needs to tell apart — a
+/// world that died and a world that would not stop — both used to arrive as
+/// [`ExitCode::FAILURE`](std::process::ExitCode). The class travels with the
+/// text so the site that KNOWS which one it was is the site that says so. Every
+/// library caller keeps the `String` form above.
+///
+/// # Errors
+///
+/// The same failures as [`serve_with_quarantine_spool`], each carrying the
+/// [`ExitClass`](mush_config::exit::ExitClass) it should exit with.
+pub async fn serve_classified(
+    config: Config,
+    bound: Option<oneshot::Sender<IpcEndpoint>>,
+    store: Option<Arc<dyn ObjectStore>>,
+    mut quarantine_spool: QuarantineSpool,
+) -> Result<(), ExitFailure> {
     let endpoint = config.ipc_endpoint().map_err(|e| e.to_string())?;
     prepare_quarantine_for_writable_boot(&config, &mut quarantine_spool, store.as_deref()).await?;
     let (store, ledger_archive) = match store {
@@ -460,7 +485,20 @@ pub async fn serve_with_quarantine_spool(
             // flush its Bye and exit (it stops when the world drops its
             // `to_gw_tx` clones).
             world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
-            world_join.await
+            // BOUNDED (WS22-S3): a world that will not stop must not hold this
+            // process open in silence. The bound is strictly longer than the
+            // world's own shutdown grace, so the designed slow path — waiting
+            // out a pending exact commit — is never read as a hung world.
+            match tokio::time::timeout(world_task::WORLD_JOIN_TIMEOUT, &mut world_join).await {
+                Ok(joined) => Some(joined),
+                Err(_) => {
+                    tracing::error!(
+                        bound_s = world_task::WORLD_JOIN_TIMEOUT.as_secs(),
+                        "world task did not join within its bound; shutting down without it"
+                    );
+                    None
+                }
+            }
         }
         BoundaryEnd::World(joined) => {
             // The world stopped under a live gateway. It is already gone, so
@@ -468,7 +506,7 @@ pub async fn serve_with_quarantine_spool(
             // sequence above is the only one that ever issues it, and a second
             // teardown here would race it.
             tracing::info!("world task ended while the gateway was still connected");
-            joined
+            Some(joined)
         }
     };
     // Release the reader's captures before waiting on the channels they hold.
@@ -493,6 +531,20 @@ pub async fn serve_with_quarantine_spool(
     // worth bypassing a
     // drain, and it is never raised by `process::exit`/`abort` from inside a
     // catch handler or a driver.
+    let Some(world_result) = world_result else {
+        // The tail above still ran, and each of its joins is the gateway
+        // supervisor's problem to bound (WS22-S6); what this process owes an
+        // operator is the distinction, and it is a code of its own so a
+        // supervisor can tell a slow stop from a dead world without parsing
+        // logs.
+        return Err(ExitFailure::new(
+            ExitClass::WorldJoinTimeout,
+            format!(
+                "world task did not join within {}s",
+                world_task::WORLD_JOIN_TIMEOUT.as_secs()
+            ),
+        ));
+    };
     world_exit_result(world_result).inspect_err(|detail| {
         tracing::error!(%detail, "mush-server exiting on a world fault");
     })?;

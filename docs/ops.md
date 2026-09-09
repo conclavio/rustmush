@@ -544,6 +544,44 @@ writer cannot drain, the final BGSAVE is skipped rather than snapshotting a
 possibly incomplete store. Batches that could not be flushed within the cap
 are lost — the same window a `kill -9` during the outage would lose.
 
+### Exit codes (WS22-S3)
+
+`mushd` and `mush-server` speak one exit vocabulary (`mush_config::exit`), so a
+supervisor does not have to remember which half produced a number:
+
+| code | meaning | operator response |
+|---|---|---|
+| 0 | the shutdown sequence ran to the end | none |
+| 1 | a fatal error — bad config, refused command line, unreachable store, **or a world task that faulted or panicked** | read the log; the ERROR line names which |
+| 2 | *reserved*: another live process holds the quarantine lifetime lock | you already have one of these running |
+| 3 | the world task did not join within its bound | the box is probably loaded, not broken — do not restart it harder |
+
+`1` stays the catch-all because that is what every convention already reads as
+"it failed"; the codes above it exist only where the *response* differs. The
+one that earns its own number is `3`: a world that **died** and a world that is
+merely **slow to stop** used to be the same `1`, and they are opposite
+incidents.
+
+Every join of the world task is bounded at `WORLD_JOIN_TIMEOUT` (30s: the
+world's own 15s shutdown grace plus 15s of slack for its post-loop work). The
+bound is deliberately longer than the grace, so the designed slow path — a
+shutdown waiting out a pending exact commit — is never misread as a hung world.
+A join that does expire logs `world task did not join within its bound`, skips
+the final BGSAVE (nothing can say whether that world's RAM finished reaching the
+store), and exits `3`. Before the bound existed the process simply waited
+forever and systemd escalated to `SIGKILL`, which skips the whole shutdown tail
+above and leaves an exit with no code at all.
+
+In `mushd` every step after that join is itself bounded, so the `3` really does
+reach the supervisor. In `mush-server` the joins that follow (outbox, store
+writer, IPC writer) are still unbounded — WS22-S6 bounds them — so on a wedged
+world the timeout's ERROR line is the reliable signal there and the exit code
+may still be waiting behind one of those joins.
+
+Code `2` has no producer yet. It is in the table anyway: the cost of reserving
+it now is zero, and the cost of discovering the collision later — after a unit
+file already treats `2` as something else — is a silent misclassification.
+
 ## Game systems (M5): clock, weather, scripting
 
 Three M5 subsystems are compiled in and boot with every server; none needs

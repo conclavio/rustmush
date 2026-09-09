@@ -11,6 +11,8 @@
 //!   are captured raw as [`toml::Value`] and deserialized into their typed
 //!   forms by the crate that owns them, so `mush-config` needs neither
 //!   `mush-llm` nor `mush-net-web`).
+//! - [`exit`] — the one process-exit vocabulary both halves speak, so a
+//!   supervisor can tell a dead world from a slow one.
 //! - [`logging`] — the tracing subscriber + rotating file appender setup.
 //! - [`signals`] — the one terminate/interrupt future all three binaries wait
 //!   on, including the rule that a supervised child ignores Ctrl-C.
@@ -40,6 +42,7 @@ pub mod config;
 pub mod decision_keys;
 pub mod discord;
 mod durable_keys;
+pub mod exit;
 pub mod ipguard;
 pub mod logging;
 pub mod metrics;

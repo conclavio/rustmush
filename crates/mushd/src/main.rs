@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_config::cli::CliSpec;
+use mush_config::exit::{ExitClass, ExitFailure};
 use mush_core::{ControlMsg, Inbound};
 use mush_net_web::{Metrics, WebConfig};
 use mush_session::{SessionConfig, SessionManager};
@@ -72,6 +73,12 @@ const SHUTDOWN_STORE_TIMEOUT: Duration = Duration::from_secs(10);
 /// perfectly and the latch stays clear — and the old two-term gate would then
 /// promote whatever RAM had reached the store to the on-disk truth. A world
 /// that did not finish is not a world worth snapshotting.
+///
+/// The world-exit term is unclean for BOTH endings that are not an ordinary
+/// one: a world that faulted, and a world that never joined at all within its
+/// bound. The second knows even less than the first — nothing here can say
+/// whether its RAM finished reaching the store — so it refuses the snapshot for
+/// the same reason and with less evidence.
 ///
 /// The fault term is deliberately *not* folded into it, because the two facts
 /// are separately derived and fail in different directions. `world_exited_cleanly`
@@ -114,6 +121,105 @@ fn world_fault_detail(result: Result<WorldOutcome, tokio::task::JoinError>) -> O
     }
 }
 
+/// How the world task ended, from the joiner's side.
+///
+/// [`world_fault_detail`] can only speak for a world that actually *joined*.
+/// The third ending is the one it cannot see: a world that never resolves at
+/// all. That used to be indistinguishable from a healthy slow one because the
+/// join was `world_join.await` with no bound — a wedged world hung `mushd`
+/// until systemd escalated to `SIGKILL`, which skips the writer drain, the
+/// store close and the whole shutdown tail, and leaves an operator an exit with
+/// no code at all to explain it.
+///
+/// The distinction is worth a variant (and a distinct exit code) because the
+/// operator responses diverge: a [`Failed`](Self::Failed) world is a bug to
+/// page on, a [`Timeout`](Self::Timeout) is usually a box under load, and
+/// restarting the second one harder makes it worse.
+///
+/// WS22-S5 moves this (and [`await_world`]) into `mush_server::shutdown` so
+/// both halves share one copy.
+#[derive(Debug)]
+enum WorldEnd {
+    /// The world walked out of its own state machine: `@shutdown`, Ctrl-C,
+    /// SIGTERM.
+    Clean,
+    /// The world stopped without finishing, carrying the detail
+    /// [`world_fault_detail`] extracted.
+    Failed(String),
+    /// The world did not join within its bound. Nothing is known about how it
+    /// ended, which is itself the finding.
+    Timeout,
+}
+
+impl WorldEnd {
+    /// Classify a join result that actually arrived.
+    fn classify(result: Result<WorldOutcome, tokio::task::JoinError>) -> Self {
+        match world_fault_detail(result) {
+            None => Self::Clean,
+            Some(detail) => Self::Failed(detail),
+        }
+    }
+
+    /// The fault text, for the ending that has one.
+    fn fault_detail(&self) -> Option<&str> {
+        match self {
+            Self::Failed(detail) => Some(detail),
+            Self::Clean | Self::Timeout => None,
+        }
+    }
+
+    /// Whether the world reached an ordinary ending. Everything else — fault or
+    /// silence — refuses the shutdown snapshot.
+    const fn is_clean(&self) -> bool {
+        matches!(self, Self::Clean)
+    }
+
+    /// The shared exit vocabulary's verdict on this ending.
+    const fn exit_class(&self) -> ExitClass {
+        match self {
+            Self::Clean => ExitClass::Ok,
+            Self::Failed(_) => ExitClass::Failure,
+            Self::Timeout => ExitClass::WorldJoinTimeout,
+        }
+    }
+
+    /// Spend the ending as this process's exit, once the whole shutdown tail
+    /// has run. `None` is a clean exit.
+    fn into_failure(self) -> Option<ExitFailure> {
+        let class = self.exit_class();
+        match self {
+            Self::Clean => None,
+            Self::Failed(detail) => Some(ExitFailure::new(
+                class,
+                format!("world task faulted: {detail}"),
+            )),
+            Self::Timeout => Some(ExitFailure::new(
+                class,
+                format!(
+                    "world task did not join within {}s",
+                    world_task::WORLD_JOIN_TIMEOUT.as_secs()
+                ),
+            )),
+        }
+    }
+}
+
+/// Join the world task, but never for longer than `bound`.
+///
+/// The bound is [`world_task::WORLD_JOIN_TIMEOUT`] at every call site: strictly
+/// longer than the world's own shutdown grace, so the *designed* slow path — a
+/// shutdown waiting out a pending exact commit — is never misread as a hung
+/// world.
+async fn await_world(
+    join: &mut tokio::task::JoinHandle<WorldOutcome>,
+    bound: Duration,
+) -> WorldEnd {
+    match tokio::time::timeout(bound, join).await {
+        Ok(result) => WorldEnd::classify(result),
+        Err(_) => WorldEnd::Timeout,
+    }
+}
+
 /// This binary's half of the one command line the three binaries share
 /// (WS22-S1). `--repl` is `mushd`'s alone; `--ipc` belongs to the server half,
 /// so naming it here is an error rather than a token quietly dropped.
@@ -130,16 +236,16 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("{}: {e}", CLI.program);
             eprintln!("{}", CLI.usage);
-            return ExitCode::FAILURE;
+            return ExitClass::Failure.exit_code();
         }
     };
     if cli.help {
         println!("{}", CLI.usage);
-        return ExitCode::SUCCESS;
+        return ExitClass::Ok.exit_code();
     }
     if cli.repl {
         repl::run();
-        return ExitCode::SUCCESS;
+        return ExitClass::Ok.exit_code();
     }
 
     // Config is loaded first because the `[log]` section drives the
@@ -151,7 +257,7 @@ fn main() -> ExitCode {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{}: {e}", CLI.program);
-            return ExitCode::FAILURE;
+            return ExitClass::Failure.exit_code();
         }
     };
 
@@ -162,7 +268,7 @@ fn main() -> ExitCode {
         Ok(spool) => spool,
         Err(error) => {
             eprintln!("mushd: quarantine spool preflight failed: {error}");
-            return ExitCode::FAILURE;
+            return ExitClass::Failure.exit_code();
         }
     };
 
@@ -195,16 +301,19 @@ fn main() -> ExitCode {
         .enable_all()
         .build()
         .expect("tokio runtime");
+    // The one exit table both halves speak (`mush_config::exit`): 0 clean, 1 a
+    // fatal error including a world fault, 3 a world that never joined. An
+    // operator's supervisor reads the number; the text explains it.
     match runtime.block_on(serve(config, quarantine_spool)) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("mushd: {e}");
-            ExitCode::FAILURE
+        Ok(()) => ExitClass::Ok.exit_code(),
+        Err(failure) => {
+            eprintln!("mushd: {failure}");
+            failure.class.exit_code()
         }
     }
 }
 
-async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<(), String> {
+async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<(), ExitFailure> {
     let listen = config.ssh_listen().map_err(|e| e.to_string())?;
     let data_dir = config.server.data_dir.clone();
     tracing::info!(
@@ -401,11 +510,13 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     );
 
     tracing::info!(ssh = %listener.addr(), web = %web_listen, "up; press Ctrl-C to shut down");
-    // Set when the world task did NOT walk out of its own state machine. Both
-    // arms below bind the join result rather than dropping it, because either
-    // can carry a fault: a world can panic while the operator's Ctrl-C
-    // shutdown is already in flight just as easily as it can die on its own.
-    let world_fault: Option<String> = tokio::select! {
+    // How the world task ended. Both arms below bind the join result rather than
+    // dropping it, because either can carry a fault: a world can panic while
+    // the operator's Ctrl-C shutdown is already in flight just as easily as it
+    // can die on its own. The signal arm's join is BOUNDED, so a world that
+    // never ends at all is a third ending with a code of its own rather than a
+    // process that hangs until systemd kills it.
+    let world_end: WorldEnd = tokio::select! {
         // Ctrl-C at the console, or the systemd stop / `kill <pid>` SIGTERM of
         // the production box (never on Windows). One arm, because the two ran
         // the identical sequence and a copy that drifts is a shutdown that
@@ -418,28 +529,38 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             // to every connection before exiting.
             listener.stop_accepting();
             world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
-            world_fault_detail(world_join.await)
+            // BOUNDED (WS22-S3). An unbounded join here is how a wedged world
+            // turned `systemctl stop` into systemd's own SIGKILL — which skips
+            // every step of the tail below.
+            await_world(&mut world_join, world_task::WORLD_JOIN_TIMEOUT).await
         }
         // The world task can also end itself — an in-game `@shutdown` (it has
         // already stepped ControlMsg::Shutdown and announced), or a fault that
         // stopped the loop mid-command. The two are not the same event and no
         // longer log the same way.
         joined = &mut world_join => {
-            let fault = world_fault_detail(joined);
-            if fault.is_none() {
+            let end = WorldEnd::classify(joined);
+            if end.is_clean() {
                 tracing::info!("world task ended on its own");
             }
             listener.stop_accepting();
-            fault
+            end
         }
     };
-    // Said once, before the shutdown tail, so the fault is on the record ahead
-    // of every decision the tail makes about it.
-    if let Some(detail) = &world_fault {
-        tracing::error!(
+    // Said once, before the shutdown tail, so the ending is on the record ahead
+    // of every decision the tail makes about it. The timeout gets its own fixed
+    // marker: it is the ending with no detail of its own, so this line IS the
+    // whole diagnosis.
+    match &world_end {
+        WorldEnd::Clean => {}
+        WorldEnd::Failed(detail) => tracing::error!(
             %detail,
             "world task faulted; shutting down and exiting on failure"
-        );
+        ),
+        WorldEnd::Timeout => tracing::error!(
+            bound_s = world_task::WORLD_JOIN_TIMEOUT.as_secs(),
+            "world task did not join within its bound; shutting down without it"
+        ),
     }
     // Stop the web ingress (graceful: in-flight requests finish; WS conns
     // saw the shutdown announce before the world task exited).
@@ -489,20 +610,28 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         world_exited_cleanly,
         writer_drained,
         integrity_latched,
-        world_fault.is_some(),
+        !world_end.is_clean(),
     ) {
         match tokio::time::timeout(SHUTDOWN_STORE_TIMEOUT, store.bgsave()).await {
             Ok(Ok(())) => tracing::info!("shutdown BGSAVE triggered"),
             Ok(Err(e)) => tracing::error!(error = %e, "shutdown BGSAVE failed"),
             Err(_) => tracing::error!("shutdown BGSAVE timed out (store down?)"),
         }
-    } else if let Some(detail) = &world_fault {
+    } else if let Some(detail) = world_end.fault_detail() {
         // First, because it is the most specific: it names WHY the world did
         // not finish. The clean-exit branch below would otherwise swallow it.
         tracing::error!(
             %detail,
             "shutdown BGSAVE skipped: the world task faulted, so its RAM is a torn \
              mid-command state and a snapshot would canonize it"
+        );
+    } else if matches!(world_end, WorldEnd::Timeout) {
+        // A world that never joined may still be mutating RAM the store has not
+        // seen. Snapshotting under a live writer is the same torn-state hazard
+        // as the fault above, minus the explanation.
+        tracing::error!(
+            "shutdown BGSAVE skipped: the world task never joined, so nothing here knows \
+             whether its RAM finished reaching the store"
         );
     } else if !world_exited_cleanly {
         tracing::error!(
@@ -533,9 +662,10 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // Only NOW, with the writer drained, the store drained and closed and the
     // transports flushed, is the failure raised. An exit code is never worth
     // bypassing a drain, and it is never raised by `process::exit`/`abort` from
-    // inside a catch handler. `main` maps this `Err` to `ExitCode::FAILURE`.
-    if let Some(detail) = world_fault {
-        return Err(format!("world task faulted: {detail}"));
+    // inside a catch handler. `main` spends the class on this process's exit
+    // code and prints the detail to stderr.
+    if let Some(failure) = world_end.into_failure() {
+        return Err(failure);
     }
     tracing::info!("mushd exiting at {}", unix_now_s());
     Ok(())
@@ -557,7 +687,10 @@ fn banner(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{WorldOutcome, shutdown_bgsave_allowed, world_fault_detail};
+    use super::{
+        ExitClass, WorldEnd, WorldOutcome, await_world, shutdown_bgsave_allowed,
+        world_fault_detail, world_task,
+    };
 
     /// The full truth table of the four-term gate. Exactly one row may
     /// snapshot; every row with an unclean world exit must refuse, including
@@ -635,5 +768,111 @@ mod tests {
         let cancelled = handle.await.expect_err("the task was cancelled");
         let detail = world_fault_detail(Err(cancelled)).expect("a cancellation is a fault");
         assert!(detail.contains("without a value"), "{detail}");
+    }
+
+    // -----------------------------------------------------------------------
+    // WS22-S3: the bounded join, and the three endings it can report
+    // -----------------------------------------------------------------------
+
+    /// A real `JoinError` from a real panic, through the real bound. The panic
+    /// is the ending the join handle is the ONLY witness to (the world loop's
+    /// own dispatch boundary cannot catch one raised across an `.await`), so a
+    /// classifier that lost it would hand `main` a clean exit for a dead world.
+    #[tokio::test]
+    async fn a_panicked_world_task_is_a_failure() {
+        let mut join = tokio::spawn(async { panic!("the world fell over") });
+        let end = await_world(&mut join, world_task::WORLD_JOIN_TIMEOUT).await;
+        let detail = end.fault_detail().expect("a panic is a fault").to_owned();
+        assert!(detail.contains("outside its dispatch boundary"), "{detail}");
+        assert!(!end.is_clean());
+        assert_eq!(end.exit_class(), ExitClass::Failure);
+    }
+
+    /// The other `JoinError`: a task cancelled out from under the joiner. It
+    /// carries no payload at all, which is exactly why it must not be mistaken
+    /// for an ordinary ending.
+    #[tokio::test]
+    async fn a_cancelled_world_task_is_a_failure() {
+        let mut join = tokio::spawn(std::future::pending::<WorldOutcome>());
+        join.abort();
+        let end = await_world(&mut join, world_task::WORLD_JOIN_TIMEOUT).await;
+        assert!(!end.is_clean());
+        assert_eq!(end.exit_class(), ExitClass::Failure);
+    }
+
+    /// The contrast: a world that returned `Clean` inside the bound is an
+    /// ordinary exit, worth zero. A false positive here restart-loops a live
+    /// box.
+    #[tokio::test]
+    async fn a_world_that_finished_cleanly_is_clean() {
+        let mut join = tokio::spawn(async { WorldOutcome::Clean });
+        let end = await_world(&mut join, world_task::WORLD_JOIN_TIMEOUT).await;
+        assert!(end.is_clean());
+        assert_eq!(end.fault_detail(), None);
+        assert_eq!(end.exit_class(), ExitClass::Ok);
+    }
+
+    /// The failure this step closes: a world task that never resolves.
+    ///
+    /// Before the bound this was `world_join.await`, so this test could not be
+    /// written — it would hang forever, which is precisely what `mushd` did on
+    /// a wedged world until systemd escalated to `SIGKILL` and skipped the
+    /// whole shutdown tail. The clock is paused, so the assertion on the
+    /// elapsed time is exact rather than a range: the join waits its bound and
+    /// not a second more or less.
+    #[tokio::test(start_paused = true)]
+    async fn a_world_that_never_joins_times_out_at_the_bound() {
+        let mut join = tokio::spawn(std::future::pending::<WorldOutcome>());
+        let start = tokio::time::Instant::now();
+        let end = await_world(&mut join, world_task::WORLD_JOIN_TIMEOUT).await;
+        assert_eq!(start.elapsed(), world_task::WORLD_JOIN_TIMEOUT);
+        assert!(matches!(end, WorldEnd::Timeout), "{end:?}");
+        // Not a fault: there is no fault detail to report, and the exit code is
+        // its own, so a supervisor can tell a slow stop from a dead world.
+        assert_eq!(end.fault_detail(), None);
+        assert!(!end.is_clean());
+        assert_eq!(end.exit_class(), ExitClass::WorldJoinTimeout);
+        join.abort();
+    }
+
+    /// The joiner's bound must outlast the world's own shutdown grace,
+    /// otherwise the designed slow path — a shutdown that waits out a pending
+    /// exact commit — reports as a hung world every single time.
+    #[test]
+    fn the_join_bound_outlasts_the_worlds_own_grace() {
+        assert!(world_task::WORLD_JOIN_TIMEOUT > world_task::WORLD_SHUTDOWN_GRACE);
+        assert_eq!(
+            world_task::WORLD_JOIN_TIMEOUT,
+            world_task::WORLD_SHUTDOWN_GRACE + world_task::WORLD_JOIN_SLACK
+        );
+    }
+
+    /// This binary's half of the one exit table (`mush_config::exit`). The
+    /// numbers are what a supervisor and a unit file encode out of tree, so
+    /// they are asserted here as literals, not derived.
+    #[test]
+    fn the_exit_codes_are_the_shared_vocabulary() {
+        assert_eq!(WorldEnd::Clean.exit_class().code(), 0);
+        assert_eq!(WorldEnd::Failed("boom".to_owned()).exit_class().code(), 1);
+        assert_eq!(WorldEnd::Timeout.exit_class().code(), 3);
+        // ...and the reserved one is still reserved (WS22-S18 produces it).
+        assert_eq!(ExitClass::QuarantineLockHeld.code(), 2);
+    }
+
+    /// The text `main` prints to stderr, for each ending that has any. The
+    /// fault wording is asserted end to end by `tests/world_fault.rs`.
+    #[test]
+    fn each_failing_ending_explains_itself() {
+        assert!(WorldEnd::Clean.into_failure().is_none());
+        let faulted = WorldEnd::Failed("engine.step: the sky fell".to_owned())
+            .into_failure()
+            .expect("a fault is a failure");
+        assert_eq!(faulted.class, ExitClass::Failure);
+        assert!(faulted.detail.contains("world task faulted"), "{faulted}");
+        let slow = WorldEnd::Timeout
+            .into_failure()
+            .expect("a timeout is a failure");
+        assert_eq!(slow.class, ExitClass::WorldJoinTimeout);
+        assert!(slow.detail.contains("did not join"), "{slow}");
     }
 }
