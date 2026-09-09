@@ -18,12 +18,12 @@ Room flags decide what a room shows:
               no ambient drip.
   (neither)   Indoor: silent. An indoor room in a weather zone shows nothing.
 
-Staff commands (Wizard/Royalty) — `<zone>` is `here` (this room's zone) or an
-object match, usually the Zone Master Object's dbref:
+Staff commands (Wizard/Royalty) — `<place>` is a neighborhood or a region on
+the atlas:
 
   @weather <place>                Show a place's current conditions.
   @weather <place>=<state>        Pin a state (pauses the machine and
-                                  broadcasts the change to the zone's rooms).
+                                  broadcasts the change to the place's rooms).
   @weather/release <place>        Unpin; the machine resumes from that state.
   @weather/climate <place>=<name> Assign a climate and opt the place in.
   @weather/climate <place>=none   Opt the place out of weather.
@@ -34,13 +34,15 @@ pack id (`neighborhood.ooc_area`, `region.limbo`), `here` (this room's
 neighborhood) or a room. A room's weather is its neighborhood's cell, else its
 region's; a room off the map bears none. Zones keep locks and zone exits only.
 
-Setting a zone up, start to finish:
+Giving a place weather, start to finish:
 
-  @create Downtown              (or use an existing Zone Master Object)
-  @set Downtown=ZONE_MASTER
-  @zone here=Downtown           put a room into the zone
-  @set here=OUTDOORS            let its weather show
-  @weather/climate here=temperate-coastal
+  @atlas                        see which neighborhood you stand in
+  @weather/climate here=temperate-coastal      this neighborhood
+  @weather/climate The Lot=temperate-coastal   or the whole region, for every
+                                               neighborhood without a cell of its own
+
+Rooms a pack makes outdoors already carry OUTDOORS; `@set here=OUTDOORS` lets a
+builder's own room on the map show its weather.
 
 Shipped climates: temperate-coastal, desert, arctic. Weather state is always
 deterministic; only the flavour text varies, drawn from the climate's line

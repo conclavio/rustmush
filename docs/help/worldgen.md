@@ -9,12 +9,12 @@ switched on (`[llm].enabled = true`; otherwise `@gen` just says so).
 
 ## Themes
 
-A theme is the house style the generator writes to. It lives on a Zone Master
-Object (so a whole neighbourhood shares it), on a single room (an override), or
-on `#0` (the game-wide default), and rooms resolve it nearest-first up their
-atlas: a room resolves through its site, its neighborhood, the locality, the
-region and then the world theme (nearest scalar wins, lists union). Set fields
-with `@atlas/theme` (staff):
+A theme is the house style the generator writes to. It lives on the atlas: a
+region, a locality, a neighborhood or a site may carry one, and `world` is the
+game-wide default. A room resolves its theme nearest-first through its site,
+its neighborhood, the locality, the region and then the world theme (the
+nearest scalar wins; list fields union). Set fields with `@atlas/theme`
+(staff):
 
   @atlas/theme <place>=<field>:<value>   Set one theme field on a region,
                                          locality, neighborhood or site, or on
