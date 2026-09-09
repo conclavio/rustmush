@@ -371,6 +371,150 @@ fn desc_and_look_detail() {
     assert_error_contains(&out, ann, "I don't see that here.");
 }
 
+/// The dbref walk. `look #N` for every id in the database must answer the
+/// same line as a name that matched nothing, unless the target is in reach.
+/// Before the locality gate, `#N` and `*name` resolved globally in
+/// `match_object` and `look` gated only on perception (a free pass with no
+/// Perceive hook), so `#0..#next` read every desc and every room view.
+#[test]
+fn look_dbref_walk_reads_nothing_out_of_reach() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let bob = g.bob;
+    // Off-site: a room with a desc, a thing in it, and Bob standing there.
+    let vault = g.w.create(ObjKind::Room, "Vault", GOD, None).unwrap();
+    let relic =
+        g.w.create(ObjKind::Thing, "relic", GOD, Some(vault))
+            .unwrap();
+    g.w.move_to(bob, vault).unwrap();
+    g.run(
+        GOD,
+        &format!("@desc #{}=Rows of numbered drawers.", vault.0),
+    );
+    g.run(GOD, &format!("@set #{}/desc=A cracked seal.", relic.0));
+    // In reach: Ann's room, a thing she carries, a thing on the floor.
+    let coin = g.w.create(ObjKind::Thing, "coin", GOD, Some(ann)).unwrap();
+    let rug = g.w.create(ObjKind::Thing, "rug", GOD, Some(LIMBO)).unwrap();
+
+    // The refusal every out-of-reach dbref must reproduce byte for byte.
+    let baseline = actor_texts(&g.run(ann, "look zzzznotathing"), ann);
+    assert_eq!(baseline, vec!["I don't see that here.".to_string()]);
+
+    // GOD starts in Limbo alongside Ann, so it is in reach like the rest.
+    let in_reach = [ann, GOD, LIMBO, coin, rug];
+    let ids: Vec<ObjId> = g.w.iter().map(|o| o.id).collect();
+    for id in ids {
+        let out = g.run(ann, &format!("look #{}", id.0));
+        if in_reach.contains(&id) {
+            assert_ne!(
+                actor_texts(&out, ann),
+                baseline,
+                "#{} is in reach and must still render",
+                id.0
+            );
+            continue;
+        }
+        assert_eq!(
+            actor_texts(&out, ann),
+            baseline,
+            "#{} answered something other than the NoMatch line",
+            id.0
+        );
+        assert!(
+            !out.events()
+                .iter()
+                .any(|(_, e)| matches!(e, OutputEvent::Room(_))),
+            "#{} leaked a room view",
+            id.0
+        );
+    }
+    // A dbref past the end of the database reads the same.
+    let past_end = g.w.iter().map(|o| o.id.0).max().unwrap() + 7;
+    assert_eq!(
+        actor_texts(&g.run(ann, &format!("look #{past_end}")), ann),
+        baseline
+    );
+
+    // `me`, `here` and plain names are untouched by the gate.
+    assert_ne!(actor_texts(&g.run(ann, "look me"), ann), baseline);
+    assert_ne!(actor_texts(&g.run(ann, "look coin"), ann), baseline);
+    assert_ne!(actor_texts(&g.run(ann, "look rug"), ann), baseline);
+    assert!(
+        g.run(ann, "look here")
+            .events()
+            .iter()
+            .any(|(_, e)| matches!(e, OutputEvent::Room(_))),
+        "look here still renders the room"
+    );
+    // And the `detail:` keyword fallback still runs after a failed match.
+    g.run(GOD, "@set here/detail:mist=Curls of silver mist.");
+    assert_error_contains(&g.run(ann, "look mist"), ann, "Curls of silver mist.");
+}
+
+/// `*name` is the same oracle by another spelling: it resolves through the
+/// global player index, so it gets the same locality test.
+#[test]
+fn look_star_name_is_gated_by_locality() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let bob = g.bob;
+    let vault = g.w.create(ObjKind::Room, "Vault", GOD, None).unwrap();
+    let baseline = actor_texts(&g.run(ann, "look zzzznotathing"), ann);
+
+    // Same room: `*Bob` renders.
+    let out = actor_texts(&g.run(ann, "look *Bob"), ann);
+    assert_ne!(out, baseline, "a player in the room still renders");
+    assert!(
+        out.join(
+            "
+"
+        )
+        .contains("Bob"),
+        "{out:?}"
+    );
+
+    // Elsewhere: the same refusal a missing name gives.
+    g.w.move_to(bob, vault).unwrap();
+    assert_eq!(
+        actor_texts(&g.run(ann, "look *Bob"), ann),
+        baseline,
+        "*name must not reach across the map"
+    );
+    // Nor may it distinguish an absent player from a non-existent one.
+    assert_eq!(actor_texts(&g.run(ann, "look *Nobody"), ann), baseline);
+}
+
+/// Staff keep the walk: `can_examine` (control, or the `EXAMINE_ALL` power)
+/// is the exemption, so the gate hides nothing a staffer could already read.
+#[test]
+fn look_locality_exempts_examine_all() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let bob = g.bob;
+    let vault = g.w.create(ObjKind::Room, "Vault", GOD, None).unwrap();
+    g.run(
+        GOD,
+        &format!("@desc #{}=Rows of numbered drawers.", vault.0),
+    );
+    g.w.move_to(bob, vault).unwrap();
+    let baseline = actor_texts(&g.run(ann, "look zzzznotathing"), ann);
+    assert_eq!(
+        actor_texts(&g.run(ann, &format!("look #{}", vault.0)), ann),
+        baseline
+    );
+
+    g.w.get_mut(ann).unwrap().powers = Powers::EXAMINE_ALL;
+    assert!(
+        g.run(ann, &format!("look #{}", vault.0))
+            .events()
+            .iter()
+            .any(|(_, e)| matches!(e, OutputEvent::Room(_))),
+        "EXAMINE_ALL still reads a distant room"
+    );
+    let out = actor_texts(&g.run(ann, "look *Bob"), ann);
+    assert_ne!(out, baseline, "EXAMINE_ALL still reads a distant player");
+}
+
 #[test]
 fn builder_gating() {
     let mut g = Game::new();

@@ -119,6 +119,36 @@ pub fn match_object(w: &World, looker: ObjId, raw: &str) -> Result<ObjId, MatchE
     Err(MatchErr::NoMatch)
 }
 
+/// Whether `target` is within `looker`'s reach — the locality the name pools
+/// (steps 5–9 above) enforce implicitly and the two global spellings, `#123`
+/// and `*name`, skip entirely.
+///
+/// True when `target` is the looker itself, the looker's location, something
+/// in that location's contents or exits, or something the looker carries.
+/// `GOING` husks are not filtered here: this answers "is it in reach", not
+/// "does it match a name".
+///
+/// Exported deliberately. `match_object` must stay global — `@tel me=#123`
+/// to a `JUMP_OK` room and `@link exit=#123` name distant dbrefs on purpose —
+/// so the read commands that must not become a database oracle apply this
+/// test *after* the match instead, which covers both spellings at once.
+#[must_use]
+pub fn is_nearby(w: &World, looker: ObjId, target: ObjId) -> bool {
+    if looker == target {
+        return true;
+    }
+    if w.get(target).is_none() {
+        return false;
+    }
+    if w.contents_of(looker).contains(&target) {
+        return true;
+    }
+    let Some(loc) = w.get(looker).and_then(|o| o.location) else {
+        return false;
+    };
+    loc == target || w.contents_of(loc).contains(&target) || w.exits_of(loc).contains(&target)
+}
+
 /// Filter a candidate list: drop `GOING` husks.
 fn pool(w: &World, ids: &[ObjId]) -> Vec<ObjId> {
     ids.iter()

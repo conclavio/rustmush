@@ -253,7 +253,7 @@ pub use lock::{
     LockExpr, LockParseError, LockType, MAX_LOCK_EXPR_DEPTH, MAX_LOCK_PARSE_FRAMES, eval_lock,
     glob_match, parse_lock,
 };
-pub use matchit::{MatchErr, match_object};
+pub use matchit::{MatchErr, is_nearby, match_object};
 pub use mechanics::{
     BridgeDescriptor, BridgeEntry, BridgeKey, BridgeLookupError, BridgeRegistry,
     BridgeRegistryBuilder, BridgeRegistryError, CanonicalEncodingError, CanonicalId,

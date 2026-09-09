@@ -8,7 +8,7 @@ use mush_proto::{OutputEvent, RichText};
 use crate::attr::{AttrFlags, AttrValue};
 use crate::cmd::{CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Role};
-use crate::matchit::{MatchErr, match_object};
+use crate::matchit::{MatchErr, is_nearby, match_object};
 use crate::module::{HookPoint, perceives_via_action_state};
 use crate::obj::{ObjId, ObjKind};
 use crate::output::{Outbox, name_span};
@@ -28,13 +28,31 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.show_room(ctx.actor, loc);
         return Ok(());
     }
+    // `#123` and `*name` resolve globally in `match_object`; the name pools it
+    // searches are already local. Only those two spellings need the locality
+    // test, and they get it here rather than in the resolver, which must stay
+    // global for `@tel`/`@link`.
+    let global_spelling = {
+        let t = q.trim();
+        t.starts_with('#') || t.starts_with('*')
+    };
     match match_object(ctx.w, ctx.actor, &q) {
         // M11 per-observer projection: a target the looker cannot perceive
         // (a cloaked vampire) resolves to nothing — true silence, so `look
         // <name>` and `look #dbref` cannot probe a concealed subject. The
         // looker always perceives themselves. Free pass with no Perceive hook,
         // so this is identical to today for a game without concealment.
-        Ok(target) if target == ctx.actor || ctx.can_perceive(ctx.actor, target) => {
+        //
+        // Locality on top of that: a dbref or `*name` naming something out of
+        // reach reads nothing unless the looker could examine it anyway (its
+        // controller, or staff holding `EXAMINE_ALL`), so walking `#0..#N`
+        // cannot pull descs and room views out of the database.
+        Ok(target)
+            if (target == ctx.actor || ctx.can_perceive(ctx.actor, target))
+                && (!global_spelling
+                    || is_nearby(ctx.w, ctx.actor, target)
+                    || perm::can_examine(ctx.w, ctx.actor, target)) =>
+        {
             look_at(
                 ctx.reg,
                 ctx.w,
@@ -45,8 +63,10 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             );
             Ok(())
         }
-        // A matched-but-imperceptible target falls through exactly like a name
-        // that matched nothing: the `detail:` keyword fallback, then NoMatch.
+        // A matched-but-imperceptible or matched-but-distant target falls
+        // through exactly like a name that matched nothing: the `detail:`
+        // keyword fallback, then the byte-identical NoMatch refusal. No
+        // existence oracle either way.
         Ok(_) | Err(MatchErr::NoMatch) => {
             // `look <keyword>`: room details stored as `detail:<keyword>`
             // attributes on the room (inheritable), then on the looker.
