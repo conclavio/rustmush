@@ -3012,12 +3012,6 @@ pub fn about_real(secs: i64) -> String {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unreachable
-)]
 mod tests {
     use super::*;
 
@@ -3048,18 +3042,19 @@ mod tests {
     }
 
     #[test]
-    fn a_journey_record_re_checks_its_invariants() {
+    fn a_journey_record_re_checks_its_invariants() -> Result<(), String> {
         let stamp = ClockStamp {
             clock: ClockRef::WorldIc { generation: 1 },
             at: 10,
         };
+        let key = RecordKey::new(
+            mush_core::CanonicalId::new("p").map_err(|e| e.to_string())?,
+            mush_core::CanonicalId::new("e").map_err(|e| e.to_string())?,
+        );
         let ok = JourneyRec {
             id: JourneyId(1),
             traveler: Traveler::Character(ObjId(5)),
-            way: Way::Portal(RecordKey::new(
-                mush_core::CanonicalId::new("p").expect("id"),
-                mush_core::CanonicalId::new("e").expect("id"),
-            )),
+            way: Way::Portal(key),
             mode: "foot".into(),
             heading: Heading::Forward,
             nodes: vec![Node::Room { room: ObjId(1) }, Node::Room { room: ObjId(2) }],
@@ -3072,7 +3067,7 @@ mod tests {
             applied_revision: 1,
             anomaly: None,
         };
-        assert!(ok.validate().is_ok());
+        ok.validate()?;
         assert_eq!(ok.arrival_at(), Some(40));
         let mut past = ok.clone();
         past.cursor = 2;
@@ -3080,5 +3075,6 @@ mod tests {
         let mut legs = ok;
         legs.legs_ic.push(1);
         assert!(legs.validate().is_err());
+        Ok(())
     }
 }

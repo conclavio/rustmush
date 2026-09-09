@@ -482,10 +482,16 @@ fn watchable(ctx: &Ctx<'_>, here: ObjId) -> Result<Vec<(RecordKey, String, Strin
             continue;
         }
         for leg in &conn.legs {
-            if let Some(cp) = st.records.checkpoints.get(&leg.to)
-                && !out.iter().any(|(k, _, _)| k == &cp.key)
-            {
-                out.push((cp.key.clone(), cp.name.clone(), conn.name.clone()));
+            let Some(cp) = st.records.checkpoints.get(&leg.to) else {
+                continue;
+            };
+            match out.iter_mut().find(|(k, _, _)| k == &cp.key) {
+                Some((_, _, ways)) if !ways.contains(&conn.name) => {
+                    ways.push_str(", the ");
+                    ways.push_str(&conn.name);
+                }
+                Some(_) => {}
+                None => out.push((cp.key.clone(), cp.name.clone(), conn.name.clone())),
             }
         }
     }
@@ -545,13 +551,13 @@ fn cmd_stakeout(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 // ---------------------------------------------------------------------------
 
 /// Find a traveler by what the actor typed: something here, or by name among the
-/// live journeys and the service vehicles.
+/// Find a traveler by what the actor typed: something here that can be intercepted,
+/// else by name among the live journeys and the service vehicles.
 fn find_traveler(ctx: &Ctx<'_>, raw: &str) -> Result<ObjId, CmdError> {
-    if let Ok(obj) = match_object(ctx.w, ctx.actor, raw) {
-        return Ok(obj);
-    }
     let st = state(ctx)?;
-    let by_name = st
+    // What can be intercepted at all: every live journey's traveler and every service
+    // vehicle. A room's exit that happens to be called "bus" is neither.
+    let candidates: Vec<ObjId> = st
         .travel
         .journeys
         .values()
@@ -562,12 +568,21 @@ fn find_traveler(ctx: &Ctx<'_>, raw: &str) -> Result<ObjId, CmdError> {
                 .values()
                 .filter_map(|c| service_vehicle(ctx.w, c)),
         )
-        .find(|o| {
-            ctx.w
-                .get(*o)
-                .is_some_and(|o| matches_name(mush_core::output::primary_name(&o.name), raw))
-        });
-    by_name.ok_or_else(|| CmdError::msg("It is not going anywhere."))
+        .collect();
+    let matched = match_object(ctx.w, ctx.actor, raw).ok();
+    if let Some(obj) = matched
+        && candidates.contains(&obj)
+    {
+        return Ok(obj);
+    }
+    let by_name = candidates.iter().copied().find(|o| {
+        ctx.w
+            .get(*o)
+            .is_some_and(|o| matches_name(mush_core::output::primary_name(&o.name), raw))
+    });
+    by_name
+        .or(matched)
+        .ok_or_else(|| CmdError::msg("It is not going anywhere."))
 }
 
 fn cmd_intercept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
