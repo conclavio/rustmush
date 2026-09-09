@@ -55,7 +55,6 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
-pub mod accounts;
 pub mod accounts_identity;
 pub mod action_coordinator;
 pub mod archive;
@@ -72,6 +71,7 @@ pub mod durable_outbox;
 pub mod econ_alerts;
 pub mod econ_canon;
 pub mod econ_inbox;
+pub mod gateway_link;
 pub mod gateway_sink;
 pub mod help;
 pub mod industry_recipes;
@@ -1884,7 +1884,20 @@ pub async fn reader_loop(
 /// Answer one [`ServiceReq`] by calling the world handle. Each maps to an
 /// existing ack-gated / oneshot world-task round trip; the await happens here
 /// (off the world loop), never inside `run`.
-async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
+///
+/// This is the ONE dispatch table both deployments answer from: the forked
+/// server's boundary reader calls it directly, and the all-in-one binary
+/// reaches it through the in-process [`GatewayLink`](mush_ipc::GatewayLink)
+/// impl in [`crate::gateway_link`]. The exhaustive match therefore lives in a
+/// single place, so a new variant is a compile error once rather than a
+/// silently unanswered request on one of the two links.
+///
+/// **Exposed only so `tests/gateway_link_parity.rs` can drive it beside the
+/// in-process link and prove the two agree** — the same reason
+/// [`reader_loop`] is reachable from `tests/dead_world_reader.rs`. Nothing
+/// outside this crate answers a `ServiceReq`; the boundary reader does.
+#[doc(hidden)]
+pub async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
     match req {
         ServiceReq::CreatePlayer { name } => {
             create_player_response(world.create_player(&name).await)
