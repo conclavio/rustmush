@@ -312,6 +312,9 @@ pub struct RegionRec {
     /// The coarse ground resolution, centimetres.
     #[serde(default = "default_ground_resolution")]
     pub ground_resolution_cm: u16,
+    /// The theme staff or a pack set here (S2b); `None` inherits the tier above.
+    #[serde(default)]
+    pub theme: Option<crate::theme::Theme>,
     /// Revision.
     pub revision: u64,
 }
@@ -328,6 +331,9 @@ impl RegionRec {
     /// [`RecordError`].
     pub fn validate(&self) -> Result<(), RecordError> {
         check_text("region.name", &self.name, MAX_NAME_BYTES)?;
+        if let Some(theme) = &self.theme {
+            theme.validate().map_err(RecordError::Value)?;
+        }
         self.extent
             .validate()
             .map_err(|source| RecordError::Geometry {
@@ -365,6 +371,9 @@ pub struct LocalityRec {
     pub kind: String,
     /// The footprint, region metres.
     pub footprint: Polygon2,
+    /// The theme staff or a pack set here (S2b); `None` inherits the tier above.
+    #[serde(default)]
+    pub theme: Option<crate::theme::Theme>,
     /// Revision.
     pub revision: u64,
 }
@@ -377,6 +386,9 @@ impl LocalityRec {
     /// [`RecordError`].
     pub fn validate(&self) -> Result<(), RecordError> {
         check_text("locality.name", &self.name, MAX_NAME_BYTES)?;
+        if let Some(theme) = &self.theme {
+            theme.validate().map_err(RecordError::Value)?;
+        }
         check_word("locality.kind", &self.kind)?;
         self.footprint
             .to_cm()
@@ -450,6 +462,9 @@ pub struct NeighborhoodRec {
     pub tiles: Vec<RecordKey>,
     /// The fine resolution, centimetres.
     pub resolution_cm: u16,
+    /// The theme staff or a pack set here (S2b); `None` inherits the tier above.
+    #[serde(default)]
+    pub theme: Option<crate::theme::Theme>,
     /// Revision.
     pub revision: u64,
 }
@@ -462,6 +477,9 @@ impl NeighborhoodRec {
     /// [`RecordError`].
     pub fn validate(&self) -> Result<(), RecordError> {
         check_text("neighborhood.name", &self.name, MAX_NAME_BYTES)?;
+        if let Some(theme) = &self.theme {
+            theme.validate().map_err(RecordError::Value)?;
+        }
         check_word("neighborhood.setting", &self.setting)?;
         self.footprint
             .to_cm()
@@ -550,6 +568,9 @@ pub struct SiteRec {
     pub review: ReviewState,
     /// Whether every room has a footprint on a tile and every portal has geometry.
     pub tactical_ready: bool,
+    /// The theme staff or a pack set here (S2b); `None` inherits the tier above.
+    #[serde(default)]
+    pub theme: Option<crate::theme::Theme>,
     /// Revision.
     pub revision: u64,
 }
@@ -562,6 +583,9 @@ impl SiteRec {
     /// [`RecordError`].
     pub fn validate(&self) -> Result<(), RecordError> {
         check_text("site.name", &self.name, MAX_NAME_BYTES)?;
+        if let Some(theme) = &self.theme {
+            theme.validate().map_err(RecordError::Value)?;
+        }
         check_word("site.kind", &self.kind)?;
         if self.neighborhoods.is_empty() {
             return Err(RecordError::Value(
@@ -1726,6 +1750,7 @@ mod tests {
                 Point2(10.0, 0.0),
                 Point2(10.0, 10.0),
             ]),
+            theme: None,
             revision: 1,
         };
         assert!(bad.validate().is_err(), "kind must be a lowercase word");

@@ -556,7 +556,7 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@atlas"
 category = "legacy-post-image"
 family = "atlas.records"
-note = "S1 (14-spatial-implementation-plan 3.1): @atlas/pack list|show|plan|apply|retire, staff (SIM_ADMIN or Royalty). Applying a content pack writes bounded whole-document atlas records at deterministic keys (mod:atlas:<kind>:<pack>:<entry>, roomgeo:<obj>, tile:<pack>:<entry>) through strict deny_unknown_fields wires re-validated at boot, and the content latch (mod:content:applied:<pack>) through mush-content's API. None of it takes part in authority or prepared mechanics: a room's geometry decides what a map draws, never what an action may do. The declared family is where S4's windows move the tiles when they come under the K3 bundle limits. S2 adds @atlas/journey list|show|hold|release|abort (staff): reads over the journey book, and the same journey document the +travel stanza describes (family atlas.journey) for hold, release and abort."
+note = "S1 (14-spatial-implementation-plan 3.1): @atlas/pack list|show|plan|apply|retire, staff (SIM_ADMIN or Royalty). Applying a content pack writes bounded whole-document atlas records at deterministic keys (mod:atlas:<kind>:<pack>:<entry>, roomgeo:<obj>, tile:<pack>:<entry>) through strict deny_unknown_fields wires re-validated at boot, and the content latch (mod:content:applied:<pack>) through mush-content's API. None of it takes part in authority or prepared mechanics: a room's geometry decides what a map draws, never what an action may do. The declared family is where S4's windows move the tiles when they come under the K3 bundle limits. S2 adds @atlas/journey list|show|send|hold|release|abort (staff): reads over the journey book, and the same journey document the +travel stanza describes (family atlas.journey) for send, hold, release and abort. S2b adds @atlas/theme <place>=<field>:<value>, /show and /exemplar (staff): the theme rides the place's own record document (region, locality, neighborhood or site) or the world theme document mod:atlas:theme:world, replacing mush-worldgen's retired @theme and the worldgen.theme zone attribute (doc 14 D-14-28)."
 
 [[handler]]
 name = "@behavior"
@@ -836,8 +836,9 @@ note = "E7 cut 7 (10b 3.7, 3.8 handoff). /envelopes reads (byte-identical for an
 
 [[handler]]
 name = "@property"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
+category = "legacy-post-image"
+family = "housing.property"
+note = "S2b (14-spatial-implementation-plan 3.3; doc 14 D-14-28): @property/site <id>=<site> links a residence to the atlas site it stands on, refused naming any room that lies outside the site's footprint or is on no map; empty clears; /show prints it. The property document (property:<id>, a strict try_from wire) gains one optional field. Title, tenancy and the access predicate are untouched: a site link decides what a map says, never who may enter."
 
 [[handler]]
 name = "@ps"
@@ -852,8 +853,9 @@ note = "E7 residue pass 1, R3 (10b 15.1 item 5; doc 10 Q7A/T7/S3A/7A): the recov
 
 [[handler]]
 name = "@region"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
+category = "legacy-post-image"
+family = "faction.region"
+note = "S2b (14-spatial-implementation-plan 3.3; doc 14 D-14-28): @region/atlas <control-region>=<neighborhood|locality|region> points a faction control region at an atlas place (a string id on the bounded region:<id> document; empty clears), and +territory renders that place's footprint. The zone coverage list stays. Region records were already exempt documents written whole; nothing here takes part in authority or prepared mechanics."
 
 [[handler]]
 name = "@salvage"
@@ -950,11 +952,6 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
-name = "@theme"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
 name = "@unit"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -981,8 +978,9 @@ note = "baseline pinned at b0e3b52 (core/engine registry)"
 
 [[handler]]
 name = "@weather"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
+category = "legacy-post-image"
+family = "weather.cell"
+note = "S2b (14-spatial-implementation-plan 3.3; doc 14 D-14-28): weather keys on the atlas. @weather <place>[=<state>], /release, /climate and /list address a neighborhood or a region (by name, pack id, here, or a room), and a cell is the bounded whole document mod:weather:cell:<place id> (a pre-atlas zone-keyed cell:<dbref> is dropped loudly at boot). A room's weather is its neighborhood's cell, else its region's; zones keep locks and zone exits only. The flavor top-up (/generate, /lines) is unchanged and reads the theme through the atlas. No authority, no prepared mechanic: the machine decides what a room hears and what a ruleset query answers, never what an action may do."
 
 [[handler]]
 name = "@wo"

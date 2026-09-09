@@ -27,10 +27,13 @@ pub mod commands;
 pub mod def;
 pub mod geom;
 pub mod module;
+pub mod place;
 pub mod raster;
 pub mod record;
 pub mod starter;
 pub mod terrain;
+pub mod theme;
+pub mod theme_cmd;
 pub mod travel;
 pub mod travel_cmd;
 pub mod validate;
@@ -44,11 +47,13 @@ pub use module::{
     ATTR_NS, AtlasConfig, AtlasLimits, AtlasModule, AtlasState, MAX_CONFIGURED_PACKS, NS,
     PackSource, is_staff, verify_sources,
 };
+pub use place::{PlaceRef, chain_for_room, find_place};
 pub use record::{
     Access, Footprint, MAX_KNOWN_PLACES, NeighborhoodRec, PortalRec, RecordError, RecordKey,
     Records, RegionRec, RoomGeo, RoomKind, SiteRec, StructureRec, SurfaceRef, TileRec,
 };
 pub use terrain::TerrainClass;
+pub use theme::{DescLength, Theme, resolve_place_theme, resolve_theme, world_theme};
 pub use travel::{
     DEFAULT_DWELL_FLOOR_S, DEFAULT_REAL_CAP_S, End, Heading, HoldReason, JourneyId, JourneyRec,
     JourneyState, MAX_JOURNEYS, Node, RESUME_GRACE_S, TICK_TAG, TravelState, Traveler, Way,

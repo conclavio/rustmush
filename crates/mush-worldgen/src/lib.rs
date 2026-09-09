@@ -7,9 +7,11 @@
 //!
 //! ## Shape
 //!
-//! - [`Theme`] data lives in a `worldgen.theme` attribute on zones / rooms /
-//!   `#0`, edited via `@theme` and resolved hierarchically
-//!   ([`resolve_theme`]).
+//! - [`Theme`] data lives on the atlas's places (S2b, doc 14 D-14-28): a
+//!   region, locality, neighborhood or site carries a theme, the world theme is
+//!   the default, `@atlas/theme` edits them, and [`resolve_theme`] (re-exported
+//!   from `mush-atlas`) walks a room up through its site, neighborhood,
+//!   locality and region to the world.
 //! - `@gen here=<prose>` (gated on `BUILDER_LLM`) snapshots the prompt
 //!   context synchronously and defers the LLM call as an
 //!   [`Effect::ModuleAsync`](mush_core::engine::Effect::ModuleAsync) — the
@@ -82,7 +84,6 @@
 mod commands;
 mod data;
 mod generate;
-mod theme;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -105,7 +106,7 @@ pub use generate::{
     run_worldgen_async, submit_building_brief_tool, submit_room_tool, system_prompt, user_prompt,
     user_prompt_inner,
 };
-pub use theme::{DescLength, THEME_ATTR, Theme, resolve_theme, theme_chain, theme_on};
+pub use mush_atlas::theme::{DescLength, Theme, resolve_theme};
 
 /// Tuning for the worldgen module (config knobs). Everything defaults, so a
 /// keyless/config-less server behaves exactly as before.

@@ -21,13 +21,18 @@ Room flags decide what a room shows:
 Staff commands (Wizard/Royalty) — `<zone>` is `here` (this room's zone) or an
 object match, usually the Zone Master Object's dbref:
 
-  @weather <zone>                 Show a zone's current conditions.
-  @weather <zone>=<state>         Pin a state (pauses the machine and
+  @weather <place>                Show a place's current conditions.
+  @weather <place>=<state>        Pin a state (pauses the machine and
                                   broadcasts the change to the zone's rooms).
-  @weather/release <zone>         Unpin; the machine resumes from that state.
-  @weather/climate <zone>=<name>  Assign a climate and opt the zone in.
-  @weather/climate <zone>=none    Opt the zone out of weather.
+  @weather/release <place>        Unpin; the machine resumes from that state.
+  @weather/climate <place>=<name> Assign a climate and opt the place in.
+  @weather/climate <place>=none   Opt the place out of weather.
   @weather/list                   List every weather cell.
+
+A place is a neighborhood or a region on the atlas, by name (`OOC Area`), by
+pack id (`neighborhood.ooc_area`, `region.limbo`), `here` (this room's
+neighborhood) or a room. A room's weather is its neighborhood's cell, else its
+region's; a room off the map bears none. Zones keep locks and zone exits only.
 
 Setting a zone up, start to finish:
 

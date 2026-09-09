@@ -1,8 +1,9 @@
 //! # mush-weather
 //!
-//! The zone-scoped weather module (design doc 04 §10, PLAN's Weather
-//! bullet), built as a [`GameModule`] on mush-core's merged module API. The
-//! model is a **deterministic** per-zone Markov state machine driven by
+//! The place-scoped weather module (design doc 04 §10, PLAN's Weather
+//! bullet; keyed on the atlas since S2b, doc 14 D-14-28), built as a
+//! [`GameModule`] on mush-core's merged module API. The model is a
+//! **deterministic** per-place Markov state machine driven by
 //! climate data files; there is no LLM flavor here (that is M10 — the line
 //! pools ship hand-written and leave a documented top-up seam, see
 //! [`climate`]).
@@ -11,7 +12,7 @@
 //!
 //! - **State** lives in one [`WeatherState`] module state slot (the live
 //!   [`WeatherCell`]s + a deterministic [`WxRng`]). Every cell mutation
-//!   mirrors to a `mod:weather:cell:{zone}` document via [`mush_core::ModuleOp`],
+//!   mirrors to a `mod:weather:cell:<place id>` document via [`mush_core::ModuleOp`],
 //!   so persistence is write-through with tick/command atomicity;
 //!   [`GameModule::on_world_loaded`] rebuilds the cells at boot. The
 //!   immutable [`ClimateSet`] is shared (`Arc`) across the tick, hooks,
@@ -23,9 +24,10 @@
 //!   clock) and emits transition + ambient lines.
 //! - **Room opt-in via flags** (already in mush-core): a room is `OUTDOORS`
 //!   (full weather), `SHELTERED` (state changes, muffled, no ambient drip),
-//!   or `INDOORS` (neither flag — silent). A room's `zone` determines its
-//!   cell.
-//! - **Messaging**: transition broadcasts to a zone's `OUTDOORS`/`SHELTERED`
+//!   or `INDOORS` (neither flag — silent). A room's weather is its
+//!   **neighborhood's** cell, else its **region's** (S2b); a room off the atlas
+//!   bears none — zones keep locks and zone exits only.
+//! - **Messaging**: transition broadcasts to a place's `OUTDOORS`/`SHELTERED`
 //!   rooms; low-probability jittered ambient lines per `OUTDOORS` room,
 //!   **suppressed when no players are present**; the `RoomView.ambient`
 //!   `weather` glance (a [`HookPoint::RoomAmbient`] hook) carries the
@@ -59,9 +61,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mush_core::output::display_name;
 use mush_core::{
-    Audience, Ctx, EventHook, Flags, GameModule, HookPoint, HookReadContext, ModError,
+    Audience, CanonicalId, Ctx, EventHook, Flags, GameModule, HookPoint, HookReadContext, ModError,
     ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId, ObjKind, PanelFeedHandle, Registrar,
     TickCadence, TickHandler, WeatherQuery, World, WorldEvent, WorldEventKind, WxSnapshot,
 };
@@ -219,7 +220,6 @@ impl GameModule for WeatherModule {
                 panel: panel.clone(),
             }),
         );
-        reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(WeatherCleanup));
         reg.subscribe(
             WorldEventKind::Moved,
             Arc::new(WeatherMove {
@@ -243,29 +243,40 @@ impl GameModule for WeatherModule {
         ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> Result<(), ModError> {
-        let mut cells: BTreeMap<ObjId, WeatherCell> = BTreeMap::new();
-        let mut orphans: Vec<ObjId> = Vec::new();
+        let mut cells: BTreeMap<CanonicalId, WeatherCell> = BTreeMap::new();
+        let mut orphans: Vec<CanonicalId> = Vec::new();
+        let mut legacy: Vec<SmolStr> = Vec::new();
         let mut flavor = FlavorStore::default();
         let mut stale_flavor: Vec<FlavorKey> = Vec::new();
         for (key, value) in data.kv {
-            if let Some(id) = key
-                .strip_prefix("cell:")
-                .and_then(|s| s.parse::<u32>().ok())
-            {
-                let cell = serde_json::from_value::<WeatherCell>(value)
-                    .map_err(|e| ModError::msg(format!("weather: bad cell doc {key:?}: {e}")))?;
-                // Drop cells whose zone object is gone or whose climate no
-                // longer ships — keep the machine consistent with live data.
-                let zone_ok = ctx.w.get(ObjId(id)).is_some();
-                if !zone_ok || !self.climates.contains(&cell.climate) {
-                    orphans.push(ObjId(id));
-                    if !self.climates.contains(&cell.climate) {
-                        tracing::warn!(zone = id, climate = %cell.climate,
-                            "weather: dropping cell with unknown climate");
+            if let Some(id) = key.strip_prefix("cell:") {
+                // S2b: a cell keys on an atlas place id. A pre-atlas cell keyed by a
+                // zone dbref (`cell:<digits>`) is dropped loudly — zones keep locks and
+                // exits only (doc 14 D-14-28); `@weather/climate <place>=<climate>`
+                // opts the neighborhood or region in.
+                let place = match CanonicalId::new(id) {
+                    Ok(place) if !id.bytes().all(|b| b.is_ascii_digit()) => place,
+                    _ => {
+                        tracing::warn!(%key, "weather: dropping a zone-keyed cell; weather keys on the atlas now");
+                        legacy.push(key.clone());
+                        continue;
                     }
+                };
+                let cell = match serde_json::from_value::<WeatherCell>(value) {
+                    Ok(cell) => cell,
+                    Err(e) => {
+                        tracing::warn!(%key, error = %e, "weather: dropping an unreadable cell");
+                        legacy.push(key.clone());
+                        continue;
+                    }
+                };
+                if !self.climates.contains(&cell.climate) {
+                    tracing::warn!(place = %place, climate = %cell.climate,
+                        "weather: dropping cell with unknown climate");
+                    orphans.push(place);
                     continue;
                 }
-                cells.insert(ObjId(id), cell);
+                cells.insert(place, cell);
             } else if let Some(fkey) = parse_flavor_key(&key) {
                 // The M10 flavor pool. Drop pools for a climate that no longer
                 // ships (its lines can never enter selection anyway).
@@ -300,8 +311,14 @@ impl GameModule for WeatherModule {
             st.cells = cells;
             st.flavor = flavor;
         }
-        for zone in orphans {
-            ctx.persist(delete_cell(zone));
+        for place in orphans {
+            ctx.persist(delete_cell(&place));
+        }
+        for key in legacy {
+            ctx.persist(ModuleOp {
+                ns: SmolStr::new_static(NS),
+                op: ModuleWrite::Del { key },
+            });
         }
         for fkey in stale_flavor {
             ctx.persist(ModuleOp {
@@ -345,20 +362,20 @@ fn run_tick(
     let season = ctx.season();
     let tod = ctx.time_of_day();
 
-    // (1) Read-only world scan for the zones that have a cell.
-    let zones: Vec<ObjId> = ctx
+    // (1) Read-only world scan for the places that have a cell.
+    let places: Vec<CanonicalId> = ctx
         .w
         .module_state::<WeatherState>()
-        .map(|s| s.cells.keys().copied().collect())
+        .map(|s| s.cells.keys().cloned().collect())
         .unwrap_or_default();
-    if zones.is_empty() {
+    if places.is_empty() {
         // Still advance the tick counter for diagnostics.
         if let Some(st) = ctx.w.module_state_mut::<WeatherState>() {
             st.tick_count = st.tick_count.saturating_add(1);
         }
         return;
     }
-    let scans: Vec<ZoneScan> = zones.iter().map(|&z| scan_zone(ctx.w, z)).collect();
+    let scans: Vec<PlaceScan> = places.iter().map(|p| scan_place(ctx.w, p)).collect();
 
     // (2) Roll every cell against the machine; collect emissions.
     let mut emits: Vec<Emit> = Vec::new();
@@ -369,7 +386,7 @@ fn run_tick(
         };
         st.tick_count = st.tick_count.saturating_add(1);
         for scan in &scans {
-            let Some(cell) = st.cells.get_mut(&scan.zone) else {
+            let Some(cell) = st.cells.get_mut(&scan.place) else {
                 continue;
             };
             let Some(climate) = climates.get(&cell.climate) else {
@@ -403,13 +420,13 @@ fn run_tick(
                         };
                         emits.push(Emit::Weather {
                             room: room.room,
-                            zone_name: scan.zone_name.clone(),
+                            zone_name: scan.name.clone(),
                             text,
                             icon: to.clone(),
                         });
                         emits.push(Emit::Panel {
                             room: room.room,
-                            data: panel_payload(&scan.zone_name, &to, temp),
+                            data: panel_payload(&scan.name, &to, temp),
                         });
                     }
                     changed.push(cell.clone());
@@ -437,7 +454,7 @@ fn run_tick(
                     {
                         emits.push(Emit::Weather {
                             room: room.room,
-                            zone_name: scan.zone_name.clone(),
+                            zone_name: scan.name.clone(),
                             text: line,
                             icon: cur.clone(),
                         });
@@ -582,27 +599,6 @@ impl mush_core::WorldObserver for WeatherMove {
 }
 
 // ----------------------------------------------------------------------
-// ObjDestroyed observer: drop a destroyed zone's cell
-// ----------------------------------------------------------------------
-
-struct WeatherCleanup;
-
-impl mush_core::WorldObserver for WeatherCleanup {
-    fn on_event(&self, ctx: &mut Ctx<'_>, ev: &WorldEvent) {
-        let WorldEvent::ObjDestroyed { obj } = ev else {
-            return;
-        };
-        let had = ctx
-            .w
-            .module_state_mut::<WeatherState>()
-            .is_some_and(|st| st.cells.remove(obj).is_some());
-        if had {
-            ctx.persist(delete_cell(*obj));
-        }
-    }
-}
-
-// ----------------------------------------------------------------------
 // WeatherQuery provider (the reserved ruleset seam)
 // ----------------------------------------------------------------------
 
@@ -621,14 +617,14 @@ impl WeatherQuery for WeatherProvider {
 // Shared helpers (used by the tick, hooks, provider, and commands)
 // ----------------------------------------------------------------------
 
-/// One zone's weather-bearing rooms, gathered from a read-only world scan.
-pub(crate) struct ZoneScan {
-    pub(crate) zone: ObjId,
-    pub(crate) zone_name: String,
+/// One place's weather-bearing rooms, gathered from the atlas's records.
+pub(crate) struct PlaceScan {
+    pub(crate) place: CanonicalId,
+    pub(crate) name: String,
     pub(crate) rooms: Vec<RoomInfo>,
 }
 
-/// One weather-bearing room in a zone.
+/// One weather-bearing room in a place.
 pub(crate) struct RoomInfo {
     pub(crate) room: ObjId,
     /// `SHELTERED` (and not also `OUTDOORS`): muffled, no ambient drip.
@@ -637,32 +633,91 @@ pub(crate) struct RoomInfo {
     pub(crate) occupied: bool,
 }
 
-/// Scan a zone for its `OUTDOORS`/`SHELTERED` rooms and their occupancy. A
-/// room with both flags counts as `OUTDOORS` (full weather).
-pub(crate) fn scan_zone(w: &World, zone: ObjId) -> ZoneScan {
-    let zone_name = display_name(w, zone);
-    let member_ids: Vec<ObjId> = w.zone_members_of(zone).collect();
-    let mut rooms = Vec::new();
-    for id in member_ids {
-        let Some(o) = w.get(id) else { continue };
-        if o.kind != ObjKind::Room {
-            continue;
-        }
-        let outdoors = o.flags.contains(Flags::OUTDOORS);
-        let sheltered = o.flags.contains(Flags::SHELTERED);
-        if !outdoors && !sheltered {
-            continue; // INDOORS: silent
-        }
-        let occupied = w.contents_of(id).iter().any(|&c| w.is_connected(c));
-        rooms.push(RoomInfo {
-            room: id,
-            sheltered: sheltered && !outdoors,
-            occupied,
-        });
+/// The atlas place a cell id names: a neighborhood by pack id, else a region.
+pub(crate) fn place_ref(w: &World, place: &CanonicalId) -> Option<mush_atlas::PlaceRef> {
+    let records = mush_atlas::place::records(w)?;
+    mush_atlas::place::neighborhood_by_pack(records, place)
+        .map(mush_atlas::PlaceRef::Neighborhood)
+        .or_else(|| {
+            mush_atlas::place::region_by_pack(records, place).map(mush_atlas::PlaceRef::Region)
+        })
+}
+
+/// A place's display name, or its id when the atlas does not know it (yet).
+pub(crate) fn place_name(w: &World, place: &CanonicalId) -> String {
+    match (place_ref(w, place), mush_atlas::place::records(w)) {
+        (Some(p), Some(records)) => p.name(records),
+        _ => place.to_string(),
     }
-    ZoneScan {
-        zone,
-        zone_name,
+}
+
+/// The place whose cell governs `room` (S2b): its neighborhood when that has a
+/// cell, else its region when that has one. A room off the atlas has none.
+pub(crate) fn place_of_room(w: &World, room: ObjId) -> Option<(CanonicalId, String)> {
+    let records = mush_atlas::place::records(w)?;
+    let st = w.module_state::<WeatherState>()?;
+    let nb_key = mush_atlas::place::neighborhood_of_room(records, room)?;
+    let nb = records.neighborhoods.get(&nb_key)?;
+    if st.cells.contains_key(&nb.key.pack) {
+        return Some((nb.key.pack.clone(), nb.name.clone()));
+    }
+    let region = records.regions.get(&nb.region)?;
+    if st.cells.contains_key(&region.key.pack) {
+        return Some((region.key.pack.clone(), region.name.clone()));
+    }
+    None
+}
+
+/// Scan a place for its `OUTDOORS`/`SHELTERED` rooms and their occupancy: a
+/// neighborhood's own rooms, or — for a region — the rooms of every neighborhood
+/// in it that has no cell of its own. A room with both flags counts as `OUTDOORS`
+/// (full weather).
+pub(crate) fn scan_place(w: &World, place: &CanonicalId) -> PlaceScan {
+    let mut rooms = Vec::new();
+    let mut name = place.to_string();
+    if let Some(records) = mush_atlas::place::records(w) {
+        let has_cell = |pack: &CanonicalId| {
+            w.module_state::<WeatherState>()
+                .is_some_and(|st| st.cells.contains_key(pack))
+        };
+        let mut room_ids: Vec<ObjId> = Vec::new();
+        if let Some(nb_key) = mush_atlas::place::neighborhood_by_pack(records, place) {
+            if let Some(nb) = records.neighborhoods.get(&nb_key) {
+                name.clone_from(&nb.name);
+            }
+            room_ids.extend(records.rooms_in(&nb_key).map(|g| g.room));
+        } else if let Some(region_key) = mush_atlas::place::region_by_pack(records, place) {
+            if let Some(region) = records.regions.get(&region_key) {
+                name.clone_from(&region.name);
+            }
+            for nb in records.neighborhoods_in(&region_key) {
+                if has_cell(&nb.key.pack) {
+                    continue;
+                }
+                room_ids.extend(records.rooms_in(&nb.key).map(|g| g.room));
+            }
+        }
+        for id in room_ids {
+            let Some(o) = w.get(id) else { continue };
+            if o.kind != ObjKind::Room {
+                continue;
+            }
+            let outdoors = o.flags.contains(Flags::OUTDOORS);
+            let sheltered = o.flags.contains(Flags::SHELTERED);
+            if !outdoors && !sheltered {
+                continue; // INDOORS: silent
+            }
+            let occupied = w.contents_of(id).iter().any(|&c| w.is_connected(c));
+            rooms.push(RoomInfo {
+                room: id,
+                sheltered: sheltered && !outdoors,
+                occupied,
+            });
+        }
+    }
+    PlaceScan {
+        place: place.clone(),
+        name,
         rooms,
     }
 }
@@ -698,8 +753,8 @@ pub(crate) fn panel_payload(zone_name: &str, state: &str, temp: i16) -> serde_js
 }
 
 /// Resolve `room` → `(cell, state-def, sheltered)` when the room bears
-/// weather (`OUTDOORS`/`SHELTERED`, in a zone with a cell whose climate is
-/// loaded). `None` for `INDOORS`/unzoned/unknown-climate rooms.
+/// weather (`OUTDOORS`/`SHELTERED`, in a neighborhood or region with a cell whose
+/// climate is loaded). `None` for `INDOORS`, off-atlas and unknown-climate rooms.
 pub(crate) fn resolve_room_weather<'a>(
     w: &World,
     climates: &'a ClimateSet,
@@ -714,8 +769,8 @@ pub(crate) fn resolve_room_weather<'a>(
     if !outdoors && !sheltered {
         return None;
     }
-    let zone = o.zone?;
-    let cell = w.module_state::<WeatherState>()?.cell(zone)?.clone();
+    let (place, _) = place_of_room(w, room)?;
+    let cell = w.module_state::<WeatherState>()?.cell(&place)?.clone();
     let climate = climates.get(&cell.climate)?;
     let def = climate.state(&cell.state)?;
     Some((cell, def, sheltered && !outdoors))
@@ -743,9 +798,8 @@ pub(crate) fn current_panel_data(
     room: ObjId,
 ) -> Option<serde_json::Value> {
     let (cell, _def, _sheltered) = resolve_room_weather(w, climates, room)?;
-    let zone = w.get(room)?.zone?;
-    let zone_name = display_name(w, zone);
-    Some(panel_payload(&zone_name, &cell.state, cell.temp))
+    let (_, name) = place_of_room(w, room)?;
+    Some(panel_payload(&name, &cell.state, cell.temp))
 }
 
 /// A short human phrase for a state id (falls back to the id itself for a

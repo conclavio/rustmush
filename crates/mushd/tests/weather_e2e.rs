@@ -17,9 +17,7 @@
 
 mod support;
 
-use support::{
-    boot_module_server, login_create, parse_id_after, play_client, scratch_dir, strip_ansi,
-};
+use support::{boot_module_server, login_create, play_client, scratch_dir, strip_ansi};
 
 const GM_PASSWORD: &str = "gm-secret-1";
 const BANNER: &str = "Welcome to the weather e2e MUSH!";
@@ -37,59 +35,42 @@ async fn rain_rolls_in_demo() {
     god.expect("Connected as God").await;
     god.expect("Limbo #0").await;
 
-    // --- Build a zone with one OUTDOORS room and one INDOORS room. -------
-    god.send_line("@create Downtown").await;
-    god.expect("Created: Downtown(#").await;
-    let zone = parse_id_after(&strip_ansi(&god.seen), "Created: Downtown(#");
-    god.send_line(&format!("@set #{zone}=ZONE_MASTER")).await;
-    god.expect("Set.").await;
-
-    // Two rooms, each reachable from Limbo by a named exit.
-    god.send_line("@dig Plaza=plaza,out").await;
-    god.expect("Plaza created with room number #").await;
-    let plaza = parse_id_after(&strip_ansi(&god.seen), "Plaza created with room number #");
-    god.send_line("@dig Cellar=cellar,back").await;
-    god.expect("Cellar created with room number #").await;
-    let cellar = parse_id_after(&strip_ansi(&god.seen), "Cellar created with room number #");
-
-    // Both rooms join the zone; only the Plaza is OUTDOORS. (The Cellar
-    // carries no weather flag, so it is INDOORS by default — silent.)
-    let mark = god.mark();
-    god.send_line(&format!("@zone #{plaza}=#{zone}")).await;
-    god.expect_after(mark, "Zoned.").await;
-    let mark = god.mark();
-    god.send_line(&format!("@zone #{cellar}=#{zone}")).await;
-    god.expect_after(mark, "Zoned.").await;
-    let mark = god.mark();
-    god.send_line(&format!("@set #{plaza}=OUTDOORS")).await;
-    god.expect_after(mark, "Set.").await;
-
-    // Opt the zone into weather.
-    god.send_line(&format!("@weather/climate #{zone}={CLIMATE}"))
+    // --- S2b: weather keys on the atlas. The starter lot is applied at first
+    // boot; the OOC Area's rooms are outdoors, and the Staff lot is another
+    // neighborhood with no cell of its own — silent.
+    god.send_line(&format!("@weather/climate OOC Area={CLIMATE}"))
         .await;
     god.expect("now uses climate").await;
 
     // --- Two players take their positions. ------------------------------
+    // Alice walks out to the OOC bus stop (outdoors, in the OOC Area).
     let (_alice_handle, mut alice) = login_create(addr, "Alice", "secret123").await;
     god.expect("Alice has connected.").await;
     let mark = alice.mark();
-    alice.send_line("plaza").await;
-    alice.expect_after(mark, "Plaza #").await;
+    alice.send_line("o").await;
+    alice.expect_after(mark, "Welcome Hall #").await;
+    let mark = alice.mark();
+    alice.send_line("s").await;
+    alice.expect_after(mark, "Lounge #").await;
+    let mark = alice.mark();
+    alice.send_line("out").await;
+    alice.expect_after(mark, "Bus Stop (OOC) #").await;
 
+    // Bob goes to the Staff lot's forecourt: a different neighborhood, no cell.
     let (_bob_handle, mut bob) = login_create(addr, "Bob", "hunter42").await;
     let mark = bob.mark();
-    bob.send_line("cellar").await;
-    bob.expect_after(mark, "Cellar #").await;
+    bob.send_line("s").await;
+    bob.expect_after(mark, "Forecourt & Bus Stop #").await;
 
     // --- Rain rolls in. -------------------------------------------------
     // Pin to rain, then to storm: the `rain->storm` transition pool has a
     // single line, so the broadcast to the OUTDOORS room is deterministic.
     let mark = god.mark();
-    god.send_line(&format!("@weather #{zone}=rain")).await;
+    god.send_line("@weather OOC Area=rain").await;
     god.expect_after(mark, "Pinned").await;
     let mark = alice.mark();
     let god_mark = god.mark();
-    god.send_line(&format!("@weather #{zone}=storm")).await;
+    god.send_line("@weather OOC Area=storm").await;
     god.expect_after(god_mark, "Pinned").await;
     alice
         .expect_after(mark, "The rain hardens and thunder rolls in close.")
@@ -98,7 +79,7 @@ async fn rain_rolls_in_demo() {
     // Alice's look shows the current-conditions line (the LookRendered hook).
     let mark = alice.mark();
     alice.send_line("look").await;
-    alice.expect_after(mark, "Plaza #").await;
+    alice.expect_after(mark, "Bus Stop (OOC) #").await;
     alice.expect_after(mark, "Overhead: a storm").await;
 
     // Bob's INDOORS room stays silent: his look shows the room but no
@@ -106,7 +87,7 @@ async fn rain_rolls_in_demo() {
     // output has arrived before we assert its absence.
     let mark = bob.mark();
     bob.send_line("look").await;
-    bob.expect_after(mark, "Cellar #").await;
+    bob.expect_after(mark, "Forecourt & Bus Stop #").await;
     bob.send_line("think WEATHER-SENTINEL").await;
     bob.expect_after(mark, "WEATHER-SENTINEL").await;
     let slice = strip_ansi(&bob.seen[mark..]);

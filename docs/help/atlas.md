@@ -19,6 +19,20 @@ Limbo is on no map. The OOC Area `<O>` and the Staff lot `<S>` are.
 
 Roads between neighborhoods take time to travel: see `help travel`.
 
+## What keys on the atlas
+
+The worldbuilding theme (`help worldgen`) hangs off places: a region, locality,
+neighborhood or site may carry one, `world` is the default, and a room resolves
+up through its site, neighborhood, locality and region. Weather cells key on a
+neighborhood or a region (`help weather`). A faction control region may stand on
+a place (`@region/atlas`), and a residence may be linked to the site it stands on
+(`@property/site`, refused if any of its rooms lies outside the site). Zones keep
+locks and zone exits only.
+
+  @atlas/theme <place>=<field>:<value>   set a theme field (staff)
+  @atlas/theme/show [<place>]            the effective theme there, or here
+  @atlas/theme/exemplar <place>=<room>   copy a room's desc in as an exemplar
+
 ## Content packs (staff)
 
 Places arrive as content packs: one JSON document — a manifest, entries (a

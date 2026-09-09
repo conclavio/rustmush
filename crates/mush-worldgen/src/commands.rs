@@ -1,4 +1,5 @@
-//! The `@theme`, `@gen`, and `@llm` command surface, plus the
+//! The `@gen` and `@llm` command surface (the theme verbs moved to `@atlas/theme`
+//! in S2b), plus the
 //! [`AsyncCompletion`] that re-enters a finished draft.
 //!
 //! The `@gen` handler is the world-loop half of the two-phase pattern: it
@@ -26,7 +27,7 @@ use crate::data::{
     WorldgenState, building_key, draft_key,
 };
 use crate::generate::map_brief_concepts;
-use crate::theme::{THEME_ATTR, Theme, resolve_theme, theme_on};
+use mush_atlas::theme::resolve_theme;
 
 /// The BFS room cap for a `@gen/building` walk (design 03 §5.3: N ≤ 40).
 pub const MAX_BUILDING_ROOMS: usize = 40;
@@ -87,25 +88,6 @@ pub(crate) fn register(reg: &mut Registrar<'_>, llm: Arc<LlmService>) -> Result<
             ..CommandSpec::default()
         },
         Arc::new(cmd_gen),
-    )?;
-    reg.command(
-        CommandSpec {
-            name: "@theme".into(),
-            shape: ArgShape::EqPair,
-            switches: vec!["show".into(), "exemplar".into()],
-            min_role: Role::Builder,
-            help: "@theme <zone>=<field>:<value> -- set a theme field on a zone, room, or \
-                   #0 (game default). Fields: name, style_guide, vocabulary, banned, \
-                   exemplars, desc_length, pov_rules (list fields take comma-separated \
-                   values).\n\
-                   @theme/show [<zone>] -- show the effective (resolved) theme for a \
-                   zone/room (default: here).\n\
-                   @theme/exemplar <zone>=<room> -- copy a room's accepted desc in as an \
-                   exemplar."
-                .into(),
-            ..CommandSpec::default()
-        },
-        Arc::new(cmd_theme),
     )?;
     reg.command(
         CommandSpec {
@@ -572,104 +554,6 @@ impl AsyncCompletion for WorldgenCompletion {
             }
         }
     }
-}
-
-// ----------------------------------------------------------------------
-// @theme
-// ----------------------------------------------------------------------
-
-fn cmd_theme(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    if ctx.switches.has("show") {
-        return theme_show(ctx);
-    }
-    if ctx.switches.has("exemplar") {
-        return theme_exemplar(ctx);
-    }
-    theme_set(ctx)
-}
-
-fn theme_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let lhs = ctx.args.lhs().to_string();
-    let rhs = ctx
-        .args
-        .rhs()
-        .map(str::to_string)
-        .ok_or_else(|| CmdError::msg("Usage: @theme <zone>=<field>:<value>."))?;
-    let (field, value) = rhs
-        .split_once(':')
-        .ok_or_else(|| CmdError::msg("Usage: @theme <zone>=<field>:<value>."))?;
-    let target = match_object(ctx.w, ctx.actor, &lhs)?;
-    if !perm::can_modify(ctx.w, ctx.actor, target) {
-        return Err(CmdError::msg("Permission denied."));
-    }
-    let mut theme = theme_on(ctx.w, target).unwrap_or_default();
-    let canonical = theme.set_field(field, value).map_err(CmdError::msg)?;
-    store_theme(ctx, target, &theme)?;
-    ctx.out.info(
-        ctx.actor,
-        format!("Theme {canonical} set on {}.", room_name(ctx.w, target)),
-    );
-    Ok(())
-}
-
-fn theme_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let lhs = ctx.args.lhs();
-    let target = if lhs.is_empty() {
-        here(ctx)?
-    } else {
-        match_object(ctx.w, ctx.actor, lhs)?
-    };
-    let theme = resolve_theme(ctx.w, target);
-    ctx.out.info(
-        ctx.actor,
-        format!("Effective theme for {}:", room_name(ctx.w, target)),
-    );
-    for line in render_theme_lines(&theme) {
-        ctx.out.info(ctx.actor, line);
-    }
-    Ok(())
-}
-
-fn theme_exemplar(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let lhs = ctx.args.lhs().to_string();
-    let rhs = ctx
-        .args
-        .rhs()
-        .map(str::to_string)
-        .ok_or_else(|| CmdError::msg("Usage: @theme/exemplar <zone>=<room>."))?;
-    let target = match_object(ctx.w, ctx.actor, &lhs)?;
-    if !perm::can_modify(ctx.w, ctx.actor, target) {
-        return Err(CmdError::msg("Permission denied."));
-    }
-    let room = match_object(ctx.w, ctx.actor, &rhs)?;
-    let desc = ctx
-        .w
-        .attr(room, "desc")
-        .and_then(|a| a.as_text())
-        .map(str::to_string)
-        .filter(|d| !d.trim().is_empty())
-        .ok_or_else(|| CmdError::msg("That room has no accepted description to copy."))?;
-    let mut theme = theme_on(ctx.w, target).unwrap_or_default();
-    theme.exemplars.push(desc);
-    store_theme(ctx, target, &theme)?;
-    ctx.out.info(
-        ctx.actor,
-        format!(
-            "Exemplar copied from {} into {}'s theme ({} total).",
-            room_name(ctx.w, room),
-            room_name(ctx.w, target),
-            theme.exemplars.len()
-        ),
-    );
-    Ok(())
-}
-
-fn store_theme(ctx: &mut Ctx<'_>, target: ObjId, theme: &Theme) -> Result<(), CmdError> {
-    let value = serde_json::to_value(theme)
-        .map_err(|e| CmdError::msg(format!("Could not serialize the theme: {e}")))?;
-    ctx.w
-        .set_attr(target, THEME_ATTR, Attr::json(value, ctx.actor))?;
-    Ok(())
 }
 
 // ----------------------------------------------------------------------
@@ -1333,33 +1217,6 @@ fn render_draft_lines(w: &World, draft: &StoredDraft) -> Vec<String> {
         if !e.desc.trim().is_empty() {
             lines.push(format!("Exit [{handle}]: {}", e.desc));
         }
-    }
-    lines
-}
-
-fn render_theme_lines(theme: &Theme) -> Vec<String> {
-    if theme.is_empty() {
-        return vec!["  (no theme configured)".to_string()];
-    }
-    let mut lines = Vec::new();
-    if !theme.name.is_empty() {
-        lines.push(format!("  Name: {}", theme.name));
-    }
-    if !theme.style_guide.is_empty() {
-        lines.push(format!("  Style: {}", theme.style_guide));
-    }
-    if !theme.pov_rules.is_empty() {
-        lines.push(format!("  POV: {}", theme.pov_rules));
-    }
-    if !theme.vocabulary.is_empty() {
-        lines.push(format!("  Vocabulary: {}", theme.vocabulary.join(", ")));
-    }
-    if !theme.banned.is_empty() {
-        lines.push(format!("  Banned: {}", theme.banned.join(", ")));
-    }
-    lines.push(format!("  Length: {}", theme.desc_length.as_str()));
-    if !theme.exemplars.is_empty() {
-        lines.push(format!("  Exemplars: {}", theme.exemplars.len()));
     }
     lines
 }

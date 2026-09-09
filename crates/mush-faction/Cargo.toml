@@ -8,6 +8,8 @@ description = "Faction registry: organizations, membership, structure edges, res
 
 [dependencies]
 mush-core.workspace = true
+# S2b: a control region may point at an atlas place (doc 14 D-14-28); acyclic.
+mush-atlas.workspace = true
 mush-comsys.workspace = true
 mush-canon.workspace = true
 # E1c: the faction-standing predicate provider bridges faction standing into org
@@ -23,6 +25,8 @@ smol_str.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# S2b tests apply a small content pack so rooms have a neighborhood on the map.
+mush-content.workspace = true
 futures.workspace = true
 mush-proto.workspace = true
 mush-store.workspace = true

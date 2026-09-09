@@ -340,8 +340,9 @@ async fn m5_module_round_trip(store: Arc<dyn ObjectStore>) {
     god_cmd_committed(&world, "@dig/teleport Plaza").await;
     god_cmd_committed(&world, "@zone here=Downtown").await;
     god_cmd_committed(&world, "@set here=OUTDOORS").await;
-    god_cmd_committed(&world, "@weather/climate here=temperate-coastal").await;
-    god_cmd_committed(&world, "@weather here=storm").await;
+    // S2b: the cell keys on the atlas's OOC Area, not the zone.
+    god_cmd_committed(&world, "@weather/climate OOC Area=temperate-coastal").await;
+    god_cmd_committed(&world, "@weather OOC Area=storm").await;
     expect_text(&mut god_rx, "Pinned").await;
 
     // A scripted object: its script lives in a `script:*` attribute on the
@@ -369,7 +370,7 @@ async fn m5_module_round_trip(store: Arc<dyn ObjectStore>) {
     let ev = expect_text(&mut god_rx2, "[pinned]").await;
     let listed = text_of(&ev);
     assert!(
-        listed.contains("storm") && listed.contains("Downtown"),
+        listed.contains("storm") && listed.contains("OOC Area"),
         "reboot must rebuild the pinned storm cell: {listed:?}"
     );
 
@@ -1132,12 +1133,12 @@ async fn worldgen_round_trip(store: Arc<dyn ObjectStore>) {
     let world = handles.handle.clone();
     let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
 
-    // A Zone Master Object carrying the theme (a `worldgen.theme` obj attr).
+    // The world theme (S2b: an atlas document, `mod:atlas:theme:world`).
     god_cmd_committed(&world, "@create Downtown").await;
     god_cmd_committed(&world, "@set Downtown=ZONE_MASTER").await;
     god_cmd_committed(
         &world,
-        &format!("@theme Downtown=style_guide:{THEME_STYLE}"),
+        &format!("@atlas/theme world=style_guide:{THEME_STYLE}"),
     )
     .await;
     expect_text(&mut god_rx, "Theme style_guide set").await;
@@ -1162,9 +1163,9 @@ async fn worldgen_round_trip(store: Arc<dyn ObjectStore>) {
     let world2 = handles2.handle.clone();
     let mut god_rx2 = attach_direct(&sessions2, &world2, 2, GOD, "god").await;
 
-    // The theme survived (an obj attribute on Downtown): it resolves for the
+    // The theme survived (the atlas's world theme document): it resolves for the
     // reloaded Plaza, where God still stands (his teleport persisted).
-    god_cmd(&world2, "@theme/show here").await;
+    god_cmd(&world2, "@atlas/theme/show here").await;
     let ev = expect_text(&mut god_rx2, THEME_STYLE).await;
     assert!(
         text_of(&ev).contains(THEME_STYLE),

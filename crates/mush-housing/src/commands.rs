@@ -61,7 +61,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@property".into(),
             shape: ArgShape::EqPair,
-            switches: ["create", "rooms", "tier", "feature", "withdraw", "show", "list"]
+            switches: ["create", "rooms", "tier", "feature", "site", "withdraw", "show", "list"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -78,6 +78,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20                                      while the property is LET)\n\
                    @property/tier <id>=<0-5>               the residence's physical band (staff)\n\
                    @property/feature <id>=<key>            record an approved feature (staff)\n\
+                   @property/site <id>=<site>              link the atlas site it stands on (staff);\n\
+                   \x20                                      refused naming any room outside the\n\
+                   \x20                                      site's footprint; empty clears\n\
                    @property/withdraw <id>                 take it out of service (staff)\n\
                    @property/show <id>   @property/list [landlord=<org>]\n\
                    \x20  Who may read them: staff; an officer holding property.view or\n\
@@ -597,11 +600,13 @@ fn cmd_property(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         property_tier(ctx)
     } else if sw.has("feature") {
         property_feature(ctx)
+    } else if sw.has("site") {
+        property_site(ctx)
     } else if sw.has("withdraw") {
         property_withdraw(ctx)
     } else {
         Err(CmdError::msg(
-            "Usage: @property/create|rooms|tier|feature|withdraw|show|list",
+            "Usage: @property/create|rooms|tier|feature|site|withdraw|show|list",
         ))
     }
 }
@@ -959,6 +964,101 @@ fn property_feature(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// there, still gets in, and still shows on `+home`. What changes is that the destroy
 /// gate stops protecting the rooms and the access hook stops answering for them, which
 /// is the point — withdrawing is how staff clear the way to demolish something.
+/// `@property/site <id>=<site>` (S2b): link the atlas site the residence stands on.
+/// Every room of the property must lie within the site's footprint — by its room
+/// geometry naming the site, or its footprint falling inside the site's; a room off
+/// the map, or outside, is named in the refusal. An empty right-hand side clears.
+fn property_site(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let p = property_of(ctx, ctx.args.lhs())?;
+    let rhs = ctx.args.rhs().unwrap_or("").trim().to_string();
+    let site = if rhs.is_empty() {
+        None
+    } else {
+        let records = mush_atlas::place::records(ctx.w)
+            .ok_or_else(|| CmdError::msg("The atlas is not composed on this server."))?;
+        let key = match mush_atlas::place::find_place(records, &rhs) {
+            Some(mush_atlas::PlaceRef::Site(key)) => key,
+            Some(_) => {
+                return Err(CmdError::msg(
+                    "A property stands on a site, not a larger place.",
+                ));
+            }
+            None => {
+                return Err(CmdError::msg(format!(
+                    "No site called {rhs:?} on the atlas (name it, or <pack>:<entry>)."
+                )));
+            }
+        };
+        let site = records
+            .sites
+            .get(&key)
+            .ok_or_else(|| CmdError::msg("That site is gone."))?;
+        let shape = site
+            .footprint
+            .to_cm()
+            .map_err(|e| CmdError::msg(format!("The site's footprint will not measure: {e}")))?;
+        let shape = mush_atlas::Shape::Polygon(shape);
+        for room in &p.rooms {
+            let Some(geo) = records.roomgeo.get(room) else {
+                return Err(CmdError::msg(format!(
+                    "#{} is on no map; a property links to a site only when every room has \
+                     geometry.",
+                    room.0
+                )));
+            };
+            if geo.site.as_ref() == Some(&key) {
+                continue;
+            }
+            let inside = geo.footprint.shape().is_ok_and(|room_shape| {
+                let b = room_shape.bbox();
+                [
+                    mush_atlas::PointCm {
+                        x: b.min.x,
+                        y: b.min.y,
+                    },
+                    mush_atlas::PointCm {
+                        x: b.max.x - 1,
+                        y: b.min.y,
+                    },
+                    mush_atlas::PointCm {
+                        x: b.min.x,
+                        y: b.max.y - 1,
+                    },
+                    mush_atlas::PointCm {
+                        x: b.max.x - 1,
+                        y: b.max.y - 1,
+                    },
+                ]
+                .iter()
+                .all(|corner| shape.contains(*corner))
+            });
+            if !inside {
+                return Err(CmdError::msg(format!(
+                    "#{} lies outside {}'s footprint; a property stands on one site.",
+                    room.0, site.name
+                )));
+            }
+        }
+        Some((key, site.name.clone()))
+    };
+    let mut next = p.clone();
+    next.site = site.as_ref().map(|(k, _)| k.clone());
+    next.revision = next.revision.saturating_add(1);
+    put_property(ctx, next);
+    info(
+        ctx,
+        match site {
+            Some((key, name)) => format!(
+                "Property #{} stands on site {name} ({}:{}).",
+                p.id, key.pack, key.entry
+            ),
+            None => format!("Property #{} stands on no atlas site.", p.id),
+        },
+    );
+    ctx.gate_on_durable_ack();
+    Ok(())
+}
+
 fn property_withdraw(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let p = property_of(ctx, ctx.args.lhs())?;
     if p.status == PropertyStatus::Withdrawn {
@@ -1028,6 +1128,15 @@ fn property_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ),
     );
     info(ctx, format!("  rooms: {}", rooms.join(" ")));
+    if let Some(site) = &p.site {
+        let name = mush_atlas::place::records(ctx.w)
+            .and_then(|r| r.sites.get(site))
+            .map_or_else(|| "a site that is gone".to_string(), |s| s.name.clone());
+        info(
+            ctx,
+            format!("  site: {name} ({}:{})", site.pack, site.entry),
+        );
+    }
     for line in review {
         info(ctx, line);
     }

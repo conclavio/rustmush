@@ -410,6 +410,11 @@ pub struct Region {
     /// Zone master objects this region covers (may be empty).
     #[serde(default)]
     pub zones: Vec<ObjId>,
+    /// The atlas place this region stands on, if it stands anywhere (S2b, doc 14
+    /// D-14-28): a neighborhood's or a region's pack id, or `<pack>:<entry>` for a
+    /// locality. Never required — a non-spatial region has none.
+    #[serde(default)]
+    pub atlas: Option<String>,
 }
 
 /// How a faction holds a region (§3.5). A single owner field cannot express

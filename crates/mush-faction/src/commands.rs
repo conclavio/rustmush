@@ -1180,11 +1180,56 @@ fn cmd_region(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         region_destroy(ctx)
     } else if ctx.switches.has("zone") {
         region_zone(ctx)
+    } else if ctx.switches.has("atlas") {
+        region_atlas(ctx)
     } else if ctx.switches.has("note") {
         region_note(ctx)
     } else {
         region_list(ctx)
     }
+}
+
+/// `@region/atlas <region>=<place>` (S2b): point a control region at an atlas
+/// place — a neighborhood, a locality or a region, by name or id — or clear it
+/// with an empty right-hand side. The place's footprint is what `+territory`
+/// shows for it.
+fn region_atlas(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let r = resolve_region(ctx, ctx.args.lhs())?;
+    let rhs = ctx.args.rhs().unwrap_or("").trim().to_string();
+    let place = if rhs.is_empty() {
+        None
+    } else {
+        let records = mush_atlas::place::records(ctx.w)
+            .ok_or_else(|| CmdError::msg("The atlas is not composed on this server."))?;
+        match mush_atlas::place::find_place(records, &rhs) {
+            Some(mush_atlas::PlaceRef::World) | Some(mush_atlas::PlaceRef::Site(_)) => {
+                return Err(CmdError::msg(
+                    "A control region stands on a neighborhood, a locality or a region.",
+                ));
+            }
+            Some(place) => Some((place.id(), place.name(records))),
+            None => {
+                return Err(CmdError::msg(format!(
+                    "No neighborhood, locality or region called {rhs:?} on the atlas."
+                )));
+            }
+        }
+    };
+    let updated = {
+        let st = state(ctx);
+        let region = st.regions.get_mut(&r.id).expect("resolved above");
+        region.atlas = place.as_ref().map(|(id, _)| id.clone());
+        region.clone()
+    };
+    persist_region(ctx.out, &updated);
+    info(
+        ctx,
+        match place {
+            Some((id, name)) => format!("Region {} now stands on {name} ({id}).", updated.name),
+            None => format!("Region {} stands on no atlas place.", updated.name),
+        },
+    );
+    Ok(())
 }
 
 fn region_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -1205,6 +1250,7 @@ fn region_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             name: SmolStr::new(&name),
             note: String::new(),
             zones: Vec::new(),
+            atlas: None,
         };
         st.regions.insert(id, r.clone());
         (r, st.next_faction_id, st.next_region_id)
@@ -1571,7 +1617,26 @@ fn cmd_territory(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         } else {
             holds.join("; ")
         };
-        lines.push(format!("  {} — {hold_text}", r.name));
+        // S2b: a region that stands on an atlas place shows its footprint.
+        let footprint = r
+            .atlas
+            .as_deref()
+            .and_then(|id| {
+                let records = mush_atlas::place::records(ctx.w)?;
+                let place = mush_atlas::place::find_place(records, id)?;
+                let (w_m, h_m, x0, y0) = place.extent_m(records)?;
+                Some(format!(
+                    "  [map: {} {}, {:.0} m × {:.0} m at ({:.0}, {:.0})]",
+                    place.kind(),
+                    place.name(records),
+                    w_m,
+                    h_m,
+                    x0,
+                    y0
+                ))
+            })
+            .unwrap_or_default();
+        lines.push(format!("  {} — {hold_text}{footprint}", r.name));
     }
     if lines.is_empty() {
         ctx.out
@@ -1657,13 +1722,17 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 "create".into(),
                 "destroy".into(),
                 "zone".into(),
+                "atlas".into(),
                 "note".into(),
             ],
             help: "@region  --  Staff territory regions (Royalty+ or FACTION_ADMIN). No switch: \
                    list. A region is deliberately NOT the room graph: it may cover zone master \
-                   objects, or nothing at all (a non-spatial region like \"Media influence\").\n\
+                   objects, stand on an atlas place, or nothing at all (a non-spatial region \
+                   like \"Media influence\").\n\
                    @region/create <name> ; @region/destroy <name>\n\
                    @region/zone <region>=<zone master object>  (toggle coverage)\n\
+                   @region/atlas <region>=<neighborhood|locality|region>  (its footprint shows \
+                   in +territory; empty clears)\n\
                    @region/note <region>=<text>"
                 .into(),
             ..CommandSpec::default()

@@ -4,23 +4,22 @@
 //!
 //! Surface:
 //!
-//! - `@weather <zone>` — show a zone's current conditions (+ panel keyframe).
-//! - `@weather <zone>=<state>` — pin a state (pauses the machine).
-//! - `@weather/release <zone>` — unpin, resume the machine.
-//! - `@weather/climate <zone>=<name>` — assign a climate and opt the zone in
-//!   (`<name>` = `none`/`off` opts the zone out).
+//! - `@weather <place>` — show a place's current conditions (+ panel keyframe).
+//! - `@weather <place>=<state>` — pin a state (pauses the machine).
+//! - `@weather/release <place>` — unpin, resume the machine.
+//! - `@weather/climate <place>=<name>` — assign a climate and opt the place in
+//!   (`<name>` = `none`/`off` opts the place out).
 //! - `@weather/list` — list every weather cell.
 //!
-//! `<zone>` is `here` (the actor's room's zone) or any object match — staff
-//! normally pass the zone object's dbref.
+//! `<place>` (S2b, doc 14 D-14-28) is a neighborhood or a region — by name, by pack
+//! id, `here` (this room's neighborhood) or a room (its neighborhood).
 
 use std::sync::Arc;
 
 use mush_core::module::AsyncCompletion;
-use mush_core::output::display_name;
 use mush_core::{
-    ArgShape, CmdError, CommandHandler, CommandSpec, Ctx, Deferred, Effect, ModError, ObjId,
-    PanelFeedHandle, Powers, Registrar, Role, World, match_object, perm,
+    ArgShape, CanonicalId, CmdError, CommandHandler, CommandSpec, Ctx, Deferred, Effect, ModError,
+    ObjId, ObjKind, PanelFeedHandle, Powers, Registrar, Role, World, match_object, perm,
 };
 use smol_str::SmolStr;
 
@@ -31,14 +30,9 @@ use crate::flavor::{
     MAX_FLAVOR_LINES_PER_POOL, MAX_FLAVOR_VARIANTS_PER_BUCKET,
 };
 use crate::machine::{pick_transition_line, roll_temp};
-use crate::{NS, WeatherConfig, muffle, panel_payload, scan_zone, weather_event};
-
-/// The attribute a worldgen [`Theme`](mush_worldgen) is stored under. Hardcoded
-/// (not a `mush-worldgen` dependency) so weather can read a zone's theme
-/// **style** for flavor consistency — the one documented cross-module contract,
-/// mirroring how `mush-worldgen` hardcodes the NPC `agent:profile` attr. Only
-/// the `style_guide`/`vocabulary`/`banned` fields are read, as opaque JSON.
-const ZONE_THEME_ATTR: &str = "worldgen.theme";
+use crate::{
+    NS, WeatherConfig, muffle, panel_payload, place_name, place_ref, scan_place, weather_event,
+};
 
 /// Register the `@weather` command and the flavor-generation async completion.
 pub(crate) fn register(
@@ -77,12 +71,12 @@ pub(crate) fn register(
 }
 
 const HELP: &str = "\
-@weather <zone>                 -- show a zone's current conditions
-@weather <zone>=<state>         -- pin a weather state (pauses the machine)
-@weather/release <zone>         -- unpin and resume the machine
-@weather/climate <zone>=<name>  -- assign a climate + opt the zone in
-@weather/climate <zone>=none    -- opt the zone out of weather
-@weather/list                   -- list every weather cell
+@weather <place>                 -- show a place's current conditions
+@weather <place>=<state>         -- pin a weather state (pauses the machine)
+@weather/release <place>         -- unpin and resume the machine
+@weather/climate <place>=<name>  -- assign a climate + opt the place in
+@weather/climate <place>=none    -- opt the place out of weather
+@weather/list                    -- list every weather cell
 
 Flavor top-up (LLM; needs the BUILDER_LLM power):
 @weather/generate [<climate>] [<state>]  -- generate PENDING flavor variants
@@ -90,8 +84,11 @@ Flavor top-up (LLM; needs the BUILDER_LLM power):
 @weather/lines/approve <id>|all          -- approve pending line(s) into play
 @weather/lines/reject <id>|all           -- reject (delete) pending line(s)
 
-<zone> is 'here' (this room's zone) or an object match (usually a dbref).
-Rooms opt in with the OUTDOORS or SHELTERED flags; INDOORS rooms stay silent.
+<place> is a neighborhood or a region on the atlas: by name, by pack id
+(neighborhood.ooc_area, region.limbo), 'here' (this room's neighborhood) or a
+room. A room's weather is its neighborhood's cell, else its region's; a room
+off the map bears none. Rooms opt in with the OUTDOORS or SHELTERED flags;
+INDOORS rooms stay silent.
 Generated lines are PENDING until approved; only APPROVED lines are ever shown
 to players. Transitions stay 100% deterministic; only the flavor text is LLM.
 Royalty+ (the flavor top-up also needs the BUILDER_LLM power).";
@@ -120,62 +117,91 @@ impl CommandHandler for WeatherCmd {
         if ctx.switches.has("list") {
             return self.list(ctx);
         }
-        let zone_arg = ctx.args.lhs().trim().to_string();
+        let place_arg = ctx.args.lhs().trim().to_string();
         if ctx.switches.has("release") {
-            return self.release(ctx, &zone_arg);
+            return self.release(ctx, &place_arg);
         }
         if ctx.switches.has("climate") {
             let name = ctx.args.rhs().unwrap_or("").trim().to_string();
-            return self.assign(ctx, &zone_arg, &name);
+            return self.assign(ctx, &place_arg, &name);
         }
         match ctx.args.rhs().map(|s| s.trim().to_string()) {
-            Some(state) => self.pin(ctx, &zone_arg, &state),
-            None => self.show(ctx, &zone_arg),
+            Some(state) => self.pin(ctx, &place_arg, &state),
+            None => self.show(ctx, &place_arg),
         }
     }
 }
 
 impl WeatherCmd {
-    /// Resolve a `<zone>` argument to a zone object id.
-    fn resolve_zone(&self, ctx: &Ctx<'_>, arg: &str) -> Result<ObjId, CmdError> {
+    /// Resolve a `<place>` argument to an atlas place id and its name: `here` or a
+    /// room (its neighborhood), a pack id, or a neighborhood's or region's name.
+    fn resolve_place(&self, ctx: &Ctx<'_>, arg: &str) -> Result<(CanonicalId, String), CmdError> {
         let arg = arg.trim();
         if arg.is_empty() {
             return Err(CmdError::msg(
-                "Usage: @weather <zone>[=<state>]  (see 'help @weather').",
+                "Usage: @weather <place>[=<state>]  (see 'help @weather').",
             ));
         }
-        if arg.eq_ignore_ascii_case("here") {
-            let room = ctx
-                .w
-                .get(ctx.actor)
-                .and_then(|o| o.location)
-                .ok_or_else(|| CmdError::msg("You are nowhere."))?;
-            return ctx
-                .w
-                .get(room)
-                .and_then(|o| o.zone)
-                .ok_or_else(|| CmdError::msg("This room is not in a zone."));
+        let records = mush_atlas::place::records(ctx.w)
+            .ok_or_else(|| CmdError::msg("The atlas is not composed on this server."))?;
+        let room = if arg.eq_ignore_ascii_case("here") {
+            Some(
+                ctx.w
+                    .get(ctx.actor)
+                    .and_then(|o| o.location)
+                    .ok_or_else(|| CmdError::msg("You are nowhere."))?,
+            )
+        } else {
+            match_object(ctx.w, ctx.actor, arg)
+                .ok()
+                .filter(|o| ctx.w.get(*o).is_some_and(|o| o.kind == ObjKind::Room))
+        };
+        if let Some(room) = room {
+            let nb = mush_atlas::place::neighborhood_of_room(records, room)
+                .and_then(|k| records.neighborhoods.get(&k))
+                .ok_or_else(|| {
+                    CmdError::msg(
+                        "That room is on no map; weather keys on a neighborhood or a region.",
+                    )
+                })?;
+            return Ok((nb.key.pack.clone(), nb.name.clone()));
         }
-        Ok(match_object(ctx.w, ctx.actor, arg)?)
+        match mush_atlas::place::find_place(records, arg) {
+            Some(mush_atlas::PlaceRef::Neighborhood(k)) => records
+                .neighborhoods
+                .get(&k)
+                .map(|n| (n.key.pack.clone(), n.name.clone()))
+                .ok_or_else(|| CmdError::msg("No such place.")),
+            Some(mush_atlas::PlaceRef::Region(k)) => records
+                .regions
+                .get(&k)
+                .map(|r| (r.key.pack.clone(), r.name.clone()))
+                .ok_or_else(|| CmdError::msg("No such place.")),
+            Some(_) => Err(CmdError::msg(
+                "Weather keys on a neighborhood or a region, not a locality or a site.",
+            )),
+            None => Err(CmdError::msg(format!(
+                "No neighborhood or region called {arg:?}. Name one, or a room in it."
+            ))),
+        }
     }
 
-    /// `@weather <zone>` — show current conditions and push a panel keyframe.
+    /// `@weather <place>` — show current conditions and push a panel keyframe.
     fn show(&self, ctx: &mut Ctx<'_>, arg: &str) -> Result<(), CmdError> {
-        let zone = self.resolve_zone(ctx, arg)?;
+        let (place, name) = self.resolve_place(ctx, arg)?;
         let cell = ctx
             .w
             .module_state::<WeatherState>()
-            .and_then(|s| s.cell(zone).cloned())
+            .and_then(|s| s.cell(&place).cloned())
             .ok_or_else(|| {
-                CmdError::msg("That zone has no weather cell.  (See @weather/climate.)")
+                CmdError::msg("That place has no weather cell.  (See @weather/climate.)")
             })?;
-        let zone_name = display_name(ctx.w, zone);
         let pinned = if cell.pinned { "  [pinned]" } else { "" };
         ctx.out.info(
             ctx.actor,
             format!(
-                "Weather for {zone_name} (#{}): {}, {}\u{b0}C, climate {}{pinned}.",
-                zone.0, cell.state, cell.temp, cell.climate
+                "Weather for {name} ({place}): {}, {}\u{b0}C, climate {}{pinned}.",
+                cell.state, cell.temp, cell.climate
             ),
         );
         if let Some(def) = self
@@ -192,29 +218,29 @@ impl WeatherCmd {
             );
         }
         self.panel
-            .keyframe(ctx, panel_payload(&zone_name, &cell.state, cell.temp));
+            .keyframe(ctx, panel_payload(&name, &cell.state, cell.temp));
         Ok(())
     }
 
-    /// `@weather <zone>=<state>` — pin a state and broadcast the change.
+    /// `@weather <place>=<state>` — pin a state and broadcast the change.
     fn pin(&self, ctx: &mut Ctx<'_>, arg: &str, state: &str) -> Result<(), CmdError> {
         if state.is_empty() {
             return Err(CmdError::msg(
-                "Pin to which state?  @weather <zone>=<state>",
+                "Pin to which state?  @weather <place>=<state>",
             ));
         }
-        let zone = self.resolve_zone(ctx, arg)?;
+        let (place, name) = self.resolve_place(ctx, arg)?;
         let cell = ctx
             .w
             .module_state::<WeatherState>()
-            .and_then(|s| s.cell(zone).cloned())
+            .and_then(|s| s.cell(&place).cloned())
             .ok_or_else(|| {
-                CmdError::msg("Assign a climate first: @weather/climate <zone>=<name>.")
+                CmdError::msg("Assign a climate first: @weather/climate <place>=<name>.")
             })?;
         let climate = self
             .climates
             .get(&cell.climate)
-            .ok_or_else(|| CmdError::msg("That zone's climate is not loaded."))?;
+            .ok_or_else(|| CmdError::msg("That place's climate is not loaded."))?;
         if climate.state(state).is_none() {
             let known: Vec<&str> = climate.states.iter().map(|s| s.id.as_str()).collect();
             return Err(CmdError::msg(format!(
@@ -236,7 +262,7 @@ impl WeatherCmd {
                 .expect("weather state slot installed at registration");
             let cell = st
                 .cells
-                .get_mut(&zone)
+                .get_mut(&place)
                 .expect("cell exists (checked above)");
             let from = cell.state.clone();
             let temp = climate
@@ -255,20 +281,17 @@ impl WeatherCmd {
         };
 
         ctx.persist(persist_cell(&updated));
-        self.broadcast(ctx, zone, &line, &to, temp);
+        self.broadcast(ctx, &place, &line, &to, temp);
         ctx.out.info(
             ctx.actor,
-            format!(
-                "Pinned {} to {to} (was {from}).  /release to resume the machine.",
-                display_name(ctx.w, zone)
-            ),
+            format!("Pinned {name} to {to} (was {from}).  /release to resume the machine."),
         );
         Ok(())
     }
 
-    /// `@weather/release <zone>` — unpin, resuming the machine.
+    /// `@weather/release <place>` — unpin, resuming the machine.
     fn release(&self, ctx: &mut Ctx<'_>, arg: &str) -> Result<(), CmdError> {
-        let zone = self.resolve_zone(ctx, arg)?;
+        let (place, name) = self.resolve_place(ctx, arg)?;
         let updated = {
             let st = ctx
                 .w
@@ -276,10 +299,10 @@ impl WeatherCmd {
                 .expect("weather state slot installed at registration");
             let cell = st
                 .cells
-                .get_mut(&zone)
-                .ok_or_else(|| CmdError::msg("That zone has no weather cell."))?;
+                .get_mut(&place)
+                .ok_or_else(|| CmdError::msg("That place has no weather cell."))?;
             if !cell.pinned {
-                return Err(CmdError::msg("That zone is not pinned."));
+                return Err(CmdError::msg("That place is not pinned."));
             }
             cell.pinned = false;
             cell.clone()
@@ -287,33 +310,28 @@ impl WeatherCmd {
         ctx.persist(persist_cell(&updated));
         ctx.out.info(
             ctx.actor,
-            format!(
-                "Released {}; the weather machine resumes.",
-                display_name(ctx.w, zone)
-            ),
+            format!("Released {name}; the weather machine resumes."),
         );
         Ok(())
     }
 
-    /// `@weather/climate <zone>=<name>` — assign a climate (opt in), or
+    /// `@weather/climate <place>=<name>` — assign a climate (opt in), or
     /// `=none`/`=off` to opt out.
     fn assign(&self, ctx: &mut Ctx<'_>, arg: &str, name: &str) -> Result<(), CmdError> {
-        let zone = self.resolve_zone(ctx, arg)?;
+        let (place, place_name_) = self.resolve_place(ctx, arg)?;
         // Opt out.
         if name.is_empty() || name.eq_ignore_ascii_case("none") || name.eq_ignore_ascii_case("off")
         {
             let removed = ctx
                 .w
                 .module_state_mut::<WeatherState>()
-                .is_some_and(|s| s.cells.remove(&zone).is_some());
+                .is_some_and(|s| s.cells.remove(&place).is_some());
             if !removed {
-                return Err(CmdError::msg("That zone has no weather cell."));
+                return Err(CmdError::msg("That place has no weather cell."));
             }
-            ctx.persist(delete_cell(zone));
-            ctx.out.info(
-                ctx.actor,
-                format!("{} opted out of weather.", display_name(ctx.w, zone)),
-            );
+            ctx.persist(delete_cell(&place));
+            ctx.out
+                .info(ctx.actor, format!("{place_name_} opted out of weather."));
             return Ok(());
         }
         if !self.climates.contains(name) {
@@ -341,25 +359,22 @@ impl WeatherCmd {
                 .state(&start)
                 .map(|def| roll_temp(def, season, &mut st.rng))
                 .unwrap_or(0);
-            let mut cell = WeatherCell::new(zone, name, start.clone());
+            let mut cell = WeatherCell::new(place.clone(), name, start.clone());
             cell.temp = temp;
             cell.since = now;
             let extra = st
                 .flavor
                 .approved_texts(name, &start, FlavorBucket::Transition);
             let line = pick_transition_line(climate, &start, &start, &extra, &mut st.rng);
-            st.cells.insert(zone, cell.clone());
+            st.cells.insert(place.clone(), cell.clone());
             (temp, line, cell)
         };
 
         ctx.persist(persist_cell(&updated));
-        self.broadcast(ctx, zone, &line, &start, temp);
+        self.broadcast(ctx, &place, &line, &start, temp);
         ctx.out.info(
             ctx.actor,
-            format!(
-                "{} now uses climate {name}; weather is {start} ({temp}\u{b0}C).",
-                display_name(ctx.w, zone)
-            ),
+            format!("{place_name_} now uses climate {name}; weather is {start} ({temp}\u{b0}C)."),
         );
         Ok(())
     }
@@ -378,23 +393,30 @@ impl WeatherCmd {
         ctx.out
             .info(ctx.actor, format!("Weather cells ({}):", cells.len()));
         for cell in cells {
-            let name = display_name(ctx.w, cell.zone);
+            let name = place_name(ctx.w, &cell.place);
             let pinned = if cell.pinned { " [pinned]" } else { "" };
             ctx.out.info(
                 ctx.actor,
                 format!(
-                    "  {name} (#{}): {}, {}\u{b0}C, {}{pinned}",
-                    cell.zone.0, cell.state, cell.temp, cell.climate
+                    "  {name} ({}): {}, {}\u{b0}C, {}{pinned}",
+                    cell.place, cell.state, cell.temp, cell.climate
                 ),
             );
         }
         Ok(())
     }
 
-    /// Broadcast a state line to a zone's OUTDOORS/SHELTERED rooms (muffled
+    /// Broadcast a state line to a place's OUTDOORS/SHELTERED rooms (muffled
     /// for sheltered) and a matching panel delta.
-    fn broadcast(&self, ctx: &mut Ctx<'_>, zone: ObjId, line: &str, icon: &SmolStr, temp: i16) {
-        let scan = scan_zone(ctx.w, zone);
+    fn broadcast(
+        &self,
+        ctx: &mut Ctx<'_>,
+        place: &CanonicalId,
+        line: &str,
+        icon: &SmolStr,
+        temp: i16,
+    ) {
+        let scan = scan_place(ctx.w, place);
         for room in scan.rooms {
             let text = if room.sheltered {
                 muffle(line)
@@ -404,7 +426,7 @@ impl WeatherCmd {
             ctx.out.to_room(
                 room.room,
                 Vec::new(),
-                weather_event(&scan.zone_name, text, icon.clone()),
+                weather_event(&scan.name, text, icon.clone()),
             );
             self.panel.delta_to(
                 ctx,
@@ -413,7 +435,7 @@ impl WeatherCmd {
                     exclude: Vec::new(),
                     subject: None,
                 },
-                panel_payload(&scan.zone_name, icon, temp),
+                panel_payload(&scan.name, icon, temp),
             );
         }
     }
@@ -739,7 +761,7 @@ impl WeatherCmd {
 // ----------------------------------------------------------------------
 
 /// Snapshot the prompt context for one `(climate, state)` bucket: the climate's
-/// style + the state's physical conditions, plus the theme of a zone in that
+/// style + the state's physical conditions, plus the theme of a place in that
 /// climate (if any) for setting-consistency. Owned data only (treaty ruling 3).
 fn build_flavor_snapshot(
     w: &World,
@@ -752,7 +774,7 @@ fn build_flavor_snapshot(
         .state(state)
         .map(state_desc_line)
         .unwrap_or_else(|| format!("state {state}"));
-    let (theme_style, theme_vocab, theme_banned) = read_zone_theme(w, &climate.id);
+    let (theme_style, theme_vocab, theme_banned) = read_place_theme(w, &climate.id);
     FlavorGenSnapshot {
         requester,
         climate: climate.id.clone(),
@@ -775,47 +797,24 @@ fn state_desc_line(def: &WxStateDef) -> String {
     )
 }
 
-/// Read the `worldgen.theme` of the lowest-id zone using `climate_id` and pull
-/// its style guide / vocabulary / banned words (opaque JSON — no `mush-worldgen`
-/// dependency). Empty tuple when no such zone or no theme.
-fn read_zone_theme(w: &World, climate_id: &str) -> (String, Vec<String>, Vec<String>) {
-    let Some(zone) = w.module_state::<WeatherState>().and_then(|s| {
+/// The theme in effect at the first (lowest-id) place using `climate_id`, read
+/// through the atlas (S2b): its style guide, vocabulary and banned words. Empty
+/// when no place uses the climate or no theme resolves.
+fn read_place_theme(w: &World, climate_id: &str) -> (String, Vec<String>, Vec<String>) {
+    let Some(place) = w.module_state::<WeatherState>().and_then(|s| {
         s.cells
             .values()
             .filter(|c| c.climate == climate_id)
-            .map(|c| c.zone)
+            .map(|c| c.place.clone())
             .min()
     }) else {
         return (String::new(), Vec::new(), Vec::new());
     };
-    let Some(json) = w
-        .attr(zone, ZONE_THEME_ATTR)
-        .and_then(mush_core::Attr::as_json)
-    else {
+    let Some(place) = place_ref(w, &place) else {
         return (String::new(), Vec::new(), Vec::new());
     };
-    let style = json
-        .get("style_guide")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    (
-        style,
-        json_str_array(json, "vocabulary"),
-        json_str_array(json, "banned"),
-    )
-}
-
-/// Extract a JSON string array field, dropping non-strings.
-fn json_str_array(v: &serde_json::Value, key: &str) -> Vec<String> {
-    v.get(key)
-        .and_then(|a| a.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|e| e.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
+    let theme = mush_atlas::theme::resolve_place_theme(w, &place);
+    (theme.style_guide, theme.vocabulary, theme.banned)
 }
 
 /// The hand-written lines for `(state, bucket)` — the `[builtin]` half of a

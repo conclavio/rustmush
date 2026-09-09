@@ -42,6 +42,9 @@ pub struct RegionDef {
     /// The coarse ground resolution, centimetres (default 1000).
     #[serde(default = "default_ground_resolution")]
     pub ground_resolution_cm: u16,
+    /// A theme for this place and what lies within it (S2b).
+    #[serde(default)]
+    pub theme: Option<crate::theme::Theme>,
 }
 
 fn default_ground_resolution() -> u16 {
@@ -87,6 +90,9 @@ pub struct LocalityDef {
     pub kind: String,
     /// The footprint.
     pub footprint: Polygon2,
+    /// A theme for this place and what lies within it (S2b).
+    #[serde(default)]
+    pub theme: Option<crate::theme::Theme>,
 }
 
 /// A `checkpoint` entry.
@@ -247,6 +253,9 @@ pub struct NeighborhoodDef {
     /// The fine resolution, centimetres (default 100).
     #[serde(default = "default_fine_resolution")]
     pub resolution_cm: u16,
+    /// A theme for this place and what lies within it (S2b).
+    #[serde(default)]
+    pub theme: Option<crate::theme::Theme>,
 }
 
 fn default_representation() -> Representation {
@@ -270,6 +279,9 @@ pub struct SiteDef {
     /// The exit entries that are its entrances.
     #[serde(default)]
     pub entrances: Vec<String>,
+    /// A theme for this place and what lies within it (S2b).
+    #[serde(default)]
+    pub theme: Option<crate::theme::Theme>,
 }
 
 /// A floor, as authored.

@@ -40,8 +40,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{
-    Audience, Effect, Effects, Engine, Flags, GOD, Inbound, ModuleWrite, ObjId, ObjKind, Outbox,
-    World, WorldCommand,
+    Audience, Effect, Effects, Engine, GOD, Inbound, ModuleWrite, ObjId, ObjKind, Outbox, World,
+    WorldCommand,
 };
 use mush_llm::{
     BudgetConfig, BudgetLimit, CompletionResponse, ContentBlock, LlmProvider, LlmService,
@@ -567,21 +567,16 @@ async fn weather_flavor_generate_approve_and_tick_draws_approved() {
     let mut tw = TestWorld::with_modules(vec![Box::new(module)]);
 
     // A zone + one OUTDOORS room on the barren climate; pin to rain so no
-    // transition steals the tick.
-    let zone = tw
-        .world_mut()
-        .create(ObjKind::Thing, "Downtown", GOD, Some(mush_core::LIMBO))
-        .unwrap();
+    // transition steals the tick. S2b: the cell keys on the starter lot's OOC
+    // Area, and the audience stands at its outdoor bus stop.
     let room = tw
-        .world_mut()
-        .create(ObjKind::Room, "Plaza", GOD, None)
-        .unwrap();
-    tw.world_mut().set_zone(room, Some(zone)).unwrap();
-    tw.world_mut()
-        .set_flag(room, Flags::OUTDOORS, true)
-        .unwrap();
-    tw.run(GOD, &format!("@weather/climate #{}=barren", zone.0));
-    tw.run(GOD, &format!("@weather #{}=rain", zone.0));
+        .world()
+        .iter()
+        .find(|o| o.kind == ObjKind::Room && o.name == "Bus Stop (OOC)")
+        .expect("the starter lot is applied")
+        .id;
+    tw.run(GOD, "@weather/climate OOC Area=barren");
+    tw.run(GOD, "@weather OOC Area=rain");
 
     // A player in the room so the tick has an audience.
     let player = tw.spawn_player("Rae");

@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use mush_core::{ModuleOp, ModuleWrite, ObjId, WxSnapshot};
+use mush_core::{CanonicalId, ModuleOp, ModuleWrite, WxSnapshot};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -25,13 +25,13 @@ pub const NS: &str = "weather";
 /// (`100`) maps to ~30 m/s. Documented so ruleset consumers know the unit.
 pub const WIND_MS_PER_UNIT: f32 = 0.30;
 
-/// One opted-in zone's live weather (design 04 §10.1). Keyed by the zone
-/// object's [`ObjId`]; the whole struct is the persisted
-/// `cell:{zone-dbref}` document.
+/// One opted-in place's live weather (design 04 §10.1; S2b). Keyed by the atlas
+/// place's id — a neighborhood's or a region's pack id — and the whole struct is
+/// the persisted `cell:<place id>` document.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeatherCell {
-    /// The zone master object this cell belongs to.
-    pub zone: ObjId,
+    /// The atlas place this cell belongs to: a neighborhood or a region, by pack id.
+    pub place: CanonicalId,
     /// The climate id driving this cell (a key into the [`crate::ClimateSet`]).
     pub climate: SmolStr,
     /// The current weather state id (a key into the climate's states).
@@ -49,11 +49,15 @@ pub struct WeatherCell {
 }
 
 impl WeatherCell {
-    /// A fresh cell for `zone` in `climate`, starting in `state`.
+    /// A fresh cell for `place` in `climate`, starting in `state`.
     #[must_use]
-    pub fn new(zone: ObjId, climate: impl Into<SmolStr>, state: impl Into<SmolStr>) -> WeatherCell {
+    pub fn new(
+        place: CanonicalId,
+        climate: impl Into<SmolStr>,
+        state: impl Into<SmolStr>,
+    ) -> WeatherCell {
         WeatherCell {
-            zone,
+            place,
             climate: climate.into(),
             state: state.into(),
             since: 0,
@@ -138,8 +142,8 @@ impl Default for WxRng {
 /// deterministic scratch that reseed at boot.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WeatherState {
-    /// One cell per opted-in zone, keyed by the zone object id.
-    pub cells: BTreeMap<ObjId, WeatherCell>,
+    /// One cell per opted-in place, keyed by the place's pack id.
+    pub cells: BTreeMap<CanonicalId, WeatherCell>,
     /// The deterministic randomness stream (injectable in tests). Defaults
     /// to [`WxRng::default`]'s fixed seed.
     pub rng: WxRng,
@@ -154,10 +158,10 @@ pub struct WeatherState {
 }
 
 impl WeatherState {
-    /// The cell for `zone`, if the zone opted in.
+    /// The cell for `place`, if the place opted in.
     #[must_use]
-    pub fn cell(&self, zone: ObjId) -> Option<&WeatherCell> {
-        self.cells.get(&zone)
+    pub fn cell(&self, place: &CanonicalId) -> Option<&WeatherCell> {
+        self.cells.get(place)
     }
 }
 
@@ -165,10 +169,10 @@ impl WeatherState {
 // Persistence keys + op helpers
 // ----------------------------------------------------------------------
 
-/// The kv key of a zone's cell document.
+/// The kv key of a place's cell document.
 #[must_use]
-pub fn cell_key(zone: ObjId) -> SmolStr {
-    SmolStr::new(format!("cell:{}", zone.0))
+pub fn cell_key(place: &CanonicalId) -> SmolStr {
+    SmolStr::new(format!("cell:{place}"))
 }
 
 /// A `JsonSet` op mirroring one cell (cells are plain data; serialization
@@ -179,19 +183,19 @@ pub fn persist_cell(cell: &WeatherCell) -> ModuleOp {
     ModuleOp {
         ns: SmolStr::new_static(NS),
         op: ModuleWrite::JsonSet {
-            key: cell_key(cell.zone),
+            key: cell_key(&cell.place),
             value,
         },
     }
 }
 
-/// A `Del` op removing a zone's cell document (opt-out).
+/// A `Del` op removing a place's cell document (opt-out).
 #[must_use]
-pub fn delete_cell(zone: ObjId) -> ModuleOp {
+pub fn delete_cell(place: &CanonicalId) -> ModuleOp {
     ModuleOp {
         ns: SmolStr::new_static(NS),
         op: ModuleWrite::Del {
-            key: cell_key(zone),
+            key: cell_key(place),
         },
     }
 }
@@ -231,7 +235,8 @@ mod tests {
             wind: 50,
             temp_band: (2, 18),
         };
-        let mut cell = WeatherCell::new(ObjId(5), "temperate-coastal", "rain");
+        let place = CanonicalId::new("neighborhood.downtown").expect("id");
+        let mut cell = WeatherCell::new(place, "temperate-coastal", "rain");
         cell.temp = 11;
         let snap = cell.snapshot(&def);
         assert_eq!(snap.state, "rain");
@@ -242,7 +247,8 @@ mod tests {
     }
 
     #[test]
-    fn cell_key_uses_dbref() {
-        assert_eq!(cell_key(ObjId(42)), "cell:42");
+    fn cell_key_uses_the_place_id() {
+        let place = CanonicalId::new("region.limbo").expect("id");
+        assert_eq!(cell_key(&place), "cell:region.limbo");
     }
 }

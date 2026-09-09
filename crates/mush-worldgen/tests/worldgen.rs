@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use mush_core::{
-    Audience, DeliveryClass, Effect, Effects, GOD, Inbound, LIMBO, ModuleOp, ModuleWrite, ObjId,
-    ObjKind, Outbox, Powers, WorldCommand,
+    Audience, DeliveryClass, Effect, Effects, GOD, Inbound, ModuleOp, ModuleWrite, ObjId, ObjKind,
+    Outbox, Powers, WorldCommand,
 };
 use mush_llm::{
     BudgetConfig, BudgetLimit, CompletionResponse, ContentBlock, LlmProvider, LlmService,
@@ -89,7 +89,10 @@ fn text_resp(t: &str) -> CompletionResponse {
 fn gen_world() -> (TestWorld, Arc<MockProvider>, Arc<LlmService>, ObjId) {
     let mock = Arc::new(MockProvider::new("openrouter"));
     let llm = service(&mock);
-    let mut tw = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(Arc::clone(&llm)))]);
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(Arc::clone(&llm))),
+    ]);
     let hall = tw
         .world_mut()
         .create(ObjKind::Room, "Hall", GOD, None)
@@ -229,9 +232,13 @@ async fn gen_cycle(
 
 #[test]
 fn theme_set_show_and_exemplar() {
-    let mut tw = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(service(&Arc::new(
-        MockProvider::new("openrouter"),
-    ))))]);
+    // S2b: themes live on the atlas; a room off the map resolves to the world theme.
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(service(&Arc::new(MockProvider::new(
+            "openrouter",
+        ))))),
+    ]);
     let hall = tw
         .world_mut()
         .create(ObjKind::Room, "Hall", GOD, None)
@@ -239,16 +246,24 @@ fn theme_set_show_and_exemplar() {
     tw.world_mut().move_to(GOD, hall).unwrap();
 
     // Set several fields, including a list field.
-    step_cmd(&mut tw, GOD, "@theme here=style_guide:smoky jazz-age noir");
-    step_cmd(&mut tw, GOD, "@theme here=vocabulary:gaslight, brass, rain");
-    step_cmd(&mut tw, GOD, "@theme here=desc_length:long");
+    step_cmd(
+        &mut tw,
+        GOD,
+        "@atlas/theme world=style_guide:smoky jazz-age noir",
+    );
+    step_cmd(
+        &mut tw,
+        GOD,
+        "@atlas/theme world=vocabulary:gaslight, brass, rain",
+    );
+    step_cmd(&mut tw, GOD, "@atlas/theme world=desc_length:long");
     let theme = mush_worldgen::resolve_theme(tw.world(), hall);
     assert_eq!(theme.style_guide, "smoky jazz-age noir");
     assert_eq!(theme.vocabulary, ["gaslight", "brass", "rain"]);
     assert_eq!(theme.desc_length, mush_worldgen::DescLength::Long);
 
     // /show renders the resolved theme.
-    let (events, _) = step_cmd(&mut tw, GOD, "@theme/show here");
+    let (events, _) = step_cmd(&mut tw, GOD, "@atlas/theme/show here");
     let lines = sys_to(&events, GOD);
     assert!(contains(&lines, "smoky jazz-age noir"), "show: {lines:?}");
     assert!(contains(&lines, "gaslight"), "show: {lines:?}");
@@ -265,60 +280,157 @@ fn theme_set_show_and_exemplar() {
             mush_core::Attr::text("A narrow brick alley, slick with rain.", GOD),
         )
         .unwrap();
-    step_cmd(&mut tw, GOD, &format!("@theme/exemplar here=#{}", alley.0));
-    let theme = mush_worldgen::theme_on(tw.world(), hall).unwrap();
+    step_cmd(
+        &mut tw,
+        GOD,
+        &format!("@atlas/theme/exemplar world=#{}", alley.0),
+    );
+    let theme = mush_atlas::world_theme(tw.world()).unwrap();
     assert_eq!(theme.exemplars.len(), 1);
     assert!(theme.exemplars[0].contains("narrow brick alley"));
 }
 
 #[test]
 fn theme_resolution_is_hierarchical() {
-    let mut tw = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(service(&Arc::new(
-        MockProvider::new("openrouter"),
-    ))))]);
-    // Zone master, and a room in the zone.
-    let downtown = tw
+    // S2b: world → region → neighborhood, nearest scalar wins, lists union; a room
+    // in a neighborhood with no theme of its own falls to the region's; a room off
+    // the map falls to the world's; the old zone attribute is no longer read.
+    let mut appliers = mush_content::Appliers::new();
+    mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+    let packs = theme_packs()
+        .iter()
+        .map(|p| mush_content::parse_pack(p).expect("pack"))
+        .collect();
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(
+            mush_content::ContentModule::new()
+                .with_appliers(appliers)
+                .with_boot_packs(packs),
+        ),
+        Box::new(WorldgenModule::new(service(&Arc::new(MockProvider::new(
+            "openrouter",
+        ))))),
+    ]);
+    let hall = room_named(&tw, "Hall");
+    let bare = room_named(&tw, "Bare");
+    let off_map = tw
         .world_mut()
-        .create(ObjKind::Thing, "Downtown", GOD, Some(LIMBO))
+        .create(ObjKind::Room, "Nowhere", GOD, None)
         .unwrap();
-    tw.world_mut()
-        .set_flag(downtown, mush_core::Flags::ZONE_MASTER, true)
-        .unwrap();
-    let hall = tw
-        .world_mut()
-        .create(ObjKind::Room, "Hall", GOD, None)
-        .unwrap();
-    tw.world_mut().set_zone(hall, Some(downtown)).unwrap();
-    let bare = tw
-        .world_mut()
-        .create(ObjKind::Room, "Bare", GOD, None)
-        .unwrap();
-    tw.world_mut().set_zone(bare, Some(downtown)).unwrap();
 
-    // Game default on #0, zone default on Downtown, room override on Hall.
-    step_cmd(&mut tw, GOD, "@theme #0=vocabulary:fog");
-    step_cmd(&mut tw, GOD, "@theme #0=desc_length:long");
+    // Game default on the world, a style on the region, a style on Downtown.
+    step_cmd(&mut tw, GOD, "@atlas/theme world=vocabulary:fog");
+    step_cmd(&mut tw, GOD, "@atlas/theme world=desc_length:long");
     step_cmd(
         &mut tw,
         GOD,
-        &format!("@theme #{}=style_guide:zone style", downtown.0),
+        "@atlas/theme Testland=style_guide:region style",
     );
     step_cmd(
         &mut tw,
         GOD,
-        &format!("@theme #{}=style_guide:room style", hall.0),
+        "@atlas/theme Downtown=style_guide:neighborhood style",
     );
 
-    // Hall: nearest style wins; vocabulary unions in the game default; length
-    // inherits from the game default (Hall/zone leave it at the default).
+    // Hall (in Downtown): nearest style wins; vocabulary unions in the world's;
+    // length inherits from the world (the places leave it at the default).
     let ht = mush_worldgen::resolve_theme(tw.world(), hall);
-    assert_eq!(ht.style_guide, "room style");
+    assert_eq!(ht.style_guide, "neighborhood style");
     assert!(ht.vocabulary.iter().any(|v| v == "fog"), "{ht:?}");
     assert_eq!(ht.desc_length, mush_worldgen::DescLength::Long);
 
-    // Bare has no room override: it falls through to the zone style.
+    // Bare (in the Outskirts, no theme of its own): falls through to the region.
     let bt = mush_worldgen::resolve_theme(tw.world(), bare);
-    assert_eq!(bt.style_guide, "zone style");
+    assert_eq!(bt.style_guide, "region style");
+
+    // Off the map: the world alone.
+    let nt = mush_worldgen::resolve_theme(tw.world(), off_map);
+    assert!(nt.style_guide.is_empty(), "{nt:?}");
+    assert_eq!(nt.desc_length, mush_worldgen::DescLength::Long);
+
+    // The zone attribute is no longer read: setting it on the room changes nothing.
+    tw.world_mut()
+        .set_attr(
+            hall,
+            "worldgen.theme",
+            mush_core::Attr::json(json!({ "style_guide": "attribute style" }), GOD),
+        )
+        .unwrap();
+    assert_eq!(
+        mush_worldgen::resolve_theme(tw.world(), hall).style_guide,
+        "neighborhood style"
+    );
+}
+
+fn room_named(tw: &TestWorld, name: &str) -> ObjId {
+    tw.world()
+        .iter()
+        .find(|o| o.kind == ObjKind::Room && o.name == name)
+        .unwrap_or_else(|| panic!("no room named {name}"))
+        .id
+}
+
+fn signed_pack(mut doc: serde_json::Value) -> String {
+    doc["manifest"]["digest"] = serde_json::Value::String("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = mush_content::parse_pack(&unsigned)
+        .expect("parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    doc["manifest"]["digest"] = serde_json::Value::String(digest);
+    serde_json::to_string(&doc).expect("json")
+}
+
+/// A region with two neighborhoods: Downtown (the Hall) and the Outskirts (Bare).
+fn theme_packs() -> Vec<String> {
+    let region = signed_pack(json!({
+        "manifest": { "id": "region.test", "version": 1, "kind": "region", "digest": "", "requires": [] },
+        "entries": {
+            "region.test": { "kind": "region", "def": {
+                "name": "Testland", "kind": "surface", "body": "earth",
+                "extent": [[0, 0], [400, 400]], "datum_m": 0.0,
+                "background": { "surface": "paved", "mix": [["grass", 8]], "relief_cm": 0,
+                                "relief_period_cm": 800, "seed": 1 },
+                "ground_resolution_cm": 1000 } },
+            "locality.test": { "kind": "locality", "def": {
+                "region": "region.test", "name": "The Valley", "kind": "district",
+                "footprint": [[0, 0], [400, 0], [400, 400], [0, 400]] } }
+        }
+    }));
+    let neighborhood =
+        |id: &str, name: &str, fp: serde_json::Value, room: &str, rect: serde_json::Value| {
+            signed_pack(json!({
+                "manifest": { "id": id, "version": 1, "kind": "neighborhood", "digest": "",
+                              "requires": [{ "id": "region.test", "version": 1 }] },
+                "entries": {
+                    "neighborhood": { "kind": "neighborhood", "def": {
+                        "region": "region.test", "locality": "locality.test", "name": name,
+                        "setting": "urban", "footprint": fp,
+                        "room_budget": { "target": 2, "maximum": 4 } } },
+                    "room.one": { "kind": "room", "def": { "name": room, "surface": "ground",
+                        "footprint": { "rect": rect } } }
+                }
+            }))
+        };
+    vec![
+        region,
+        neighborhood(
+            "neighborhood.downtown",
+            "Downtown",
+            json!([[0, 0], [200, 0], [200, 200], [0, 200]]),
+            "Hall",
+            json!([[10, 10], [50, 50]]),
+        ),
+        neighborhood(
+            "neighborhood.outskirts",
+            "Outskirts",
+            json!([[200, 0], [400, 0], [400, 200], [200, 200]]),
+            "Bare",
+            json!([[210, 10], [250, 50]]),
+        ),
+    ]
 }
 
 // ----------------------------------------------------------------------
@@ -328,8 +440,12 @@ fn theme_resolution_is_hierarchical() {
 #[tokio::test]
 async fn gen_prompt_carries_theme_and_neighbors() {
     let (mut tw, mock, llm, hall) = gen_world();
-    // A theme on the room and a described neighbor to the north.
-    step_cmd(&mut tw, GOD, "@theme here=style_guide:smoky jazz-age noir");
+    // A theme on the world (S2b) and a described neighbor to the north.
+    step_cmd(
+        &mut tw,
+        GOD,
+        "@atlas/theme world=style_guide:smoky jazz-age noir",
+    );
     let alley = tw
         .world_mut()
         .create(ObjKind::Room, "Alley", GOD, None)
@@ -526,7 +642,10 @@ async fn text_fallback_takes_the_last_valid_json_object() {
         reasoning: true,
     }));
     let llm = service(&mock);
-    let mut tw = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(Arc::clone(&llm)))]);
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(Arc::clone(&llm))),
+    ]);
     let hall = tw
         .world_mut()
         .create(ObjKind::Room, "Hall", GOD, None)
@@ -699,7 +818,10 @@ async fn per_builder_budget_is_enforced() {
         ..BudgetConfig::default()
     };
     let llm = service_with_budget(&mock, budget);
-    let mut tw = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(Arc::clone(&llm)))]);
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(Arc::clone(&llm))),
+    ]);
     let hall = tw
         .world_mut()
         .create(ObjKind::Room, "Hall", GOD, None)
@@ -743,7 +865,10 @@ async fn draft_persists_across_reboot() {
     // Second boot: fresh module + identically-shaped world, hand it the doc.
     let mock2 = Arc::new(MockProvider::new("openrouter"));
     let llm2 = service(&mock2);
-    let mut tw2 = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(llm2))]);
+    let mut tw2 = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(llm2)),
+    ]);
     let hall2 = tw2
         .world_mut()
         .create(ObjKind::Room, "Hall", GOD, None)
@@ -779,7 +904,10 @@ async fn draft_persists_across_reboot() {
 fn llm_staff_commands_reach_the_shared_service() {
     let mock = Arc::new(MockProvider::new("openrouter"));
     let llm = service(&mock);
-    let mut tw = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(Arc::clone(&llm)))]);
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(Arc::clone(&llm))),
+    ]);
 
     // /budget renders the ledger view.
     let (events, _) = step_cmd(&mut tw, GOD, "@llm/budget");
@@ -895,7 +1023,10 @@ fn llm_dashboard_terminal_command_renders_budgets_and_recent_calls() {
         ..BudgetConfig::default()
     };
     let llm = service_with_budget(&mock, budget);
-    let mut tw = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(Arc::clone(&llm)))]);
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(Arc::clone(&llm))),
+    ]);
 
     llm.ledger().settle(
         &ScopeLimits {
@@ -1034,7 +1165,10 @@ fn dig_exit(tw: &mut TestWorld, name: &str, from: ObjId, to: ObjId) {
 fn building_world() -> (TestWorld, Arc<MockProvider>, Arc<LlmService>, [ObjId; 3]) {
     let mock = Arc::new(MockProvider::new("openrouter"));
     let llm = batch_service(&mock);
-    let mut tw = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(Arc::clone(&llm)))]);
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(Arc::clone(&llm))),
+    ]);
     let hall = tw
         .world_mut()
         .create(ObjKind::Room, "Hall", GOD, None)
@@ -1052,7 +1186,11 @@ fn building_world() -> (TestWorld, Arc<MockProvider>, Arc<LlmService>, [ObjId; 3
     dig_exit(&mut tw, "north", parlor, study);
     dig_exit(&mut tw, "south", study, parlor);
     tw.world_mut().move_to(GOD, hall).unwrap();
-    step_cmd(&mut tw, GOD, "@theme here=style_guide:smoky jazz-age noir");
+    step_cmd(
+        &mut tw,
+        GOD,
+        "@atlas/theme world=style_guide:smoky jazz-age noir",
+    );
     (tw, mock, llm, [hall, parlor, study])
 }
 
@@ -1505,7 +1643,10 @@ async fn building_budget_trip_mid_batch_degrades_remaining() {
         ..BudgetConfig::default()
     };
     let llm = batch_service_with_budget(&mock, budget);
-    let mut tw = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(Arc::clone(&llm)))]);
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(Arc::clone(&llm))),
+    ]);
     let hall = tw
         .world_mut()
         .create(ObjKind::Room, "Hall", GOD, None)
@@ -1592,7 +1733,10 @@ async fn building_batch_persists_across_reboot() {
     // Boot 2: an identically-shaped world + a fresh module, handed the docs.
     let mock2 = Arc::new(MockProvider::new("openrouter"));
     let llm2 = batch_service(&mock2);
-    let mut tw2 = TestWorld::with_modules(vec![Box::new(WorldgenModule::new(llm2))]);
+    let mut tw2 = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(llm2)),
+    ]);
     for name in ["Hall", "Parlor", "Study"] {
         tw2.world_mut()
             .create(ObjKind::Room, name, GOD, None)

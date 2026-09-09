@@ -108,6 +108,7 @@ mod tests {
             },
             ground: Vec::new(),
             ground_resolution_cm: 1000,
+            theme: None,
             revision: 1,
         }
     }

@@ -142,7 +142,8 @@ async fn worldgen_full_journey_over_ssh() {
     let zone = parse_id_after(&strip_ansi(&god.seen), "Created: Districts(#");
     god.send_line(&format!("@set #{zone}=ZONE_MASTER")).await;
     god.expect("Set.").await;
-    god.send_line(&format!("@theme #{zone}=style_guide:{THEME_STYLE}"))
+    // S2b: the theme is the world's (an atlas document), not a zone attribute.
+    god.send_line(&format!("@atlas/theme world=style_guide:{THEME_STYLE}"))
         .await;
     god.expect("Theme style_guide set").await;
 

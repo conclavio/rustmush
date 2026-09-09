@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.3 — 2026-09-09 (S1, S2 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.4 — 2026-09-09 (S1, S2, S2b landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -422,6 +422,67 @@ a property's site link is refused when the rooms lie outside the site's footprin
 
 **What this cut does not do.** No rendering of control on the map (S4's projection may add it).
 
+**Ledger (landed 2026-09-09).** Gates: `cargo fmt --all --check`, `cargo clippy --workspace
+-- -D warnings` and `--all-targets` on the crates touched, `cargo test` on every dependent,
+the restriction-lint table (`mush-atlas` still at zero on all six), the legacy-handler
+allowlist (`@theme` retired with its verb; `@weather`, `@region` and `@property` moved from
+baseline to legacy-post-image with families `weather.cell`, `faction.region` and
+`housing.property`; the baseline pin lowered to 151; `@atlas` gains `/theme`). Deviations
+from the text above, each with its reason:
+
+- **`Theme` moved to `mush-atlas::theme`** (with `DescLength`, the merge rules and
+  `resolve_theme`); `mush-worldgen` re-exports them and its `theme.rs`, `@theme`,
+  `theme_on` and `theme_chain` are gone. `mush-worldgen`, `mush-weather`, `mush-faction` and
+  `mush-housing` now depend on `mush-atlas` — four acyclic edges, since the atlas depends
+  on `{core, content, proto}` only.
+- **The chain and the world theme.** `resolve_theme(room)` walks the room's site,
+  neighborhood, locality and region and then the **world theme**, a new atlas document
+  `mod:atlas:theme:world` edited as `@atlas/theme world=…` (`#0` and `default` are
+  aliases). The plan's chain ended at `#0`: the `worldgen.theme` attribute on `#0` is still
+  read as the world default when no atlas document exists, so a world themed before the
+  atlas keeps its default; the attribute on a zone or a room is no longer read (D-14-28),
+  and no room-level override exists — a room off the map resolves to the world theme.
+- **A theme on the records** (`theme: Option<Theme>`, `serde(default)`, validated with
+  byte and count caps) can be authored in a pack (`theme` on a region, locality,
+  neighborhood or site definition) or set by staff; a re-apply that authors none keeps the
+  staff-set theme, since the record is otherwise rebuilt from the definition.
+- **A place** (`mush_atlas::place::PlaceRef`, `find_place`) is the one lookup the theme,
+  the weather, the faction and the housing modules share: by name (exact, then a unique
+  prefix or substring), by pack id for a region or a neighborhood, `<pack>:<entry>` for a
+  locality or a site, `world`.
+- **Weather cells key on the pack id** of a neighborhood or a region
+  (`mod:weather:cell:<id>`, `WeatherCell.place`); a room's cell is its neighborhood's, else
+  its region's, so a region-wide climate covers every neighborhood that has none of its
+  own. A pre-atlas zone-keyed cell (`cell:<dbref>`) is dropped loudly at boot with its
+  document deleted, and the `ObjDestroyed` cleanup is gone with it (places are not objects).
+  `@weather <place>` takes a name, a pack id, `here` or a room (its neighborhood); a locality
+  or a site is refused as a weather key. The panel payload keeps its `zone` field name for
+  the web client, now carrying the place's name. The flavor top-up reads the theme of the
+  first place using a climate through the atlas.
+- **`Region.atlas` is a string id**, not a `CanonicalId`: a control region may stand on a
+  locality (`<pack>:<entry>`) as well as a neighborhood or a region. `+territory` appends
+  `[map: <kind> <name>, <w> m × <h> m at (<x>, <y>)]` — the extent, since the plan reserves
+  drawing control on the map for S4. Its `/zone` coverage stays.
+- **`Property.site` is a `RecordKey`**, since a site is a pack entry, not a pack. The link
+  is refused naming the first room that is on no map or whose footprint's corners fall
+  outside the site's polygon (a room whose geometry names the site passes outright), and
+  cleared with an empty right-hand side; `/show` prints it. Title, tenancy and the access
+  predicate are untouched.
+- **Boot order does not matter to any of it**: the four modules read the atlas's slot at run
+  time and validate nothing against it at their own boot, so a weather cell for a place the
+  atlas has not applied yet (or has retired) simply has no rooms until it does.
+- **What migrated.** The weather crate's three suites, `mush-worldgen`'s theme tests, and
+  the `mushd` weather, worldgen, flavor and persistence end-to-end tests now drive places —
+  the starter lot's OOC Area in the daemon tests, small fixture packs elsewhere — instead of
+  zone master objects; the help pages for worldgen, weather, faction and the atlas say what
+  keys on the atlas.
+- **Tests (fourteen new or rewritten against the plan's ~20)**: the theme chain through the
+  atlas ignoring the attribute, the world default and the off-map fall-through, the pack
+  and staff theme on a record; weather by id, name and room, the neighborhood-else-region
+  rule, flags, the glance, ambient suppression, the query seam, panels, the round trip and
+  the legacy-cell drop; a control region's footprint in `+territory`; a property's site link
+  and its refusals.
+
 ### 3.4 Cut S3 — the building agent and hydration
 
 **`mush-llm`.** A generic bounded **tool loop** (`agent::run(ctx, tools, rounds, budget)`)
@@ -704,3 +765,4 @@ square root of its pinned distance.
 - 0.1 (2026-09-09): first draft, from doc 14 Draft 0.1; S7 gains the campaign ephemeris (doc 10 T17) the same day; §6's decisions acknowledged by the owner the same day.
 - 0.2 (2026-09-09): S1 landed — `mush-content`, `mush-atlas`, the starter packs, `[game].starter_area`, `[atlas]`; its ledger and verify fold recorded under §3.1; §8's tile-size question closed by measurement.
 - 0.3 (2026-09-09): S2 landed — one travel system in `mush-atlas` (journeys for characters, objects and the room-model bus; `+travel`, `+stakeout`, `+intercept`, `@atlas/journey`; timed portals; the clock floor and cap), `route.rs`'s runtime retired; D-P-4 amended (the carrier journey is layered until S7); its ledger and verify fold under §3.2; the starter packs at version 2.
+- 0.4 (2026-09-09): S2b landed — theme, weather, control regions and property key on the atlas (D-14-28): `Theme` in `mush-atlas` with a world theme and `@atlas/theme`; weather cells on neighborhoods and regions; `@region/atlas`, `@property/site`; `@theme` retired; its ledger under §3.3.

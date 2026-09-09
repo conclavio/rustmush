@@ -2223,8 +2223,10 @@ name = "mush-faction"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "mush-atlas",
  "mush-canon",
  "mush-comsys",
+ "mush-content",
  "mush-core",
  "mush-economy",
  "mush-org",
@@ -2279,6 +2281,8 @@ dependencies = [
 name = "mush-housing"
 version = "0.1.0"
 dependencies = [
+ "mush-atlas",
+ "mush-content",
  "mush-core",
  "mush-economy",
  "mush-jobs",
@@ -2731,6 +2735,8 @@ name = "mush-weather"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "mush-atlas",
+ "mush-content",
  "mush-core",
  "mush-llm",
  "mush-proto",
@@ -2748,6 +2754,8 @@ dependencies = [
 name = "mush-worldgen"
 version = "0.1.0"
 dependencies = [
+ "mush-atlas",
+ "mush-content",
  "mush-core",
  "mush-llm",
  "mush-proto",

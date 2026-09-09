@@ -8,6 +8,8 @@ description = "LLM worldbuilding: themes, @gen draft/review pipeline"
 
 [dependencies]
 mush-core.workspace = true
+# S2b: themes live on the atlas (doc 14 D-14-28); worldgen reads them there.
+mush-atlas.workspace = true
 mush-llm.workspace = true
 mush-proto.workspace = true
 serde.workspace = true
@@ -17,6 +19,8 @@ sha2.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# The theme tests apply a small content pack so a room has a neighborhood to resolve through.
+mush-content.workspace = true
 # The in-process engine driver: boot the worldgen module, dispatch commands,
 # drive the Effects/Inbound re-entry path directly.
 mush-testkit.workspace = true

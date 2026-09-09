@@ -19,6 +19,8 @@ debug-checks = []
 
 [dependencies]
 mush-core.workspace = true
+# S2b: a property may point at the atlas site it stands on (doc 14 D-14-28); acyclic.
+mush-atlas.workspace = true
 mush-org.workspace = true
 mush-economy.workspace = true
 # E5b: the story window opens a job in the `wod-story` queue and closes it again
@@ -34,6 +36,8 @@ tracing.workspace = true
 
 
 [dev-dependencies]
+# S2b tests apply a small content pack so rooms have a neighborhood on the map.
+mush-content.workspace = true
 mush-testkit.workspace = true
 
 [lints]

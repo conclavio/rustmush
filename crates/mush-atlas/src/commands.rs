@@ -56,7 +56,13 @@ pub(crate) fn register_pack(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@atlas".into(),
             shape: ArgShape::Raw,
-            switches: vec![SmolStr::new_static("pack"), SmolStr::new_static("journey")],
+            switches: vec![
+                SmolStr::new_static("pack"),
+                SmolStr::new_static("journey"),
+                SmolStr::new_static("theme"),
+                SmolStr::new_static("show"),
+                SmolStr::new_static("exemplar"),
+            ],
             help: "@atlas/pack list                   every pack on the shelf, and every latch\n\
                    @atlas/pack show <id>              a pack's manifest, entries, brief and secrets\n\
                    @atlas/pack plan <id>              what applying it would create, update or\n\
@@ -75,6 +81,10 @@ pub(crate) fn register_pack(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @atlas/journey hold <traveler>     stop it where it is (a patch is made if needed)\n\
                    @atlas/journey release <traveler>  let it go on\n\
                    @atlas/journey abort <traveler> [why]   end it where it is\n\
+                   @atlas/theme <place>=<field>:<value>   set a theme field on a region, locality,\n\
+                   \x20                                  neighborhood or site, or on `world`\n\
+                   @atlas/theme/show [<place>]        the effective theme there, or here\n\
+                   @atlas/theme/exemplar <place>=<room>   copy a room's desc in as an exemplar\n\
                    Staff only (SIM_ADMIN or Royalty). A pack is content: applying the same pack\n\
                    twice changes nothing, and a retired pack stays retired across restarts."
                 .into(),
@@ -171,6 +181,9 @@ fn nowhere(here: Option<mush_core::ObjId>) -> String {
 fn cmd_atlas_pack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.has("journey") {
         return crate::travel_cmd::journey_admin(ctx);
+    }
+    if ctx.switches.has("theme") {
+        return crate::theme_cmd::theme_admin(ctx);
     }
     if !is_staff(ctx.w, ctx.actor) {
         return Err(CmdError::msg("Permission denied."));

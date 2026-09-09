@@ -18,7 +18,7 @@ use crate::data::{
     BriefRoomFact, BriefSnapshot, BuildingBriefContext, BuildingBriefPayload, DraftPayload,
     GenOutcome, GenSnapshot, RoomConcept, WorldgenReq,
 };
-use crate::theme::Theme;
+use mush_atlas::theme::Theme;
 
 /// The forced tool name (the portable structured-output mechanism).
 const TOOL_NAME: &str = "submit_room";

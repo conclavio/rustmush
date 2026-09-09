@@ -2,41 +2,16 @@
 //! `RoomView.ambient["weather"]`; since I3 its `line` is the only prose the
 //! module contributes to a room render.
 
-use std::time::Duration;
+mod common;
 
+use common::{downtown_with_climate, room, world};
 use mush_core::output::room_view;
-use mush_core::{Flags, GOD, LIMBO, ObjKind};
-use mush_testkit::TestWorld;
-use mush_weather::{WeatherConfig, WeatherModule};
-
-const CLIMATE: &str = "temperate-coastal";
 
 #[test]
 fn room_ambient_carries_the_weather_glance_for_outdoor_rooms_only() {
-    let module = WeatherModule::with_config(WeatherConfig {
-        tick: Duration::from_secs(300),
-        ambient_permille: 0,
-        ..WeatherConfig::default()
-    });
-    let mut tw = TestWorld::with_modules(vec![Box::new(module)]);
-    let zone = tw
-        .world_mut()
-        .create(ObjKind::Thing, "Downtown", GOD, Some(LIMBO))
-        .unwrap();
-    let outdoor = tw
-        .world_mut()
-        .create(ObjKind::Room, "Plaza", GOD, None)
-        .unwrap();
-    let indoor = tw
-        .world_mut()
-        .create(ObjKind::Room, "Cellar", GOD, None)
-        .unwrap();
-    tw.world_mut().set_zone(outdoor, Some(zone)).unwrap();
-    tw.world_mut().set_zone(indoor, Some(zone)).unwrap();
-    tw.world_mut()
-        .set_flag(outdoor, Flags::OUTDOORS, true)
-        .unwrap();
-    tw.run(GOD, &format!("@weather/climate #{}={CLIMATE}", zone.0));
+    let mut tw = world(300, 0);
+    let outdoor = downtown_with_climate(&mut tw);
+    let indoor = room(&tw, "Cellar");
     let player = tw.spawn_player("Rae");
 
     let rv = room_view(tw.registry(), tw.world(), player, outdoor).expect("room renders");

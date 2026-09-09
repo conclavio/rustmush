@@ -177,6 +177,11 @@ pub struct Property {
     /// Lifecycle.
     #[serde(default)]
     pub status: PropertyStatus,
+    /// The atlas site the residence stands on, if staff linked one (S2b, doc 14
+    /// D-14-28): `@property/site`, refused unless every room lies within the site's
+    /// footprint. Never required.
+    #[serde(default)]
+    pub site: Option<mush_atlas::RecordKey>,
     /// Staleness stamp.
     pub revision: u64,
 }
@@ -216,6 +221,7 @@ impl Property {
             landlord_scope: None,
             features: Vec::new(),
             status: PropertyStatus::Vacant,
+            site: None,
             revision: 1,
         })
     }
@@ -316,6 +322,8 @@ struct PropertyWire {
     features: Vec<Feature>,
     #[serde(default)]
     status: PropertyStatus,
+    #[serde(default)]
+    site: Option<mush_atlas::RecordKey>,
     revision: u64,
 }
 
@@ -351,6 +359,7 @@ impl TryFrom<PropertyWire> for Property {
         p.landlord_scope = w.landlord_scope;
         p.features = w.features;
         p.status = w.status;
+        p.site = w.site;
         p.revision = w.revision;
         Ok(p)
     }

@@ -12,13 +12,12 @@
 //! persists across a reboot; and a non-staff caller is refused.
 
 use std::collections::HashMap;
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
-use mush_core::{
-    Attr, Audience, Effect, Effects, Flags, GOD, Inbound, LIMBO, ObjId, ObjKind, Outbox,
-    WorldCommand,
-};
+use mush_core::{Audience, Effect, Effects, Flags, GOD, Inbound, ObjId, Outbox, WorldCommand};
 use mush_llm::{
     CompletionResponse, ContentBlock, LlmProvider, LlmService, MockProvider, RouteConfig,
     StopReason, Usage,
@@ -174,30 +173,13 @@ async fn generate(
 
 /// A world with the weather module over the shipped climates.
 fn world() -> TestWorld {
-    let module = WeatherModule::with_config(WeatherConfig {
-        tick: Duration::from_secs(60),
-        ambient_permille: 1000,
-        ..WeatherConfig::default()
-    });
-    TestWorld::with_modules(vec![Box::new(module)])
+    common::world(60, 1000)
 }
 
-/// Create a zone + one OUTDOORS room, assign `CLIMATE`, return `(zone, room)`.
-fn zone_with_climate(tw: &mut TestWorld) -> (ObjId, ObjId) {
-    let zone = tw
-        .world_mut()
-        .create(ObjKind::Thing, "Downtown", GOD, Some(LIMBO))
-        .unwrap();
-    let room = tw
-        .world_mut()
-        .create(ObjKind::Room, "Plaza", GOD, None)
-        .unwrap();
-    tw.world_mut().set_zone(room, Some(zone)).unwrap();
-    tw.world_mut()
-        .set_flag(room, Flags::OUTDOORS, true)
-        .unwrap();
-    tw.run(GOD, &format!("@weather/climate #{}={CLIMATE}", zone.0));
-    (zone, room)
+/// Opt Downtown (the fixture's neighborhood, with its OUTDOORS Plaza) into
+/// `CLIMATE`, returning the Plaza.
+fn zone_with_climate(tw: &mut TestWorld) -> ObjId {
+    common::downtown_with_climate(tw)
 }
 
 fn flavor_ops(tw: &mut TestWorld) -> Vec<(String, serde_json::Value)> {
@@ -219,23 +201,16 @@ fn flavor_ops(tw: &mut TestWorld) -> Vec<(String, serde_json::Value)> {
 #[tokio::test]
 async fn generate_caches_pending_lines_and_prompt_carries_style_and_theme() {
     let mut tw = world();
-    let (zone, _room) = zone_with_climate(&mut tw);
-    // A worldgen theme on the zone — weather reads it for setting-consistency.
-    tw.world_mut()
-        .set_attr(
-            zone,
-            "worldgen.theme",
-            Attr::json(
-                json!({
-                    "style_guide": "rain-slick neon streets of a drowned city",
-                    "vocabulary": ["neon", "puddle"],
-                    "banned": ["sunshine"]
-                }),
-                GOD,
-            ),
-        )
-        .unwrap();
-    tw.take_module_ops(); // drop the assign/theme cell ops
+    let _room = zone_with_climate(&mut tw);
+    // A theme on the neighborhood (S2b: the atlas, not a zone attribute) — weather
+    // reads it through the atlas for setting-consistency.
+    tw.run(
+        GOD,
+        "@atlas/theme Downtown=style_guide:rain-slick neon streets of a drowned city",
+    );
+    tw.run(GOD, "@atlas/theme Downtown=vocabulary:neon, puddle");
+    tw.run(GOD, "@atlas/theme Downtown=banned:sunshine");
+    tw.take_module_ops(); // drop the assign/theme ops
 
     let mock = Arc::new(MockProvider::new("openrouter"));
     mock.push_response(flavor_resp(
@@ -479,21 +454,16 @@ async fn tick_selection_shows_approved_never_pending() {
             ..WeatherConfig::default()
         },
     );
-    let mut tw = TestWorld::with_modules(vec![Box::new(module)]);
-    let zone = tw
-        .world_mut()
-        .create(ObjKind::Thing, "Downtown", GOD, Some(LIMBO))
-        .unwrap();
-    let room = tw
-        .world_mut()
-        .create(ObjKind::Room, "Plaza", GOD, None)
-        .unwrap();
-    tw.world_mut().set_zone(room, Some(zone)).unwrap();
-    tw.world_mut()
-        .set_flag(room, Flags::OUTDOORS, true)
-        .unwrap();
-    tw.run(GOD, &format!("@weather/climate #{}=barren", zone.0));
-    tw.run(GOD, &format!("@weather #{}=rain", zone.0)); // pin: no transition steals the tick
+    let mut tw = TestWorld::with_modules(common::modules(module));
+
+    // Downtown's OUTDOORS Plaza on the barren climate; pin to rain so no
+    // transition steals the tick.
+    let room = common::room(&tw, "Plaza");
+    tw.run(
+        GOD,
+        &format!("@weather/climate {}=barren", common::DOWNTOWN),
+    );
+    tw.run(GOD, &format!("@weather {}=rain", common::DOWNTOWN)); // pin: no transition steals the tick
 
     // Inject one PENDING ambient line directly (as a generate would).
     tw.world_mut()

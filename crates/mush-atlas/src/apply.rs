@@ -288,6 +288,14 @@ fn create_entry(
         "region" => {
             let def: RegionDef = decode(id, entry)?;
             let previous = state.records.regions.get(&key).map(|r| r.revision);
+            // A staff-set theme survives a re-apply that authors none.
+            let theme = def.theme.clone().or_else(|| {
+                state
+                    .records
+                    .regions
+                    .get(&key)
+                    .and_then(|r| r.theme.clone())
+            });
             let extent = def
                 .extent
                 .validate()
@@ -307,6 +315,7 @@ fn create_entry(
                 background: def.background,
                 ground: Vec::new(),
                 ground_resolution_cm: def.ground_resolution_cm,
+                theme,
                 revision: revision_after(previous),
             };
             rec.validate().map_err(|e| format!("{id}: {e}"))?;
@@ -320,12 +329,20 @@ fn create_entry(
                 .record(&def.region, "region")
                 .map_err(|e| format!("{id}: region: {e}"))?;
             let previous = state.records.localities.get(&key).map(|r| r.revision);
+            let theme = def.theme.clone().or_else(|| {
+                state
+                    .records
+                    .localities
+                    .get(&key)
+                    .and_then(|r| r.theme.clone())
+            });
             let rec = LocalityRec {
                 key: key.clone(),
                 region,
                 name: def.name,
                 kind: def.kind,
                 footprint: def.footprint,
+                theme,
                 revision: revision_after(previous),
             };
             rec.validate().map_err(|e| format!("{id}: {e}"))?;
@@ -463,6 +480,10 @@ fn create_entry(
                     .map(|p| p.tiles.clone())
                     .unwrap_or_default(),
                 resolution_cm: def.resolution_cm,
+                theme: def
+                    .theme
+                    .clone()
+                    .or_else(|| previous.as_ref().and_then(|p| p.theme.clone())),
                 revision: revision_after(previous.map(|p| p.revision)),
             };
             rec.validate().map_err(|e| format!("{id}: {e}"))?;
@@ -524,6 +545,10 @@ fn create_entry(
                 origin: SiteOrigin::Authored,
                 review: ReviewState::NotApplicable,
                 tactical_ready: false,
+                theme: def
+                    .theme
+                    .clone()
+                    .or_else(|| previous.as_ref().and_then(|p| p.theme.clone())),
                 revision: revision_after(previous.map(|p| p.revision)),
             };
             rec.validate().map_err(|e| format!("{id}: {e}"))?;

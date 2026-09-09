@@ -12,11 +12,16 @@ switched on (`[llm].enabled = true`; otherwise `@gen` just says so).
 A theme is the house style the generator writes to. It lives on a Zone Master
 Object (so a whole neighbourhood shares it), on a single room (an override), or
 on `#0` (the game-wide default), and rooms resolve it nearest-first up their
-zone chain. Set fields with `@theme` (Builder+):
+atlas: a room resolves through its site, its neighborhood, the locality, the
+region and then the world theme (nearest scalar wins, lists union). Set fields
+with `@atlas/theme` (staff):
 
-  @theme <zone>=<field>:<value>   Set one theme field on a zone/room/#0.
-  @theme/show [<zone>]            Show the effective (resolved) theme (default: here).
-  @theme/exemplar <zone>=<room>   Copy a room's accepted desc in as a gold-standard example.
+  @atlas/theme <place>=<field>:<value>   Set one theme field on a region,
+                                         locality, neighborhood or site, or on
+                                         `world` (the game default).
+  @atlas/theme/show [<place>]            Show the effective theme there, or here.
+  @atlas/theme/exemplar <place>=<room>   Copy a room's accepted desc in as a
+                                         gold-standard example.
 
 Fields (list fields take comma-separated values):
 
@@ -94,8 +99,8 @@ Start to finish (a small building already dug off the entrance):
 
   @create Harbourside               (or use an existing Zone Master Object)
   @set Harbourside=ZONE_MASTER
-  @theme Harbourside=style_guide:fog-bound Edwardian docks, gaslight and wet stone
-  @theme Harbourside=banned:neon, plastic, chrome
+  @atlas/theme Harbourside=style_guide:fog-bound Edwardian docks, gaslight and wet stone
+  @atlas/theme Harbourside=banned:neon, plastic, chrome
   @dig/teleport Wharf               dig a room and step into it
   @zone here=Harbourside            put it in the zone (so it inherits the theme)
   @gen here=A long wooden wharf, tar and rope, a customs shed at the far end.

@@ -90,6 +90,9 @@ Discovery happens in play.
   @region/zone <r>=<zmo>      master objects — or nothing at all: "Media
   @region/note <r>=<text>     influence in Chicago" is a perfectly good
   @region                     region with no rooms behind it.
+  @region/atlas <r>=<place>   Stand a region on an atlas neighborhood, locality
+                              or region; +territory then shows its footprint.
+                              An empty right-hand side clears it.
   @faction/control <region>=<f>/<kind>[/strength:<n>][/vis:<v>]
                               Kinds: dejure, defacto, covert, economic.
   @faction/uncontrol <region>=<f>/<kind>

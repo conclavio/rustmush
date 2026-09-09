@@ -8,7 +8,7 @@ use mush_core::{ObjId, PanelFeedHandle};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::theme::Theme;
+use mush_atlas::theme::Theme;
 
 /// The module's persistence namespace and identity.
 pub const NS: &str = "worldgen";

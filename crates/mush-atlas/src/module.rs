@@ -180,6 +180,8 @@ pub struct AtlasState {
     pub last_plan: BTreeMap<ObjId, (CanonicalId, String)>,
     /// The travel system (S2): journeys, patches, watches, known places, services.
     pub travel: crate::travel::TravelState,
+    /// The world theme (S2b): what every place falls to.
+    pub world_theme: Option<crate::theme::Theme>,
 }
 
 impl Default for AtlasState {
@@ -195,6 +197,7 @@ impl Default for AtlasState {
             records: Records::default(),
             last_plan: BTreeMap::new(),
             travel: crate::travel::TravelState::default(),
+            world_theme: None,
         }
     }
 }
@@ -325,14 +328,20 @@ impl GameModule for AtlasModule {
     ) -> Result<(), ModError> {
         let Loaded { records, dropped } = parse(&data, ctx.w);
         let (travel, dropped_travel) = crate::travel::hydrate(&data.kv, ctx.w, &records);
+        let (world_theme, dropped_theme) = hydrate_world_theme(&data.kv);
         {
             let slot = ctx
                 .state_mut::<AtlasState>()
                 .ok_or_else(|| ModError::msg("atlas: state slot missing"))?;
             slot.records = records;
             slot.travel = travel;
+            slot.world_theme = world_theme;
         }
-        for key in dropped.into_iter().chain(dropped_travel) {
+        for key in dropped
+            .into_iter()
+            .chain(dropped_travel)
+            .chain(dropped_theme)
+        {
             del_doc(ctx, key);
         }
         Ok(())
@@ -342,6 +351,28 @@ impl GameModule for AtlasModule {
 struct Loaded {
     records: Records,
     dropped: Vec<SmolStr>,
+}
+
+/// The world theme document, validated; a bad one is dropped loudly.
+fn hydrate_world_theme(
+    kv: &[(SmolStr, serde_json::Value)],
+) -> (Option<crate::theme::Theme>, Vec<SmolStr>) {
+    let Some((key, value)) = kv
+        .iter()
+        .find(|(k, _)| k.as_str() == crate::theme::WORLD_THEME_KEY)
+    else {
+        return (None, Vec::new());
+    };
+    match serde_json::from_value::<crate::theme::WorldThemeDoc>(value.clone())
+        .map_err(|e| e.to_string())
+        .and_then(|doc| doc.theme.validate().map(|()| doc.theme))
+    {
+        Ok(theme) => (Some(theme), Vec::new()),
+        Err(error) => {
+            tracing::warn!(%key, %error, "atlas: the world theme document was dropped at boot");
+            (None, vec![key.clone()])
+        }
+    }
 }
 
 fn decode<T: DeserializeOwned>(
@@ -375,7 +406,7 @@ fn parse(data: &ModuleBootData, w: &World) -> Loaded {
     let mut records = Records::default();
     let mut dropped: Vec<SmolStr> = Vec::new();
     for (key, value) in &data.kv {
-        if crate::travel::is_travel_key(key) {
+        if crate::travel::is_travel_key(key) || key.starts_with("theme:") {
             continue;
         }
         let Some((kind, _)) = key.split_once(':') else {
