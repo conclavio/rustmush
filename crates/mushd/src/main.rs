@@ -20,29 +20,18 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mush_config::offer_keys::DurableOfferKeyStore;
-use mush_config::resolution_keys::DurableResolutionKeyStore;
-use mush_core::{ControlMsg, Engine, Inbound};
-use mush_llm::LlmService;
+use mush_core::{ControlMsg, Inbound};
 use mush_net_web::{Metrics, WebConfig};
-use mush_server::config_ext::{
-    economy_config_with, llm_config, onboarding_ruleset, shadowrun_cadences,
-    shadowrun_economy_config, tacsim_config, weather_config, wod_economy_config, worldgen_config,
-};
 use mush_session::{SessionConfig, SessionManager};
-use mush_store::{
-    InMemoryStore, LedgerArchive, ObjectStore, RedisStore, core_migrations, run_migrations,
-};
+use mush_store::ObjectStore;
 use serde::Deserialize;
 
-use mushd::accounts::{Accounts, import_accounts_json};
-use mushd::config::{Config, StoreBackend};
+use mushd::accounts::Accounts;
+use mushd::boot;
+use mushd::config::Config;
 use mushd::ipguard::IpGuard;
-use mushd::modules;
-use mushd::persist::{load_or_seed_world, reconcile_authoritative_for_writable_boot};
 use mushd::quarantine::QuarantineSpool;
 use mushd::ssh_bridge::{SshBridge, start_listener};
-use mushd::staff::{StaffQueue, register_server_commands_with_cap};
 use mushd::web_bridge::WebBridge;
 use mushd::world_task::{self, ServerDeps, WorldOutcome};
 use mushd::{repl, unix_now_s};
@@ -189,81 +178,9 @@ fn main() -> ExitCode {
     }
 }
 
-/// Open the configured store backend, failing fast with an operator-facing
-/// error when Redis is unreachable (PLAN: never run without persistence).
-/// With `[store.archive].enabled`, the ledger archive tier (J5) is opened
-/// under the data dir and attached, so `log:` reads fall through to it; the
-/// archive is returned beside the store for the nightly pass to write.
-async fn open_store(
-    config: &Config,
-) -> Result<(Arc<dyn ObjectStore>, Option<Arc<LedgerArchive>>), String> {
-    let archive = if config.store.archive.enabled {
-        let root = config.server.data_dir.join(&config.store.archive.dir);
-        let archive = LedgerArchive::open(&root)
-            .map_err(|e| format!("opening the ledger archive at {}: {e}", root.display()))?;
-        let stats = archive.stats();
-        tracing::info!(
-            root = %root.display(),
-            chunks = stats.chunks,
-            purged = stats.purged,
-            compressed_mb = stats.compressed_bytes / (1024 * 1024),
-            "ledger archive tier attached"
-        );
-        Some(Arc::new(archive))
-    } else {
-        None
-    };
-    let store: Arc<dyn ObjectStore> = match config.store_backend().map_err(|e| e.to_string())? {
-        StoreBackend::Redis => {
-            let url = &config.store.redis_url;
-            tracing::info!(%url, "connecting to Redis");
-            let store = RedisStore::connect_read_only(url).await.map_err(|e| {
-                format!(
-                    "cannot reach Redis at {url}: {e}\n\
-                     mushd requires its store at boot. Start Redis (or point \
-                     [store].redis_url at it), or set [store].store = \"memory\" \
-                     for a throwaway world."
-                )
-            })?;
-            match &archive {
-                Some(archive) => Arc::new(store.with_archive(Arc::clone(archive))),
-                None => Arc::new(store),
-            }
-        }
-        StoreBackend::Memory => {
-            tracing::warn!("[store].store = \"memory\": nothing will survive a restart");
-            match &archive {
-                Some(archive) => Arc::new(InMemoryStore::new().with_archive(Arc::clone(archive))),
-                None => Arc::new(InMemoryStore::new()),
-            }
-        }
-    };
-    Ok((store, archive))
-}
-
 async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<(), String> {
     let listen = config.ssh_listen().map_err(|e| e.to_string())?;
     let data_dir = config.server.data_dir.clone();
-    // The pre-opened spool still owns the single-deployment lock. Compare any
-    // valid active records through the store's read-only connection before
-    // migrations, account import, world seeding, or module boot can write.
-    mush_server::prepare_quarantine_for_writable_boot(&config, &mut quarantine_spool, None).await?;
-    let offer_keys = DurableOfferKeyStore::new(config.offer_key_dir())
-        .load_or_create()
-        .map_err(|error| format!("offer key provisioning failed: {error}"))?;
-    tracing::info!(
-        current_version = offer_keys.current_version(),
-        key_dir = %config.offer_key_dir().display(),
-        "durable legal-action offer keys loaded"
-    );
-    let resolution_keys = DurableResolutionKeyStore::new(config.resolution_key_dir())
-        .load_or_create()
-        .map_err(|error| format!("resolution key provisioning failed: {error}"))?;
-    tracing::info!(
-        current_version = resolution_keys.current_version(),
-        key_dir = %config.resolution_key_dir().display(),
-        "durable authoritative resolution keys loaded"
-    );
     tracing::info!(
         name = %config.server.name,
         data_dir = %data_dir.display(),
@@ -279,169 +196,18 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // over /healthz and /metrics.
     let metrics = Arc::new(Metrics::new());
 
-    // Store: connect (fail fast), migrate, one-time accounts.json import,
-    // then load or seed the world — all before anything serves.
-    let (store, ledger_archive) = open_store(&config).await?;
-    let authoritative = store.authoritative_store().ok_or_else(|| {
-        "configured store does not implement K3 exact-token durability; refusing writable boot"
-            .to_owned()
-    })?;
-    let recovery = reconcile_authoritative_for_writable_boot(authoritative).await?;
-    tracing::info!(
-        indexed = recovery.indexed,
-        retained = recovery.retained,
-        reconciled = recovery.reconciled,
-        already_finalized = recovery.already_finalized,
-        checkpointed = recovery.checkpointed,
-        checkpoint_deferred_outbox = recovery.checkpoint_deferred_outbox,
-        scan_pages = recovery.scan_pages,
-        "authoritative intent recovery barrier complete"
-    );
-    store
-        .bootstrap_writable()
-        .await
-        .map_err(|error| format!("store writable bootstrap failed: {error}"))?;
-    let version = run_migrations(&*store, &core_migrations())
-        .await
-        .map_err(|e| format!("store migrations failed: {e}"))?;
-    tracing::info!(schema = version, "store schema current");
-    let imported = import_accounts_json(&*store, &data_dir).await?;
-    if imported > 0 {
-        tracing::info!(imported, "M1 accounts.json imported");
-    }
-    // Command table: core + engine + server staff commands (@siteban/@dump/
-    // @boot/@ps/@stats push typed ops onto the queue the world task
-    // drains), plus the markdown help topics.
-    let staff = Arc::new(StaffQueue::new());
-    let mut registry = world_task::base_registry();
-    register_server_commands_with_cap(&mut registry, &staff, config.game.max_characters as usize)
-        .map_err(|e| format!("server command registration: {e}"))?;
-    match mushd::help::load_help_topics(&mut registry, &config.server.help_dir) {
-        Ok(n) => tracing::info!(topics = n, "help topics loaded"),
-        Err(e) => tracing::warn!(error = %e, dir = %config.server.help_dir.display(),
-            "help topics failed to load; continuing without them"),
-    }
-    // M7 LLM service: built from [llm] config, resolving each provider's API
-    // key from its named env var (never inlined in config, never logged). A
-    // keyless clone still boots — `enabled` defaults false, and a provider
-    // whose key env-var is unset is skipped (routes to it fail fast). The
-    // worldgen module and the world task's `Effect::ModuleAsync` driver share
-    // this one handle.
-    let llm_cfg = llm_config(&config.llm)?;
-    let llm = Arc::new(LlmService::from_config(&llm_cfg).map_err(|e| format!("llm config: {e}"))?);
-    tracing::info!(
-        enabled = llm_cfg.enabled,
-        providers = llm_cfg.providers.len(),
-        routes = llm_cfg.routes.len(),
-        "llm service built"
-    );
-
-    // Game modules: the built-ins (including sim + tactics), then
-    // the M7 worldgen module, then the config-selected rulesets
-    // ([rulesets].enabled — M6: "wod"). Everything after the built-ins
-    // registers cleanly against the one registry; rulesets go last so their
-    // approval payload handlers see a loaded jobs module. Then run each
-    // namespace's store migrations and hand each module its persisted boot
-    // data — all before the world task starts serving.
-    let onboarding = onboarding_ruleset(&config.onboarding);
-    // E5c: `[wod.economy]`, validated here (an unknown mode is a hard boot error).
-    // `None` when no WoD ruleset is enabled — that is what gates the housing title
-    // issuer (08d §2).
-    let wod_economy = wod_economy_config(&config.wod)?;
-    let wod_selected = config
-        .rulesets
-        .enabled
-        .iter()
-        .any(|r| r.trim().eq_ignore_ascii_case("wod"));
-    // E6a: `[shadowrun.economy]`, validated here (an unknown lifestyle tier is a hard
-    // boot error). `None` when no Shadowrun ruleset is enabled — that is what gates
-    // the run board's economy observer (08f §2's `issuers` pattern).
-    let sr_economy = shadowrun_economy_config(&config.shadowrun)?;
-    let sr_selected = config
-        .rulesets
-        .enabled
-        .iter()
-        .any(|r| r.trim().eq_ignore_ascii_case("shadowrun"));
-    // SP1 / D-LBK-7: a Shadowrun server needs `sr.month` declared or no lifestyle
-    // obligation can exist. The host contributes the stanza unless the operator
-    // declared one of that name themselves.
-    let contributed: Vec<(String, mush_server::config_ext::DeclaredCadence)> = if sr_selected {
-        shadowrun_cadences(&sr_economy)
-    } else {
-        Vec::new()
-    };
-    let contributed: Vec<(&str, mush_server::config_ext::DeclaredCadence)> = contributed
-        .iter()
-        .map(|(n, d)| (n.as_str(), d.clone()))
-        .collect();
-    // E7 cut 1: the TacSim layer's frozen block, read **host-side** so an unreadable,
-    // oversized or digest-mismatched pack fails the boot naming the file before any
-    // module runs (invariant (iv)). E7 residue pass 1 (R4) reads it here, before the
-    // module list is built, because `[tacsim.recovery]` reaches `mush-campaign` —
-    // which composes inside `server_modules_with` — through the composition root's
-    // own mapping and never through a crate edge.
-    let tacsim = tacsim_config(&config.tacsim)?;
-    let mut mods = modules::server_modules_with(
-        weather_config(&config.weather),
-        economy_config_with(&config.economy, &contributed)?,
-        &onboarding,
-        wod_selected.then_some(&wod_economy),
-        sr_selected.then_some(&sr_economy),
-        modules::recovery_policy(&tacsim.recovery),
-    );
-    mods.push(modules::worldgen_module_with(
-        Arc::clone(&llm),
-        worldgen_config(&config.worldgen),
-    ));
-    // M8: the NPC agent module, grounded by the enabled ruleset's sheet +
-    // on-loop abilities through the generic ruleset grounding adapter (WoD,
-    // Shadowrun, …); dialogue-only when no ruleset is enabled.
-    let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
-    mods.push(modules::npc_module_with(npc_grounding, &config.npc));
-    let rulesets = modules::ruleset_modules(
-        &config.rulesets.enabled,
-        &onboarding,
-        &wod_economy,
-        &sr_economy,
-    )
-    .map_err(|e| format!("ruleset selection: {e}"))?;
-    if !rulesets.is_empty() {
-        tracing::info!(rulesets = ?config.rulesets.enabled, "rulesets enabled");
-    }
-    mods.extend(rulesets);
-    // E7 cut 1: the TacSim layer, **after** the character ruleset (doc 10 §20, 10b
-    // §3.1). It is not a `[rulesets]` id — `[tacsim].enabled` switches it, independently
-    // of which single character ruleset is loaded — and it composes last so its boot
-    // can read that ruleset's facts. Its config was read above, before the module list,
-    // for `[tacsim.recovery]`'s sake.
-    if tacsim.enabled {
-        tracing::info!(
-            packs = tacsim.packs.len(),
-            seeds = tacsim.seeds.len(),
-            "tacsim enabled"
-        );
-    }
-    mods.push(modules::tacsim_module(tacsim));
-    // Compose and freeze every mechanics registry before persisted world data
-    // is loaded. This makes the C1 boot order structural instead of relying on
-    // individual modules to avoid early interpretation.
-    let composition =
-        Engine::compose_modules(registry, mods).map_err(|e| format!("module registration: {e}"))?;
-    let mut world = load_or_seed_world(&*store).await?;
-    // Hydrate the versioned IC timeline before module state and ticks are
-    // materialized into the engine. [game] seeds an empty store only;
-    // persisted epochs remain authoritative across configuration changes.
-    let clock = config.game.game_clock().map_err(|e| e.to_string())?;
-    mush_server::timeline::hydrate_world_timeline(&mut world, &*store, clock).await?;
-    tracing::info!(
-        generation = world.world_timeline().current().generation,
-        ic_rate = world.world_timeline().current().rate,
-        "world timeline installed",
-    );
-    let mut engine = Engine::from_composition(world, composition);
-    engine.set_offer_keys(offer_keys);
-    engine.set_resolution_keys(resolution_keys);
-    modules::boot_modules(&mut engine, &*store).await?;
+    // Everything the deployed all-in-one composes, in one callable root the
+    // integration suite boots too (WS04-S0): the quarantine barrier, the three
+    // durable key rings, the store, the module roster, the world, and every
+    // module's boot pass.
+    let boot::Booted {
+        store,
+        ledger_archive,
+        engine,
+        staff,
+        llm,
+        llm_config: llm_cfg,
+    } = boot::boot_all_in_one(&config, &mut quarantine_spool).await?;
     // J5: the namespaces the nightly archive pass walks — every composed module's.
     let archive_namespaces: Vec<String> = engine
         .modules()

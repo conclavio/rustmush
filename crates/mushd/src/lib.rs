@@ -26,6 +26,7 @@
 //!
 //! [`InProcessSink`]: inprocess::InProcessSink
 
+pub mod boot;
 pub mod inprocess;
 pub mod repl;
 

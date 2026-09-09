@@ -2688,6 +2688,7 @@ dependencies = [
  "mush-script",
  "mush-server",
  "mush-session",
+ "mush-sim",
  "mush-store",
  "mush-testkit",
  "mush-weather",
