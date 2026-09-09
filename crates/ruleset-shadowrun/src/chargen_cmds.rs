@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, Registrar};
+use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, Registrar, perm};
 use mush_jobs::{Job, OpenJob, open_job};
 use mush_ruleset::schema::FieldType;
 use mush_ruleset::{ApprovalState, SheetDoc};
@@ -270,7 +270,10 @@ fn spec_cmd(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     apply_spec(cmd, ctx, &skill, &spec)
 }
 
-/// Record a specialization on an active skill — shared with the wizard.
+/// Record a specialization on an active skill — shared with the wizard, and so
+/// the one place the write can be gated. A specialization is +2 dice, and until
+/// this gate existed an approved runner could add them for free without limit;
+/// the sheet is editable here only while unapproved and in chargen, or by staff.
 pub(crate) fn apply_spec(
     cmd: &Sr5Cmd,
     ctx: &mut Ctx<'_>,
@@ -286,6 +289,18 @@ pub(crate) fn apply_spec(
     let sk = crate::data::active_skill(&skill)
         .ok_or_else(|| CmdError::msg(format!("No such active skill: {skill}")))?;
     let mut doc = cmd.read_or_default_ctx(ctx, actor)?;
+    // Only editable while unapproved and in chargen, or by staff — mirroring the
+    // spell-learning gate in `magic.rs`. There is no karma route to a
+    // specialization yet, so the refusal points at a gamemaster, not at a
+    // `+karma/spend` spelling that would refuse in turn.
+    if !perm::has_role(ctx.w, actor, mush_core::Role::Royalty) {
+        if doc.approved.is_approved() {
+            return Err(CmdError::msg(
+                "Your sheet is approved; ask a gamemaster to add a specialization.",
+            ));
+        }
+        require_chargen(ctx)?;
+    }
     let id = sk.id.to_string();
     let mut list: Vec<serde_json::Value> = doc
         .map(crate::schema::SKILL_SPECIALIZATIONS_FIELD)
