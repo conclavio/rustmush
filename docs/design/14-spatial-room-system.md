@@ -52,6 +52,7 @@ The givens G1–G9 of 14a §1 and these answers (owner, 2026-09-09, binding):
 | D-14-29 | Names: `mush-atlas` over `mush-content`; `+atlas`, `+travel`, `+stakeout`, `@atlas/*`; tiers region / locality / neighborhood / site / structure / room; "control region" for the faction record; docs 14, 14a, 14b, 14c | 29A |
 | D-14-30 | **SSH first for maps**: anything the terminal can show the web can show, never the reverse; the map projection is a text grid and the web draws the same frames | I7 |
 | D-14-31 | Boot never spends: the starter area is static committed content; the agent path is never a boot step; test instances do not apply it | G9 |
+| D-14-32 | Interface NPCs: staff-zone NPCs as the conversational face of game systems, holding only the asker's authority and only read-or-propose abilities | owner direction, **proposed** (§4.6); recommended: adopt as 14b's first slice |
 
 Kept from the binding designs, unchanged: doc 06's single authoritative placement graph and
 atomic transitions; doc 10's abstracted routes (1A), journeys never pause for scenes (6A), carrier
@@ -298,16 +299,16 @@ into `mush-content`.
     "site.lobby":   { "kind": "site", "def": { "name": "The Lobby", "site_kind": "site.office",
                       "footprint": [[10,10],[50,10],[50,40],[10,40]], "entrances": ["portal.front_doors"] } },
     "structure.lobby": { "kind": "structure", "def": { "site": "site.lobby", "footprint": [[10,10],[50,10],[50,40],[10,40]],
-                      "floors": [ { "index": 0, "z_offset_m": 0 }, { "index": 1, "z_offset_m": 3.6, "name": "Mezzanine" } ] } },
+                      "floors": [ { "index": 0, "z_offset_m": 0 }, { "index": 1, "z_offset_m": 3.6, "name": "Mezzanine (Production Office)" } ] } },
     "room.lobby":   { "kind": "room", "def": { "name": "Lobby", "site": "site.lobby", "surface": { "floor": ["structure.lobby", 0] },
                       "footprint": { "rect": [[12,12],[48,38]] }, "desc": "…", "details": { "desk": "…" } } },
-    "room.mezz":    { "kind": "room", "def": { "name": "Mezzanine", "site": "site.lobby", "surface": { "floor": ["structure.lobby", 1] },
+    "room.production_office": { "kind": "room", "def": { "name": "Production Office", "site": "site.lobby", "surface": { "floor": ["structure.lobby", 1] },
                       "footprint": { "rect": [[12,30],[48,38]] }, "access": "restricted" } },
-    "exit.stairs":  { "kind": "exit", "def": { "from": "room.lobby", "to": "room.mezz", "names": ["up;u", "down;d"],
+    "exit.stairs":  { "kind": "exit", "def": { "from": "room.lobby", "to": "room.production_office", "names": ["up;u", "down;d"],
                       "portal": { "mode": "stair", "at": [[30,30,0],[30,30,3.6]], "dz_m": 3.6 } } },
     "feature.desk": { "kind": "feature", "def": { "feature_kind": "counter", "surface": { "floor": ["structure.lobby", 0] },
                       "polyline": [[20,20],[30,20]], "z_range": [0, 1.1], "blocks": { "movement": true, "sight": false } } },
-    "npc.receptionist": { "kind": "npc", "def": { "name": "Nell Okafor", "tier": "minor", "room": "room.lobby",
+    "npc.susie": { "kind": "npc", "def": { "name": "Susie", "tier": "minor", "room": "room.lobby",
                       "profile": { "persona": "…", "fallback": ["The tour starts at the top of the hour."] },
                       "lore": [ { "tier": "public", "fact": "The tour starts at the top of the hour." },
                                 { "tier": "guarded", "fact": "The tour is running late again." } ] } },
@@ -326,14 +327,78 @@ them at apply (3.2). Prose fields are prose; the digest covers them like any fie
 ### 2.6 The starter area, as content
 
 Two packs ship in the repository and apply at first boot when `[game].starter_area = true`
-(default; the testkit's `boot_world` leaves it false): `region.limbo` — one surface region, "the
-lot", 400 m square, flat at datum 0 with one raised loading dock; localities `locality.lot`;
-the connection `connection.lot_tram` (journey, modes `tram`, two checkpoints); background recipe
-"paved lot" — and `neighborhood.ooc_area` and `neighborhood.staff_lobby` with the content of doc
-11 §11 R4's table. Limbo `#0` keeps its identity and gains `OOC Area <O>` and `Staff <S>` exits
-whose portals point at the two neighborhoods' arrival rooms; `#0` itself belongs to no
-neighborhood (P1 holds: it is a room). The tram is a carrier object with a one-room interior
-whose journey follows `connection.lot_tram`. Both packs include their `brief` blocks (3.7).
+(default; the testkit's `boot_world` leaves it false). Names and voices are the owner's
+(2026-09-09) where given; three NPCs carry placeholders until named.
+
+**`region.limbo`** — one surface region, "the lot", 400 m square, flat at datum 0 with a raised
+loading dock (+1.2 m) on the back lot; locality `locality.lot`; background recipe "paved lot";
+the connection `connection.lot_tour` (journey; mode `bus`; a corridor from the OOC bus stop past
+`checkpoint.security_gate` and `checkpoint.water_tower` to the lobby forecourt). The **Studio Tour
+Bus** is a carrier object with a one-room interior (`room.bus`) whose journey loops on that
+connection: it is how newcomers arrive at the lobby, and the standard transit test.
+
+**Limbo `#0`** keeps its identity as the spawn room and hub: exits `OOC Area <O>` (open) to the
+Welcome Hall and `Staff <S>` (open by default, D-14-27) to the lobby forecourt. `#0` belongs to no
+neighborhood.
+
+**`neighborhood.ooc_area`** (six rooms, public, no secrets; hydration policy: one player-built
+games room allowed):
+
+| Room | Purpose |
+|---|---|
+| Welcome Hall | arrival from `<O>`; signposts to the tutorial and the bus |
+| Tutorial: Moving | exits, `look`, `home` |
+| Tutorial: Talking | `say`, `pose`, `page`, channels |
+| Tutorial: Building | a sandbox where `BUILDER`-flagged players may `@dig`; reset by staff |
+| Lounge | the OOC hangout; the notice board |
+| Bus Stop (OOC) | where the tour bus departs |
+
+**`neighborhood.staff_lobby`** (eight rooms; every NPC room public; one restricted room):
+
+| Room | Surface | Purpose and occupant |
+|---|---|---|
+| Forecourt & Bus Stop | ground, outdoor | arrival from `<S>` and from the bus |
+| Lobby | Lobby building, floor 0 | reception; **Susie** |
+| Breakroom | Lobby building, floor 0 | the staff breakroom; **Phil** |
+| Production Office | Lobby building, floor 1 (mezzanine, +3.6 m) | **restricted** to staff: the one locked room, and the stair portal's `dz` |
+| Souvenir Shop | its own site | **Karen** |
+| Backlot | ground, outdoor; the loading dock | circulation; the **Meteorologist** (placeholder name) |
+| Coffee Shop | its own site on the back lot | the open house venue; the **Economist** (placeholder) |
+| Writers' Room | its own site | the **Set Designer** (placeholder): the builder's front desk |
+
+**NPCs** — all minor tier, enabled, on the default per-NPC budget, each with fallback lines so
+the lot works with `[llm].enabled = false`; the interface abilities are §4.6:
+
+- **Susie** — receptionist, Lobby. ENFP: warm, quick, curious about everyone. Greets newcomers
+  getting off the studio tour bus. Plays guitar and sings her originals at the back-lot coffee
+  shop open house. Happy to tell you the layout of the lot and who's around today (interface
+  abilities `atlas.describe`, `who.nearby`). Public lore: the lot's layout, the bus schedule, the
+  open house; guarded: the tour is running late again; does not know why. Fallback: "Welcome to
+  the lot! The bus just got in — coffee shop's out back, and I'm right here if you get turned
+  around."
+- **Phil** — off-duty gamemaster, Breakroom. Works at an off-screen comic book shop; has an
+  opinion on everything gaming related; loves to brainstorm character concepts (interface
+  abilities `chargen.explain`, `rules.lookup`). Public lore: how scenes and `+request` work,
+  what a storyteller does; guarded: which storyline he thinks is overrated. Fallback: "I'm off
+  the clock. Tell me about your character anyway."
+- **Karen** — owner of the Souvenir Shop and its manager, and still insists on speaking with
+  the manager. Public lore: the shop's stock (props, posters, the tutorial pamphlet), the lot's
+  history as she tells it; guarded: what the props department owes her. Fallback: "I'd like to
+  speak with the manager. …Right. That's me. How can I help you?"
+- **The Meteorologist** (placeholder) — Backlot; talks about the weather (`weather.report`,
+  `weather.forecast` over the lot's weather cell). **The Economist** (placeholder) — Coffee Shop;
+  shows you the markets (`market.quote`, `market.list` over the public projection). **The Set
+  Designer** (placeholder) — Writers' Room; the builder's front desk (`build.propose`,
+  `build.status`, `build.answer`).
+
+**Hooks**: `hook.open_house` — Susie's set at the coffee shop, an invitation and a place
+strangers meet, no mechanic. **Items**: the tutorial pamphlet (readable), the shooting-schedule
+clipboard (details), the notice board (details), the lost-and-found box (container), a souvenir
+mug. **Secret**: `secret.late` — why the tour is late, stored `Secret`, never in a prompt.
+
+Both packs include their `brief` blocks (3.7). Fourteen rooms plus Limbo; every room is
+justified by a tutorial step, an arrival, an NPC or a demonstration (the stair, the dock, the
+lock, the bus).
 
 ## 3. Behaviour
 
@@ -539,6 +604,58 @@ the cap becomes 0 until staff reset it; staff raise caps for players whose sites
 All of it is on the character (accounts are not principals), audited, and visible to the player
 (`+build/status`).
 
+### 4.6 Interface NPCs (owner direction 2026-09-09; proposed — recommended: adopt as 14b's first slice)
+
+The owner's idea: the staff zone's NPCs as the conversational face of game systems — the builder
+as a Set Designer you talk to, an Economist who shows you the markets, a Meteorologist who talks
+about the weather, a receptionist who knows the lot and who is around. It fits the tree better
+than it first looks.
+
+**What exists.** An NPC agent already acts only through a closed tool list — say, pose, move,
+look, remember, use an ability, do nothing (`crates/mush-npc/src/lib.rs`, `NpcAction`, bounded by
+`MAX_ROUND_TRIPS` and `MAX_ACTIONS`) — and `UseAbility` is resolved on the world loop by
+`Ruleset::invoke_ability` (`crates/mush-ruleset/src/lib.rs`), the NPC's `AgentCapabilityProfile`
+deciding which abilities its prompt is offered. `wod_roll` and `sr_roll` are abilities today. Doc
+03 §7's rule — the allowlist, not the prompt, is the boundary — is what makes the idea safe.
+
+**The design.** An **interface ability** is an ability whose provider is a game system rather than
+a ruleset sheet, registered through the same seam and invoked the same way:
+
+| Ability | Fronts | Backed by |
+|---|---|---|
+| `atlas.describe(place)`, `who.nearby()` | the receptionist | `+atlas` and the presence projection, filtered for the asker |
+| `weather.report(zone)`, `weather.forecast(zone)` | the meteorologist | `mush-weather`'s cell for the lot's zone (the read side of `@weather <zone>`) |
+| `market.quote(…)`, `market.list(…)` | the economist | `+market`'s public projection (`crates/mush-market/src/commands.rs`), never the book beneath it (doc 10 §14's safe projection) |
+| `build.propose(brief)`, `build.status(id)`, `build.answer(q, a)` | the set designer | the authoring agent (4.1); the conversation *is* the proposal record's question loop; the NPC never applies |
+| `chargen.explain(topic)`, `rules.lookup(topic)` | the off-duty gamemaster | the help topics and the loaded ruleset's chargen schema |
+
+Four rules keep an interface NPC exactly as powerful as the person talking to it:
+
+1. **Authority is the asker's.** Every interface ability runs with the speaking character's
+   principal, powers and visibility; the NPC holds none of its own. Karen cannot show a hidden
+   faction's holding because a wizard asked her about it yesterday.
+2. **Read or propose, never mutate.** An interface ability either reads a projection the asker
+   could read with a command, or writes to a proposal record the asker owns. The mutation stays
+   a typed command the asker issues (`+build/go`): the NPC drafts, the validator checks, the person
+   commits — trust but verify, in a costume.
+3. **Cost lands where the work is.** A read is charged to the NPC's own daily budget like any
+   turn; an ability that runs the authoring agent is charged to the asker's actor budget under
+   `worldgen_plan` with the $5 / $2 ceilings (4.1). Tier and cooldown bound the chatter.
+4. **Audited and fallback-safe.** Every call is audited as `(npc, asker, ability, args)`; with
+   the LLM off, each interface NPC's fallback lines name the command that does the same thing
+   (`+atlas`, `weather`, `+market`, `+build`, `help chargen`).
+
+**Why the staff zone.** It is where the game shows its workings and it is public by design
+(D-14-27): a newcomer learns `+atlas` by asking Susie where the coffee shop is; a builder learns
+the authoring loop by talking to the Set Designer before typing `@atlas/propose`. The same
+abilities can be given to any NPC anywhere later — a city's cab dispatcher is `+travel` with a
+voice — with no second mechanism.
+
+**What it costs to build.** A provider trait for interface abilities beside the ruleset's, both
+reached through the one `invoke_ability` path; an asker-scoped authority context on the ability
+call; and per-ability projections that already exist as commands. It follows cut 3 as the first
+slice of 14b.
+
 ## 5. What the engine owns and what rulesets register
 
 D-14-10, made concrete. The engine (`mush-atlas`) defines and answers; rulesets declare
@@ -634,6 +751,8 @@ propellant, alignment bands). A WoD or Shadowrun ruleset registers pedestrians a
 | 5 | Engine physics | locomotion table, LOS, traces, hearing; `mush-propagation` on the metric | biped vs wheeled costs; a wall blocks sight and a window does not; an indirect shot clears a wall a direct one hits | 4 |
 | 6 | TacSim ground driver and imports | 1000 cm windows, tracked/legged/rotor, indirect fire, heightfield import; hex vocabulary removed from the tactics stub | a mech engagement on imported relief over the same tiles a street fight used | 5, E7 cut 8 |
 
+Interface NPCs (§4.6) follow cut 3 as the first slice of 14b once D-14-32 is accepted.
+
 Acceptance scenarios beyond the table: a landing at an implicit point yields a bounded patch, a
 perimeter and one arrival room and persists nothing until a feature is damaged there; a ship
 departs a pad on a cross-frame connection, is held in orbit, and lands elsewhere with every
@@ -665,4 +784,5 @@ pins both fine tile sets and the background; a hyphenated id is refused at load 
   lands (cut 2 chooses the record; the layer may absorb it).
 - The pedestrian encounter policy for unwatched hazard bands in city campaigns (a ruleset
   decision; the engine only exposes the band).
-- The names and voices in the starter lot (14a I9; placeholders until the owner supplies them).
+- Names for the Meteorologist, the Economist and the Set Designer (Susie, Phil and Karen are the
+  owner's, 2026-09-09); whether D-14-32 is accepted.
