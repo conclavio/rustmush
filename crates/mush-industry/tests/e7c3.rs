@@ -2439,6 +2439,13 @@ fn filed_claims(
 fn ws02_s3_a_filer_with_no_authority_mints_no_object_and_no_title() {
     let (mut world, families) = boot_orgs();
     let alice = world.spawn_player("alice");
+    // A `Thing` alice owns, so `acts_for` is true of `obj:<widget>` for her:
+    // `controls` covers anything she owns. Minted before the baseline, because
+    // what is under test is that the *filing* mints nothing.
+    let widget = world
+        .world_mut()
+        .create(ObjKind::Thing, "widget", alice, None)
+        .expect("widget");
     let before_id = world.world().next_id();
     let before_titles = titles(&world);
     let ev = world.run(alice, "@claim/file place:7=org:1/obj:2/shared/1/1000/bound");
@@ -2467,6 +2474,37 @@ fn ws02_s3_a_filer_with_no_authority_mints_no_object_and_no_title() {
         world.seen_by(&ev, alice).join("\n"),
         refused,
         "a foreign authority and a missing one are refused identically"
+    );
+    // And the one `acts_for` alone would have admitted: an `Object` principal
+    // alice MUSH-controls. Layer 2 offers organizations only, so a layer 1 that
+    // stopped at `acts_for` would mint the claim object here and refuse it at
+    // the provider — and every minted claim is itself owned by alice, so the
+    // loop would feed itself.
+    let ev = world.run(
+        alice,
+        &format!(
+            "@claim/file place:7=obj:{}/obj:2/shared/1/1000/bound",
+            widget.0
+        ),
+    );
+    assert_eq!(
+        world.seen_by(&ev, alice).join("\n"),
+        refused,
+        "an object the filer controls is not an authority over the ground"
+    );
+    assert_eq!(
+        world.world().next_id(),
+        before_id,
+        "and naming it minted no world object either"
+    );
+    assert_eq!(
+        titles(&world),
+        before_titles,
+        "nor a title under the controlled object"
+    );
+    assert!(
+        filed_claims(&mut world, &families).is_empty(),
+        "nor a claim record"
     );
 }
 

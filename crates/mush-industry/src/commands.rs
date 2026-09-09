@@ -510,9 +510,21 @@ fn cmd_claim(
             .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
         // Nobody issues their own tenure, staff included: an issuer is an
         // authority *over* the ground, and "because I say so" is not one.
-        if issuer == PrincipalId::Object(ctx.actor)
-            || !(staff || mush_economy::acts_for(ctx.w, ctx.actor, &issuer))
-        {
+        //
+        // For a non-staff filer the predicate is the **whole** of
+        // `issuable_authorities`, organization kind included, not just its
+        // `acts_for` half. `acts_for` is true of any `Object` the actor MUSH-
+        // controls ([`mush_core::perm::controls`] — anything it owns, or its
+        // owner owns), and layer 2 offers organizations only; a layer 1 that
+        // tested `acts_for` alone would therefore wave a controlled `Thing`
+        // through, mint the claim object, and only then be refused downstream —
+        // the object-creation loop this layer exists to close, made
+        // self-sustaining by the fact that each minted claim is itself owned by
+        // the filer.
+        let issuable = staff
+            || (matches!(issuer, PrincipalId::Organization(_))
+                && mush_economy::acts_for(ctx.w, ctx.actor, &issuer));
+        if issuer == PrincipalId::Object(ctx.actor) || !issuable {
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         }
         let holder = crate::provider::parse_principal(parts[1].trim())

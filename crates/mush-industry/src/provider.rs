@@ -809,13 +809,16 @@ pub fn issuable_authorities(engine: &Engine, actor: ObjId) -> Vec<PrincipalId> {
         .collect();
     orgs.sort_unstable();
     orgs.dedup();
-    let mut out: Vec<PrincipalId> = orgs
-        .into_iter()
+    // Capped **before** the filter, not after: `acts_for` is a capability lookup
+    // per candidate, run on the world thread once per projection, so the cap has
+    // to bound the probes and not merely the answer. The cost is that an org the
+    // filter would have dropped can shorten the offered list — the same
+    // truncate-and-accept posture the sibling `administrable_claims` takes.
+    orgs.truncate(MAX_DEPOSIT_CHOICES);
+    orgs.into_iter()
         .map(PrincipalId::Organization)
         .filter(|who| mush_economy::acts_for(&engine.world, actor, who))
-        .collect();
-    out.truncate(MAX_DEPOSIT_CHOICES);
-    out
+        .collect()
 }
 
 /// The issuer gate's structural half, run inside `file()` before anything is
