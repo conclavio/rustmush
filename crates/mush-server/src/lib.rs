@@ -91,14 +91,22 @@ pub mod world_task;
 use crate::action_coordinator::{ActionCoordinator, ActionPreflight};
 use crate::gateway_sink::SocketSink;
 use crate::persist::AuthoritativeCommitFailure;
-use crate::persist::{load_or_seed_world, reconcile_authoritative_for_writable_boot};
+use crate::persist::{
+    WorldExitStatus, load_or_seed_world, reconcile_authoritative_for_writable_boot,
+};
 use crate::quarantine::QuarantineSpool;
 use crate::staff::{StaffQueue, register_server_commands_with_cap};
 use crate::world_task::{
-    CreatePlayerErr, LegalActionReadError, ServerDeps, WorldHandle, WorldReadError,
+    CreatePlayerErr, LegalActionReadError, ServerDeps, WorldHandle, WorldOutcome, WorldReadError,
 };
 
 pub use gateway_sink::{GatewaySink, SocketSink as ServerSocketSink};
+
+/// WS01-S8's world-turn fault arming, for a supervised proof whose server
+/// halves are threads in the test process. Feature-gated; no shipped build
+/// carries it.
+#[cfg(feature = "fault-injection")]
+pub use process_fault::arm_world_turn_panic;
 
 /// A human-readable server identity string, sent in [`ToGateway::Hello`].
 fn server_id() -> String {
@@ -534,6 +542,11 @@ pub async fn serve_with_quarantine_spool(
     let world_join = handles.world_join;
     let store_writer_join = handles.writer_join;
     let outbox_join = handles.outbox_join;
+    // The reader's shutdown-provenance source. The world loop sets this as the
+    // LAST statement of its own function — before its receiver drops — so a
+    // reader that finds the channel closed can already tell an ordinary exit
+    // from a fault without waiting on the join handle it does not own.
+    let world_exit = handles.world_exit.clone();
 
     let listener = mush_ipc::listen(&endpoint)
         .await
@@ -569,25 +582,65 @@ pub async fn serve_with_quarantine_spool(
     ));
 
     // Reader: pump the gateway's `ToServer` traffic into the world. Runs until
-    // the gateway closes the boundary (clean EOF) or a protocol fault.
-    let reader_result = reader_loop(
+    // the gateway closes the boundary (clean EOF), a protocol fault, or the
+    // world stops accepting — a closed world channel is permanent, so the
+    // reader refuses to keep answering frames it can never deliver.
+    //
+    // BOXED, therefore pinned: the world's own completion is raced against it
+    // below, and a `select!` that moved the reader between polls could drop a
+    // half-read frame mid-await. Owning the box also lets this function DROP
+    // the reader — and with it the `WorldHandle` clone and the `to_gw` sender
+    // inside `reply_sink` — before the joins below wait for those very channels
+    // to close.
+    let mut reader = Box::pin(reader_loop(
         reader_half,
         world.clone(),
         ingress_store,
         offer_routes,
         reply_sink,
         &metrics,
-    )
-    .await;
-    match reader_result {
-        Ok(()) => tracing::info!("gateway disconnected (clean EOF)"),
-        Err(e) => tracing::warn!(error = %e, "ipc reader ended on error"),
-    }
+        world_exit,
+    ));
+    let mut world_join = world_join;
 
-    // Boundary gone: shut the world down cleanly, then let the writer flush its
-    // Bye and exit (it stops when the world drops its `to_gw_tx` clones).
-    world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
-    let _ = world_join.await;
+    // The world half of the fork is only useful while the world task is alive.
+    // Before this race the reader was awaited to completion first, so a world
+    // that died under a still-connected gateway left this process up with its
+    // IPC listener bound, dropping every frame forever and giving the
+    // supervisor nothing to heal (D2). Whichever side ends first ends service.
+    let end = tokio::select! {
+        reader_result = &mut reader => BoundaryEnd::Reader(reader_result),
+        joined = &mut world_join => BoundaryEnd::World(joined),
+    };
+    let world_result = match end {
+        BoundaryEnd::Reader(reader_result) => {
+            match reader_result {
+                Ok(()) => tracing::info!("gateway disconnected (clean EOF)"),
+                // A reader that ended because the world is gone already logged
+                // that at its own provenance severity; repeating it as a warn
+                // would make every ordinary `@shutdown` look like a fault.
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                    tracing::info!(error = %e, "ipc reader ended with the world already gone");
+                }
+                Err(e) => tracing::warn!(error = %e, "ipc reader ended on error"),
+            }
+            // Boundary gone: shut the world down cleanly, then let the writer
+            // flush its Bye and exit (it stops when the world drops its
+            // `to_gw_tx` clones).
+            world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
+            world_join.await
+        }
+        BoundaryEnd::World(joined) => {
+            // The world stopped under a live gateway. It is already gone, so
+            // this path sends NO second `ControlMsg::Shutdown`: the ordinary
+            // sequence above is the only one that ever issues it, and a second
+            // teardown here would race it.
+            tracing::info!("world task ended while the gateway was still connected");
+            joined
+        }
+    };
+    // Release the reader's captures before waiting on the channels they hold.
+    drop(reader);
     drop(to_gw_tx);
     drop(world);
     let _ = outbox_join.await;
@@ -597,8 +650,49 @@ pub async fn serve_with_quarantine_spool(
     // world believed shutdown sequencing had transferred custody.
     let _ = store_writer_join.await;
     let _ = ipc_writer_join.await;
+    // Only now, with the outbox, the store writer and the IPC writer all
+    // joined, is the failure raised: an exit code is never worth bypassing a
+    // drain, and it is never raised by `process::exit`/`abort` from inside a
+    // catch handler or a driver.
+    world_exit_result(world_result).inspect_err(|detail| {
+        tracing::error!(%detail, "mush-server exiting on a world fault");
+    })?;
     tracing::info!("mush-server exiting");
     Ok(())
+}
+
+/// Which half of the boundary ended first.
+enum BoundaryEnd {
+    /// The gateway-facing reader returned (clean EOF, protocol fault, or a
+    /// world it can no longer reach).
+    Reader(std::io::Result<()>),
+    /// The world task's join handle resolved while the reader was still live.
+    World(Result<WorldOutcome, tokio::task::JoinError>),
+}
+
+/// Turn the world task's ending into this process's exit.
+///
+/// A world that walked out of its own state machine is an ordinary exit —
+/// `@shutdown` and the boundary's own `ControlMsg::Shutdown` both land here.
+/// Anything else is a fault the process must NOT survive quietly: the
+/// supervisor heals the forked half by relaunching it (D2), and it only knows
+/// to do that if this process stops and says so. `main` maps the `Err` to
+/// [`ExitCode::FAILURE`](std::process::ExitCode).
+fn world_exit_result(result: Result<WorldOutcome, tokio::task::JoinError>) -> Result<(), String> {
+    match result {
+        Ok(WorldOutcome::Clean) => Ok(()),
+        Ok(WorldOutcome::Faulted(fault)) => Err(format!(
+            "world task faulted at {}: {}",
+            fault.site, fault.detail
+        )),
+        // The dispatch boundary cannot cover a panic across an `.await`, so the
+        // task's own `JoinError` is the net for those — and for a world task
+        // that was cancelled out from under this function.
+        Err(e) if e.is_panic() => Err(format!(
+            "world task panicked outside its dispatch boundary: {e}"
+        )),
+        Err(e) => Err(format!("world task ended without a value: {e}")),
+    }
 }
 
 /// Build the web `hello` manifest from the booted engine — a verbatim port of
@@ -1227,17 +1321,57 @@ async fn handle_authoritative_input(
     }
 }
 
-async fn reader_loop(
+/// The error every closed-world exit raises, logged at a severity that depends
+/// on where the shutdown came from.
+///
+/// A `false` from [`WorldHandle::inbound`] means the world task's receiver is
+/// gone. Nothing re-opens it: the world is single-writer and never restarts in
+/// place, so the condition is PERMANENT and the reader must end the boundary
+/// rather than keep accepting frames it can never deliver.
+///
+/// Severity is provenance, not damage. An operator `@shutdown` — typed in game
+/// or arriving as `ToServer::Control` — is an ordinary exit and logs at INFO;
+/// a world that vanished with no shutdown on record is a fault and logs at
+/// ERROR. `shutdown_seen` covers the frame this reader forwarded itself;
+/// `world_exit` covers the in-game path, and is set by the world loop's own
+/// last statement before its receiver drops.
+fn world_is_gone(
+    site: &'static str,
+    shutdown_seen: bool,
+    world_exit: &WorldExitStatus,
+) -> std::io::Error {
+    if shutdown_seen || world_exit.is_clean() {
+        tracing::info!(site, "world task has shut down; ending the boundary");
+    } else {
+        tracing::error!(
+            site,
+            "world task is gone with no shutdown on record; ending the boundary so the supervisor relaunches"
+        );
+    }
+    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "world task is gone")
+}
+
+/// Pump the gateway's `ToServer` traffic into the world.
+///
+/// **Exposed only so `tests/dead_world_reader.rs` can drive it against a world
+/// task it has already stopped.** Nothing outside this crate composes a
+/// boundary; [`serve`] is the entry point.
+#[doc(hidden)]
+pub async fn reader_loop(
     r: mush_ipc::BoxRead,
     world: WorldHandle,
     store: Arc<dyn ObjectStore>,
     offer_routes: Arc<OfferRouteTable>,
     reply_sink: SocketSink,
     metrics: &Metrics,
+    world_exit: WorldExitStatus,
 ) -> std::io::Result<()> {
     let mut reader = FrameReader::new(r);
     let service_requests = ServiceRequestLimiter::new();
     let input_claims = Arc::new(Mutex::new(ServerInputClaims::default()));
+    // Set the moment this reader forwards a `ControlMsg::Shutdown`, so the
+    // closed channel that follows reads as the exit it asked for.
+    let mut shutdown_seen = false;
     while let Some(msg) = reader.read::<ToServer>().await? {
         match msg {
             ToServer::Inbound(wire) => {
@@ -1251,7 +1385,9 @@ async fn reader_loop(
                         "player input requires GatewayRequest custody",
                     ));
                 }
-                world.inbound(Inbound::from(wire)).await;
+                if !world.inbound(Inbound::from(wire)).await {
+                    return Err(world_is_gone("inbound", shutdown_seen, &world_exit));
+                }
             }
             ToServer::Input(request) => {
                 let uid = request.uid;
@@ -1280,15 +1416,22 @@ async fn reader_loop(
                             name: name.clone(),
                             args: args.clone(),
                         };
-                        let accepted = world.inbound(query).await;
+                        if !world.inbound(query).await {
+                            // A closed world channel is permanent, so this is
+                            // the one disposition the gateway must NOT retry:
+                            // answering `retryable: true` invited a replay into
+                            // a world that will never take it.
+                            request_disposition(
+                                &reply_sink,
+                                uid,
+                                GatewayRequestDisposition::Rejected { retryable: false },
+                            );
+                            return Err(world_is_gone("query", shutdown_seen, &world_exit));
+                        }
                         request_disposition(
                             &reply_sink,
                             uid,
-                            if accepted {
-                                GatewayRequestDisposition::EphemeralFinished
-                            } else {
-                                GatewayRequestDisposition::Rejected { retryable: true }
-                            },
+                            GatewayRequestDisposition::EphemeralFinished,
                         );
                     }
                     GatewayInput::Cmd { .. } => {
@@ -1422,10 +1565,21 @@ async fn reader_loop(
                         request = %request,
                         "world closed after legacy release; command was not executed"
                     );
+                    return Err(world_is_gone(
+                        "gateway_released",
+                        shutdown_seen,
+                        &world_exit,
+                    ));
                 }
             }
             ToServer::Control(ctrl) => {
-                world.inbound(Inbound::Control(ctrl)).await;
+                // Record the intent BEFORE the send: an operator shutdown that
+                // finds the world already gone is still an ordinary exit, not a
+                // fault to relaunch over.
+                shutdown_seen |= matches!(ctrl, ControlMsg::Shutdown);
+                if !world.inbound(Inbound::Control(ctrl)).await {
+                    return Err(world_is_gone("control", shutdown_seen, &world_exit));
+                }
             }
             ToServer::Request { id, req } => {
                 match service_requests.try_admit() {
@@ -1594,6 +1748,52 @@ fn create_player_response(result: Result<mush_core::ObjId, CreatePlayerErr>) -> 
         Err(CreatePlayerErr::StoreUnavailable) => {
             ServiceResp::CreatePlayer(Err(mush_ipc::CreatePlayerError::StoreUnavailable))
         }
+    }
+}
+
+#[cfg(test)]
+mod world_exit_tests {
+    //! What `serve` does with the world task's ending. `main` maps the `Err`
+    //! to `ExitCode::FAILURE`, and that exit code is the only thing a
+    //! supervisor can act on — so a fault that classified as `Ok` would leave
+    //! the forked half looking healthy while its world was gone.
+
+    use super::{WorldOutcome, world_exit_result};
+    use crate::world_task::WorldFault;
+
+    #[test]
+    fn a_worlds_own_break_is_an_ordinary_exit() {
+        assert_eq!(world_exit_result(Ok(WorldOutcome::Clean)), Ok(()));
+    }
+
+    #[test]
+    fn a_caught_fault_names_its_site_and_fails_the_process() {
+        let result = world_exit_result(Ok(WorldOutcome::Faulted(WorldFault {
+            site: "engine.step",
+            detail: "module unwrapped a None".to_owned(),
+        })));
+        let detail = result.expect_err("a faulted world must not exit success");
+        assert!(
+            detail.contains("engine.step") && detail.contains("module unwrapped a None"),
+            "the exit reason carries the fault's site and payload: {detail}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_panic_across_an_await_fails_the_process_too() {
+        // The dispatch boundary cannot cover a panic across an `.await`, so
+        // this arrives as a real `JoinError` rather than a `WorldOutcome`.
+        let joined = tokio::spawn(async { panic!("a driver panicked mid-await") })
+            .await
+            .map(|(): ()| WorldOutcome::Clean);
+        assert!(
+            joined.as_ref().is_err_and(tokio::task::JoinError::is_panic),
+            "the rig really panicked the task"
+        );
+        assert!(
+            world_exit_result(joined).is_err(),
+            "an uncaught world-task panic is a failure exit"
+        );
     }
 }
 

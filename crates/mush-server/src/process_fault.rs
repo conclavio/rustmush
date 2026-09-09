@@ -1,4 +1,5 @@
-//! Feature-gated process-termination hooks for the K8 crash matrix.
+//! Feature-gated fault-injection hooks: the K8 crash matrix's process
+//! terminations, and WS01-S8's armed world-turn panic.
 //!
 //! The hooks are inert unless both environment variables name an exact cut
 //! and a one-shot marker path. A marker is created with `create_new`, so a
@@ -29,6 +30,13 @@ const CUT_ENV: &str = "RUSTMUSH_K8_PROCESS_CUT";
 const MARKER_ENV: &str = "RUSTMUSH_K8_PROCESS_CUT_MARKER";
 #[cfg(feature = "fault-injection")]
 const RELEASE_ENV: &str = "RUSTMUSH_K8_PROCESS_CUT_RELEASE";
+/// WS01-S8: the exact command line whose world turn must panic.
+#[cfg(feature = "fault-injection")]
+const PANIC_CMD_ENV: &str = "RUSTMUSH_WS01_S8_PANIC_CMD";
+/// WS01-S8: the one-shot marker for that panic, so a relaunched replacement
+/// inheriting the same environment boots clean.
+#[cfg(feature = "fault-injection")]
+const PANIC_MARKER_ENV: &str = "RUSTMUSH_WS01_S8_PANIC_MARKER";
 
 #[cfg(feature = "fault-injection")]
 enum ArmedCut {
@@ -102,6 +110,95 @@ pub(crate) fn terminate_sync_at(point: &'static str) {
 
     #[cfg(not(feature = "fault-injection"))]
     let _ = point;
+}
+
+/// The in-process arming slot for [`panic_world_turn_if_armed`]. One-shot: the
+/// turn that matches takes the line out, so a supervised relaunch inside the
+/// same test process boots clean.
+#[cfg(feature = "fault-injection")]
+static ARMED_WORLD_TURN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Arm the next world turn on `line` to panic, in THIS process.
+///
+/// The companion to the environment route below, for a supervised proof that
+/// runs its server halves as threads rather than children: a test process
+/// cannot set its own environment without racing every other thread reading it.
+/// Feature-gated, so it does not exist in a shipped build.
+#[cfg(feature = "fault-injection")]
+pub fn arm_world_turn_panic(line: &str) {
+    let mut armed = ARMED_WORLD_TURN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *armed = Some(line.trim().to_owned());
+}
+
+/// Whether `line` is the armed turn — and, if it is, DISARM before returning.
+///
+/// Two routes, both one-shot. The in-process slot serves a supervised proof
+/// whose servers are threads; the environment plus a `create_new` marker serves
+/// a real child process, whose replacement inherits the same environment and
+/// must boot clean.
+#[cfg(feature = "fault-injection")]
+fn take_armed_world_turn(line: &str) -> bool {
+    {
+        let mut armed = ARMED_WORLD_TURN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if armed.as_deref() == Some(line) {
+            *armed = None;
+            return true;
+        }
+    }
+    if std::env::var(PANIC_CMD_ENV).ok().as_deref() != Some(line) {
+        return false;
+    }
+    let Some(marker) = std::env::var_os(PANIC_MARKER_ENV).map(PathBuf::from) else {
+        return false;
+    };
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+    else {
+        return false;
+    };
+    let _ = writeln!(file, "cmd={line} pid={}", std::process::id());
+    let _ = file.sync_all();
+    true
+}
+
+/// Panic ONE world turn, from inside the world task's synchronous dispatch
+/// boundary.
+///
+/// WS01-S8's claim is that a forked server whose world dies stops being a
+/// server: it joins its outbox, its store writer and its IPC writer, and then
+/// exits non-zero so the supervisor relaunches it (D2). Proving that end to end
+/// needs a *real* `mush-server` process whose world *really* faults — nothing
+/// simulated, because the whole question is what the process does afterwards.
+///
+/// Arming is the same shape as the process cuts above and inert for the same
+/// reasons: the `fault-injection` feature (off by default, on in no shipped
+/// binary), plus an environment naming the exact command line, plus a one-shot
+/// marker created with `create_new` so the replacement process — which inherits
+/// its parent's environment — runs clean.
+///
+/// The call site sits INSIDE the guarded dispatch, so this is a caught fault
+/// (`WorldOutcome::Faulted`), not a task panic.
+pub(crate) fn panic_world_turn_if_armed(inbound: &mush_core::Inbound) {
+    #[cfg(feature = "fault-injection")]
+    {
+        let mush_core::Inbound::Cmd { line, .. } = inbound else {
+            return;
+        };
+        let line = line.trim();
+        if !take_armed_world_turn(line) {
+            return;
+        }
+        panic!("WS01-S8 armed world-turn fault on {line:?}");
+    }
+
+    #[cfg(not(feature = "fault-injection"))]
+    let _ = inbound;
 }
 
 #[cfg(test)]

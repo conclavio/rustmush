@@ -3836,7 +3836,15 @@ async fn run(
                                 deferred_world_msg = Some(WorldMsg::Inbound(msg));
                                 StepOutcome::Continue
                             } else {
-                                guarded!("engine.step", engine.step(msg, &mut out, &mut fx))
+                                guarded!("engine.step", {
+                                    // WS01-S8's armed world fault (feature +
+                                    // environment gated, inert in every shipped
+                                    // build). Inside the guard, so the proof
+                                    // exercises the firewall's `Faulted` path
+                                    // rather than an uncaught task panic.
+                                    crate::process_fault::panic_world_turn_if_armed(&msg);
+                                    engine.step(msg, &mut out, &mut fx)
+                                })
                             }
                         }
                         WorldMsg::ReAttach { recs } => {
