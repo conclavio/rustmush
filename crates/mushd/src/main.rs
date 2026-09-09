@@ -401,25 +401,21 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     );
 
     tracing::info!(ssh = %listener.addr(), web = %web_listen, "up; press Ctrl-C to shut down");
-    // Set when the world task did NOT walk out of its own state machine. Every
-    // arm below binds the join result rather than dropping it, because all
-    // three can carry a fault: a world can panic while the operator's Ctrl-C
+    // Set when the world task did NOT walk out of its own state machine. Both
+    // arms below bind the join result rather than dropping it, because either
+    // can carry a fault: a world can panic while the operator's Ctrl-C
     // shutdown is already in flight just as easily as it can die on its own.
     let world_fault: Option<String> = tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Ctrl-C: shutting down");
+        // Ctrl-C at the console, or the systemd stop / `kill <pid>` SIGTERM of
+        // the production box (never on Windows). One arm, because the two ran
+        // the identical sequence and a copy that drifts is a shutdown that
+        // half-works; `mush_config::signals` is the same future the forked
+        // halves wait on (WS22-S2).
+        signal = mush_config::signals::shutdown_signal() => {
+            tracing::info!(%signal, "shutting down on signal");
             // Stop accepting first (PLAN shutdown order), then announce +
             // stop the loop; the world task delivers the shutdown notice
             // to every connection before exiting.
-            listener.stop_accepting();
-            world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
-            world_fault_detail(world_join.await)
-        }
-        // systemd stop / `kill <pid>` on the production box (PLAN gap
-        // closures: the shutdown sequence "also SIGTERM"). Never resolves
-        // on Windows.
-        () = terminate_signal() => {
-            tracing::info!("SIGTERM: shutting down");
             listener.stop_accepting();
             world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
             world_fault_detail(world_join.await)
@@ -543,23 +539,6 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     }
     tracing::info!("mushd exiting at {}", unix_now_s());
     Ok(())
-}
-
-/// Resolves when SIGTERM arrives (Unix only — systemd's stop signal);
-/// pends forever elsewhere, so the `select!` arm simply never fires on
-/// Windows.
-async fn terminate_signal() {
-    #[cfg(unix)]
-    {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-                return;
-            }
-            Err(e) => tracing::error!(error = %e, "cannot install SIGTERM handler"),
-        }
-    }
-    std::future::pending::<()>().await;
 }
 
 /// The classic welcome-screen banner (the transport appends the command
