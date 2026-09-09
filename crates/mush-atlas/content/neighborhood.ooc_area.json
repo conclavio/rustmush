@@ -1,13 +1,13 @@
 {
   "manifest": {
     "id": "neighborhood.ooc_area",
-    "version": 1,
+    "version": 2,
     "kind": "neighborhood",
-    "digest": "ea068eb175a6590f904980615e2e8050a15fb34309cdeae3c6fe7fc43c679532",
+    "digest": "ed004c353b85be4f55011285806427d7da1b4de1389abda21b2f655a99b648c1",
     "requires": [
       {
         "id": "region.limbo",
-        "version": 1
+        "version": 2
       }
     ]
   },
@@ -303,7 +303,7 @@
             ]
           ]
         },
-        "desc": "Two rows of vinyl seats, a rattling PA, and windows full of back lot. The driver watches the mirror. Until the tour runs on its own clock the bus stands at both its stops: get off at the OOC bus stop or the lobby forecourt.",
+        "desc": "Two rows of vinyl seats, a rattling PA, and windows full of back lot. The driver watches the mirror. The tour runs a loop on its own clock: the OOC bus stop, the security gate, the water tower, the lobby forecourt, and back. The doors open at the stops; +travel/status says where the bus has got to.",
         "flags": [
           "sheltered"
         ]

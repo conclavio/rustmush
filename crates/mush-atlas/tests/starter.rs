@@ -11,15 +11,15 @@ use mush_content::{PackKind, parse_pack};
 const PINNED: [(&str, &str); 3] = [
     (
         REGION_PACK,
-        "80cc2032c4f21da8a4335bb896e3f895b9cf1c1a2945a6610d6f1d63f038932b",
+        "f127f7d7cc79b6d1f8f2e0b11f49f57497e101af0fe19cdd8cfaad0631501ef0",
     ),
     (
         OOC_AREA_PACK,
-        "ea068eb175a6590f904980615e2e8050a15fb34309cdeae3c6fe7fc43c679532",
+        "ed004c353b85be4f55011285806427d7da1b4de1389abda21b2f655a99b648c1",
     ),
     (
         STAFF_LOBBY_PACK,
-        "5f91be4eb27bc64a6496a5a789397d271d9289f7392236cea6e0466295fec069",
+        "a1dc2bbc426ab26527cd9d1ec9c4c31b4bcdee4fa0111787a65fb1d3feb3bf6c",
     ),
 ];
 

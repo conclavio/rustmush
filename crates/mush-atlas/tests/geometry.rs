@@ -29,7 +29,7 @@ fn neighborhood_pack(id: &str, entries: Value) -> String {
     let mut doc = json!({
         "manifest": { "id": id, "version": 1, "kind": "neighborhood",
                       "digest": "0000000000000000000000000000000000000000000000000000000000000000",
-                      "requires": [{ "id": "region.limbo", "version": 1 }] },
+                      "requires": [{ "id": "region.limbo", "version": 2 }] },
         "entries": entries
     });
     let unsigned = serde_json::to_string(&doc).expect("json");

@@ -67,6 +67,8 @@
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
 //! | `[atlas].nearest_room_cells` | `8` | S1: parsed, **inert** until S4's windows |
 //! | `[atlas].pack_paths` | `[]` | S1: content pack files or directories, read **host-side** at boot like `[tacsim].pack_paths`; they go on the `@atlas/pack` shelf and nothing is applied by being listed |
+//! | `[atlas].dwell_floor_s` | `30` | S2: real seconds a traveler stays at every checkpoint at least, so a stake-out can act |
+//! | `[atlas].real_cap_s.<mode>` | `180` for `foot`, `car`, `transit`, `bus` | S2: real seconds a whole passage may take at most, per travel mode; a mode absent is uncapped |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
 //! The `[web]` table deserializes straight into
@@ -810,6 +812,13 @@ pub struct AtlasCfg {
     /// the shelf `@atlas/pack list|plan|apply` works from; nothing is applied by
     /// being listed here.
     pub pack_paths: Vec<String>,
+    /// S2: real seconds a traveler stays at every checkpoint at least, so a stake-out
+    /// can act (default 30).
+    pub dwell_floor_s: u32,
+    /// S2: real seconds a whole passage may take at most, per travel mode (default
+    /// 180 for `foot`, `car`, `transit` and `bus`; a mode absent here is uncapped —
+    /// `ship` and `torch` campaigns set their own).
+    pub real_cap_s: BTreeMap<String, u32>,
 }
 
 impl Default for AtlasCfg {
@@ -818,6 +827,11 @@ impl Default for AtlasCfg {
             tile_max_cells: 65_536,
             nearest_room_cells: 8,
             pack_paths: Vec::new(),
+            dwell_floor_s: 30,
+            real_cap_s: ["foot", "car", "transit", "bus"]
+                .into_iter()
+                .map(|m| (m.to_string(), 180))
+                .collect(),
         }
     }
 }

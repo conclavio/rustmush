@@ -258,6 +258,17 @@ nearest_room_cells = 8             # parsed, INERT until S4's windows
 # shelf "@atlas/pack list|plan|apply" works from; nothing is applied by being
 # listed here. The shipped starter packs are always on the shelf.
 pack_paths = []
+# (S2) Travel on the world clock. A passage's legs are IC seconds; real time is
+# IC over the campaign rate. dwell_floor_s keeps a traveler at every checkpoint
+# at least this many REAL seconds so a stake-out can act; real_cap_s caps a whole
+# passage in real seconds per travel mode (a mode not listed is uncapped -- ship
+# and torch campaigns set their own).
+dwell_floor_s = 30
+[atlas.real_cap_s]
+foot = 180
+car = 180
+transit = 180
+bus = 180
 
 [npc]                              # (H2b) the NPC agent layer's world-task knobs
 # How long an NPC's scene turn may wait for its durable decision before the

@@ -115,9 +115,10 @@ pub struct AccessDef {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegDefDef {
-    /// The checkpoint the leg ends at.
+    /// The checkpoint the leg ends at; the last leg names the connection entry itself
+    /// (its far end).
     pub to: String,
-    /// Base seconds.
+    /// Base IC seconds.
     pub base_s: u32,
     /// Hazard band.
     #[serde(default)]
@@ -160,6 +161,37 @@ pub struct ConnectionDef {
     /// Whether it is in service.
     #[serde(default = "default_status")]
     pub status: ConnectionStatus,
+    /// The vehicle that runs it on its own clock (S2).
+    #[serde(default)]
+    pub service: Option<ServiceDefDef>,
+}
+
+/// A pack entry in another pack, as authored: `{"pack": "…", "entry": "…"}`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntryRefDef {
+    /// The pack.
+    pub pack: String,
+    /// The entry.
+    pub entry: String,
+}
+
+/// A connection's service, as authored.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceDefDef {
+    /// The vehicle room.
+    pub vehicle: EntryRefDef,
+    /// Real seconds at each stop (default 60).
+    #[serde(default = "default_dwell")]
+    pub dwell_s: u32,
+    /// The driver NPC.
+    #[serde(default)]
+    pub driver: Option<EntryRefDef>,
+}
+
+fn default_dwell() -> u32 {
+    60
 }
 
 fn default_direction() -> Direction {
@@ -385,6 +417,10 @@ pub struct PortalDef {
     /// Who can see it.
     #[serde(default)]
     pub visibility: Visibility,
+    /// The travel modes of a **timed** portal (S2): going through it is a one-leg
+    /// journey over `distance_m` at the mode's speed. Empty means instant.
+    #[serde(default)]
+    pub timed: Vec<String>,
 }
 
 fn default_portal_mode() -> crate::record::PortalMode {
@@ -399,6 +435,7 @@ impl Default for PortalDef {
             dz_m: 0.0,
             distance_m: None,
             visibility: Visibility::Public,
+            timed: Vec::new(),
         }
     }
 }

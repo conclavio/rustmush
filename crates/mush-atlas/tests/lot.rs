@@ -415,12 +415,12 @@ fn pack_list_and_show_are_staff_only_and_show_keeps_the_secret_off_the_map() {
     assert!(said.contains("Permission denied"), "{said}");
     let events = tw.run(GOD, "@atlas/pack list");
     let said = texts(&tw, &events, GOD);
-    assert!(said.contains("region.limbo@1"), "{said}");
-    assert!(said.contains("applied v1"), "{said}");
+    assert!(said.contains("region.limbo@2"), "{said}");
+    assert!(said.contains("applied v2"), "{said}");
     let events = tw.run(GOD, "@atlas/pack show neighborhood.staff_lobby");
     let said = texts(&tw, &events, GOD);
     assert!(said.contains("secret secret.late"), "{said}");
-    assert!(said.contains("requires: region.limbo@1"), "{said}");
+    assert!(said.contains("requires: region.limbo@2"), "{said}");
     // The secret is nowhere a player can reach: not on the map, not on any NPC.
     tw.run(alice, "s");
     let events = tw.run(alice, "+atlas");

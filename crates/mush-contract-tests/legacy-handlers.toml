@@ -269,8 +269,9 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
 name = "+intercept"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
+category = "legacy-post-image"
+family = "atlas.journey"
+note = "S2 (14-spatial-implementation-plan 3.2): moved from mush-sim's retired route runtime to mush-atlas's one travel system. +intercept <traveler> stops a traveler when it reaches the interceptor (the checkpoint they are staking out, or their room) or holds a service vehicle standing at their stop; +intercept/release lets it go. Writes the bounded whole-document journey record (mod:atlas:journey:<id>, strict wire, cursor as the idempotency key) and a patch room's document; no authority, no prepared mechanic. Knowledge (lens K): the reply never confirms the traveler's route or destination -- an intercept on something not coming this way reads the same as one that is."
 
 [[handler]]
 name = "+job"
@@ -485,6 +486,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
+name = "+stakeout"
+category = "legacy-post-image"
+family = "atlas.journey"
+note = "S2 (14-spatial-implementation-plan 3.2): +stakeout <checkpoint> materializes the checkpoint's patch -- one room made from the region's background at the checkpoint's point (P4), written as mod:atlas:patch:<pack>:<entry> -- moves the watcher there and registers the watch; a traveler reaching a watched checkpoint is held there and both sides are told. +stakeout/end gives the watch up, walks back, releases what it held, and retires an idle patch. The watch itself is not a document: at boot the watchers are whoever stands in a patch. No authority, no prepared mechanic."
+
+[[handler]]
 name = "+stat"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -515,6 +522,12 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "+travel"
+category = "legacy-post-image"
+family = "atlas.journey"
+note = "S2 (14-spatial-implementation-plan 3.2): one CommandSpec, ceiling class. +travel bare and +travel/status are pure reads (what the character knows they can reach from here, and where they have got to); +travel <place>[/<mode>] writes the journey document (mod:atlas:journey:<id>: a bounded whole document, strict wire re-validated at boot, the leg cursor as the idempotency key, WorldIc stamps that a rate change relabels and never re-bases) and the way's transit room document, and moves the traveler into the transit room; +travel/cancel ends it at its last committed node. The journey is advanced by the atlas.travel Coarse tick on the world IC clock with [atlas].dwell_floor_s and [atlas].real_cap_s.<mode> fixed at departure. No authority, no prepared mechanic, no state family: a journey decides where a character is, never what an action may do."
+
+[[handler]]
 name = "+tribe"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
@@ -543,7 +556,7 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "@atlas"
 category = "legacy-post-image"
 family = "atlas.records"
-note = "S1 (14-spatial-implementation-plan 3.1): @atlas/pack list|show|plan|apply|retire, staff (SIM_ADMIN or Royalty). Applying a content pack writes bounded whole-document atlas records at deterministic keys (mod:atlas:<kind>:<pack>:<entry>, roomgeo:<obj>, tile:<pack>:<entry>) through strict deny_unknown_fields wires re-validated at boot, and the content latch (mod:content:applied:<pack>) through mush-content's API. None of it takes part in authority or prepared mechanics: a room's geometry decides what a map draws, never what an action may do. The declared family is where S4's windows move the tiles when they come under the K3 bundle limits."
+note = "S1 (14-spatial-implementation-plan 3.1): @atlas/pack list|show|plan|apply|retire, staff (SIM_ADMIN or Royalty). Applying a content pack writes bounded whole-document atlas records at deterministic keys (mod:atlas:<kind>:<pack>:<entry>, roomgeo:<obj>, tile:<pack>:<entry>) through strict deny_unknown_fields wires re-validated at boot, and the content latch (mod:content:applied:<pack>) through mush-content's API. None of it takes part in authority or prepared mechanics: a room's geometry decides what a map draws, never what an action may do. The declared family is where S4's windows move the tiles when they come under the K3 bundle limits. S2 adds @atlas/journey list|show|hold|release|abort (staff): reads over the journey book, and the same journey document the +travel stanza describes (family atlas.journey) for hold, release and abort."
 
 [[handler]]
 name = "@behavior"
@@ -839,11 +852,6 @@ note = "E7 residue pass 1, R3 (10b 15.1 item 5; doc 10 Q7A/T7/S3A/7A): the recov
 
 [[handler]]
 name = "@region"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "@route"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 

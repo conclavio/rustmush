@@ -311,19 +311,6 @@ fn projections_for(
 }
 
 /// Plan `t` against `st`/`w`. Pure: nothing is mutated.
-/// Refuse to sim-bind an object that is mid-journey — the placement-side half
-/// of the EITHER-journey-OR-sim-placed invariant (`route_ineligible` is the
-/// route-side half). Enforced in the validate stage, so a refusal mutates
-/// nothing.
-fn route_free(w: &World, obj: ObjId) -> Result<(), SpatialError> {
-    if w.module_state::<crate::route::RouteState>()
-        .is_some_and(|rs| rs.is_traveling(obj))
-    {
-        return Err(SpatialError::EnRoute(obj));
-    }
-    Ok(())
-}
-
 /// Resolve the structural parent OBJECT a [`SpatialParent`] names, running every
 /// existence, liveness and capacity check that placing `obj` there requires.
 /// Shared by [`Transition::Place`] and [`Transition::CarrierMove`], so the two
@@ -466,7 +453,6 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             }
             live(w, obj)?;
             needs(w, obj, "sim.participant")?;
-            route_free(w, obj)?;
             let parent_obj = resolve_parent(st, w, obj, parent)?;
             carrier_seal(st, w, obj, Some(parent_obj))?;
             // Acyclic + bounded: obj must not be an ancestor of its new parent.
@@ -607,7 +593,6 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
         Transition::Space { space, anchor } => {
             let space = *space;
             live(w, space)?;
-            route_free(w, space)?;
             // The base record: keep an existing one's compartments/rooms, or a
             // fresh Unanchored shell whose sole room is the space itself.
             let base = st
@@ -706,7 +691,6 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             }
             live(w, root)?;
             needs(w, root, "sim.participant")?;
-            route_free(w, root)?;
             // Bounded on records VISITED (D-LBK-5), closing §7's missing
             // per-carrier cap: a pathological carrier cannot make an arrival
             // bundle unbounded — the move is refused instead.

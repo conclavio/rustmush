@@ -1243,7 +1243,8 @@ pub struct AccessPoint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegDef {
-    /// The checkpoint the leg ends at.
+    /// The checkpoint the leg ends at; the **last** leg names the connection itself,
+    /// meaning its far end.
     pub to: RecordKey,
     /// The base time, seconds.
     pub base_s: u32,
@@ -1283,7 +1284,23 @@ pub enum ConnectionStatus {
     Inactive,
 }
 
-/// A connection (doc 14 §2.3 `ConnectionRec`), declared now; journeys are S2.
+/// A vehicle that runs a connection on its own clock (S2): the tour bus. The
+/// references are pack entries resolved through the content latch at run time, since
+/// the vehicle's pack may apply after the region's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceRec {
+    /// The vehicle room.
+    pub vehicle: RecordKey,
+    /// Real seconds it stands at each stop before setting out again.
+    pub dwell_s: u32,
+    /// The driver NPC, for its announcements.
+    #[serde(default)]
+    pub driver: Option<RecordKey>,
+}
+
+/// A connection (doc 14 §2.3 `ConnectionRec`): a corridor between two neighborhoods,
+/// its checkpoints as legs, and (S2) the vehicle that may serve it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectionRec {
@@ -1313,6 +1330,9 @@ pub struct ConnectionRec {
     pub visibility: Visibility,
     /// Whether it is in service.
     pub status: ConnectionStatus,
+    /// The vehicle that runs it, if one does (S2).
+    #[serde(default)]
+    pub service: Option<ServiceRec>,
     /// Revision.
     pub revision: u64,
 }
@@ -1351,6 +1371,36 @@ impl ConnectionRec {
             })?;
         }
         check_count("connection.legs", self.legs.len(), MAX_LEGS)?;
+        if let Some(last) = self.legs.last() {
+            if last.to != self.key {
+                return Err(RecordError::Value(
+                    "a connection's last leg names the connection itself (its far end)".to_string(),
+                ));
+            }
+            if self
+                .legs
+                .iter()
+                .take(self.legs.len() - 1)
+                .any(|l| l.to == self.key)
+            {
+                return Err(RecordError::Value(
+                    "only a connection's last leg names the connection itself".to_string(),
+                ));
+            }
+        }
+        if let Some(service) = &self.service {
+            if service.dwell_s == 0 || service.dwell_s > crate::travel::MAX_DWELL_S {
+                return Err(RecordError::Value(format!(
+                    "a service dwells 1 to {} seconds",
+                    crate::travel::MAX_DWELL_S
+                )));
+            }
+            if self.direction != Direction::Both {
+                return Err(RecordError::Value(
+                    "a service runs a connection that goes both ways".to_string(),
+                ));
+            }
+        }
         for ap in [&self.endpoints.0, &self.endpoints.1] {
             ap.point
                 .validate()

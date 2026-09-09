@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.2 — 2026-09-09 (S1 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.3 — 2026-09-09 (S1, S2 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -310,6 +310,95 @@ rendering leak a destination or a route?).
 **What this cut does not do.** No hired-car dispatch (doc 07 §9 later), no epistemic knowledge,
 no windows: a hold is a narrative room until S4 lets a scene open a window on it.
 
+**Ledger (landed 2026-09-09).** Gates: `cargo fmt --all --check`, `cargo clippy --workspace
+-- -D warnings` and `--all-targets` on the crates touched, `cargo test` on every dependent, the
+restriction-lint table (`mush-atlas` still at zero on all six), the legacy-handler allowlist
+(`+travel`, `+stakeout`, `+intercept` legacy-post-image, family `atlas.journey`; `@atlas` gains
+`/journey`; `@route` retired, the baseline pin lowered to 155), the digest pins (the three starter
+packs re-pinned at version 2). Verify fold over N/C/S/K: see the findings folded below.
+Deviations from the text above, each with its reason:
+
+- **The carrier journey is layered, not replaced** (D-P-4, amended by the owner at S2).
+  `journey.rs`, `@journey` and `TacsimRouteCatalog` stay for placement-graph carriers until
+  S7's TacSim fold; `mush-sim`'s movement gate keeps only its carrier arm. What is deleted is
+  `route.rs`'s runtime — `Journey`, `Leg`, `RouteState`, the sweep, `@route`, `+intercept` and
+  the boot hydration — plus `tests/route.rs` and cut 6's "legacy `@route` is untouched" test;
+  `RouteDef`, `LegDef`, `DriveProfile`, `route_duration` and the catalog seam are what remain.
+- **`JourneyRec` is the atlas's own record**, not a moved `CarrierJourney`: `Traveler`
+  (character, object, carrier), `Way` (a connection or a timed portal), `Heading`, the resolved
+  `nodes` (origin room, checkpoints, destination room) and `legs_ic` **fixed at departure**, the
+  two WorldIc stamps, the cursor, `Held { by, since } | UnderWay | Arrived | Aborted`, a real-time
+  `grace_until`, and `applied_revision` = the way's revision — a connection or portal re-applied
+  under a journey ends it at its last node (the "failed validation" arm of doc 14 §3.3) instead
+  of cut 6's placement heal, which has no meaning for a room projection. Terminal records are
+  retired on the spot; a live one is `mod:atlas:journey:<id>`, strict wire, re-validated at boot.
+- **The cursor, the catch-up and the re-anchor are cut 6's** (one boundary per slice, filter
+  before take, relabel never re-base), and **release re-bases** the departure so every leg still
+  to run runs whole from the release — a shift by the hold's length, `route.rs`'s rule, restarted
+  nothing when the hold began late in a catch-up (found by test N3 and fixed).
+- **Clocks** are `plan_legs`: real = IC / rate; the per-mode `real_cap_s` scales every leg down
+  proportionally, the `dwell_floor_s` then lifts every leg **after the first** (the dwell at the
+  checkpoint it leaves) to the floor, and rounding that carries the whole over the cap is taken
+  back from the longest legs. A paused world (rate 0) plans as rate 1 and nothing is due.
+- **A read-only hook cannot start a journey.** `MoveAttempt` vetoes a timed portal with the
+  departure narration and **queues** the departure (`Arc<Mutex<Vec<_>>>` shared with the tick);
+  the next tick, at most a second later, departs it if the actor is still at the exit. The same
+  hook gates a traveler under way or held (no exit, no teleport) and opens a vehicle's doors only
+  at the stop it stands at; `LookRendered` adds the traveler's position line in a transit room;
+  `Perceive` hides two travelers at different points of one road from each other (P1: the room
+  is a projection of progress, not a place).
+- **A timed portal is any exit whose rooms do not touch** (S1's `distance_m` rule already made
+  it `Timed { foot }`); `portal.timed = [modes]` overrides the modes. The leg is the distance at
+  the mode's speed plus two seconds a metre of climb, then the floor and cap.
+- **The transit room and the patch are runtime atlas rooms**, one per way
+  (`mod:atlas:transit:<key>`) and one per materialized checkpoint (`mod:atlas:patch:<key>`, with
+  a held vehicle's doors), made on first use from the region's background and retired when
+  nobody watches, nobody is held and nothing stands there. **Anyone standing in a patch is a
+  watcher** — a passenger who stepped off a held bus holds the road as surely as the person who
+  typed `+stakeout` — so a hold made by a watch lifts when nobody is left, whoever made it, and
+  `+stakeout/end` works for them too, walking back to where they came from or to the road's
+  first end. A watch is not persisted: at boot the watchers are whoever stands in a patch.
+- **The tour bus is a room that travels**: `connection.service { vehicle, dwell_s, driver }`
+  (entry references resolved through the content latch at run time, since the vehicle's pack
+  applies after the region's) runs the vehicle end to end on its own clock, dwelling `dwell_s`
+  real seconds at each stop; passengers keep their one location, the doors open where the bus
+  stands or onto the patch it is held at, and the driver's PA lines are scripted from the pack
+  (D-P-10's "Aaron drives" is this, not the S6 agent loop). `+intercept` on a vehicle standing
+  at the interceptor's stop holds it there (RAM only; `+intercept/release` lets it go).
+- **The last leg of a connection names the connection itself** (its far end), so a connection's
+  legs cover the whole corridor and a reverse journey walks them backwards; a `LegDef` still
+  decodes byte-for-byte. The starter packs move to **version 2** for this and for the service
+  (with the bus's text); a world that applied version 1 keeps its lot, drops its v1 connection
+  record loudly at boot (it no longer validates) and gets the tour back with `@atlas/pack apply`.
+- **`+travel` from the road.** A traveler whose journey ended past a checkpoint (cancel,
+  disconnect, a closed way) stands in the transit room; `+travel` there offers the road's two
+  ends from the node they stopped at (RAM; after a restart, from the near end). With no mode
+  named, a road you can walk is chosen before a ride, then the quicker, then by name.
+- **Two verbs beyond the list**: `+intercept/release <traveler>` (the counterpart the text
+  lacked) and `@atlas/journey send <object>=<place>[/<mode>]` (how a plain object gets on the
+  road: the old `@route`'s one legitimate use, for staff).
+- **Knowledge grows by visiting only.** `known:<char>` is written by the `Moved` observer for a
+  player entering an authored room; "being told" is not in S2. A hidden connection is offered
+  only to someone who knows its far neighborhood; staff see everything.
+- **What is RAM and forgotten by a restart**: watches (rebuilt from who stands in a patch),
+  intercepts, a vehicle held at its stop, and a stranded traveler's node. A disconnect ends a
+  character's own journey where it is (doc 14 §3.3); a passenger's disconnect ends nothing.
+- **Tests (22, not ~46)**: `tests/travel.rs` covers every bullet of the *Tests* paragraph above
+  in eighteen end-to-end tests over a test valley (two neighborhoods, a foot road with two
+  checkpoints, a hidden road, a four-hour drive, a farm road) and the starter lot (the bus), plus
+  four unit tests on the planner and the wire; several bullets share one test. The count is
+  lower than planned because the lot and the valley exercise one engine, not two.
+
+**Verify fold (N/C/S/K).** Six findings, all fixed before landing: **N** a release that shifted
+the departure by the hold's length re-ran nothing after a late hold (now re-bases); **N** the
+watcher on their way out still counted as a watcher, so their own `+stakeout/end` never released
+what they held (now excluded), and a hold whose watcher was someone else never lifted when that
+person left (the sweep now lifts any watch-hold with nobody left); **C** rounding each capped leg
+up carried a bus passage two seconds over `real_cap_s` (now taken back from the longest legs);
+**S** `@atlas/journey send` took the first road by map order — the four-hour drive — when the
+foot road was meant (one chooser for `+travel` and `send`); **K** an exit's `<HINT>` leaked into
+the departure prose (stripped). Left as noted: the intercept and the door-hold are RAM.
+
 ### 3.3 Cut S2b — the atlas adopts theme, weather, control regions and property
 
 **Records.** `theme: Option<Theme>` on `RegionRec`, `LocalityRec`, `NeighborhoodRec`, `SiteRec`
@@ -561,7 +650,7 @@ square root of its pinned distance.
 | D-P-1 ★ | `ruleset-tacsim` keeps its own seed latch through S1–S6 and folds onto `mush-content`'s in S7 — **decided** |
 | D-P-2 | `mush-content` before `mush-sim`, `mush-atlas` after it, in `server_modules_with` |
 | D-P-3 | Starter packs are `include_str!` fixtures in `mush-atlas` with digest-pinning tests |
-| D-P-4 | The journey document moves under the `atlas` family; `route.rs` is deleted in S2, not deprecated |
+| D-P-4 | The journey document moves under the `atlas` family; `route.rs`'s runtime (`Journey`, `Leg`, the sweep, `@route`, `+intercept`) is deleted in S2, not deprecated. **Amended at S2 (owner, 2026-09-09):** the *carrier* journey (`journey.rs`, `@journey`) is **layered, not replaced** — it stays for placement-graph carriers until S7's TacSim fold, where one record absorbs both; S2's `JourneyRec` carries characters, objects and room-model vehicles. Reason: `CarrierJourney` is wired into `mush-sim`'s placement gate, quarantine, the pulse authority's `Promoted` state, the interception raise, boot hydration and about a hundred test references, and moving it under the atlas needs a core-level seam `mush-sim` would read the atlas's slot through; the plan's S7 fold is where that seam belongs |
 | D-P-5 | Theme and weather move in S2b, not S1, so S1 has no behavioural change outside new verbs |
 | D-P-6 | The tool loop lives in `mush-llm` and `mush-npc` becomes its first caller (one loop, two users) |
 | D-P-7 | `+move` is a generic atlas verb gated by the scene turn, not a ruleset verb |
@@ -614,3 +703,4 @@ square root of its pinned distance.
 
 - 0.1 (2026-09-09): first draft, from doc 14 Draft 0.1; S7 gains the campaign ephemeris (doc 10 T17) the same day; §6's decisions acknowledged by the owner the same day.
 - 0.2 (2026-09-09): S1 landed — `mush-content`, `mush-atlas`, the starter packs, `[game].starter_area`, `[atlas]`; its ledger and verify fold recorded under §3.1; §8's tile-size question closed by measurement.
+- 0.3 (2026-09-09): S2 landed — one travel system in `mush-atlas` (journeys for characters, objects and the room-model bus; `+travel`, `+stakeout`, `+intercept`, `@atlas/journey`; timed portals; the clock floor and cap), `route.rs`'s runtime retired; D-P-4 amended (the carrier journey is layered until S7); its ledger and verify fold under §3.2; the starter packs at version 2.

@@ -31,6 +31,8 @@ pub mod raster;
 pub mod record;
 pub mod starter;
 pub mod terrain;
+pub mod travel;
+pub mod travel_cmd;
 pub mod validate;
 pub mod view;
 
@@ -47,4 +49,9 @@ pub use record::{
     Records, RegionRec, RoomGeo, RoomKind, SiteRec, StructureRec, SurfaceRef, TileRec,
 };
 pub use terrain::TerrainClass;
+pub use travel::{
+    DEFAULT_DWELL_FLOOR_S, DEFAULT_REAL_CAP_S, End, Heading, HoldReason, JourneyId, JourneyRec,
+    JourneyState, MAX_JOURNEYS, Node, RESUME_GRACE_S, TICK_TAG, TravelState, Traveler, Way,
+    plan_legs,
+};
 pub use validate::check_pack;

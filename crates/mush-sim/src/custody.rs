@@ -34,7 +34,6 @@ use mush_core::{Ctx, Flags, HookPoint, ObjId, World};
 use mush_economy::{CustodyError, CustodyProvider, CustodyRef};
 
 use crate::data::{MAX_SPATIAL_DEPTH, NS, SpaceAnchor, SpatialParent, SpatialState};
-use crate::route::{self, RouteState};
 use crate::transition::{Transition, run};
 
 /// The behavior [`Transition::Place`] requires. The provider **attaches
@@ -55,18 +54,12 @@ fn live(w: &World, o: ObjId) -> bool {
 }
 
 /// Why the simulation — not an ordinary container — owns `obj`'s motion, if it
-/// does. The same two predicates the `PlacementGate`/`route` movement veto is
-/// built from, deliberately taken WHOLE: a route traveler is not placed, and a
-/// space/mount/station host is not placed either, yet neither may be picked up
-/// and dropped into a strongbox.
+/// does. The same predicate the `PlacementGate` movement veto is built from,
+/// deliberately taken WHOLE: a space/mount/station host is not placed, yet may
+/// not be picked up and dropped into a strongbox. (A traveler on `mush-atlas`'s
+/// road is gated by the atlas's own `MoveAttempt` hook since S2.)
 #[must_use]
 fn claim_reason(w: &World, obj: ObjId) -> Option<String> {
-    if let Some(reason) = w
-        .module_state::<RouteState>()
-        .and_then(|rs| route::traveling_reason(rs, w, obj))
-    {
-        return Some(reason);
-    }
     let st = w.module_state::<SpatialState>()?;
     st.is_sim_bound(obj)
         .then(|| format!("{} is bound into the simulation.", display_name(w, obj)))

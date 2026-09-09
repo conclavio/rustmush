@@ -17,6 +17,8 @@ is drawn floor by floor; the ground shows its outline.
 
 Limbo is on no map. The OOC Area `<O>` and the Staff lot `<S>` are.
 
+Roads between neighborhoods take time to travel: see `help travel`.
+
 ## Content packs (staff)
 
 Places arrive as content packs: one JSON document — a manifest, entries (a

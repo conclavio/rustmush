@@ -70,7 +70,7 @@ const RULESETS: [&str; 2] = ["wod", "shadowrun"];
 /// `Ctx::submit_authoritative(domain_pulse_arm, ..)` and arms the domain's
 /// durable pulse cursor. It is `authoritative` now, with its reasons in the
 /// stanza.
-const PINNED_BASELINE: usize = 157;
+const PINNED_BASELINE: usize = 155;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

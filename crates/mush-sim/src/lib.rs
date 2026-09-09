@@ -75,9 +75,9 @@ pub use journey::{
     under_way_root_of,
 };
 pub use route::{
-    CadenceId, DriveProfile, DriveProfileWire, Journey, JourneyStatus, Leg, LegDef, LegDefWire,
-    MAX_HAZARD_BAND, MAX_LEGS, MAX_ROUTE_ID_BYTES, RouteCatalog, RouteCatalogState, RouteDef,
-    RouteDefError, RouteDefWire, RouteState, route_duration,
+    CadenceId, DriveProfile, DriveProfileWire, LegDef, LegDefWire, MAX_HAZARD_BAND, MAX_LEGS,
+    MAX_ROUTE_ID_BYTES, RouteCatalog, RouteCatalogState, RouteDef, RouteDefError, RouteDefWire,
+    route_duration,
 };
 pub use seat::{
     ControlLeaseView, MAX_LEASE_VIEW_RECORDS, MAX_STATION_SERVICE_ROWS, SeatError, SeatRequest,
@@ -297,12 +297,8 @@ impl EventHook for PlacementGate {
 /// move/carry hooks would let anyone pick a ship up mid-passage, and the ONE
 /// checked `move_carrier_subtree` would stop being the only way a carrier moves.
 fn gate_reason(w: &World, obj: ObjId) -> Option<String> {
-    w.module_state::<route::RouteState>()
-        .and_then(|rs| route::traveling_reason(rs, w, obj))
-        .or_else(|| {
-            w.module_state::<journey::JourneyBook>()
-                .and_then(|book| journey::journeying_reason(book, w, obj))
-        })
+    w.module_state::<journey::JourneyBook>()
+        .and_then(|book| journey::journeying_reason(book, w, obj))
         .or_else(|| placed_or_quarantined(w, obj))
 }
 
@@ -464,7 +460,6 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         return;
     };
     let obj = *obj;
-    route::on_traveler_destroyed(ctx, obj);
     // E7c6: a destroyed carrier root drops its journey, so the seal lifts with
     // the husk and no ghost record keeps a dead subtree "under way".
     journey::on_root_destroyed(ctx, obj);
@@ -710,7 +705,6 @@ impl GameModule for SimulationModule {
             handoff::register(reg, control_leases, tick::definition_descriptors()?)?;
         tick::register(reg, tick_definitions)?;
         reg.state(SpatialState::new(self.config.recovery_room));
-        reg.state(route::RouteState::default());
         // E7c5 B1: carry the composition-installed account oracle into world
         // state so command handlers consult it synchronously; unwired = fail
         // closed.
@@ -765,11 +759,6 @@ impl GameModule for SimulationModule {
         reg.destroy_gate(Arc::new(StructuralDestroyGate));
         reg.detach_gate(Arc::new(SimDetachGate));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
-        reg.tick(
-            route::SWEEP_TAG,
-            TickCadence::Coarse(Duration::from_secs(route::SWEEP_SECS)),
-            Arc::new(route::sweep),
-        )?;
         // E7c6 B1+B2+B3: ONE `Coarse` tick advances every carrier journey on the
         // world's IC clock — the housing assessment tick's "pull, not a
         // subscription" shape. It is the whole driver: the leg cursor makes it
@@ -800,11 +789,9 @@ impl GameModule for SimulationModule {
         ctx: &mut ModuleCtx<'_>,
         mut data: ModuleBootData,
     ) -> Result<(), ModError> {
-        let (journeys, dead_journeys) = boot::extract_journeys(&mut data);
         let carriers = journey::extract_carrier_journeys(&mut data);
         let workflow = domain::extract_domain_workflow(&mut data);
         let q = boot::load_boot(ctx, data, self.config.recovery_room)?;
-        boot::install_journeys(ctx, journeys, dead_journeys);
         domain::install_domain_workflow(ctx, workflow);
         // Installing the carrier journeys runs the same idempotent advance the
         // tick runs (B3): an arrival already applied is a no-op, and one whose

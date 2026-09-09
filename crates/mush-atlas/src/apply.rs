@@ -358,16 +358,37 @@ fn create_entry(
                 .record(&def.region, "region")
                 .map_err(|e| format!("{id}: region: {e}"))?;
             let mut legs = Vec::with_capacity(def.legs.len());
-            for leg in &def.legs {
-                legs.push(LegDef {
-                    to: resolver
+            let last = def.legs.len().saturating_sub(1);
+            for (i, leg) in def.legs.iter().enumerate() {
+                // The last leg names the connection itself: its far end (S2).
+                let to = if i == last && leg.to == id.as_str() {
+                    key.clone()
+                } else {
+                    resolver
                         .record(&leg.to, "checkpoint")
-                        .map_err(|e| format!("{id}: leg: {e}"))?,
+                        .map_err(|e| format!("{id}: leg: {e}"))?
+                };
+                legs.push(LegDef {
+                    to,
                     base_s: leg.base_s,
                     hazard: leg.hazard,
                     interdiction: leg.interdiction,
                 });
             }
+            let entry_ref = |r: &crate::def::EntryRefDef| -> Result<RecordKey, String> {
+                Ok(RecordKey::new(
+                    CanonicalId::new(&r.pack).map_err(|e| format!("{id}: service pack: {e}"))?,
+                    CanonicalId::new(&r.entry).map_err(|e| format!("{id}: service entry: {e}"))?,
+                ))
+            };
+            let service = match &def.service {
+                Some(s) => Some(crate::record::ServiceRec {
+                    vehicle: entry_ref(&s.vehicle)?,
+                    dwell_s: s.dwell_s,
+                    driver: s.driver.as_ref().map(entry_ref).transpose()?,
+                }),
+                None => None,
+            };
             let access = |a: &crate::def::AccessDef| -> Result<AccessPoint, String> {
                 Ok(AccessPoint {
                     neighborhood: CanonicalId::new(&a.neighborhood)
@@ -391,6 +412,7 @@ fn create_entry(
                 cost: def.cost,
                 visibility: def.visibility,
                 status: def.status,
+                service,
                 revision: revision_after(previous),
             };
             rec.validate().map_err(|e| format!("{id}: {e}"))?;
@@ -1093,7 +1115,15 @@ fn create_exit(
                 ));
             }
         },
+    }; // S2: a timed portal is a journey, whatever its geometry said.
+    let time = if def.portal.timed.is_empty() {
+        time
+    } else {
+        TimePolicy::Timed {
+            modes: def.portal.timed.clone(),
+        }
     };
+
     if from != LIMBO && geo_from.is_none() {
         return Err(format!("{id}: {} is not an atlas room", def.from));
     }

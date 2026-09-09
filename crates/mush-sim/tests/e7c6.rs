@@ -1354,35 +1354,6 @@ fn e7c6_p5_a_station_edit_never_touches_a_placement_document() {
     );
 }
 
-/// The legacy `@route` runtime is untouched, and the two never fight over one
-/// object: a carrier under way refuses a `@route`, and a traveler refuses a
-/// journey.
-#[test]
-fn e7c6_p6_the_legacy_route_runtime_is_untouched() {
-    let (mut tw, fx) = scene();
-    depart(&mut tw, &fx);
-    let refused = err(
-        &mut tw,
-        &format!("@route #{}=#{}:5", fx.carrier.0, fx.phobos.0),
-    );
-    assert!(refused.contains("simulation"), "{refused}");
-
-    let courier = tw
-        .world_mut()
-        .create(ObjKind::Thing, "Courier", GOD, Some(fx.field))
-        .unwrap();
-    ok(
-        &mut tw,
-        &format!("@route #{}=#{}:5", courier.0, fx.phobos.0),
-    );
-    bind(&mut tw, courier, "sim.participant");
-    let refused = err(
-        &mut tw,
-        &format!("@journey/depart #{}=x #{}:5", courier.0, fx.phobos.0),
-    );
-    assert!(refused.contains("legacy @route"), "{refused}");
-}
-
 /// A destroyed carrier root drops its journey: no ghost record keeps a dead
 /// subtree "under way".
 #[test]

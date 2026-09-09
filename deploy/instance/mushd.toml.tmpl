@@ -263,6 +263,14 @@ start_room_unapproved = __START_ROOM_UNAPPROVED__
 tile_max_cells = 65536
 nearest_room_cells = 8
 pack_paths = []
+# S2: travel on the world clock -- the per-checkpoint dwell floor and the per-mode
+# real cap, both in REAL seconds.
+dwell_floor_s = 30
+[atlas.real_cap_s]
+foot = 180
+car = 180
+transit = 180
+bus = 180
 
 [npc]
 scene_turn_deadline_secs = 120

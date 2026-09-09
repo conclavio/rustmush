@@ -26,11 +26,17 @@
 //! after bumping its version to rebuild the record.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use mush_content::{Pack, PackError, load_pack};
-use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar};
+use mush_core::module::{
+    EventHook, GameModule, HookPoint, ModError, ModuleBootData, ModuleCtx, Registrar,
+    WorldEventKind,
+};
 use mush_core::{
-    CanonicalId, CommandCompatibility, Ctx, ModuleOp, ModuleWrite, ObjId, Role, World,
+    CanonicalId, CommandCompatibility, Ctx, ModuleOp, ModuleWrite, ObjId, Role, SceneId,
+    TickCadence, World,
 };
 use serde::de::DeserializeOwned;
 use smol_str::SmolStr;
@@ -72,6 +78,22 @@ pub struct AtlasConfig {
     /// Operator packs read host-side from `[atlas].pack_paths`, put on the shelf for
     /// `@atlas/pack`.
     pub packs: Vec<PackSource>,
+    /// Real seconds a traveler dwells at every checkpoint at least (S2, plan §7
+    /// `dwell_floor_s`, default 30), so a stake-out can act.
+    pub dwell_floor_s: u32,
+    /// Real seconds a whole passage may take at most, per mode (S2, plan §7
+    /// `real_cap_s`, default 180 for `foot`, `car`, `transit` and `bus`; a mode
+    /// absent here is uncapped).
+    pub real_cap_s: BTreeMap<String, u32>,
+}
+
+/// The default `real_cap_s` table.
+#[must_use]
+pub fn default_real_caps() -> BTreeMap<String, u32> {
+    crate::travel::CAPPED_MODES
+        .iter()
+        .map(|m| ((*m).to_string(), crate::travel::DEFAULT_REAL_CAP_S))
+        .collect()
 }
 
 impl Default for AtlasConfig {
@@ -80,6 +102,8 @@ impl Default for AtlasConfig {
             tile_max_cells: crate::cells::MAX_TILE_CELLS,
             nearest_room_cells: 8,
             packs: Vec::new(),
+            dwell_floor_s: crate::travel::DEFAULT_DWELL_FLOOR_S,
+            real_cap_s: default_real_caps(),
         }
     }
 }
@@ -102,6 +126,26 @@ pub fn verify_sources(config: &AtlasConfig) -> Result<Vec<Pack>, String> {
             crate::cells::MAX_TILE_CELLS
         ));
     }
+    if config.dwell_floor_s > crate::travel::MAX_DWELL_S {
+        return Err(format!(
+            "[atlas].dwell_floor_s must be at most {}",
+            crate::travel::MAX_DWELL_S
+        ));
+    }
+    for (mode, cap) in &config.real_cap_s {
+        if mode.is_empty()
+            || mode.len() > 32
+            || !mode.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            return Err(format!("[atlas].real_cap_s: {mode:?} is not a mode word"));
+        }
+        if *cap == 0 || *cap > crate::travel::MAX_DWELL_S {
+            return Err(format!(
+                "[atlas].real_cap_s.{mode} must be 1 to {}",
+                crate::travel::MAX_DWELL_S
+            ));
+        }
+    }
     let mut packs = Vec::with_capacity(config.packs.len());
     for source in &config.packs {
         let pack = load_pack(&source.bytes).map_err(|e| format!("[atlas] {}: {e}", source.name))?;
@@ -110,13 +154,17 @@ pub fn verify_sources(config: &AtlasConfig) -> Result<Vec<Pack>, String> {
     Ok(packs)
 }
 
-/// The limits the rasterizer and the views read.
-#[derive(Clone, Copy, Debug)]
+/// The limits the rasterizer, the views and the travel system read.
+#[derive(Clone, Debug)]
 pub struct AtlasLimits {
     /// See [`AtlasConfig::tile_max_cells`].
     pub tile_max_cells: u32,
     /// See [`AtlasConfig::nearest_room_cells`].
     pub nearest_room_cells: u32,
+    /// See [`AtlasConfig::dwell_floor_s`].
+    pub dwell_floor_s: u32,
+    /// See [`AtlasConfig::real_cap_s`].
+    pub real_cap_s: BTreeMap<String, u32>,
 }
 
 /// The module's state slot.
@@ -130,6 +178,8 @@ pub struct AtlasState {
     pub records: Records,
     /// The last plan each staffer printed, so `apply <fingerprint>` knows the pack.
     pub last_plan: BTreeMap<ObjId, (CanonicalId, String)>,
+    /// The travel system (S2): journeys, patches, watches, known places, services.
+    pub travel: crate::travel::TravelState,
 }
 
 impl Default for AtlasState {
@@ -138,10 +188,13 @@ impl Default for AtlasState {
             limits: AtlasLimits {
                 tile_max_cells: crate::cells::MAX_TILE_CELLS,
                 nearest_room_cells: 8,
+                dwell_floor_s: crate::travel::DEFAULT_DWELL_FLOOR_S,
+                real_cap_s: default_real_caps(),
             },
             shelf: BTreeMap::new(),
             records: Records::default(),
             last_plan: BTreeMap::new(),
+            travel: crate::travel::TravelState::default(),
         }
     }
 }
@@ -216,6 +269,8 @@ impl GameModule for AtlasModule {
                     .tile_max_cells
                     .clamp(1, crate::cells::MAX_TILE_CELLS),
                 nearest_room_cells: self.config.nearest_room_cells,
+                dwell_floor_s: self.config.dwell_floor_s,
+                real_cap_s: self.config.real_cap_s.clone(),
             },
             ..AtlasState::default()
         };
@@ -230,6 +285,36 @@ impl GameModule for AtlasModule {
         crate::commands::register_views(reg)?;
         reg.classify_commands(CommandCompatibility::LegacyPostImage);
         crate::commands::register_pack(reg)?;
+        crate::travel_cmd::register_travel(reg)?;
+        // S2: the travel system — one hook under three points (the movement gate and
+        // the timed-portal departure queue, the transit look, the transit projection),
+        // three observers, and one `Coarse` tick that drains the queue, advances every
+        // journey, runs the service vehicles and sweeps idle patches.
+        let pending: crate::travel::Pending = Arc::new(Mutex::new(Vec::new()));
+        let hook: Arc<dyn EventHook> = Arc::new(crate::travel::TravelHook {
+            pending: Arc::clone(&pending),
+        });
+        reg.hook(HookPoint::MoveAttempt, Arc::clone(&hook));
+        reg.hook(HookPoint::LookRendered, Arc::clone(&hook));
+        reg.hook(HookPoint::Perceive, hook);
+        reg.subscribe(WorldEventKind::Moved, Arc::new(crate::travel::on_moved));
+        reg.subscribe(
+            WorldEventKind::Disconnected,
+            Arc::new(crate::travel::on_disconnected),
+        );
+        reg.subscribe(
+            WorldEventKind::ObjDestroyed,
+            Arc::new(crate::travel::on_destroyed),
+        );
+        reg.tick(
+            crate::travel::TICK_TAG,
+            TickCadence::Coarse(Duration::from_secs(crate::travel::TICK_SECS)),
+            Arc::new(
+                move |ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>| {
+                    crate::travel::tick(ctx, &pending);
+                },
+            ),
+        )?;
         Ok(())
     }
 
@@ -239,13 +324,15 @@ impl GameModule for AtlasModule {
         data: ModuleBootData,
     ) -> Result<(), ModError> {
         let Loaded { records, dropped } = parse(&data, ctx.w);
+        let (travel, dropped_travel) = crate::travel::hydrate(&data.kv, ctx.w, &records);
         {
             let slot = ctx
                 .state_mut::<AtlasState>()
                 .ok_or_else(|| ModError::msg("atlas: state slot missing"))?;
             slot.records = records;
+            slot.travel = travel;
         }
-        for key in dropped {
+        for key in dropped.into_iter().chain(dropped_travel) {
             del_doc(ctx, key);
         }
         Ok(())
@@ -288,6 +375,9 @@ fn parse(data: &ModuleBootData, w: &World) -> Loaded {
     let mut records = Records::default();
     let mut dropped: Vec<SmolStr> = Vec::new();
     for (key, value) in &data.kv {
+        if crate::travel::is_travel_key(key) {
+            continue;
+        }
         let Some((kind, _)) = key.split_once(':') else {
             tracing::warn!(%key, "atlas: unrecognised persisted key; dropping");
             dropped.push(key.clone());

@@ -56,7 +56,7 @@ pub(crate) fn register_pack(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@atlas".into(),
             shape: ArgShape::Raw,
-            switches: vec![SmolStr::new_static("pack")],
+            switches: vec![SmolStr::new_static("pack"), SmolStr::new_static("journey")],
             help: "@atlas/pack list                   every pack on the shelf, and every latch\n\
                    @atlas/pack show <id>              a pack's manifest, entries, brief and secrets\n\
                    @atlas/pack plan <id>              what applying it would create, update or\n\
@@ -69,6 +69,12 @@ pub(crate) fn register_pack(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20                                  reference, while any room is occupied, holds\n\
                    \x20                                  something the pack did not put there, or is\n\
                    \x20                                  the destination of an exit from outside it.\n\
+                   @atlas/journey list                every journey under way, and each service\n\
+                   @atlas/journey show <traveler>     one journey: its nodes, legs and stamps\n\
+                   @atlas/journey send <object>=<place>[/<mode>]   put a plain object on the road\n\
+                   @atlas/journey hold <traveler>     stop it where it is (a patch is made if needed)\n\
+                   @atlas/journey release <traveler>  let it go on\n\
+                   @atlas/journey abort <traveler> [why]   end it where it is\n\
                    Staff only (SIM_ADMIN or Royalty). A pack is content: applying the same pack\n\
                    twice changes nothing, and a retired pack stays retired across restarts."
                 .into(),
@@ -163,6 +169,9 @@ fn nowhere(here: Option<mush_core::ObjId>) -> String {
 // ---------------------------------------------------------------------------
 
 fn cmd_atlas_pack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.has("journey") {
+        return crate::travel_cmd::journey_admin(ctx);
+    }
     if !is_staff(ctx.w, ctx.actor) {
         return Err(CmdError::msg("Permission denied."));
     }

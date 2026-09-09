@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "region.limbo",
-    "version": 1,
+    "version": 2,
     "kind": "region",
-    "digest": "80cc2032c4f21da8a4335bb896e3f895b9cf1c1a2945a6610d6f1d63f038932b",
+    "digest": "f127f7d7cc79b6d1f8f2e0b11f49f57497e101af0fe19cdd8cfaad0631501ef0",
     "requires": []
   },
   "brief": {
@@ -160,14 +160,25 @@
             "interdiction": 0
           },
           {
-            "to": "checkpoint.water_tower",
+            "to": "connection.lot_tour",
             "base_s": 120,
             "hazard": 0,
             "interdiction": 0
           }
         ],
         "visibility": "public",
-        "status": "active"
+        "status": "active",
+        "service": {
+          "vehicle": {
+            "pack": "neighborhood.ooc_area",
+            "entry": "room.bus"
+          },
+          "dwell_s": 90,
+          "driver": {
+            "pack": "neighborhood.ooc_area",
+            "entry": "npc.aaron_samuels"
+          }
+        }
       }
     },
     "lore.the_lot": {

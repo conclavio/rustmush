@@ -430,6 +430,8 @@ pub fn atlas_config(cfg: &AtlasCfg) -> Result<mush_atlas::AtlasConfig, String> {
     let typed = mush_atlas::AtlasConfig {
         tile_max_cells: cfg.tile_max_cells,
         nearest_room_cells: cfg.nearest_room_cells,
+        dwell_floor_s: cfg.dwell_floor_s,
+        real_cap_s: cfg.real_cap_s.clone(),
         packs: sources
             .into_iter()
             .map(|s| mush_atlas::PackSource {
