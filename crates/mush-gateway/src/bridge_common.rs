@@ -49,6 +49,7 @@ use mush_config::ipguard::IpGuard;
 
 use crate::accounts::{AuthBackend, AuthOutcome, CreateErr};
 use crate::delivery::{char_key, char_key_obj, send_event_to_conn};
+use crate::poison::locked;
 
 /// QUIT/boot may wait briefly for an exact delivery acknowledgement, but a
 /// wedged world must not hold a transport forever. Busy admission is retried a
@@ -261,10 +262,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     }
 
     fn next_view_sequence(&self, conn: ConnId, view: &'static str) -> Option<u64> {
-        let mut sequences = self
-            .view_sequences
-            .lock()
-            .expect("semantic-view sequence table poisoned");
+        let mut sequences = locked(&self.view_sequences, "semantic-view sequence table");
         // Some server-initiated closes bypass `GameBridge::disconnected`.
         // Opportunistic exact pruning against the authoritative local
         // connection table keeps this side index bounded in those paths too.
@@ -280,9 +278,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     }
 
     fn forget_view_sequences(&self, conn: ConnId) {
-        self.view_sequences
-            .lock()
-            .expect("semantic-view sequence table poisoned")
+        locked(&self.view_sequences, "semantic-view sequence table")
             .retain(|(owned_conn, _), _| *owned_conn != conn.0);
     }
 

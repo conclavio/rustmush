@@ -70,6 +70,7 @@ use mush_config::unix_now_s;
 use crate::accounts::{AuthBackend, CreateErr};
 use crate::bridge_common::{AuthResult, GameBridge};
 use crate::delivery::{char_key, send_event_to_conn};
+use crate::poison::locked;
 
 /// Web session lifetime: 7 days, sliding (each successful validation
 /// pushes expiry out to `now + TOKEN_TTL_S`).
@@ -273,10 +274,7 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
 
     /// Remember which token (hash) authenticated a now-attached connection.
     fn track_conn(&self, conn: u64, token: &str) {
-        self.conn_tokens
-            .lock()
-            .expect("conn_tokens lock")
-            .insert(conn, token_hash(token));
+        locked(&self.conn_tokens, "conn_tokens").insert(conn, token_hash(token));
     }
 
     /// Boot one attached web connection game-side: world `ConnDown(Boot)`
@@ -307,10 +305,7 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
         self.core
             .sessions
             .detach(conn, mush_session::DetachReason::Booted);
-        self.conn_tokens
-            .lock()
-            .expect("conn_tokens lock")
-            .remove(&conn.0);
+        locked(&self.conn_tokens, "conn_tokens").remove(&conn.0);
     }
 }
 
@@ -416,7 +411,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
             // Revocation is instant: any live connection this token opened
             // is booted now, not left playing until its transport drops.
             let doomed: Vec<u64> = {
-                let map = self.conn_tokens.lock().expect("conn_tokens lock");
+                let map = locked(&self.conn_tokens, "conn_tokens");
                 map.iter()
                     .filter(|&(_, h)| *h == hash)
                     .map(|(&c, _)| c)
@@ -467,10 +462,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
             {
                 Ok(entered) => entered,
                 Err(e) => {
-                    self.conn_tokens
-                        .lock()
-                        .expect("conn_tokens lock")
-                        .remove(&conn_id);
+                    locked(&self.conn_tokens, "conn_tokens").remove(&conn_id);
                     return Err(format!("{e}."));
                 }
             };
@@ -551,10 +543,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
             {
                 self.core.link.cancel_connection_reservation(conn_id.0);
                 self.core.rollback_local_attach(conn_id, from_linkdead);
-                self.conn_tokens
-                    .lock()
-                    .expect("conn_tokens lock")
-                    .remove(&conn_id.0);
+                locked(&self.conn_tokens, "conn_tokens").remove(&conn_id.0);
                 return Err(ResumeErr::Unavailable);
             }
             let live_from = replayed.last().map_or(last_seq, |env| env.seq) + 1;
@@ -742,11 +731,8 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
             // A hint, not input: no flood bucket and no idle stamp. The
             // limiter keeps a burst of keystrokes to one hint per interval;
             // an `active: false` always passes (interface plan I4, D-I-11).
-            let allowed = self
-                .composing
-                .lock()
-                .expect("composing limiter poisoned")
-                .allow(conn, active, Instant::now());
+            let allowed =
+                locked(&self.composing, "composing limiter").allow(conn, active, Instant::now());
             if !allowed {
                 return;
             }
@@ -776,14 +762,8 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
 
     fn disconnected(&self, conn: u64) -> BoxFuture<'_, ()> {
         Box::pin(async move {
-            self.composing
-                .lock()
-                .expect("composing limiter poisoned")
-                .forget(conn);
-            self.conn_tokens
-                .lock()
-                .expect("conn_tokens lock")
-                .remove(&conn);
+            locked(&self.composing, "composing limiter").forget(conn);
+            locked(&self.conn_tokens, "conn_tokens").remove(&conn);
             self.core.disconnected(ConnId(conn)).await;
         })
     }

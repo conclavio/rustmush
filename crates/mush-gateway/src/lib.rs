@@ -80,6 +80,10 @@ pub mod discord_bridge;
 pub mod ssh_bridge;
 pub mod web_bridge;
 
+mod poison;
+
+pub(crate) use crate::poison::locked;
+
 /// Where the server half comes from.
 pub enum ServerSource {
     /// Production: spawn + SUPERVISE a `mush-server` child process (D1). The
@@ -486,7 +490,7 @@ impl ToServerTx {
     fn try_reserve_connection(&self, conn: u64, actor: mush_core::ObjId) -> ConnectionAdmission {
         let queue_cap = self.cap.max(1);
         let queue_depth = self.depth();
-        let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+        let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
 
         if lifecycle.connections.contains_key(&conn) {
             tracing::error!(conn, %actor, "duplicate lifecycle reservation refused");
@@ -529,10 +533,7 @@ impl ToServerTx {
 
     /// Cancel a reservation that never reached `ConnUp`.
     fn cancel_connection_reservation(&self, conn: u64) {
-        self.lifecycle
-            .lock()
-            .expect("lifecycle custody poisoned")
-            .cancel_reserved(conn);
+        locked(&self.lifecycle, "lifecycle custody").cancel_reserved(conn);
     }
 
     /// Enqueue one frame after applying lifecycle bookkeeping. New `ConnUp`
@@ -544,7 +545,7 @@ impl ToServerTx {
         if let ToServer::Inbound(WireInbound::ConnUp { conn, actor, .. }) = &msg {
             let conn = *conn;
             let actor = *actor;
-            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
             let valid_reservation = matches!(
                 lifecycle.connections.get(&conn),
                 Some(ConnectionCustody {
@@ -583,7 +584,7 @@ impl ToServerTx {
             let reason = *reason;
             // Hold the lifecycle lock through enqueue so a concurrent `ConnUp`
             // for this conn/actor cannot overtake its teardown in the FIFO.
-            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
             lifecycle.observe_conn_down(conn, actor, reason);
             return self.enqueue_raw(msg);
         }
@@ -594,7 +595,7 @@ impl ToServerTx {
             // reconnect was merely reserved, invalidate that reservation: its
             // later ConnUp fails and rolls the local attach back, preserving
             // SessionGone-before-any-fresh-ConnUp ordering.
-            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
             let cancelled = lifecycle.observe_session_gone(actor);
             for conn in cancelled {
                 tracing::warn!(conn, %actor, "link-dead expiry cancelled an in-progress reconnect reservation");
@@ -665,7 +666,7 @@ impl BoundaryConn {
         // of registration. Admission and boundary teardown share this lock, so
         // a waiter cannot slip into an already-drained table.
         let admission = {
-            let mut p = self.pending.lock().expect("pending table poisoned");
+            let mut p = locked(&self.pending, "pending table");
             if p.down {
                 PendingAdmission::Down
             } else if p.waiters.len() >= MAX_IN_FLIGHT_SERVICE_REQUESTS
@@ -700,7 +701,7 @@ impl BoundaryConn {
         let pending = Arc::clone(&self.pending);
         Box::pin(async move {
             if !sent {
-                let mut p = pending.lock().expect("pending table poisoned");
+                let mut p = locked(&pending, "pending table");
                 p.waiters.remove(&id);
                 p.capacity_warned = false;
                 return None;
@@ -733,19 +734,19 @@ struct BoundaryHandle {
 impl BoundaryHandle {
     /// The current live boundary, or `None` during a restart gap.
     fn current(&self) -> Option<Arc<BoundaryConn>> {
-        self.inner.lock().expect("boundary handle poisoned").clone()
+        locked(&self.inner, "boundary handle").clone()
     }
 
     /// Install a freshly (re)connected boundary and clear the restart gap.
     fn connect(&self, conn: Arc<BoundaryConn>) {
-        *self.inner.lock().expect("boundary handle poisoned") = Some(conn);
+        *locked(&self.inner, "boundary handle") = Some(conn);
         self.restarting.store(false, Ordering::SeqCst);
     }
 
     /// Enter the restart gap: drop the live boundary and refuse input until the
     /// next [`connect`](BoundaryHandle::connect).
     fn enter_gap(&self) {
-        *self.inner.lock().expect("boundary handle poisoned") = None;
+        *locked(&self.inner, "boundary handle") = None;
         self.restarting.store(true, Ordering::SeqCst);
     }
 
@@ -959,7 +960,7 @@ impl SocketGatewayLink {
             // receive these frames, but the next ReAnnounce snapshot is built
             // from the already-updated SessionManager, so update the stable
             // custody ledger locally or gap-time disconnects would leak slots.
-            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
             match &msg {
                 ToServer::Inbound(WireInbound::ConnUp { conn, .. }) => {
                     lifecycle.cancel_reserved(*conn);
@@ -1047,11 +1048,7 @@ impl SocketGatewayLink {
             return InputSend::Shed;
         };
         let uid = request.uid;
-        let admission = self
-            .input_custody
-            .lock()
-            .expect("input custody poisoned")
-            .admit(request.clone());
+        let admission = locked(&self.input_custody, "input custody").admit(request.clone());
         if admission != InputCustodyAdmission::Admitted {
             self.metrics.ipc_frame_shed();
             if !matches!(admission, InputCustodyAdmission::Full { warn: false }) {
@@ -1069,10 +1066,7 @@ impl SocketGatewayLink {
         if conn.tx.send(ToServer::Input(request)) {
             InputSend::Sent
         } else {
-            self.input_custody
-                .lock()
-                .expect("input custody poisoned")
-                .remove(uid);
+            locked(&self.input_custody, "input custody").remove(uid);
             InputSend::Gone
         }
     }
@@ -1090,10 +1084,7 @@ impl GatewayLink for SocketGatewayLink {
         if let Some(boundary) = self.boundary.current() {
             boundary.tx.cancel_connection_reservation(conn);
         } else {
-            self.lifecycle
-                .lock()
-                .expect("lifecycle custody poisoned")
-                .cancel_reserved(conn);
+            locked(&self.lifecycle, "lifecycle custody").cancel_reserved(conn);
         }
     }
 
@@ -1233,7 +1224,7 @@ async fn gateway_reader(
             }
             ToGateway::Reply { id, resp } => {
                 let waiter = {
-                    let mut p = pending.lock().expect("pending table poisoned");
+                    let mut p = locked(&pending, "pending table");
                     let waiter = p.waiters.remove(&id);
                     if p.waiters.len() < MAX_IN_FLIGHT_SERVICE_REQUESTS {
                         p.capacity_warned = false;
@@ -1250,10 +1241,7 @@ async fn gateway_reader(
                 request,
                 disposition,
             } => {
-                let held = input_custody
-                    .lock()
-                    .expect("input custody poisoned")
-                    .remove(request);
+                let held = locked(&input_custody, "input custody").remove(request);
                 match (held, disposition) {
                     (Some(_held), GatewayRequestDisposition::LegacyClaimed) => {
                         // Release our exact replay copy BEFORE authorizing
@@ -1350,8 +1338,7 @@ async fn gateway_reader(
                     server,
                     "late Hello (already handshaked); refreshing manifest"
                 );
-                *manifest.lock().expect("manifest cache poisoned") =
-                    HelloManifest { features, panels };
+                *locked(&manifest, "manifest cache") = HelloManifest { features, panels };
             }
             ToGateway::Bye => {
                 tracing::info!("server said Bye; closing boundary");
@@ -1368,7 +1355,7 @@ async fn gateway_reader(
     // flag then makes any request that races in after this drain fail fast too
     // (it never parks), so no request can hang across a mid-request teardown.
     let dropped = {
-        let mut p = pending.lock().expect("pending table poisoned");
+        let mut p = locked(&pending, "pending table");
         p.down = true;
         p.capacity_warned = false;
         p.waiters.drain().count()
@@ -1730,7 +1717,7 @@ async fn connect_and_wire(
                     server_proto: proto,
                 });
             }
-            *manifest.lock().expect("manifest cache poisoned") = HelloManifest { features, panels };
+            *locked(manifest, "manifest cache") = HelloManifest { features, panels };
             tracing::info!(proto, server, "handshake ok");
         }
         Some(other) => return Err(format!("expected Hello, got {other:?}").into()),
@@ -2080,10 +2067,7 @@ async fn resync_boundary(
             // The public boundary remains in Gap while this snapshot is
             // enqueued. Existing requests therefore replay after the complete
             // attachment roster, and newly accepted input cannot overtake it.
-            let replay = input_custody
-                .lock()
-                .expect("input custody poisoned")
-                .snapshot();
+            let replay = locked(input_custody, "input custody").snapshot();
             for request in &replay {
                 if !conn.tx.send(ToServer::Input(request.clone())) {
                     return Err(format!(
@@ -2581,7 +2565,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // running while the operator fixes the [web] config.
     let (web_stop, web_join) = {
         let (features, panels) = {
-            let m = manifest.lock().expect("manifest cache poisoned");
+            let m = locked(&manifest, "manifest cache");
             (m.features.clone(), m.panels.clone())
         };
         match WebConfig::deserialize(config.web.clone()) {
@@ -3881,6 +3865,75 @@ mod tests {
             link.try_reserve_connection(5, ObjId(5)),
             ConnectionAdmission::Reserved,
             "cancelling unused custody must make exactly one slot available"
+        );
+    }
+
+    /// The failure this converts away. Lifecycle custody is shared by every
+    /// connection-owning task in the gateway, so `.expect("... poisoned")` on
+    /// it meant one task's panic became a panic on *every* other connection's
+    /// next reserve/attach/teardown — under D1, the SSH sessions the fork
+    /// exists to hold across a server restart. Recovery keeps the custody the
+    /// panicking task left and lets everyone else through.
+    #[test]
+    fn a_poisoned_lifecycle_table_keeps_every_other_connection_alive() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (to_server, _metrics, lifecycle) = test_tx(tx, 8, 0);
+        assert_eq!(
+            to_server.try_reserve_connection(1, ObjId(1)),
+            ConnectionAdmission::Reserved
+        );
+
+        crate::poison::tests::poison(&lifecycle);
+
+        assert_eq!(
+            to_server.try_reserve_connection(1, ObjId(1)),
+            ConnectionAdmission::Busy,
+            "the reservation the panicking task left is still held, not forgotten"
+        );
+        assert_eq!(
+            to_server.try_reserve_connection(2, ObjId(2)),
+            ConnectionAdmission::Reserved,
+            "an unrelated connection still gets in over a poisoned table"
+        );
+        to_server.cancel_connection_reservation(1);
+        assert_eq!(
+            to_server.try_reserve_connection(1, ObjId(1)),
+            ConnectionAdmission::Reserved,
+            "and teardown still releases custody"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "reservations must not create lifecycle frames"
+        );
+    }
+
+    /// The same proof for the boundary handle, which the supervisor swaps on
+    /// every server restart while the reader loop reads it. A poisoning here
+    /// used to make the restart gap unrecoverable: `connect` could not install
+    /// the new boundary and `current` could not read it.
+    #[test]
+    fn a_poisoned_boundary_handle_still_swaps_the_boundary() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (to_server, _metrics, _lifecycle) = test_tx(tx, 8, 0);
+        let handle = BoundaryHandle::default();
+        let conn = Arc::new(BoundaryConn {
+            tx: to_server,
+            pending: SocketGatewayLink::pending_table(),
+        });
+        handle.connect(Arc::clone(&conn));
+
+        crate::poison::tests::poison(&handle.inner);
+
+        assert!(
+            handle.current().is_some(),
+            "the boundary the panicking task left is still readable"
+        );
+        handle.enter_gap();
+        assert!(handle.current().is_none(), "the restart gap still opens");
+        handle.connect(conn);
+        assert!(
+            handle.current().is_some(),
+            "and the reconnect still installs the fresh boundary"
         );
     }
 

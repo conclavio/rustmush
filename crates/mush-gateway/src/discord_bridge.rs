@@ -68,6 +68,7 @@ use crate::accounts::AuthBackend;
 use crate::bridge_common::{GameBridge, LineOutcome as CoreLine};
 use crate::controls::{DiscordControl, GatewayControls, RelaySink};
 use crate::delivery::{char_key, char_key_obj};
+use crate::poison::locked;
 
 /// Discord connection ids start here: disjoint from SSH (allocated from 1)
 /// and web (`WEB_CONN_ID_BASE = 1 << 32`), so a follow can never collide with
@@ -365,9 +366,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     /// The character `user_id` is following, if any.
     #[must_use]
     pub fn following(&self, user_id: u64) -> Option<(ObjId, String)> {
-        self.follows
-            .lock()
-            .expect("follows poisoned")
+        locked(&self.follows, "follows")
             .get(&user_id)
             .map(|f| (f.character, f.name.clone()))
     }
@@ -557,7 +556,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         // One follow per user: the same character is a no-op, another one
         // replaces the first (a clean QUIT of the old connection).
         let previous = {
-            let mut follows = self.follows.lock().expect("follows poisoned");
+            let mut follows = locked(&self.follows, "follows");
             match follows.get(&user_id) {
                 Some(cur) if cur.character == chosen.id => {
                     return FollowOutcome::Following {
@@ -599,7 +598,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         );
         let state = FollowState::new(link.quiet, chosen.id.to_string());
         {
-            let mut follows = self.follows.lock().expect("follows poisoned");
+            let mut follows = locked(&self.follows, "follows");
             // The same lock protects invalidation and publication.
             if generation == u64::MAX || generation != self.revocation.load(Ordering::SeqCst) {
                 return FollowOutcome::Failed("the link changed; try following again".into());
@@ -635,7 +634,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 run_dm_writer(api, channel, rx, policy, state.clone()).await;
                 state.cancelled.cancel();
                 let removed = {
-                    let mut follows = follows.lock().expect("follows poisoned");
+                    let mut follows = locked(&follows, "follows");
                     if follows.get(&user_id).is_some_and(|f| f.conn == conn) {
                         follows.remove(&user_id)
                     } else {
@@ -678,7 +677,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             Err(e) => {
                 // `enter_game` rolled the attach back and dropped the handle;
                 // the writer is ending on its own. Forget the follow now.
-                let mut follows = self.follows.lock().expect("follows poisoned");
+                let mut follows = locked(&self.follows, "follows");
                 if follows.get(&user_id).is_some_and(|f| f.conn == conn) {
                     follows.remove(&user_id);
                 }
@@ -708,12 +707,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             return;
         }
         let user_id = link.user_id;
-        if self
-            .follows
-            .lock()
-            .expect("follows poisoned")
-            .contains_key(&user_id)
-        {
+        if locked(&self.follows, "follows").contains_key(&user_id) {
             // Already following (this or another character); never yank it.
             return;
         }
@@ -752,7 +746,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     /// past the threshold and not in a scene. Returns the characters detached.
     pub async fn sweep_idle(&self, now: Instant) -> Vec<String> {
         let due: Vec<(u64, ConnId, String, bool)> = {
-            let follows = self.follows.lock().expect("follows poisoned");
+            let follows = locked(&self.follows, "follows");
             follows
                 .iter()
                 .filter_map(|(user, f)| {
@@ -768,7 +762,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         let mut detached = Vec::new();
         for (user, conn, name, deaf) in due {
             let removed = {
-                let mut follows = self.follows.lock().expect("follows poisoned");
+                let mut follows = locked(&self.follows, "follows");
                 follows
                     .get(&user)
                     .is_some_and(|f| f.conn == conn)
@@ -831,7 +825,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     }
 
     fn invalidate_character(&self, actor: ObjId) -> Option<ConnId> {
-        let mut follows = self.follows.lock().expect("follows poisoned");
+        let mut follows = locked(&self.follows, "follows");
         // MAX is unreachable in practice; saturating makes exhaustion fail
         // closed below instead of reviving an earlier attachment generation.
         let _ = self
@@ -864,9 +858,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
 
     /// The follow's connection and writer state, if `user_id` is following.
     fn follow_of(&self, user_id: u64) -> Option<(ConnId, ObjId, Arc<FollowState>)> {
-        self.follows
-            .lock()
-            .expect("follows poisoned")
+        locked(&self.follows, "follows")
             .get(&user_id)
             .map(|f| (f.conn, f.character, Arc::clone(&f.state)))
     }
@@ -1193,9 +1185,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
 
     /// The follow of `actor`'s character, if any: `(user, conn, state)`.
     fn follow_of_character(&self, actor: ObjId) -> Option<(u64, ConnId, Arc<FollowState>)> {
-        self.follows
-            .lock()
-            .expect("follows poisoned")
+        locked(&self.follows, "follows")
             .iter()
             .find(|(_, f)| f.character == actor)
             .map(|(user, f)| (*user, f.conn, Arc::clone(&f.state)))
@@ -1240,12 +1230,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                     return;
                 };
                 let user_id = link.user_id;
-                if self
-                    .follows
-                    .lock()
-                    .expect("follows poisoned")
-                    .contains_key(&user_id)
-                {
+                if locked(&self.follows, "follows").contains_key(&user_id) {
                     self.tell(
                         actor,
                         "Discord: your Discord user is already following another of your \
@@ -1290,7 +1275,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             DiscordControlOp::Unfollow => match self.follow_of_character(actor) {
                 Some((user, conn, _)) => {
                     let removed = {
-                        let mut follows = self.follows.lock().expect("follows poisoned");
+                        let mut follows = locked(&self.follows, "follows");
                         follows
                             .get(&user)
                             .is_some_and(|f| f.conn == conn)
@@ -1418,7 +1403,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     /// Whether `user` may relay another line now; records the line if so.
     fn relay_admit(&self, user: u64) -> bool {
         let now = Instant::now();
-        let mut limiter = self.relay_limiter.lock().expect("relay limiter poisoned");
+        let mut limiter = locked(&self.relay_limiter, "relay limiter");
         let window = limiter.entry(user).or_default();
         while window
             .front()
@@ -1619,11 +1604,7 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
             }
             let _ = self.store.discord_user_release(user_id).await;
             // An unlinked user has no business following.
-            let follow = self
-                .follows
-                .lock()
-                .expect("follows poisoned")
-                .remove(&user_id);
+            let follow = locked(&self.follows, "follows").remove(&user_id);
             if let Some(f) = follow {
                 self.core.quit(f.conn).await;
             }
@@ -1660,11 +1641,7 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
 
     fn detach(&self, user_id: u64) -> BoxFuture<'_, DetachOutcome> {
         Box::pin(async move {
-            let follow = self
-                .follows
-                .lock()
-                .expect("follows poisoned")
-                .remove(&user_id);
+            let follow = locked(&self.follows, "follows").remove(&user_id);
             match follow {
                 None => DetachOutcome::NotFollowing,
                 Some(f) => {
@@ -1681,7 +1658,7 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
                 return LineOutcome::NotFollowing;
             };
             let conn = {
-                let mut follows = self.follows.lock().expect("follows poisoned");
+                let mut follows = locked(&self.follows, "follows");
                 match follows.get_mut(&user_id) {
                     Some(f) if f.conn == validated && !f.state.cancelled.is_cancelled() => {
                         f.last_input = Instant::now();
@@ -1694,7 +1671,7 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
             match self.core.line(conn, line).await {
                 CoreLine::Continue => LineOutcome::Accepted,
                 CoreLine::Close => {
-                    let mut follows = self.follows.lock().expect("follows poisoned");
+                    let mut follows = locked(&self.follows, "follows");
                     if follows.get(&user_id).is_some_and(|f| f.conn == conn) {
                         follows.remove(&user_id);
                     }
