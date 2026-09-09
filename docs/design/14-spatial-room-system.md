@@ -52,7 +52,7 @@ The givens G1–G9 of 14a §1 and these answers (owner, 2026-09-09, binding):
 | D-14-29 | Names: `mush-atlas` over `mush-content`; `+atlas`, `+travel`, `+stakeout`, `@atlas/*`; tiers region / locality / neighborhood / site / structure / room; "control region" for the faction record; docs 14, 14a, 14b, 14c | 29A |
 | D-14-30 | **SSH first for maps**: anything the terminal can show the web can show, never the reverse; the map projection is a text grid and the web draws the same frames | I7 |
 | D-14-31 | Boot never spends: the starter area is static committed content; the agent path is never a boot step; test instances do not apply it | G9 |
-| D-14-32 | Interface NPCs: staff-zone NPCs as the conversational face of game systems, holding only the asker's authority and only read-or-propose abilities | owner direction, **proposed** (§4.6); recommended: adopt as 14b's first slice |
+| D-14-32 | Interface NPCs: staff-zone NPCs as the conversational face of game systems, holding only the asker's authority and only read-or-propose abilities | owner, **decided 2026-09-09** (§4.6); 14b's first slice |
 
 Kept from the binding designs, unchanged: doc 06's single authoritative placement graph and
 atomic transitions; doc 10's abstracted routes (1A), journeys never pause for scenes (6A), carrier
@@ -604,7 +604,7 @@ the cap becomes 0 until staff reset it; staff raise caps for players whose sites
 All of it is on the character (accounts are not principals), audited, and visible to the player
 (`+build/status`).
 
-### 4.6 Interface NPCs (owner direction 2026-09-09; proposed — recommended: adopt as 14b's first slice)
+### 4.6 Interface NPCs (owner direction, decided 2026-09-09; 14b's first slice)
 
 The owner's idea: the staff zone's NPCs as the conversational face of game systems — the builder
 as a Set Designer you talk to, an Economist who shows you the markets, a Meteorologist who talks
@@ -751,7 +751,7 @@ propellant, alignment bands). A WoD or Shadowrun ruleset registers pedestrians a
 | 5 | Engine physics | locomotion table, LOS, traces, hearing; `mush-propagation` on the metric | biped vs wheeled costs; a wall blocks sight and a window does not; an indirect shot clears a wall a direct one hits | 4 |
 | 6 | TacSim ground driver and imports | 1000 cm windows, tracked/legged/rotor, indirect fire, heightfield import; hex vocabulary removed from the tactics stub | a mech engagement on imported relief over the same tiles a street fight used | 5, E7 cut 8 |
 
-Interface NPCs (§4.6) follow cut 3 as the first slice of 14b once D-14-32 is accepted.
+Interface NPCs (§4.6) follow cut 3 as the first slice of 14b (D-14-32).
 
 Acceptance scenarios beyond the table: a landing at an implicit point yields a bounded patch, a
 perimeter and one arrival room and persists nothing until a feature is damaged there; a ship
@@ -785,4 +785,4 @@ pins both fine tile sets and the background; a hyphenated id is refused at load 
 - The pedestrian encounter policy for unwatched hazard bands in city campaigns (a ruleset
   decision; the engine only exposes the band).
 - Names for the Meteorologist, the Economist and the Set Designer (Susie, Phil and Karen are the
-  owner's, 2026-09-09); whether D-14-32 is accepted.
+  owner's, 2026-09-09).
