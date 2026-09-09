@@ -496,6 +496,22 @@ impl DurableOutboxIntent {
         })
     }
 
+    /// Re-stamp this intent's position in the finished bundle order.
+    ///
+    /// A provider chooses ordinals only inside its own emission group; the
+    /// coordinator concatenates the groups and renumbers the whole vector
+    /// `0..n` so a trigger reusing the root's numbering cannot trip the
+    /// contiguity check far from its cause. The ordinal is inside
+    /// `payload_hash`, so the hash is rebuilt with it — and a group that was
+    /// already contiguous renumbers to itself, byte for byte, leaving both
+    /// `payload_hash` and the enclosing `bundle_hash` where they were.
+    pub fn renumbered(self, ordinal: u16) -> Result<Self, AuthoritativeBundleError> {
+        if self.ordinal == ordinal {
+            return Ok(self);
+        }
+        Self::new(ordinal, self.owner, self.adapter, self.payload)
+    }
+
     #[must_use]
     pub const fn ordinal(&self) -> u16 {
         self.ordinal

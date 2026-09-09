@@ -23,6 +23,7 @@ use crate::action_state::{
 };
 use crate::authoritative::{
     AuthoritativeBundleError, AuthoritativeSemanticEvent, DurableOutboxIntent,
+    MAX_DURABLE_OUTBOX_INTENTS,
 };
 use crate::behavior::ChannelId;
 use crate::mechanics::{
@@ -4067,6 +4068,16 @@ impl AuthoritativeActionOutput {
         self
     }
 
+    /// Post-finalization delivery intents this one emission wants.
+    ///
+    /// The ordinals a provider stamps are an **intra-group order hint**: they
+    /// order this group against itself and mean nothing across groups. The
+    /// coordinator concatenates the root's group ahead of each same-commit
+    /// trigger's group in cascade order and renumbers the result `0..n`, so a
+    /// trigger may reuse the root's numbers without disturbing it. Two intents
+    /// sharing an ordinal inside one group are refused
+    /// ([`ActionProviderPrepareError::OutboxOrdinalConflict`]), because there
+    /// the provider really did fail to say which comes first.
     #[must_use]
     pub fn with_durable_outbox(mut self, outbox: Vec<DurableOutboxIntent>) -> Self {
         self.durable_outbox = outbox;
@@ -5030,6 +5041,7 @@ impl ActionProviderRegistry {
             mut durable_outbox,
             root_triggers,
         ) = root_output.into_cascade_parts();
+        order_outbox_group(&mut durable_outbox, ROOT_OUTBOX_GROUP)?;
         if let Some(prepared) = &resolution {
             if prepared.outcome() != &outcome {
                 return Err(ActionProviderPrepareError::ResolutionOutcomeMismatch);
@@ -5073,7 +5085,7 @@ impl ActionProviderRegistry {
                 event_resolution,
                 event_definitions,
                 event_witnesses,
-                event_outbox,
+                mut event_outbox,
                 triggers,
             ) = output.into_cascade_parts();
             if event_resolution.is_some() {
@@ -5092,6 +5104,10 @@ impl ActionProviderRegistry {
                 queue.enqueue(trigger.into_prepared(entry, cause.event_id()))?;
             }
             definitions.extend(event_definitions);
+            order_outbox_group(
+                &mut event_outbox,
+                work.trigger().identity().handler.id().as_str(),
+            )?;
             durable_outbox.extend(event_outbox);
             semantic_events.push(event);
             queue.complete_trigger(work)?;
@@ -5101,7 +5117,7 @@ impl ActionProviderRegistry {
         definitions.dedup();
         eligible_witnesses.sort();
         eligible_witnesses.dedup();
-        durable_outbox.sort_by_key(DurableOutboxIntent::ordinal);
+        let durable_outbox = renumber_durable_outbox(durable_outbox)?;
         let prepared = txn.prepare().map_err(ActionProviderPrepareError::State)?;
         Ok((
             prepared,
@@ -5252,6 +5268,71 @@ fn validate_resolution_custody(
     }
 }
 
+/// The name the root provider's own emission group carries in an ordinal
+/// conflict; every other group is named by its trigger handler.
+const ROOT_OUTBOX_GROUP: &str = "root";
+
+/// Put one provider emission group in the order its own ordinals ask for.
+///
+/// Ordinals are a hint *inside* a group (see
+/// [`AuthoritativeActionOutput::with_durable_outbox`]), so this settles the
+/// order the group asked for and refuses the one thing the provider cannot
+/// mean: the same ordinal twice, where nothing says which intent leads.
+fn order_outbox_group(
+    group: &mut [DurableOutboxIntent],
+    name: &str,
+) -> Result<(), ActionProviderPrepareError> {
+    group.sort_by_key(DurableOutboxIntent::ordinal);
+    if let Some(pair) = group
+        .windows(2)
+        .find(|pair| pair[0].ordinal() == pair[1].ordinal())
+    {
+        return Err(ActionProviderPrepareError::OutboxOrdinalConflict {
+            group: name.into(),
+            ordinal: pair[0].ordinal(),
+        });
+    }
+    Ok(())
+}
+
+/// Renumber the concatenated groups `0..n` so the bundle sees one contiguous
+/// run.
+///
+/// Groups arrive root-first and then in cascade order, each already sorted by
+/// its own hint, and this stamps delivery order onto them. It is the identity
+/// for the common case — one group already numbered from zero — so the usual
+/// bundle's `payload_hash`es and `bundle_hash` are exactly what the provider
+/// built. The bound is checked here rather than left to
+/// [`AuthoritativeBundle`](crate::authoritative::AuthoritativeBundle)
+/// construction so an over-long outbox is refused at its cause.
+fn renumber_durable_outbox(
+    outbox: Vec<DurableOutboxIntent>,
+) -> Result<Vec<DurableOutboxIntent>, ActionProviderPrepareError> {
+    if outbox.len() > MAX_DURABLE_OUTBOX_INTENTS {
+        return Err(ActionProviderPrepareError::Semantic(
+            AuthoritativeBundleError::OutboxLimit {
+                actual: outbox.len(),
+                max: MAX_DURABLE_OUTBOX_INTENTS,
+            },
+        ));
+    }
+    outbox
+        .into_iter()
+        .enumerate()
+        .map(|(index, intent)| {
+            let ordinal = u16::try_from(index).map_err(|_| {
+                ActionProviderPrepareError::Semantic(AuthoritativeBundleError::OutboxLimit {
+                    actual: index.saturating_add(1),
+                    max: MAX_DURABLE_OUTBOX_INTENTS,
+                })
+            })?;
+            intent
+                .renumbered(ordinal)
+                .map_err(ActionProviderPrepareError::Semantic)
+        })
+        .collect()
+}
+
 /// Exact transactional action-preparation failure. Every variant precedes
 /// both live installation and persistence submission.
 #[derive(Debug, Error)]
@@ -5273,6 +5354,8 @@ pub enum ActionProviderPrepareError {
     },
     #[error("same-commit causal expansion failed: {0}")]
     Cascade(#[from] CascadeError),
+    #[error("durable-outbox group {group} claimed ordinal {ordinal} more than once")]
+    OutboxOrdinalConflict { group: Box<str>, ordinal: u16 },
     #[error("authoritative semantic event preparation failed: {0}")]
     Semantic(#[from] AuthoritativeBundleError),
     #[error("prepared resolution outcome does not match the authoritative action outcome")]
@@ -7474,5 +7557,330 @@ mod tests {
             )),
             Err(CascadeError::TriggerLimit { .. })
         ));
+    }
+
+    /// One action definition and the outcome definition every group in the
+    /// cascade reports, so the bundle's definition set is closed.
+    fn outbox_definitions() -> (DefinitionRegistry, DefinitionRef, DefinitionRef) {
+        let mut builder = DefinitionRegistryBuilder::new();
+        let action = builder
+            .register(
+                owner(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("action").unwrap(),
+                    DefinitionId::new("wave").unwrap(),
+                    1,
+                    json!({"parameter": "target"}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let outcome = builder
+            .register(
+                owner(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("outcome").unwrap(),
+                    DefinitionId::new("waved").unwrap(),
+                    1,
+                    json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        (builder.freeze().unwrap(), action, outcome)
+    }
+
+    /// A provider whose root output and whose one same-commit trigger each
+    /// emit their own durable-outbox group with provider-chosen ordinals.
+    struct OutboxCascadeProvider {
+        outcome: DefinitionRef,
+        counter: StateFamilyHandle<u64, u16>,
+        root_ordinals: Vec<u16>,
+        trigger_ordinals: Vec<u16>,
+        emits_trigger: bool,
+    }
+
+    /// One trivial typed family and a store that shares the composition's
+    /// readiness, so the root provider's transaction is not empty.
+    fn outbox_state(
+        roster: &BTreeSet<OwnerId>,
+        readiness: MechanicalOwnerReadiness,
+    ) -> (ActionStateStore, StateFamilyHandle<u64, u16>) {
+        let mut builder = crate::action_state::StateFamilyRegistryBuilder::new();
+        let counter = builder
+            .register::<u64, u16, _, _, _, _>(
+                owner(),
+                crate::action_state::StateFamilyDescriptor::new(
+                    crate::action_state::StateFamilyId::new("outbox_counter").unwrap(),
+                    CanonicalId::new("u64.decimal.v1").unwrap(),
+                    CanonicalId::new("counter.v1").unwrap(),
+                    1,
+                    CanonicalId::new("counter.decode_json.v1").unwrap(),
+                    CanonicalId::new("counter.range.v1").unwrap(),
+                    CanonicalId::new("counter.json.v1").unwrap(),
+                )
+                .unwrap(),
+                |key: &u64| Ok(key.to_string()),
+                |value: &Value| {
+                    value
+                        .as_u64()
+                        .and_then(|amount| u16::try_from(amount).ok())
+                        .ok_or_else(|| "amount must be a u16".to_owned())
+                },
+                |_value: &u16| Ok(()),
+                |value: &u16| Ok(json!(value)),
+            )
+            .unwrap();
+        let registry = builder
+            .freeze_for_owners_with_readiness(roster, readiness)
+            .unwrap();
+        (ActionStateStore::new(registry), counter)
+    }
+
+    fn outbox_intents(ordinals: &[u16], group: &str) -> Vec<DurableOutboxIntent> {
+        ordinals
+            .iter()
+            .map(|ordinal| {
+                DurableOutboxIntent::new(
+                    *ordinal,
+                    owner(),
+                    CanonicalId::new("courier").unwrap(),
+                    json!({ "group": group, "hint": ordinal }),
+                )
+                .unwrap()
+            })
+            .collect()
+    }
+
+    impl ActionProvider for OutboxCascadeProvider {
+        fn validate_invocation(&self, _invocation: &ActionInvocation) -> Result<(), ActionError> {
+            Ok(())
+        }
+
+        fn prepare_authoritative(
+            &self,
+            _invocation: &ActionInvocation,
+            txn: &mut ActionTxn<'_>,
+        ) -> Result<AuthoritativeActionOutput, ActionError> {
+            txn.insert(&self.counter, &1, 1).unwrap();
+            let outcome = RulesValue::new(self.outcome.clone(), json!({"waved": true})).unwrap();
+            let mut output = AuthoritativeActionOutput::new(outcome)
+                .with_durable_outbox(outbox_intents(&self.root_ordinals, "root"));
+            if self.emits_trigger {
+                output = output.with_same_commit_triggers(vec![SameCommitTrigger::new(
+                    CanonicalId::new("echo").unwrap(),
+                    SubjectKey::Object { id: ObjId(8) },
+                    0,
+                    json!({}),
+                )]);
+            }
+            Ok(output)
+        }
+
+        fn prepare_same_commit_trigger(
+            &self,
+            _invocation: &ActionInvocation,
+            _trigger: &PreparedTrigger,
+            _txn: &mut ActionTxn<'_>,
+        ) -> Result<AuthoritativeActionOutput, ActionError> {
+            let truth = RulesValue::new(self.outcome.clone(), json!({"echoed": true})).unwrap();
+            Ok(AuthoritativeActionOutput::new(truth)
+                .with_durable_outbox(outbox_intents(&self.trigger_ordinals, "trigger")))
+        }
+    }
+
+    /// Run the whole authoritative preparation for one cascade: a root group
+    /// and, when `trigger_ordinals` is supplied, one same-commit trigger's.
+    fn prepare_outbox_cascade(
+        root_ordinals: &[u16],
+        trigger_ordinals: Option<&[u16]>,
+    ) -> Result<PreparedAuthoritativeAction, ActionProviderPrepareError> {
+        let roster = owner_roster();
+        let readiness = MechanicalOwnerReadiness::for_owners(&roster);
+        let (definitions, action, outcome) = outbox_definitions();
+        let definitions = bind_definitions(definitions, &readiness);
+        let (mut state, counter) = outbox_state(&roster, readiness.clone());
+        let mut builder = ActionProviderRegistryBuilder::new();
+        builder
+            .register(
+                owner(),
+                action.clone(),
+                Arc::new(OutboxCascadeProvider {
+                    outcome,
+                    counter,
+                    root_ordinals: root_ordinals.to_vec(),
+                    trigger_ordinals: trigger_ordinals.unwrap_or(&[]).to_vec(),
+                    emits_trigger: trigger_ordinals.is_some(),
+                }),
+            )
+            .unwrap();
+        let registry = builder
+            .freeze_for_owners_with_readiness(&definitions, &roster, readiness)
+            .unwrap();
+        registry
+            .prepare_authoritative_invocation(
+                &action,
+                &invocation(request(1)),
+                CommitToken::from_bytes([2; 16]),
+                &mut state,
+                None,
+            )
+            .map(|(_txn, prepared)| prepared)
+    }
+
+    /// The group and provider-chosen hint each delivered intent carries,
+    /// beside the ordinal the coordinator stamped on it.
+    fn outbox_shape(prepared: &PreparedAuthoritativeAction) -> Vec<(String, u64, u16)> {
+        prepared
+            .durable_outbox
+            .iter()
+            .map(|intent| {
+                (
+                    intent.payload()["group"].as_str().unwrap().to_owned(),
+                    intent.payload()["hint"].as_u64().unwrap(),
+                    intent.ordinal(),
+                )
+            })
+            .collect()
+    }
+
+    /// The bundle the server would build from one prepared action, with the
+    /// outbox overridden when a test needs the pre-renumbering shape.
+    fn outbox_bundle(
+        prepared: PreparedAuthoritativeAction,
+        outbox: Option<Vec<DurableOutboxIntent>>,
+    ) -> Result<crate::authoritative::AuthoritativeBundle, AuthoritativeBundleError> {
+        let (_, action, _) = outbox_definitions();
+        let request = request(1);
+        let (
+            outcome,
+            _resolution,
+            mut definitions,
+            eligible_witnesses,
+            durable_outbox,
+            semantic_events,
+        ) = prepared.into_parts();
+        // The coordinator, not the provider, contributes the action itself.
+        definitions.push(action.clone());
+        definitions.sort();
+        definitions.dedup();
+        crate::authoritative::AuthoritativeBundle::new(
+            crate::authoritative::AuthoritativeBundleDraft {
+                token: CommitToken::from_bytes([2; 16]),
+                request,
+                idempotency: idempotency(request),
+                ingress_hash: CanonicalHash::from_bytes([3; 32]),
+                request_hash: CanonicalHash::from_bytes([4; 32]),
+                plan_hash: CanonicalHash::from_bytes([5; 32]),
+                action,
+                provider: owner(),
+                cause: PreparedCausalRef::new(request, None, 0).unwrap(),
+                definitions,
+                writes: Vec::new(),
+                outcome,
+                resolution: None,
+                semantic_events,
+                eligible_witnesses,
+                durable_outbox: outbox.unwrap_or(durable_outbox),
+            },
+        )
+    }
+
+    #[test]
+    fn a_trigger_reusing_the_roots_outbox_ordinal_still_builds() {
+        let prepared = prepare_outbox_cascade(&[0, 1], Some(&[0])).unwrap();
+        assert_eq!(
+            outbox_shape(&prepared),
+            vec![
+                ("root".to_owned(), 0, 0),
+                ("root".to_owned(), 1, 1),
+                ("trigger".to_owned(), 0, 2),
+            ]
+        );
+
+        // What the pre-renumbering concatenation handed the bundle: the two
+        // groups' ordinals globally sorted into 0, 0, 1.
+        let mut interleaved = outbox_intents(&[0, 1], "root");
+        interleaved.extend(outbox_intents(&[0], "trigger"));
+        interleaved.sort_by_key(DurableOutboxIntent::ordinal);
+        assert!(matches!(
+            outbox_bundle(prepared.clone(), Some(interleaved)),
+            Err(AuthoritativeBundleError::OutboxOrdinal {
+                expected: 1,
+                actual: 0
+            })
+        ));
+
+        let bundle = outbox_bundle(prepared, None).unwrap();
+        assert_eq!(
+            bundle
+                .durable_outbox()
+                .iter()
+                .map(DurableOutboxIntent::ordinal)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        // The persisted read is the path that requires canonical order; the
+        // renumbered vector satisfies it rather than tripping NonCanonicalOutbox.
+        let wire = serde_json::to_value(&bundle).unwrap();
+        let restored: crate::authoritative::AuthoritativeBundle =
+            serde_json::from_value(wire).unwrap();
+        assert_eq!(restored, bundle);
+    }
+
+    #[test]
+    fn root_and_trigger_ordinals_no_longer_interleave() {
+        let prepared = prepare_outbox_cascade(&[0, 2], Some(&[1])).unwrap();
+        // The deliberate semantic change: each group delivers whole and the
+        // root's first, where the old global sort put the trigger's 1
+        // between the root's 0 and 2.
+        assert_eq!(
+            outbox_shape(&prepared),
+            vec![
+                ("root".to_owned(), 0, 0),
+                ("root".to_owned(), 2, 1),
+                ("trigger".to_owned(), 1, 2),
+            ]
+        );
+        outbox_bundle(prepared, None).unwrap();
+    }
+
+    #[test]
+    fn duplicate_ordinals_inside_one_group_are_refused() {
+        let root = prepare_outbox_cascade(&[0, 0], None).unwrap_err();
+        assert!(matches!(
+            &root,
+            ActionProviderPrepareError::OutboxOrdinalConflict { group, ordinal }
+                if group.as_ref() == "root" && *ordinal == 0
+        ));
+
+        let trigger = prepare_outbox_cascade(&[0], Some(&[3, 3])).unwrap_err();
+        assert!(matches!(
+            &trigger,
+            ActionProviderPrepareError::OutboxOrdinalConflict { group, ordinal }
+                if group.as_ref() == "echo" && *ordinal == 3
+        ));
+    }
+
+    #[test]
+    fn renumbering_is_identity_for_already_contiguous_groups() {
+        let prepared = prepare_outbox_cascade(&[0, 1], None).unwrap();
+        let emitted = outbox_intents(&[0, 1], "root");
+        // Byte for byte what the provider built, payload_hash included.
+        assert_eq!(prepared.durable_outbox, emitted);
+        assert_eq!(
+            prepared
+                .durable_outbox
+                .iter()
+                .map(DurableOutboxIntent::payload_hash)
+                .collect::<Vec<_>>(),
+            emitted
+                .iter()
+                .map(DurableOutboxIntent::payload_hash)
+                .collect::<Vec<_>>()
+        );
+        let renumbered = outbox_bundle(prepared.clone(), None).unwrap();
+        let untouched = outbox_bundle(prepared, Some(emitted)).unwrap();
+        assert_eq!(renumbered.bundle_hash(), untouched.bundle_hash());
     }
 }
