@@ -92,6 +92,16 @@ impl OrgState {
     pub fn member_orgs(&self, member: ObjId) -> impl Iterator<Item = OrgId> + '_ {
         self.by_member.get(&member).into_iter().flatten().copied()
     }
+    /// The orgs an object holds a **direct capability grant** in (`O(k)` via the
+    /// reverse index) — the grantee-side companion to [`OrgState::member_orgs`].
+    ///
+    /// A projection that must enumerate the authorities one actor might act for
+    /// needs both halves (a grantee is not necessarily a member), and it must get
+    /// them without walking [`OrgState::orgs`]. Ids repeat when one grantee holds
+    /// several grants in one org; the caller dedupes.
+    pub fn grant_orgs(&self, grantee: ObjId) -> impl Iterator<Item = OrgId> + '_ {
+        self.grants_to(grantee).map(|grant| grant.org)
+    }
     /// A role template.
     pub fn role(&self, id: RoleId) -> Option<&OrgRole> {
         self.roles.get(&id)

@@ -494,6 +494,27 @@ fn cmd_claim(
                  <priority>/<term seconds>/<transferable|bound>",
             ));
         }
+        // ---- The issuer gate, layer 1: BEFORE the world mutation ----
+        //
+        // `ctx.w.create` and `issue_title` below both write, and they run before
+        // `submit` ever reaches the provider. A gate that lived only on the
+        // prepared path would therefore mint an orphan `Thing` and an E4 title on
+        // every refusal — an object-creation DoS any player could drive in a
+        // loop. So the authority is tested here first, on the same predicate the
+        // projection's `Choice` is built from
+        // ([`crate::provider::issuable_authorities`]), and the refusal is the
+        // byte-identical `NO_SUCH_CLAIM` an unreadable claim renders: naming an
+        // authority you may not speak for is refused exactly as naming one that
+        // does not exist is.
+        let issuer = crate::provider::parse_principal(parts[0].trim())
+            .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
+        // Nobody issues their own tenure, staff included: an issuer is an
+        // authority *over* the ground, and "because I say so" is not one.
+        if issuer == PrincipalId::Object(ctx.actor)
+            || !(staff || mush_economy::acts_for(ctx.w, ctx.actor, &issuer))
+        {
+            return Err(CmdError::msg(NO_SUCH_CLAIM));
+        }
         let holder = crate::provider::parse_principal(parts[1].trim())
             .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
         // The claim's **titled world object**: created and titled here, on E4's
@@ -535,7 +556,11 @@ fn cmd_claim(
         };
         let parameters = json!({
             "subject": lhs,
-            "issuer": parts[0].trim(),
+            // The **canonical** token, not the raw text: the projection's
+            // `Choice` is spelled by `principal_token`, so `org:007` typed at the
+            // keyboard has to reach `resolve_legal_action` as `org:7` or the
+            // player's own offer refuses their own submission.
+            "issuer": mush_economy::principal_token(&issuer).as_str(),
             "holder": parts[1].trim(),
             "object": object.0,
             "exclusivity": parts[2].trim(),

@@ -278,6 +278,16 @@ fn production_schedule_id(order: WorkOrderId) -> Result<ScheduleId, ActionError>
 /// refusals a viewer may not distinguish are byte-identical.
 const REFUSED: &str = "You cannot work that here.";
 
+/// The actor the `ClaimFile` offer was projected to, published as a fixed
+/// parameter so the prepare can tell its own offer from somebody else's.
+pub const CLAIM_FILED_BY: &str = "claim_filed_by";
+/// Whether that actor was staff when the `ClaimFile` offer was projected — the
+/// only way to reach `file()` with an issuer no organization vouches for.
+pub const CLAIM_FILE_STAFF: &str = "claim_file_staff";
+/// The `principal_token` spellings of the authorities a non-staff actor may file
+/// under, published as a fixed parameter beside the offer's own `Choice`.
+pub const CLAIM_ISSUERS: &str = "claim_issuers";
+
 /// The one line every work-order refusal a viewer may not distinguish renders.
 const WO_REFUSED: &str = "You cannot do that with that work order.";
 /// The line a replayed delivery renders (a marker HIT).
@@ -772,6 +782,95 @@ pub fn administrable_claims(
     out
 }
 
+/// The authorities a **non-staff** actor may file a claim under: the
+/// organizations it is a member of, plus the organizations it holds a direct
+/// capability grant in, filtered by `acts_for` — which for an organization means
+/// holding `economy.account.post` on its root compartment.
+///
+/// Both halves come from `OrgState`'s reverse indexes (`member_orgs`,
+/// `grant_orgs`), never from a walk of `orgs()`: the cost is `O(this actor's
+/// orgs)` and does not grow with the size of the world. Sorted by id, deduped and
+/// capped at [`MAX_DEPOSIT_CHOICES`], so the offer is deterministic and bounded.
+///
+/// An `Object` principal is never in the list — not even the actor's own, and not
+/// one it MUSH-controls. An issuer is an authority *over* the ground; a player who
+/// could name themselves would be issuing tenure to themselves by fiat, which is
+/// the thing the whole gate exists to refuse. Staff are not restricted here: this
+/// feeds the non-staff `Choice` only.
+#[must_use]
+pub fn issuable_authorities(engine: &Engine, actor: ObjId) -> Vec<PrincipalId> {
+    let Some(store) = engine.world.module_state::<mush_org::OrgStore>() else {
+        return Vec::new();
+    };
+    let state = store.state();
+    let mut orgs: Vec<mush_org::OrgId> = state
+        .member_orgs(actor)
+        .chain(state.grant_orgs(actor))
+        .collect();
+    orgs.sort_unstable();
+    orgs.dedup();
+    let mut out: Vec<PrincipalId> = orgs
+        .into_iter()
+        .map(PrincipalId::Organization)
+        .filter(|who| mush_economy::acts_for(&engine.world, actor, who))
+        .collect();
+    out.truncate(MAX_DEPOSIT_CHOICES);
+    out
+}
+
+/// The issuer gate's structural half, run inside `file()` before anything is
+/// written.
+///
+/// It compares the submitted `issuer` against the offer's own fixed parameters —
+/// [`CLAIM_FILED_BY`], [`CLAIM_FILE_STAFF`] and [`CLAIM_ISSUERS`], which
+/// `merge_parameters` will not let a submission overwrite — so the authority a
+/// claim is filed under is one the **projection** vouched for, not one the
+/// parameters merely assert. An invocation that reached the provider by some other
+/// route carries no such list and is refused outright.
+///
+/// Every arm answers the identical `REFUSED` line: which of the three failed is
+/// not a fact a refused filer gets to learn.
+fn authorize_claim_file(
+    invocation: &ActionInvocation,
+    parameters: &serde_json::Map<String, Value>,
+    issuer: &PrincipalId,
+) -> Result<(), ActionError> {
+    let actor = invocation.actor();
+    let unauthorized = || error(ActionErrorCode::Unauthorized, REFUSED);
+    // Nobody issues their own tenure, staff included (the command refuses this
+    // first; this is the half a hand-built invocation still meets).
+    if issuer == &PrincipalId::Object(actor) {
+        return Err(unauthorized());
+    }
+    // The offer was projected to *this* actor: a replayed invocation cannot carry
+    // one filer's authority list under another filer's name.
+    let filed_by = parameters
+        .get(CLAIM_FILED_BY)
+        .and_then(Value::as_u64)
+        .and_then(|id| u32::try_from(id).ok())
+        .map(ObjId);
+    if filed_by != Some(actor) {
+        return Err(unauthorized());
+    }
+    if parameters
+        .get(CLAIM_FILE_STAFF)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let token = mush_economy::principal_token(issuer);
+    let vouched = parameters
+        .get(CLAIM_ISSUERS)
+        .and_then(Value::as_array)
+        .is_some_and(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .any(|allowed| allowed == token.as_str())
+        });
+    if vouched { Ok(()) } else { Err(unauthorized()) }
+}
+
 /// **This actor's orders that are holding production resources with no live budget
 /// hold** (independent verify fold, D4) — the delivery offer's server-authored
 /// refusal list, rendered as decimal strings so it compares against the same
@@ -881,6 +980,9 @@ impl ActionProvider for IndustryProvider {
         let actor = query.actor();
         let staff = crate::store::is_staff(&engine.world, actor);
         let mut parameters = Vec::new();
+        // The `ClaimFile` offer's server-authored authority list, published below
+        // as a fixed parameter so `prepare_authoritative` can re-check it.
+        let mut claim_issuers: Vec<String> = Vec::new();
         match self.verb {
             IndustryVerb::DepositOpen => {
                 // Opening an ore body is a staff act: it credits a pool from
@@ -912,7 +1014,34 @@ impl ActionProvider for IndustryProvider {
             }
             IndustryVerb::ClaimFile => {
                 parameters.push(text("subject", 40)?);
-                parameters.push(text("issuer", 64)?);
+                // ---- The issuer gate, layer 2: the offer itself ----
+                //
+                // Free text here let any actor file tenure in any government's
+                // name. Staff may still name any authority by token; every other
+                // actor is offered a `Choice` over exactly the organizations it
+                // `acts_for`, so a forged issuer is refused by
+                // `ProjectedParameterSchema::validate` before the provider runs.
+                // An actor who speaks for nobody gets **no offer at all** — the
+                // same nothing an actor sees for a verb that does not exist, so
+                // the projection is not an org-membership oracle either.
+                if staff {
+                    parameters.push(text("issuer", 64)?);
+                } else {
+                    claim_issuers = issuable_authorities(engine, actor)
+                        .iter()
+                        .map(|who| mush_economy::principal_token(who).to_string())
+                        .collect();
+                    if claim_issuers.is_empty() {
+                        return Ok(None);
+                    }
+                    parameters.push(parameter(
+                        "issuer",
+                        true,
+                        mush_core::ProjectedParameterKind::Choice {
+                            choices: claim_issuers.clone(),
+                        },
+                    )?);
+                }
                 parameters.push(text("holder", 64)?);
                 parameters.push(integer("object", 0, i64::from(u32::MAX))?);
                 parameters.push(text("exclusivity", 16)?);
@@ -1131,6 +1260,22 @@ impl ActionProvider for IndustryProvider {
                 crate::money::UNFUNDED_ORDERS.to_owned(),
                 json!(unfunded_orders(engine, &self.families, actor)),
             );
+        }
+        // ---- The issuer gate, layer 3: the structural half ----
+        //
+        // The same server-authored trick, for the same reason: `merge_parameters`
+        // refuses a submitted key that collides with a fixed one, so these three
+        // reach `file()` exactly as this projection wrote them. The `Choice` above
+        // already refuses a forged issuer on the offer route; this is what makes
+        // the rule structural rather than presentational — `file()` re-derives the
+        // authority from the offer that produced the invocation instead of
+        // trusting the parameter beside it.
+        if self.verb == IndustryVerb::ClaimFile
+            && let Some(map) = fixed.as_object_mut()
+        {
+            map.insert(CLAIM_FILED_BY.to_owned(), json!(actor.0));
+            map.insert(CLAIM_FILE_STAFF.to_owned(), json!(staff));
+            map.insert(CLAIM_ISSUERS.to_owned(), json!(claim_issuers));
         }
         Ok(Some(mush_core::ProviderOfferDraft {
             // The IC stamp rides the offer's FIXED parameters, so preparation
@@ -1354,6 +1499,7 @@ impl IndustryProvider {
     ) -> Result<String, ActionError> {
         let subject = subject_field(parameters)?;
         let issuer = principal_field(parameters, "issuer")?;
+        authorize_claim_file(invocation, parameters, &issuer)?;
         let holder = principal_field(parameters, "holder")?;
         let object = obj_field(parameters, "object")?;
         let exclusivity = match text_field(parameters, "exclusivity")?.as_str() {
