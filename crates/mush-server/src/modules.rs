@@ -127,7 +127,14 @@ pub fn server_modules_with(
     // E6c (§2 item 8, B11): the market mints the title of a stocked asset, so
     // `sr.market` joins the frozen issuer table when the Shadowrun economic layer is
     // enabled — and only then, exactly as housing's joins only for a configured WoD.
-    if shadowrun.is_some_and(|s| s.enabled) {
+    //
+    // WS04-S7: computed ONCE, here, for the same reason `housing_on` is. It gates both
+    // this list and `MarketModule::with_issuer` below, so the economy's frozen issuer
+    // table and the market's own name cannot disagree by construction — the
+    // disagreement being what `issue_title` answers `Unauthorized` to, from inside a
+    // verb whose operator never named an issuer at all.
+    let market_on = shadowrun.is_some_and(|s| s.enabled);
+    if market_on {
         issuers.push(market_title_issuer());
     }
     // E7 cut 3: the claim's titled object is minted through
@@ -137,6 +144,7 @@ pub fn server_modules_with(
     // `mush-industry` composes on every ruleset.
     issuers.push(mush_industry::industry_title_issuer());
     let issuer = housing_on.then(housing_title_issuer);
+    let market_issuer = market_on.then(market_title_issuer);
     // E7 cut 3 B1: the composition root's own wire between two modules whose
     // order it already fixes. `mush-inventory` fills it while registering;
     // `mush-industry`, composed after it, takes the handles out.
@@ -493,12 +501,11 @@ pub fn server_modules_with(
         // handle cell must be filled by the time this module registers, which it is —
         // inventory composes above and `Engine::compose_modules` registers in list
         // order.
-        Box::new(
-            mush_market::MarketModule::new()
+        Box::new({
+            let m = mush_market::MarketModule::new()
                 .with_catalog_sources(market_catalog_sources(shadowrun))
                 .with_availability(market_availability(shadowrun))
                 .with_delivery(market_delivery(shadowrun))
-                .with_issuer(market_title_issuer())
                 // E7r2 P1 (§15.5 (b′)): `IndustryModule::with_inventory`'s shape
                 // exactly. It carries a **capability**; the authority to write with it
                 // is `with_quantity_delegates(["industry", "market"])` above, and
@@ -506,8 +513,18 @@ pub fn server_modules_with(
                 // `ActionStateError::OwnerMismatch`. Unwired is fail-closed: no lot
                 // action registers and `@market/vendor stock` refuses a
                 // lot-represented good byte-identically to E6c.
-                .with_inventory(Arc::clone(&inventory_handles)),
-        ),
+                .with_inventory(Arc::clone(&inventory_handles));
+            // WS04-S7: housing's shape at the top of this list, for housing's reason.
+            // Wired unconditionally, `sr.market` was a name the market held and the
+            // economy did not list on every non-Shadowrun server, so the one arm that
+            // could reach `issue_title` answered `Unauthorized` — a permission
+            // refusal for a capability the operator never asked for — instead of the
+            // market's own "this server registers no market title issuer".
+            match market_issuer {
+                Some(i) => m.with_issuer(i),
+                None => m,
+            }
+        }),
         Box::new(mush_script::ScriptModule::new()),
     ]
 }
@@ -633,9 +650,13 @@ pub fn housing_title_issuer() -> mush_org::SystemPrincipalId {
 /// §2 item 8, D-E3-13).
 ///
 /// Named in exactly two places — `EconomyModule::with_title_issuers` and
-/// `@market/vendor stock`'s own call — and `mush_economy::issue_title` refuses an
-/// issuer that is not on the economy's list, so a typo is a loud refusal rather than
-/// a silent capability. Registration, not code.
+/// `MarketModule::with_issuer` — and `mush_economy::issue_title` refuses an issuer
+/// that is not on the economy's list, so a typo is a loud refusal rather than a
+/// silent capability. Registration, not code.
+///
+/// WS04-S7: **both** of those places are gated by the one `market_on` flag, exactly
+/// as housing's two are gated by `housing_on`. The second used to be unconditional,
+/// so every non-Shadowrun server held a name the economy did not list.
 #[must_use]
 pub fn market_title_issuer() -> mush_org::SystemPrincipalId {
     mush_org::SystemPrincipalId::new("sr.market")
