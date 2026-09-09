@@ -168,11 +168,15 @@ fn examine_own_vs_others_object() {
     );
 }
 
-/// `help @dig` returns its usage text, aliases, and switches.
+/// `help @dig` returns its usage text, aliases, and switches — to a
+/// BUILDER, since `help` names only verbs the reader could dispatch.
 #[test]
 fn help_at_dig_returns_usage() {
     let mut tw = TestWorld::new();
     let alice = tw.spawn_player("Alice");
+    tw.world_mut()
+        .set_flag(alice, mush_core::Flags::BUILDER, true)
+        .unwrap();
     let events = tw.run(alice, "help @dig");
     assert_actor_saw(&events, alice, "@dig <name>");
     assert_actor_saw(&events, alice, "/teleport");

@@ -144,6 +144,24 @@ fn truncate_summary(s: &str) -> String {
     format!("{}…", s[..end].trim_end())
 }
 
+/// Whether `viewer` may see `spec` in a listing: the role, power and
+/// privilege gates dispatch itself applies, and nothing else.
+///
+/// Locks are per-target and are not evaluated. Neither are
+/// [`CommandGate`](crate::CommandGate)s: a gate takes the world and refuses
+/// with a reason at dispatch time, so it cannot be run speculatively for a
+/// listing — a gated-but-in-role verb still appears, in the palette and in
+/// `help` alike. This is the one predicate both listings share, so the
+/// line-mode `help` table and the web/TUI palette can never drift into
+/// naming different surfaces.
+fn spec_visible_to(w: &World, viewer: ObjId, role: Role, spec: &CommandSpec) -> bool {
+    role >= spec.min_role
+        && spec.power.is_none_or(|p| perm::has_power(w, viewer, p))
+        && spec
+            .privilege
+            .is_none_or(|p| perm::has_privilege(w, viewer, p))
+}
+
 /// The command table as `viewer` may use it: every registered command whose
 /// role and power gates the viewer passes (locks are per-target and are not
 /// evaluated), sorted by name, each with its usage and summary. Staff-gated
@@ -155,12 +173,7 @@ pub fn command_entries(reg: &Registry, w: &World, viewer: ObjId) -> Vec<CommandE
     let role = perm::role_of(w, viewer);
     let mut entries: Vec<CommandEntry> = reg
         .command_registrations()
-        .filter(|(spec, _, _)| role >= spec.min_role)
-        .filter(|(spec, _, _)| spec.power.is_none_or(|p| perm::has_power(w, viewer, p)))
-        .filter(|(spec, _, _)| {
-            spec.privilege
-                .is_none_or(|p| perm::has_privilege(w, viewer, p))
-        })
+        .filter(|(spec, _, _)| spec_visible_to(w, viewer, role, spec))
         .map(|(spec, module, _)| {
             let (usage, summary) = split_help(&spec.help);
             CommandEntry {
@@ -265,12 +278,26 @@ fn article(word: &str) -> &'static str {
     }
 }
 
+/// `help` — the line-mode command table and the prose topics.
+///
+/// The listing is filtered by [`spec_visible_to`], the same predicate the
+/// web/TUI palette uses: a listing never names a verb the actor cannot
+/// dispatch, so `help` is not an enumeration of the staff surface. `help
+/// <name>` for an out-of-role verb answers the same "No help available" an
+/// unknown name gets — the refusal must not confirm the verb exists — after
+/// falling through to the prose topics, which are public.
 fn help_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let topic = ctx.args.raw().trim().to_string();
+    let role = perm::role_of(ctx.w, ctx.actor);
     if topic.is_empty() {
         ctx.out
             .info(ctx.actor, "Commands (type \"help <command>\" for details):");
-        let mut names: Vec<&str> = ctx.reg.specs().map(|s| s.name.as_str()).collect();
+        let mut names: Vec<&str> = ctx
+            .reg
+            .specs()
+            .filter(|s| spec_visible_to(ctx.w, ctx.actor, role, s))
+            .map(|s| s.name.as_str())
+            .collect();
         names.sort_unstable();
         ctx.out.info(ctx.actor, names.join("  "));
         let topics: Vec<&str> = ctx.reg.help_topic_names().collect();
@@ -282,8 +309,15 @@ fn help_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     // Precedence: an exact command-name (or alias) match always wins over a
-    // prose topic of the same name; topics fill in everything else.
-    let Some(spec) = ctx.reg.spec_of(&topic) else {
+    // prose topic of the same name; topics fill in everything else. A verb
+    // the actor could not dispatch is treated as if it were not registered
+    // at all — otherwise the refusal itself is an existence oracle over the
+    // staff surface the listing above just withheld.
+    let Some(spec) = ctx
+        .reg
+        .spec_of(&topic)
+        .filter(|s| spec_visible_to(ctx.w, ctx.actor, role, s))
+    else {
         if let Some(t) = ctx.reg.help_topic(&topic) {
             let (title, body) = (t.title.clone(), t.body.clone());
             ctx.out.info(ctx.actor, title);

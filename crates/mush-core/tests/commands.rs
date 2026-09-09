@@ -1119,25 +1119,88 @@ fn who_lists_connected_players() {
 #[test]
 fn help_renders_specs() {
     let mut g = Game::new();
-    let ann = g.ann;
-    let out = g.run(ann, "help @dig");
-    let all = actor_texts(&out, ann).join("\n");
+    let (ann, bob) = (g.ann, g.bob);
+    // Bob holds BUILDER, so @dig is his to run and his to read about.
+    let out = g.run(bob, "help @dig");
+    let all = actor_texts(&out, bob).join("\n");
     assert!(all.contains("@dig"), "{all}");
     assert!(all.contains("Create a new room"), "{all}");
     assert!(all.contains("/teleport"), "{all}");
-    // Listing.
+    // Listing: everyone sees the ungated verbs; only the builder sees @dig.
     let out = g.run(ann, "help");
     let all = actor_texts(&out, ann).join("\n");
-    assert!(
-        all.contains("look") && all.contains("@dig") && all.contains("WHO"),
-        "{all}"
-    );
+    assert!(all.contains("look") && all.contains("WHO"), "{all}");
+    let out = g.run(bob, "help");
+    let all = actor_texts(&out, bob).join("\n");
+    assert!(all.contains("@dig"), "{all}");
     // +help is the same command.
     let out = g.run(ann, "+help say");
     assert_error_contains(&out, ann, "Speak to everyone");
     // Unknown topic.
     let out = g.run(ann, "help frobnicate");
     assert_error_contains(&out, ann, "No help available");
+}
+
+/// The listing names only what the actor could actually dispatch, and a
+/// refusal for an out-of-role verb is indistinguishable from an unknown
+/// name — `help` is not an enumeration of, or an oracle over, the staff
+/// surface.
+#[test]
+fn help_listing_is_role_filtered_and_never_confirms_a_gated_verb() {
+    let mut g = Game::new();
+    let (ann, bob) = (g.ann, g.bob);
+    let wiz =
+        g.w.create(ObjKind::Player, "Wiz", GOD, Some(LIMBO))
+            .unwrap();
+    g.w.set_flag(wiz, Flags::WIZARD, true).unwrap();
+
+    let listing = |g: &mut Game, who: ObjId| -> Vec<String> {
+        let out = g.run(who, "help");
+        actor_texts(&out, who)
+            .join("\n")
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect()
+    };
+    let player = listing(&mut g, ann);
+    let builder = listing(&mut g, bob);
+    let wizard = listing(&mut g, wiz);
+
+    // A plain player's listing names no Builder- or Wizard-gated verb.
+    assert!(player.iter().any(|n| n == "look"), "{player:?}");
+    assert!(!player.iter().any(|n| n == "@dig"), "{player:?}");
+    assert!(!player.iter().any(|n| n == "@wall"), "{player:?}");
+    // Each staff step is a strict superset of the one below it.
+    assert!(builder.iter().any(|n| n == "@dig"), "{builder:?}");
+    assert!(!builder.iter().any(|n| n == "@wall"), "{builder:?}");
+    assert!(wizard.iter().any(|n| n == "@wall"), "{wizard:?}");
+    for name in &player {
+        assert!(builder.contains(name), "builder lost {name}: {builder:?}");
+    }
+    for name in &builder {
+        assert!(wizard.contains(name), "wizard lost {name}: {wizard:?}");
+    }
+
+    // The refusal for a real-but-gated verb is the refusal an unknown name
+    // gets, word for word: no existence oracle.
+    let gated = g.run(ann, "help @wall");
+    let unknown = g.run(ann, "help frobnicate");
+    assert_error_contains(&gated, ann, "No help available");
+    assert_eq!(
+        actor_texts(&gated, ann),
+        vec!["No help available for \"@wall\".".to_string()]
+    );
+    assert_eq!(
+        actor_texts(&unknown, ann),
+        vec!["No help available for \"frobnicate\".".to_string()]
+    );
+    // And the wizard still reads it.
+    let out = g.run(wiz, "help @wall");
+    assert!(
+        actor_texts(&out, wiz).join("\n").contains("Wizards only"),
+        "{:?}",
+        actor_texts(&out, wiz)
+    );
 }
 
 // ---------------------------------------------------------------------

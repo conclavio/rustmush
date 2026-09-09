@@ -137,8 +137,8 @@ use mush_core::{
     Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
     Flags, Inbound, IncidentId, LegalActionQuery, ObjId, ObjKind, OfferExecutionContext,
     OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
-    ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind, StagedAction,
-    StepOutcome, TickCadence, World, WorldCommand, WorldEvent, can_perceive,
+    Privileges, ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind,
+    StagedAction, StepOutcome, TickCadence, World, WorldCommand, WorldEvent, can_perceive,
     can_perceive_with_action_state, event_subject, is_ignoring, narrative_actor,
     register_core_commands, register_engine_commands,
 };
@@ -378,6 +378,24 @@ pub enum WorldMsg {
     /// single-writer. The opaque permit proves the store lookup happened
     /// before provider resolution or truth reads.
     AuthoritativeAction(Box<AuthoritativeActionRequest>),
+    /// Re-check one privilege on the world loop for an off-loop executor
+    /// holding an authorization taken a queue hop ago (WS02-A1). The staff
+    /// executor captures no world borrow, so this is the only way it can ask;
+    /// a revocation in the window is recorded as a second `Denied` audit row
+    /// against `command` before the `false` goes back. Busy/unavailable is
+    /// typed so the caller fails closed instead of disclosing on a guess.
+    RecheckPrivilege {
+        /// Whose privilege to re-check (the requester, not the subject).
+        actor: ObjId,
+        /// The bit the command was authorized on.
+        privilege: Privileges,
+        /// What the op is about, for the audit row.
+        subject: Option<ObjId>,
+        /// The command name recorded in the audit detail.
+        command: &'static str,
+        /// `true` = still held.
+        reply: oneshot::Sender<Result<bool, WorldReadError>>,
+    },
     /// Ordering barrier: replied to once every message queued before it has
     /// been processed *and its output delivered*. The QUIT flow uses this to
     /// flush a quitting player's in-flight output before detaching them.
@@ -942,6 +960,10 @@ fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
         WorldMsg::CreatePlayer { .. }
         | WorldMsg::AuthoritativeAction(_)
         | WorldMsg::DiscordInteraction { .. }
+        // A revoked re-check writes an audit row, so it is classed with the
+        // writes: refused (fail-closed) in a restricted mode rather than
+        // answering `true` off a world it may not read.
+        | WorldMsg::RecheckPrivilege { .. }
         | WorldMsg::RelaySpeak { .. } => IngressClass::WorldMutation,
         WorldMsg::NameFree { .. }
         | WorldMsg::InInputContext { .. }
@@ -1235,6 +1257,36 @@ impl WorldHandle {
         if self
             .tx
             .send(WorldMsg::ConnectionReady { conn, actor, reply })
+            .await
+            .is_err()
+        {
+            return Err(WorldReadError::Unavailable);
+        }
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
+    }
+
+    /// Re-check a privilege the world task authorized before it queued an op
+    /// to an off-loop executor (WS02-A1). `Ok(false)` means the grant was
+    /// revoked in the window and a second `Denied` row is in the audit;
+    /// `Err` means the world could not answer, which callers must treat as a
+    /// refusal — an authorization is never inferred from a failed read.
+    pub async fn recheck_privilege(
+        &self,
+        actor: ObjId,
+        privilege: Privileges,
+        subject: Option<ObjId>,
+        command: &'static str,
+    ) -> Result<bool, WorldReadError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::RecheckPrivilege {
+                actor,
+                privilege,
+                subject,
+                command,
+                reply,
+            })
             .await
             .is_err()
         {
@@ -4074,6 +4126,27 @@ async fn run(
                             let _ = reply.send(Ok(engine.actor_of(conn) == Some(actor)));
                             StepOutcome::Continue
                         }
+                        WorldMsg::RecheckPrivilege {
+                            actor,
+                            privilege,
+                            subject,
+                            command,
+                            reply,
+                        } => {
+                            // The world fields are borrowed disjointly so the
+                            // audit append rides this step's deferred queue.
+                            let held = crate::staff::recheck_privilege(
+                                &mut engine.world,
+                                &engine.registry,
+                                &mut out,
+                                actor,
+                                privilege,
+                                subject,
+                                command,
+                            );
+                            let _ = reply.send(Ok(held));
+                            StepOutcome::Continue
+                        }
                         WorldMsg::LegalActions {
                             conn,
                             actor,
@@ -5767,6 +5840,14 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
             let _ = reply.send(Err(error));
         }
         WorldMsg::ConnectionReady { reply, .. } => {
+            let error = if reason == RefusalReason::CommitPending {
+                WorldReadError::Busy
+            } else {
+                WorldReadError::Unavailable
+            };
+            let _ = reply.send(Err(error));
+        }
+        WorldMsg::RecheckPrivilege { reply, .. } => {
             let error = if reason == RefusalReason::CommitPending {
                 WorldReadError::Busy
             } else {
@@ -7880,7 +7961,12 @@ async fn staff_ops_loop(
                 }
                 text
             }
-            StaffOpKind::DiscordShow { target, .. } => run_discord_show(&*store, target).await,
+            StaffOpKind::DiscordShow { actor: by, target } => {
+                match discord_show_recheck(&world, by, target).await {
+                    Ok(()) => run_discord_show(&*store, target).await,
+                    Err(text) => text,
+                }
+            }
             StaffOpKind::DiscordUnlink { target, .. } => {
                 run_discord_unlink(&gateway, &*store, target, true).await
             }
@@ -8088,6 +8174,54 @@ async fn run_discord_set(
             account.name
         ),
         Err(e) => format!("@discord/set failed: {e}"),
+    }
+}
+
+/// The execution-time authorization for `@discord/show`: the privilege was
+/// tested on the world loop and the `use` audited **before** the op was
+/// queued, and this executor is a queue hop later with no world borrow of its
+/// own — so `@privilege/revoke` can land in between and the disclosure would
+/// still go out. Round-trip one `WorldMsg` (the `@newpassword` precedent) and
+/// let the world loop answer.
+///
+/// Fail closed: a revocation, a busy world (a commit is pending) and a gone
+/// world all refuse. The world loop writes the second `Denied` audit row on
+/// the revocation; `Err` here is a refusal to disclose, never a panic — this
+/// module denies `clippy::unreachable` and the loop must not be lost over a
+/// staff op.
+async fn discord_show_recheck(
+    world: &mpsc::WeakSender<WorldMsg>,
+    actor: ObjId,
+    target: ObjId,
+) -> Result<(), String> {
+    let Some(world) = world.upgrade().map(|tx| WorldHandle {
+        tx,
+        shutdown: None,
+        direct_actions: None,
+    }) else {
+        return Err("@discord/show: the world is shutting down; nothing was shown.".to_string());
+    };
+    match world
+        .recheck_privilege(
+            actor,
+            Privileges::DISCORD_IDENTITY,
+            Some(target),
+            "@discord/show",
+        )
+        .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            tracing::warn!(
+                %actor, %target,
+                "@discord/show refused at execution: the privilege was revoked after the command"
+            );
+            Err("@discord/show: your DISCORD_IDENTITY privilege was revoked before the                  look could be answered. Permission denied."
+                .to_string())
+        }
+        Err(e) => Err(format!(
+            "@discord/show: the privilege could not be re-checked ({e}); nothing was shown."
+        )),
     }
 }
 
@@ -13655,9 +13789,87 @@ mod tests {
         );
         let (reply, _rx) = oneshot::channel();
         assert_eq!(
+            classify_world_msg(&WorldMsg::RecheckPrivilege {
+                actor: GOD,
+                privilege: Privileges::DISCORD_IDENTITY,
+                subject: None,
+                command: "@discord/show",
+                reply,
+            }),
+            IngressClass::WorldMutation
+        );
+        let (reply, _rx) = oneshot::channel();
+        assert_eq!(
             classify_world_msg(&WorldMsg::Barrier { reply }),
             IngressClass::OrderingBarrier
         );
+    }
+
+    /// The disclosure is refused whenever the world cannot say the privilege
+    /// is still held: revoked, busy, or gone. Nothing about a failed read may
+    /// be read as an authorization.
+    #[tokio::test]
+    async fn discord_show_refuses_unless_the_world_re_confirms_the_privilege() {
+        let (tx, mut rx) = mpsc::channel::<WorldMsg>(4);
+        let weak = tx.downgrade();
+        let target = ObjId(7);
+
+        // The world answers the re-check; the first says the grant is gone.
+        let answers = tokio::spawn(async move {
+            let mut sent = Vec::new();
+            while let Some(msg) = rx.recv().await {
+                let WorldMsg::RecheckPrivilege {
+                    actor,
+                    privilege,
+                    subject,
+                    command,
+                    reply,
+                } = msg
+                else {
+                    continue;
+                };
+                sent.push((actor, privilege, subject, command));
+                let held = sent.len() > 2;
+                let _ = reply.send(if sent.len() == 2 {
+                    Err(WorldReadError::Busy)
+                } else {
+                    Ok(held)
+                });
+            }
+            sent
+        });
+
+        // (1) Revoked in the window.
+        let refusal = discord_show_recheck(&weak, GOD, target)
+            .await
+            .expect_err("a revoked privilege must refuse");
+        assert!(refusal.contains("revoked"), "{refusal}");
+        assert!(refusal.contains("Permission denied"), "{refusal}");
+        // (2) The world is committing and cannot answer: refuse too.
+        let refusal = discord_show_recheck(&weak, GOD, target)
+            .await
+            .expect_err("an unanswerable re-check must refuse");
+        assert!(refusal.contains("could not be re-checked"), "{refusal}");
+        // (3) Still held: the executor proceeds to the disclosure.
+        discord_show_recheck(&weak, GOD, target)
+            .await
+            .expect("a held privilege discloses");
+
+        drop(tx);
+        let sent = answers.await.expect("answering task");
+        assert_eq!(sent.len(), 3);
+        for (actor, privilege, subject, command) in sent {
+            assert_eq!(actor, GOD);
+            assert_eq!(privilege, Privileges::DISCORD_IDENTITY);
+            assert_eq!(subject, Some(target));
+            assert_eq!(command, "@discord/show");
+        }
+
+        // (4) The world task is gone: no disclosure on a dead channel.
+        let refusal = discord_show_recheck(&weak, GOD, target)
+            .await
+            .expect_err("a gone world must refuse");
+        assert!(refusal.contains("shutting down"), "{refusal}");
     }
 
     #[test]

@@ -1217,16 +1217,8 @@ pub(crate) fn dispatch_with_action_state(
     //    say/pose/… by the prefix expansion, so a gate sees it as a normal
     //    verb it can wave through. Skipped entirely when no gate is
     //    registered (the default) — dispatch is then byte-identical.
-    if !reg.command_gates.is_empty() {
-        let line = cur.trim();
-        let (head, _) = split_head(line);
-        let verb = head.split('/').next().unwrap_or("");
-        for gate in &reg.command_gates {
-            if let Err(reason) = gate.check(w, reg, actor, verb, line) {
-                out.error(actor, reason);
-                return;
-            }
-        }
+    if command_gates_refuse(reg, w, actor, &cur, out) {
+        return;
     }
 
     // 3. Alias stage (comsys seam). Prefix-expanded lines skip it: the
@@ -1236,15 +1228,26 @@ pub(crate) fn dispatch_with_action_state(
     //    player never named. A *typed* "say hello" still offers the alias
     //    stage first, per treaty ruling 5.
     if !prefix_expanded {
+        let mut rewritten = false;
         for entry in &reg.alias_stages {
             match entry.stage.try_alias(w, actor, &cur, out) {
                 AliasOutcome::NotMine => {}
                 AliasOutcome::Handled => return,
                 AliasOutcome::Rewrite(s) => {
                     cur = s;
+                    rewritten = true;
                     break;
                 }
             }
+        }
+        // A rewrite substitutes a DIFFERENT verb for the one step 2 gated,
+        // and everything downstream (home, exits, the command table) acts on
+        // the substitute — so the gates see it too, or the whole gate is one
+        // alias stage away from being defeated. Only on the rewrite path:
+        // with no rewrite (and always with no gate registered) dispatch does
+        // exactly the work it did before.
+        if rewritten && command_gates_refuse(reg, w, actor, &cur, out) {
+            return;
         }
     }
 
@@ -1457,6 +1460,36 @@ fn run_handler(
         out.truncate_deferred(deferred_before);
         out.error(actor, e.to_string());
     }
+}
+
+/// Consult every registered [`CommandGate`] on `line`'s leading verb and the
+/// whole line. `true` means refused — the gate's reason is already queued on
+/// `out` and the caller must stop dispatching.
+///
+/// Skipped entirely when no gate is registered (the default), so dispatch is
+/// byte-identical to the un-gated pipeline. Called twice on the alias path:
+/// once on the prefix-expanded line, once more on the verb an
+/// [`AliasOutcome::Rewrite`] put in its place.
+fn command_gates_refuse(
+    reg: &Registry,
+    w: &World,
+    actor: ObjId,
+    line: &str,
+    out: &mut Outbox,
+) -> bool {
+    if reg.command_gates.is_empty() {
+        return false;
+    }
+    let line = line.trim();
+    let (head, _) = split_head(line);
+    let verb = head.split('/').next().unwrap_or("");
+    for gate in &reg.command_gates {
+        if let Err(reason) = gate.check(w, reg, actor, verb, line) {
+            out.error(actor, reason);
+            return true;
+        }
+    }
+    false
 }
 
 /// Queue the classic `Huh?`, with a fuzzy suggestion when one is close.
@@ -1768,6 +1801,95 @@ mod tests {
             !plain(&out).iter().any(|l| l == "broadcast"),
             "the alias stage must not have run"
         );
+    }
+
+    #[test]
+    fn command_gate_re_runs_after_an_alias_rewrite() {
+        use crate::obj::{GOD, LIMBO, ObjKind};
+        // A gate holding an unapproved character to "+stat", and an alias
+        // stage that rewrites anything else into "@dig x" — the bypass: the
+        // gate saw the ORIGINAL verb, and without a second pass the rewritten
+        // one dispatches ungated.
+        struct OnlyStat;
+        impl CommandGate for OnlyStat {
+            fn check(
+                &self,
+                _w: &World,
+                _reg: &Registry,
+                _actor: ObjId,
+                verb: &str,
+                _line: &str,
+            ) -> Result<(), String> {
+                if verb.eq_ignore_ascii_case("+stat") {
+                    Ok(())
+                } else {
+                    Err("gated".to_string())
+                }
+            }
+        }
+        struct RewriteToDig;
+        impl AliasStage for RewriteToDig {
+            fn try_alias(
+                &self,
+                _w: &mut World,
+                _actor: ObjId,
+                line: &str,
+                _out: &mut Outbox,
+            ) -> AliasOutcome {
+                if line.split_whitespace().next() == Some("+stat") {
+                    AliasOutcome::Rewrite("@dig x".to_string())
+                } else {
+                    AliasOutcome::NotMine
+                }
+            }
+        }
+        let mut w = World::new_minimal();
+        let ann = w.create(ObjKind::Player, "Ann", GOD, Some(LIMBO)).unwrap();
+        let mut reg = Registry::new();
+        reg.register(
+            spec("@dig", ArgShape::Raw),
+            Arc::new(|ctx: &mut Ctx<'_>| {
+                ctx.out.info(ctx.actor, "dug");
+                Ok(())
+            }),
+        )
+        .unwrap();
+        reg.register(
+            spec("+stat", ArgShape::Raw),
+            Arc::new(|ctx: &mut Ctx<'_>| {
+                ctx.out.info(ctx.actor, "stat");
+                Ok(())
+            }),
+        )
+        .unwrap();
+        reg.add_alias_stage(Arc::new(RewriteToDig));
+        reg.add_command_gate(Arc::new(OnlyStat));
+
+        let plain = |out: &Outbox| -> Vec<String> {
+            out.events()
+                .iter()
+                .filter_map(|(_, e)| match e {
+                    mush_proto::OutputEvent::Sys(t) => Some(t.to_plain_text()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // "+stat" passes the first gate pass, the alias stage turns it into
+        // "@dig x", and the second pass refuses THAT verb: the handler never
+        // runs.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, ann, "+stat", &mut out);
+        assert_eq!(plain(&out), vec!["gated".to_string()]);
+        assert!(
+            !plain(&out).iter().any(|l| l == "dug"),
+            "the rewritten verb must not have dispatched"
+        );
+
+        // A line no stage rewrites is gated exactly once, on its own verb.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, ann, "@dig y", &mut out);
+        assert_eq!(plain(&out), vec!["gated".to_string()]);
     }
 
     #[test]
