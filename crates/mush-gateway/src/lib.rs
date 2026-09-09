@@ -87,8 +87,12 @@ pub enum ServerSource {
     /// binds, and on the child's exit (crash or deliberate restart) respawns it
     /// — holding the player connections and re-attaching them (M16c).
     Spawn {
-        /// The config path to pass the child (`--config`).
-        config_path: PathBuf,
+        /// The config path to pass the child as `--config`, when the gateway
+        /// itself was given one. `None` means the gateway resolved the
+        /// implicit `mushd.toml` and the child must be allowed to resolve it
+        /// the same way (WS22-S1): forging an explicit path here turns the
+        /// parent's tolerated absence into the child's hard failure.
+        config_path: Option<PathBuf>,
     },
     /// Test / attach: connect to an already-running server at this endpoint
     /// ONCE, spawning nothing and NOT supervising it (the M16b two-process
@@ -1520,7 +1524,7 @@ async fn connect_with_retry(
 /// Spawn the `mush-server` child process (the supervisor). Locates the binary
 /// as a sibling of the current executable in the same target dir.
 fn spawn_server_child(
-    config_path: &std::path::Path,
+    config_path: Option<&std::path::Path>,
     endpoint: &IpcEndpoint,
 ) -> Result<tokio::process::Child, String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
@@ -1530,13 +1534,30 @@ fn spawn_server_child(
     let server_bin = dir.join(format!("mush-server{}", std::env::consts::EXE_SUFFIX));
     tracing::info!(bin = %server_bin.display(), "spawning mush-server child");
     tokio::process::Command::new(&server_bin)
-        .arg("--config")
-        .arg(config_path)
-        .arg("--ipc")
-        .arg(endpoint.describe())
+        .args(server_child_args(config_path, endpoint))
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("spawning {}: {e}", server_bin.display()))
+}
+
+/// The argument vector [`spawn_server_child`] hands the child, split out so the
+/// one rule that is easy to get wrong is testable without a process: `--config`
+/// is passed ONLY when the gateway was given one (WS22-S1). A gateway that
+/// booted the implicit `mushd.toml` — or its absence — must let the child
+/// resolve the same way; forging `--config mushd.toml` here would make the
+/// child refuse to start under `mush-config`'s explicit-path stat.
+fn server_child_args(
+    config_path: Option<&std::path::Path>,
+    endpoint: &IpcEndpoint,
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = Vec::with_capacity(4);
+    if let Some(path) = config_path {
+        args.push("--config".into());
+        args.push(path.as_os_str().to_os_string());
+    }
+    args.push("--ipc".into());
+    args.push(endpoint.describe().into());
+    args
 }
 
 /// The production [`ServerLauncher`]: spawn (and, on each restart, respawn) a
@@ -1544,7 +1565,8 @@ fn spawn_server_child(
 /// endpoint (D1). `kill_on_drop` is armed as a final runtime-teardown backstop;
 /// the supervisor still requires positive exit confirmation before respawn.
 struct SpawnLauncher {
-    config_path: PathBuf,
+    /// `None` when the gateway itself resolved the implicit config path.
+    config_path: Option<PathBuf>,
     endpoint: IpcEndpoint,
 }
 
@@ -1553,7 +1575,7 @@ impl ServerLauncher for SpawnLauncher {
         let config_path = self.config_path.clone();
         let endpoint = self.endpoint.clone();
         Box::pin(async move {
-            let mut child = spawn_server_child(&config_path, &endpoint)?;
+            let mut child = spawn_server_child(config_path.as_deref(), &endpoint)?;
             // Own the child in a task that resolves the `exited` future when it
             // dies. The exit-only API cannot force that task to drop, so the
             // supervisor fails closed if this confirmation misses its deadline.
@@ -2625,6 +2647,33 @@ mod tests {
     use mush_ipc::WireInbound;
     use mush_proto::{ClientCaps, ClientKind, ColorDepth, Envelope};
     use mush_session::{ConnId, ConnectionHandle};
+
+    /// WS22-S1: the explicitness of `--config` has to cross the spawn.
+    ///
+    /// The failure this pins is the quiet one: a gateway started with no
+    /// `--config` (defaults, or an implicit `mushd.toml` in the working
+    /// directory) that hands its child a forged `--config mushd.toml`. Under
+    /// the shared parser an explicit path that does not exist is fatal, so the
+    /// gateway would come up and its child would refuse to start, for a file
+    /// nobody asked for.
+    #[test]
+    fn child_config_argument_is_passed_only_when_explicit() {
+        let endpoint = IpcEndpoint::Tcp("127.0.0.1:6791".parse().expect("literal addr"));
+
+        let implicit = server_child_args(None, &endpoint);
+        assert_eq!(implicit, ["--ipc", "127.0.0.1:6791"], "{implicit:?}");
+        assert!(
+            !implicit.iter().any(|a| a == "--config"),
+            "a gateway that was given no --config must forge none: {implicit:?}"
+        );
+
+        let explicit = server_child_args(Some(std::path::Path::new("/etc/mushd.toml")), &endpoint);
+        assert_eq!(
+            explicit,
+            ["--config", "/etc/mushd.toml", "--ipc", "127.0.0.1:6791"],
+            "{explicit:?}"
+        );
+    }
 
     /// A test [`ToServerTx`] over `tx` with a throwaway registry, the given
     /// input-shed `cap`, and `depth` frames pre-charged onto the gauge (to force

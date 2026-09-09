@@ -25,6 +25,10 @@
 //! flattened, narrative kinds get their classic MUSH shapes ("Alice says,
 //! \"hi\"", "Alice grins."). It is deliberately simple; the real ANSI
 //! renderer lands in `mush-ansi` later and owns niceties like You-vs-Name.
+//!
+//! [`proc`] is the other half of the same idea one level out: a shared
+//! child-process harness for the tests that must drive a real binary
+//! (`mushd`, `mush-server`, `mush-gateway`) rather than a world.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
 // held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
@@ -36,6 +40,8 @@
     clippy::unreachable,
     clippy::panic_in_result_fn
 )]
+
+pub mod proc;
 
 use std::collections::HashMap;
 

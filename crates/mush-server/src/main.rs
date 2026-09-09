@@ -2,8 +2,8 @@
 //!
 //! Boots the world task + persistence + modules and serves the gateway over
 //! the [`mush_ipc`] boundary socket. Normally spawned as a child of
-//! `mush-gateway` (which passes `--config` and `--ipc <addr>`), but it also
-//! runs standalone for testing.
+//! `mush-gateway` (which passes `--ipc <addr>`, and `--config` only when it was
+//! given one itself), but it also runs standalone for testing.
 //!
 //! Usage: `mush-server [--config <path>] [--ipc <addr>]`.
 
@@ -13,37 +13,40 @@
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(clippy::unwrap_used, clippy::panic_in_result_fn)]
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mush_config::config::Config;
+use mush_config::cli::CliSpec;
+
+/// This binary's half of the one command line the three binaries share
+/// (WS22-S1). `--ipc <addr>` overrides `[ipc].listen` — the supervisor picks
+/// the socket — and is applied by `Cli::load_config`.
+const CLI: CliSpec = CliSpec {
+    program: "mush-server",
+    usage: "Usage: mush-server [--config <path>] [--ipc <addr>]",
+    ipc: true,
+    repl: false,
+};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("Usage: mush-server [--config <path>] [--ipc <addr>]");
-        return ExitCode::SUCCESS;
-    }
-    let config_path = args
-        .iter()
-        .position(|a| a == "--config")
-        .and_then(|i| args.get(i + 1))
-        .map_or_else(|| PathBuf::from("mushd.toml"), PathBuf::from);
-    let mut config = match Config::load(&config_path) {
-        Ok(c) => c,
+    let cli = match mush_config::cli::parse_env(&CLI) {
+        Ok(cli) => cli,
         Err(e) => {
-            eprintln!("mush-server: {e}");
+            eprintln!("{}: {e}", CLI.program);
+            eprintln!("{}", CLI.usage);
             return ExitCode::FAILURE;
         }
     };
-    // `--ipc <addr>` overrides `[ipc].listen` (the supervisor picks the socket).
-    if let Some(addr) = args
-        .iter()
-        .position(|a| a == "--ipc")
-        .and_then(|i| args.get(i + 1))
-    {
-        config.ipc.listen = addr.clone();
+    if cli.help {
+        println!("{}", CLI.usage);
+        return ExitCode::SUCCESS;
     }
+    let config = match cli.load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}: {e}", CLI.program);
+            return ExitCode::FAILURE;
+        }
+    };
 
     // Logging may create/append files, so integrity storage is structurally
     // validated first. Retain this exact instance (and its exclusive lifetime

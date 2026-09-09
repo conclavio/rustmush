@@ -1403,6 +1403,27 @@ waits for the server's `Hello` handshake over the socket, then accepts SSH
 connections. Running the server standalone (`mush-server --config … --ipc …`)
 is supported for testing.
 
+**The command line is strict (WS22-S1).** All three binaries share one parser
+(`mush_config::cli`) and refuse anything it does not recognise, with the
+offending token on stderr and a non-zero exit:
+
+| line | result |
+|---|---|
+| `mushd --confg prod.toml` | refused — "unrecognised argument" naming `--confg` |
+| `mushd --config` | refused — "needs a value" |
+| `mushd --config a --config b` | refused — "given more than once" |
+| `mush-gateway --repl`, `mushd --ipc …` | refused — the flag belongs to another binary |
+| `mushd --config /nope.toml` | refused — `config file not found: /nope.toml` |
+| `mushd` (no `--config`) | the implicit `./mushd.toml`; **absent is fine**, it means the built-in defaults |
+
+That last row is the one asymmetry: a config path you *named* must exist, and a
+config path you did not name need not. It crosses the process boundary too —
+a gateway started without `--config` spawns its child without one, so the child
+resolves `mushd.toml` from the same working directory rather than being handed
+an explicit path that may not be there. Every deployed unit in `deploy/` passes
+exactly `--config <path>` and is unaffected; a wrapper script that passed an
+extra undocumented argument will now fail to start, loudly.
+
 The all-in-one `mushd` service (`deploy/README.md`) remains the default deploy;
 the split adds the **hot restart** below, and is proven by
 `crates/mush-gateway/tests/two_process_e2e.rs` +

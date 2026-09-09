@@ -12,8 +12,10 @@
 //! `--repl` preserves the M0
 //! synchronous stdin REPL for offline poking (fully in-memory, no store).
 //!
-//! Usage: `mushd [--repl] [--config <path>]` (config defaults to
-//! `mushd.toml` in the working directory; a missing file means defaults).
+//! Usage: `mushd [--repl] [--config <path>]`. The config defaults to
+//! `mushd.toml` in the working directory, and a missing *implicit* file means
+//! defaults; an explicit `--config` that names a file which is not there is a
+//! refusal, as is any argument the shared parser does not recognise (WS22-S1).
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
 // held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
@@ -26,11 +28,11 @@
     clippy::panic_in_result_fn
 )]
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use mush_config::cli::CliSpec;
 use mush_core::{ControlMsg, Inbound};
 use mush_net_web::{Metrics, WebConfig};
 use mush_session::{SessionConfig, SessionManager};
@@ -112,13 +114,30 @@ fn world_fault_detail(result: Result<WorldOutcome, tokio::task::JoinError>) -> O
     }
 }
 
+/// This binary's half of the one command line the three binaries share
+/// (WS22-S1). `--repl` is `mushd`'s alone; `--ipc` belongs to the server half,
+/// so naming it here is an error rather than a token quietly dropped.
+const CLI: CliSpec = CliSpec {
+    program: "mushd",
+    usage: "Usage: mushd [--repl] [--config <path>]",
+    ipc: false,
+    repl: true,
+};
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("Usage: mushd [--repl] [--config <path>]");
+    let cli = match mush_config::cli::parse_env(&CLI) {
+        Ok(cli) => cli,
+        Err(e) => {
+            eprintln!("{}: {e}", CLI.program);
+            eprintln!("{}", CLI.usage);
+            return ExitCode::FAILURE;
+        }
+    };
+    if cli.help {
+        println!("{}", CLI.usage);
         return ExitCode::SUCCESS;
     }
-    if args.iter().any(|a| a == "--repl") {
+    if cli.repl {
         repl::run();
         return ExitCode::SUCCESS;
     }
@@ -126,16 +145,12 @@ fn main() -> ExitCode {
     // Config is loaded first because the `[log]` section drives the
     // subscriber. Config::load's own tracing calls (before the subscriber is
     // installed) are therefore uncaptured, but its errors go to stderr, so a
-    // bad config still reports cleanly.
-    let config_path = args
-        .iter()
-        .position(|a| a == "--config")
-        .and_then(|i| args.get(i + 1))
-        .map_or_else(|| PathBuf::from("mushd.toml"), PathBuf::from);
-    let config = match Config::load(&config_path) {
+    // bad config still reports cleanly. An explicit `--config` that names a
+    // file which is not there stops here instead of booting the defaults.
+    let config = match cli.load_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("mushd: {e}");
+            eprintln!("{}: {e}", CLI.program);
             return ExitCode::FAILURE;
         }
     };

@@ -5,6 +5,8 @@
 //! need, kept in one dependency-light crate so neither half drags the other's
 //! deps in through them:
 //!
+//! - [`cli`] — the shared command line (`--config`/`--ipc`/`--repl`) all three
+//!   binaries parse, and the one place an explicit config path is stat'ed.
 //! - [`config`] — `mushd.toml` parsing/validation (the `[llm]`/`[web]` sections
 //!   are captured raw as [`toml::Value`] and deserialized into their typed
 //!   forms by the crate that owns them, so `mush-config` needs neither
@@ -31,6 +33,7 @@
 )]
 
 pub mod accounts;
+pub mod cli;
 pub mod config;
 pub mod decision_keys;
 pub mod discord;

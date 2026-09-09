@@ -16,27 +16,43 @@
     clippy::panic_in_result_fn
 )]
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mush_config::config::Config;
+use mush_config::cli::CliSpec;
 use mush_gateway::{GatewayOptions, ServerSource, serve};
 
+/// This binary's half of the one command line the three binaries share
+/// (WS22-S1). The gateway takes neither `--ipc` (it reads `[ipc].listen` and
+/// hands it to the child) nor `--repl`.
+const CLI: CliSpec = CliSpec {
+    program: "mush-gateway",
+    usage: "Usage: mush-gateway [--config <path>]",
+    ipc: false,
+    repl: false,
+};
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("Usage: mush-gateway [--config <path>]");
+    let cli = match mush_config::cli::parse_env(&CLI) {
+        Ok(cli) => cli,
+        Err(e) => {
+            eprintln!("{}: {e}", CLI.program);
+            eprintln!("{}", CLI.usage);
+            return ExitCode::FAILURE;
+        }
+    };
+    if cli.help {
+        println!("{}", CLI.usage);
         return ExitCode::SUCCESS;
     }
-    let config_path = args
-        .iter()
-        .position(|a| a == "--config")
-        .and_then(|i| args.get(i + 1))
-        .map_or_else(|| PathBuf::from("mushd.toml"), PathBuf::from);
-    let config = match Config::load(&config_path) {
+    // Only an EXPLICIT `--config` crosses to the child. A gateway that booted
+    // the implicit `mushd.toml` — present or absent — must let the child
+    // resolve it the same way, or a defaults-booted gateway spawns a child
+    // that refuses to start on a path nobody wrote.
+    let child_config = cli.child_config_path().map(std::path::Path::to_path_buf);
+    let config = match cli.load_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("mush-gateway: {e}");
+            eprintln!("{}: {e}", CLI.program);
             return ExitCode::FAILURE;
         }
     };
@@ -54,7 +70,9 @@ fn main() -> ExitCode {
         }
     };
     let opts = GatewayOptions {
-        source: ServerSource::Spawn { config_path },
+        source: ServerSource::Spawn {
+            config_path: child_config,
+        },
         store: None,
         ssh_ready: None,
         web_ready: None,
