@@ -235,8 +235,18 @@ fn examine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             AttrValue::Text(s) => s.clone(),
             AttrValue::Json(v) => v.to_string(),
         };
-        ctx.out
-            .info(ctx.actor, format!("{name} [{}]: {value}", attr.owner));
+        // The setter, then whatever flags the attribute carries — the
+        // examiner has to be able to see that `@set/flag` landed.
+        let flags = attr.flags.names();
+        let flags = if flags.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", flags.join(" "))
+        };
+        ctx.out.info(
+            ctx.actor,
+            format!("{name} [{}{flags}]: {value}", attr.owner),
+        );
     }
     // M11 per-observer projection: `examine` dumps raw contents (offline
     // players included), so it must also drop occupants the examiner cannot
@@ -290,10 +300,12 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
             switches: vec!["all".into()],
             help: "examine[/all] [<target>]  --  Full technical view of an object \
                    you control (or may examine): id, type, flags, owner, zone, \
-                   parent, locks, and attributes. Defaults to yourself. HIDDEN \
-                   attributes only show with /all; SELF_ONLY attributes show only \
-                   to the object itself and staff. On objects you may not examine, \
-                   only the owner is shown."
+                   parent, locks, and attributes. Defaults to yourself. Each \
+                   attribute shows its setter and its flags in brackets \
+                   (`@set/flag` writes those). HIDDEN attributes only show with \
+                   /all; SELF_ONLY attributes show only to the object itself and \
+                   staff; WIZARD_ONLY ones only to staff. On objects you may not \
+                   examine, only the owner is shown."
                 .into(),
             ..CommandSpec::default()
         },

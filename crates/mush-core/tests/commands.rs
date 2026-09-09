@@ -1407,9 +1407,10 @@ fn speech_lock_gates_room_speech() {
     let _ = bob;
 }
 
-/// Put `name`=`value` on `id` carrying `flags`. `examine` is the only thing
-/// that has ever enforced the read flags, so a test that wants one has to set
-/// it through the World rather than through `@set`.
+/// Put `name`=`value` on `id` carrying `flags`, owned by God. `@set/flag` is
+/// the in-game writer, but it is staff-only for the read guards and refuses
+/// module-owned namespaces, so probes that want a flagged `wod:*` attribute
+/// still set it through the World.
 fn set_flagged_attr(g: &mut Game, id: ObjId, name: &str, value: &str, flags: AttrFlags) {
     let mut a = Attr::text(value, GOD);
     a.flags = flags;
@@ -1917,4 +1918,164 @@ fn a_page_lands_a_reply_ready_notice_on_the_target_never_the_sender_nor_via_an_i
             .any(|(a, e)| *a == Audience::Actor(bob) && matches!(e, OutputEvent::Notice { .. })),
         "an ignored sender's page never notifies"
     );
+}
+
+// ---------------------------------------------------------------------
+// @set/flag: the writer for attribute flags
+// ---------------------------------------------------------------------
+
+/// The flags on `id`'s attribute `name`, or a panic if it is gone.
+fn attr_flags(g: &Game, id: ObjId, name: &str) -> AttrFlags {
+    g.w.get(id)
+        .and_then(|o| o.attrs.get(name))
+        .unwrap_or_else(|| panic!("no {name} on {id}"))
+        .flags
+}
+
+#[test]
+fn a_wizard_can_flag_an_attribute_wizard_only_and_take_it_back() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    g.run(ann, "@set me/diary=dear diary");
+    let out = g.run(GOD, "@set/flag Ann/diary=wizard_only");
+    assert_error_contains(&out, GOD, "diary - WIZARD_ONLY set.");
+    assert_eq!(attr_flags(&g, ann, "diary"), AttrFlags::WIZARD_ONLY);
+
+    // The owner is not exempt: WIZARD_ONLY is withheld from her own examine,
+    // with or without /all.
+    let all = actor_texts(&g.run(ann, "examine me"), ann).join("\n");
+    assert!(!all.contains("dear diary"), "{all}");
+    let all = actor_texts(&g.run(ann, "examine/all me"), ann).join("\n");
+    assert!(!all.contains("dear diary"), "{all}");
+    // Staff see the value and the flag that is hiding it.
+    let all = actor_texts(&g.run(GOD, "examine/all Ann"), GOD).join("\n");
+    assert!(all.contains("dear diary"), "{all}");
+    assert!(
+        all.contains("WIZARD_ONLY"),
+        "examine must name the flag: {all}"
+    );
+
+    let out = g.run(GOD, "@set/flag Ann/diary=!wizard_only");
+    assert_error_contains(&out, GOD, "diary - WIZARD_ONLY cleared.");
+    assert!(attr_flags(&g, ann, "diary").is_empty());
+    let all = actor_texts(&g.run(ann, "examine me"), ann).join("\n");
+    assert!(
+        all.contains("dear diary"),
+        "clearing must give it back: {all}"
+    );
+}
+
+#[test]
+fn a_player_cannot_set_or_clear_the_read_guards_on_their_own_attribute() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    g.run(ann, "@set me/diary=dear diary");
+    // She controls the attribute and may rewrite its value, but the two bits
+    // a lock key refuses to read through are not hers to move — otherwise
+    // every attribute lock aimed at her is one `@set/flag` from useless.
+    for spelling in ["wizard_only", "WIZARD_ONLY", "self_only", "Self_Only"] {
+        let out = g.run(ann, &format!("@set/flag me/diary={spelling}"));
+        assert_error_contains(&out, ann, "Permission denied.");
+    }
+    assert!(attr_flags(&g, ann, "diary").is_empty());
+
+    // And not in the clearing direction either, once staff have set one.
+    g.run(GOD, "@set/flag Ann/diary=self_only");
+    let out = g.run(ann, "@set/flag me/diary=!self_only");
+    assert_error_contains(&out, ann, "Permission denied.");
+    assert_eq!(attr_flags(&g, ann, "diary"), AttrFlags::SELF_ONLY);
+}
+
+#[test]
+fn self_only_set_by_staff_hides_from_other_examiners_but_not_the_object() {
+    let mut g = Game::new();
+    let (ann, bob) = (g.ann, g.bob);
+    g.run(ann, "@set me/diary=dear diary");
+    g.w.get_mut(bob).unwrap().powers = Powers::EXAMINE_ALL;
+    let all = actor_texts(&g.run(bob, "examine/all Ann"), bob).join("\n");
+    assert!(all.contains("dear diary"), "baseline: {all}");
+
+    let out = g.run(GOD, "@set/flag Ann/diary=self_only");
+    assert_error_contains(&out, GOD, "diary - SELF_ONLY set.");
+    let all = actor_texts(&g.run(bob, "examine/all Ann"), bob).join("\n");
+    assert!(!all.contains("dear diary"), "SELF_ONLY leaked: {all}");
+    let all = actor_texts(&g.run(ann, "examine me"), ann).join("\n");
+    assert!(
+        all.contains("dear diary"),
+        "the object still reads it: {all}"
+    );
+}
+
+#[test]
+fn a_player_may_flag_their_own_attribute_hidden_without_moving_a_lock_over_it() {
+    // HIDDEN stays a controller tool, which is only safe because the lock
+    // layer ignores it: flagging it must not change whether a third party's
+    // key opens, in the plain form or the negated one.
+    let mut outcomes = Vec::new();
+    for key in ["secret:V*", "!secret:V*"] {
+        let mut g = Game::new();
+        let ann = g.ann;
+        g.run(ann, "@set me/secret=Ventrue");
+        let set = g.run(GOD, &format!("@lock/speech here={key}"));
+        assert_error_contains(&set, GOD, "Locked.");
+        let before = room_texts(&g.run(ann, "say hi"), LIMBO);
+
+        let out = g.run(ann, "@set/flag me/secret=hidden");
+        assert_error_contains(&out, ann, "secret - HIDDEN set.");
+        assert_eq!(attr_flags(&g, ann, "secret"), AttrFlags::HIDDEN);
+
+        let after = room_texts(&g.run(ann, "say hi"), LIMBO);
+        assert_eq!(before, after, "HIDDEN moved the {key} lock: {before:?}");
+        outcomes.push(after);
+    }
+    // Not vacuous: the two keys really do decide differently.
+    assert!(outcomes[0].iter().any(|t| t == "hi"), "{outcomes:?}");
+    assert!(outcomes[1].is_empty(), "{outcomes:?}");
+}
+
+#[test]
+fn an_attribute_flag_survives_a_value_write_and_reaches_the_write_batch() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    g.run(ann, "@set me/diary=dear diary");
+    let _ = g.w.take_dirty();
+    let out = g.run(ann, "@set/flag me/diary=hidden");
+    assert_error_contains(&out, ann, "diary - HIDDEN set.");
+    assert!(
+        g.w.take_dirty().contains(&ann),
+        "a flag write must dirty the object, or the batch never carries it"
+    );
+
+    // The ordinary value path keeps the flag (the `existing_flags` carry).
+    let out = g.run(ann, "@set me/diary=second entry");
+    assert_error_contains(&out, ann, "diary - Set.");
+    assert_eq!(attr_flags(&g, ann, "diary"), AttrFlags::HIDDEN);
+
+    // And the persisted object doc re-hydrates with it.
+    let json = serde_json::to_string(g.w.get(ann).unwrap()).unwrap();
+    let back: mush_core::Obj = serde_json::from_str(&json).unwrap();
+    let attr = back.attrs.get("diary").unwrap();
+    assert!(attr.flags.contains(AttrFlags::HIDDEN), "{json}");
+    assert_eq!(
+        attr.value,
+        mush_core::AttrValue::Text("second entry".to_string())
+    );
+}
+
+#[test]
+fn set_flag_refuses_a_missing_attribute_an_unknown_name_and_the_object_form() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let out = g.run(ann, "@set/flag me/diary=hidden");
+    assert_error_contains(&out, ann, "diary - No such attribute.");
+    g.run(ann, "@set me/diary=dear diary");
+    let out = g.run(ann, "@set/flag me/diary=sneaky");
+    assert_error_contains(&out, ann, "I don't understand the attribute flag");
+    let out = g.run(ann, "@set/flag me/diary=");
+    assert_error_contains(&out, ann, "Set which attribute flag?");
+    // `/flag` over the object-flag form is a typo, not a DARK write.
+    let out = g.run(ann, "@set/flag me=DARK");
+    assert_error_contains(&out, ann, "object flag, not an attribute flag");
+    assert!(!g.w.get(ann).unwrap().flags.contains(Flags::DARK));
+    assert!(attr_flags(&g, ann, "diary").is_empty());
 }

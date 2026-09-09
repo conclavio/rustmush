@@ -164,6 +164,19 @@ bitflags::bitflags! {
 
 crate::flags::impl_bits_serde!(AttrFlags, u8);
 
+impl AttrFlags {
+    /// The set bits as their flag names, in bit order.
+    ///
+    /// `examine` renders these beside the setter and `@set/flag` lists them
+    /// when it does not recognise a name; the parse in the other direction is
+    /// `AttrFlags::from_name`, which bitflags derives (uppercase names only,
+    /// so callers upcase first).
+    #[must_use]
+    pub fn names(self) -> Vec<&'static str> {
+        self.iter_names().map(|(n, _)| n).collect()
+    }
+}
+
 /// A single attribute value: classic text, or structured JSON so rulesets
 /// (sheets, agent config) don't have to serialize into strings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

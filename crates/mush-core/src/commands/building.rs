@@ -370,6 +370,52 @@ fn set_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }) {
             return Err(CmdError::msg("That attribute is locked."));
         }
+        // `@set/flag <target>/<attr>=[!]<FLAG>`: rewrite one bit on an
+        // attribute that already exists, leaving the value alone.
+        if ctx.switches.has("flag") {
+            let (on, fname) = match rhs.strip_prefix('!') {
+                Some(rest) => (false, rest.trim()),
+                None => (true, rhs.trim()),
+            };
+            if fname.is_empty() {
+                return Err(CmdError::msg(
+                    "Set which attribute flag?  (@set/flag <target>/<attr>=[!]<FLAG>)",
+                ));
+            }
+            let name = fname.to_uppercase();
+            let Some(flag) = AttrFlags::from_name(&name) else {
+                return Err(CmdError::msg(format!(
+                    "I don't understand the attribute flag \"{fname}\".  (Known: {}.)",
+                    AttrFlags::all().names().join(" ")
+                )));
+            };
+            // WIZARD_ONLY and SELF_ONLY are the two bits a lock key refuses
+            // to read through (`lock::attr_is_readable`). Leaving them to
+            // whoever controls the object would hand every player a switch
+            // for defeating the attribute locks aimed at them, so both
+            // directions are staff-only; HIDDEN, LOCKED and NO_INHERIT stay
+            // controller tools.
+            if flag.intersects(AttrFlags::WIZARD_ONLY | AttrFlags::SELF_ONLY)
+                && !perm::has_role(ctx.w, ctx.actor, Role::Wizard)
+            {
+                return Err(perm_denied());
+            }
+            let Some(mut attr) = ctx.w.get(target).and_then(|o| o.attrs.get(aname)).cloned() else {
+                return Err(CmdError::msg(format!("{aname} - No such attribute.")));
+            };
+            attr.flags.set(flag, on);
+            ctx.w.set_attr(target, aname, attr)?;
+            ctx.out.info(
+                ctx.actor,
+                format!("{aname} - {name} {}.", if on { "set" } else { "cleared" }),
+            );
+            ctx.emit_world_event(&crate::module::WorldEvent::AttrSet {
+                obj: target,
+                name: aname.to_string(),
+                setter: ctx.actor,
+            });
+            return Ok(());
+        }
         if rhs.is_empty() {
             ctx.w.remove_attr(target, aname)?;
             ctx.out.info(ctx.actor, format!("{aname} - Cleared."));
@@ -393,6 +439,12 @@ fn set_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 
     // Flag form: @set <target>=[!]<FLAG>.
+    if ctx.switches.has("flag") {
+        return Err(CmdError::msg(
+            "That is an object flag, not an attribute flag.  \
+             (@set/flag <target>/<attr>=[!]<FLAG>)",
+        ));
+    }
     let target = match_object(ctx.w, ctx.actor, &lhs)?;
     let (on, flag_name) = match rhs.strip_prefix('!') {
         Some(rest) => (false, rest.trim().to_string()),
@@ -836,13 +888,20 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
     reg.register(
         CommandSpec {
             name: "@set".into(),
+            switches: switch_vec(&["flag"]),
             shape: ArgShape::EqPair,
-            help: "@set <target>=[!]<FLAG>  or  @set <target>/<attr>=<value>  --  Set \
-                   or clear (!) a flag, or write an attribute (empty value clears \
-                   it). WIZARD needs God; ROYALTY/BUILDER need a wizard; DARK on a \
-                   player or NPC needs a wizard; attributes flagged WIZARD_ONLY \
-                   need a wizard and LOCKED ones their setter. You must control the \
-                   target."
+            help: "@set <target>=[!]<FLAG>  or  @set <target>/<attr>=<value>  or  \
+                   @set/flag <target>/<attr>=[!]<ATTRFLAG>  --  Set or clear (!) an \
+                   object flag, write an attribute (empty value clears it), or set \
+                   one flag on an attribute that already exists. WIZARD needs God; \
+                   ROYALTY/BUILDER need a wizard; DARK on a player or NPC needs a \
+                   wizard; attributes flagged WIZARD_ONLY need a wizard and LOCKED \
+                   ones their setter. Attribute flags: HIDDEN (kept out of a plain \
+                   examine), LOCKED (only its setter may rewrite it), NO_INHERIT \
+                   (not seen through @parent) -- and WIZARD_ONLY / SELF_ONLY, the \
+                   two read guards, which only a wizard may set or clear because \
+                   locks refuse to read through them. A flag survives a later \
+                   value write. You must control the target."
                 .into(),
             ..CommandSpec::default()
         },
