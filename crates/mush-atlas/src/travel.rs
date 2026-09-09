@@ -3068,13 +3068,19 @@ mod tests {
             anomaly: None,
         };
         ok.validate()?;
-        assert_eq!(ok.arrival_at(), Some(40));
+        if ok.arrival_at() != Some(40) {
+            return Err(format!("arrival at {:?}, not 40", ok.arrival_at()));
+        }
         let mut past = ok.clone();
         past.cursor = 2;
-        assert!(past.validate().is_err());
+        if past.validate().is_ok() {
+            return Err("a cursor past the last node validated".to_string());
+        }
         let mut legs = ok;
         legs.legs_ic.push(1);
-        assert!(legs.validate().is_err());
+        if legs.validate().is_ok() {
+            return Err("one leg too many validated".to_string());
+        }
         Ok(())
     }
 }
