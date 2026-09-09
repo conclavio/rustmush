@@ -1416,9 +1416,12 @@ Now it:
   `/healthz` also reports as `"supervision_ok": false` (alert on either);
 - tells the connected players once ("the server is down and could not be
   restarted");
-- and then, unless `exit_on_abandoned_supervision = false`, exits **1** after a
-  short grace window so the init system restarts the pair. Connections that
-  refuse every input are worth less than a working game.
+- and then, unless `exit_on_abandoned_supervision = false`, stops accepting new
+  SSH logins at once and exits **1** after a short grace window (the window is
+  for the notice above to reach the sessions already held, not for new arrivals;
+  the web listener stays up through it so `/healthz` keeps answering) so the
+  init system restarts the pair. Connections that refuse every input are worth
+  less than a working game.
 
 Every shed, teardown, protocol violation, and write timeout logs and increments a counter
 surfaced on `/metrics` (`mush_ipc_frames_shed_total`, `mush_ipc_write_timeouts_total`,

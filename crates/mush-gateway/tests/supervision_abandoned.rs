@@ -550,3 +550,80 @@ async fn an_abandoned_supervisor_is_visible_then_fatal() {
         "phase 3 adds exactly one more marker; the exit path must not re-log it"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The fix-up proof: an unheld restart trigger is not a shutdown
+// ---------------------------------------------------------------------------
+
+/// Start a gateway the way `mush-gateway`'s own `main` does — with NO
+/// `restart_ready` channel, so nothing outside `serve` is handed the restart
+/// trigger. Returns the SSH address and the channel `serve`'s result comes back
+/// on.
+async fn start_gateway_without_a_trigger(
+    launcher: Box<dyn ServerLauncher>,
+) -> (SocketAddr, oneshot::Receiver<Result<(), String>>) {
+    let gw_store = seeded_gw_store().await;
+    let (ssh_tx, ssh_rx) = oneshot::channel();
+    let (exit_tx, exit_rx) = oneshot::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(mush_gateway::serve(
+            gateway_config(true),
+            GatewayOptions {
+                source: ServerSource::Restartable(launcher),
+                store: Some(gw_store),
+                ssh_ready: Some(ssh_tx),
+                web_ready: None,
+                restart_ready: None,
+                siteban_refresh: None,
+            },
+        ));
+        let _ = exit_tx.send(result);
+    });
+    let ssh = tokio::time::timeout(Duration::from_secs(30), ssh_rx)
+        .await
+        .expect("gateway bound SSH")
+        .expect("ssh addr");
+    (ssh, exit_rx)
+}
+
+/// "The restart trigger was dropped" is NOT "the gateway is shutting down".
+///
+/// `serve` builds the trigger, hands one clone to `restart_ready` — which
+/// `mush-gateway`'s own `main` sets to `None` — and gives the other to the
+/// `SIGHUP` handler, which is a no-op that drops it immediately on non-Unix and
+/// drops it on Unix too when `signal()` fails. With every sender gone the
+/// supervisor's `restart_rx.recv()` returns `None` at once and supervision ends
+/// on a perfectly healthy server. A gateway that now WATCHES its supervisor
+/// must not read that as a shutdown, or it boots, stops accepting and exits 0
+/// within milliseconds — on the very platform where `SIGHUP` does not exist.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gateway_nobody_handed_the_restart_trigger_keeps_serving() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let (ssh, mut exit) = start_gateway_without_a_trigger(Box::new(HealthyLauncher {
+        store: Arc::clone(&store),
+    }))
+    .await;
+
+    // Far longer than the supervisor needs to notice an empty channel.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        exit.try_recv().is_err(),
+        "a healthy gateway must not exit merely because nothing outside `serve` held \
+         its restart trigger"
+    );
+
+    // And it is still a GAME, not just a live process: a player who arrives
+    // after that window logs in and the world answers.
+    let (_h, mut player) = connect_god(ssh).await;
+    let mark = player.mark();
+    player.send_line("look").await;
+    player.expect_after(mark, "Limbo").await;
+    assert!(
+        exit.try_recv().is_err(),
+        "the gateway must still be serving after a player has played"
+    );
+}

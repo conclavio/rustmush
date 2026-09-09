@@ -2246,8 +2246,10 @@ async fn supervise(
             }
             reason = restart_rx.recv() => {
                 if reason.is_none() {
-                    // The trigger is gone (gateway shutting down): drop the
-                    // supervisor without touching the live server.
+                    // Every restart sender is gone. `serve` holds one for its
+                    // whole lifetime (`_restart_keepalive`), so this can only
+                    // mean `serve` itself has let go — i.e. the gateway is on
+                    // its way down. Drop the supervisor without respawning.
                     return SupervisionOutcome::Stopped;
                 }
                 crashed = false;
@@ -2649,7 +2651,18 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     if let Some(tx) = opts.restart_ready {
         let _ = tx.send(trigger.clone());
     }
-    install_sighup_handler(trigger);
+    install_sighup_handler(trigger.clone());
+    // Keep ONE sender alive for the whole of `serve`. The supervisor reads "every
+    // restart sender has been dropped" as "the gateway is shutting down" and
+    // returns `Stopped` — but nothing outside `serve` is obliged to hold the
+    // trigger: `mush-gateway`'s own `main` passes `restart_ready: None`, and
+    // `install_sighup_handler` is a no-op that drops it on non-Unix (and drops it
+    // on Unix too if `signal()` fails). Without this keepalive the supervisor of a
+    // perfectly healthy server stops milliseconds after boot, which since WS22-S17
+    // (where `serve` watches the supervisor) would take the whole gateway down
+    // with it. The trigger's real owners are the SIGHUP task and `restart_ready`;
+    // this binding only outlives them.
+    let _restart_keepalive = trigger;
 
     match launcher {
         Some(launcher) => {
@@ -2688,6 +2701,14 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                 Some(SupervisionOutcome::Abandoned(reason))
                     if config.ipc_exit_on_abandoned_supervision() =>
                 {
+                    // Shut the front door FIRST. The grace window exists so the
+                    // give-up notice reaches the sessions we are ALREADY
+                    // holding — it is not an invitation for new players to log
+                    // into a boundary that is in its gap and seconds from
+                    // closing. (The web listener stays up through the grace on
+                    // purpose: `/healthz` is where the abandonment gauge is
+                    // scraped, and it should answer until the process goes.)
+                    listener.stop_accepting();
                     // Let the give-up notice land before the sockets close.
                     tokio::time::sleep(ABANDONED_EXIT_GRACE).await;
                     Some(reason)
@@ -2705,6 +2726,8 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                 Some(SupervisionOutcome::Stopped) | None => None,
             };
             tracing::info!("gateway shutting down");
+            // Idempotent: the abandoned-exit arm above already shut the door
+            // before its grace window.
             listener.stop_accepting();
             stop_web(web_stop, web_join).await;
             discord.stop().await;
