@@ -403,3 +403,100 @@ async fn tampered_offer_tag_is_rejected_before_intent() {
     .await
     .unwrap();
 }
+
+/// A raw IPC peer can admit an authoritative action and then send
+/// `GatewayReleased` naming the same uid — a frame *pair* no conforming gateway
+/// produces, since the gateway releases only what the server answered
+/// `LegacyClaimed`. The release path used to convert the released payload with
+/// an infallible `From` whose action arm was an `unreachable!`, so that pair
+/// panicked the IPC reader loop and, in split mode, aborted into the supervisor
+/// relaunch loop with every session on the boundary dropped.
+///
+/// The boundary must survive the pair, and the coordinator must remain the sole
+/// author of the request's outcome: exactly one disposition per uid, and it is
+/// the coordinator's own refusal of the spoofed actor. The release races the
+/// in-flight handler, so the pair is driven repeatedly — a single lost race is
+/// what used to kill the process, and the fix must hold for every ordering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_release_of_a_coordinator_action_cannot_kill_the_reader_loop() {
+    let (endpoint, _store) = boot_server("action-release-pair").await;
+    let (mut frames, mut writer) = hello_and_attach(&endpoint).await;
+    let offer = brace_offer(&mut frames, &mut writer).await;
+
+    for sequence in 10..22u64 {
+        // A spoofed actor: the coordinator crosses the store and the world
+        // before it can refuse, which is the window the release lands in.
+        let request = action_request(sequence, LIMBO, offer);
+        write_frame(&mut writer, &ToServer::Input(request.clone()))
+            .await
+            .unwrap();
+        write_frame(
+            &mut writer,
+            &ToServer::GatewayReleased {
+                request: request.uid,
+            },
+        )
+        .await
+        .unwrap();
+
+        let disposition = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let ToGateway::RequestDisposition {
+                    request: seen,
+                    disposition,
+                } = frames.read::<ToGateway>().await.unwrap().unwrap()
+                {
+                    assert_eq!(
+                        seen, request.uid,
+                        "no disposition may exist for a uid other than the one in flight"
+                    );
+                    break disposition;
+                }
+            }
+        })
+        .await
+        .expect("the reader loop died on the release of a coordinator claim");
+        assert_eq!(
+            disposition,
+            GatewayRequestDisposition::Rejected { retryable: false },
+            "the coordinator alone decides an action's fate"
+        );
+    }
+
+    // No second disposition for any of those uids: the peer's release published
+    // nothing of its own and freed no uid for a duplicate run.
+    write_frame(
+        &mut writer,
+        &ToServer::Request {
+            id: 950,
+            req: ServiceReq::Barrier,
+        },
+    )
+    .await
+    .unwrap();
+    let probe = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match frames.read::<ToGateway>().await.unwrap().unwrap() {
+                ToGateway::Reply { id: 950, resp } => break resp,
+                ToGateway::RequestDisposition { request, .. } => {
+                    panic!("extra disposition for {request} after the coordinator finished")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("boundary liveness probe timed out");
+    assert_eq!(
+        probe,
+        ServiceResp::Barrier,
+        "the boundary must still serve this connection after the refused releases"
+    );
+
+    write_frame(
+        &mut writer,
+        &ToServer::Control(mush_core::ControlMsg::Shutdown),
+    )
+    .await
+    .unwrap();
+}

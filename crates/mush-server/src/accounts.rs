@@ -27,7 +27,18 @@ impl GatewayLink for WorldHandle {
                 // `SocketGatewayLink`; the all-in-one bridge sends raw inbound
                 // directly. Accept a manually supplied request as a direct
                 // in-process delivery, while a release has no retained claim.
-                ToServer::Input(request) => self.inbound(request.input.into()).await,
+                // An authoritative action has no `Inbound` form and never
+                // reaches the world this way: it is refused, not enqueued.
+                ToServer::Input(request) => match Inbound::try_from(request.input) {
+                    Ok(inbound) => self.inbound(inbound).await,
+                    Err(_) => {
+                        debug_assert!(
+                            false,
+                            "GatewayInput::Action must go through the action coordinator"
+                        );
+                        false
+                    }
+                },
                 ToServer::GatewayReleased { .. } => true,
                 // Operator control (`@shutdown`, `@dump`) crosses as the
                 // top-level `ToServer::Control`; in-process it re-enters the

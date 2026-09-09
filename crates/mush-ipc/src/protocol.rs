@@ -269,26 +269,33 @@ impl GatewayInput {
     }
 }
 
-impl From<GatewayInput> for Inbound {
-    fn from(input: GatewayInput) -> Self {
+/// The world's inbound queue accepts only the two replayable player-input
+/// kinds. An authoritative action has no `Inbound` form at all: it enters
+/// through the coordinator, which owns its durable intent and its single
+/// disposition. The conversion therefore *refuses* that arm and hands the
+/// input back, so a caller holding custody of it makes a custody decision
+/// instead of asserting the process to death on a frame a raw peer chose.
+impl TryFrom<GatewayInput> for Inbound {
+    /// The refused input, returned unchanged so the caller keeps custody.
+    type Error = GatewayInput;
+
+    fn try_from(input: GatewayInput) -> Result<Self, Self::Error> {
         match input {
-            GatewayInput::Cmd { conn, actor, line } => Self::Cmd { conn, actor, line },
+            GatewayInput::Cmd { conn, actor, line } => Ok(Self::Cmd { conn, actor, line }),
             GatewayInput::Query {
                 conn,
                 actor,
                 id,
                 name,
                 args,
-            } => Self::Query {
+            } => Ok(Self::Query {
                 conn,
                 actor,
                 id,
                 name,
                 args,
-            },
-            GatewayInput::Action(_) => {
-                unreachable!("authoritative actions enter through the coordinator, not Inbound")
-            }
+            }),
+            input @ GatewayInput::Action(_) => Err(input),
         }
     }
 }

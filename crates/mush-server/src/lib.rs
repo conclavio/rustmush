@@ -808,6 +808,25 @@ enum ServerClaimAdmission {
     Conflict,
 }
 
+/// What a peer-driven `GatewayReleased` did to one claim.
+///
+/// The claim's kind and its custody state travel together so the reader loop
+/// can branch on the outcome without re-matching a payload the table has
+/// already classified under the lock.
+#[derive(Clone, Debug, PartialEq)]
+enum ServerClaimRelease {
+    /// No claim under that uid: a duplicate or stale release.
+    Unknown,
+    /// A legacy command claim. Server custody is surrendered and the request
+    /// is the caller's to enqueue exactly once.
+    Legacy(GatewayRequest),
+    /// A coordinator action claim, still in coordinator custody. The peer does
+    /// not own an action's fate: the claim is left in the table for
+    /// `handle_authoritative_input` to dispose, and it is never enqueued as
+    /// `Inbound`.
+    CoordinatorHeld,
+}
+
 impl ServerInputClaims {
     fn admit(&mut self, request: GatewayRequest) -> ServerClaimAdmission {
         if !request.has_valid_uid() {
@@ -847,7 +866,10 @@ impl ServerInputClaims {
         ServerClaimAdmission::New
     }
 
-    fn release(&mut self, uid: RequestUid) -> Option<GatewayRequest> {
+    /// Surrender custody of one claim unconditionally and reconcile the
+    /// accounting. This is the *owner's* disposal path: the coordinator (and
+    /// the legacy release below) already decided this request's fate.
+    fn dispose(&mut self, uid: RequestUid) -> Option<GatewayRequest> {
         let held = self.entries.remove(&uid)?;
         let conn = held.request.input.conn();
         self.bytes = self.bytes.saturating_sub(held.bytes);
@@ -864,6 +886,27 @@ impl ServerInputClaims {
             self.capacity_warned = false;
         }
         Some(held.request)
+    }
+
+    /// The peer-driven release: the gateway says it has dropped its replay
+    /// copy of one request.
+    ///
+    /// A legacy command is the only kind the gateway may release this way, and
+    /// releasing it is what authorizes execution. A coordinator action is
+    /// released by its disposition instead, so a release naming one is refused
+    /// twice over: custody stays in the table for the in-flight handler, and
+    /// the payload never becomes an `Inbound`.
+    fn release(&mut self, uid: RequestUid) -> ServerClaimRelease {
+        let Some(held) = self.entries.get(&uid) else {
+            return ServerClaimRelease::Unknown;
+        };
+        if matches!(held.request.input, GatewayInput::Action(_)) {
+            return ServerClaimRelease::CoordinatorHeld;
+        }
+        match self.dispose(uid) {
+            Some(request) => ServerClaimRelease::Legacy(request),
+            None => ServerClaimRelease::Unknown,
+        }
     }
 
     /// One consistent custody reading: held claims and held bytes taken under
@@ -913,7 +956,7 @@ fn release_input_claim(
     claims: &Arc<Mutex<ServerInputClaims>>,
     request: RequestUid,
 ) -> Option<GatewayRequest> {
-    claims_guard(claims).release(request)
+    claims_guard(claims).dispose(request)
 }
 
 async fn handle_authoritative_input(
@@ -1220,8 +1263,24 @@ async fn reader_loop(
                     ));
                 }
                 match &request.input {
-                    GatewayInput::Query { .. } => {
-                        let accepted = world.inbound(request.input.into()).await;
+                    GatewayInput::Query {
+                        conn,
+                        actor,
+                        id,
+                        name,
+                        args,
+                    } => {
+                        // Built from the arm's own fields: the kind is already
+                        // decided here, so there is no second, fallible
+                        // classification of the payload on this path.
+                        let query = Inbound::Query {
+                            conn: *conn,
+                            actor: *actor,
+                            id: *id,
+                            name: name.clone(),
+                            args: args.clone(),
+                        };
+                        let accepted = world.inbound(query).await;
                         request_disposition(
                             &reply_sink,
                             uid,
@@ -1320,17 +1379,45 @@ async fn reader_loop(
                 }
             }
             ToServer::GatewayReleased { request } => {
-                let Some(claim) = claims_guard(&input_claims).release(request) else {
-                    tracing::debug!(
+                // Take the outcome out of the guard before any await: the claim
+                // table's mutex is never held across a suspension point.
+                let released = claims_guard(&input_claims).release(request);
+                let claim = match released {
+                    ServerClaimRelease::Legacy(claim) => claim,
+                    ServerClaimRelease::Unknown => {
+                        tracing::debug!(
+                            request = %request,
+                            "duplicate or stale legacy release ignored"
+                        );
+                        continue;
+                    }
+                    ServerClaimRelease::CoordinatorHeld => {
+                        // A conforming gateway releases only what the server
+                        // answered `LegacyClaimed`; naming a coordinator action
+                        // here is a raw peer's frame. The in-flight handler
+                        // still owns this uid's custody and its single
+                        // disposition, so publish nothing and take nothing.
+                        tracing::error!(
+                            request = %request,
+                            "peer released a coordinator action; custody stays with the coordinator"
+                        );
+                        continue;
+                    }
+                };
+                let Ok(inbound) = Inbound::try_from(claim.input) else {
+                    // Unreachable by construction — `release` surrenders custody
+                    // only for a claim it classified as legacy — so fail closed
+                    // on a drifted classification rather than execute it.
+                    tracing::error!(
                         request = %request,
-                        "duplicate or stale legacy release ignored"
+                        "released claim is not world input; dropped without execution"
                     );
                     continue;
                 };
                 // Remove the server claim before enqueueing. From this point a
                 // crash can lose the command, but neither this boundary nor a
                 // gateway replay can execute it twice.
-                if !world.inbound(claim.input.into()).await {
+                if !world.inbound(inbound).await {
                     tracing::warn!(
                         request = %request,
                         "world closed after legacy release; command was not executed"
@@ -1515,11 +1602,12 @@ mod service_request_tests {
     use super::{
         Arc, CreatePlayerErr, GatewayInput, GatewayRequest,
         MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_SERVICE_REQUESTS, Mutex,
-        ServerClaimAdmission, ServerInputClaims, ServiceRequestLimiter, ServiceResp,
-        WorldReadError, admit_with_custody_snapshot, barrier_response, claims_guard,
+        ServerClaimAdmission, ServerClaimRelease, ServerInputClaims, ServiceRequestLimiter,
+        ServiceResp, WorldReadError, admit_with_custody_snapshot, barrier_response, claims_guard,
         create_player_response, release_input_claim,
     };
-    use mush_core::ObjId;
+    use mush_core::{ActionOfferId, CanonicalHash, Inbound, ObjId, PerceivedRef};
+    use mush_ipc::GatewayAction;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
@@ -1599,7 +1687,7 @@ mod service_request_tests {
             "one UID may never identify two payloads"
         );
 
-        assert_eq!(claims.release(first.uid), Some(first));
+        assert_eq!(claims.release(first.uid), ServerClaimRelease::Legacy(first));
         assert!(claims.entries.is_empty());
         assert!(claims.per_connection.is_empty());
         assert_eq!(claims.bytes, 0);
@@ -1624,7 +1712,9 @@ mod service_request_tests {
             "continued overload is edge-logged rather than log-amplified"
         );
 
-        let released = claims.release(legacy_request(0, 9).uid).unwrap();
+        let ServerClaimRelease::Legacy(released) = claims.release(legacy_request(0, 9).uid) else {
+            panic!("a legacy claim releases to its request");
+        };
         assert_eq!(released.input.conn(), 9);
         assert_eq!(
             claims.admit(legacy_request(10_002, 9)),
@@ -1742,6 +1832,62 @@ mod service_request_tests {
 
         stop.store(true, Ordering::Relaxed);
         churn.join().expect("churn thread");
+    }
+
+    fn action_request(sequence: u64, conn: u64) -> GatewayRequest {
+        GatewayRequest::new(
+            19,
+            sequence,
+            GatewayInput::Action(Box::new(GatewayAction {
+                conn,
+                actor: ObjId(7),
+                offered_action: ActionOfferId(CanonicalHash::from_bytes([3; 32])),
+                subject: PerceivedRef::SelfActor,
+                targets: Vec::new(),
+                parameters: serde_json::json!({}),
+            })),
+        )
+    }
+
+    /// A raw peer could admit an authoritative action and then send
+    /// `GatewayReleased` for the same uid. The release path used to convert the
+    /// released payload with an infallible `From` whose action arm was an
+    /// `unreachable!`, so that frame *pair* panicked the IPC reader loop — in
+    /// split mode, an abort into the supervisor relaunch with every session
+    /// dropped. The peer may not take a coordinator claim at all: custody stays
+    /// in the table for the in-flight handler to dispose.
+    #[test]
+    fn a_peer_release_can_neither_enqueue_nor_evict_a_coordinator_claim() {
+        let mut claims = ServerInputClaims::default();
+        let action = action_request(1, 9);
+        assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::New);
+        let (held, bytes) = claims.capacity_snapshot();
+
+        assert_eq!(
+            claims.release(action.uid),
+            ServerClaimRelease::CoordinatorHeld,
+            "an action release must report coordinator custody, not hand back a payload"
+        );
+        assert_eq!(
+            claims.capacity_snapshot(),
+            (held, bytes),
+            "the claim and its custody accounting must survive the peer's release"
+        );
+        // Still exactly the claim the coordinator is working on: a replay of the
+        // same uid is a duplicate, not a fresh admission that would run twice.
+        assert_eq!(
+            claims.admit(action.clone()),
+            ServerClaimAdmission::Duplicate,
+            "the refused release must not have freed the uid"
+        );
+
+        // Only the coordinator's own disposal clears it.
+        assert_eq!(claims.dispose(action.uid), Some(action.clone()));
+        assert_eq!(claims.capacity_snapshot(), (0, 0));
+        assert_eq!(claims.release(action.uid), ServerClaimRelease::Unknown);
+
+        // And the payload has no world-input form to be enqueued as, either.
+        assert!(Inbound::try_from(action.input).is_err());
     }
 }
 

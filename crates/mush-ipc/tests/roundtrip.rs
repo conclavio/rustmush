@@ -579,6 +579,59 @@ fn wire_inbound_is_the_cross_boundary_subset() {
     );
 }
 
+/// The custody envelope's payload converts to world input for exactly the two
+/// replayable player-input kinds. An authoritative action has no `Inbound` form
+/// at all — it enters through the coordinator — and the conversion that used to
+/// `unreachable!` on it now refuses it and hands the input back, so a caller
+/// holding custody of a peer-chosen frame makes a custody decision instead of
+/// killing the process.
+#[test]
+fn a_gateway_action_is_refused_by_the_inbound_conversion() {
+    let action = GatewayInput::Action(Box::new(GatewayAction {
+        conn: 4,
+        actor: ObjId(11),
+        offered_action: ActionOfferId(CanonicalHash::from_bytes([9; 32])),
+        subject: PerceivedRef::SelfActor,
+        targets: vec![PerceivedRef::SelfActor],
+        parameters: serde_json::json!({ "stance": "brace" }),
+    }));
+    assert_eq!(
+        Inbound::try_from(action.clone()),
+        Err(action),
+        "the refused input must come back unchanged, custody intact"
+    );
+
+    // The two accepted kinds still convert field-for-field.
+    assert_eq!(
+        Inbound::try_from(GatewayInput::Cmd {
+            conn: 4,
+            actor: ObjId(11),
+            line: "look".to_owned(),
+        }),
+        Ok(Inbound::Cmd {
+            conn: 4,
+            actor: ObjId(11),
+            line: "look".to_owned(),
+        })
+    );
+    assert_eq!(
+        Inbound::try_from(GatewayInput::Query {
+            conn: 4,
+            actor: ObjId(11),
+            id: 17,
+            name: "who".into(),
+            args: serde_json::json!({ "scope": "all" }),
+        }),
+        Ok(Inbound::Query {
+            conn: 4,
+            actor: ObjId(11),
+            id: 17,
+            name: "who".into(),
+            args: serde_json::json!({ "scope": "all" }),
+        })
+    );
+}
+
 /// The bare `Inbound` (with its new derives) round-trips through the codec too,
 /// so the server-internal `Apply`/`Control` arms are still serde-complete
 /// (needed for any future in-process persistence of the queue).
