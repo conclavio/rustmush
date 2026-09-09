@@ -77,15 +77,15 @@
 //! this module; it cannot be a crate-level deny while `lib.rs`, `persist.rs`
 //! and `quarantine.rs` still carry production `unreachable!` of their own.
 //!
-//! Six production `expect` deliberately remain, all of them boot-time or
+//! Five production `expect` deliberately remain, all of them boot-time or
 //! arithmetic-precondition rather than world-state assertions, and none of
 //! them reachable from a player line:
 //!
 //! * [`base_registry`] x2 — command-table collisions at construction, before
 //!   the loop exists; a collision is a build-time wiring error.
 //! * the delayed-decision recovery arm — `CanonicalId::new` over a literal.
-//! * `flush_prepared_action` and `flush_dirty` — the serial `checked_add`,
-//!   whose `u64::MAX` case is refused a few lines above each site.
+//! * `flush_dirty` — the serial `checked_add`, whose `u64::MAX` case is
+//!   refused a few lines above the site.
 //! * `@discord/link` — `normalize_link_code` over a code this function just
 //!   minted.
 //!
@@ -138,8 +138,8 @@ use mush_core::{
     Flags, Inbound, IncidentId, LegalActionQuery, ObjId, ObjKind, OfferExecutionContext,
     OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
     ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind, StagedAction,
-    StagedActionPersistence, StepOutcome, TickCadence, World, WorldCommand, WorldEvent,
-    can_perceive, can_perceive_with_action_state, event_subject, is_ignoring, narrative_actor,
+    StepOutcome, TickCadence, World, WorldCommand, WorldEvent, can_perceive,
+    can_perceive_with_action_state, event_subject, is_ignoring, narrative_actor,
     register_core_commands, register_engine_commands,
 };
 use mush_ipc::{
@@ -151,7 +151,6 @@ use mush_proto::{ActionStatusId, OutputEvent, ProjectedActionStatus, RichText};
 use mush_store::{
     AccountRec, AuthoritativeReceipt, AuthoritativeStore, BoundIdempotencyStatus, BundleStatus,
     DiscordBanRec, DiscordCodeRecord, InMemoryStore, IntentReceipt, ObjectStore, SshKeyRec,
-    WriteBatch,
 };
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
@@ -6173,10 +6172,7 @@ async fn flush_engine_step(
     persistence_integrity: &PersistenceIntegrityLatch,
 ) -> FlushOutcome {
     if engine.has_staged_action() {
-        flush_prepared_action(
-            engine, writer, serial, health, metrics, retained, high_water,
-        )
-        .await
+        flush_prepared_action(engine, writer, health, metrics, retained, high_water).await
     } else {
         flush_dirty(
             engine,
@@ -6195,13 +6191,14 @@ async fn flush_engine_step(
 }
 
 /// Submit one already-built action-state write set and retain its typed RAM
-/// images for the matching acknowledgement. K2 callers use the legacy serial
-/// lane; K3 callers transfer one complete exact-token bundle to the same FIFO
-/// writer and install only after its matching durable receipt.
+/// images for the matching acknowledgement. There is one lane: the caller
+/// transfers a complete exact-token bundle to the FIFO writer and installs
+/// only after its matching durable receipt. This path deliberately takes no
+/// writer serial — a K3 commit is named by its own token, and the legacy
+/// serial belongs to `flush_dirty` alone.
 async fn flush_prepared_action(
     engine: &mut Engine,
     writer: &StoreWriter,
-    serial: &mut u64,
     health: &mut StoreHealth,
     _metrics: &Metrics,
     retained: &mut RetainedSeals,
@@ -6221,7 +6218,7 @@ async fn flush_prepared_action(
         }
         Err(error) => return FlushOutcome::Refused(error.to_string()),
     };
-    let (persistence, installation) = staged.into_parts();
+    let (bundle, installation) = staged.into_parts();
 
     // Staging checks this invariant once, but later code in the same engine
     // step must not be able to add legacy dirtiness and silently move it to a
@@ -6251,85 +6248,35 @@ async fn flush_prepared_action(
                 .to_owned(),
         );
     }
-    let receipt = match persistence {
-        StagedActionPersistence::Legacy(module_ops) => {
-            if *serial == u64::MAX {
-                release_prepared_installation(
-                    engine,
-                    installation,
-                    "flush_prepared_action/serial-exhausted",
-                );
-                return FlushOutcome::Rejected(
-                    "authoritative writer serial exhausted; restart/recovery required".to_owned(),
-                );
-            }
-            *serial = serial
-                .checked_add(1)
-                .expect("u64::MAX was rejected before prepared batch construction");
-            let batch = WriteBatch {
-                serial: *serial,
-                module_ops,
-                durable: true,
-                ..WriteBatch::default()
-            };
-            debug_assert!(!batch.is_empty());
-            let (notify, receiver) = oneshot::channel();
-            if writer
-                .send(StoreJob::Write {
-                    batch,
-                    notify: Some(notify),
-                })
-                .await
-                .is_err()
-            {
-                release_prepared_installation(
-                    engine,
-                    installation,
-                    "flush_prepared_action/writer-gone-legacy",
-                );
-                tracing::error!(
-                    serial = *serial,
-                    "store writer gone before accepting prepared action"
-                );
-                return FlushOutcome::WriterGone;
-            }
-            PendingReceipt::Legacy {
-                expected_serial: *serial,
-                receiver,
-            }
-        }
-        StagedActionPersistence::Authoritative(bundle) => {
-            let expected_token = bundle.token();
-            let expected_hash = bundle.bundle_hash();
-            let (ownership_notify, ownership) = oneshot::channel();
-            let (notify, receiver) = oneshot::channel();
-            if writer
-                .send(StoreJob::Authoritative {
-                    bundle,
-                    ownership: ownership_notify,
-                    notify,
-                })
-                .await
-                .is_err()
-            {
-                release_prepared_installation(
-                    engine,
-                    installation,
-                    "flush_prepared_action/writer-gone-authoritative",
-                );
-                tracing::error!(
-                    %expected_token,
-                    "store writer gone before accepting authoritative action"
-                );
-                return FlushOutcome::WriterGone;
-            }
-            PendingReceipt::Authoritative {
-                expected_token,
-                expected_hash,
-                ownership: Some(ownership),
-                receiver,
-            }
-        }
+    let expected_token = bundle.token();
+    let expected_hash = bundle.bundle_hash();
+    let (ownership_notify, ownership) = oneshot::channel();
+    let (notify, receiver) = oneshot::channel();
+    if writer
+        .send(StoreJob::Authoritative {
+            bundle,
+            ownership: ownership_notify,
+            notify,
+        })
+        .await
+        .is_err()
+    {
+        release_prepared_installation(
+            engine,
+            installation,
+            "flush_prepared_action/writer-gone-authoritative",
+        );
+        tracing::error!(
+            %expected_token,
+            "store writer gone before accepting authoritative action"
+        );
+        return FlushOutcome::WriterGone;
+    }
+    let receipt = PendingReceipt::Authoritative {
+        expected_token,
+        expected_hash,
+        ownership: Some(ownership),
+        receiver,
     };
     health.last_write_unix = Some(unix_now_s());
     FlushOutcome::Queued {
@@ -10362,10 +10309,7 @@ mod tests {
             .take_staged_action()
             .expect("capture admission")
             .expect("capture staged action");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("decision capture used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         store
             .reserve_authoritative_intent((*bundle).clone())
             .await
@@ -10852,7 +10796,7 @@ mod tests {
             .take_staged_action()
             .expect("lease admission")
             .expect("staged lease action");
-        let (_persistence, installation) = prepared.into_parts();
+        let (_bundle, installation) = prepared.into_parts();
         let (_receipt_tx, receipt_rx) = oneshot::channel();
         let pending_commit = PendingCommit {
             token: CommitToken::Legacy(1),
@@ -11137,10 +11081,7 @@ mod tests {
             .take_staged_action()
             .expect("fallback custody admission")
             .expect("staged fallback custody action");
-        let (persistence, installation) = prepared.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("fallback custody used legacy persistence")
-        };
+        let (bundle, installation) = prepared.into_parts();
         assert_eq!(bundle.token(), staged.token);
         assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
         let authoritative = store
@@ -11308,10 +11249,7 @@ mod tests {
             .take_staged_action()
             .expect("lease admission")
             .expect("staged lease action");
-        let (persistence, installation) = prepared.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("decision lease used legacy persistence")
-        };
+        let (bundle, installation) = prepared.into_parts();
         assert_eq!(bundle.token(), staged.token);
         store
             .reserve_authoritative_intent((*bundle).clone())
@@ -11373,10 +11311,7 @@ mod tests {
             .take_staged_action()
             .expect("cancellation admission")
             .expect("staged cancellation action");
-        let (persistence, installation) = prepared.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("decision cancellation used legacy persistence")
-        };
+        let (bundle, installation) = prepared.into_parts();
         assert_eq!(bundle.token(), staged.token);
         assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
         store
@@ -11420,10 +11355,7 @@ mod tests {
             .take_staged_action()
             .expect("compaction admission")
             .expect("staged compaction action");
-        let (persistence, installation) = prepared.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("decision compaction used legacy persistence")
-        };
+        let (bundle, installation) = prepared.into_parts();
         assert_eq!(bundle.token(), compacted.token);
         assert_eq!(bundle.bundle_hash(), compacted.bundle_hash);
         store
@@ -11566,10 +11498,7 @@ mod tests {
             .take_staged_action()
             .expect("lease admission")
             .expect("staged lease action");
-        let (persistence, installation) = prepared.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("decision lease used legacy persistence")
-        };
+        let (bundle, installation) = prepared.into_parts();
         assert_eq!(bundle.token(), staged.token);
         assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
         store
@@ -11643,7 +11572,7 @@ mod tests {
             .take_staged_action()
             .expect("selected action admission")
             .expect("selected staged action");
-        let (_persistence, installation) = staged.into_parts();
+        let (_bundle, installation) = staged.into_parts();
         engine
             .abort_prepared_action(installation)
             .expect("the fixture aborts");
@@ -11718,10 +11647,7 @@ mod tests {
             .take_staged_action()
             .expect("selected action admission")
             .expect("selected action stage");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("selected action used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         store
             .reserve_authoritative_intent((*bundle).clone())
             .await
@@ -11767,10 +11693,7 @@ mod tests {
             .take_staged_action()
             .expect("resolving action admission")
             .expect("resolving action stage");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("resolving action used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         assert_eq!(bundle.token(), resolving.token);
         assert_eq!(bundle.bundle_hash(), resolving.bundle_hash);
         store
@@ -11815,10 +11738,7 @@ mod tests {
             .take_staged_action()
             .expect("terminal action admission")
             .expect("terminal action stage");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("terminal action used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         assert_eq!(bundle.token(), terminal.token);
         assert_eq!(bundle.bundle_hash(), terminal.bundle_hash);
         store
@@ -11947,10 +11867,7 @@ mod tests {
                 .take_staged_action()
                 .expect("provider-policy admission")
                 .expect("provider-policy staged action");
-            let (persistence, installation) = staged.into_parts();
-            let StagedActionPersistence::Authoritative(bundle) = persistence else {
-                panic!("{kind:?} used legacy persistence")
-            };
+            let (bundle, installation) = staged.into_parts();
             bundles.push(serde_json::to_value(&*bundle).expect("canonical bundle JSON"));
             engine
                 .abort_prepared_action(installation)
@@ -12050,10 +11967,7 @@ mod tests {
             .take_staged_action()
             .expect("fallback action admission")
             .expect("fallback action staged");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("fallback action used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         store
             .reserve_authoritative_intent((*bundle).clone())
             .await
@@ -12586,10 +12500,7 @@ mod tests {
                     .take_staged_action()
                     .expect("selected action admission")
                     .expect("selected action staged");
-                let (persistence, installation) = staged.into_parts();
-                let StagedActionPersistence::Authoritative(bundle) = persistence else {
-                    panic!("delayed tactical action used legacy persistence")
-                };
+                let (bundle, installation) = staged.into_parts();
                 assert!(bundle.resolution().is_some(), "RNG evidence is durable");
                 assert_eq!(bundle.semantic_events().len(), 1);
                 assert!(bundle.durable_outbox().is_empty());
@@ -12801,10 +12712,7 @@ mod tests {
             .take_staged_action()
             .unwrap()
             .expect("rebased schedule action staged");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("schedule driver used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         assert_eq!(bundle.idempotency().epoch(), 9);
         assert_eq!(driver.idempotency_epoch, 9);
         engine
@@ -13316,6 +13224,38 @@ mod tests {
             durable_outbox: vec![],
         })
         .unwrap()
+    }
+
+    /// Play the writer's side of one queued K3 job against an in-memory store:
+    /// reserve the exact intent, release ownership, then reconcile and send the
+    /// exact receipt. Returns the bundle the world actually queued.
+    async fn settle_queued_authoritative_job(job: StoreJob) -> AuthoritativeBundle {
+        let StoreJob::Authoritative {
+            bundle,
+            ownership,
+            notify,
+        } = job
+        else {
+            panic!("the prepared lane must queue one exact authoritative bundle");
+        };
+        let store = InMemoryStore::new();
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        let intent = store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("the exact intent reserves");
+        ownership
+            .send(Ok(intent))
+            .expect("the world still owns the ownership channel");
+        let exact = store
+            .reconcile_authoritative(token, hash)
+            .await
+            .expect("the exact receipt reconciles");
+        notify
+            .send(Ok(exact))
+            .expect("the world still owns the exact receipt");
+        *bundle
     }
 
     fn pending_with_prepared_installation(
@@ -14266,13 +14206,14 @@ mod tests {
             .insert(&handle, &41, PreparedLaneState { amount: 7 })
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
+        let bundle = prepared_lane_bundle(&prepared, 7);
+        let expected_token = bundle.token();
         let guards = empty_guards(&engine);
         engine
-            .stage_prepared_action(prepared, guards)
+            .stage_authoritative_action(prepared, guards, bundle)
             .expect("clean engine accepts prepared action");
 
         let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
-        let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
@@ -14280,7 +14221,6 @@ mod tests {
         let outcome = flush_prepared_action(
             &mut engine,
             &writer,
-            &mut serial,
             &mut health,
             &metrics,
             &mut retained,
@@ -14294,15 +14234,12 @@ mod tests {
         else {
             panic!("prepared action must queue with its receipt and install image");
         };
-        let StoreJob::Write {
-            batch,
-            notify: Some(notify),
-        } = writer_rx.recv().await.expect("prepared write was queued")
-        else {
-            panic!("prepared lane must request an exact writer receipt");
-        };
-        assert_eq!(batch.serial, serial);
-        assert_eq!(batch.module_ops.len(), 1);
+        let queued = settle_queued_authoritative_job(
+            writer_rx.recv().await.expect("prepared write was queued"),
+        )
+        .await;
+        assert_eq!(queued.token(), expected_token);
+        assert_eq!(queued.writes().len(), 1);
 
         assert_eq!(engine.action_state().revision(), 0);
         assert!(engine.action_state().has_prepared());
@@ -14315,12 +14252,10 @@ mod tests {
             "queue acceptance must not expose the typed post-image"
         );
 
-        notify
-            .send(Ok(batch.serial))
-            .expect("world still owns the exact receipt");
         let mut receipt = receipt;
         let ack = receipt.receive().await;
-        let pending = pending_with_prepared_installation(batch.serial, installation);
+        let mut pending = pending_with_prepared_installation(0, installation);
+        pending.token = CommitToken::from_authoritative(expected_token);
         let gateway: Gateway = Arc::new(BlackholeGateway);
         let persistence_integrity = PersistenceIntegrityLatch::new();
         let (tx, _rx) = mpsc::channel(1);
@@ -14701,15 +14636,15 @@ mod tests {
         );
 
         let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
-        let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
         let high_water = AtomicU64::new(0);
+        // The lane takes no serial to consume: a K3 commit is named by its own
+        // token, and `flush_engine_step` keeps the legacy counter to itself.
         let outcome = flush_prepared_action(
             &mut engine,
             &writer,
-            &mut serial,
             &mut health,
             &metrics,
             &mut retained,
@@ -14724,7 +14659,6 @@ mod tests {
             ),
             _ => panic!("an empty prepared flush must refuse"),
         }
-        assert_eq!(serial, 0, "a refused flush consumes no serial");
         assert!(
             matches!(writer_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
             "and hands the writer nothing"
@@ -14791,13 +14725,14 @@ mod tests {
             .insert(&handle, &41, PreparedLaneState { amount: 7 })
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
+        let bundle = prepared_lane_bundle(&prepared, 13);
+        let expected_token = bundle.token();
         let guards = empty_guards(&engine);
         engine
-            .stage_prepared_action(prepared, guards)
+            .stage_authoritative_action(prepared, guards, bundle)
             .expect("clean engine accepts prepared action");
 
         let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
-        let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
@@ -14805,7 +14740,6 @@ mod tests {
         let outcome = flush_prepared_action(
             &mut engine,
             &writer,
-            &mut serial,
             &mut health,
             &metrics,
             &mut retained,
@@ -14819,19 +14753,12 @@ mod tests {
         else {
             panic!("prepared action must queue with its receipt and install image");
         };
-        let StoreJob::Write {
-            batch,
-            notify: Some(notify),
-        } = writer_rx.recv().await.expect("prepared write was queued")
-        else {
-            panic!("prepared lane must request an exact writer receipt");
-        };
-        notify
-            .send(Ok(batch.serial))
-            .expect("world still owns the exact receipt");
+        settle_queued_authoritative_job(writer_rx.recv().await.expect("prepared write was queued"))
+            .await;
         let mut receipt = receipt;
         let ack = receipt.receive().await;
-        let pending = pending_with_prepared_installation(batch.serial, installation);
+        let mut pending = pending_with_prepared_installation(0, installation);
+        pending.token = CommitToken::from_authoritative(expected_token);
         let recorder = Arc::new(RecordingGateway {
             discord: Mutex::default(),
             sends: Mutex::new(Vec::new()),
@@ -14957,7 +14884,8 @@ mod tests {
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
         let high_water = AtomicU64::new(0);
-        let outcome = flush_prepared_action(
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let outcome = flush_engine_step(
             &mut engine,
             &writer,
             &mut serial,
@@ -14965,6 +14893,8 @@ mod tests {
             &metrics,
             &mut retained,
             &high_water,
+            &crate::quarantine::QuarantineSpool::in_memory(),
+            &persistence_integrity,
         )
         .await;
         let FlushOutcome::Queued {
@@ -15008,7 +14938,6 @@ mod tests {
         let mut pending = pending_with_prepared_installation(0, installation);
         pending.token = CommitToken::from_authoritative(expected_token);
         let gateway: Gateway = Arc::new(BlackholeGateway);
-        let persistence_integrity = PersistenceIntegrityLatch::new();
         let (tx, _rx) = mpsc::channel(1);
         let completed = complete_pending_commit(
             pending,
@@ -15099,9 +15028,10 @@ mod tests {
             .insert(&handle, &43, PreparedLaneState { amount: 8 })
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
+        let bundle = prepared_lane_bundle(&prepared, 23);
         let guards = prepared_lane_guards(&engine, 1);
         engine
-            .stage_prepared_action(prepared, guards)
+            .stage_authoritative_action(prepared, guards, bundle)
             .expect("clean engine accepts prepared action");
 
         engine
@@ -15120,7 +15050,8 @@ mod tests {
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
         let high_water = AtomicU64::new(0);
-        let outcome = flush_prepared_action(
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let outcome = flush_engine_step(
             &mut engine,
             &writer,
             &mut serial,
@@ -15128,6 +15059,8 @@ mod tests {
             &metrics,
             &mut retained,
             &high_water,
+            &crate::quarantine::QuarantineSpool::in_memory(),
+            &persistence_integrity,
         )
         .await;
 
@@ -15227,14 +15160,14 @@ mod tests {
             .insert(&handle, &23, PreparedLaneState { amount: 5 })
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
+        let bundle = prepared_lane_bundle(&prepared, 37);
         let guards = empty_guards(&engine);
         engine
-            .stage_prepared_action(prepared, guards)
+            .stage_authoritative_action(prepared, guards, bundle)
             .expect("clean engine accepts prepared action");
 
         let (writer, writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
         drop(writer_rx);
-        let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
@@ -15242,7 +15175,6 @@ mod tests {
         let outcome = flush_prepared_action(
             &mut engine,
             &writer,
-            &mut serial,
             &mut health,
             &metrics,
             &mut retained,
@@ -15263,6 +15195,12 @@ mod tests {
         assert!(engine.action_transaction(&handle).is_ok());
     }
 
+    /// With the K2 shim gone, the recheck at the head of `flush_prepared_action`
+    /// is the only remaining mixed-lane refusal, and it is permanent: staging
+    /// proves the step was clean, this proves it *stayed* clean. Both ways a
+    /// step can pick up legacy work after staging — a dirtied world and a
+    /// queued module op — must reject at submission, consume no commit serial,
+    /// and hand the writer nothing.
     #[tokio::test]
     async fn prepared_action_refuses_legacy_work_added_after_staging() {
         enum LateLegacyWork {
@@ -15279,9 +15217,10 @@ mod tests {
                 .insert(&handle, &29, PreparedLaneState { amount: 9 })
                 .expect("test state is valid");
             let prepared = transaction.prepare().expect("test transaction prepares");
+            let bundle = prepared_lane_bundle(&prepared, 41);
             let guards = empty_guards(&engine);
             engine
-                .stage_prepared_action(prepared, guards)
+                .stage_authoritative_action(prepared, guards, bundle)
                 .expect("clean engine accepts prepared action");
 
             match late_work {
@@ -15308,7 +15247,8 @@ mod tests {
             let metrics = Metrics::new();
             let mut retained = RetainedSeals::new();
             let high_water = AtomicU64::new(0);
-            let outcome = flush_prepared_action(
+            let persistence_integrity = PersistenceIntegrityLatch::new();
+            let outcome = flush_engine_step(
                 &mut engine,
                 &writer,
                 &mut serial,
@@ -15316,6 +15256,8 @@ mod tests {
                 &metrics,
                 &mut retained,
                 &high_water,
+                &crate::quarantine::QuarantineSpool::in_memory(),
+                &persistence_integrity,
             )
             .await;
 
@@ -16107,17 +16049,12 @@ mod tests {
             }
             _ => panic!("the command submission must stage an authoritative action"),
         };
-        let (persistence, _installation) = engine
+        let (bundle, _installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("staged action")
             .into_parts();
-        let bundle = match persistence {
-            StagedActionPersistence::Authoritative(bundle) => *bundle,
-            StagedActionPersistence::Legacy(_) => {
-                panic!("the seam must never use the legacy lane")
-            }
-        };
+        let bundle = *bundle;
         assert_eq!(bundle.token(), staged.token);
         assert_eq!(
             bundle.action().key().id.as_str(),
@@ -16199,14 +16136,11 @@ mod tests {
             driver.drive_one(&mut engine, &store).await.unwrap(),
             CommandSubmitDrive::Staged { .. }
         ));
-        let (persistence, installation) = engine
+        let (bundle, installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("staged action")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane")
-        };
         store
             .reserve_authoritative_intent(*bundle.clone())
             .await
@@ -16457,14 +16391,11 @@ mod tests {
         };
         let submission = command_offer_submission(&engine, &submit).expect("offer");
         let (staged, _) = resolve_and_stage_offer(&mut engine, permit, submission).expect("staged");
-        let (persistence, installation) = engine
+        let (bundle, installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("staged action")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane")
-        };
         assert_eq!(bundle.token(), staged.token);
         store
             .reserve_authoritative_intent(*bundle.clone())
@@ -16731,14 +16662,11 @@ mod tests {
         let submission = command_offer_submission(engine, submit)?;
         let (staged, _) = resolve_and_stage_offer(engine, permit, submission)?;
         let summary = staged.summary.as_deref().unwrap_or_default().to_owned();
-        let (persistence, installation) = engine
+        let (bundle, installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("a staged action")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane");
-        };
         store
             .reserve_authoritative_intent(*bundle.clone())
             .await
@@ -16809,15 +16737,12 @@ mod tests {
         };
         ActionCoordinator::prepare_and_stage_scheduled(permit, world.engine_mut(), &candidate)
             .expect("the apply stages");
-        let (persistence, installation) = world
+        let (bundle, installation) = world
             .engine_mut()
             .take_staged_action()
             .unwrap()
             .expect("a staged apply")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane");
-        };
         store
             .reserve_authoritative_intent(*bundle.clone())
             .await
@@ -17337,14 +17262,11 @@ mod tests {
             driver.drive_one(&mut engine, &store).await.unwrap(),
             CommandSubmitDrive::Staged { .. }
         ));
-        let (persistence, _installation) = engine
+        let (bundle, _installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("staged action")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane")
-        };
         store
             .reserve_authoritative_intent(*bundle.clone())
             .await
@@ -17423,14 +17345,11 @@ mod tests {
             !fresh.contains(&staged.token.to_string()),
             "no raw commit token in player output: {fresh}"
         );
-        let (persistence, installation) = engine
+        let (bundle, installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("staged action")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane")
-        };
         store
             .reserve_authoritative_intent(*bundle.clone())
             .await
@@ -18094,10 +18013,7 @@ mod tests {
                         .take_staged_action()
                         .expect("the staged tick is admitted")
                         .expect("a staged tick action");
-                    let (persistence, installation) = staged.into_parts();
-                    let StagedActionPersistence::Authoritative(bundle) = persistence else {
-                        panic!("the tick used legacy persistence")
-                    };
+                    let (bundle, installation) = staged.into_parts();
                     store
                         .reserve_authoritative_intent((*bundle).clone())
                         .await
@@ -18295,10 +18211,7 @@ mod tests {
                 .take_staged_action()
                 .expect("admitted")
                 .expect("a staged tick");
-            let (persistence, installation) = staged.into_parts();
-            let StagedActionPersistence::Authoritative(first) = persistence else {
-                panic!("legacy persistence")
-            };
+            let (first, installation) = staged.into_parts();
             let first_hash = first.bundle_hash();
             engine
                 .abort_prepared_action(installation)
@@ -18313,10 +18226,7 @@ mod tests {
                 .take_staged_action()
                 .expect("admitted")
                 .expect("a staged tick");
-            let (persistence, installation) = staged.into_parts();
-            let StagedActionPersistence::Authoritative(second) = persistence else {
-                panic!("legacy persistence")
-            };
+            let (second, installation) = staged.into_parts();
             assert_eq!(
                 first_hash,
                 second.bundle_hash(),

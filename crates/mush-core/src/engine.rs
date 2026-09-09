@@ -563,34 +563,19 @@ pub struct ModuleComposition {
 }
 
 /// One prepared action submission crossing the synchronous engine/driver
-/// boundary. It is deliberately separate from legacy [`ModuleOp`] custody.
+/// boundary. It is deliberately separate from legacy [`ModuleOp`] custody:
+/// every staged action carries one complete K3 [`AuthoritativeBundle`], and
+/// there is no second persistence identity it could carry instead.
 pub struct StagedAction {
-    persistence: StagedActionPersistence,
+    bundle: Box<AuthoritativeBundle>,
     installation: PreparedInstallation,
     guards: GuardSet,
-}
-
-/// Persistence identity paired with one non-cloneable prepared RAM image.
-pub enum StagedActionPersistence {
-    /// K2 compatibility lane using the process-local writer serial.
-    Legacy(Vec<ModuleOp>),
-    /// K3 lane carrying the complete immutable exact-token intent.
-    Authoritative(Box<AuthoritativeBundle>),
-}
-
-impl fmt::Debug for StagedActionPersistence {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Legacy(module_ops) => f.debug_tuple("Legacy").field(module_ops).finish(),
-            Self::Authoritative(bundle) => f.debug_tuple("Authoritative").field(bundle).finish(),
-        }
-    }
 }
 
 impl fmt::Debug for StagedAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StagedAction")
-            .field("persistence", &self.persistence)
+            .field("bundle", &self.bundle)
             .field("installation", &self.installation)
             .field("guards", &self.guards)
             .finish()
@@ -598,9 +583,9 @@ impl fmt::Debug for StagedAction {
 }
 
 impl StagedAction {
-    /// Split the already-built persistence writes from the post-ack images.
-    pub fn into_parts(self) -> (StagedActionPersistence, PreparedInstallation) {
-        (self.persistence, self.installation)
+    /// Split the already-built exact-token bundle from the post-ack images.
+    pub fn into_parts(self) -> (Box<AuthoritativeBundle>, PreparedInstallation) {
+        (self.bundle, self.installation)
     }
 }
 
@@ -2670,39 +2655,6 @@ impl Engine {
         }
     }
 
-    /// Move a logical action's persistence and install images into the one
-    /// driver-facing prepared lane.
-    ///
-    /// A prepared action is never mixed with the legacy dirty-object/module
-    /// snapshot path. On refusal its store reservation is explicitly aborted,
-    /// leaving byte-identical live action state.
-    pub fn stage_prepared_action(
-        &mut self,
-        prepared: PreparedTxn,
-        guards: GuardSet,
-    ) -> Result<(), StagePreparedActionError> {
-        if self.staged_action.is_some() {
-            let (_, installation) = prepared.into_parts();
-            self.release_installation(installation, "stage_prepared_action/already-staged");
-            return Err(StagePreparedActionError::AlreadyStaged);
-        }
-        let (module_ops, installation) = prepared.into_parts();
-        if self.world.has_dirty() {
-            self.release_installation(installation, "stage_prepared_action/dirty-world");
-            return Err(StagePreparedActionError::DirtyWorld);
-        }
-        if !self.module_ops.is_empty() {
-            self.release_installation(installation, "stage_prepared_action/legacy-module-ops");
-            return Err(StagePreparedActionError::LegacyModuleOps);
-        }
-        self.staged_action = Some(StagedAction {
-            persistence: StagedActionPersistence::Legacy(module_ops),
-            installation,
-            guards,
-        });
-        Ok(())
-    }
-
     /// Stage one K3 action only when its immutable replay writes exactly match
     /// the typed post-images retained for post-ack RAM installation.
     ///
@@ -2737,7 +2689,7 @@ impl Engine {
         }
         let (_, installation) = prepared.into_parts();
         self.staged_action = Some(StagedAction {
-            persistence: StagedActionPersistence::Authoritative(Box::new(bundle)),
+            bundle: Box::new(bundle),
             installation,
             guards,
         });

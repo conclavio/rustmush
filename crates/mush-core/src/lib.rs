@@ -237,8 +237,8 @@ pub use durable_schedule::{
 pub use engine::{
     AUTHORITATIVE_SUBMIT_QUEUE_MAX, AuthoritativeSubmit, ControlMsg, Deferred, DisconnectKind,
     Effect, Effects, Engine, Inbound, ModuleComposition, QueuedDecisionCapture,
-    StagePreparedActionError, StagedAction, StagedActionAdmissionError, StagedActionPersistence,
-    StepOutcome, WorldCommand, register_engine_commands,
+    StagePreparedActionError, StagedAction, StagedActionAdmissionError, StepOutcome, WorldCommand,
+    register_engine_commands,
 };
 pub use flags::{Flags, Powers, Privileges, Role};
 pub use ledger::{

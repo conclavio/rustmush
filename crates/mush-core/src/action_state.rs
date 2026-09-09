@@ -2863,6 +2863,83 @@ mod tests {
             .unwrap()
     }
 
+    /// One complete K3 bundle around an already-prepared transaction, so a
+    /// staging refusal can be provoked at the lane's only entry point.
+    fn state_test_bundle(prepared: &PreparedTxn, owner: &str) -> crate::AuthoritativeBundle {
+        let owner = crate::OwnerId::new(owner).expect("static owner id");
+        let mut definitions = crate::DefinitionRegistryBuilder::new();
+        let action = definitions
+            .register(
+                owner.clone(),
+                crate::DefinitionDescriptor::new(
+                    crate::DefinitionKind::new("action").unwrap(),
+                    crate::DefinitionId::new("bump_counter").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let outcome_definition = definitions
+            .register(
+                owner.clone(),
+                crate::DefinitionDescriptor::new(
+                    crate::DefinitionKind::new("outcome").unwrap(),
+                    crate::DefinitionId::new("counter_bumped").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let request = crate::RequestUid::from_bytes([0x11; 16]);
+        let principal = crate::PrincipalId::Object { id: crate::GOD };
+        let cause = crate::PreparedCausalRef::new(request, None, 0).unwrap();
+        crate::AuthoritativeBundle::new(crate::AuthoritativeBundleDraft {
+            token: crate::CommitToken::from_bytes([0x12; 16]),
+            request,
+            idempotency: crate::ScopedIdempotencyKey::new(
+                crate::IdempotencyScope {
+                    principal: principal.clone(),
+                    owner: owner.clone(),
+                    namespace: CanonicalId::new("bump_counter").unwrap(),
+                },
+                0,
+                crate::IdempotencyKey::Request(request),
+            ),
+            ingress_hash: crate::CanonicalHash::from_bytes([0x13; 32]),
+            request_hash: crate::CanonicalHash::from_bytes([0x14; 32]),
+            plan_hash: crate::CanonicalHash::from_bytes([0x15; 32]),
+            action: action.clone(),
+            provider: owner,
+            cause,
+            definitions: vec![action.clone(), outcome_definition.clone()],
+            writes: prepared.authoritative_replay_writes(),
+            outcome: crate::RulesValue::new(
+                outcome_definition.clone(),
+                serde_json::json!({ "accepted": true }),
+            )
+            .unwrap(),
+            resolution: None,
+            semantic_events: vec![
+                crate::AuthoritativeSemanticEvent::root(
+                    cause,
+                    &action,
+                    crate::RulesValue::new(
+                        outcome_definition,
+                        serde_json::json!({ "accepted": true }),
+                    )
+                    .unwrap(),
+                    vec![principal.clone()],
+                )
+                .unwrap(),
+            ],
+            eligible_witnesses: vec![principal],
+            durable_outbox: vec![],
+        })
+        .unwrap()
+    }
+
     fn boot_records(ops: Vec<ModuleOp>) -> Vec<ActionStateBootRecord> {
         ops.into_iter()
             .map(|op| match op.op {
@@ -3202,8 +3279,14 @@ mod tests {
         let prepared = txn.prepare().unwrap();
         let guards = empty_guards(&engine);
 
+        let bundle = state_test_bundle(&prepared, "state_test");
+
+        assert!(
+            engine.world.has_dirty(),
+            "the fixture's seeded world is the legacy dirtiness under test"
+        );
         assert_eq!(
-            engine.stage_prepared_action(prepared, guards),
+            engine.stage_authoritative_action(prepared, guards, bundle),
             Err(crate::StagePreparedActionError::DirtyWorld)
         );
         assert!(!engine.action_state().has_prepared());
