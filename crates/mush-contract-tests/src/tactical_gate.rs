@@ -1486,7 +1486,9 @@ impl VolleySubmitProvider {
                 ActionErrorCode::ProviderRejected,
                 "the simultaneous fire window is full",
             ),
-            ActionWindowError::InputOperationLimit | ActionWindowError::ReceiptLimit => (
+            ActionWindowError::InputOperationLimit
+            | ActionWindowError::ReceiptLimit
+            | ActionWindowError::RecordBytes { .. } => (
                 ActionErrorCode::BoundsExceeded,
                 "the simultaneous fire window reached its durable operation bound",
             ),

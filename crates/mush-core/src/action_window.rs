@@ -12,11 +12,12 @@ use thiserror::Error;
 
 use crate::action::{
     ActionError, ActionErrorCode, ActionInvocation, AuthorityGuard, AuthorityGuardContext,
-    AuthorityGuardValidator, CanonicalHash, CanonicalHashError, CommitToken, RequestUid,
-    SubjectKey,
+    AuthorityGuardValidator, CanonicalHash, CanonicalHashError, CommitToken,
+    MAX_ACTION_PARAMETER_BYTES, RequestUid, SubjectKey,
 };
+use crate::action_state::MAX_ACTION_STATE_RECORD_BYTES;
 use crate::clock::{ClockMismatch, ClockRef, ClockStamp};
-use crate::mechanics::{CanonicalId, OwnerId};
+use crate::mechanics::{CanonicalId, OwnerId, canonical_json_bytes_with_limit};
 use crate::{
     StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyHandle, StateFamilyId,
     StateKeyCodec, StateValueDecoder, StateValueSerializer, StateValueValidator,
@@ -29,6 +30,33 @@ pub const MAX_WINDOW_OPERATION_RECEIPTS: usize = 1_024;
 /// Two receipt slots are reserved for close and consume/cancel so input churn
 /// cannot prevent a window from reaching a terminal state.
 pub const MAX_WINDOW_INPUT_OPERATIONS: usize = MAX_WINDOW_OPERATION_RECEIPTS - 2;
+/// Canonical bytes `ActionTxn::put_checked` spends on the persistence envelope
+/// it wraps around a serialized window record — the owning family's owner and
+/// id, the encoded state key (itself capped at [`crate::MAX_STATE_KEY_BYTES`]),
+/// and the value schema id and version. The window's own budget is the record
+/// cap MINUS this allowance, so a record the window admits still canonicalises
+/// inside [`MAX_ACTION_STATE_RECORD_BYTES`] once wrapped.
+pub const WINDOW_RECORD_ENVELOPE_BYTES: usize = 4 * 1024;
+/// Hard cap on canonical bytes in one durable action-window record.
+pub const MAX_WINDOW_RECORD_BYTES: usize =
+    MAX_ACTION_STATE_RECORD_BYTES - WINDOW_RECORD_ENVELOPE_BYTES;
+/// Bytes held back from input mutations for the two receipts a window still
+/// has to write to reach a terminal state (close plus consume or cancel), the
+/// byte-side twin of the two receipt SLOTS [`MAX_WINDOW_INPUT_OPERATIONS`]
+/// holds back. `the_terminal_reserve_covers_both_reserved_receipts` pins it
+/// against [`WindowMutationReceipt`] growth.
+pub const WINDOW_TERMINAL_RESERVE_BYTES: usize = 4 * 1024;
+/// Canonical byte budget charged to input mutations (submit and cancel-intent)
+/// so a window can never be filled past the point where it will still close.
+pub const MAX_WINDOW_INPUT_RECORD_BYTES: usize =
+    MAX_WINDOW_RECORD_BYTES - WINDOW_TERMINAL_RESERVE_BYTES;
+/// Ceiling used only to MEASURE a prospective record, above every record one
+/// mutation can produce: the full budget plus one intent, whose invocation
+/// parameters are themselves capped at [`MAX_ACTION_PARAMETER_BYTES`]. A
+/// measurement that reaches this ceiling saturates there — past it the exact
+/// size no longer changes the answer, which is always a refusal.
+const WINDOW_RECORD_MEASUREMENT_BYTES: usize =
+    MAX_WINDOW_RECORD_BYTES + MAX_ACTION_PARAMETER_BYTES + 32 * 1024;
 /// Hard cap on ruleset-provided deterministic ordering components.
 pub const MAX_WINDOW_ORDER_KEY_PARTS: usize = 16;
 /// Hard cap on provider catch-up work after a pause or restart.
@@ -588,6 +616,18 @@ pub enum WindowMutationResult {
     WindowCancelled,
 }
 
+impl WindowMutationResult {
+    /// Whether this mutation drives the window out of collection, and so
+    /// spends the reserve rather than being charged against it.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Closed | Self::Consumed { .. } | Self::WindowCancelled
+        )
+    }
+}
+
 /// Retained idempotency receipt. `binding` covers the complete operation
 /// payload; reusing an operation ID with another payload is an integrity
 /// conflict rather than a second mutation.
@@ -1069,6 +1109,22 @@ impl ActionWindowRecord {
         Ok(())
     }
 
+    /// Exact canonical size of this record, measured the way the state family
+    /// that stores it measures its post-image. A record beyond
+    /// `WINDOW_RECORD_MEASUREMENT_BYTES` — which no single mutation can reach
+    /// from an admitted record — saturates at that ceiling rather than being
+    /// encoded without bound.
+    pub fn canonical_bytes(&self) -> Result<usize, ActionWindowError> {
+        let value =
+            serde_json::to_value(self).map_err(|_| ActionWindowError::RecordNotCanonical)?;
+        Ok(
+            match canonical_json_bytes_with_limit(&value, WINDOW_RECORD_MEASUREMENT_BYTES) {
+                Ok(bytes) => bytes.len(),
+                Err(_) => WINDOW_RECORD_MEASUREMENT_BYTES,
+            },
+        )
+    }
+
     fn transition(
         &self,
         operation: RequestUid,
@@ -1094,15 +1150,44 @@ impl ActionWindowRecord {
         };
         let mut receipts = self.receipts.clone();
         receipts.push(receipt.clone());
+        let record = Self {
+            schema_version: Self::SCHEMA_VERSION,
+            window: self.window.clone(),
+            phase,
+            revision,
+            intents,
+            receipts,
+        };
+        // The count reserve alone let a window be filled past the size its own
+        // family will store: `put_checked` canonicalises the post-image again
+        // and refuses it, and the refusal lands on the CLOSE, which no player
+        // can retry their way out of. So the prospective record is charged
+        // here, against the terminal cap for a terminal mutation and against
+        // the smaller input budget for collection churn — with the reserve
+        // between them sized to cover the close and consume receipts a window
+        // still owes.
+        let attempted = record.canonical_bytes()?;
+        if receipt.result.is_terminal() {
+            if attempted > MAX_WINDOW_RECORD_BYTES {
+                return Err(ActionWindowError::RecordBytes {
+                    attempted,
+                    max: MAX_WINDOW_RECORD_BYTES,
+                });
+            }
+        } else if attempted > MAX_WINDOW_INPUT_RECORD_BYTES
+            // A mutation that SHRINKS the record is never the one refused: a
+            // cancelled intent inside the reserve band still frees bytes, and
+            // refusing it would strand the window in the band it is trying to
+            // leave.
+            && attempted > self.canonical_bytes()?
+        {
+            return Err(ActionWindowError::RecordBytes {
+                attempted,
+                max: MAX_WINDOW_INPUT_RECORD_BYTES,
+            });
+        }
         Ok(WindowTransition {
-            record: Self {
-                schema_version: Self::SCHEMA_VERSION,
-                window: self.window.clone(),
-                phase,
-                revision,
-                intents,
-                receipts,
-            },
+            record,
             receipt,
             replayed: false,
         })
@@ -1262,6 +1347,10 @@ pub enum ActionWindowError {
     InputOperationLimit,
     #[error("action-window operation receipt history is full")]
     ReceiptLimit,
+    #[error("action-window record would be {attempted} canonical bytes; maximum is {max}")]
+    RecordBytes { attempted: usize, max: usize },
+    #[error("action-window record cannot be canonically encoded")]
+    RecordNotCanonical,
     #[error("action-window operation {operation} was reused with different input")]
     OperationConflict { operation: RequestUid },
     #[error("action-window revision is exhausted")]
@@ -1711,5 +1800,325 @@ mod tests {
         let mut zero_secret = encoded;
         zero_secret["window"]["resolution_secret_version"] = json!(0);
         assert!(codec.decode_value(&zero_secret).is_err());
+    }
+
+    // ---- WS03-S3: the byte side of the window's bounds ----
+
+    fn operation(index: u128) -> RequestUid {
+        RequestUid::from_bytes(index.to_be_bytes())
+    }
+
+    /// One intent whose parameters are padded, so a window reaches its BYTE
+    /// budget long before it reaches its 256 slots or its 1,022 input receipts.
+    fn padded_intent(
+        window: &ActionWindow,
+        actor: u32,
+        request: RequestUid,
+        order: i64,
+        padding: usize,
+    ) -> WindowIntent {
+        let principal = PrincipalId::Object {
+            id: crate::obj::ObjId(actor),
+        };
+        let invocation = ActionInvocation::new(ActionInvocationDraft {
+            request,
+            principal: principal.clone(),
+            actor: crate::obj::ObjId(actor),
+            offered_action: ActionOfferId(CanonicalHash::from_bytes([0x44; 32])),
+            subject: PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: json!({ "choice": order, "pad": "p".repeat(padding) }),
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal,
+                    owner: OwnerId::new("toy").unwrap(),
+                    namespace: CanonicalId::new("window_submit").unwrap(),
+                },
+                0,
+                IdempotencyKey::Request(request),
+            ),
+        })
+        .unwrap();
+        WindowIntent::new(
+            window.id(),
+            window.generation(),
+            SubjectKey::Object {
+                id: crate::obj::ObjId(actor),
+            },
+            Vec::new(),
+            action_definition(),
+            invocation,
+            WindowOrderKey::new(vec![order]).unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// Submit padded intents until the record byte budget refuses one. Returns
+    /// the last admitted record, the refusal, and the actor that was refused.
+    fn fill_to_the_input_byte_budget(
+        definition: &ActionWindow,
+        padding: usize,
+    ) -> (ActionWindowRecord, ActionWindowError, u32) {
+        let mut record = ActionWindowRecord::open(definition.clone());
+        for actor in 1..=MAX_WINDOW_CAPACITY {
+            let intent = padded_intent(
+                definition,
+                actor,
+                operation(u128::from(actor)),
+                i64::from(actor),
+                padding,
+            );
+            match record.checked_submit(record.revision(), &turn(11), intent) {
+                Ok(transition) => record = transition.into_record(),
+                Err(error) => return (record, error, actor),
+            }
+        }
+        panic!("a padded window must reach its byte budget before its slot count");
+    }
+
+    /// A registry holding exactly the window family, so a record can be put
+    /// through the real `ActionTxn` path that stores it.
+    fn window_family() -> (
+        crate::action_state::ActionStateStore,
+        StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+    ) {
+        let owner = OwnerId::new("toy").unwrap();
+        let owners = BTreeSet::from([owner.clone()]);
+        let readiness = crate::mechanics::MechanicalOwnerReadiness::for_owners(&owners);
+        let mut families = crate::action_state::StateFamilyRegistryBuilder::new();
+        let codec = ActionWindowStateCodec;
+        let handle = families
+            .register(
+                owner,
+                action_window_state_family_descriptor(StateFamilyId::new("windows").unwrap())
+                    .unwrap(),
+                codec,
+                codec,
+                codec,
+                codec,
+            )
+            .unwrap();
+        let registry = families
+            .freeze_for_owners_with_readiness(&owners, readiness)
+            .unwrap();
+        (crate::action_state::ActionStateStore::new(registry), handle)
+    }
+
+    /// The failure this step closes: input churn used to be able to fill a
+    /// window past the size its own state family will store, and the refusal
+    /// then landed on the CLOSE — the one mutation nobody can retry their way
+    /// out of. Input now stops at the reserve, and the close and consume that
+    /// follow both fit the record cap AND commit through a real `ActionTxn`.
+    #[test]
+    fn input_stops_at_the_reserve_and_the_window_still_closes_and_consumes() {
+        let definition = window(MAX_WINDOW_CAPACITY);
+        let (record, refusal, actor) = fill_to_the_input_byte_budget(&definition, 4 * 1024);
+        let ActionWindowError::RecordBytes { attempted, max } = refusal else {
+            panic!("the input budget refuses with RecordBytes, not {refusal:?}");
+        };
+        assert_eq!(max, MAX_WINDOW_INPUT_RECORD_BYTES);
+        assert!(attempted > MAX_WINDOW_INPUT_RECORD_BYTES);
+        assert!(actor > 1, "one padded intent must still be admissible");
+        assert!(record.canonical_bytes().unwrap() <= MAX_WINDOW_INPUT_RECORD_BYTES);
+
+        // The terminal pair the reserve exists for.
+        let closed = record
+            .checked_close_due(
+                record.revision(),
+                RequestUid::from_bytes([0xC1; 16]),
+                &turn(20),
+            )
+            .unwrap()
+            .into_record();
+        assert!(closed.canonical_bytes().unwrap() <= MAX_WINDOW_RECORD_BYTES);
+        let consumed = closed
+            .checked_consume(
+                closed.revision(),
+                RequestUid::from_bytes([0xC2; 16]),
+                CommitToken::from_bytes([0xC3; 16]),
+                &turn(20),
+            )
+            .unwrap()
+            .into_record();
+        assert!(consumed.canonical_bytes().unwrap() <= MAX_WINDOW_RECORD_BYTES);
+
+        // And the envelope allowance holds: the family that stores the record
+        // canonicalises it again, wrapped, and must not refuse it.
+        let (mut store, handle) = window_family();
+        let mut transaction = store.transaction(&handle).unwrap();
+        transaction
+            .insert(&handle, &definition.id(), consumed)
+            .expect("the record the window admits is a record the family stores");
+        let _prepared = transaction
+            .prepare()
+            .expect("and the family prepares that post-image");
+    }
+
+    /// The byte reserve is the twin of the two receipt SLOTS the count side
+    /// holds back: it has to cover the close receipt and the consume receipt a
+    /// window still owes when its input budget is spent. This pins the
+    /// constant against `WindowMutationReceipt` growth.
+    #[test]
+    fn the_terminal_reserve_covers_both_reserved_receipts() {
+        let definition = window(MAX_WINDOW_CAPACITY);
+        let (record, _, _) = fill_to_the_input_byte_budget(&definition, 4 * 1024);
+        let before = record.canonical_bytes().unwrap();
+        let closed = record
+            .checked_close_due(
+                record.revision(),
+                RequestUid::from_bytes([0xD1; 16]),
+                &turn(20),
+            )
+            .unwrap()
+            .into_record();
+        let consumed = closed
+            .checked_consume(
+                closed.revision(),
+                RequestUid::from_bytes([0xD2; 16]),
+                CommitToken::from_bytes([0xD3; 16]),
+                &turn(20),
+            )
+            .unwrap()
+            .into_record();
+        let growth = consumed.canonical_bytes().unwrap() - before;
+        assert!(
+            growth <= WINDOW_TERMINAL_RESERVE_BYTES,
+            "a close plus a consume grew the record by {growth} bytes, past the \
+             {WINDOW_TERMINAL_RESERVE_BYTES}-byte reserve held back for them"
+        );
+        // The arithmetic itself: a record filled exactly to the input budget,
+        // plus that growth, still fits the terminal cap — and the terminal cap
+        // plus the persistence envelope still fits the family's record cap.
+        assert!(MAX_WINDOW_INPUT_RECORD_BYTES + growth <= MAX_WINDOW_RECORD_BYTES);
+        assert_eq!(
+            MAX_WINDOW_INPUT_RECORD_BYTES + WINDOW_TERMINAL_RESERVE_BYTES,
+            MAX_WINDOW_RECORD_BYTES
+        );
+        assert_eq!(
+            MAX_WINDOW_RECORD_BYTES + WINDOW_RECORD_ENVELOPE_BYTES,
+            MAX_ACTION_STATE_RECORD_BYTES
+        );
+    }
+
+    /// A record can sit ABOVE the input budget — a stored one hydrates without
+    /// being re-charged — and the mutation that would free it must not be the
+    /// one refused. A submit that grows such a record is refused; the cancel
+    /// that shrinks it is admitted, and the window still closes.
+    #[test]
+    fn a_shrinking_cancel_is_admitted_inside_the_reserve_band() {
+        let definition = window(MAX_WINDOW_CAPACITY);
+        let (record, _, next_actor) = fill_to_the_input_byte_budget(&definition, 4 * 1024);
+        // The same record hydrated with one intent fattened a kilobyte past
+        // the budget: same actor and subject, so the canonical slot order is
+        // untouched, and the padding is ASCII, so it costs its own length.
+        let last = record.intents().len() - 1;
+        let fat_actor = record.intents()[last].invocation().actor().0;
+        let deficit = MAX_WINDOW_INPUT_RECORD_BYTES - record.canonical_bytes().unwrap() + 1024;
+        let fattened = {
+            let mut wire = serde_json::to_value(&record).unwrap();
+            wire["intents"][last] = serde_json::to_value(padded_intent(
+                &definition,
+                fat_actor,
+                RequestUid::from_bytes([0xEE; 16]),
+                i64::from(fat_actor),
+                4 * 1024 + deficit,
+            ))
+            .unwrap();
+            serde_json::from_value::<ActionWindowRecord>(wire).unwrap()
+        };
+        let over = fattened.canonical_bytes().unwrap();
+        assert!(over > MAX_WINDOW_INPUT_RECORD_BYTES);
+        assert!(over <= MAX_WINDOW_RECORD_BYTES);
+
+        // Growth inside the band is refused.
+        let grow = padded_intent(
+            &definition,
+            next_actor,
+            RequestUid::from_bytes([0xEF; 16]),
+            i64::from(next_actor),
+            0,
+        );
+        assert!(matches!(
+            fattened.checked_submit(fattened.revision(), &turn(11), grow),
+            Err(ActionWindowError::RecordBytes { .. })
+        ));
+
+        // The cancel that frees bytes is not.
+        let slot = fattened.intents()[last].slot();
+        let shrunk = fattened
+            .checked_cancel_intent(
+                fattened.revision(),
+                RequestUid::from_bytes([0xF1; 16]),
+                &turn(11),
+                slot,
+            )
+            .expect("a shrinking cancel is never the mutation refused")
+            .into_record();
+        assert!(shrunk.canonical_bytes().unwrap() < over);
+        shrunk
+            .checked_close_due(
+                shrunk.revision(),
+                RequestUid::from_bytes([0xF2; 16]),
+                &turn(20),
+            )
+            .expect("and the window still closes");
+    }
+
+    /// Receipt churn alone — one slot replaced over and over, which never
+    /// grows the intent set — cannot spend the terminal slots or the terminal
+    /// bytes: whichever bound trips first, close and consume still follow.
+    #[test]
+    fn receipt_churn_alone_cannot_exhaust_the_terminal_slots() {
+        let definition = window(4);
+        let mut record = ActionWindowRecord::open(definition.clone());
+        let mut refusal = None;
+        for round in 0..MAX_WINDOW_INPUT_OPERATIONS + 4 {
+            let index = u128::try_from(round).unwrap() + 1;
+            let intent = padded_intent(
+                &definition,
+                1,
+                operation(index),
+                i64::try_from(round).unwrap(),
+                0,
+            );
+            match record.checked_submit(record.revision(), &turn(11), intent) {
+                Ok(transition) => record = transition.into_record(),
+                Err(error) => {
+                    refusal = Some((error, round));
+                    break;
+                }
+            }
+        }
+        let (error, round) = refusal.expect("input churn is bounded");
+        assert!(
+            matches!(
+                error,
+                ActionWindowError::InputOperationLimit
+                    | ActionWindowError::RecordBytes {
+                        max: MAX_WINDOW_INPUT_RECORD_BYTES,
+                        ..
+                    }
+            ),
+            "churn stopped at round {round} with {error:?}"
+        );
+        assert_eq!(record.intents().len(), 1, "replacement never grows the set");
+        let closed = record
+            .checked_close_due(
+                record.revision(),
+                RequestUid::from_bytes([0xA1; 16]),
+                &turn(20),
+            )
+            .expect("the reserved close is always available")
+            .into_record();
+        let consumed = closed
+            .checked_consume(
+                closed.revision(),
+                RequestUid::from_bytes([0xA2; 16]),
+                CommitToken::from_bytes([0xA3; 16]),
+                &turn(20),
+            )
+            .expect("and so is the reserved consume")
+            .into_record();
+        assert!(consumed.canonical_bytes().unwrap() <= MAX_WINDOW_RECORD_BYTES);
     }
 }

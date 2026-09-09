@@ -1371,6 +1371,8 @@ impl ActionWindowProvider {
             ActionWindowError::CapacityReached { .. }
             | ActionWindowError::InputOperationLimit
             | ActionWindowError::ReceiptLimit
+            // WS03-S3: the byte budget is a bound like the other three.
+            | ActionWindowError::RecordBytes { .. }
             | ActionWindowError::OrderKeyTooLong { .. }
             | ActionWindowError::RevisionExhausted => ActionErrorCode::BoundsExceeded,
             _ => ActionErrorCode::ProviderRejected,
