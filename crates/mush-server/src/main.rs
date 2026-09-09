@@ -5,7 +5,11 @@
 //! `mush-gateway` (which passes `--ipc <addr>`, and `--config` only when it was
 //! given one itself), but it also runs standalone for testing.
 //!
-//! Usage: `mush-server [--config <path>] [--ipc <addr>]`.
+//! Usage: `mush-server [--check-config] [--config <path>] [--ipc <addr>]`.
+//! `--check-config` loads the config, reports every refusal the boot would
+//! raise, and exits without opening the store or the quarantine lifetime lock
+//! — the one preflight that covers the half a supervisor never starts
+//! directly, and where a bad `[store]`/`[tacsim]` value takes the world down.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
 // held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
@@ -23,9 +27,10 @@ use mush_config::exit::{ExitClass, ExitFailure};
 /// the socket — and is applied by `Cli::load_config`.
 const CLI: CliSpec = CliSpec {
     program: "mush-server",
-    usage: "Usage: mush-server [--config <path>] [--ipc <addr>]",
+    usage: "Usage: mush-server [--check-config] [--config <path>] [--ipc <addr>]",
     ipc: true,
     repl: false,
+    check_config: true,
 };
 
 /// This binary's ending, in the one exit vocabulary both halves speak
@@ -61,6 +66,18 @@ fn main() -> ExitCode {
             return ExitClass::Failure.exit_code();
         }
     };
+
+    // `--check-config` (WS04-S3): every refusal the boot would raise, without
+    // opening the store, a socket, or the quarantine spool's exclusive lifetime
+    // lock — so it is safe to run beside the live instance it preflights.
+    if cli.check_config {
+        return mush_config::preflight::verdict(
+            CLI.program,
+            &cli.config,
+            &mush_server::boot::check_config(&config),
+        )
+        .exit_code();
+    }
 
     // Logging may create/append files, so integrity storage is structurally
     // validated first. Retain this exact instance (and its exclusive lifetime

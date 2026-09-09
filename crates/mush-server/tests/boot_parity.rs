@@ -18,7 +18,9 @@
 //! - the layer really composes: a booted split engine loads the packs the
 //!   config named, and a route resolves once its seed is applied;
 //! - a pack that will not verify fails the split boot naming the file;
-//! - the J5 archive pass is joined at shutdown rather than dropped detached.
+//! - the J5 archive pass is joined at shutdown rather than dropped detached;
+//! - and (WS04-S3) `--check-config` finds each of those refusals WITHOUT
+//!   booting, so an operator meets them before a supervisor does.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -472,4 +474,61 @@ async fn the_split_shutdown_awaits_the_archive_job() {
         .expect("the shutdown tail must not wedge on the never-ending archive pass")
         .expect("a clean EOF is an ordinary exit");
     let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+// ---- 6: --check-config finds the world half's refusals without booting ------
+
+/// WS04-S3. `boot::check_config` is what `mushd --check-config` and
+/// `mush-server --check-config` run, and its whole value is that it refuses the
+/// same values `build_engine`/`spawn_ledger_archive` refuse — at a cost of
+/// nothing, against a config a live instance may already be serving.
+///
+/// So it is asserted against the two refusals only the WORLD half can find, and
+/// each is checked to actually name what it refused: a preflight that says "no"
+/// without saying which line is no better than the boot failure it replaces.
+#[test]
+fn check_config_finds_the_world_half_refusals_without_booting() {
+    // A stock config preflights clean, or the flag is a thing that always says
+    // no and no operator would run it twice.
+    let mut cfg = wod_config("check-clean");
+    assert!(
+        boot::check_config(&cfg).is_empty(),
+        "{:?}",
+        boot::check_config(&cfg)
+    );
+
+    // (a) a pack whose bytes no longer match its declared digest — the refusal
+    // `a_digest_mismatched_pack_fails_the_split_boot` proves the boot makes,
+    // made here without opening the store.
+    let mut tampered_cfg = wod_config("check-tampered");
+    enable_tacsim(&mut tampered_cfg);
+    let path = PathBuf::from(&tampered_cfg.tacsim.pack_paths[0]);
+    let tampered = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("alloy_smelt", "alloy_smelts");
+    std::fs::write(&path, tampered).unwrap();
+    let refusals = boot::check_config(&tampered_cfg);
+    assert!(
+        refusals.iter().any(|r| r.contains("tacsim_core.json")),
+        "the preflight must name the offending pack: {refusals:?}"
+    );
+
+    // (b) an unparseable archive window. `spawn_ledger_archive` refuses the
+    // boot on it rather than leaving the nightly pass silently unscheduled for
+    // the life of the deployment — which makes it exactly the kind of value
+    // worth finding ahead of a restart.
+    cfg.store.archive.enabled = true;
+    cfg.store.archive.window = "25:61-03:00".to_owned();
+    let refusals = boot::check_config(&cfg);
+    assert!(
+        refusals.iter().any(|r| r.contains("25:61")),
+        "the preflight must name the offending window: {refusals:?}"
+    );
+    // ...and a disabled tier does not care what the window says, because
+    // nothing will ever read it.
+    cfg.store.archive.enabled = false;
+    assert!(boot::check_config(&cfg).is_empty());
+
+    let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+    let _ = std::fs::remove_dir_all(&tampered_cfg.server.data_dir);
 }

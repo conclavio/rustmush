@@ -3,7 +3,12 @@
 //! Spawns and supervises the `mush-server` child, then serves SSH connections,
 //! bridging them to the server over the [`mush_ipc`] boundary socket.
 //!
-//! Usage: `mush-gateway [--config <path>]`.
+//! Usage: `mush-gateway [--check-config] [--config <path>]`.
+//! `--check-config` loads the config, reports every refusal the boot would
+//! raise, and exits. This is the process a supervisor actually starts, so it is
+//! where an operator's preflight lands; the world-half validations it cannot
+//! run (the `[tacsim]` pack block, the archive window) belong to
+//! `mush-server --check-config`, which reads the same file.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
 // held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
@@ -26,9 +31,10 @@ use mush_gateway::{GatewayOptions, ServerSource, serve};
 /// hands it to the child) nor `--repl`.
 const CLI: CliSpec = CliSpec {
     program: "mush-gateway",
-    usage: "Usage: mush-gateway [--config <path>]",
+    usage: "Usage: mush-gateway [--check-config] [--config <path>]",
     ipc: false,
     repl: false,
+    check_config: true,
 };
 
 fn main() -> ExitCode {
@@ -56,6 +62,17 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // `--check-config` (WS04-S3), before logging installs a file appender:
+    // a preflight must leave nothing behind on the box it is asked about.
+    if cli.check_config {
+        return mush_config::preflight::verdict(
+            CLI.program,
+            &cli.config,
+            &mush_config::preflight::check(&config),
+        )
+        .exit_code();
+    }
 
     let _log_guards = mush_config::logging::init(&config.log, &config.server.data_dir, "gateway");
 

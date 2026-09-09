@@ -12,7 +12,10 @@
 //! `--repl` preserves the M0
 //! synchronous stdin REPL for offline poking (fully in-memory, no store).
 //!
-//! Usage: `mushd [--repl] [--config <path>]`. The config defaults to
+//! Usage: `mushd [--repl] [--check-config] [--config <path>]`.
+//! `--check-config` loads the config, reports every refusal the boot would
+//! raise, and exits without opening the store or the quarantine lifetime lock.
+//! The config defaults to
 //! `mushd.toml` in the working directory, and a missing *implicit* file means
 //! defaults; an explicit `--config` that names a file which is not there is a
 //! refusal, as is any argument the shared parser does not recognise (WS22-S1).
@@ -225,9 +228,10 @@ async fn await_world(
 /// so naming it here is an error rather than a token quietly dropped.
 const CLI: CliSpec = CliSpec {
     program: "mushd",
-    usage: "Usage: mushd [--repl] [--config <path>]",
+    usage: "Usage: mushd [--repl] [--check-config] [--config <path>]",
     ipc: false,
     repl: true,
+    check_config: true,
 };
 
 fn main() -> ExitCode {
@@ -260,6 +264,19 @@ fn main() -> ExitCode {
             return ExitClass::Failure.exit_code();
         }
     };
+
+    // `--check-config` (WS04-S3): every refusal the boot would raise, without
+    // opening the store, a socket, or the quarantine spool's exclusive lifetime
+    // lock. It sits here — after the config loads, before ANYTHING is opened —
+    // precisely so it is safe to run beside a live instance.
+    if cli.check_config {
+        return mush_config::preflight::verdict(
+            CLI.program,
+            &cli.config,
+            &mush_server::boot::check_config(&config),
+        )
+        .exit_code();
+    }
 
     // Validate the integrity store before logging is allowed to create or
     // append any startup file. Retain this exact instance (and its exclusive
@@ -332,43 +349,23 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     let metrics = Arc::new(Metrics::new());
 
     // Everything the deployed all-in-one composes, in one callable root the
-    // integration suite boots too (WS04-S0): the quarantine barrier, the three
-    // durable key rings, the store, the module roster, the world, and every
-    // module's boot pass.
-    let boot::Booted {
-        store,
-        ledger_archive,
-        engine,
-        staff,
-        llm,
-        llm_config: llm_cfg,
-    } = boot::boot_all_in_one(&config, &mut quarantine_spool).await?;
-    // J5: the namespaces the nightly archive pass walks — every composed module's.
-    let archive_namespaces: Vec<String> = engine
-        .modules()
-        .iter()
-        .map(|m| m.name().to_string())
-        .collect();
+    // integration suite boots too (WS04-S0): the quarantine barrier, the store,
+    // the three durable key rings, the module roster, the world, and every
+    // module's boot pass. WS04-S3 reduced that root to a delegation, so what
+    // boots here is `mush_server::boot` itself — the same code the split half
+    // runs, rather than a second transcription of it.
+    let (
+        mush_server::boot::OpenedStore {
+            store,
+            archive: ledger_archive,
+        },
+        booted,
+    ) = boot::boot_all_in_one(&config, &mut quarantine_spool).await?;
 
-    // The web hello manifest, collected while the registry is still in
-    // hand: every module-registered panel feed plus the engine-side "who",
-    // and one feature id per module (comsys advertises as "channels").
-    let mut panels: Vec<String> = engine
-        .registry
-        .panel_feeds()
-        .iter()
-        .map(|(feed, _)| feed.to_string())
-        .collect();
-    panels.push("who".to_string());
-    panels.push("legal.actions".to_string());
-    let features: Vec<String> = engine
-        .modules()
-        .iter()
-        .map(|m| match m.name() {
-            "comsys" => "channels".to_string(),
-            other => other.to_string(),
-        })
-        .collect();
+    // The web hello manifest: every module-registered panel feed plus the
+    // engine-side "who"/"legal.actions", and one feature id per module (comsys
+    // advertises as "channels").
+    let (features, panels) = mush_server::boot::build_hello_manifest(&booted.engine);
 
     // Session layer.
     let sessions = Arc::new(SessionManager::with_config(SessionConfig {
@@ -400,13 +397,13 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
 
     // The single-writer world task + its store writer.
     let handles = world_task::spawn_persist_with_decision_workers(
-        engine,
+        booted.engine,
         Arc::clone(&sessions),
         ServerDeps {
             store: Arc::clone(&store),
             guard: Arc::clone(&guard),
-            staff,
-            llm: Some(Arc::clone(&llm)),
+            staff: booted.staff,
+            llm: Some(Arc::clone(&booted.llm)),
             metrics: Arc::clone(&metrics),
             // E0 quarantine spool: a separate durable failure domain under the
             // data dir for confirmed-poison ledger seals.
@@ -415,7 +412,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             // configured (a REST-only client of its own, beside the gateway's).
             outbox_adapters: mushd::discord_dm::adapters_from_config(&config),
         },
-        llm_cfg.decision_workers,
+        booted.decision_workers,
         Arc::clone(&controls),
     )?;
     let persistence_integrity = handles.persistence_integrity.clone();
@@ -431,11 +428,15 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // the store writer and never on the world task. WS04-S1: assembled once, in
     // `mush_server::boot`, so the split half schedules the same pass off the
     // same `[store.archive]` reading.
-    let _archive_job = mush_server::boot::spawn_ledger_archive(
+    // The handle is BOUND, not dropped: a detached pass is a task this function
+    // owns and cannot stop, still copying and purging inside a runtime the
+    // shutdown tail is about to tear down (mushd-5). `stop_ledger_archive` in
+    // that tail is the other end of it.
+    let archive_job = mush_server::boot::spawn_ledger_archive(
         &config,
         &store,
         ledger_archive,
-        archive_namespaces,
+        booted.archive_namespaces,
         &metrics,
     )?;
 
@@ -597,6 +598,13 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
             false
         }
     };
+    // The J5 pass is the fourth task this function owns, and it is joined like
+    // the other three — before the store drain, because a live pass is still
+    // writing to the store this is about to drain and close. It has no shutdown
+    // seam of its own (it sleeps in a loop for the life of the process), so the
+    // join is a cancel-then-await; both halves of a pass are idempotent, so a
+    // cancelled one costs the next night's pass a re-copy and nothing else.
+    mush_server::boot::stop_ledger_archive(archive_job).await;
     // Each tail step is individually bounded so a dead store can never
     // wedge shutdown (systemd would otherwise escalate to SIGKILL).
     match tokio::time::timeout(SHUTDOWN_STORE_TIMEOUT, store.drain()).await {

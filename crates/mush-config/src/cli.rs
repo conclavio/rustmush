@@ -54,13 +54,11 @@ pub struct CliSpec {
     pub ipc: bool,
     /// Accept `--repl` (the all-in-one's offline stdin REPL).
     pub repl: bool,
+    /// Accept `--check-config` (WS04-S3: validate and exit without booting).
+    pub check_config: bool,
 }
 
 /// A parsed command line.
-///
-/// WS04-S3 adds `check_config: bool` here and a matching `check_config` flag to
-/// [`CliSpec`]; the shape is deliberately a plain struct of accepted flags so
-/// that is one field and one match arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cli {
     /// The config path to load — the `--config` value, or
@@ -73,6 +71,10 @@ pub struct Cli {
     pub ipc: Option<String>,
     /// `--repl` was given.
     pub repl: bool,
+    /// `--check-config` was given: load the config, run every validation that
+    /// needs neither a socket nor the store, and exit on the verdict
+    /// ([`crate::preflight`]).
+    pub check_config: bool,
     /// `--help`/`-h` was given; the caller prints [`CliSpec::usage`] and exits
     /// successfully without touching the config.
     pub help: bool,
@@ -86,6 +88,7 @@ impl Cli {
             config_explicit: false,
             ipc: None,
             repl: false,
+            check_config: false,
             help: false,
         }
     }
@@ -215,6 +218,7 @@ where
     let mut config: Option<String> = None;
     let mut ipc: Option<String> = None;
     let mut repl = false;
+    let mut check_config = false;
     let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -226,6 +230,14 @@ where
                 }
                 repl = true;
             }
+            "--check-config" if spec.check_config => {
+                if check_config {
+                    return Err(CliError::Repeated {
+                        flag: "--check-config",
+                    });
+                }
+                check_config = true;
+            }
             _ => return Err(CliError::UnknownArg { arg }),
         }
     }
@@ -235,6 +247,7 @@ where
         config: config.map_or_else(|| PathBuf::from(DEFAULT_CONFIG_FILE), PathBuf::from),
         ipc,
         repl,
+        check_config,
         help: false,
     })
 }
@@ -254,15 +267,26 @@ mod tests {
 
     const MUSHD: CliSpec = CliSpec {
         program: "mushd",
-        usage: "Usage: mushd [--repl] [--config <path>]",
+        usage: "Usage: mushd [--repl] [--check-config] [--config <path>]",
         ipc: false,
         repl: true,
+        check_config: true,
     };
     const SERVER: CliSpec = CliSpec {
         program: "mush-server",
-        usage: "Usage: mush-server [--config <path>] [--ipc <addr>]",
+        usage: "Usage: mush-server [--check-config] [--config <path>] [--ipc <addr>]",
         ipc: true,
         repl: false,
+        check_config: true,
+    };
+    /// A spec that declares NOTHING beyond the universal flags, so the
+    /// opt-in-ness of `--check-config` is provable rather than assumed.
+    const BARE: CliSpec = CliSpec {
+        program: "bare",
+        usage: "Usage: bare [--config <path>]",
+        ipc: false,
+        repl: false,
+        check_config: false,
     };
 
     fn scratch(tag: &str) -> PathBuf {
@@ -343,6 +367,35 @@ mod tests {
         assert!(parse(["-h"], &SERVER).unwrap().help);
         // Even beside a token that would otherwise be refused.
         assert!(parse(["--confg", "--help"], &MUSHD).unwrap().help);
+    }
+
+    #[test]
+    fn check_config_is_opt_in_and_not_repeatable() {
+        assert!(parse(["--check-config"], &MUSHD).unwrap().check_config);
+        assert!(parse(["--check-config"], &SERVER).unwrap().check_config);
+        assert!(
+            !parse(std::iter::empty::<&str>(), &MUSHD)
+                .unwrap()
+                .check_config
+        );
+        let err = parse(["--check-config", "--check-config"], &MUSHD).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CliError::Repeated {
+                    flag: "--check-config"
+                }
+            ),
+            "{err:?}"
+        );
+        // A binary that does not declare it must refuse it rather than drop it:
+        // an operator who thought they had preflighted a config and had not is
+        // exactly the silence this parser exists to abolish.
+        let err = parse(["--check-config"], &BARE).unwrap_err();
+        assert!(
+            matches!(&err, CliError::UnknownArg { arg } if arg == "--check-config"),
+            "{err:?}"
+        );
     }
 
     #[test]

@@ -58,10 +58,6 @@ mush-worldgen.workspace = true
 mush-content.workspace = true
 mush-atlas.workspace = true
 mush-npc.workspace = true
-# E7: the TacSim simulation layer. The composition root upgrades two of its
-# post-composition state slots by type (the account oracle, the pulse cadence),
-# so the boot root names them directly — as the forked server half does.
-mush-sim.workspace = true
 mush-ruleset.workspace = true
 mush-testkit.workspace = true
 mush-net-ssh.workspace = true
@@ -94,6 +90,13 @@ thiserror.workspace = true
 # for `cargo test -p mushd` — the normal dependency above stays featureless, so
 # no release build of `mushd` carries the seam.
 mush-server = { workspace = true, features = ["fault-injection"] }
+# E7: the TacSim simulation layer. WS04-S3 deleted the all-in-one's second
+# transcription of the world boot, and with it the only `src/` reference to
+# these types — the post-composition state upgrades (the account oracle, the
+# pulse cadence) now happen once, in `mush_server::boot`. What is left here is
+# `tests/boot_composition.rs` reading the pulse slot back out of the booted
+# world, so the edge is a TEST edge and says so.
+mush-sim.workspace = true
 # start_paused tests (virtual clock) need tokio's test-util.
 tokio = { workspace = true, features = ["test-util"] }
 # Real SSH client for the full-stack loopback and e2e tests.

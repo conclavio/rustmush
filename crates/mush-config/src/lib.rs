@@ -5,14 +5,16 @@
 //! need, kept in one dependency-light crate so neither half drags the other's
 //! deps in through them:
 //!
-//! - [`cli`] — the shared command line (`--config`/`--ipc`/`--repl`) all three
-//!   binaries parse, and the one place an explicit config path is stat'ed.
+//! - [`cli`] — the shared command line
+//!   (`--config`/`--ipc`/`--repl`/`--check-config`) all three binaries parse, and the one place an explicit config path is stat'ed.
 //! - [`config`] — `mushd.toml` parsing/validation (the `[llm]`/`[web]` sections
 //!   are captured raw as [`toml::Value`] and deserialized into their typed
 //!   forms by the crate that owns them, so `mush-config` needs neither
 //!   `mush-llm` nor `mush-net-web`).
 //! - [`exit`] — the one process-exit vocabulary both halves speak, so a
 //!   supervisor can tell a dead world from a slow one.
+//! - [`preflight`] — `--check-config`: the boot refusals every binary can find
+//!   without opening a socket, the store, or the quarantine lock.
 //! - [`logging`] — the tracing subscriber + rotating file appender setup.
 //! - [`signals`] — the one terminate/interrupt future all three binaries wait
 //!   on, including the rule that a supervised child ignores Ctrl-C.
@@ -47,6 +49,7 @@ pub mod ipguard;
 pub mod logging;
 pub mod metrics;
 pub mod offer_keys;
+pub mod preflight;
 pub mod resolution_keys;
 pub mod signals;
 
