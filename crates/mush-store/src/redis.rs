@@ -103,10 +103,10 @@ use crate::store::{AuthoritativeStore, ModuleDocs, ObjectStore};
 use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
-    AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReceipt,
-    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BoundIdempotencyStatus,
-    BundleStatus, CharacterRef, DiscordBanRec, DiscordCodeRecord, DiscordLinkRec,
-    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReadbackPhase,
+    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
+    BoundIdempotencyStatus, BundleStatus, CharacterRef, DiscordBanRec, DiscordCodeRecord,
+    DiscordLinkRec, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
     MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
@@ -415,6 +415,29 @@ fn plan_authoritative_replay(
             })
         })
         .collect()
+}
+
+/// Resolve a script's `READBACK_MISMATCH:<index>` against the plan that was
+/// sent, so the refusal names the one key whose post-image disagreed.
+///
+/// Both scripts walk their replay pairs 1-based in the exact order `planned`
+/// was pushed into `ARGV`, so the index they report is a direct offset into
+/// the same slice the caller still holds. This resolution is local to the
+/// call sites that have a plan in scope; [`authoritative_script_error`] is
+/// shared by ten of them and stays a plain code translator. Anything that is
+/// not a readback mismatch — or an index the plan cannot explain — falls
+/// through to it unchanged.
+fn authoritative_readback_error(
+    code: &str,
+    planned: &[RedisReplayWrite],
+    phase: AuthoritativeReadbackPhase,
+) -> Option<StoreError> {
+    let index = code.strip_prefix("READBACK_MISMATCH:")?;
+    let write = planned.get(index.parse::<usize>().ok()?.checked_sub(1)?)?;
+    Some(StoreError::AuthoritativeReadbackMismatch {
+        key: write.key.clone(),
+        phase,
+    })
 }
 
 fn authoritative_script_error(code: &str) -> StoreError {
@@ -1604,7 +1627,12 @@ impl AuthoritativeStore for RedisStore {
                 .eval(FINALIZE_AUTHORITATIVE_LUA, keys, args)
                 .await?;
             if code != "FINALIZED" {
-                return Err(authoritative_script_error(&code));
+                return Err(authoritative_readback_error(
+                    &code,
+                    &planned,
+                    AuthoritativeReadbackPhase::Finalize,
+                )
+                .unwrap_or_else(|| authoritative_script_error(&code)));
             }
             let Some(stored) = self.load_validated_authoritative(token).await? else {
                 return Err(StoreError::AuthoritativeCorrupt(
@@ -1738,7 +1766,14 @@ impl AuthoritativeStore for RedisStore {
             let resumed = match code.as_str() {
                 "CHECKPOINTED" => false,
                 "RESUMED" => true,
-                _ => return Err(authoritative_script_error(&code)),
+                _ => {
+                    return Err(authoritative_readback_error(
+                        &code,
+                        &planned,
+                        AuthoritativeReadbackPhase::Checkpoint,
+                    )
+                    .unwrap_or_else(|| authoritative_script_error(&code)));
+                }
             };
             let Some(LoadedAuthoritative::Checkpointed(stored)) =
                 self.load_validated_authoritative(token).await?

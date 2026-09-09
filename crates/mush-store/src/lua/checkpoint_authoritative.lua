@@ -83,22 +83,23 @@ if parent_manifest and parent_manifest ~= ARGV[9] then
 end
 
 -- The full intent is the last repair witness. Never release it unless every
--- authoritative target still has its exact committed post-image.
+-- authoritative target still has its exact committed post-image. A mismatch
+-- names the replay index it caught so the caller can refuse by key.
 for index = 1, write_count do
   local kind = ARGV[8 + index * 2]
   local post_image = ARGV[9 + index * 2]
   local key = KEYS[8 + index]
   if kind == 'json_set' then
     if redis.call('JSON.GET', key) ~= post_image then
-      return 'READBACK_MISMATCH'
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   elseif kind == 'string_set' then
     if redis.call('GET', key) ~= post_image then
-      return 'READBACK_MISMATCH'
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   elseif kind == 'delete' then
     if redis.call('EXISTS', key) ~= 0 then
-      return 'READBACK_MISMATCH'
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   else
     return 'CORRUPT_ARGUMENTS'

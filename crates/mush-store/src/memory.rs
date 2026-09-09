@@ -29,14 +29,15 @@ use mush_core::{
     ScopedIdempotencyKey,
 };
 
+use crate::redis::{META_NEXT_ID, MOD_PREFIX, OBJ_PREFIX};
 use crate::store::{AuthoritativeStore, ModuleDocs, ObjectStore};
 use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
-    AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReceipt,
-    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BoundIdempotencyStatus,
-    BundleStatus, CharacterRef, DiscordBanRec, DiscordCodeRecord, DiscordLinkRec,
-    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReadbackPhase,
+    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
+    BoundIdempotencyStatus, BundleStatus, CharacterRef, DiscordBanRec, DiscordCodeRecord,
+    DiscordLinkRec, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
     MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
@@ -456,7 +457,7 @@ impl AuthoritativeFaultStore {
         }
         validate_replay_recovery(&inner, &bundle)?;
         apply_replay(&mut inner, &planned[..count]);
-        if !replay_matches(&inner, &planned[..count]) {
+        if first_replay_mismatch(&inner, &planned[..count]).is_some() {
             return Err(StoreError::AuthoritativeCorrupt(
                 "fault harness prefix readback mismatch".to_owned(),
             ));
@@ -759,25 +760,49 @@ fn apply_replay(inner: &mut Inner, planned: &[PlannedReplayWrite]) {
     }
 }
 
-fn replay_matches(inner: &Inner, planned: &[PlannedReplayWrite]) -> bool {
-    planned.iter().all(|write| match write {
-        PlannedReplayWrite::ObjectSet { id, doc } => inner.objects.get(id) == Some(doc),
-        PlannedReplayWrite::ObjectDelete { id } => !inner.objects.contains_key(id),
-        PlannedReplayWrite::ObjectAllocatorSet { next_id } => inner.next_id == Some(*next_id),
+/// The first planned write whose post-image is not what the store now holds,
+/// or `None` when every one of them reads back exactly.
+///
+/// The fake stores the exact `String` it was handed, so this can only ever
+/// catch a genuinely clobbered target — never a backend renormalizing its own
+/// serialization, which is the live server's failure mode, not this one's.
+fn first_replay_mismatch<'a>(
+    inner: &Inner,
+    planned: &'a [PlannedReplayWrite],
+) -> Option<&'a PlannedReplayWrite> {
+    planned.iter().find(|write| match write {
+        PlannedReplayWrite::ObjectSet { id, doc } => inner.objects.get(id) != Some(doc),
+        PlannedReplayWrite::ObjectDelete { id } => inner.objects.contains_key(id),
+        PlannedReplayWrite::ObjectAllocatorSet { next_id } => inner.next_id != Some(*next_id),
         PlannedReplayWrite::ModuleJsonSet {
             namespace,
             key,
             doc,
-        } => inner.module_kv.get(&(namespace.clone(), key.clone())) == Some(doc),
+        } => inner.module_kv.get(&(namespace.clone(), key.clone())) != Some(doc),
         PlannedReplayWrite::ModuleDelete { namespace, key } => {
-            !inner
+            inner
                 .module_kv
                 .contains_key(&(namespace.clone(), key.clone()))
-                && !inner
+                || inner
                     .module_streams
                     .contains_key(&(namespace.clone(), key.clone()))
         }
     })
+}
+
+/// The Redis key a planned write addresses, so a readback refusal names the
+/// same target on the fake as it does on the live server.
+fn planned_write_key(write: &PlannedReplayWrite) -> String {
+    match write {
+        PlannedReplayWrite::ObjectSet { id, .. } | PlannedReplayWrite::ObjectDelete { id } => {
+            format!("{OBJ_PREFIX}{id}")
+        }
+        PlannedReplayWrite::ObjectAllocatorSet { .. } => META_NEXT_ID.to_owned(),
+        PlannedReplayWrite::ModuleJsonSet { namespace, key, .. }
+        | PlannedReplayWrite::ModuleDelete { namespace, key } => {
+            format!("{MOD_PREFIX}{namespace}:{key}")
+        }
+    }
 }
 
 fn validate_replay_admission(
@@ -1268,10 +1293,11 @@ impl AuthoritativeStore for InMemoryStore {
                 }
             }
             apply_replay(&mut inner, &planned);
-            if !replay_matches(&inner, &planned) {
-                return Err(StoreError::AuthoritativeCorrupt(
-                    "authoritative replay readback mismatch".to_owned(),
-                ));
+            if let Some(write) = first_replay_mismatch(&inner, &planned) {
+                return Err(StoreError::AuthoritativeReadbackMismatch {
+                    key: planned_write_key(write),
+                    phase: AuthoritativeReadbackPhase::Finalize,
+                });
             }
             for (item_id, doc) in outbox_records {
                 inner.authoritative_outbox.insert(item_id, doc);
@@ -1313,10 +1339,11 @@ impl AuthoritativeStore for InMemoryStore {
             let receipt = validate_retained_intent(&inner, token, &bundle)?
                 .ok_or(StoreError::AuthoritativeNotFinalized)?;
             let planned = plan_replay(&bundle)?;
-            if !replay_matches(&inner, &planned) {
-                return Err(StoreError::AuthoritativeCorrupt(
-                    "authoritative checkpoint post-image readback mismatch".to_owned(),
-                ));
+            if let Some(write) = first_replay_mismatch(&inner, &planned) {
+                return Err(StoreError::AuthoritativeReadbackMismatch {
+                    key: planned_write_key(write),
+                    phase: AuthoritativeReadbackPhase::Checkpoint,
+                });
             }
             for expected in expected_outbox_records(&bundle)? {
                 let record = decode_outbox_record(
@@ -3400,8 +3427,8 @@ mod tests {
 
         assert!(matches!(
             store.checkpoint_authoritative(token, hash).await,
-            Err(StoreError::AuthoritativeCorrupt(message))
-                if message.contains("post-image readback mismatch")
+            Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                if key == META_NEXT_ID && phase == AuthoritativeReadbackPhase::Checkpoint
         ));
         assert_eq!(
             store

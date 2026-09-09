@@ -2487,3 +2487,102 @@ pub async fn authoritative_retention_generation_contract(store: &dyn Authoritati
             .expect("exact counters are an idempotent no-op")
     );
 }
+
+/// Every JSON number and string shape a replay post-image can carry must
+/// survive materialization byte-for-byte, on every backend.
+///
+/// Both authoritative scripts verify a write by comparing the **bytes** they
+/// read back against the exact post-image they were handed, so a backend that
+/// renormalizes JSON on its way out — an integer above 2^53 rounded through a
+/// double, `1.0` printed as `1`, `-0.0` collapsed to `0`, `1e21` expanded,
+/// a `\u`-escape rewritten — would refuse a write that in fact landed
+/// perfectly. That is not a hypothetical the fake can answer: it stores the
+/// exact `String` it was given, so here this is a parity assertion only. The
+/// live proof is the `redis_suite` mirror against a real RedisJSON.
+///
+/// The shapes travel by both JSON routes at once — a module document and an
+/// object document (through an `AttrValue::Json`) — because both are written
+/// with `JSON.SET` and read back with `JSON.GET`.
+pub async fn authoritative_number_shaped_post_image_round_trips(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let owner = OwnerId::new("store_contract").expect("contract owner");
+    let shapes = serde_json::json!({
+        "one_point_zero": 1.0,
+        "negative_zero": -0.0,
+        "big_exponent": 1e21,
+        "float_residue": 0.30000000000000004,
+        "beyond_double": 9_007_199_254_740_993_u64,
+        "escaped": "\u{7}quote\"backslash\\ astral\u{1f600}",
+        "empty_object": {},
+        "empty_array": [],
+    });
+    // #1 already exists in the seeded world, so rewriting it needs no
+    // allocator post-image beyond the one the contract bundle already carries.
+    let mut carrier = Obj::new(ObjId(1), ObjKind::Player, "God", GOD, 0);
+    carrier.location = Some(LIMBO);
+    carrier.home = Some(LIMBO);
+    carrier.attrs.set("shapes", Attr::json(shapes.clone(), GOD));
+    let module_key =
+        AuthoritativeKey::parse_canonical("action-state/v1/shapes/1").expect("shape key");
+    let bundle = authoritative_bundle_with(
+        21,
+        31,
+        0,
+        vec![],
+        false,
+        vec![
+            ReplayWrite::ObjectSet {
+                object: carrier.clone(),
+            },
+            ReplayWrite::ModuleJsonSet {
+                namespace: owner.clone(),
+                key: module_key.clone(),
+                value: shapes.clone(),
+            },
+        ],
+    );
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve number-shaped intent");
+    let receipt = store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("materialize number-shaped post-images: the backend renormalized JSON");
+    assert!(receipt.matches_bundle(&bundle));
+    assert_eq!(
+        store
+            .module_json_get(owner.as_str(), module_key.as_str())
+            .await
+            .expect("materialized shape document"),
+        Some(shapes.clone()),
+        "a materialized module post-image must decode back to what was written"
+    );
+    let snapshot = store
+        .load_world()
+        .await
+        .expect("load materialized world")
+        .expect("non-empty world");
+    assert_eq!(
+        snapshot.objects.iter().find(|o| o.id == ObjId(1)),
+        Some(&carrier),
+        "a materialized object post-image must decode back to what was written"
+    );
+
+    let checkpoint = store
+        .checkpoint_authoritative(token, hash)
+        .await
+        .expect("checkpoint number-shaped post-images: the backend renormalized JSON");
+    assert!(!checkpoint.resumed);
+    assert_eq!(checkpoint.receipt, receipt);
+    assert_eq!(
+        store
+            .module_json_get(owner.as_str(), module_key.as_str())
+            .await
+            .expect("post-checkpoint shape document"),
+        Some(shapes)
+    );
+}

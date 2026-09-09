@@ -116,21 +116,23 @@ for index = 1, write_count do
   end
 end
 
+-- A mismatch names the replay index it caught, so the caller can resolve it
+-- against the plan it sent and refuse by key rather than by whole bundle.
 for index = 1, write_count do
   local kind = ARGV[7 + index * 2]
   local post_image = ARGV[8 + index * 2]
   local key = KEYS[6 + index]
   if kind == 'json_set' then
     if redis.call('JSON.GET', key) ~= post_image then
-      return 'READBACK_MISMATCH'
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   elseif kind == 'string_set' then
     if redis.call('GET', key) ~= post_image then
-      return 'READBACK_MISMATCH'
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   elseif kind == 'delete' then
     if redis.call('EXISTS', key) ~= 0 then
-      return 'READBACK_MISMATCH'
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   end
 end

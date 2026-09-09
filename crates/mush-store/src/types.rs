@@ -1328,6 +1328,38 @@ pub struct BanRec {
     pub reason: String,
 }
 
+/// Which authoritative phase caught a post-image readback mismatch.
+///
+/// Both phases re-read every materialized replay target, but they mean
+/// different things: `Finalize` says the write the script just performed did
+/// not land, `Checkpoint` says a target that *did* land has since been
+/// clobbered under a finalized action whose full intent is about to be
+/// released. Naming the phase keeps those two apart in a log line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthoritativeReadbackPhase {
+    /// Materialization inside `reconcile_authoritative`.
+    Finalize,
+    /// The pre-release re-verification inside `checkpoint_authoritative`.
+    Checkpoint,
+}
+
+impl AuthoritativeReadbackPhase {
+    /// The lowercase phase name used in the error text.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthoritativeReadbackPhase::Finalize => "finalize",
+            AuthoritativeReadbackPhase::Checkpoint => "checkpoint",
+        }
+    }
+}
+
+impl std::fmt::Display for AuthoritativeReadbackPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Everything that can go wrong in the persistence layer.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -1424,6 +1456,23 @@ pub enum StoreError {
     /// A stored authoritative intent or finalized witness failed strict decode.
     #[error("authoritative persistence record is corrupt: {0}")]
     AuthoritativeCorrupt(String),
+    /// A materialized replay post-image did not read back as it was written.
+    ///
+    /// The old refusal was one undifferentiated string for a whole bundle,
+    /// which told an operator that *something* under a multi-write action
+    /// disagreed and left them to diff the plan against the keyspace by hand.
+    /// Both scripts already know the offending replay index, so the refusal
+    /// carries the key it addressed and the phase that caught it.
+    ///
+    /// Deterministic and fatal to the write, exactly like the corruption it
+    /// was carved out of: the same post-image will disagree forever, so the
+    /// writer must not retry it, and the full intent stays retained as the
+    /// repair witness.
+    #[error("authoritative {phase} readback mismatch at key {key:?}")]
+    AuthoritativeReadbackMismatch {
+        key: String,
+        phase: AuthoritativeReadbackPhase,
+    },
     /// Retaining another exact intent would exceed a hard bound.
     #[error(
         "authoritative retained-intent capacity exhausted: {retained_count}/{max_count} records, {retained_bytes}/{max_bytes} bytes"
@@ -1520,6 +1569,7 @@ impl StoreError {
             | StoreError::AuthoritativeEpochRegression { .. }
             | StoreError::AuthoritativeEpochPending { .. }
             | StoreError::AuthoritativeCorrupt(_)
+            | StoreError::AuthoritativeReadbackMismatch { .. }
             | StoreError::AuthoritativeCapacity { .. }
             | StoreError::AuthoritativeIntentInFlight { .. }
             | StoreError::AuthoritativeIntentQuarantined { .. }

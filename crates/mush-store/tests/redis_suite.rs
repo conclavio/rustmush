@@ -24,9 +24,9 @@ use mush_core::{
     ScopedIdempotencyKey, World,
 };
 use mush_store::{
-    AuthoritativeOutboxAttemptResult, AuthoritativeRetentionUsage, AuthoritativeScanCursor,
-    AuthoritativeStore, BundleStatus, IdempotencyStatus, ObjectStore, RedisStore, StoreError,
-    WriteBatch, suite,
+    AuthoritativeOutboxAttemptResult, AuthoritativeReadbackPhase, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, AuthoritativeStore, BundleStatus, IdempotencyStatus, ObjectStore,
+    RedisStore, StoreError, WriteBatch, suite,
 };
 use tokio::sync::Mutex;
 
@@ -338,6 +338,12 @@ redis_gated!(authoritative_contract_conflicts, store, {
 });
 redis_gated!(authoritative_contract_retention_generation, store, {
     suite::authoritative_retention_generation_contract(&store).await;
+});
+// The live half of the RedisJSON re-serialization probe. Both authoritative
+// scripts compare readback *bytes*, so this is the only place that can answer
+// whether a real RedisJSON echoes serde_json's output verbatim.
+redis_gated!(authoritative_contract_number_shaped_post_images, store, {
+    suite::authoritative_number_shaped_post_image_round_trips(&store).await;
 });
 redis_gated!(module_kv_round_trip, store, {
     suite::module_kv_round_trip(&store).await;
@@ -663,9 +669,59 @@ redis_gated!(
 
         assert!(matches!(
             store.checkpoint_authoritative(token, hash).await,
-            Err(StoreError::AuthoritativeCorrupt(message))
-                if message.contains("READBACK_MISMATCH")
+            Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                if key == "meta:next_id"
+                    && phase == AuthoritativeReadbackPhase::Checkpoint
         ));
+        assert_eq!(
+            store.client().exists::<i64, _>(intent_key).await.unwrap(),
+            1,
+            "failed checkpoint must retain the exact repair witness"
+        );
+    }
+);
+
+// The negative proof for the diagnostic itself: a *JSON* replay target
+// clobbered with a genuinely different document must be refused by name, not
+// as one undifferentiated string for the whole bundle. It lives here rather
+// than in the shared suite because naming the offending key needs a raw
+// `JSON.SET` behind the store's back, and the suite has no backend-neutral
+// escape for that.
+redis_gated!(
+    authoritative_checkpoint_readback_mismatch_names_the_clobbered_key,
+    store,
+    {
+        use fred::interfaces::KeysInterface;
+
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(37, 47);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        let intent_key = format!("auth:intent:{token}");
+        // The contract bundle's typed document, addressed the way the store
+        // addresses it.
+        let clobbered = "mod:redis_toy:action-state/v1/guarded/2";
+        store
+            .reserve_authoritative_intent(bundle)
+            .await
+            .expect("reserve checkpoint candidate");
+        store
+            .reconcile_authoritative(token, hash)
+            .await
+            .expect("finalize checkpoint candidate");
+        store
+            .debug_plant_raw_doc(clobbered, r#"{"amount":99}"#)
+            .await
+            .expect("clobber one materialized JSON post-image");
+
+        assert!(
+            matches!(
+                store.checkpoint_authoritative(token, hash).await,
+                Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                    if key == clobbered && phase == AuthoritativeReadbackPhase::Checkpoint
+            ),
+            "the refusal must name the one clobbered key, not the whole bundle"
+        );
         assert_eq!(
             store.client().exists::<i64, _>(intent_key).await.unwrap(),
             1,
