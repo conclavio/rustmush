@@ -1607,6 +1607,52 @@ struct BoundaryEnv {
     controls: Arc<controls::GatewayControls>,
 }
 
+/// The fixed marker an operator greps the gateway log for when the halves were
+/// built at different [`IPC_VERSION`]s. Stable text, quoted by the proof in
+/// `tests/server_panic_relaunch.rs`; do not reword it.
+pub const IPC_VERSION_SKEW_MARKER: &str = "IPC-VERSION-SKEW";
+
+/// Why an attempt to wire a server boundary failed.
+///
+/// The supervisor treats the two arms differently, which is the whole point of
+/// the type: a transport/handshake/resync failure is evidence that this server
+/// cannot come back and so spends a crash-guard attempt, while an
+/// [`IPC_VERSION`] mismatch is evidence only that an operator deployed
+/// mismatched binaries. Under D1 a deploy can rebuild the server half and
+/// `reload` the gateway, so a FRESH server child announces its version to a
+/// gateway built at the old one; counting that as a crash burned the guard in
+/// five attempts and abandoned supervision for good, leaving every held
+/// connection alive and permanently input-refused with no way back short of a
+/// gateway restart (which drops them).
+#[derive(Debug)]
+enum BoundaryFailure {
+    /// The boundary could not be established: connect, handshake, or the
+    /// post-reconnect resync barrier. Counts against the crash-loop guard.
+    Failed(String),
+    /// The server half completed its Hello but speaks a different
+    /// [`IPC_VERSION`]. An operator error, not a crash loop.
+    VersionSkew { server_proto: u32 },
+}
+
+impl From<String> for BoundaryFailure {
+    fn from(e: String) -> BoundaryFailure {
+        BoundaryFailure::Failed(e)
+    }
+}
+
+impl std::fmt::Display for BoundaryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BoundaryFailure::Failed(e) => f.write_str(e),
+            BoundaryFailure::VersionSkew { server_proto } => write!(
+                f,
+                "{IPC_VERSION_SKEW_MARKER}: server speaks ipc v{server_proto}, \
+                 gateway speaks v{IPC_VERSION}"
+            ),
+        }
+    }
+}
+
 /// Connect to a (freshly launched) server endpoint, run the [`ToGateway::Hello`]
 /// handshake + [`IPC_VERSION`] check, and wire up the per-connection boundary:
 /// a fresh `ToServer` channel + reply table, a writer task, and a reader task
@@ -1618,7 +1664,7 @@ async fn connect_and_wire(
     sessions: &Arc<SessionManager>,
     connect_timeout: Duration,
     env: &BoundaryEnv,
-) -> Result<WiredBoundary, String> {
+) -> Result<WiredBoundary, BoundaryFailure> {
     let manifest = &env.manifest;
     let (reader_half, writer_half) = connect_with_retry(endpoint, connect_timeout).await?;
 
@@ -1638,15 +1684,18 @@ async fn connect_and_wire(
             panels,
         }) => {
             if proto != IPC_VERSION {
-                return Err(format!(
-                    "ipc version mismatch: server speaks {proto}, gateway speaks {IPC_VERSION}"
-                ));
+                // Its own arm: the two halves were built at different commits,
+                // which no amount of respawning fixes and which the crash-loop
+                // guard must therefore not spend its budget on (WS22-S16).
+                return Err(BoundaryFailure::VersionSkew {
+                    server_proto: proto,
+                });
             }
             *manifest.lock().expect("manifest cache poisoned") = HelloManifest { features, panels };
             tracing::info!(proto, server, "handshake ok");
         }
-        Some(other) => return Err(format!("expected Hello, got {other:?}")),
-        None => return Err("server closed the boundary before Hello".to_string()),
+        Some(other) => return Err(format!("expected Hello, got {other:?}").into()),
+        None => return Err("server closed the boundary before Hello".to_string().into()),
     }
 
     let (raw_tx, to_server_rx) = mpsc::unbounded_channel::<ToServer>();
@@ -1756,6 +1805,20 @@ fn server_down_notice() -> OutputEvent {
     ))
 }
 
+/// The gap notice when the launched server half speaks a different
+/// [`IPC_VERSION`] (WS22-S16). Unlike [`server_down_notice`] this is not a
+/// give-up: the supervisor keeps retrying, so the wording names the operator
+/// action and promises the session survives it. Broadcast once per skew streak,
+/// not once per retry.
+fn version_skew_notice() -> OutputEvent {
+    OutputEvent::Sys(RichText::tag(
+        "error",
+        "GAME: The server and gateway halves are built at different protocol versions, so \
+         the restart cannot complete. An operator must redeploy the matching server build; \
+         you stay connected and play resumes by itself when they do.",
+    ))
+}
+
 /// Broadcast one system line to every connected session.
 fn broadcast(sessions: &SessionManager, event: OutputEvent) {
     let _ = sessions.broadcast_all(Arc::new(event));
@@ -1780,6 +1843,12 @@ struct CrashGuard {
     /// burns the full deadline each time, so the wall-clock window alone would
     /// only ever hold a handful of timestamps and never trip.
     consecutive_failures: u32,
+    /// Consecutive [`BoundaryFailure::VersionSkew`] attempts. These are NOT
+    /// failures for admission purposes (they never trip the guard); the streak
+    /// exists only to pace the retries so a mismatched deploy does not respawn
+    /// a server process every backoff tick for as long as it takes an operator
+    /// to notice.
+    skew_streak: u32,
 }
 
 /// Max respawn attempts allowed within [`CRASH_WINDOW`] before the guard gives
@@ -1915,6 +1984,7 @@ impl CrashGuard {
             recent: Vec::new(),
             consecutive: 0,
             consecutive_failures: 0,
+            skew_streak: 0,
         }
     }
 
@@ -1956,6 +2026,27 @@ impl CrashGuard {
     /// Record that the current attempt failed to bring a server back.
     fn record_failure(&mut self) {
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.skew_streak = 0;
+    }
+
+    /// Record that the attempt just made met a version-skewed server rather
+    /// than a crash: give the attempt back.
+    ///
+    /// The guard exists to stop respawning a server that cannot run. A server
+    /// that greets a gateway built at another [`IPC_VERSION`] runs fine — the
+    /// operator deployed halves from two commits — so spending the budget on it
+    /// buys nothing and costs everything: five mismatched handshakes and the
+    /// supervisor abandons a boundary full of live, input-refused players.
+    /// Undoing the attempt keeps the retry loop alive indefinitely, so
+    /// redeploying the matching binary heals the gap on its own, with no
+    /// gateway restart and no dropped connections. Returns the skew streak,
+    /// which paces [`CrashGuard::skew_backoff`].
+    fn record_version_skew(&mut self) -> u32 {
+        // `record_attempt` pushed this attempt's timestamp last.
+        self.recent.pop();
+        self.consecutive = self.consecutive.saturating_sub(1);
+        self.skew_streak = self.skew_streak.saturating_add(1);
+        self.skew_streak
     }
 
     /// Record that a respawn succeeded — the server is back and re-attached. Only
@@ -1963,12 +2054,22 @@ impl CrashGuard {
     /// timestamps so a boot-then-crash loop still trips.
     fn record_success(&mut self) {
         self.consecutive_failures = 0;
+        self.skew_streak = 0;
     }
 
     /// The backoff to wait before the next respawn (grows with consecutive fast
     /// restarts, capped).
     fn backoff(&self) -> Duration {
         let shift = self.consecutive.saturating_sub(1).min(5);
+        BACKOFF_BASE.saturating_mul(1u32 << shift).min(BACKOFF_CAP)
+    }
+
+    /// The extra pause after a version-skewed handshake. Same shape and cap as
+    /// [`CrashGuard::backoff`], on its own counter: skew retries are unbounded
+    /// (nothing gives up), so they must settle onto the cap rather than respawn
+    /// a server process every 200 ms until an operator redeploys.
+    fn skew_backoff(&self) -> Duration {
+        let shift = self.skew_streak.saturating_sub(1).min(5);
         BACKOFF_BASE.saturating_mul(1u32 << shift).min(BACKOFF_CAP)
     }
 }
@@ -2091,6 +2192,31 @@ async fn supervise(
                             }
                         }
                     }
+                }
+                Err(BoundaryFailure::VersionSkew { server_proto }) => {
+                    // NOT a crash (WS22-S16): the halves were built at different
+                    // commits. Hand the attempt back to the guard so the retry
+                    // loop outlives the mistake, name the operator action, and
+                    // pace the next try.
+                    let streak = guard.record_version_skew();
+                    tracing::error!(
+                        marker = IPC_VERSION_SKEW_MARKER,
+                        server_proto,
+                        gateway_proto = IPC_VERSION,
+                        streak,
+                        "the launched server half speaks a different ipc version than this \
+                         gateway; rebuild and redeploy BOTH halves from the same commit — the \
+                         gateway keeps retrying, and holds every session in the restart gap \
+                         until a matching server answers"
+                    );
+                    if streak == 1 {
+                        broadcast(&sessions, version_skew_notice());
+                    }
+                    if !wait_for_exit("version-skewed server instance", new_instance.exited).await {
+                        announce_uncertain_exit(&sessions);
+                        return;
+                    }
+                    tokio::time::sleep(guard.skew_backoff()).await;
                 }
                 Err(e) => {
                     guard.record_failure();
@@ -2227,13 +2353,17 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             }
         };
     let first_instance = first_instance.expect("first instance set above");
+    // The FIRST boundary has no supervisor behind it yet and no sessions to
+    // hold, so every failure — version skew included — is simply a gateway that
+    // cannot start. It is worth saying out loud which one it was.
     let first_wired = connect_and_wire(
         &first_instance.endpoint,
         &sessions,
         INITIAL_CONNECT_TIMEOUT,
         &env,
     )
-    .await?;
+    .await
+    .map_err(|e| e.to_string())?;
     boundary.connect(Arc::clone(&first_wired.conn));
 
     // The gateway's own KV store (accounts/tokens/bans).
@@ -3177,6 +3307,55 @@ mod tests {
         assert!(
             !guard.tripped(),
             "a successful reconnect must reset the consecutive-failure streak"
+        );
+    }
+
+    /// WS22-S16: a version-skewed handshake is an operator error, not a crash.
+    /// Ten times the consecutive-failure ceiling of them must leave the guard
+    /// admitting attempts — including on the wall-clock window, which
+    /// `record_attempt` had already stamped — so the supervisor never abandons
+    /// a boundary full of held sessions over a mismatched deploy. The retries
+    /// still pace themselves, and one real failure ends the streak.
+    #[test]
+    fn version_skew_never_trips_the_crash_guard() {
+        let mut guard = CrashGuard::new();
+        for i in 0..(MAX_CONSECUTIVE_FAILURES * 10) {
+            assert!(
+                !guard.tripped(),
+                "skewed attempt {i} must still be admitted (it is not a crash)"
+            );
+            guard.record_attempt();
+            let streak = guard.record_version_skew();
+            assert_eq!(streak, i + 1, "the skew streak counts every mismatch");
+        }
+        assert!(
+            !guard.tripped(),
+            "a version-skewed server must never trip the crash-loop guard: the halves are \
+             mismatched, not dying, and a redeployed server heals it with no gateway restart"
+        );
+        assert!(
+            guard.recent.is_empty(),
+            "a forgiven attempt must leave nothing in the wall-clock window either"
+        );
+        assert_eq!(
+            guard.consecutive_failures, 0,
+            "no skew may reach the consecutive-failure ceiling"
+        );
+        assert_eq!(
+            guard.skew_backoff(),
+            BACKOFF_CAP,
+            "a sustained skew settles onto the cap instead of respawning every base tick"
+        );
+
+        // A real failure is still a real failure, and ends the skew streak.
+        guard.record_attempt();
+        guard.record_failure();
+        assert_eq!(guard.consecutive_failures, 1);
+        assert_eq!(guard.skew_streak, 0);
+        assert_eq!(
+            guard.skew_backoff(),
+            BACKOFF_BASE,
+            "the next skew after a real failure starts its pacing over"
         );
     }
 

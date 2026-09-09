@@ -16,6 +16,12 @@
 //!   faults the same way. The connection is never dropped: the player is told
 //!   the server is restarting, is reconnected into the reloaded world, and
 //!   keeps playing.
+//! - **Skew half (WS22-S16).** The contrast to a crash: a server half built at
+//!   another commit, which answers the handshake with a different
+//!   `IPC_VERSION`. That is an operator error, not a dying world, so it must
+//!   NOT spend the crash-loop budget — before this step five mismatched
+//!   handshakes abandoned supervision for good, leaving every held session
+//!   alive and permanently input-refused.
 //!
 //! Before this step the server did neither. `serve` awaited its gateway reader
 //! to completion and only then looked at the world's join handle, so a world
@@ -28,18 +34,21 @@
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
 use mush_core::GOD;
-use mush_gateway::{GatewayOptions, LaunchedServer, RestartTrigger, ServerLauncher, ServerSource};
+use mush_gateway::{
+    GatewayOptions, IPC_VERSION_SKEW_MARKER, LaunchedServer, RestartTrigger, ServerLauncher,
+    ServerSource,
+};
 use mush_ipc::{
-    FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IpcEndpoint, ToGateway,
-    ToServer, WireInbound, write_frame,
+    FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION, IpcEndpoint,
+    ToGateway, ToServer, WireInbound, write_frame,
 };
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
 use russh::ChannelMsg;
@@ -585,4 +594,184 @@ async fn a_faulted_world_is_relaunched_and_the_session_keeps_playing() {
     god.expect_after(after_restart, "Vault").await;
 
     drop(god);
+}
+
+// ---------------------------------------------------------------------------
+// Skew half (WS22-S16)
+// ---------------------------------------------------------------------------
+
+/// Skewed boots served before the operator "redeploys" the matching build. One
+/// more than the gateway's private `MAX_CONSECUTIVE_FAILURES` (5): the count at
+/// which the crash-loop guard used to give up and stop supervising.
+const SKEWED_BOOTS: usize = 6;
+
+/// A stand-in for a server half built at another commit: it binds the boundary
+/// and greets the gateway properly, but announces the wrong [`IPC_VERSION`].
+/// Everything else about it is healthy — that is exactly the point, and why
+/// counting it as a crash was wrong.
+async fn launch_version_skewed_server() -> Result<LaunchedServer, String> {
+    let listener = mush_ipc::listen(&IpcEndpoint::parse("127.0.0.1:0")?)
+        .await
+        .map_err(|e| format!("binding the skewed server: {e}"))?;
+    let addr = listener
+        .tcp_addr()
+        .ok_or_else(|| "the skewed server needs a tcp endpoint".to_string())?;
+    let (exit_tx, exit_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        if let Ok((reader, mut writer)) = listener.accept().await {
+            let _ = write_frame(
+                &mut writer,
+                &ToGateway::Hello {
+                    proto: IPC_VERSION + 1,
+                    server: "mush-server (built at another commit)".to_string(),
+                    features: vec![],
+                    panels: vec![],
+                },
+            )
+            .await;
+            // Stay up until the gateway hangs up on the mismatch: a skewed
+            // server is a live process, not a crashed one, and the supervisor
+            // confirms its exit before it launches the next.
+            let mut frames = FrameReader::new(reader);
+            while matches!(frames.read::<ToServer>().await, Ok(Some(_))) {}
+        }
+        drop(listener);
+        let _ = exit_tx.send(());
+    });
+    Ok(LaunchedServer {
+        endpoint: IpcEndpoint::Tcp(addr),
+        exited: Box::pin(async move {
+            let _ = exit_rx.await;
+        }),
+    })
+}
+
+/// The botched deploy, then the fix. Boot 0 is the gateway's own startup (a
+/// healthy server, so a player can get in and be held); the next
+/// [`SKEWED_BOOTS`] answer with the wrong protocol version; the one after that
+/// is the operator redeploying the matching build.
+struct SkewedThenRedeployedLauncher {
+    store: Arc<dyn ObjectStore>,
+    launches: Arc<AtomicUsize>,
+}
+
+impl ServerLauncher for SkewedThenRedeployedLauncher {
+    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
+        let n = self.launches.fetch_add(1, Ordering::SeqCst);
+        if (1..=SKEWED_BOOTS).contains(&n) {
+            return Box::pin(launch_version_skewed_server());
+        }
+        let store = Arc::clone(&self.store);
+        Box::pin(launch_thread_server(store))
+    }
+}
+
+/// A `tracing` writer that keeps the log in memory, so the proof can assert on
+/// the operator-facing marker itself rather than on a paraphrase of it.
+#[derive(Clone)]
+struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for CapturedLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("log buffer poisoned")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+    type Writer = CapturedLog;
+
+    fn make_writer(&'a self) -> CapturedLog {
+        self.clone()
+    }
+}
+
+/// The failure WS22-S16 closes: a deploy that rebuilds the server half against
+/// a bumped `IPC_VERSION` while the running gateway still speaks the old one.
+/// Every relaunch handshakes and is refused, and the supervisor used to count
+/// each refusal as a crash — five of them and it broadcast "the server is down"
+/// and RETURNED, so the boundary stayed in its gap for ever: every SSH session
+/// still connected, none of them able to type, and `SIGHUP` powerless because
+/// the returned supervisor had dropped the restart receiver.
+///
+/// The mismatch must instead be its own verdict: logged with a fixed marker an
+/// operator can grep, told to players in words that name the action, kept OFF
+/// the crash-loop budget, and retried for as long as it takes — so redeploying
+/// the matching server build heals the game with no gateway restart and no
+/// dropped connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_version_skewed_server_is_not_a_crash_and_heals_on_redeploy() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    assert!(
+        tracing_subscriber::fmt()
+            .with_writer(CapturedLog(Arc::clone(&log)))
+            .with_max_level(tracing::Level::ERROR)
+            .with_ansi(false)
+            .try_init()
+            .is_ok(),
+        "this proof owns the process-wide subscriber; nothing else in this test binary \
+         may install one"
+    );
+
+    let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let launches = Arc::new(AtomicUsize::new(0));
+    let (ssh_addr, trigger) = start_split(Box::new(SkewedThenRedeployedLauncher {
+        store: Arc::clone(&server_store),
+        launches: Arc::clone(&launches),
+    }))
+    .await;
+
+    let (_g, mut god) = play_client(ssh_addr).await;
+    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
+    god.expect("Connected as God (account boss, 1 connection).")
+        .await;
+    god.expect("Limbo #0").await;
+
+    // The deploy: the operator restarts the server half, and every replacement
+    // for the next six attempts is the wrong build.
+    let before_restart = god.mark();
+    assert!(
+        trigger.restart().await,
+        "the supervisor must accept a deliberate restart"
+    );
+    god.expect_after(before_restart, "restarting").await;
+    // The gap names the operator action instead of "could not be restarted",
+    // and promises the session survives it.
+    god.expect_after(before_restart, "different protocol versions")
+        .await;
+    // ... and it does: the seventh launch is the corrected binary, and the held
+    // session re-attaches with no gateway restart. Reaching this line at all is
+    // the proof the guard never tripped — a tripped guard returns from
+    // `supervise`, and no later launch is ever made.
+    god.expect_after(before_restart, "Reconnected").await;
+    god.expect_after(before_restart, "Limbo #0").await;
+
+    let after_heal = god.mark();
+    god.send_line("@dig Vault = east;e, west;w").await;
+    god.expect_after(after_heal, "Vault created with room number")
+        .await;
+
+    assert_eq!(
+        launches.load(Ordering::SeqCst),
+        SKEWED_BOOTS + 2,
+        "the supervisor must keep relaunching past MAX_CONSECUTIVE_FAILURES skewed \
+         handshakes (boot 0 + {SKEWED_BOOTS} skewed + the redeploy); a smaller count means \
+         the crash-loop guard tripped on an operator error and abandoned the boundary"
+    );
+    let captured = String::from_utf8_lossy(&log.lock().expect("log buffer poisoned")).to_string();
+    assert!(
+        captured.contains(IPC_VERSION_SKEW_MARKER),
+        "the mismatch must be logged with the fixed marker an operator greps for; captured: \
+         {captured}"
+    );
+
+    drop(god);
+    drop(trigger);
 }
