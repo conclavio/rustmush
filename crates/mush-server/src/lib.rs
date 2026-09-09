@@ -686,10 +686,65 @@ struct ServerConnectionClaims {
     bytes: usize,
 }
 
+/// How many times an exact gateway replay may re-arm one retained claim
+/// before the server gives up on it.
+///
+/// A retained claim is the honest answer to a store or world state that could
+/// neither prove nor deny the request's durable fate; the gateway's own replay
+/// (its custody copy survives, because retention publishes no disposition) is
+/// what re-runs the read-only preflight. This bound is what keeps that from
+/// being an unbounded loop: after it, the server surrenders custody and hands
+/// the request back with `Rejected { retryable: true }`.
+const MAX_CLAIM_REARMS: u8 = 3;
+
+/// How many read-only preflight lookups one handler may spend on a store that
+/// keeps answering transiently, and the wall-clock window they must fit in.
+///
+/// The backoff starts at 100 ms and doubles, so the attempt ceiling binds on a
+/// store that fails fast (four sleeps: 100 + 200 + 400 + 800 ms) and the window
+/// binds on one that is merely slow to answer. Both are deliberately short:
+/// the loop only exists to ride out a hiccup, and giving up on it costs
+/// nothing but a retained claim the next gateway replay re-arms.
+const MAX_PREFLIGHT_ATTEMPTS: u32 = 5;
+
+/// See [`MAX_PREFLIGHT_ATTEMPTS`].
+const PREFLIGHT_RETRY_WINDOW: Duration = Duration::from_secs(5);
+
+/// The two custody states one server claim can be in.
+///
+/// `Active` means some handler owns this uid's single disposition. `Retained`
+/// means no handler does: the request's durable fate is unproven, both sides
+/// still hold it, and the next exact replay re-arms it. The instant is
+/// [`tokio::time::Instant`] — `std::time::Instant` does not move under
+/// `tokio::time::pause`, so a test could not reach the age this records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClaimState {
+    Active {
+        rearms: u8,
+    },
+    Retained {
+        since: tokio::time::Instant,
+        reason: &'static str,
+        rearms: u8,
+    },
+}
+
+impl ClaimState {
+    /// How many times this claim has already been re-armed — carried across
+    /// the flip back to `Active`, because it is the *claim's* budget and not
+    /// one retention's.
+    const fn rearms(self) -> u8 {
+        match self {
+            ClaimState::Active { rearms } | ClaimState::Retained { rearms, .. } => rearms,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ServerLegacyClaim {
     request: GatewayRequest,
     bytes: usize,
+    state: ClaimState,
 }
 
 /// Server-side bounded pre-ownership custody.
@@ -710,7 +765,18 @@ struct ServerInputClaims {
 enum ServerClaimAdmission {
     New,
     Duplicate,
-    Full { warn: bool },
+    /// An exact replay of a *retained* claim: custody was already held, the
+    /// claim is now `Active` again under the same lock that read it, and the
+    /// caller owes it one fresh handler. Flipping the state here — rather than
+    /// letting the caller do it after the guard drops — is what stops two
+    /// concurrent replays from spawning two handlers for one uid.
+    Rearm,
+    /// A retained claim that has spent its re-arm budget. `admit` has already
+    /// disposed of it; the caller owes the gateway a terminal answer.
+    Exhausted,
+    Full {
+        warn: bool,
+    },
     Invalid,
     Conflict,
 }
@@ -742,12 +808,40 @@ impl ServerInputClaims {
         let Ok(bytes) = request.input.logical_bytes() else {
             return ServerClaimAdmission::Invalid;
         };
-        if let Some(existing) = self.entries.get(&request.uid) {
-            return if existing.request == request {
-                ServerClaimAdmission::Duplicate
-            } else {
-                ServerClaimAdmission::Conflict
-            };
+        if let Some(existing) = self.entries.get_mut(&request.uid) {
+            if existing.request != request {
+                return ServerClaimAdmission::Conflict;
+            }
+            match existing.state {
+                // A handler owns this uid's disposition already.
+                ClaimState::Active { .. } => return ServerClaimAdmission::Duplicate,
+                ClaimState::Retained {
+                    since,
+                    reason,
+                    rearms,
+                } if rearms < MAX_CLAIM_REARMS => {
+                    existing.state = ClaimState::Active { rearms: rearms + 1 };
+                    tracing::warn!(
+                        request = %request.uid,
+                        reason,
+                        retained_for_ms = since.elapsed().as_millis(),
+                        rearms = rearms + 1,
+                        "re-arming a retained coordinator claim on an exact replay"
+                    );
+                    return ServerClaimAdmission::Rearm;
+                }
+                // Out of re-arms: stop holding a request nobody can resolve.
+                ClaimState::Retained { reason, .. } => {
+                    tracing::error!(
+                        request = %request.uid,
+                        reason,
+                        max = MAX_CLAIM_REARMS,
+                        "retained claim exhausted its re-arm budget; surrendering custody"
+                    );
+                }
+            }
+            self.dispose(request.uid);
+            return ServerClaimAdmission::Exhausted;
         }
 
         let conn = request.input.conn();
@@ -763,14 +857,42 @@ impl ServerInputClaims {
             return ServerClaimAdmission::Full { warn };
         }
 
-        self.entries
-            .insert(request.uid, ServerLegacyClaim { request, bytes });
+        self.entries.insert(
+            request.uid,
+            ServerLegacyClaim {
+                request,
+                bytes,
+                state: ClaimState::Active { rearms: 0 },
+            },
+        );
         self.bytes += bytes;
         let account = self.per_connection.entry(conn).or_default();
         account.count += 1;
         account.bytes += bytes;
         self.capacity_warned = false;
         ServerClaimAdmission::New
+    }
+
+    /// Park one claim in [`ClaimState::Retained`]: this handler is finished
+    /// but the request's durable fate is *unproven*, so custody is kept rather
+    /// than answered with a disposition that would be a lie in one direction
+    /// or the other.
+    ///
+    /// Nothing is published, which is precisely what leaves the gateway's own
+    /// replay copy in place: its next replay of this uid re-arms the claim
+    /// (see [`ServerInputClaims::admit`]) and re-runs the read-only preflight.
+    /// Returns `false` if the claim is already gone — a drifted caller, not a
+    /// state to invent.
+    fn retain(&mut self, uid: RequestUid, reason: &'static str) -> bool {
+        let Some(claim) = self.entries.get_mut(&uid) else {
+            return false;
+        };
+        claim.state = ClaimState::Retained {
+            since: tokio::time::Instant::now(),
+            reason,
+            rearms: claim.state.rearms(),
+        };
+        true
     }
 
     /// Surrender custody of one claim unconditionally and reconcile the
@@ -866,6 +988,36 @@ fn release_input_claim(
     claims_guard(claims).dispose(request)
 }
 
+/// Keep custody of one coordinator claim without publishing a disposition,
+/// because the request's durable fate could be neither proved nor denied.
+///
+/// This is the *only* honest answer for an ambiguous outcome: `Busy` and
+/// `Rejected` both assert "no intent exists", which a store that never
+/// answered cannot support, and `Owned` asserts one does. Retention asserts
+/// nothing and costs the gateway nothing — it still holds its replay copy —
+/// so its next replay re-arms the claim and re-runs the read-only lookup.
+fn retain_input_claim(
+    claims: &Arc<Mutex<ServerInputClaims>>,
+    request: RequestUid,
+    reason: &'static str,
+) {
+    if claims_guard(claims).retain(request, reason) {
+        tracing::warn!(
+            %request,
+            reason,
+            "coordinator custody retained; awaiting an exact gateway replay"
+        );
+    } else {
+        // Only a drifted caller reaches this: the claim was disposed of by
+        // some other path while its handler still believed it owned it.
+        tracing::error!(
+            %request,
+            reason,
+            "retention named a claim the custody table no longer holds"
+        );
+    }
+}
+
 async fn handle_authoritative_input(
     request: GatewayRequest,
     routes: Arc<OfferRouteTable>,
@@ -906,18 +1058,47 @@ async fn handle_authoritative_input(
         }
     };
     let Some(authoritative_store) = store.authoritative_store() else {
-        tracing::error!(%uid, "configured store lacks authoritative request capability; preserving custody");
+        // A configuration fault, not an ambiguity: this store will never grow
+        // the capability, so retention would hold the claim while every replay
+        // failed identically. Answer terminally instead.
+        release_input_claim(&claims, uid);
+        request_disposition(
+            &sink,
+            uid,
+            GatewayRequestDisposition::Rejected { retryable: false },
+        );
+        tracing::error!(%uid, "configured store lacks authoritative request capability");
         return;
     };
+    let preflight_started = tokio::time::Instant::now();
     let mut preflight_delay = Duration::from_millis(100);
+    let mut preflight_attempts = 0u32;
     let preflight = loop {
+        preflight_attempts += 1;
         match ActionCoordinator::preflight(authoritative_store, envelope.clone()).await {
             Ok(preflight) => break preflight,
             Err(error) if error.is_transient() => {
                 // Busy means "proved no intent" and would be a lie here: this
-                // may be a replay whose exact intent already exists. Retain
-                // bounded custody and retry the read-only lookup in place.
-                tracing::warn!(%uid, error = %error, "coordinator preflight transient; retaining custody");
+                // may be a replay whose exact intent already exists. Retry the
+                // read-only lookup in place, but only for a bounded window —
+                // this loop is the fast path for a store hiccup, not the
+                // durable one. The durable one is retention plus the gateway's
+                // own replay, which survives even a server restart.
+                let spent = preflight_started.elapsed();
+                if preflight_attempts >= MAX_PREFLIGHT_ATTEMPTS
+                    || spent.saturating_add(preflight_delay) > PREFLIGHT_RETRY_WINDOW
+                {
+                    tracing::error!(
+                        %uid,
+                        error = %error,
+                        attempts = preflight_attempts,
+                        spent_ms = spent.as_millis(),
+                        "coordinator preflight stayed transient to the bound"
+                    );
+                    retain_input_claim(&claims, uid, "preflight transient to the bound");
+                    return;
+                }
+                tracing::warn!(%uid, error = %error, attempt = preflight_attempts, "coordinator preflight transient; retrying in place");
                 tokio::time::sleep(preflight_delay).await;
                 preflight_delay = (preflight_delay * 2).min(Duration::from_secs(5));
             }
@@ -926,6 +1107,7 @@ async fn handle_authoritative_input(
                 // intent exists. Preserve both gateway and server custody and
                 // publish no lying rejection.
                 tracing::error!(%uid, error = %error, "coordinator preflight could not prove request state");
+                retain_input_claim(&claims, uid, "preflight could not prove request state");
                 return;
             }
         }
@@ -980,13 +1162,27 @@ async fn handle_authoritative_input(
             return;
         }
         ActionPreflight::Quarantined(receipt) => {
-            // Quarantine is terminal evidence, but not successful completion
-            // and not proof of "no intent". Hold custody for the incident.
+            // Quarantine is terminal evidence: the request consumed its
+            // idempotency binding and must never be planned again. It is not
+            // completion, so `Finished` would be a lie — but the intent IS
+            // durably owned, and `Owned` says exactly that and no more. The
+            // status lookup is the honest follow-up, and it is terminal for
+            // the gateway (which drops its replay copy on any disposition),
+            // so no new wire variant is needed to say it.
             tracing::error!(
                 %uid,
                 token = %receipt.token(),
                 evidence = %receipt.evidence_hash(),
-                "coordinator request is quarantined; preserving gateway custody"
+                "coordinator request is quarantined; answering from the durable record"
+            );
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Owned {
+                    token: receipt.token(),
+                    status: status.clone(),
+                },
             );
             return;
         }
@@ -1072,11 +1268,13 @@ async fn handle_authoritative_input(
             return;
         }
         Ok(Err(AuthoritativeCommitFailure::Integrity(detail))) => {
-            tracing::error!(%uid, %detail, "coordinator ownership became ambiguous; preserving custody");
+            tracing::error!(%uid, %detail, "coordinator ownership became ambiguous; retaining custody");
+            retain_input_claim(&claims, uid, "ownership became ambiguous");
             return;
         }
         Err(_) => {
-            tracing::error!(%uid, "world dropped coordinator ownership result; preserving custody");
+            tracing::error!(%uid, "world dropped coordinator ownership result; retaining custody");
+            retain_input_claim(&claims, uid, "world dropped the ownership result");
             return;
         }
     };
@@ -1258,6 +1456,22 @@ pub async fn reader_loop(
                                     GatewayRequestDisposition::LegacyClaimed,
                                 );
                             }
+                            ServerClaimAdmission::Rearm | ServerClaimAdmission::Exhausted => {
+                                // Unreachable by construction: only the
+                                // coordinator retains a claim, and it retains
+                                // only its own actions. Fail closed rather
+                                // than re-authorize an execution this arm
+                                // never classified.
+                                tracing::error!(
+                                    request = %uid,
+                                    "legacy claim reported a coordinator-only custody state"
+                                );
+                                request_disposition(
+                                    &reply_sink,
+                                    uid,
+                                    GatewayRequestDisposition::Rejected { retryable: false },
+                                );
+                            }
                             ServerClaimAdmission::Full { warn } => {
                                 if warn {
                                     tracing::warn!(
@@ -1288,7 +1502,10 @@ pub async fn reader_loop(
                     GatewayInput::Action(_) => {
                         let admission = claims_guard(&input_claims).admit(request.clone());
                         match admission {
-                            ServerClaimAdmission::New => {
+                            // `Rearm` is a claim the table just flipped back to
+                            // `Active` under its own lock, so exactly one
+                            // handler exists for it here too.
+                            ServerClaimAdmission::New | ServerClaimAdmission::Rearm => {
                                 let world = world.clone();
                                 let store = Arc::clone(&store);
                                 let routes = Arc::clone(&offer_routes);
@@ -1305,6 +1522,22 @@ pub async fn reader_loop(
                                 tracing::debug!(
                                     request = %uid,
                                     "duplicate coordinator input joined server pre-ownership custody"
+                                );
+                            }
+                            ServerClaimAdmission::Exhausted => {
+                                // The re-arm budget is spent and `admit` has
+                                // already surrendered custody. Hand the
+                                // request back through the vocabulary the
+                                // gateway already releases its replay copy on,
+                                // so no uid can be retained forever.
+                                tracing::error!(
+                                    request = %uid,
+                                    "retained coordinator claim exhausted its re-arms; returning it to the gateway"
+                                );
+                                request_disposition(
+                                    &reply_sink,
+                                    uid,
+                                    GatewayRequestDisposition::Rejected { retryable: true },
                                 );
                             }
                             ServerClaimAdmission::Full { warn } => {
@@ -1613,7 +1846,7 @@ mod world_exit_tests {
 #[cfg(test)]
 mod service_request_tests {
     use super::{
-        Arc, CreatePlayerErr, GatewayInput, GatewayRequest,
+        Arc, CreatePlayerErr, GatewayInput, GatewayRequest, MAX_CLAIM_REARMS,
         MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_SERVICE_REQUESTS, Mutex,
         ServerClaimAdmission, ServerClaimRelease, ServerInputClaims, ServiceRequestLimiter,
         ServiceResp, WorldReadError, admit_with_custody_snapshot, barrier_response, claims_guard,
@@ -1901,6 +2134,119 @@ mod service_request_tests {
 
         // And the payload has no world-input form to be enqueued as, either.
         assert!(Inbound::try_from(action.input).is_err());
+    }
+
+    /// Five returns out of `handle_authoritative_input` used to leak the claim:
+    /// no release, no disposition, and — because `admit` answered `Duplicate`
+    /// for the uid forever after — no way for a gateway replay to restart it
+    /// either. That silently wedged one connection's coordinator custody until
+    /// it reconnected.
+    ///
+    /// Retention is the state those returns now take, and an exact replay is
+    /// what re-arms it. The flip to `Active` happens under the same guard that
+    /// read `Retained`, so a gateway replaying twice cannot spawn two handlers
+    /// for one uid: the second replay is an ordinary `Duplicate`.
+    #[test]
+    fn an_identical_replay_of_a_retained_claim_rearms_once_and_then_is_active() {
+        let mut claims = ServerInputClaims::default();
+        let action = action_request(1, 9);
+        assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::New);
+        assert_eq!(
+            claims.admit(action.clone()),
+            ServerClaimAdmission::Duplicate,
+            "a replay while a handler owns the uid must not spawn a second one"
+        );
+        let custody = claims.capacity_snapshot();
+
+        assert!(claims.retain(action.uid, "test retention"));
+        assert_eq!(
+            claims.admit(action.clone()),
+            ServerClaimAdmission::Rearm,
+            "a retained claim must be re-armable, not silently swallowed as a duplicate"
+        );
+        assert_eq!(
+            claims.admit(action.clone()),
+            ServerClaimAdmission::Duplicate,
+            "the re-arm already flipped the claim Active; a second replay owes no handler"
+        );
+        assert_eq!(
+            claims.capacity_snapshot(),
+            custody,
+            "re-arming takes no extra custody: it is the same claim"
+        );
+    }
+
+    /// The other half of the bound: retention may not become a way for one uid
+    /// to occupy custody forever. After `MAX_CLAIM_REARMS`, `admit` surrenders
+    /// the claim itself and tells the caller to answer terminally — the caller
+    /// publishes `Rejected { retryable: true }`, which is the vocabulary the
+    /// gateway already drops its own replay copy on.
+    #[test]
+    fn a_retained_claim_stops_rearming_at_the_bound() {
+        let mut claims = ServerInputClaims::default();
+        let action = action_request(2, 9);
+        assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::New);
+
+        for expected in 1..=MAX_CLAIM_REARMS {
+            assert!(claims.retain(action.uid, "test retention"));
+            assert_eq!(
+                claims.admit(action.clone()),
+                ServerClaimAdmission::Rearm,
+                "re-arm {expected} is inside the budget"
+            );
+        }
+
+        assert!(claims.retain(action.uid, "test retention"));
+        assert_eq!(
+            claims.admit(action.clone()),
+            ServerClaimAdmission::Exhausted,
+            "the budget is spent: the claim must be surrendered, not retained again"
+        );
+        assert_eq!(
+            claims.capacity_snapshot(),
+            (0, 0),
+            "an exhausted claim releases its custody and its per-connection budget"
+        );
+        assert_eq!(
+            claims.release(action.uid),
+            ServerClaimRelease::Unknown,
+            "nothing is left in the table to release"
+        );
+    }
+
+    /// The re-arm budget is the *claim's*, not one retention's: flipping back
+    /// to `Active` may not reset it, or an alternating retain/replay pair would
+    /// loop forever.
+    #[test]
+    fn the_rearm_budget_survives_the_flip_back_to_active() {
+        let mut claims = ServerInputClaims::default();
+        let action = action_request(3, 9);
+        assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::New);
+        for _ in 0..MAX_CLAIM_REARMS {
+            assert!(claims.retain(action.uid, "test retention"));
+            assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::Rearm);
+            // Between re-arms the claim is Active, exactly as a live handler
+            // leaves it. That must not refund the budget.
+            assert_eq!(
+                claims.admit(action.clone()),
+                ServerClaimAdmission::Duplicate
+            );
+        }
+        assert!(claims.retain(action.uid, "test retention"));
+        assert_eq!(claims.admit(action), ServerClaimAdmission::Exhausted);
+    }
+
+    /// Retention names a claim the table holds. A caller that retains a uid
+    /// already disposed of gets a `false` it can log, and invents no entry —
+    /// custody accounting stays exact.
+    #[test]
+    fn retaining_a_disposed_claim_creates_nothing() {
+        let mut claims = ServerInputClaims::default();
+        let action = action_request(4, 9);
+        assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::New);
+        assert_eq!(claims.dispose(action.uid), Some(action.clone()));
+        assert!(!claims.retain(action.uid, "test retention"));
+        assert_eq!(claims.capacity_snapshot(), (0, 0));
     }
 }
 

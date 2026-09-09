@@ -2,10 +2,18 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use mush_config::config::Config;
-use mush_core::{ActionOfferId, CanonicalHash, GOD, LIMBO, PerceivedRef, PrincipalId};
+use mush_core::{
+    ActionOfferId, AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeSemanticEvent,
+    CanonicalHash, CanonicalId, CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind,
+    DefinitionRegistryBuilder, GOD, IdempotencyKey, IdempotencyScope, LIMBO, Obj, ObjId, ObjKind,
+    OwnerId, PerceivedRef, PreparedCausalRef, PrincipalId, ReplayWrite, RequestUid, RulesValue,
+    ScopedIdempotencyKey,
+};
 use mush_ipc::{
     FrameReader, GatewayAction, GatewayInput, GatewayRequest, GatewayRequestDisposition,
     ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound, write_frame,
@@ -13,7 +21,15 @@ use mush_ipc::{
 use mush_proto::ProjectedActionStatus;
 use mush_server::action_coordinator::ActionCoordinator;
 use mush_store::BoundIdempotencyStatus;
-use mush_store::{AuthoritativeStore, BundleStatus, InMemoryStore, ObjectStore};
+use mush_store::{
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
+    AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
+    AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReceipt,
+    AuthoritativeRetentionUsage, AuthoritativeScanCursor, AuthoritativeStore, BanRec, BootSkip,
+    BundleStatus, DiscordBanRec, DiscordCodeRecord, DiscordLinkRec, IdempotencyStatus,
+    InMemoryStore, IntentReceipt, ModuleDocs, ObjectStore, PendingAuthoritativeIntent, SshKeyRec,
+    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
+};
 
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -534,4 +550,770 @@ async fn hello_advertises_the_tacsim_feature() {
         features.iter().any(|f| f == "channels"),
         "comsys still advertises as `channels`: {features:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// WS03-S4: the custody-leaking coordinator returns
+// ---------------------------------------------------------------------------
+
+/// Which answer the store gives the coordinator's read-only preflight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreflightFault {
+    /// Answer honestly from the in-memory store.
+    None,
+    /// Answer with a *transient* error, forever. Nothing about the request's
+    /// durable fate is ever proved, which is the state the retry loop used to
+    /// spin on without a ceiling or a deadline.
+    Transient,
+    /// Answer that the exact request is quarantined: terminal evidence that it
+    /// consumed its idempotency binding without committing.
+    Quarantined,
+}
+
+/// The commit token the planted quarantine receipt carries, so the test can
+/// prove the disposition names *that* durable record and not some other one.
+const QUARANTINE_TOKEN: [u8; 16] = [0x5a; 16];
+
+/// An [`ObjectStore`] whose authoritative *preflight lookup* can be made to
+/// fail transiently forever, or to report a quarantined binding. Everything
+/// else — the whole boot, the world's writes, the rest of the authoritative
+/// protocol — is the ordinary in-memory store.
+struct PreflightFaultStore {
+    inner: InMemoryStore,
+    fault: Mutex<PreflightFault>,
+    quarantined: AuthoritativeQuarantineReceipt,
+}
+
+impl PreflightFaultStore {
+    fn new() -> Arc<PreflightFaultStore> {
+        Arc::new(PreflightFaultStore {
+            inner: InMemoryStore::new(),
+            fault: Mutex::new(PreflightFault::None),
+            quarantined: quarantine_receipt(),
+        })
+    }
+
+    fn arm(&self, fault: PreflightFault) {
+        *self.fault.lock().unwrap() = fault;
+    }
+
+    fn fault(&self) -> PreflightFault {
+        *self.fault.lock().unwrap()
+    }
+
+    fn authoritative(&self) -> &dyn AuthoritativeStore {
+        self.inner
+            .authoritative_store()
+            .expect("the in-memory store is authoritative")
+    }
+}
+
+/// A valid quarantine receipt to plant. Its own identity is arbitrary: the
+/// coordinator reads only the token and the evidence hash off it, and the test
+/// asserts the disposition carries exactly this token.
+fn quarantine_receipt() -> AuthoritativeQuarantineReceipt {
+    let owner = OwnerId::new("preflight_fault").expect("owner");
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let action = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("action").expect("kind"),
+                DefinitionId::new("brace").expect("definition"),
+                1,
+                serde_json::json!({}),
+            )
+            .expect("action descriptor"),
+        )
+        .expect("register action");
+    let outcome = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("outcome").expect("kind"),
+                DefinitionId::new("braced").expect("definition"),
+                1,
+                serde_json::json!({}),
+            )
+            .expect("outcome descriptor"),
+        )
+        .expect("register outcome");
+    let request = RequestUid::from_bytes([0x33; 16]);
+    let principal = PrincipalId::Object { id: GOD };
+    let cause = PreparedCausalRef::new(request, None, 0).expect("root cause");
+    let bundle = AuthoritativeBundle::new(AuthoritativeBundleDraft {
+        token: CommitToken::from_bytes(QUARANTINE_TOKEN),
+        request,
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: owner.clone(),
+                namespace: CanonicalId::new("brace").expect("namespace"),
+            },
+            1,
+            IdempotencyKey::Request(request),
+        ),
+        ingress_hash: CanonicalHash::from_bytes([9; 32]),
+        request_hash: CanonicalHash::from_bytes([3; 32]),
+        plan_hash: CanonicalHash::from_bytes([4; 32]),
+        action: action.clone(),
+        provider: owner.clone(),
+        cause,
+        definitions: vec![action.clone(), outcome.clone()],
+        writes: vec![
+            ReplayWrite::ObjectSet {
+                object: Obj::new(ObjId(2), ObjKind::Thing, "quarantined", GOD, 0),
+            },
+            ReplayWrite::ObjectAllocatorSet { next_id: 3 },
+        ],
+        outcome: RulesValue::new(outcome.clone(), serde_json::json!({ "ok": true }))
+            .expect("outcome value"),
+        resolution: None,
+        semantic_events: vec![
+            AuthoritativeSemanticEvent::root(
+                cause,
+                &action,
+                RulesValue::new(outcome, serde_json::json!({ "ok": true })).expect("event value"),
+                vec![principal.clone()],
+            )
+            .expect("root event"),
+        ],
+        eligible_witnesses: vec![principal],
+        durable_outbox: Vec::new(),
+    })
+    .expect("quarantined bundle");
+    AuthoritativeQuarantineReceipt::new(&bundle, CanonicalHash::from_bytes([0xee; 32]))
+}
+
+impl AuthoritativeStore for PreflightFaultStore {
+    fn authoritative_idempotency_status<'a>(
+        &'a self,
+        key: &'a ScopedIdempotencyKey,
+        ingress_hash: CanonicalHash,
+    ) -> BoxFuture<'a, Result<IdempotencyStatus, StoreError>> {
+        match self.fault() {
+            PreflightFault::None => self
+                .authoritative()
+                .authoritative_idempotency_status(key, ingress_hash),
+            // Transient by construction: `is_transient()` is true for it, so
+            // the coordinator must read it as "unproven", never as "no intent
+            // exists".
+            PreflightFault::Transient => {
+                Box::pin(async move { Err(StoreError::AuthoritativeEpochContention) })
+            }
+            PreflightFault::Quarantined => {
+                let receipt = self.quarantined.clone();
+                Box::pin(async move { Ok(IdempotencyStatus::QuarantinedExact(Box::new(receipt))) })
+            }
+        }
+    }
+
+    fn reserve_authoritative_intent(
+        &self,
+        bundle: AuthoritativeBundle,
+    ) -> BoxFuture<'_, Result<IntentReceipt, StoreError>> {
+        self.authoritative().reserve_authoritative_intent(bundle)
+    }
+
+    fn bound_authoritative_idempotency_status<'a>(
+        &'a self,
+        key: &'a ScopedIdempotencyKey,
+    ) -> BoxFuture<'a, Result<BoundIdempotencyStatus, StoreError>> {
+        self.authoritative()
+            .bound_authoritative_idempotency_status(key)
+    }
+
+    fn reconcile_authoritative(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeReceipt, StoreError>> {
+        self.authoritative()
+            .reconcile_authoritative(token, expected_bundle_hash)
+    }
+
+    fn checkpoint_authoritative(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeCheckpointReceipt, StoreError>> {
+        self.authoritative()
+            .checkpoint_authoritative(token, expected_bundle_hash)
+    }
+
+    fn discard_quarantined_authoritative_intent(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeDiscardReceipt, StoreError>> {
+        self.authoritative()
+            .discard_quarantined_authoritative_intent(token, expected_bundle_hash, evidence_hash)
+    }
+
+    fn restore_quarantined_authoritative_intent(
+        &self,
+        bundle: AuthoritativeBundle,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<IntentReceipt, StoreError>> {
+        self.authoritative()
+            .restore_quarantined_authoritative_intent(bundle, evidence_hash)
+    }
+
+    fn pending_authoritative_outbox(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<AuthoritativeOutboxRecord>, StoreError>> {
+        self.authoritative().pending_authoritative_outbox()
+    }
+
+    fn begin_authoritative_outbox_attempt(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_attempts: u32,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>> {
+        self.authoritative().begin_authoritative_outbox_attempt(
+            item_id,
+            expected_payload_hash,
+            expected_attempts,
+        )
+    }
+
+    fn complete_authoritative_outbox_attempt(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_attempt: u32,
+        result: AuthoritativeOutboxAttemptResult,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>> {
+        self.authoritative().complete_authoritative_outbox_attempt(
+            item_id,
+            expected_payload_hash,
+            expected_attempt,
+            result,
+        )
+    }
+
+    fn note_authoritative_outbox_unroutable(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_passes: u32,
+        error: String,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>> {
+        self.authoritative().note_authoritative_outbox_unroutable(
+            item_id,
+            expected_payload_hash,
+            expected_passes,
+            error,
+        )
+    }
+
+    fn retire_authoritative_epochs<'a>(
+        &'a self,
+        scope: &'a IdempotencyScope,
+        minimum_accepted_epoch: u64,
+    ) -> BoxFuture<'a, Result<AuthoritativeEpochRetirement, StoreError>> {
+        self.authoritative()
+            .retire_authoritative_epochs(scope, minimum_accepted_epoch)
+    }
+
+    fn authoritative_status(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<BundleStatus, StoreError>> {
+        self.authoritative()
+            .authoritative_status(token, expected_bundle_hash)
+    }
+
+    fn pending_authoritative_intents(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<PendingAuthoritativeIntent>, StoreError>> {
+        self.authoritative().pending_authoritative_intents()
+    }
+
+    fn scan_authoritative_intents(
+        &self,
+        cursor: Option<AuthoritativeScanCursor>,
+        limit: usize,
+    ) -> BoxFuture<'_, Result<AuthoritativeIntentPage, StoreError>> {
+        self.authoritative()
+            .scan_authoritative_intents(cursor, limit)
+    }
+
+    fn authoritative_retention_generation(&self) -> BoxFuture<'_, Result<u64, StoreError>> {
+        self.authoritative().authoritative_retention_generation()
+    }
+
+    fn repair_authoritative_retention(
+        &self,
+        expected_generation: u64,
+        usage: AuthoritativeRetentionUsage,
+    ) -> BoxFuture<'_, Result<bool, StoreError>> {
+        self.authoritative()
+            .repair_authoritative_retention(expected_generation, usage)
+    }
+}
+
+impl ObjectStore for PreflightFaultStore {
+    fn authoritative_store(&self) -> Option<&dyn AuthoritativeStore> {
+        Some(self)
+    }
+
+    fn bootstrap_writable(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.bootstrap_writable()
+    }
+
+    fn load_world(&self) -> BoxFuture<'_, Result<Option<WorldSnapshot>, StoreError>> {
+        self.inner.load_world()
+    }
+
+    fn write(&self, batch: WriteBatch) -> BoxFuture<'_, Result<WriteReceipt, StoreError>> {
+        self.inner.write(batch)
+    }
+
+    fn create_account(&self, rec: AccountRec) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.create_account(rec)
+    }
+
+    fn get_account<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> BoxFuture<'a, Result<Option<AccountRec>, StoreError>> {
+        self.inner.get_account(account)
+    }
+
+    fn link_character<'a>(
+        &'a self,
+        account: &'a str,
+        id: ObjId,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        self.inner.link_character(account, id, name)
+    }
+
+    fn list_accounts(&self) -> BoxFuture<'_, Result<Vec<AccountRec>, StoreError>> {
+        self.inner.list_accounts()
+    }
+
+    fn set_account_password<'a>(
+        &'a self,
+        account: &'a str,
+        hash: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.set_account_password(account, hash)
+    }
+
+    fn set_account_ssh_keys<'a>(
+        &'a self,
+        account: &'a str,
+        keys: &'a [SshKeyRec],
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.set_account_ssh_keys(account, keys)
+    }
+
+    fn set_account_discord<'a>(
+        &'a self,
+        account: &'a str,
+        link: Option<&'a DiscordLinkRec>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.set_account_discord(account, link)
+    }
+
+    fn discord_user_reserve<'a>(
+        &'a self,
+        user_id: u64,
+        account: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.discord_user_reserve(user_id, account)
+    }
+
+    fn discord_user_release(&self, user_id: u64) -> BoxFuture<'_, Result<bool, StoreError>> {
+        self.inner.discord_user_release(user_id)
+    }
+
+    fn account_by_discord_user(
+        &self,
+        user_id: u64,
+    ) -> BoxFuture<'_, Result<Option<AccountRec>, StoreError>> {
+        self.inner.account_by_discord_user(user_id)
+    }
+
+    fn discord_code_put(
+        &self,
+        code: String,
+        rec: DiscordCodeRecord,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.discord_code_put(code, rec)
+    }
+
+    fn discord_code_take<'a>(
+        &'a self,
+        code: &'a str,
+    ) -> BoxFuture<'a, Result<Option<DiscordCodeRecord>, StoreError>> {
+        self.inner.discord_code_take(code)
+    }
+
+    fn discord_ban_put(&self, rec: DiscordBanRec) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.discord_ban_put(rec)
+    }
+
+    fn discord_ban_get(
+        &self,
+        user_id: u64,
+    ) -> BoxFuture<'_, Result<Option<DiscordBanRec>, StoreError>> {
+        self.inner.discord_ban_get(user_id)
+    }
+
+    fn discord_ban_del(&self, user_id: u64) -> BoxFuture<'_, Result<bool, StoreError>> {
+        self.inner.discord_ban_del(user_id)
+    }
+
+    fn set_ban<'a>(
+        &'a self,
+        ip: &'a str,
+        until_unix: Option<i64>,
+        reason: &'a str,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        self.inner.set_ban(ip, until_unix, reason)
+    }
+
+    fn get_bans(&self) -> BoxFuture<'_, Result<Vec<BanRec>, StoreError>> {
+        self.inner.get_bans()
+    }
+
+    fn clear_ban<'a>(&'a self, ip: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.clear_ban(ip)
+    }
+
+    fn token_put(&self, hash: String, rec: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.token_put(hash, rec)
+    }
+
+    fn token_get<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<TokenRecord>, StoreError>> {
+        self.inner.token_get(hash)
+    }
+
+    fn token_touch<'a>(
+        &'a self,
+        hash: &'a str,
+        now: i64,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.token_touch(hash, now)
+    }
+
+    fn token_del<'a>(&'a self, hash: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.token_del(hash)
+    }
+
+    fn tokens_del_account<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> BoxFuture<'a, Result<u64, StoreError>> {
+        self.inner.tokens_del_account(account)
+    }
+
+    fn module_json_get<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<serde_json::Value>, StoreError>> {
+        self.inner.module_json_get(ns, key)
+    }
+
+    fn module_json_list<'a>(
+        &'a self,
+        ns: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        self.inner.module_json_list(ns)
+    }
+
+    fn module_docs<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
+        self.inner.module_docs(ns)
+    }
+
+    fn module_docs_from<'a>(
+        &'a self,
+        ns: &'a str,
+        skip: &'a BootSkip,
+    ) -> BoxFuture<'a, Result<ModuleDocs, StoreError>> {
+        self.inner.module_docs_from(ns, skip)
+    }
+
+    fn module_keys<'a>(&'a self, ns: &'a str) -> BoxFuture<'a, Result<Vec<String>, StoreError>> {
+        self.inner.module_keys(ns)
+    }
+
+    fn module_doc_text<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, StoreError>> {
+        self.inner.module_doc_text(ns, key)
+    }
+
+    fn module_purge_archived<'a>(
+        &'a self,
+        ns: &'a str,
+        keys: Vec<String>,
+    ) -> BoxFuture<'a, Result<usize, StoreError>> {
+        self.inner.module_purge_archived(ns, keys)
+    }
+
+    fn ledger_archive(&self) -> Option<&mush_store::LedgerArchive> {
+        self.inner.ledger_archive()
+    }
+
+    fn stream_range<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+        count_latest: u32,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        self.inner.stream_range(ns, key, count_latest)
+    }
+
+    fn get_schema_version(&self) -> BoxFuture<'_, Result<Option<u32>, StoreError>> {
+        self.inner.get_schema_version()
+    }
+
+    fn set_schema_version(&self, version: u32) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.set_schema_version(version)
+    }
+
+    fn bgsave(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.bgsave()
+    }
+
+    fn drain(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.drain()
+    }
+
+    fn close(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.close()
+    }
+}
+
+async fn boot_fault_server(tag: &'static str) -> (mush_ipc::IpcEndpoint, Arc<PreflightFaultStore>) {
+    let (bound, bound_rx) = tokio::sync::oneshot::channel();
+    let store = PreflightFaultStore::new();
+    let server_store: Arc<dyn ObjectStore> = store.clone();
+    let config = test_config(tag);
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(mush_server::serve_with_store(
+                config,
+                Some(bound),
+                Some(server_store),
+            ))
+            .unwrap();
+    });
+    let endpoint = tokio::time::timeout(Duration::from_secs(30), bound_rx)
+        .await
+        .expect("server bind timed out")
+        .expect("server returned bound endpoint");
+    (endpoint, store)
+}
+
+/// The next disposition published for `uid`; a disposition for any other uid
+/// is a bug this rig refuses to skip past.
+async fn next_disposition(
+    frames: &mut FrameReader<mush_ipc::BoxRead>,
+    uid: mush_ipc::RequestUid,
+    what: &str,
+) -> GatewayRequestDisposition {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let ToGateway::RequestDisposition {
+                request: seen,
+                disposition,
+            } = frames.read::<ToGateway>().await.unwrap().unwrap()
+            {
+                assert_eq!(seen, uid, "a disposition for an unexpected request");
+                break disposition;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what} timed out"))
+}
+
+/// A quarantined preflight used to `return` with the claim still in the table
+/// and nothing published: the gateway kept its replay copy forever, the server
+/// kept its custody slot forever, and every replay of that uid was swallowed as
+/// a `Duplicate`. One connection lost a custody slot per incident and the
+/// player was told nothing at all.
+///
+/// Quarantine is terminal evidence, so the answer is terminal too: `Owned`
+/// naming the quarantined record's own token — truthful (the intent IS durably
+/// owned), terminal for the gateway, and needing no new wire variant. Custody
+/// is surrendered on both sides, which the replay below proves: it is admitted
+/// afresh and answered from the store again, without the action ever being
+/// planned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_quarantined_preflight_is_answered_and_releases_custody() {
+    let (endpoint, store) = boot_fault_server("preflight-quarantined").await;
+    let (mut frames, mut writer) = hello_and_attach(&endpoint).await;
+    let offer = brace_offer(&mut frames, &mut writer).await;
+
+    store.arm(PreflightFault::Quarantined);
+    let request = action_request(30, GOD, offer);
+    write_frame(&mut writer, &ToServer::Input(request.clone()))
+        .await
+        .unwrap();
+
+    let first = next_disposition(&mut frames, request.uid, "quarantine disposition").await;
+    let GatewayRequestDisposition::Owned { token, status } = first else {
+        panic!("a quarantined request must be answered as durably owned: {first:?}");
+    };
+    assert_eq!(
+        token,
+        CommitToken::from_bytes(QUARANTINE_TOKEN),
+        "the disposition must name the quarantined record's own token"
+    );
+
+    // Custody was surrendered on both sides, so the exact replay is a fresh
+    // admission rather than a swallowed duplicate — and it is answered from
+    // the durable record again, not planned.
+    write_frame(&mut writer, &ToServer::Input(request.clone()))
+        .await
+        .unwrap();
+    let replay = next_disposition(&mut frames, request.uid, "quarantine replay disposition").await;
+    assert_eq!(
+        replay,
+        GatewayRequestDisposition::Owned { token, status },
+        "the replay must be answered from the store, not re-planned"
+    );
+
+    // And nothing else was ever published for it.
+    write_frame(
+        &mut writer,
+        &ToServer::Request {
+            id: 960,
+            req: ServiceReq::Barrier,
+        },
+    )
+    .await
+    .unwrap();
+    let probe = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match frames.read::<ToGateway>().await.unwrap().unwrap() {
+                ToGateway::Reply { id: 960, resp } => break resp,
+                ToGateway::RequestDisposition { request, .. } => {
+                    panic!("extra disposition for {request} after the quarantine answer")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("boundary liveness probe timed out");
+    assert_eq!(probe, ServiceResp::Barrier);
+
+    write_frame(
+        &mut writer,
+        &ToServer::Control(mush_core::ControlMsg::Shutdown),
+    )
+    .await
+    .unwrap();
+}
+
+/// The transient-preflight loop had an exponential backoff capped at five
+/// seconds and neither a retry ceiling nor a deadline: against a store that
+/// stays transient it retried forever, holding a custody slot and a detached
+/// task per request while publishing nothing.
+///
+/// It is bounded now. Giving up *retains* the claim rather than lying about the
+/// request's fate, so nothing is published and the gateway keeps its replay
+/// copy — and each exact replay re-arms the claim for one more attempt. That
+/// re-arming is bounded too: after `MAX_CLAIM_REARMS` the server surrenders
+/// custody and answers `Rejected { retryable: true }`, the vocabulary the
+/// gateway already drops its own replay copy on. No uid can loop forever, and
+/// the connection is not wedged: once the store heals, a fresh action commits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_permanently_transient_preflight_retains_and_then_stops_at_the_rearm_bound() {
+    let (endpoint, store) = boot_fault_server("preflight-transient").await;
+    let (mut frames, mut writer) = hello_and_attach(&endpoint).await;
+    let offer = brace_offer(&mut frames, &mut writer).await;
+
+    store.arm(PreflightFault::Transient);
+    let request = action_request(40, GOD, offer);
+    let uid = request.uid;
+    write_frame(&mut writer, &ToServer::Input(request.clone()))
+        .await
+        .unwrap();
+
+    // Read on its own task: cancelling a frame read to drive the replays would
+    // risk losing a partially-read frame.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let reader = tokio::spawn(async move {
+        loop {
+            if let ToGateway::RequestDisposition {
+                request: seen,
+                disposition,
+            } = frames.read::<ToGateway>().await.unwrap().unwrap()
+            {
+                assert_eq!(seen, uid, "a disposition for an unexpected request");
+                let _ = tx.send(disposition);
+                break;
+            }
+        }
+        frames
+    });
+
+    let mut rx = rx;
+    let disposition = tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            tokio::select! {
+                got = &mut rx => break got.expect("the reader task delivered the disposition"),
+                () = tokio::time::sleep(Duration::from_millis(250)) => {
+                    // The gateway's replay cadence, compressed: a replay that
+                    // lands while the claim is retained re-arms it, and one
+                    // that lands while a handler runs is an ordinary duplicate.
+                    write_frame(&mut writer, &ToServer::Input(request.clone()))
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+    })
+    .await
+    .expect("the retained claim never stopped re-arming");
+    assert_eq!(
+        disposition,
+        GatewayRequestDisposition::Rejected { retryable: true },
+        "the re-arm bound hands the request back to the gateway"
+    );
+    let mut frames = tokio::time::timeout(Duration::from_secs(10), reader)
+        .await
+        .expect("reader task")
+        .expect("reader join");
+
+    // The connection is not wedged: its custody budget came back with the
+    // exhausted claim, so a fresh action owns once the store heals.
+    store.arm(PreflightFault::None);
+    let fresh = action_request(41, GOD, offer);
+    write_frame(&mut writer, &ToServer::Input(fresh.clone()))
+        .await
+        .unwrap();
+    let owned = next_disposition(&mut frames, fresh.uid, "healed action disposition").await;
+    assert!(
+        matches!(owned, GatewayRequestDisposition::Owned { .. }),
+        "the connection must still be able to own an action: {owned:?}"
+    );
+
+    write_frame(
+        &mut writer,
+        &ToServer::Control(mush_core::ControlMsg::Shutdown),
+    )
+    .await
+    .unwrap();
 }
