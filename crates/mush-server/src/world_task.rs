@@ -3652,6 +3652,10 @@ async fn run(
     // refused with a typed Busy response: RAM already contains the tentative
     // post-image, so it is not an authoritative query snapshot yet.
     let mut pending_commit: Option<PendingCommit> = None;
+    // Loss witnesses already accounted for by the supervision check at the head
+    // of the loop. Boot may hydrate a store that has none, so this starts where
+    // the store starts rather than at zero.
+    let mut lost_installations_seen = engine.action_state().lost_installations();
     // If a must-retain async completion or connection-lifecycle message is
     // already dequeued while another exact receipt is outstanding, retain that
     // ONE message locally and stop polling `rx`. This preserves FIFO without
@@ -3721,6 +3725,20 @@ async fn run(
         };
     }
     loop {
+        // Supervision, before anything is admitted: a `PreparedInstallation`
+        // that died without an install or an abort took the RAM half of an
+        // ack-gated commit with it, and its durable half may already be in the
+        // store. There is no answer to give the player and no state to answer
+        // from, so the freeze is latched here and `admission_mode` below reads
+        // it — every later line is refused rather than served from RAM that may
+        // no longer match Redis.
+        freeze_on_lost_installation(
+            &engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &mut lost_installations_seen,
+        );
         let admission_mode = match (&pending_commit, health.mode) {
             // IntegrityFrozen is stricter than every in-flight state and may
             // never be hidden. A transient StoreReadOnly transition is not:
@@ -5932,6 +5950,48 @@ fn release_prepared_installation(
             "prepared action-state installation could not be released"
         );
     }
+}
+
+/// Fail stop on a prepared installation that died without an install or an
+/// abort.
+///
+/// [`release_prepared_installation`] covers every path this file knows how to
+/// end. What it cannot cover is a `PreparedInstallation` that is simply
+/// dropped — a `PendingCommit` that goes out of scope, a panic caught between
+/// taking the installation out and answering for it. By then
+/// `PreparedTxn::into_parts` has already handed the module ops to the writer,
+/// so the durable half of the commit may be acknowledged while the typed RAM
+/// post-images are gone: RAM and Redis have diverged, and the write-through
+/// rule that says they may not (docs/PLAN.md) has no local repair.
+///
+/// The store witnesses that itself — it poisons its reservation rather than
+/// freeing it, and counts the loss — and this is the world loop reading that
+/// count once per iteration, before admission. A loss is deliberately louder
+/// than the wedge it replaces: divergence with no witness has no recovery, a
+/// freeze has both. Returns whether this call was the one that saw a new loss.
+fn freeze_on_lost_installation(
+    engine: &Engine,
+    gateway: &Gateway,
+    health: &mut StoreHealth,
+    persistence_integrity: &PersistenceIntegrityLatch,
+    seen: &mut u64,
+) -> bool {
+    let lost = engine.action_state().lost_installations();
+    if lost == *seen {
+        return false;
+    }
+    *seen = lost;
+    apply_integrity_freeze(
+        &engine.world,
+        gateway,
+        health,
+        persistence_integrity,
+        &format!(
+            "{lost} prepared action-state installation(s) were dropped without an install or an \
+             abort; acknowledged writes may not be live in RAM"
+        ),
+    );
+    true
 }
 
 /// Latch the non-auto-lifting freeze on any deterministic persistence breach:
@@ -14406,6 +14466,85 @@ mod tests {
         assert!(persistence_integrity.is_latched());
         assert!(wizard_heard(&recorder, "persistence integrity breach"));
         assert_eq!(engine.action_state().revision(), 0);
+    }
+
+    /// core-action-8, the third ending: nobody answered for the installation
+    /// at all. `into_parts` had already handed the module ops to the writer,
+    /// so the store may hold a durable write whose typed RAM post-images went
+    /// out with the dropped value. RAM and Redis have diverged and this task
+    /// cannot reconcile them, so the loop's supervision check quarantines the
+    /// world instead of admitting the next line and answering it out of RAM.
+    #[test]
+    fn an_installation_loss_quarantines_rather_than_answering_the_player() {
+        let (mut engine, handle) = prepared_lane_fixture();
+        engine.world.set_connected(GOD, true);
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+        let mut health = StoreHealth::new();
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let mut seen = engine.action_state().lost_installations();
+
+        // A healthy store passes the check untouched — it is on the head of
+        // every loop iteration, so it may not freeze anything by itself.
+        assert!(!freeze_on_lost_installation(
+            &engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &mut seen,
+        ));
+        assert!(!health.mode.integrity_frozen());
+        assert!(!persistence_integrity.is_latched());
+
+        // Stage the durable half, then lose the installation the way a dropped
+        // `PendingCommit` does.
+        let mut transaction = engine
+            .action_transaction(&handle)
+            .expect("test transaction begins");
+        transaction
+            .insert(&handle, &41, PreparedLaneState { amount: 7 })
+            .expect("test state is valid");
+        let (module_ops, installation) = transaction
+            .prepare()
+            .expect("test transaction prepares")
+            .into_parts();
+        assert_eq!(module_ops.len(), 1);
+        drop(installation);
+
+        assert!(freeze_on_lost_installation(
+            &engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &mut seen,
+        ));
+        assert!(health.mode.integrity_frozen());
+        assert!(persistence_integrity.is_latched());
+        assert!(wizard_heard(&recorder, "persistence integrity breach"));
+        // No success disposition: the post-image never went live, and the next
+        // line cannot even open a transaction to make one.
+        assert_eq!(engine.action_state().revision(), 0);
+        assert!(
+            engine
+                .action_state()
+                .get(&handle, &41)
+                .expect("state lookup succeeds")
+                .is_none()
+        );
+        assert!(matches!(
+            engine.action_transaction(&handle).err(),
+            Some(mush_core::ActionStateError::InstallationLost { reservation: 1 })
+        ));
+        // Frozen means frozen: the check does not re-alert on a loss it has
+        // already answered for, and the freeze does not auto-lift.
+        assert!(!freeze_on_lost_installation(
+            &engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &mut seen,
+        ));
+        assert!(health.mode.integrity_frozen());
     }
 
     // ---- WS01-S5: the world loop's impossible states fail closed ----

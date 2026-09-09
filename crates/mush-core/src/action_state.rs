@@ -1011,6 +1011,7 @@ struct ReservationSlot {
     pending: AtomicU64,
     dropped: AtomicU64,
     lost: AtomicBool,
+    lost_installations: AtomicU64,
 }
 
 impl ReservationSlot {
@@ -1019,6 +1020,7 @@ impl ReservationSlot {
             pending: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
             lost: AtomicBool::new(false),
+            lost_installations: AtomicU64::new(0),
         }
     }
 
@@ -1036,8 +1038,10 @@ impl ReservationSlot {
 /// [`PreparedTxn::into_parts`] has handed the module ops out, a durable write
 /// may already be in flight, and silently freeing the slot would let the next
 /// transaction prepare against RAM the acknowledged write was never installed
-/// into — so the installation stage stays fail-closed and wedged, which is
-/// the witness WS03-S11 gives teeth to.
+/// into — so the installation stage stays fail-closed and wedged, and a drop
+/// there is a loss witness: `lost` latches, `lost_installations` counts, and
+/// the store refuses every later transaction with
+/// [`ActionStateError::InstallationLost`] (WS03-S11).
 enum ReservationStage {
     Prepared,
     Installation,
@@ -1081,8 +1085,29 @@ impl ReservationGuard {
 
 impl Drop for ReservationGuard {
     fn drop(&mut self) {
-        if !matches!(self.stage, ReservationStage::Prepared) {
-            return;
+        match self.stage {
+            // `install`/`abort` reached a definitive answer and cleared the
+            // slot themselves.
+            ReservationStage::Settled => return,
+            // `into_parts` already handed the module ops to the store, so a
+            // durable write may have been acknowledged for post-images that
+            // are now gone. Releasing the slot here would let the next
+            // transaction prepare against RAM that acknowledged write was
+            // never installed into: RAM and Redis would diverge with no
+            // witness and no recovery. So the reservation stays held, the
+            // loss latches, and the world task fails stop on it.
+            ReservationStage::Installation => {
+                self.slot.lost.store(true, Ordering::Release);
+                self.slot.lost_installations.fetch_add(1, Ordering::Relaxed);
+                tracing::error!(
+                    reservation = self.reservation,
+                    "prepared action-state installation was dropped without an install or an \
+                     abort; its acknowledged post-images are lost and the store reservation is \
+                     poisoned rather than released"
+                );
+                return;
+            }
+            ReservationStage::Prepared => {}
         }
         if thread::current().id() != self.armed_on {
             self.slot.lost.store(true, Ordering::Release);
@@ -1224,13 +1249,29 @@ impl ActionStateStore {
         self.slot.dropped.load(Ordering::Relaxed)
     }
 
-    /// Whether a prepared value was dropped somewhere other than the world
-    /// task that armed it. Such a drop cannot be ordered against the store, so
-    /// it poisons the reservation instead of releasing it and the store stays
-    /// deliberately wedged. WS03-S11 owns what the engine does about it.
+    /// Whether this store's reservation is poisoned: a prepared value died
+    /// somewhere the release could not be ordered or could not be justified —
+    /// off the world task that armed it, or after
+    /// [`PreparedTxn::into_parts`] handed the durable half out. The
+    /// reservation stays held and every later transaction refuses with
+    /// [`ActionStateError::InstallationLost`].
     #[must_use]
     pub fn reservation_lost(&self) -> bool {
         self.slot.lost.load(Ordering::Acquire)
+    }
+
+    /// How many prepared installations died between [`PreparedTxn::into_parts`]
+    /// and a definitive persistence answer.
+    ///
+    /// Each one is a lost write-through commit: the module ops had already
+    /// left for the store, so the durable half may have been acknowledged
+    /// while the typed RAM post-images went out with the dropped value. That
+    /// is silent RAM/Redis divergence, which is why the store poisons instead
+    /// of releasing — this is the number the boot/health report and the world
+    /// task's supervision check read to turn the poison into a fail-stop.
+    #[must_use]
+    pub fn lost_installations(&self) -> u64 {
+        self.slot.lost_installations.load(Ordering::Relaxed)
     }
 
     /// Atomically hydrate every discovered persisted record through its exact
@@ -1558,6 +1599,16 @@ impl ActionStateStore {
             .owner_readiness
             .require_ready(&owner)
             .map_err(ActionStateError::OwnerNotReady)?;
+        // The poison outranks the ordinary wedge. `CommitPending` says "wait
+        // for the commit in flight"; this says "there is no commit to wait
+        // for, and what it would have installed is gone" — a caller that
+        // retried on it would be preparing against a revision the store may
+        // never have received.
+        if self.reservation_lost() {
+            return Err(ActionStateError::InstallationLost {
+                reservation: self.pending_reservation().unwrap_or_default(),
+            });
+        }
         if let Some(reservation) = self.pending_reservation() {
             return Err(ActionStateError::CommitPending { reservation });
         }
@@ -2359,6 +2410,13 @@ enum InstallMutation {
 
 /// Private typed RAM post-images held across the exact persistence receipt.
 /// It is deliberately non-cloneable and has no public field access.
+///
+/// Unlike [`PreparedTxn`], it may not be dropped its way out of trouble: its
+/// module ops already left for the store, so dying here loses the RAM half of
+/// an ack-gated write-through commit. Dropping it therefore poisons the
+/// store's reservation and counts a loss
+/// ([`ActionStateStore::lost_installations`]) instead of freeing the slot; the
+/// world task reads that counter and fails stop (core-action-8).
 #[must_use = "a prepared installation must be installed after exact acknowledgement or aborted"]
 pub struct PreparedInstallation {
     base_revision: u64,
@@ -2494,6 +2552,17 @@ pub enum ActionStateError {
         "prepared installation was prepared against revision {expected}; the store is at {found}"
     )]
     BaseRevisionMoved { expected: u64, found: u64 },
+    /// A prepared value died without ever reaching `install` or `abort`, in a
+    /// place the store cannot make safe: after
+    /// [`PreparedTxn::into_parts`] handed the durable half out, or off the
+    /// world task that armed the reservation. The reservation stays held, so
+    /// this is terminal for the store rather than a retryable refusal — the
+    /// world task turns it into a fail-stop, not a per-command error.
+    #[error(
+        "action state store lost prepared reservation {reservation}; its acknowledged write may \
+         never have been installed, so RAM and the store may have diverged"
+    )]
+    InstallationLost { reservation: u64 },
     #[error("transaction operation count {attempted} exceeds maximum {max}")]
     OperationLimit { attempted: usize, max: usize },
     #[error("transaction canonical bytes {attempted} exceed maximum {max}")]
@@ -3423,9 +3492,15 @@ mod tests {
         assert!(store.reservation_lost());
         assert!(store.has_prepared());
         assert_eq!(store.dropped_reservations(), 0);
+        // WS03-S2 left this as `CommitPending` and said WS03-S11 owned what
+        // the engine does with the `lost` flag. It does this: the poison is
+        // its own refusal, because "wait for the commit in flight" is a lie
+        // when there is no commit left to wait for. The off-thread drop staged
+        // nothing durable, so it is not counted as a lost installation.
+        assert_eq!(store.lost_installations(), 0);
         assert!(matches!(
             store.transaction(&handle).err(),
-            Some(ActionStateError::CommitPending { reservation: 1 })
+            Some(ActionStateError::InstallationLost { reservation: 1 })
         ));
     }
 
@@ -3449,5 +3524,101 @@ mod tests {
 
         second.abort(local).expect("the local reservation releases");
         assert!(!second.has_prepared());
+    }
+
+    /// core-action-8, the installation half. `into_parts` hands the module ops
+    /// to the store and keeps the typed RAM post-images, so from that moment a
+    /// durable write may already be acknowledged. A `PreparedInstallation`
+    /// dropped there has lost the RAM half of an ack-gated write-through
+    /// commit: freeing the reservation would let the next transaction prepare
+    /// against a revision the acknowledged write was never installed into, and
+    /// RAM and Redis would diverge with nothing to say it happened. So the
+    /// store fails stop instead — and the refusal is its own variant, because
+    /// `CommitPending` would invite exactly the retry that must not happen.
+    #[test]
+    fn a_dropped_prepared_installation_fails_stop_instead_of_diverging() {
+        let (mut store, handle) = bare_store();
+        let seeded = prepare_counter(&mut store, &handle, 1, 1);
+        store.install(seeded).expect("the seed installs");
+        let (revision_before, _, records_before) = live_state(&store);
+
+        let (module_ops, installation) = {
+            let mut txn = store.transaction(&handle).expect("the store is unreserved");
+            txn.insert(&handle, &2, CounterState { amount: 5 })
+                .expect("the counter value is valid");
+            txn.prepare()
+                .expect("the transaction prepares")
+                .into_parts()
+        };
+        // The durable half is out of the coordinator's hands; the RAM half
+        // dies with the value.
+        assert_eq!(module_ops.len(), 1);
+        drop(installation);
+
+        assert!(store.reservation_lost());
+        assert_eq!(store.lost_installations(), 1);
+        // Not Ok, and not the retryable wedge.
+        assert!(matches!(
+            store.transaction(&handle).err(),
+            Some(ActionStateError::InstallationLost { reservation: 2 })
+        ));
+        // The post-image never went live and nothing rolled forward — but the
+        // reservation is deliberately still held, so `live_state` is compared
+        // without it.
+        let (revision_after, pending_after, records_after) = live_state(&store);
+        assert_eq!(revision_after, revision_before);
+        assert_eq!(records_after, records_before);
+        assert_eq!(pending_after, Some(2));
+        assert_eq!(store.revision(), 1);
+        assert_eq!(store.len(), 1);
+    }
+
+    /// The two drops are different failures and are counted separately: a
+    /// dropped `PreparedTxn` staged nothing and hands its slot back, a dropped
+    /// `PreparedInstallation` staged everything and poisons it.
+    #[test]
+    fn a_dropped_installation_is_distinguishable_from_a_dropped_txn() {
+        let (mut leaked, leaked_handle) = bare_store();
+        assert!(matches!(
+            coordinator_early_return(&mut leaked, &leaked_handle, 7),
+            Err(ActionStateError::EmptyTransaction)
+        ));
+        assert_eq!(leaked.dropped_reservations(), 1);
+        assert_eq!(leaked.lost_installations(), 0);
+        assert!(!leaked.reservation_lost());
+        assert!(!leaked.has_prepared());
+
+        let (mut lost, lost_handle) = bare_store();
+        drop(prepare_counter(&mut lost, &lost_handle, 7, 1));
+        assert_eq!(lost.dropped_reservations(), 0);
+        assert_eq!(lost.lost_installations(), 1);
+        assert!(lost.reservation_lost());
+        assert!(lost.has_prepared());
+    }
+
+    /// The witness is only for the deaths nobody answered for. Both ordinary
+    /// endings settle the slot, leave `lost` clear, and let the next
+    /// transaction begin.
+    #[test]
+    fn install_and_abort_still_clear_the_slot() {
+        let (mut store, handle) = bare_store();
+
+        let installed = prepare_counter(&mut store, &handle, 3, 1);
+        store.install(installed).expect("the store installs");
+        assert!(!store.reservation_lost());
+        assert_eq!(store.lost_installations(), 0);
+        assert!(!store.has_prepared());
+
+        let aborted = prepare_counter(&mut store, &handle, 4, 2);
+        store.abort(aborted).expect("the store aborts");
+        assert!(!store.reservation_lost());
+        assert_eq!(store.lost_installations(), 0);
+        assert!(!store.has_prepared());
+
+        // The proof that neither ending poisoned anything: prepare still works.
+        let again = prepare_counter(&mut store, &handle, 5, 3);
+        store.install(again).expect("the store still commits");
+        assert_eq!(store.revision(), 2);
+        assert_eq!(store.len(), 2);
     }
 }
