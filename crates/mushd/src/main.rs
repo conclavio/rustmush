@@ -293,35 +293,16 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     let outbox_join = handles.outbox_join;
 
     // J5: the ledger archive pass, once a UTC day inside its window, beside
-    // the store writer and never on the world task.
-    if let Some(archive) = ledger_archive {
-        let cfg = &config.store.archive;
-        let (window_start_min, window_end_min) =
-            mush_server::archive::ArchiveConfig::parse_window(&cfg.window)?;
-        let job = mush_server::archive::ArchiveConfig {
-            window_start_min,
-            window_end_min,
-            retain_hours: cfg.retain_hours,
-            high_watermark_bytes: cfg.high_watermark_mb.saturating_mul(1024 * 1024),
-            low_watermark_bytes: cfg.low_watermark_mb.saturating_mul(1024 * 1024),
-            segment_chunks: cfg.segment_chunks,
-            max_purge_per_pass: cfg.max_purge_per_pass,
-            namespaces: archive_namespaces,
-        };
-        tracing::info!(
-            window = %cfg.window,
-            retain_hours = cfg.retain_hours,
-            high_watermark_mb = cfg.high_watermark_mb,
-            low_watermark_mb = cfg.low_watermark_mb,
-            "ledger archive pass scheduled"
-        );
-        let _archive_job = mush_server::archive::spawn_archive_job(
-            Arc::clone(&store),
-            archive,
-            job,
-            Arc::clone(&metrics),
-        );
-    }
+    // the store writer and never on the world task. WS04-S1: assembled once, in
+    // `mush_server::boot`, so the split half schedules the same pass off the
+    // same `[store.archive]` reading.
+    let _archive_job = mush_server::boot::spawn_ledger_archive(
+        &config,
+        &store,
+        ledger_archive,
+        archive_namespaces,
+        &metrics,
+    )?;
 
     // Store-backed auth + the SSH hooks bridge.
     let accounts = Arc::new(Accounts::new(

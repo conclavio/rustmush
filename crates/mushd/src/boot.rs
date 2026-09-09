@@ -8,10 +8,14 @@
 //! `build_engine`: the durable decision key ring, the boot-hydrated account
 //! oracle, the `[tacsim]` pulse cadence, and a validated
 //! `[store].receipt_policy`.
+//!
+//! WS04-S1 then took the store open itself out of here: `open_store` (the
+//! receipt-policy gate AND the J5 archive tier) lives once, in
+//! [`mush_server::boot`], and both roots call it.
 
 use std::sync::Arc;
 
-use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
+use mush_config::config::Config;
 use mush_config::decision_keys::DurableDecisionKeyStore;
 use mush_config::offer_keys::DurableOfferKeyStore;
 use mush_config::resolution_keys::DurableResolutionKeyStore;
@@ -21,9 +25,7 @@ use mush_server::config_ext::{
     economy_config_with, llm_config, onboarding_ruleset, shadowrun_cadences,
     shadowrun_economy_config, tacsim_config, weather_config, wod_economy_config, worldgen_config,
 };
-use mush_store::{
-    InMemoryStore, LedgerArchive, ObjectStore, RedisStore, core_migrations, run_migrations,
-};
+use mush_store::{LedgerArchive, ObjectStore, core_migrations, run_migrations};
 
 use crate::accounts::import_accounts_json;
 use crate::persist::{load_or_seed_world, reconcile_authoritative_for_writable_boot};
@@ -44,74 +46,6 @@ pub struct Booted {
     pub llm: Arc<LlmService>,
     /// The validated `[llm]` config (the world task reads `decision_workers`).
     pub llm_config: mush_llm::LlmConfig,
-}
-
-/// Open the configured store backend, failing fast with an operator-facing
-/// error when Redis is unreachable (PLAN: never run without persistence).
-/// With `[store.archive].enabled`, the ledger archive tier (J5) is opened
-/// under the data dir and attached, so `log:` reads fall through to it; the
-/// archive is returned beside the store for the nightly pass to write.
-pub async fn open_store(
-    config: &Config,
-) -> Result<(Arc<dyn ObjectStore>, Option<Arc<LedgerArchive>>), String> {
-    // WS04-S0: `[store].receipt_policy` is read and VALIDATED here, exactly as
-    // the forked server half reads it. Before this the all-in-one accepted any
-    // spelling in silence and ran on the weaker `applied` receipts.
-    let receipt_policy = config.store_receipt_policy().map_err(|e| e.to_string())?;
-    let archive = if config.store.archive.enabled {
-        let root = config.server.data_dir.join(&config.store.archive.dir);
-        let archive = LedgerArchive::open(&root)
-            .map_err(|e| format!("opening the ledger archive at {}: {e}", root.display()))?;
-        let stats = archive.stats();
-        tracing::info!(
-            root = %root.display(),
-            chunks = stats.chunks,
-            purged = stats.purged,
-            compressed_mb = stats.compressed_bytes / (1024 * 1024),
-            "ledger archive tier attached"
-        );
-        Some(Arc::new(archive))
-    } else {
-        None
-    };
-    let store: Arc<dyn ObjectStore> = match config.store_backend().map_err(|e| e.to_string())? {
-        StoreBackend::Redis => {
-            let url = &config.store.redis_url;
-            tracing::info!(%url, "connecting to Redis");
-            let store = RedisStore::connect_read_only(url).await.map_err(|e| {
-                format!(
-                    "cannot reach Redis at {url}: {e}\n\
-                     mushd requires its store at boot. Start Redis (or point \
-                     [store].redis_url at it), or set [store].store = \"memory\" \
-                     for a throwaway world."
-                )
-            })?;
-            if receipt_policy == StoreReceiptPolicy::HostPowerLoss {
-                store
-                    .require_host_power_loss_receipts()
-                    .await
-                    .map_err(|e| format!("Redis does not satisfy [store].receipt_policy: {e}"))?;
-            }
-            match &archive {
-                Some(archive) => Arc::new(store.with_archive(Arc::clone(archive))),
-                None => Arc::new(store),
-            }
-        }
-        StoreBackend::Memory => {
-            if receipt_policy == StoreReceiptPolicy::HostPowerLoss {
-                return Err(
-                    "[store].receipt_policy=\"host_power_loss\" requires the Redis backend"
-                        .to_owned(),
-                );
-            }
-            tracing::warn!("[store].store = \"memory\": nothing will survive a restart");
-            match &archive {
-                Some(archive) => Arc::new(InMemoryStore::new().with_archive(Arc::clone(archive))),
-                None => Arc::new(InMemoryStore::new()),
-            }
-        }
-    };
-    Ok((store, archive))
 }
 
 /// Boot the all-in-one world: quarantine barrier, durable key rings, store
@@ -160,7 +94,13 @@ pub async fn boot_all_in_one(
     );
     // Store: connect (fail fast), migrate, one-time accounts.json import,
     // then load or seed the world — all before anything serves.
-    let (store, ledger_archive) = open_store(config).await?;
+    // WS04-S1: one `open_store` for both roots — the receipt-policy gate and
+    // the J5 archive tier live in the server half's boot root, and the
+    // all-in-one calls it rather than carrying a second transcription.
+    let mush_server::boot::OpenedStore {
+        store,
+        archive: ledger_archive,
+    } = mush_server::boot::open_store(config).await?;
     let authoritative = store.authoritative_store().ok_or_else(|| {
         "configured store does not implement K3 exact-token durability; refusing writable boot"
             .to_owned()

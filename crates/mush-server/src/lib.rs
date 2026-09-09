@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use mush_config::accounts::import_accounts_json;
-use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
+use mush_config::config::{Config, StoreBackend};
 use mush_config::decision_keys::DurableDecisionKeyStore;
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
@@ -60,6 +60,7 @@ pub mod accounts;
 pub mod accounts_identity;
 pub mod action_coordinator;
 pub mod archive;
+pub mod boot;
 pub mod campaign_formations;
 pub mod config_ext;
 /// E7c10 B3: the server-side, audit-only seat attribution log.
@@ -111,37 +112,6 @@ pub use process_fault::arm_world_turn_panic;
 /// A human-readable server identity string, sent in [`ToGateway::Hello`].
 fn server_id() -> String {
     format!("mush-server {}", env!("CARGO_PKG_VERSION"))
-}
-
-/// Open the configured store backend (fail fast when Redis is unreachable).
-async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
-    let receipt_policy = config.store_receipt_policy().map_err(|e| e.to_string())?;
-    match config.store_backend().map_err(|e| e.to_string())? {
-        StoreBackend::Redis => {
-            let url = &config.store.redis_url;
-            tracing::info!(%url, "connecting to Redis");
-            let store = RedisStore::connect_read_only(url)
-                .await
-                .map_err(|e| format!("cannot reach Redis at {url}: {e}"))?;
-            if receipt_policy == StoreReceiptPolicy::HostPowerLoss {
-                store
-                    .require_host_power_loss_receipts()
-                    .await
-                    .map_err(|e| format!("Redis does not satisfy [store].receipt_policy: {e}"))?;
-            }
-            Ok(Arc::new(store))
-        }
-        StoreBackend::Memory => {
-            if receipt_policy == StoreReceiptPolicy::HostPowerLoss {
-                return Err(
-                    "[store].receipt_policy=\"host_power_loss\" requires the Redis backend"
-                        .to_owned(),
-                );
-            }
-            tracing::warn!("[store].store = \"memory\": nothing will survive a restart");
-            Ok(Arc::new(InMemoryStore::new()))
-        }
-    }
 }
 
 /// Open the narrow pre-boot side of the configured store for quarantine
@@ -454,7 +424,10 @@ pub async fn serve_with_quarantine_spool(
     prepare_quarantine_for_writable_boot(&config, &mut quarantine_spool, store.as_deref()).await?;
     let store = match store {
         Some(s) => s,
-        None => open_store(&config).await?,
+        // WS04-S1: the archive tier is attached to the store here, so the READ
+        // fall-through is live on this half; WS04-S2 owns the nightly WRITE pass
+        // (it needs the booted engine's namespace list, which does not exist yet).
+        None => boot::open_store(&config).await?.store,
     };
     let (engine, staff, llm) = build_engine(&config, &store, &quarantine_spool).await?;
     let offer_routes = Arc::new(
@@ -472,7 +445,7 @@ pub async fn serve_with_quarantine_spool(
     // the boot [`ToGateway::Hello`] so the split gateway can build the web
     // client's `hello` frame with the SAME features/panels the all-in-one
     // advertises.
-    let (features, panels) = build_hello_manifest(&engine);
+    let (features, panels) = boot::build_hello_manifest(&engine);
 
     // The server -> gateway boundary: every `ToGateway` the world loop (and the
     // request handlers) produce is queued here and drained to the socket by the
@@ -693,30 +666,6 @@ fn world_exit_result(result: Result<WorldOutcome, tokio::task::JoinError>) -> Re
         )),
         Err(e) => Err(format!("world task ended without a value: {e}")),
     }
-}
-
-/// Build the web `hello` manifest from the booted engine — a verbatim port of
-/// `mushd::main`'s assembly: every module-registered panel feed plus the
-/// engine-side `"who"`, and one feature id per module (comsys advertises as
-/// `"channels"`). Returns `(features, panels)`.
-fn build_hello_manifest(engine: &Engine) -> (Vec<String>, Vec<String>) {
-    let mut panels: Vec<String> = engine
-        .registry
-        .panel_feeds()
-        .iter()
-        .map(|(feed, _)| feed.to_string())
-        .collect();
-    panels.push("who".to_string());
-    panels.push("legal.actions".to_string());
-    let features: Vec<String> = engine
-        .modules()
-        .iter()
-        .map(|m| match m.name() {
-            "comsys" => "channels".to_string(),
-            other => other.to_string(),
-        })
-        .collect();
-    (features, panels)
 }
 
 /// The socket writer: send [`ToGateway::Hello`] (carrying the panel manifest),
