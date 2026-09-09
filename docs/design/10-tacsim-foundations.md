@@ -1,8 +1,8 @@
 # 10 — TacSim Foundations
 
-**Draft 0.4 — 2026-09-03** (R6 amended per 10a Q10, accepted by the owner). The definitional record for the TacSim programme (build units E7+):
+**Draft 0.5 — 2026-09-09** (Draft 0.4 plus the addendum **T17**, §22, owner's ruling). The definitional record for the TacSim programme (build units E7+):
 the owner's scope note, the foundational survey with the **locked decisions 1A–7A**, the
-character-first survey with the **locked decisions C1A–C30A**, the accepted addenda **T1–T16**,
+character-first survey with the **locked decisions C1A–C30A**, the accepted addenda **T1–T17**,
 the Draft 0.2 review's **sharpenings R1–R7** (§21, accepted), the remaining qualifications, and
 what all of that implies for the economy programme already in flight (docs 08–08e). This is not
 a build plan; the E7 plan will cite it the way 08c cites 08 and 09.
@@ -734,3 +734,29 @@ object is following", keyed by traveler) and folded these sharpenings, all accep
   policy input only.
 - **R7. Storage rule for the account id.** Opaque, audit-only, staff-visible through an audit verb;
   never in a journaled or canon record.
+
+## 22. Addendum — T17, the frozen sky (owner, 2026-09-09, binding)
+
+**T17. Distances are derived from real geometry at one chosen epoch and then frozen.** Refines
+1A and T1; supersedes nothing. The solar system is **not a coordinate map** — no 2²⁴ × 2²⁴ grid,
+no ephemeris ticking under the players — it is a fixed constellation of places (doc 14's
+orbital, system and interstellar regions, their sites and connections) placed fixedly relative
+to one another, exactly as a city's neighborhoods are. The distance between two places is
+computed once from real orbital geometry at the campaign's chosen **epoch** (circular, coplanar
+orbits: each body an orbit radius and a phase at the epoch) and pinned into the connection.
+**No body moves. No transfer window opens or closes. Nobody waits for an alignment**, and Titan
+is the same distance from Saturn on the day a character moves there as it is a year later.
+Travel time is the campaign's compression (1A's rates, `[tacsim.time]`) of the IC duration a
+drive needs for that frozen distance, by the drive class's distance law (a torch drive's time
+grows with the square root of distance; a coasting transfer's with the distance).
+
+The mechanism is a **campaign ephemeris** in the TacSim pack: `body` entries
+`{ orbit_au, period_days, phase_deg_at_epoch }` and a campaign `{ epoch, rate }`. **`rate = 0` is
+the ruling and the default.** The knob exists so a campaign that wants a moving sky can have one
+coherently — every pair sharing a body would change together — but this campaign does not. The
+epoch is chosen for the corridor: favourable for Mars–Ceres, the proving loop's load-bearing
+pair; every other pair falls where the real sky puts it, which is what keeps them mutually
+consistent (no configuration has every pair at closest approach). T1's freeze-at-publication
+rule is unchanged and, with a frozen sky, moot. `RouteDef.alignment_band` — declared by E7 cut 6
+and never applied by `route_duration` — is replaced by the body-pair reference the distance came
+from. Build: the spatial plan's cut S7 (`14-spatial-implementation-plan.md` §3.8).

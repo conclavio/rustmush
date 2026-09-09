@@ -419,14 +419,22 @@ text grid) imported to ground tiles; the corridor's `location` and `route` entri
 `SiteRec`/`ConnectionRec` entries in an orbital/system region, and `ruleset-tacsim`'s seed
 folds onto `mush-content`'s latch (★ D-P-1's second half); `TacticsStub`'s `toy_map`, `HexLock`,
 the `tactics.hex` driver name and every "hex" in `docs/design/04`, `06`, `10` and the help topics
-are removed or reworded (D-14-4).
+are removed or reworded (D-14-4). **The campaign ephemeris (doc 10 T17):** `body` pack entries
+`{ orbit_au, period_days, phase_deg_at_epoch }`, `[tacsim.time].ephemeris = { epoch, rate = 0 }`;
+at load, every connection between two bodies' places gets its distance computed from the phases
+at the epoch and pinned; `route_duration` gains the drive class's distance law (`torch`: time ∝
+√distance; `coast`: ∝ distance) in place of the unapplied `alignment_band`, which is deleted.
 
 **Tests (~26).** A mech engagement on imported relief composites at 1000 cm from the same tiles
 a street fight used at 100 cm; an indirect shot clears a ridge; the corridor's packs load
 through `mush-content` with unchanged digests; `grep -ri hex crates docs` finds only the
-history in this plan and the review.
+history in this plan and the review. *Ephemeris:* the pinned Mars–Ceres and Earth–Mars
+distances match the real geometry at the epoch within 2%; with `rate = 0` a route's duration is
+identical across any IC span (T17); with a test-only nonzero rate every pair sharing a body
+changes together and no pair contradicts another; a torch route's duration scales with the
+square root of its pinned distance.
 
-**Verify lenses.** **D**, **P** (pack identity across the fold), **H** (no hex left).
+**Verify lenses.** **D**, **P** (pack identity across the fold), **H** (no hex left), **E** (the sky — can any path make a distance change while `rate = 0`, or two routes disagree about one pair?).
 
 ## 4. Build discipline
 
@@ -518,4 +526,4 @@ history in this plan and the review.
 
 ## 10. Changelog
 
-- 0.1 (2026-09-09): first draft, from doc 14 Draft 0.1.
+- 0.1 (2026-09-09): first draft, from doc 14 Draft 0.1; S7 gains the campaign ephemeris (doc 10 T17) the same day.
