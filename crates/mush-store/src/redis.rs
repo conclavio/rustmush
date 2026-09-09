@@ -3459,4 +3459,90 @@ mod tests {
         assert_eq!(escape_search_term("two words"), "two\\ words");
         assert_eq!(escape_search_term("-neg"), "\\-neg");
     }
+    /// The `READBACK_MISMATCH:<index>` resolution is the only new logic the
+    /// named-key refusal adds, and its whole job is to name the *right* key.
+    /// Both scripts count their replay pairs from 1, so the slice offset is
+    /// one less; an off-by-one here would quietly blame the neighbouring
+    /// write, which is precisely the fog this refusal exists to lift. The
+    /// arithmetic needs no live server to prove.
+    #[test]
+    fn readback_mismatch_index_names_the_write_the_script_counted() {
+        fn planned_write(key: &str) -> RedisReplayWrite {
+            RedisReplayWrite {
+                key: key.to_owned(),
+                kind: "json_set",
+                post_image: "{}".to_owned(),
+            }
+        }
+        let planned = vec![
+            planned_write("obj:1"),
+            planned_write("mod:mail:inbox"),
+            planned_write(META_NEXT_ID),
+        ];
+
+        for (code, expected) in [
+            ("READBACK_MISMATCH:1", "obj:1"),
+            ("READBACK_MISMATCH:2", "mod:mail:inbox"),
+            ("READBACK_MISMATCH:3", META_NEXT_ID),
+        ] {
+            let err =
+                authoritative_readback_error(code, &planned, AuthoritativeReadbackPhase::Finalize)
+                    .expect("an index the plan explains resolves to a key");
+            assert!(
+                matches!(
+                    &err,
+                    StoreError::AuthoritativeReadbackMismatch { key, phase }
+                        if key == expected && *phase == AuthoritativeReadbackPhase::Finalize
+                ),
+                "{code} named the wrong write: {err:?}"
+            );
+            assert!(
+                !err.is_transient(),
+                "a readback mismatch is deterministic, never a retry"
+            );
+        }
+
+        // The phase belongs to the caller, not to the script: the same code
+        // from the pre-release re-verification must say so.
+        let err = authoritative_readback_error(
+            "READBACK_MISMATCH:2",
+            &planned,
+            AuthoritativeReadbackPhase::Checkpoint,
+        )
+        .expect("the same index resolves in either phase");
+        assert!(
+            matches!(
+                &err,
+                StoreError::AuthoritativeReadbackMismatch {
+                    phase: AuthoritativeReadbackPhase::Checkpoint,
+                    ..
+                }
+            ),
+            "the phase is not threaded through: {err:?}"
+        );
+
+        // Anything the plan cannot explain falls through to the shared code
+        // translator rather than inventing a key: index 0 (which the scripts
+        // never emit), an index past the plan, a bare or unparsable index, and
+        // a refusal that is not a readback mismatch at all.
+        for code in [
+            "READBACK_MISMATCH:0",
+            "READBACK_MISMATCH:4",
+            "READBACK_MISMATCH:",
+            "READBACK_MISMATCH",
+            "READBACK_MISMATCH:two",
+            "READBACK_MISMATCH:-1",
+            "TOKEN_CONFLICT",
+        ] {
+            assert!(
+                authoritative_readback_error(code, &planned, AuthoritativeReadbackPhase::Finalize)
+                    .is_none(),
+                "{code} must fall through to authoritative_script_error"
+            );
+        }
+        assert!(matches!(
+            authoritative_script_error("TOKEN_CONFLICT"),
+            StoreError::AuthoritativeTokenConflict
+        ));
+    }
 }

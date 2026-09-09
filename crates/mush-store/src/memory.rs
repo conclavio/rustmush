@@ -457,10 +457,11 @@ impl AuthoritativeFaultStore {
         }
         validate_replay_recovery(&inner, &bundle)?;
         apply_replay(&mut inner, &planned[..count]);
-        if first_replay_mismatch(&inner, &planned[..count]).is_some() {
-            return Err(StoreError::AuthoritativeCorrupt(
-                "fault harness prefix readback mismatch".to_owned(),
-            ));
+        if let Some(write) = first_replay_mismatch(&inner, &planned[..count]) {
+            return Err(StoreError::AuthoritativeCorrupt(format!(
+                "fault harness prefix readback mismatch at key {:?}",
+                planned_write_key(write)
+            )));
         }
         Ok(())
     }
