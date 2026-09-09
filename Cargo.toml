@@ -66,6 +66,12 @@ rust-embed = "8"
 # keeps the no-C-toolchain rule (default tls-rustls pulls aws-lc-sys).
 axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# dev-only X.509 generator for the `tls` feature's serve proof (WS24-S4). A
+# committed PEM would turn CI red at the certificate's own notAfter with no code
+# change, so the proof mints a throwaway self-signed pair per run. rcgen's
+# default features are `crypto, pem, ring` — ring, not aws-lc-sys, so this keeps
+# the no-C-toolchain rule the axum-server/rustls lines above are written to.
+rcgen = "0.14"
 # dev-only WS client for mush-net-web integration tests (verified Aug 2026:
 # 0.30.0 current; plain ws://, no TLS features needed)
 tokio-tungstenite = "0.30"

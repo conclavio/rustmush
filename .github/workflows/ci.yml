@@ -49,6 +49,40 @@ jobs:
           cargo test -p mush-proto --features ts --test ts_export
           git diff --exit-code web/src/lib/proto
 
+  # WS24-S4 (fu10-1): `cargo build --workspace --all-targets` above compiles
+  # every crate exactly ONCE, with its default features. Everything that is off
+  # by default is therefore code no job compiles — and `mush-gateway --features
+  # tls` is not an optional extra, it is the PRODUCTION build of the proxyless
+  # split deploy. Before this job, `tls` appeared nowhere in this file and the
+  # native-HTTPS path was first compiled at redeploy on the VPS.
+  #
+  # The `--features` spelling is NAMESPACED on purpose. Cargo 1.98 does accept
+  # a bare `--features tls` across several `-p` flags, but it applies it to
+  # whichever selected packages happen to have a feature of that name and says
+  # nothing about the ones that do not — so a rename would silently drop a
+  # package out of coverage while the job stayed green. `<pkg>/<feature>` names
+  # its package, and cargo errors if that package has no such feature. The
+  # tripwire below resolves both forms the way cargo does.
+  features:
+    name: Toggleable features compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy the native-TLS path
+        run: cargo clippy -p mush-net-web -p mush-gateway -p mushd --features mush-net-web/tls,mush-gateway/tls,mushd/tls --all-targets -- -D warnings
+      - name: Build the proxyless-deploy binaries
+        run: cargo build -p mushd -p mush-gateway --features mushd/tls,mush-gateway/tls
+      - name: The TLS listener serves
+        run: cargo test -p mush-net-web --features tls
+      - name: Every toggleable feature is named by a job
+        run: cargo test -p mush-contract-tests --test feature_matrix_inventory
+
   kernel-contracts:
     name: K8 kernel contracts
     runs-on: ubuntu-latest

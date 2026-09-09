@@ -29,6 +29,8 @@ rustls = { workspace = true, optional = true }
 [dev-dependencies]
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
+# tests/tls_serve.rs mints a throwaway self-signed pair per run (WS24-S4).
+rcgen.workspace = true
 
 [lints]
 workspace = true
