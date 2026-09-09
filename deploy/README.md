@@ -12,7 +12,42 @@ TacSim one, …). Each instance `<name>` gets:
 The reference instance is **dev1** ([`dev1/`](dev1/)) — oWoD, ports **6788/6789/6790**.
 A second instance **dev2** ([`dev2/`](dev2/)) runs **Shadowrun** (`[rulesets].enabled = ["shadowrun"]`)
 on ports **6791** (redis) / **6792** (ssh) / **6793** (https), `/opt/rustmush/dev2`.
-To add another, copy an instance directory, rename the units/config, and pick fresh ports.
+
+## A new instance: render the template, do not copy a box
+
+`dev1/mushd.toml` and `dev2/mushd.toml` predate [`instance/`](instance/) and omit
+**thirteen** sections between them — `[log]`, `[store.archive]`, `[offers]`,
+`[resolution]`, `[discord]`, `[economy]`, `[weather]`, `[worldgen]`,
+`[onboarding]`, `[npc]`, `[wod]`, `[shadowrun]`, `[tacsim]` — so each of those
+runs on a compiled-in default nobody chose: no log files, no ledger archive
+tier, key directories nobody provisioned, and every character starting in Limbo
+`#0`. Copying one of them inherits all of that silently.
+
+A new instance renders [`instance/mushd.toml.tmpl`](instance/mushd.toml.tmpl)
+instead. It carries every section with a real value, and it is parameterised by
+an `instance.env` of plain `KEY=value` lines — copy
+[`instance/instance.env.example`](instance/instance.env.example) (WoD + TacSim)
+or [`instance/instance.env.shadowrun.example`](instance/instance.env.shadowrun.example)
+(SR5), edit it, and substitute:
+
+```bash
+cp deploy/instance/instance.env.example instance.env && $EDITOR instance.env
+while IFS='=' read -r k v; do
+  case "$k" in ''|'#'*) continue;; esac
+  printf 's|__%s__|%s|g\n' "$k" "$v"
+done < instance.env > render.sed
+sed -f render.sed deploy/instance/mushd.toml.tmpl > mushd.toml
+grep -n '__' mushd.toml && echo 'INCOMPLETE instance.env' && exit 1
+```
+
+`crates/mush-config/tests/shipped_configs.rs` renders both shipped `instance.env`
+files on every build and asserts the sections are all there, the start rooms are
+not Limbo, `[ipc].listen` cannot be the store's port, and `mushd.toml.example`
+declares the same section set — so the shipped example and the shipped
+deployment cannot drift apart.
+
+Pick fresh ports per instance, and rename the units (`<name>mush.service`,
+`redis-<name>mush.service`) from `dev1/`'s.
 
 Each instance can run one of **two ways**:
 

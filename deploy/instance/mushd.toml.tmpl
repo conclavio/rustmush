@@ -1,0 +1,351 @@
+# rustmush INSTANCE CONFIG TEMPLATE — the one config a new instance renders.
+#
+# This is the whole surface, not the interesting half. Every section the server
+# reads is written here with a real value, because a section left out is not
+# "unset": it is silently the compiled-in default, and an operator who never saw
+# the key cannot know which default they are running. The two boxes that predate
+# this template (deploy/dev1, deploy/dev2) omit THIRTEEN sections between them —
+# [log], [store.archive], [offers], [resolution], [discord], [economy],
+# [weather], [worldgen], [onboarding], [npc], [wod], [shadowrun], [tacsim] —
+# and so quietly run: no log files, no ledger archive tier, key directories
+# nobody provisioned, and characters starting in Limbo. New instances do not
+# inherit that. They render this.
+#
+# RENDERING. The template is parameterised by an `instance.env` file of plain
+# `KEY=value` lines; rendering substitutes every `__KEY__` token with that key's
+# value, and nothing else. That is the entire mechanism — it is a `sed`, not a
+# template language, so the shell that deploys and the test that checks the
+# shipped files cannot disagree about what a rendered config is:
+#
+#   set -a; . ./instance.env; set +a
+#   sed -e "s|__INSTANCE__|$INSTANCE|g" -e "s|__INSTANCE_TITLE__|$INSTANCE_TITLE|g" \
+#       ... mushd.toml.tmpl > /opt/rustmush/$INSTANCE/mushd.toml
+#
+# or, equivalently and without listing the keys twice:
+#
+#   while IFS='=' read -r k v; do
+#     case "$k" in ''|'#'*) continue;; esac
+#     printf 's|__%s__|%s|g\n' "$k" "$v"
+#   done < instance.env > /tmp/render.sed
+#   sed -f /tmp/render.sed mushd.toml.tmpl > mushd.toml
+#
+# A rendered config with a `__SOMETHING__` left in it is an incomplete
+# instance.env, and crates/mush-config/tests/shipped_configs.rs fails on exactly
+# that. See deploy/instance/instance.env.example for the key list.
+
+[server]
+name = "__INSTANCE_TITLE__"
+data_dir = "__DATA_DIR__"
+help_dir = "__BUILD_DIR__/docs/help"
+
+# Structured logging. `format = "json"` is the prod choice: journald keeps the
+# lines either way, but only JSON survives a log shipper intact. `file = true`
+# writes daily-rotating copies under <data_dir>/logs/ so a box whose journal is
+# volatile still has yesterday.
+[log]
+level = "__LOG_LEVEL__"
+format = "__LOG_FORMAT__"
+file = true
+
+[store]
+store = "redis"
+# This instance's OWN Redis, never the box's 6379 development instance (whose
+# namespaces the gated test suite wipes).
+redis_url = "redis://127.0.0.1:__REDIS_PORT__"
+receipt_policy = "applied"
+
+# The J5 ledger archive tier. ON, because it is the half of the ledger's
+# durability story that config decides: with it off, sealed chunks accumulate in
+# the store forever and nothing is ever copied to disk. `dir` is under
+# [server].data_dir and holds MONEY — back it up with the store, not instead
+# of it. The nightly pass copies, reads back, verifies, and only then purges,
+# and only chunks older than `retain_hours`, and only above the high watermark.
+[store.archive]
+enabled = true
+dir = "archive"
+window = "03:00-04:00"
+retain_hours = 48
+high_watermark_mb = 512
+low_watermark_mb = 256
+segment_chunks = 256
+max_purge_per_pass = 4096
+
+# K5 offer signing and K4 resolution RNG each hold a private key family. Named
+# explicitly rather than defaulted so the two directories are provisioned (mode
+# 0700, owned by the mush user) by the deploy rather than created on first boot
+# with whatever umask the unit happened to have. They are DIFFERENT families:
+# never point them at one directory.
+[offers]
+key_dir = "__DATA_DIR__/offer-keys"
+
+[resolution]
+key_dir = "__DATA_DIR__/resolution-keys"
+
+[ssh]
+listen = "__EXTERNAL_IP__:__SSH_PORT__"
+
+# The forked gateway<->server boundary (M16b/M16c). IGNORED by the all-in-one
+# `mushd`; bound by `mush-server` and connected to by `mush-gateway` in the
+# split deployment.
+#
+# NOT OPTIONAL, and never left to the default. The unset default is the TCP
+# address 127.0.0.1:6791 — which is dev2's Redis port, so dev2 with no [ipc]
+# section would have bound the boundary on top of its own store and crash-looped
+# under the gateway's relaunch guard. `Config::ipc_endpoint()` refuses that now,
+# but the refusal is a floor, not a plan: a per-instance UNIX SOCKET under the
+# unit's RuntimeDirectory has no port to collide with at all, and — because the
+# boundary is UNAUTHENTICATED, the server trusting whatever connects to assert
+# authenticated sessions — it is also the only form a local process cannot use
+# to impersonate the gateway. /run/rustmush is provided by the unit's
+# `RuntimeDirectory=rustmush` at mode 0750.
+[ipc]
+listen = "__IPC_SOCKET__"
+to_server_cap = 1024
+to_gw_cap = 8192
+write_timeout_ms = 5000
+high_water_warn_pct = 80
+
+# The web client. External IPv4 only — never 0.0.0.0, never the tailscale
+# address. Native HTTPS needs the `tls` cargo feature on the build.
+# `features`/`panels` are filled from the module registry at boot: do not set
+# them here.
+[web]
+listen = "__EXTERNAL_IP__:__WEB_PORT__"
+tls = { cert = "__TLS_DIR__/cert.pem", key = "__TLS_DIR__/key.pem" }
+trusted_proxies = []
+metrics_enabled = false
+
+# The Discord bot. Off on a fresh instance: it needs a token, an application id
+# and a guild before it can do anything, and all three arrive after the box does.
+# The token is NEVER inlined — `token_env` names an env var the systemd
+# EnvironmentFile supplies.
+[discord]
+enabled = false
+token_env = "DISCORD_BOT_TOKEN"
+application_id_env = "DISCORD_APPLICATION_ID"
+guild_id_env = "DISCORD_GUILD_ID"
+# [[discord.relay]]                # one per mirrored comsys channel (D4)
+# channel = "Public"
+# discord_channel_id = 0
+# direction = "both"
+
+[game]
+linkdead_grace_s = 300
+max_characters = 3
+ic_ratio = 1
+ic_epoch = "2020-01-01 00:00"
+
+# The economy's bounds. Written out because each is a policy: how large a hole a
+# ruleset may open in the mint per period, how much journal stays in RAM, how
+# often a checkpoint is cut, and how long a posted idempotency key is remembered
+# in RAM (it is on disk forever regardless — this is the cache).
+[economy]
+mint_obligation_cap_major = 50000
+tx_tail_max = 20000
+checkpoint_every_entries = 10000
+idempotency_window_secs = 2592000
+idempotency_window_max = 1000000
+stale_contract_age_secs = 604800
+
+[weather]
+flavor_variants = 10
+
+[worldgen]
+batch_max_rooms = 40
+
+# Exactly one character ruleset. "wod" (oWoD20) or "shadowrun" (SR5) — they
+# share the +roll/+sheet/+chargen names, so two is a hard boot error.
+[rulesets]
+enabled = ["__RULESET__"]
+
+# The WoD layer's own economy. `personal_mode = "off"` is the pre-E5c shape and
+# the honest default for a new chronicle: housing works and staff create
+# tenancies, but no character carries money until the game runner decides it
+# should. Turn it to "abstract" or "exact" deliberately, not by drifting into it.
+[wod.economy]
+personal_mode = "off"
+housing = true
+careers = true
+default_engagement = "ambient"
+cadence = "chronicle.period"
+starting_funds_major = 0
+reserved_rooms = []
+
+# The Shadowrun layer's own economy: nuyen accounts, lifestyle billing and the
+# run board. Rendered on every instance, enabled only on the one running SR5 —
+# __RULESET__ decides which, and enabling this on a WoD box would register a
+# currency nothing spends.
+[shadowrun.economy]
+enabled = __SHADOWRUN_ECONOMY__
+instrument = "sr.nuyen"
+lifestyle_clock = "sr.month"
+lifestyle = true
+player_run_offers = true
+organization_run_offers = true
+vendor_orgs = []
+active_offer_cap = 4
+board_ttl_secs = 1209600
+board_cap = 128
+
+# The TacSim layer — a LAYER beside the one character ruleset, not a third
+# ruleset id. Rendered on every instance and switched per instance, because the
+# thing an operator gets wrong is not the packs, it is believing the layer is on
+# when the section was never written. An unreadable, oversized, unparseable or
+# digest-mismatched pack is a HARD BOOT ERROR NAMING THE FILE.
+#
+# NOTE: [tacsim] is deny_unknown_fields — a typo here REFUSES the boot rather
+# than taking a default. That is deliberate: this is the only block whose keys
+# decide whether any file is read at all.
+[tacsim]
+enabled = __TACSIM_ENABLED__
+pack_paths = []
+seed_paths = []
+corridor = ""
+active_domain_limit = 8
+ground_pulse_ms = 2000
+space_pulse_ms = 6000
+
+# Campaign rate/catch-up POLICY. Parsed and inert until later E7 cuts, and it
+# never seeds the world timeline — generation one comes from [game] above.
+[tacsim.time]
+rate = 0
+catch_up_journeys = ""
+catch_up_production = ""
+catch_up_fronts = ""
+catch_up_domains = ""
+
+# The recovery provider (a player who has lost everything getting a hull back).
+# Off on a fresh instance: it grants against a FUNDED pool account that does not
+# exist until someone creates it, and an enabled provider with `pool_account =
+# 0` queues and pages rather than granting. Also deny_unknown_fields — this
+# block decides who gets rescued and on what terms, so a mistyped key refuses
+# the boot instead of becoming a policy the operator believes is in force.
+[tacsim.recovery]
+enabled = false
+pool_account = 0
+pool_floor = 0
+tiers = []
+applications_per_principal = 1
+cooldown_days = 14
+max_operational_assets = 0
+insurance = "approved_operations"
+upkeep_per_period = 0
+
+# Onboarding. The start rooms are REAL SEEDED ROOMS, not #0. Limbo is the
+# bootstrap room the store seeds with God — it is reserved from housing, it is
+# where a world with nothing else in it puts you, and it is not a place to open
+# a game. `start_room` is where an approved character lands; unapproved
+# characters are held in `start_room_unapproved` on the chargen command set
+# until a storyteller approves their chargen job.
+[onboarding]
+chargen_required = __CHARGEN_REQUIRED__
+start_room = __START_ROOM__
+start_room_unapproved = __START_ROOM_UNAPPROVED__
+
+[npc]
+scene_turn_deadline_secs = 120
+
+# --- LLM ---------------------------------------------------------------------
+# API keys are NEVER inlined: each provider names an env var, supplied by the
+# unit's EnvironmentFile (/opt/rustmush/__INSTANCE__/__INSTANCE__.env, root:mush
+# 0640). Routing is by the MODEL-ID PREFIX on each route, not by naming a
+# provider: "anthropic/<model>" goes to `anthropic` (prefix stripped), anything
+# else goes to `openrouter` verbatim — so keep these two provider ids as written.
+[llm]
+enabled = __LLM_ENABLED__
+decision_workers = 8
+
+[llm.providers.openrouter]
+kind = "openai"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+requests_per_minute = 60
+referer = "https://github.com/rustmush"
+title = "rustmush-__INSTANCE__"
+
+[llm.providers.anthropic]
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+requests_per_minute = 60
+anthropic_version = "2023-06-01"
+price_input_per_mtok = 5.0
+price_output_per_mtok = 25.0
+
+[llm.routes.worldgen_room]
+model = "z-ai/glm-5.3"
+max_tokens = 1500
+timeout_s = 90
+reasoning = "low"
+
+[llm.routes.worldgen_brief]
+model = "z-ai/glm-5.3-flash"
+max_tokens = 2000
+timeout_s = 120
+reasoning = "low"
+
+[llm.routes.ambience]
+model = "deepseek/deepseek-v4-flash-0731"
+max_tokens = 400
+timeout_s = 30
+reasoning = "off"
+
+[llm.routes.npc_dialogue_major]
+model = "z-ai/glm-5.3"
+max_tokens = 1024
+timeout_s = 30
+reasoning = "low"
+
+[llm.routes.npc_dialogue_minor]
+model = "z-ai/glm-5.3-flash"
+max_tokens = 1024
+timeout_s = 30
+reasoning = "low"
+
+[llm.routes.npc_dialogue_extra]
+model = "deepseek/deepseek-v4-flash-0731"
+max_tokens = 768
+timeout_s = 30
+reasoning = "off"
+
+# Without this route every NPC decision falls back to its idle action after its
+# deadline — the same degrade shape as [llm].enabled = false.
+[llm.routes.npc_decision]
+model = "z-ai/glm-5.3-flash"
+max_tokens = 512
+timeout_s = 30
+reasoning = "low"
+
+[llm.routes.npc_summarize]
+model = "z-ai/glm-5.3-flash"
+max_tokens = 768
+timeout_s = 60
+reasoning = "off"
+
+# The LLM Storyteller: st_adjudicate JUDGES a proposed working, st_interpret
+# narrates the engine's already-thrown result. The LLM never rolls and never
+# sets the outcome.
+[llm.routes.st_adjudicate]
+model = "z-ai/glm-5.3"
+max_tokens = 1024
+timeout_s = 45
+reasoning = "low"
+
+[llm.routes.st_interpret]
+model = "z-ai/glm-5.3-flash"
+max_tokens = 768
+timeout_s = 30
+reasoning = "off"
+
+[llm.concurrency]
+max_interactive = 8
+max_background = 3
+
+[llm.budgets]
+global = { tokens = 5_000_000, cost_usd = 5.0 }
+per_actor_default = { cost_usd = 1.0 }
+per_npc_default = { tokens = 200_000 }
+
+[llm.budgets.per_feature]
+worldgen_room = { cost_usd = 2.0 }
+npc_dialogue_major = { cost_usd = 1.0 }

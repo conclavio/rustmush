@@ -3,6 +3,12 @@
 # (reserved) are documented targets for later milestones and are read but
 # NOT yet honored — listed so operators aren't surprised. The "(hot)"
 # / @reload story also lands later (M3+); today everything needs a restart.
+#
+# This file documents every section the server reads, for a LOCAL run. A
+# DEPLOYED instance renders deploy/instance/mushd.toml.tmpl from an
+# instance.env instead — same sections, real values, no defaults-by-omission.
+# crates/mush-config/tests/shipped_configs.rs asserts the two declare the same
+# section set, so a new section cannot land in one and be forgotten in the other.
 
 [server]
 name = "rustmush dev"              # (M2)
@@ -142,6 +148,36 @@ enabled = ["wod"]                  # oWoD20; use ["shadowrun"] for Shadowrun 5e 
 # "+chargen/template <mortal|vampire|mage|werewolf>". A character is exactly one
 # template, and its sheet carries only that splat's sections.
 
+[wod.economy]                      # (E5c) the WoD ruleset's OWN economy layer
+# Ruleset-owned (D-E5-9): these knobs turn the WoD layer on and off, never the
+# E2-E4 economy the server runs regardless. "off" is the pre-E5c shape — housing
+# works and staff create tenancies, but no character carries money. Read only
+# when [rulesets].enabled names "wod"; harmless on a Shadowrun server, and
+# written out anyway so the shipped example is the whole config surface.
+personal_mode = "off"              # off | abstract | exact (an unknown word is a hard boot error)
+housing = true                     # create tenancies + register system:wod.housing as title issuer
+careers = true                     # evaluate careers, stances, opportunities, exposure
+default_engagement = "ambient"     # ambient | engaged — a new profile's engagement
+cadence = "chronicle.period"       # the economy cadence clock careers/abstract housing settle on
+starting_funds_major = 0           # exact mode only: chargen starting funds, major units
+reserved_rooms = []                # extra #N rooms that may never become property rooms
+
+[shadowrun.economy]                # (E6a) the Shadowrun ruleset's OWN economy layer
+# Ruleset-owned exactly as [wod.economy] is. Off by default: SR5 still rolls
+# dice and nuyen is still a sheet number; the accounts, lifestyle billing and
+# run board are what this switches. The verbs register either way and answer
+# "not enabled on this server" when off.
+enabled = false
+instrument = "sr.nuyen"            # the currency code, registered at scale 0
+lifestyle_clock = "sr.month"       # the declared cadence lifestyle is billed on
+lifestyle = true                   # create lifestyle obligations
+player_run_offers = true           # +run/post accepts a personal payer
+organization_run_offers = true     # +run/post ... scope=<org> is accepted
+vendor_orgs = []                   # org ids whose contract acceptance may be programmatic
+active_offer_cap = 4               # per-principal open listings
+board_ttl_secs = 1209600           # how long a listing lives (14 d)
+board_cap = 128                    # the whole board's open-listing cap
+
 [tacsim]                           # (E7 cut 1) the TacSim layer: packs, seeds, the corridor
 # TacSim is a LAYER, not a ruleset id. It coexists with whichever single
 # character ruleset [rulesets].enabled selects, and composes AFTER it, because
@@ -173,6 +209,26 @@ catch_up_journeys = ""             # cut 6
 catch_up_production = ""           # cut 4
 catch_up_fronts = ""               # cut 9
 catch_up_domains = ""              # cut 8
+
+[tacsim.recovery]                  # (E7r1 R4) the recovery provider: a lost-everything loaner
+# Off by default; @recovery still registers and answers "not enabled on this
+# server". Like [tacsim] itself this block is deny_unknown_fields — a mistyped
+# key REFUSES the boot rather than taking a default, because it decides who gets
+# rescued and on what terms, and a policy the operator believes is in force and
+# is not is worse than not starting. It does NOT need [tacsim].enabled: the
+# provider is campaign-shaped, not tacsim-shaped.
+# The pool is NEVER minted into. pool_account names an ordinary account the
+# provider organization already holds; a deployment that wants to subsidize it
+# writes a staff-authored system obligation, outside this block.
+enabled = false
+pool_account = 0                   # the budget account; 0 is unwired — an enabled provider then queues and pages
+pool_floor = 0                     # the balance the pool may not be granted below: funded, never infinite
+tiers = []                         # the loaner tier table, cheapest first; an enabled provider needs one
+applications_per_principal = 1     # live applications one principal may hold
+cooldown_days = 14                 # 10b §7's RECOVERY_COOLDOWN, under every insurance word
+max_operational_assets = 0         # eligibility threshold over ACCESSIBLE assets (an unreachable wreck qualifies)
+insurance = "approved_operations"  # approved_operations | none — debt vs write-off, and nothing else
+upkeep_per_period = 0              # the lease's rent obligation, per campaign cadence period
 
 [onboarding]                       # (M9) the chargen_required gate + start rooms
 # When off (the default), a fresh character plays immediately, exactly as
