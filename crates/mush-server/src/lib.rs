@@ -88,7 +88,9 @@ pub mod tactics_outbox;
 pub mod timeline;
 pub mod world_task;
 
-use crate::action_coordinator::{ActionCoordinator, ActionPreflight};
+use crate::action_coordinator::{
+    ActionCoordinator, ActionPreflight, MAX_PREFLIGHT_ATTEMPTS, PREFLIGHT_RETRY_WINDOW,
+};
 use crate::gateway_sink::SocketSink;
 use crate::persist::AuthoritativeCommitFailure;
 use crate::persist::WorldExitStatus;
@@ -725,19 +727,6 @@ const RETAINED_CLAIM_TTL: Duration = Duration::from_secs(300);
 /// already holds at `MAX_IN_FLIGHT_GATEWAY_INPUTS`.
 const RETAINED_CLAIM_REAP_INTERVAL: Duration = Duration::from_secs(30);
 
-/// How many read-only preflight lookups one handler may spend on a store that
-/// keeps answering transiently, and the wall-clock window they must fit in.
-///
-/// The backoff starts at 100 ms and doubles, so the attempt ceiling binds on a
-/// store that fails fast (four sleeps: 100 + 200 + 400 + 800 ms) and the window
-/// binds on one that is merely slow to answer. Both are deliberately short:
-/// the loop only exists to ride out a hiccup, and giving up on it costs
-/// nothing but a retained claim the next gateway replay re-arms.
-const MAX_PREFLIGHT_ATTEMPTS: u32 = 5;
-
-/// See [`MAX_PREFLIGHT_ATTEMPTS`].
-const PREFLIGHT_RETRY_WINDOW: Duration = Duration::from_secs(5);
-
 /// The two custody states one server claim can be in.
 ///
 /// `Active` means some handler owns this uid's single disposition. `Retained`
@@ -1188,6 +1177,7 @@ async fn handle_authoritative_input(
     store: Arc<dyn ObjectStore>,
     sink: SocketSink,
     claims: Arc<Mutex<ServerInputClaims>>,
+    metrics: Arc<Metrics>,
 ) {
     let uid = request.uid;
     let (conn, actor) = match &request.input {
@@ -1258,6 +1248,10 @@ async fn handle_authoritative_input(
                         spent_ms = spent.as_millis(),
                         "coordinator preflight stayed transient to the bound"
                     );
+                    // Retention is silent to the gateway on purpose, so this
+                    // counter is the operator's only view of a store that is
+                    // answering neither yes nor no.
+                    metrics.coordinator_preflight_deferred();
                     retain_input_claim(&claims, uid, "preflight transient to the bound");
                     return;
                 }
@@ -1678,9 +1672,10 @@ pub async fn reader_loop(
                                 let routes = Arc::clone(&offer_routes);
                                 let sink = reply_sink.clone();
                                 let claims = Arc::clone(&input_claims);
+                                let metrics = Arc::clone(metrics);
                                 tokio::spawn(async move {
                                     handle_authoritative_input(
-                                        request, routes, world, store, sink, claims,
+                                        request, routes, world, store, sink, claims, metrics,
                                     )
                                     .await;
                                 });

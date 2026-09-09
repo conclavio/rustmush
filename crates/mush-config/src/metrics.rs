@@ -228,6 +228,14 @@ pub struct Metrics {
     /// this is the only operational signal that a boundary is accumulating
     /// requests whose durable fate nothing could prove.
     ipc_retained_claims_reaped_total: AtomicU64,
+    /// Coordinator submissions whose mandatory read-only preflight stayed
+    /// TRANSIENT to its bound, so the server deferred the work instead of
+    /// spinning on the store: the split boundary retains custody for the
+    /// gateway's next replay, the all-in-one handle answers `Busy`. Monotonic
+    /// counter and the only cheap signal that the authoritative store is
+    /// answering neither yes nor no; it climbing means players are being told
+    /// "try again" by a store hiccup, not by a rule.
+    coordinator_preflight_deferred_total: AtomicU64,
     /// High-water mark of the gateway->server (`to_server`) queue depth
     /// (`fetch_max` gauge).
     ipc_queue_high_water_to_server: AtomicU64,
@@ -570,6 +578,15 @@ impl Metrics {
             .fetch_add(reaped, Ordering::Relaxed);
     }
 
+    /// Count one coordinator submission deferred at the preflight bound: the
+    /// store stayed transient for the whole bounded window, so the request was
+    /// handed back to whoever still holds a copy of it rather than retried
+    /// forever inside the handler.
+    pub fn coordinator_preflight_deferred(&self) {
+        self.coordinator_preflight_deferred_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Record a gateway->server (`to_server`) queue occupancy observation,
     /// keeping the high-water mark (`fetch_max`).
     pub fn observe_ipc_to_server_depth(&self, depth: u64) {
@@ -763,6 +780,9 @@ impl Metrics {
                 .load(Ordering::Relaxed),
             ipc_retained_claims_reaped_total: self
                 .ipc_retained_claims_reaped_total
+                .load(Ordering::Relaxed),
+            coordinator_preflight_deferred_total: self
+                .coordinator_preflight_deferred_total
                 .load(Ordering::Relaxed),
             ipc_queue_high_water_to_server: self
                 .ipc_queue_high_water_to_server
@@ -996,6 +1016,9 @@ pub struct MetricsSnapshot {
     pub ipc_reannounce_protocol_violations_total: u64,
     /// Retained coordinator claims reaped at the retention TTL since boot.
     pub ipc_retained_claims_reaped_total: u64,
+    /// Coordinator submissions deferred at the preflight bound since boot: a
+    /// store that answered transiently for the whole bounded window.
+    pub coordinator_preflight_deferred_total: u64,
     /// High-water mark of the gateway->server (`to_server`) queue depth (M18).
     pub ipc_queue_high_water_to_server: u64,
     /// High-water mark of the server->gateway (`to_gw`) queue depth (M18).
@@ -1251,6 +1274,13 @@ impl MetricsSnapshot {
             "counter",
             "Retained coordinator claims freed by the server's retention reaper.",
             &[(&[], self.ipc_retained_claims_reaped_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_coordinator_preflight_deferred_total",
+            "counter",
+            "Coordinator submissions deferred because preflight stayed transient to its bound.",
+            &[(&[], self.coordinator_preflight_deferred_total as f64)],
         );
         metric(
             &mut o,
@@ -1962,6 +1992,7 @@ mod tests {
         assert_eq!(s.ipc_to_gw_overflow_total, 0);
         assert_eq!(s.ipc_reannounce_protocol_violations_total, 0);
         assert_eq!(s.ipc_retained_claims_reaped_total, 0);
+        assert_eq!(s.coordinator_preflight_deferred_total, 0);
         assert_eq!(s.ipc_queue_high_water_to_server, 0);
         assert_eq!(s.ipc_queue_high_water_to_gw, 0);
 
@@ -1977,6 +2008,9 @@ mod tests {
         // pass's count rather than one bump per claim.
         m.ipc_retained_claims_reaped(2);
         m.ipc_retained_claims_reaped(3);
+        // Deferral is per submission: one bump per handler that gave up
+        // at the bound, in either deployment arm.
+        m.coordinator_preflight_deferred();
 
         // High-water keeps the max, not the last observation.
         m.observe_ipc_to_server_depth(5);
@@ -1992,6 +2026,7 @@ mod tests {
         assert_eq!(s.ipc_to_gw_overflow_total, 1);
         assert_eq!(s.ipc_reannounce_protocol_violations_total, 1);
         assert_eq!(s.ipc_retained_claims_reaped_total, 5);
+        assert_eq!(s.coordinator_preflight_deferred_total, 1);
         assert_eq!(s.ipc_queue_high_water_to_server, 12);
         assert_eq!(s.ipc_queue_high_water_to_gw, 4000);
 
@@ -2004,6 +2039,7 @@ mod tests {
         assert!(text.contains("mush_ipc_to_gw_overflow_total 1"));
         assert!(text.contains("mush_ipc_reannounce_protocol_violations_total 1"));
         assert!(text.contains("mush_ipc_retained_claims_reaped_total 5"));
+        assert!(text.contains("mush_coordinator_preflight_deferred_total 1"));
         assert!(text.contains("# TYPE mush_ipc_queue_high_water gauge"));
         assert!(text.contains("mush_ipc_queue_high_water{dir=\"to_server\"} 12"));
         assert!(text.contains("mush_ipc_queue_high_water{dir=\"to_gw\"} 4000"));

@@ -160,8 +160,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::action_coordinator::{
-    ActionCoordinator, ActionPermit, ActionPreflight, StagedAuthoritativeAction,
-    StagedDecisionAttempt, StagedDecisionLease, StagedDecisionResponse,
+    ActionCoordinator, ActionPermit, ActionPreflight, MAX_PREFLIGHT_ATTEMPTS,
+    PREFLIGHT_RETRY_WINDOW, StagedAuthoritativeAction, StagedDecisionAttempt, StagedDecisionLease,
+    StagedDecisionResponse,
 };
 use crate::decision_dispatch::{
     DecisionDispatchReservation, DecisionDispatcher, DecisionProviderRegistry,
@@ -1088,6 +1089,10 @@ struct DirectActionIngress {
     projections: ReceiptProjectionTable,
     epoch: u64,
     next_sequence: AtomicU64,
+    /// The same registry the world loop and store writer publish into. This
+    /// path has no gateway boundary to report through, so a submission
+    /// deferred at the preflight bound would otherwise be invisible.
+    metrics: Arc<Metrics>,
 }
 
 impl WorldHandle {
@@ -1369,11 +1374,36 @@ impl WorldHandle {
             tracing::error!("in-process store lacks authoritative request capability");
             return ActionSend::Gone;
         };
+        // Bounded exactly like the split boundary's handler, under the shared
+        // pair in `action_coordinator`: the loop rides out a store hiccup, it
+        // is never the durable answer. What differs is the answer at the
+        // bound. The split arm retains custody because its gateway still holds
+        // a replay copy; this arm has no second custodian, so it answers
+        // `Busy` — "bounded custody full before durable ownership". That is
+        // honest here and only here, because `next_sequence` above minted a
+        // fresh sequence for this call: no intent under this request's
+        // identity can exist yet, so a caller's retry cannot double-apply one.
+        let started = tokio::time::Instant::now();
         let mut delay = Duration::from_millis(100);
+        let mut attempts = 0u32;
         let preflight = loop {
+            attempts += 1;
             match ActionCoordinator::preflight(store, envelope.clone()).await {
                 Ok(preflight) => break preflight,
                 Err(error) if error.is_transient() => {
+                    let spent = started.elapsed();
+                    if attempts >= MAX_PREFLIGHT_ATTEMPTS
+                        || spent.saturating_add(delay) > PREFLIGHT_RETRY_WINDOW
+                    {
+                        tracing::error!(
+                            error = %error,
+                            attempts,
+                            spent_ms = spent.as_millis(),
+                            "in-process coordinator preflight stayed transient to the bound"
+                        );
+                        direct.metrics.coordinator_preflight_deferred();
+                        return ActionSend::Busy;
+                    }
                     tokio::time::sleep(delay).await;
                     delay = (delay * 2).min(Duration::from_secs(5));
                 }
@@ -2013,6 +2043,7 @@ fn spawn_persist_with_gateway_mode(
         projections,
         epoch: action_epoch,
         next_sequence: AtomicU64::new(1),
+        metrics: Arc::clone(&deps.metrics),
     });
     let handle = WorldHandle {
         tx: tx.clone(),

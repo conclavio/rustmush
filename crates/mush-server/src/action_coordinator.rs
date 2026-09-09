@@ -149,6 +149,28 @@ pub(crate) const COMMAND_REQUEST_DOMAIN: &str = "cmd.legal_action.v1";
 /// and bounded parameters.
 pub(crate) const MAX_COMMAND_REQUEST_BYTES: usize = 64 * 1024;
 
+/// How many read-only preflight lookups one submission may spend on a store
+/// that keeps answering transiently, and the wall-clock window they must fit
+/// in.
+///
+/// The backoff starts at 100 ms and doubles, so the attempt ceiling binds on a
+/// store that fails fast (four sleeps: 100 + 200 + 400 + 800 ms) and the window
+/// binds on one that is merely slow to answer. Both are deliberately short:
+/// the loop only exists to ride out a hiccup, and it is never the durable
+/// answer.
+///
+/// **Both** preflight loops run under this one pair — the split boundary's
+/// `handle_authoritative_input` and the all-in-one
+/// [`WorldHandle::submit_legal_action`](crate::world_task::WorldHandle::submit_legal_action)
+/// — because the thing being bounded is the same read-only lookup against the
+/// same store. What differs is the answer at the bound: the split arm retains
+/// custody (its gateway still holds a replay copy), the all-in-one arm has no
+/// second custodian and answers `Busy`.
+pub(crate) const MAX_PREFLIGHT_ATTEMPTS: u32 = 5;
+
+/// See [`MAX_PREFLIGHT_ATTEMPTS`].
+pub(crate) const PREFLIGHT_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Process-local epoch for direct interactive action identities. Kept outside
 /// provider implementation files so the C5 architectural tripwire can prove
 /// providers have no ambient RNG access.
