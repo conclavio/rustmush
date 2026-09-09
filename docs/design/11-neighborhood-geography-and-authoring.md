@@ -772,7 +772,12 @@ latch (`crates/ruleset-tacsim/src/seed.rs`). The starter area is therefore **a J
 applied by the same loader and latch the neighborhood builder uses**, first-boot after `#0`/`#1`,
 idempotent, re-applicable by staff, disable-able in config, retirable only through the reviewed
 retirement path. It must never be hand-coded objects: it is the first proof that R2's format and
-the builder's apply path work.
+the builder's apply path work. **And it must never cost anything to boot** (owner, 2026-09-09): the
+pack is static content committed to the repository — authored once, with the agent's help if
+wanted, and reviewed like any pack — so applying it makes no LLM call; the agent-built path is a
+staff or player action, never a boot step; and a test instance never applies it unless the suite
+under test is the starter area itself (the testkit's minimal world stays Limbo `#0` plus God `#1`).
+A test that spent on generation at every spin-up would be a defect.
 
 The worked shape (review's proposal; sizes are budgets, not targets):
 
