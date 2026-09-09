@@ -2024,6 +2024,15 @@ impl Engine {
             let mut registrar = module::Registrar::for_composition(&mut registry, name);
             m.register(&mut registrar)?;
         }
+        // fu3-4: with every module's registrations in, no global command may
+        // capture a verb a behavior declares. A global always wins at
+        // dispatch, so a captured behavior verb is permanently dead with
+        // nothing logged; the check runs HERE, once, rather than inside
+        // registration, so the answer does not depend on the order the roster
+        // (or a single module's own calls) composes in.
+        registry
+            .check_behavior_verb_shadowing()
+            .map_err(ModError::msg)?;
         // Definition/action/bridge composition is complete before any world
         // state exists or persisted record can be interpreted.
         registry.freeze_mechanics(&module_owners)?;

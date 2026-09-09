@@ -2637,6 +2637,44 @@ mod tests {
         }
     }
 
+    /// fu3-4: the new composition-freeze refusal — no global verb may capture a
+    /// verb some registered behavior declares — must not wedge a real boot.
+    ///
+    /// The refusal is a hard error, so the roster it runs over has to be
+    /// checked, not assumed. Today no shipped `BehaviorSpec` declares
+    /// contextual commands at all, so the pass has nothing to refuse; this test
+    /// is what says so out loud, per ruleset, and what fails the day a module
+    /// adds a behavior command whose verb the global table already answers.
+    /// (The unit proof of the mechanism itself lives in `mush-core`'s
+    /// `tests/module_api.rs`; it cannot build a production roster from there
+    /// without `mush-core` depending on `mush-server`.)
+    #[test]
+    fn production_composition_registers_no_shadowing_verb() {
+        for ruleset in ["wod", "shadowrun"] {
+            let onboarding = ruleset_wod::OnboardingConfig::default();
+            let wod = ruleset_wod::WodEconomyConfig::default();
+            let shadowrun = ruleset_shadowrun::SrEconomyConfig::default();
+            let mut modules = server_modules_with(
+                mush_weather::WeatherConfig::default(),
+                mush_economy::EconomyConfig::default(),
+                &onboarding,
+                (ruleset == "wod").then_some(&wod),
+                (ruleset == "shadowrun").then_some(&shadowrun),
+                mush_campaign::RecoveryConfig::default(),
+            );
+            modules.extend(
+                ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
+                    .expect("one production ruleset"),
+            );
+            modules.push(tacsim_module(ruleset_tacsim::fixture::config()));
+            Engine::compose_modules(crate::world_task::base_registry(), modules).unwrap_or_else(
+                |error| {
+                    panic!("the {ruleset} composition must not shadow a behavior verb: {error}")
+                },
+            );
+        }
+    }
+
     /// E7 cut 3: the claim's titled object is minted by
     /// `mush_economy::issue_title` under `industry.claims`, which `issue_title`
     /// refuses unless it is on the economy's own issuer list. The two names

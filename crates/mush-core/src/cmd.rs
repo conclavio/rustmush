@@ -750,6 +750,77 @@ impl Registry {
             .collect()
     }
 
+    /// Refuse a global command that would capture a verb some behavior
+    /// declares (fu3-4). Run **once, after every module has registered** and
+    /// before the composition freezes; the diagnostic names the verb, the
+    /// behavior that declared it and the global that eats it.
+    ///
+    /// [`register_behavior`](Registry::register_behavior) already refuses the
+    /// forward order — a behavior verb declared against a global that exists
+    /// *already* — and stays as the better-localised diagnostic. It cannot see
+    /// the reverse: a global registered by a LATER-composed module against a
+    /// behavior declared by an earlier one registers cleanly, and the behavior
+    /// verb is then permanently dead at dispatch with nothing logged, because
+    /// the command table is consulted first and the behavior stage is reached
+    /// only on [`LookupErr::NotFound`]. This pass is the complete one.
+    ///
+    /// It deliberately does **not** live in
+    /// [`register_tagged`](Registry::register_tagged): checking there would
+    /// make intra-module registration ORDER load-bearing — one module calling
+    /// `reg.behavior(spec)` before its own `reg.command(..)` would be refused
+    /// while the same module with the two calls swapped composed and the verb
+    /// still died. Here the answer is the same whichever order the roster
+    /// composes in.
+    ///
+    /// Resolution is [`lookup_idx`](Registry::lookup_idx) — the same resolver
+    /// dispatch uses — so the exact-hit, unique-prefix and
+    /// [`Ambiguous`](LookupErr::Ambiguous) cases all fall out of it rather than
+    /// being re-derived (and no `behavior_verbs` side map would answer a prefix
+    /// query anyway). A refusal is a hard boot error, not a warning: a verb a
+    /// player can never reach is worse than a boot that says why, and no
+    /// shipped `BehaviorSpec` declares commands today, so the blast radius is
+    /// empty until the control-channel commands land.
+    pub(crate) fn check_behavior_verb_shadowing(&self) -> Result<(), String> {
+        // `behaviors` is a HashMap; sort so a roster with two shadowed verbs
+        // reports the same one every boot.
+        let mut specs: Vec<&BehaviorSpec> = self.behaviors.values().collect();
+        specs.sort_by_key(|spec| spec.id.to_string());
+        for spec in specs {
+            for cmd in &spec.commands {
+                let mut verbs: Vec<String> = vec![cmd.spec.name.to_lowercase()];
+                verbs.extend(cmd.spec.aliases.iter().map(|a| a.to_lowercase()));
+                for verb in verbs {
+                    match self.lookup_idx(&verb) {
+                        Err(LookupErr::NotFound) => {}
+                        Ok(idx) => {
+                            let global = &self.entries[idx];
+                            let owner = global
+                                .module
+                                .clone()
+                                .unwrap_or_else(|| SmolStr::new_static("core"));
+                            return Err(format!(
+                                "behavior command {verb:?} (behavior `{}`, module {}) is shadowed by the global command {:?} owned by {owner}: the global table resolves the verb first, so the behavior command would be dead at dispatch",
+                                spec.id,
+                                spec.owner,
+                                global.spec.name.as_str(),
+                            ));
+                        }
+                        Err(LookupErr::Ambiguous(names)) => {
+                            let names: Vec<&str> = names.iter().map(SmolStr::as_str).collect();
+                            return Err(format!(
+                                "behavior command {verb:?} (behavior `{}`, module {}) is shadowed by an ambiguous global prefix ({}): the global stage refuses the verb before the behavior stage, so the behavior command would be dead at dispatch",
+                                spec.id,
+                                spec.owner,
+                                names.join(", "),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Append a pre-destroy [`DestroyGate`] (design D8), consulted by
     /// [`check_destroy`](Registry::check_destroy) in registration order.
     pub fn add_destroy_gate(&mut self, gate: Arc<dyn DestroyGate>) {

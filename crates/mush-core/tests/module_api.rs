@@ -18,13 +18,14 @@ use mush_core::module::{
 };
 use mush_core::{
     ActionError, ActionInvocation, ActionProvider, AliasOutcome, AliasStage, ArgShape,
-    AuthorityGuard, AuthorityGuardKind, AuthorityGuardValidator, BridgeDescriptor, CanonicalId,
-    CmdError, CommandSpec, Ctx, DefinitionDescriptor, DefinitionDigest, DefinitionId,
-    DefinitionKey, DefinitionKind, DefinitionRef, DefinitionValidationContext, GOD, IncidentId,
-    IncidentState, LIMBO, MAX_BOOT_REPORT_DETAILS, MigrationPlanSummary, ModuleBootReport, ObjId,
-    ObjKind, Outbox, OwnerId, RecoveryIncidentSummary, RecoveryReason, RecoveryScope,
-    RecoverySeverity, Registry, RevisionKey, RevisionKind, RevisionValidator, SubjectKey, World,
-    register_core_commands, register_engine_commands,
+    AuthorityGuard, AuthorityGuardKind, AuthorityGuardValidator, BehaviorCommand, BehaviorId,
+    BehaviorSpec, BehaviorTarget, BridgeDescriptor, CanonicalId, CmdError, CommandSpec, Ctx,
+    DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKey, DefinitionKind,
+    DefinitionRef, DefinitionValidationContext, GOD, IncidentId, IncidentState, LIMBO,
+    MAX_BOOT_REPORT_DETAILS, MigrationPlanSummary, ModuleBootReport, ObjId, ObjKind, Outbox,
+    OwnerId, RecoveryIncidentSummary, RecoveryReason, RecoveryScope, RecoverySeverity, Registry,
+    RevisionKey, RevisionKind, RevisionValidator, SubjectKey, World, register_core_commands,
+    register_engine_commands,
 };
 use mush_proto::{InputMode, NarrativeKind, OutputEvent, PanelFrameKind, PromptSpec, RichText};
 use serde_json::json;
@@ -2778,4 +2779,195 @@ fn j1_boot_data_normalizes_ledger_keys_to_text() {
     data.normalize();
     assert_eq!(data.ledger.len(), 2, "idempotent");
     assert_eq!(data.fetch_ms, 0, "a rig measures no fetch");
+}
+
+// ----------------------------------------------------------------------
+// fu3-4: a global verb may not capture a behavior verb
+// ----------------------------------------------------------------------
+//
+// A behavior's contextual commands are consulted only after the global
+// command table misses (`cmd.rs`: the behavior stage runs on
+// `LookupErr::NotFound`). So a global verb that resolves the same word wins
+// forever and the behavior verb is dead with nothing logged. `register_behavior`
+// refuses the forward order at registration; `Engine::compose_modules` refuses
+// BOTH orders at the composition freeze point, which is the order-independent
+// half.
+
+fn shadow_noop(_ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    Ok(())
+}
+
+fn shadow_noop_behavior(_ctx: &mut Ctx<'_>, _target: &BehaviorTarget) -> Result<(), CmdError> {
+    Ok(())
+}
+
+/// A module owning one behavior that declares `verbs` as contextual commands.
+struct ShadowBehaviorMod {
+    name: &'static str,
+    id: &'static str,
+    verbs: Vec<&'static str>,
+}
+
+impl GameModule for ShadowBehaviorMod {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        let mut spec = BehaviorSpec::new(BehaviorId::new(self.id).expect("valid behavior id"));
+        for verb in &self.verbs {
+            spec = spec.with_command(BehaviorCommand::new(
+                CommandSpec {
+                    name: (*verb).into(),
+                    shape: ArgShape::None,
+                    ..CommandSpec::default()
+                },
+                Arc::new(shadow_noop_behavior),
+            ));
+        }
+        reg.behavior(spec)
+    }
+}
+
+/// A module owning `verbs` in the GLOBAL command table.
+struct ShadowGlobalMod {
+    name: &'static str,
+    verbs: Vec<&'static str>,
+}
+
+impl GameModule for ShadowGlobalMod {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+        for verb in &self.verbs {
+            reg.command(
+                CommandSpec {
+                    name: (*verb).into(),
+                    shape: ArgShape::None,
+                    ..CommandSpec::default()
+                },
+                Arc::new(shadow_noop),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn turret(verbs: Vec<&'static str>) -> Box<dyn GameModule> {
+    Box::new(ShadowBehaviorMod {
+        name: "gunnery",
+        id: "test.turret",
+        verbs,
+    })
+}
+
+fn sprinklers(verbs: Vec<&'static str>) -> Box<dyn GameModule> {
+    Box::new(ShadowGlobalMod {
+        name: "sprinklers",
+        verbs,
+    })
+}
+
+/// The reverse order `register_behavior` cannot see: the behavior composes
+/// first (nothing to collide with yet), then a later module registers the same
+/// bare global. Before the freeze-point pass this composed cleanly and the
+/// behavior's `fire` was permanently unreachable with no log line.
+#[test]
+fn a_global_verb_composed_after_a_behavior_verb_is_refused() {
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![turret(vec!["fire"]), sprinklers(vec!["fire"])],
+    )
+    .err()
+    .expect("a global capturing a behavior verb must fail composition");
+    let text = error.to_string();
+    assert!(text.contains("shadowed"), "{text}");
+    assert!(text.contains("\"fire\""), "{text}");
+    assert!(text.contains("gunnery"), "the behavior's owner: {text}");
+    assert!(
+        text.contains("sprinklers"),
+        "the capturing global's owner: {text}"
+    );
+}
+
+/// The property the `register_tagged` placement could not have had: the same
+/// roster composed the other way round is refused too, naming the same verb and
+/// the same two modules. (This direction trips `register_behavior`'s earlier,
+/// better-localised diagnostic first — the refusal, not its wording, is what is
+/// order-independent.)
+#[test]
+fn the_reverse_module_order_is_refused_identically() {
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![sprinklers(vec!["fire"]), turret(vec!["fire"])],
+    )
+    .err()
+    .expect("the reverse order must fail composition too");
+    let text = error.to_string();
+    assert!(text.contains("fire"), "{text}");
+    assert!(text.contains("gunnery"), "the behavior's owner: {text}");
+    assert!(
+        text.contains("sprinklers"),
+        "the capturing global's owner: {text}"
+    );
+}
+
+/// Dispatch resolves a bare verb by unique prefix, so a longer global name eats
+/// a shorter behavior verb just as an exact hit would. The pass asks
+/// `lookup_idx`, the same resolver, so this falls out rather than being
+/// re-derived.
+#[test]
+fn a_global_name_that_prefix_captures_a_behavior_verb_is_refused() {
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![turret(vec!["fire"]), sprinklers(vec!["firewall"])],
+    )
+    .err()
+    .expect("a prefix-capturing global must fail composition");
+    let text = error.to_string();
+    assert!(text.contains("shadowed"), "{text}");
+    assert!(text.contains("firewall"), "{text}");
+}
+
+/// `@`-prefixed globals are exempt from prefix matching (`lookup_idx` refuses to
+/// prefix-match a name starting with `@` or `+`), so `@fire` never reaches a
+/// bare `fire` and the roster composes — in either order.
+#[test]
+fn an_at_prefixed_global_does_not_shadow_a_bare_behavior_verb() {
+    Engine::compose_modules(
+        Registry::new(),
+        vec![turret(vec!["fire"]), sprinklers(vec!["@fire"])],
+    )
+    .expect("an @-prefixed global cannot capture a bare behavior verb");
+    Engine::compose_modules(
+        Registry::new(),
+        vec![sprinklers(vec!["@fire"]), turret(vec!["fire"])],
+    )
+    .expect("nor in the other composition order");
+}
+
+/// Two bare globals sharing the behavior verb as a prefix make the verb
+/// AMBIGUOUS at dispatch — the global stage refuses it and never falls through
+/// to the behavior stage, so the behavior command is just as dead. The
+/// diagnostic lists the candidates.
+#[test]
+fn an_ambiguous_prefix_is_refused_with_the_candidate_list() {
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![
+            turret(vec!["fire"]),
+            sprinklers(vec!["firewall", "firearm"]),
+        ],
+    )
+    .err()
+    .expect("an ambiguous global prefix must fail composition");
+    let text = error.to_string();
+    assert!(text.contains("ambiguous"), "{text}");
+    assert!(
+        text.contains("firewall") && text.contains("firearm"),
+        "{text}"
+    );
 }
