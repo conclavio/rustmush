@@ -62,13 +62,10 @@ async fn rig_with(config: SessionConfig) -> Rig {
     modules::boot_modules(&mut engine, &*store)
         .await
         .expect("module boot");
-    let mut panels: Vec<String> = engine
-        .registry
-        .panel_feeds()
-        .iter()
-        .map(|(f, _)| f.to_string())
-        .collect();
-    panels.push("who".to_string());
+    // WS04-S4: the manifest comes from the one producer both binaries use
+    // (`mush_server::boot::build_hello_manifest`), so a rig cannot advertise a
+    // panel set the deployed server does not.
+    let (_features, panels) = mush_server::boot::build_hello_manifest(&engine);
     let sessions = Arc::new(SessionManager::with_config(config));
     let guard = Arc::new(IpGuard::new());
     let handles = world_task::spawn_persist(

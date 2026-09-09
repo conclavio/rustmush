@@ -165,22 +165,9 @@ async fn boot_inner(
         .await
         .expect("module boot");
 
-    // The hello manifest, exactly as main.rs builds it.
-    let mut panels: Vec<String> = engine
-        .registry
-        .panel_feeds()
-        .iter()
-        .map(|(f, _)| f.to_string())
-        .collect();
-    panels.push("who".to_string());
-    let features: Vec<String> = engine
-        .modules()
-        .iter()
-        .map(|m| match m.name() {
-            "comsys" => "channels".to_string(),
-            other => other.to_string(),
-        })
-        .collect();
+    // The hello manifest, from the one producer main.rs builds it with
+    // (WS04-S4) rather than a second copy of the same assembly.
+    let (features, panels) = mush_server::boot::build_hello_manifest(&engine);
 
     let sessions = Arc::new(SessionManager::with_config(session_config));
     let guard = Arc::new(IpGuard::new());
