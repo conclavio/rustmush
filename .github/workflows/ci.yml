@@ -83,6 +83,95 @@ jobs:
       - name: Every toggleable feature is named by a job
         run: cargo test -p mush-contract-tests --test feature_matrix_inventory
 
+  # WS25-S6: a new instance is PROVISIONED by rendering
+  # `deploy/instance/mushd.toml.tmpl` against an `instance.env`, and until this
+  # job existed nothing ran the rendered thing past a TEXT check.
+  # `crates/mush-config/tests/shipped_configs.rs` proves the render is complete
+  # — every section present, no placeholder left; this proves the config that
+  # text parses into is one all three binaries accept and the world half boots.
+  # That matters because everything WS04 added is boot-fatal by design: a value
+  # either half refuses is a box that does not come up, and the operator hears
+  # it from a supervisor watching a boot loop.
+  #
+  # Pinned to ubuntu on purpose. The shipped `IPC_SOCKET` is a unix path, and
+  # `scripts/reset-instance.sh` is a Linux VPS tool.
+  provisioning:
+    name: Instance provisioning acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+      # Renders both shipped `instance.env` files, preflights each under both
+      # check sets AND in the real `mush-server` binary, proves a typo'd
+      # `receipt_policy` is refused by name, and boots the WoD instance (with
+      # `[store].store` overridden to "memory", the one deviation) to a hello
+      # manifest advertising `tacsim` + `wod`.
+      - name: Render, preflight and boot the shipped instances
+        run: cargo test -p mush-server --test provisioning_smoke
+      - name: Build the three binaries a deploy installs
+        run: cargo build -p mushd -p mush-server -p mush-gateway
+      # The SHELL half of the same claim. The Rust test above mirrors the
+      # substitution rule; this is the recipe itself — the loop an operator
+      # copies out of deploy/README.md — so the shell and the test cannot drift
+      # apart about what a rendered config is.
+      - name: Render both instances with the deploy's own sed recipe
+        run: |
+          set -euo pipefail
+          mkdir -p rendered
+          for env_file in instance.env.example instance.env.shadowrun.example; do
+            out="rendered/${env_file%.example}.toml"
+            while IFS='=' read -r k v; do
+              case "$k" in ''|'#'*) continue;; esac
+              printf 's|__%s__|%s|g\n' "$k" "$v"
+            done < "deploy/instance/$env_file" > rendered/render.sed
+            sed -f rendered/render.sed deploy/instance/mushd.toml.tmpl > "$out"
+            # deploy/README.md's completeness check, spelled as an `if` rather
+            # than `grep ... && { ...; }`: this step runs under `bash -e`, where
+            # a grep that correctly finds nothing would end the step.
+            if grep -n '^[^#]*__' "$out"; then
+              echo "INCOMPLETE $env_file"
+              exit 1
+            fi
+          done
+      - name: All three binaries preflight both rendered instances
+        run: |
+          set -euo pipefail
+          for out in rendered/*.toml; do
+            ./target/debug/mush-gateway --check-config --config "$out"
+            ./target/debug/mush-server --check-config --config "$out"
+            ./target/debug/mushd --check-config --config "$out"
+          done
+      # The negative control, at the level this job spends. Without it every
+      # step above is a check that can only ever say yes. `receipt_policy` is
+      # the value it is written against because it is the one that used to be
+      # accepted in silence (pre-WS04-S0), running the box on weaker receipts.
+      - name: ...and a typo'd receipt_policy is refused by all three
+        run: |
+          set -euo pipefail
+          sed 's/receipt_policy = "applied"/receipt_policy = "aplied"/' rendered/instance.env.toml > rendered/broken.toml
+          if diff -q rendered/instance.env.toml rendered/broken.toml > /dev/null; then
+            echo 'the template no longer writes receipt_policy = "applied": this control tampers with nothing'
+            exit 1
+          fi
+          for bin in mush-gateway mush-server mushd; do
+            if "./target/debug/$bin" --check-config --config rendered/broken.toml; then
+              echo "$bin accepted a typo'd receipt_policy"
+              exit 1
+            fi
+          done
+      # The disposable-store remedy this step also ships. It cannot be RUN here
+      # (it stops a systemd unit, flushes a Redis and rewrites a data dir as
+      # root), so what CI holds is that it stays well-formed and clean.
+      - name: The instance reset script is well-formed
+        run: |
+          bash -n scripts/reset-instance.sh
+          shellcheck scripts/reset-instance.sh
+
   kernel-contracts:
     name: K8 kernel contracts
     runs-on: ubuntu-latest
