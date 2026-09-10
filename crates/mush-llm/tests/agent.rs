@@ -155,7 +155,11 @@ async fn a_read_round_continues_and_echoes_only_what_was_answered() {
     let mut host = Host::default();
     let report = run(&svc, spec(6, None), &mut host).await;
 
-    assert!(matches!(report.stopped, StopCause::Done), "{:?}", report.stopped);
+    assert!(
+        matches!(report.stopped, StopCause::Done),
+        "{:?}",
+        report.stopped
+    );
     assert_eq!(report.rounds, 2);
     assert!((report.cost_usd - 0.30).abs() < 1e-9);
     assert_eq!(report.input_tokens, 200);
@@ -177,13 +181,19 @@ async fn a_read_round_continues_and_echoes_only_what_was_answered() {
         })
         .collect();
     assert_eq!(echoed_ids, vec!["r1", "r2"]);
-    assert!(matches!(echo.content.first(), Some(ContentBlock::Text { .. })));
+    assert!(matches!(
+        echo.content.first(),
+        Some(ContentBlock::Text { .. })
+    ));
     let results = &second.messages[2];
     assert_eq!(results.role, Role::User);
     assert_eq!(results.content.len(), 2);
     assert!(results.content.iter().all(|b| matches!(
         b,
-        ContentBlock::ToolResult { is_error: false, .. }
+        ContentBlock::ToolResult {
+            is_error: false,
+            ..
+        }
     )));
     assert_eq!(second.messages[0], ChatMessage::user("Plan a park."));
 }
@@ -199,13 +209,20 @@ async fn a_text_reply_gets_one_repair_then_the_run_is_over() {
         ..Host::default()
     };
     let report = run(&svc, spec(6, None), &mut host).await;
-    assert!(matches!(report.stopped, StopCause::Done), "{:?}", report.stopped);
+    assert!(
+        matches!(report.stopped, StopCause::Done),
+        "{:?}",
+        report.stopped
+    );
     assert_eq!(report.rounds, 2);
     assert_eq!(host.texts.len(), 2);
     // The repair rode as an assistant turn plus the prompt.
     let second = mock.calls().get(1).cloned().expect("two calls");
     assert_eq!(second.messages.len(), 3);
-    assert_eq!(second.messages[1], ChatMessage::assistant("I would rather chat."));
+    assert_eq!(
+        second.messages[1],
+        ChatMessage::assistant("I would rather chat.")
+    );
     assert_eq!(second.messages[2], ChatMessage::user("Call a tool."));
 
     // A second repair is not offered: the run ends with nothing usable.
@@ -223,7 +240,11 @@ async fn a_text_reply_gets_one_repair_then_the_run_is_over() {
         }
     }
     let report = run(&svc, spec(6, None), &mut AlwaysRepair).await;
-    assert!(matches!(report.stopped, StopCause::NoTool), "{:?}", report.stopped);
+    assert!(
+        matches!(report.stopped, StopCause::NoTool),
+        "{:?}",
+        report.stopped
+    );
     assert_eq!(report.rounds, 2);
     assert_eq!(report.last_text, "two");
 }
@@ -238,7 +259,11 @@ async fn the_round_bound_stops_a_run_that_keeps_reading() {
     )));
     let mut host = Host::default();
     let report = run(&svc, spec(3, None), &mut host).await;
-    assert!(matches!(report.stopped, StopCause::Done), "{:?}", report.stopped);
+    assert!(
+        matches!(report.stopped, StopCause::Done),
+        "{:?}",
+        report.stopped
+    );
     assert_eq!(report.rounds, 3, "three calls and no fourth");
     assert_eq!(mock.call_count(), 3);
     // The last round's read was answered but could not continue: the run is
@@ -256,7 +281,11 @@ async fn the_cost_cap_is_checked_before_a_call_and_stops_the_run() {
     )));
     let mut host = Host::default();
     let report = run(&svc, spec(10, Some(1.0)), &mut host).await;
-    assert!(matches!(report.stopped, StopCause::Cap), "{:?}", report.stopped);
+    assert!(
+        matches!(report.stopped, StopCause::Cap),
+        "{:?}",
+        report.stopped
+    );
     // 0.60 after one call is under the cap, so a second is made; 1.20 is not.
     assert_eq!(report.rounds, 2);
     assert_eq!(mock.call_count(), 2);
@@ -270,7 +299,11 @@ async fn the_cost_cap_is_checked_before_a_call_and_stops_the_run() {
         None,
     )));
     let report = run(&svc, spec(3, Some(0.01)), &mut Host::default()).await;
-    assert!(matches!(report.stopped, StopCause::Done), "{:?}", report.stopped);
+    assert!(
+        matches!(report.stopped, StopCause::Done),
+        "{:?}",
+        report.stopped
+    );
     assert_eq!(report.rounds, 3);
 }
 
@@ -337,7 +370,10 @@ async fn a_service_refusal_ends_the_run_with_the_error_and_what_it_had() {
     let mut host = Host::default();
     let report = run(&svc, spec(4, None), &mut host).await;
     assert!(
-        matches!(report.stopped, StopCause::Error(LlmError::BudgetExceeded { .. })),
+        matches!(
+            report.stopped,
+            StopCause::Error(LlmError::BudgetExceeded { .. })
+        ),
         "{:?}",
         report.stopped
     );
@@ -347,6 +383,9 @@ async fn a_service_refusal_ends_the_run_with_the_error_and_what_it_had() {
     // The kill switch refuses the first call outright.
     svc.kill_switch().set_global(true);
     let report = run(&svc, spec(4, None), &mut Host::default()).await;
-    assert!(matches!(report.stopped, StopCause::Error(LlmError::Disabled)));
+    assert!(matches!(
+        report.stopped,
+        StopCause::Error(LlmError::Disabled)
+    ));
     assert_eq!(report.rounds, 0);
 }

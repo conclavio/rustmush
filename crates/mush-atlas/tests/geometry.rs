@@ -53,7 +53,13 @@ fn base_entries() -> serde_json::Map<String, Value> {
         "room.yard": { "kind": "room", "def": { "name": "Yard", "surface": "ground",
             "footprint": { "rect": [[200,310],[240,350]] } } },
         "room.yard2": { "kind": "room", "def": { "name": "Second Yard", "surface": "ground",
-            "footprint": { "rect": [[200,350],[240,370]] } } }
+            "footprint": { "rect": [[200,350],[240,370]] } } },
+        // S3: the validator wants every public room reached, so the base map has a
+        // way in from Limbo and a way between its yards.
+        "exit.limbo_yard": { "kind": "exit", "def": { "from": "limbo", "to": "room.yard",
+            "names": ["Yard <Y>;y;yard", "Limbo <L>;l;limbo"] } },
+        "exit.yards": { "kind": "exit", "def": { "from": "room.yard", "to": "room.yard2",
+            "names": ["Second <2>;2", "First <1>;1"] } }
     });
     let Value::Object(map) = v else {
         panic!("object")
@@ -114,11 +120,12 @@ fn a_clean_block_applies_and_overlapping_rooms_are_refused_naming_both() {
         3
     );
 
-    // A second pack whose room overlaps the first pack's yard: refused at that
-    // entry, naming the other room; the latch says so and nothing else is made.
+    // A second pack whose room overlaps the first pack's yard: the validator refuses
+    // it at the plan (S3), naming the other room, and nothing is made or latched.
     let mut bad = base_entries();
     bad.remove("site.a");
     bad.remove("room.yard2");
+    bad.remove("exit.yards");
     bad.insert(
         "neighborhood".into(),
         json!({ "kind": "neighborhood", "def": {
@@ -134,16 +141,19 @@ fn a_clean_block_applies_and_overlapping_rooms_are_refused_naming_both() {
     let overlapping = neighborhood_pack("neighborhood.next", Value::Object(bad));
     let before = objects(&tw);
     let said = apply_via_command(&mut tw, "neighborhood.next", &overlapping);
-    assert!(said.contains("STOPPED PART WAY"), "{said}");
+    assert!(said.contains("geometry.room_overlap"), "{said}");
     assert!(said.contains("overlaps room"), "{said}");
     assert!(said.contains("room.yard"), "{said}");
+    assert!(said.contains("Fix the blocking findings"), "{said}");
     assert_eq!(objects(&tw), before, "the overlapping room was not made");
     let content = tw.world().module_state::<ContentState>().expect("content");
-    let latch = content
-        .latches
-        .applied(&CanonicalId::new("neighborhood.next").expect("id"))
-        .expect("latched honestly");
-    assert!(latch.anomaly().is_some_and(|a| a.contains("overlaps")));
+    assert!(
+        content
+            .latches
+            .applied(&CanonicalId::new("neighborhood.next").expect("id"))
+            .is_none(),
+        "a pack the validator refuses is never latched"
+    );
 }
 
 #[test]

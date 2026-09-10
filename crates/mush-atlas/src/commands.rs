@@ -29,6 +29,9 @@ use crate::view;
 /// The words `@atlas/pack` understands.
 pub const PACK_VERBS: [&str; 5] = ["list", "show", "plan", "apply", "retire"];
 
+/// The most validator findings a plan prints.
+const MAX_FINDINGS_SHOWN: usize = 24;
+
 pub(crate) fn register_views(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.command(
         CommandSpec {
@@ -361,7 +364,7 @@ fn pack_show(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
 fn pack_plan(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
     let id = pack_id(id)?;
     let actor = ctx.actor;
-    let (plan, problems) = {
+    let (plan, findings) = {
         let (Some(atlas), Some(content)) = (ctx.state::<AtlasState>(), ctx.state::<ContentState>())
         else {
             return Err(CmdError::msg("The atlas is not composed on this server."));
@@ -371,11 +374,10 @@ fn pack_plan(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
         };
         let previous = content.latches.applied(&id);
         let plan = plan(pack, previous).map_err(|e| CmdError::msg(e.to_string()))?;
-        let mut problems = crate::validate::check_pack(pack, &content.appliers);
-        if let Err(e) = mush_content::check_requires(pack, &content.latches.loaded()) {
-            problems.push(e.to_string());
-        }
-        (plan, problems)
+        // S3: the validator (doc 14 §4.3) — the same function the building agent's
+        // `pack.validate` tool runs, over the world as it stands now.
+        let cx = crate::validate::ValidateContext::for_pack(ctx.w, atlas, content, pack);
+        (plan, crate::validate::validate(pack, &cx))
     };
     let fingerprint = plan.fingerprint();
     let mut lines = vec![format!(
@@ -399,19 +401,33 @@ fn pack_plan(ctx: &mut Ctx<'_>, id: Option<&str>) -> Result<(), CmdError> {
             entry.existing.map_or(String::new(), |o| format!(" {o}"))
         ));
     }
-    if problems.is_empty() {
+    let blocking = crate::validate::blocking(&findings);
+    if findings.is_empty() {
         lines.push(" validator: no findings".to_string());
     } else {
         lines.push(format!(
-            " validator: {} finding(s) — apply will refuse or stop at the first:",
-            problems.len()
+            " validator: {} finding(s), {blocking} blocking{}",
+            findings.len(),
+            if blocking > 0 {
+                " — apply refuses until they are fixed:"
+            } else {
+                ":"
+            }
         ));
-        for p in problems.iter().take(20) {
-            lines.push(format!("  - {p}"));
+        for f in findings.iter().take(MAX_FINDINGS_SHOWN) {
+            lines.push(format!("  - {}", f.line()));
+        }
+        if findings.len() > MAX_FINDINGS_SHOWN {
+            lines.push(format!(
+                "  … and {} more",
+                findings.len() - MAX_FINDINGS_SHOWN
+            ));
         }
     }
     if plan.is_noop() {
         lines.push(" Nothing to do.".to_string());
+    } else if blocking > 0 {
+        lines.push(" Fix the blocking findings and plan again.".to_string());
     } else {
         lines.push(format!(
             " fingerprint {fingerprint} — @atlas/pack apply {fingerprint}"
@@ -458,6 +474,22 @@ fn pack_apply(
         };
         let current =
             plan(pack, content.latches.applied(&id)).map_err(|e| CmdError::msg(e.to_string()))?;
+        // S3: the validator refuses an apply with a blocking finding, so what the
+        // appliers would stop part way on never starts — before the fingerprint, since
+        // a plan with a blocking finding prints none.
+        let cx = crate::validate::ValidateContext::for_pack(ctx.w, atlas, content, pack);
+        let findings = crate::validate::validate(pack, &cx);
+        let blocking = crate::validate::blocking(&findings);
+        if blocking > 0 {
+            let first = findings
+                .iter()
+                .find(|f| f.blocks())
+                .map(crate::validate::Finding::line)
+                .unwrap_or_default();
+            return Err(CmdError::msg(format!(
+                "{id} has {blocking} blocking finding(s); the first: {first}"
+            )));
+        }
         if current.fingerprint() != given {
             return Err(CmdError::msg(format!(
                 "That is not the plan for {id} as it stands now (fingerprint {}). Plan it again and read it.",

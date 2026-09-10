@@ -59,4 +59,6 @@ pub use travel::{
     JourneyState, MAX_JOURNEYS, Node, RESUME_GRACE_S, TICK_TAG, TravelState, Traveler, Way,
     plan_legs,
 };
-pub use validate::check_pack;
+pub use validate::{
+    Finding, Severity, ValidateContext, ValidateScope, blocking, check_pack, validate,
+};

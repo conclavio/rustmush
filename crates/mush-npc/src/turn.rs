@@ -14,10 +14,12 @@
 //! on the world loop (it needs the sheet, the shared RNG, and the outbox), so an
 //! ability call is recorded as a typed action and executed during re-entry.
 
-use mush_llm::agent::{self, RunBudget, RunLimits, RunSpec, StopCause, TextVerdict, ToolHost, ToolReply};
+use mush_llm::agent::{
+    self, RunBudget, RunLimits, RunSpec, StopCause, TextVerdict, ToolHost, ToolReply,
+};
 use mush_llm::{
-    BudgetLimit, CallCtx, ChatMessage, CompletionRequest, CompletionResponse, LlmError,
-    LlmService, Sampling, ToolDef, Priority,
+    BudgetLimit, CallCtx, ChatMessage, CompletionRequest, CompletionResponse, LlmError, LlmService,
+    Priority, Sampling, ToolDef,
 };
 
 use crate::action::NpcAction;
