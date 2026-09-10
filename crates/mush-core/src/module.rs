@@ -4835,8 +4835,8 @@ impl Ctx<'_> {
     }
 
     /// End a scene: fires `SceneEnded` hooks (scene still queryable), then
-    /// removes it, its per-object ruleset state, and its map blob, queuing
-    /// `Del` persistence ops for both (in the scene's **owning** namespace,
+    /// removes it and its per-object ruleset state, queuing a `Del`
+    /// persistence op for the latter (in the scene's **owning** namespace,
     /// regardless of who calls this). Scene ticks stop on their next due
     /// time. Returns whether the scene existed.
     pub fn end_scene(&mut self, id: SceneId) -> bool {
