@@ -1136,6 +1136,9 @@ fn a_foreign_module_cannot_mutate_another_modules_slot() {
 /// why the runtime check exists beside it.
 #[test]
 fn two_modules_in_one_crate_are_checked_separately() {
+    // Hits the same refusal `error!` callsite the capturing test above reads;
+    // see `census_serialized` for why the two may not interleave.
+    let _serial = census_serialized();
     let (poacher, report) = SlotPoacher::new(true);
     let mut engine = Engine::with_modules(
         World::new_minimal(),
