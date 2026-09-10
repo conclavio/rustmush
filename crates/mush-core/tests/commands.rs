@@ -9,6 +9,11 @@ use mush_core::{
 };
 use mush_proto::{NarrativeKind, OutputEvent};
 
+/// A store-less lens for this harness: it holds no engine and never has, so
+/// it names `Test` rather than reaching for a store-less twin.
+const DETACHED: mush_core::TypedStateLens<'static> =
+    mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+
 /// A world with the core commands, a wizardly God, a builder Bob, and a
 /// plain player Ann — everyone starting in Limbo.
 struct Game {
@@ -31,7 +36,7 @@ impl Game {
 
     fn run(&mut self, actor: ObjId, line: &str) -> Outbox {
         let mut out = Outbox::new();
-        dispatch(&self.reg, &mut self.w, actor, line, &mut out);
+        dispatch(&self.reg, &mut self.w, actor, line, &mut out, DETACHED);
         out
     }
 

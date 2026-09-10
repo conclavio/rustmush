@@ -656,7 +656,7 @@ pub fn room_view(
     // Structured ambience (weather, scene, the IC clock) for a client's room
     // band; the `LookRendered` prose lines still follow the `Room` event for
     // line mode (interface plan I1, D-I-4).
-    let ambient = crate::module::room_ambient_with_action_state(reg, w, looker, room, lens);
+    let ambient = crate::module::room_ambient(reg, w, looker, room, lens);
 
     Some(RoomView {
         name: r.name.clone(),

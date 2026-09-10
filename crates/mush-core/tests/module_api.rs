@@ -2983,10 +2983,10 @@ fn an_ambiguous_prefix_is_refused_with_the_candidate_list() {
 /// that reads a typed family (WoD's Obfuscate cache is the live example)
 /// abstains — the wrong answer, silently — when the context has no store. The
 /// old API let a production caller reach that state by typing the *shorter*
-/// name: `can_perceive` passed `None`, `can_perceive_with_action_state`
-/// passed the store, and nothing made a caller choose. This probe turns that
-/// silent wrong answer into a loud one: a store-less call on any of the three
-/// production paths below hides Bob outright.
+/// name: `can_perceive` passed `None`, its longer twin passed the store, and
+/// nothing made a caller choose. This probe turns that silent wrong answer
+/// into a loud one: a store-less call on any of the three production paths
+/// below hides Bob outright.
 struct TypedStateProbeHook;
 
 impl EventHook for TypedStateProbeHook {
@@ -3173,5 +3173,170 @@ fn a_perceive_hook_sees_live_typed_state_on_every_production_path() {
             mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
         ),
         "and the notability query answers the same way"
+    );
+}
+
+// ----------------------------------------------------------------------
+// The async-completion path (WS03-S13)
+// ----------------------------------------------------------------------
+
+/// The typed value the async probe below reads back.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WardState {
+    charges: u8,
+}
+
+type WardHandle = mush_core::StateFamilyHandle<u64, WardState>;
+
+/// A module whose [`AsyncCompletion`] handler READS a typed family and reports
+/// what it saw.
+///
+/// `apply_async_completion` was one of the fourteen twins WS03-S13 collapsed:
+/// the store-less spelling was the shorter, more reachable name, so a caller
+/// that dropped the store handed the handler a `Ctx` whose family read failed
+/// outright — not a stale value, no value at all. This module makes that
+/// failure observable: the handler prints the charge count it read, or the
+/// error it got instead.
+struct WardModule {
+    handle: Arc<std::sync::Mutex<Option<WardHandle>>>,
+    completion: Arc<WardCompletion>,
+}
+
+struct WardCompletion {
+    handle: Arc<std::sync::Mutex<Option<WardHandle>>>,
+}
+
+impl mush_core::module::AsyncCompletion for WardCompletion {
+    fn on_complete(&self, ctx: &mut Ctx<'_>, correlation: u64, _payload: &str) {
+        let guard = self.handle.lock().expect("ward handle mutex");
+        let handle = guard.as_ref().expect("the family registered at compose");
+        let line = match ctx.action_state(handle, &correlation) {
+            Ok(Some(state)) => format!("charges={}", state.charges),
+            Ok(None) => "no-record".to_string(),
+            Err(error) => format!("unreadable: {error}"),
+        };
+        let actor = ctx.actor;
+        ctx.out.info(actor, line);
+    }
+}
+
+impl GameModule for WardModule {
+    fn name(&self) -> &'static str {
+        "ward"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+        let descriptor = mush_core::StateFamilyDescriptor::new(
+            mush_core::StateFamilyId::new("wards").expect("static family id"),
+            CanonicalId::new("u64.decimal.v1").expect("static codec id"),
+            CanonicalId::new("ward_state.v1").expect("static schema id"),
+            1,
+            CanonicalId::new("ward_state.decode_json.v1").expect("static decoder id"),
+            CanonicalId::new("ward_state.range.v1").expect("static validator id"),
+            CanonicalId::new("ward_state.json.v1").expect("static serializer id"),
+        )
+        .expect("static state-family descriptor");
+        let handle = reg.state_family(
+            descriptor,
+            |key: &u64| Ok(key.to_string()),
+            |value: &serde_json::Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
+            |_value: &WardState| Ok(()),
+            |value: &WardState| Ok(json!({ "charges": value.charges })),
+        )?;
+        *self.handle.lock().expect("ward handle mutex") = Some(handle);
+        reg.async_completion(
+            Arc::clone(&self.completion) as Arc<dyn mush_core::module::AsyncCompletion>
+        )
+    }
+}
+
+/// WS03-S13. The async-completion route is a production dispatch path: the
+/// engine routes [`WorldCommand::ModuleAsyncDone`] to the module's handler with
+/// a `Ctx`, and that `Ctx` must carry the LIVE typed-state snapshot. It used to
+/// have two spellings — `apply_async_completion` passing `None` beside a longer
+/// twin passing the store — and the short one was the easy one to reach.
+///
+/// The probe reads a seeded typed family, so the difference is not cosmetic: on
+/// the engine's own path it reads `charges=3`; called with an explicitly
+/// detached lens it cannot read the family at all.
+#[test]
+fn an_async_completion_hook_sees_live_typed_state() {
+    let handle_cell: Arc<std::sync::Mutex<Option<WardHandle>>> = Arc::default();
+    let composition = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(WardModule {
+            handle: Arc::clone(&handle_cell),
+            completion: Arc::new(WardCompletion {
+                handle: Arc::clone(&handle_cell),
+            }),
+        })],
+    )
+    .expect("the ward module composes");
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let mut engine = Engine::from_composition(world, composition);
+    let handle = handle_cell
+        .lock()
+        .expect("ward handle mutex")
+        .clone()
+        .expect("composition registered the family");
+
+    // Seed one live record under correlation 7 through the public transaction
+    // surface, so the read below has something real to find.
+    let installation = {
+        let mut txn = engine
+            .action_transaction(&handle)
+            .expect("the ward family opens a transaction");
+        txn.insert(&handle, &7, WardState { charges: 3 })
+            .expect("the seed insert is accepted");
+        let (_, installation) = txn
+            .prepare()
+            .expect("the seed transaction prepares")
+            .into_parts();
+        installation
+    };
+    engine
+        .install_prepared_action(installation)
+        .expect("the seed installs");
+
+    // The production path: the engine's own `ModuleAsyncDone` routing.
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.step(
+        Inbound::Apply(mush_core::WorldCommand::ModuleAsyncDone {
+            module: SmolStr::new("ward"),
+            actor: GOD,
+            correlation: 7,
+            payload: "{}".into(),
+        }),
+        &mut out,
+        &mut fx,
+    );
+    assert_eq!(
+        sys_texts(&out),
+        vec!["charges=3".to_string()],
+        "the engine's async-completion routing must hand the handler the live store"
+    );
+
+    // And the other side of the lens: named detachment, and only named
+    // detachment, takes the family away.
+    let mut out = Outbox::new();
+    mush_core::module::apply_async_completion(
+        &engine.registry,
+        &mut engine.world,
+        &mut out,
+        SmolStr::new("ward"),
+        GOD,
+        7,
+        "{}",
+        mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
+    );
+    let detached = sys_texts(&out);
+    assert!(
+        detached.len() == 1 && detached[0].starts_with("unreadable:"),
+        "a detached lens must leave the family unreadable, not silently empty: {detached:?}"
     );
 }

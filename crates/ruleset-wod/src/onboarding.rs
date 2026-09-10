@@ -235,13 +235,13 @@ pub(crate) fn on_approved(cfg: &OnboardingConfig, ctx: &mut Ctx<'_>, target: Obj
         "Your character has been approved — welcome to the game! You now have full access.",
     );
     // Show them their new surroundings. **Render the room directly** rather
-    // than re-dispatching `"look"` (08j S2): `mush_core::dispatch` is the
-    // compat wrapper that runs with no typed-state snapshot, so the whole
-    // perception chain — `can_perceive`, `is_concealed`, every
-    // `HookReadContext` — would have run against an explicitly unavailable
-    // typed reader, the one exception to 09 §C2's "production engine dispatch
-    // always uses the live store". `Ctx::show_room` is the one room-render
-    // path and carries this command's live snapshot.
+    // than re-dispatching `"look"` (08j S2): a re-dispatch from inside a
+    // handler has no lens to hand `mush_core::dispatch` but a detached one, so
+    // the whole perception chain — `can_perceive`, `is_concealed`, every
+    // `HookReadContext` — would run against an explicitly unavailable typed
+    // reader, the one exception to 09 §C2's "production engine dispatch always
+    // uses the live store". `Ctx::show_room` is the one room-render path and
+    // carries this command's live snapshot.
     //
     // The empty-input-stack guard is kept, for a narrower reason than before:
     // a direct render cannot be swallowed as body text by an open input

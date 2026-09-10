@@ -56,7 +56,7 @@ pub(crate) fn narrative_emit(text: RichText) -> OutputEvent {
 /// come through here so module lines appear everywhere a room does.
 ///
 /// [`RoomView`]: mush_proto::RoomView
-pub(crate) fn show_room_with_action_state(
+pub(crate) fn show_room(
     reg: &Registry,
     w: &World,
     looker: ObjId,

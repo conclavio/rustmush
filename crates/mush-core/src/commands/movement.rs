@@ -14,12 +14,12 @@ use mush_proto::{OutputEvent, RichText};
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::Flags;
 use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
-use crate::module::{WorldEvent, check_move_attempt, emit_world_event_with_action_state};
+use crate::module::{WorldEvent, check_move_attempt, emit_world_event};
 use crate::obj::{LIMBO, Obj, ObjId};
 use crate::output::{Outbox, name_span, primary_name};
 use crate::world::World;
 
-use super::{attr_text, narrative_emit, show_room_with_action_state};
+use super::{attr_text, narrative_emit, show_room};
 
 /// Find an exit matching `name` from `actor`'s position: the room's own
 /// exits, then exits attached to the room's Zone Master Object, then
@@ -130,8 +130,8 @@ pub fn traverse_exit(
         .map_or_else(|| " has arrived.".to_string(), |m| format!(" {m}"));
     let text = RichText::new().span(name_span(w, actor)).text(arrive);
     out.to_room_from(dest, vec![actor], actor, narrative_emit(text));
-    show_room_with_action_state(reg, w, actor, dest, out, lens);
-    emit_world_event_with_action_state(
+    show_room(reg, w, actor, dest, out, lens);
+    emit_world_event(
         reg,
         w,
         out,
@@ -190,8 +190,8 @@ pub fn go_home(
         .span(name_span(w, actor))
         .text(" arrives home.");
     out.to_room_from(home, vec![actor], actor, narrative_emit(text));
-    show_room_with_action_state(reg, w, actor, home, out, lens);
-    emit_world_event_with_action_state(
+    show_room(reg, w, actor, home, out, lens);
+    emit_world_event(
         reg,
         w,
         out,

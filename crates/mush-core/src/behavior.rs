@@ -548,23 +548,6 @@ pub fn resolve_behavior_command(
     w: &World,
     actor: ObjId,
     verb: &str,
-) -> BehaviorResolution {
-    resolve_behavior_command_with_action_state(
-        reg,
-        w,
-        actor,
-        verb,
-        crate::action_state::TypedStateLens::Detached(
-            crate::action_state::DetachedTypedState::CompatibilityCtx,
-        ),
-    )
-}
-
-pub(crate) fn resolve_behavior_command_with_action_state(
-    reg: &Registry,
-    w: &World,
-    actor: ObjId,
-    verb: &str,
     lens: crate::action_state::TypedStateLens<'_>,
 ) -> BehaviorResolution {
     if verb.is_empty() {

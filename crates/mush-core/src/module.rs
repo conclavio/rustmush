@@ -3558,23 +3558,6 @@ pub fn room_ambient(
     w: &World,
     looker: ObjId,
     room: ObjId,
-) -> std::collections::BTreeMap<SmolStr, serde_json::Value> {
-    room_ambient_with_action_state(
-        reg,
-        w,
-        looker,
-        room,
-        crate::action_state::TypedStateLens::Detached(
-            crate::action_state::DetachedTypedState::CompatibilityCtx,
-        ),
-    )
-}
-
-pub(crate) fn room_ambient_with_action_state(
-    reg: &Registry,
-    w: &World,
-    looker: ObjId,
-    room: ObjId,
     lens: crate::action_state::TypedStateLens<'_>,
 ) -> std::collections::BTreeMap<SmolStr, serde_json::Value> {
     let mut map = std::collections::BTreeMap::new();
@@ -3622,19 +3605,7 @@ pub(crate) fn room_ambient_with_action_state(
 
 /// Invoke every observer subscribed to `ev`'s kind, post-mutation, each
 /// with a [`Ctx`] carrying its module identity.
-pub fn emit_world_event(reg: &Registry, w: &mut World, out: &mut Outbox, ev: &WorldEvent) {
-    emit_world_event_with_action_state(
-        reg,
-        w,
-        out,
-        ev,
-        crate::action_state::TypedStateLens::Detached(
-            crate::action_state::DetachedTypedState::CompatibilityCtx,
-        ),
-    );
-}
-
-pub(crate) fn emit_world_event_with_action_state(
+pub fn emit_world_event(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
@@ -3665,31 +3636,8 @@ pub(crate) fn emit_world_event_with_action_state(
 /// with a full [`Ctx`] carrying the module identity. A missing handler is
 /// logged and dropped (the completion arrived for a module that registered
 /// none — a programming error, never a crash).
-pub fn apply_async_completion(
-    reg: &Registry,
-    w: &mut World,
-    out: &mut Outbox,
-    module: SmolStr,
-    actor: ObjId,
-    correlation: u64,
-    payload: &str,
-) {
-    apply_async_completion_with_action_state(
-        reg,
-        w,
-        out,
-        module,
-        actor,
-        correlation,
-        payload,
-        crate::action_state::TypedStateLens::Detached(
-            crate::action_state::DetachedTypedState::CompatibilityCtx,
-        ),
-    );
-}
-
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_async_completion_with_action_state(
+pub fn apply_async_completion(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
@@ -3804,7 +3752,7 @@ pub trait RelaySpeaker: Send + Sync {
 
 /// Run the registered relay speaker as `actor` (programme D4).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_relay_speak_with_action_state(
+pub(crate) fn apply_relay_speak(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
@@ -3834,7 +3782,7 @@ pub(crate) fn apply_relay_speak_with_action_state(
 
 /// Dispatch a forwarded Discord interaction to the module handler with the
 /// longest matching prefix. `None` when no prefix matches.
-pub(crate) fn apply_discord_interaction_with_action_state(
+pub(crate) fn apply_discord_interaction(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
@@ -3864,7 +3812,7 @@ pub(crate) fn apply_discord_interaction_with_action_state(
 /// missing handler is logged and dropped. The handler re-validates against
 /// current world state (treaty ruling 3).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_request_completion_with_action_state(
+pub(crate) fn apply_request_completion(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
@@ -3898,31 +3846,8 @@ pub(crate) fn apply_request_completion_with_action_state(
 /// task, with a full [`Ctx`] carrying the module identity (H1). A missing
 /// handler is logged and dropped — the same contract as
 /// [`apply_async_completion`].
-pub fn apply_store_read_completion(
-    reg: &Registry,
-    w: &mut World,
-    out: &mut Outbox,
-    module: SmolStr,
-    actor: ObjId,
-    correlation: u64,
-    payload: &str,
-) {
-    apply_store_read_completion_with_action_state(
-        reg,
-        w,
-        out,
-        module,
-        actor,
-        correlation,
-        payload,
-        crate::action_state::TypedStateLens::Detached(
-            crate::action_state::DetachedTypedState::CompatibilityCtx,
-        ),
-    );
-}
-
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_store_read_completion_with_action_state(
+pub fn apply_store_read_completion(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
@@ -3963,25 +3888,6 @@ pub fn fire_conn_hook(
     out: &mut Outbox,
     actor: ObjId,
     connected: bool,
-) {
-    fire_conn_hook_with_action_state(
-        reg,
-        w,
-        out,
-        actor,
-        connected,
-        crate::action_state::TypedStateLens::Detached(
-            crate::action_state::DetachedTypedState::CompatibilityCtx,
-        ),
-    );
-}
-
-pub(crate) fn fire_conn_hook_with_action_state(
-    reg: &Registry,
-    w: &mut World,
-    out: &mut Outbox,
-    actor: ObjId,
-    connected: bool,
     lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let point = if connected {
@@ -4014,25 +3920,6 @@ pub(crate) fn fire_conn_hook_with_action_state(
 /// Fire the `SceneStarted` / `SceneEnded` hooks for a scene (the scene is
 /// still queryable during `SceneEnded`).
 pub fn fire_scene_hook(
-    reg: &Registry,
-    w: &mut World,
-    out: &mut Outbox,
-    scene: SceneId,
-    started: bool,
-) {
-    fire_scene_hook_with_action_state(
-        reg,
-        w,
-        out,
-        scene,
-        started,
-        crate::action_state::TypedStateLens::Detached(
-            crate::action_state::DetachedTypedState::CompatibilityCtx,
-        ),
-    );
-}
-
-pub(crate) fn fire_scene_hook_with_action_state(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
@@ -4124,7 +4011,7 @@ impl Ctx<'_> {
     /// Render a room through perception and look hooks using this command's
     /// live typed-state snapshot.
     pub fn show_room(&mut self, looker: ObjId, room: ObjId) {
-        crate::commands::show_room_with_action_state(
+        crate::commands::show_room(
             self.reg,
             self.w,
             looker,
@@ -4467,7 +4354,7 @@ impl Ctx<'_> {
     /// handlers that mutate the world through paths not covered by the
     /// core helpers call this themselves.
     pub fn emit_world_event(&mut self, ev: &WorldEvent) {
-        emit_world_event_with_action_state(self.reg, self.w, self.out, ev, self.typed_state.lens());
+        emit_world_event(self.reg, self.w, self.out, ev, self.typed_state.lens());
     }
 
     // ------------------------------------------------------------------
@@ -4556,7 +4443,7 @@ impl Ctx<'_> {
     pub fn start_scene(&mut self, kind: &str, members: BTreeSet<ObjId>) -> SceneId {
         let ns = self.module.clone().unwrap_or_else(|| SmolStr::new(kind));
         let id = self.w.scene_create(kind, &ns, members);
-        fire_scene_hook_with_action_state(
+        fire_scene_hook(
             self.reg,
             self.w,
             self.out,
@@ -4576,7 +4463,7 @@ impl Ctx<'_> {
         if self.w.scene(id).is_none() {
             return false;
         }
-        fire_scene_hook_with_action_state(
+        fire_scene_hook(
             self.reg,
             self.w,
             self.out,

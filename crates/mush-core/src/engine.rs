@@ -34,8 +34,7 @@ use crate::action_state::{
 };
 use crate::authoritative::AuthoritativeBundle;
 use crate::cmd::{
-    ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet,
-    dispatch_with_action_state,
+    ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
 };
 use crate::commands::narrative_emit;
 use crate::flags::Role;
@@ -802,7 +801,7 @@ impl Engine {
         text: &str,
         out: &mut Outbox,
     ) -> Result<(), crate::RelayRefusal> {
-        crate::module::apply_relay_speak_with_action_state(
+        crate::module::apply_relay_speak(
             &self.registry,
             &mut self.world,
             out,
@@ -2767,7 +2766,7 @@ impl Engine {
                     component: "definition",
                 })?;
         guards
-            .revalidate_with_action_state(
+            .revalidate(
                 &self.world,
                 &self.action_state,
                 revisions,
@@ -2894,7 +2893,7 @@ impl Engine {
     /// queue and ride the caller's next `WriteBatch`, exactly as if the
     /// event had been emitted during a step.
     pub fn emit_world_event(&mut self, ev: &WorldEvent, out: &mut Outbox, fx: &mut Effects) {
-        module::emit_world_event_with_action_state(
+        module::emit_world_event(
             &self.registry,
             &mut self.world,
             out,
@@ -2951,7 +2950,7 @@ impl Engine {
                         );
                     } else {
                         self.world.session_input(actor);
-                        dispatch_with_action_state(
+                        dispatch(
                             &self.registry,
                             &mut self.world,
                             actor,
@@ -3054,7 +3053,7 @@ impl Engine {
                     // Re-validate: the actor may be gone by the time the
                     // timer fires.
                     if self.world.get(actor).is_some() {
-                        dispatch_with_action_state(
+                        dispatch(
                             &self.registry,
                             &mut self.world,
                             actor,
@@ -3081,7 +3080,7 @@ impl Engine {
                     if let Some(pending) = self.pending_requests.remove(&id) {
                         self.dec_open_requests(pending.subject);
                         if self.world.get(pending.subject).is_some() {
-                            crate::module::apply_request_completion_with_action_state(
+                            crate::module::apply_request_completion(
                                 &self.registry,
                                 &mut self.world,
                                 out,
@@ -3284,7 +3283,7 @@ impl Engine {
                 // Hooks/observers fire on the world-side transition only — a
                 // link-dead revival never "connected" twice.
                 if !was_connected {
-                    module::fire_conn_hook_with_action_state(
+                    module::fire_conn_hook(
                         &self.registry,
                         &mut self.world,
                         out,
@@ -3292,7 +3291,7 @@ impl Engine {
                         true,
                         crate::action_state::TypedStateLens::Live(&self.action_state),
                     );
-                    module::emit_world_event_with_action_state(
+                    module::emit_world_event(
                         &self.registry,
                         &mut self.world,
                         out,
@@ -3340,7 +3339,7 @@ impl Engine {
             && self.world.input_depth(actor) == 0
             && let Some(room) = self.world.get(actor).and_then(|record| record.location)
         {
-            crate::commands::show_room_with_action_state(
+            crate::commands::show_room(
                 &self.registry,
                 &self.world,
                 actor,
@@ -3367,7 +3366,7 @@ impl Engine {
                 announce_room(&self.world, actor, " has disconnected.", out);
                 self.world.set_connected(actor, false);
                 self.world.session_end(actor);
-                module::fire_conn_hook_with_action_state(
+                module::fire_conn_hook(
                     &self.registry,
                     &mut self.world,
                     out,
@@ -3375,7 +3374,7 @@ impl Engine {
                     false,
                     crate::action_state::TypedStateLens::Live(&self.action_state),
                 );
-                module::emit_world_event_with_action_state(
+                module::emit_world_event(
                     &self.registry,
                     &mut self.world,
                     out,
@@ -3407,7 +3406,7 @@ impl Engine {
         if self.world.is_connected(actor) {
             announce_room(&self.world, actor, " has disconnected.", out);
             self.world.set_connected(actor, false);
-            module::fire_conn_hook_with_action_state(
+            module::fire_conn_hook(
                 &self.registry,
                 &mut self.world,
                 out,
@@ -3415,7 +3414,7 @@ impl Engine {
                 false,
                 crate::action_state::TypedStateLens::Live(&self.action_state),
             );
-            module::emit_world_event_with_action_state(
+            module::emit_world_event(
                 &self.registry,
                 &mut self.world,
                 out,
@@ -3483,7 +3482,7 @@ impl Engine {
         interaction: &crate::module::DiscordInteraction,
         out: &mut Outbox,
     ) -> Option<Result<String, String>> {
-        crate::module::apply_discord_interaction_with_action_state(
+        crate::module::apply_discord_interaction(
             &self.registry,
             &mut self.world,
             out,
@@ -3532,7 +3531,7 @@ impl Engine {
         if self.world.get(pending.subject).is_none() {
             return;
         }
-        crate::module::apply_request_completion_with_action_state(
+        crate::module::apply_request_completion(
             &self.registry,
             &mut self.world,
             out,
@@ -3695,7 +3694,7 @@ impl Engine {
                 // Disjoint field borrows (world mut, registry shared), the
                 // same shape emit_world_event uses. The handler re-validates
                 // against current state (treaty ruling 3).
-                module::apply_async_completion_with_action_state(
+                module::apply_async_completion(
                     &self.registry,
                     &mut self.world,
                     out,
@@ -3715,7 +3714,7 @@ impl Engine {
                 // The read seam's re-entry (H1): the same routing shape as
                 // `ModuleAsyncDone`. The handler re-validates (the actor may
                 // be gone) and renders; it never needs to persist.
-                module::apply_store_read_completion_with_action_state(
+                module::apply_store_read_completion(
                     &self.registry,
                     &mut self.world,
                     out,

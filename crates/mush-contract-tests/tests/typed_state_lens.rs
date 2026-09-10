@@ -1,6 +1,7 @@
-//! **The typed-state lens pin** (WS03-S7), in the legacy-handler-allowlist
-//! style: a checked-in table beside this crate's `Cargo.toml`, a scan that
-//! fails on an undeclared hit, and a message that names the file to edit.
+//! **The typed-state lens pin** (WS03-S7, completed by WS03-S13), in the
+//! legacy-handler-allowlist style: a checked-in table beside this crate's
+//! `Cargo.toml`, a scan that fails on an undeclared hit, and a message that
+//! names the file to edit.
 //!
 //! ## What the finding was
 //!
@@ -24,19 +25,25 @@
 //! lens: `Live(store)`, or `Detached(reason)` where the reason is one of the
 //! four in `DetachedTypedState`. A store-less call now has to say so.
 //!
-//! ## The two scans
+//! ## The three scans
 //!
 //! 1. **Detachment is declared.** Every `TypedStateLens::Detached(`
 //!    construction under `crates/*/src` is listed in `typed-state-lens.toml`
 //!    with a count and a reason. A new one fails until it is written down.
-//! 2. **No public name takes the old shape.** No `pub fn` under
-//!    `crates/*/src` has an `Option<&…ActionStateStore>` parameter, so the
-//!    twins WS03-S13 has not converted yet cannot be reached by a store-less
-//!    public name in the meantime.
+//! 2. **No name takes the old shape.** No function under `crates/*/src` —
+//!    `pub`, `pub(crate)` or private — has an `Option<&…ActionStateStore>`
+//!    parameter. WS03-S7 could only pin the public surface, because the
+//!    crate-internal threading was still half converted; WS03-S13 finished it,
+//!    so the shape is gone at every visibility and this scan says so.
+//! 3. **No twin name is left.** The literals `_with_action_state` and
+//!    `_via_action_state` appear nowhere under `crates/` but in this file. That
+//!    is the naming half of the same finding: a PAIR of names is how the
+//!    store-less default got in, and a suffix is how a pair announces itself.
 //!
-//! `crates/*/tests` is deliberately out of scope for both: those are separate
-//! crates, the same boundary the panic budget (WS01-S11) and the restriction
-//! lints (WS01-S12) draw.
+//! Scans 1 and 2 stop at `crates/*/src`: `crates/*/tests` are separate crates,
+//! the same boundary the panic budget (WS01-S11) and the restriction lints
+//! (WS01-S12) draw. Scan 3 covers **everything** under `crates/`, tests
+//! included — a twin reintroduced in a test crate is still a twin.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -50,15 +57,75 @@ const PIN: &str = "typed-state-lens.toml";
 /// The construction the first scan counts.
 const DETACHED_NEEDLE: &str = "TypedStateLens::Detached(";
 
-/// The heads that open a public function. `pub(crate) fn` and `pub(super) fn`
-/// deliberately do not match: this scan is about the names another crate can
-/// reach, and the crate-internal threading is WS03-S13's to finish.
-const PUB_FN_HEADS: [&str; 4] = [
-    "pub fn ",
-    "pub async fn ",
-    "pub const fn ",
-    "pub unsafe fn ",
-];
+/// The qualifier tokens that may stand between the start of a line and the
+/// `fn` that opens a function item, in any order Rust accepts.
+const FN_QUALIFIERS: [&str; 6] = ["pub", "async", "const", "unsafe", "extern", "default"];
+
+/// The twin suffixes scan 3 forbids.
+const TWIN_SUFFIXES: [&str; 2] = ["_with_action_state", "_via_action_state"];
+
+/// The offset of the `fn` keyword that opens `trimmed`, if any: `fn` as a
+/// whole word, followed by the function's name.
+fn find_fn_keyword(trimmed: &str) -> Option<usize> {
+    let mut from = 0usize;
+    while let Some(offset) = trimmed[from..].find("fn ") {
+        let at = from + offset;
+        let boundary = at == 0
+            || !trimmed[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
+        if boundary {
+            return Some(at);
+        }
+        from = at + 3;
+    }
+    None
+}
+
+/// Whether `trimmed` — a source line with its leading whitespace removed —
+/// opens a function item at ANY visibility.
+///
+/// Everything before the `fn` keyword must be a qualifier: a visibility
+/// (`pub`, `pub(crate)`, `pub(super)`, `pub(in path)`), `async`, `const`,
+/// `unsafe`, `extern "C"`, or `default`. That rejects the lines that merely
+/// mention `fn` — a `type Cb = fn(…)` alias, a comment, a `dyn Fn(…)` bound
+/// (capital F) — while accepting every real definition.
+fn opens_a_function(trimmed: &str) -> bool {
+    let Some(at) = find_fn_keyword(trimmed) else {
+        return false;
+    };
+    let mut rest = &trimmed[..at];
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return true;
+        }
+        if let Some(after) = rest.strip_prefix('"') {
+            // An `extern "C"` ABI string.
+            let Some(end) = after.find('"') else {
+                return false;
+            };
+            rest = &after[end + 1..];
+            continue;
+        }
+        let word_end = rest
+            .find(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+            .unwrap_or(rest.len());
+        let (word, mut tail) = rest.split_at(word_end);
+        if !FN_QUALIFIERS.contains(&word) {
+            return false;
+        }
+        // `pub(crate)`, `pub(super)`, `pub(in crate::foo)`.
+        if word == "pub" && tail.starts_with('(') {
+            let Some(end) = tail.find(')') else {
+                return false;
+            };
+            tail = &tail[end + 1..];
+        }
+        rest = tail;
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct Pin {
@@ -204,7 +271,7 @@ fn every_detached_typed_state_lens_is_declared_in_the_pin() {
 }
 
 // ---------------------------------------------------------------------------
-// Scan 2: no public name still takes the old shape
+// Scan 2: no name, at any visibility, still takes the old shape
 // ---------------------------------------------------------------------------
 
 /// The parenthesised group opening at or after `start`, or `None` when the
@@ -275,7 +342,7 @@ fn takes_optional_store(params: &str) -> bool {
 }
 
 #[test]
-fn no_public_function_still_takes_an_optional_action_state_store() {
+fn no_function_at_any_visibility_takes_an_optional_action_state_store() {
     let root = repo_root();
     let mut offenders = Vec::new();
     for (relative, text) in production_sources(&root) {
@@ -283,7 +350,7 @@ fn no_public_function_still_takes_an_optional_action_state_store() {
         for line in text.split_inclusive('\n') {
             let trimmed = line.trim_start();
             let indent = line.len() - trimmed.len();
-            if PUB_FN_HEADS.iter().any(|head| trimmed.starts_with(head))
+            if opens_a_function(trimmed)
                 && let Some(params) = paren_group(&text, offset + indent)
                 && takes_optional_store(params)
             {
@@ -295,10 +362,111 @@ fn no_public_function_still_takes_an_optional_action_state_store() {
     }
     assert!(
         offenders.is_empty(),
-        "a public function still takes `Option<&ActionStateStore>`. That is the shape \
-         WS03-S7 removed: a caller can pass `None` and get the store-less perception or \
-         veto answer without saying so. Take `mush_core::TypedStateLens` instead — \
-         `Live(store)`, or `Detached(reason)` naming why there is none.\n{}",
+        "a function still takes `Option<&ActionStateStore>`. That is the shape WS03-S7 \
+         removed and WS03-S13 finished removing: a caller can pass `None` and get the \
+         store-less perception, dispatch or veto answer without saying so. Take \
+         `mush_core::TypedStateLens` instead — `Live(store)`, or `Detached(reason)` \
+         naming why there is none.\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The function-head matcher itself, since scan 2's reach is only as good as
+/// it is: WS03-S13 widened this scan from `pub fn` to every visibility, and a
+/// matcher that quietly missed `pub(crate) fn` would make the widening a lie.
+#[test]
+fn the_function_head_matcher_recognises_every_visibility_it_must() {
+    for head in [
+        "fn plain(",
+        "pub fn public(",
+        "pub(crate) fn crate_private(",
+        "pub(super) fn super_private(",
+        "pub(in crate::action_state) fn scoped(",
+        "async fn asynchronous(",
+        "pub async fn public_async(",
+        "const fn constant(",
+        "pub const fn public_const(",
+        "unsafe fn unsound(",
+        "pub unsafe fn public_unsafe(",
+        "pub extern \"C\" fn abi(",
+    ] {
+        assert!(
+            opens_a_function(head),
+            "the matcher must recognise `{head}`"
+        );
+    }
+    for head in [
+        "/// fn documented(",
+        "// fn commented(",
+        "type Callback = fn(",
+        "handler: Box<dyn Fn(",
+        "let it = something.fn_like(",
+        "struct Holder {",
+        "",
+    ] {
+        assert!(
+            !opens_a_function(head),
+            "the matcher must NOT flag `{head}`"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scan 3: no twin name is left anywhere under crates/
+// ---------------------------------------------------------------------------
+
+/// Every `.rs` file under `crates/`, production and test alike, keyed by its
+/// repo-relative path with forward slashes. Scan 3's reach is deliberately
+/// wider than scans 1 and 2's: a twin reintroduced in a test crate is a twin.
+fn every_source(root: &Path) -> Vec<(String, String)> {
+    let mut sources = Vec::new();
+    for path in rust_files(&root.join("crates")) {
+        let text =
+            fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        sources.push((relative, text));
+    }
+    sources
+}
+
+/// WS03-S13. `mush_core` used to carry PAIRS of names around the same call —
+/// `can_perceive` beside `can_perceive_with_action_state`, and thirteen more
+/// families like it — where the short name silently meant "no typed state".
+/// Collapsing them onto [`mush_core::TypedStateLens`] is only durable if the
+/// suffix cannot come back, because the suffix is what a reintroduced pair
+/// looks like on the way in.
+#[test]
+fn no_action_state_twin_names_remain() {
+    let root = repo_root();
+    let self_path = Path::new(file!())
+        .file_name()
+        .expect("this test file has a name")
+        .to_string_lossy()
+        .to_string();
+    let mut offenders = Vec::new();
+    for (relative, text) in every_source(&root) {
+        if relative.ends_with(&self_path) {
+            continue;
+        }
+        for suffix in TWIN_SUFFIXES {
+            let count = text.matches(suffix).count();
+            if count > 0 {
+                offenders.push(format!("  {relative}: {count} × `{suffix}`"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a `_with_action_state` / `_via_action_state` twin is back. Those suffixes named \
+         the second half of a PAIR: one spelling that passed the store and a shorter one \
+         that passed `None`, with nothing making a caller choose — which is how a \
+         perception hook came to answer the wrong verdict rather than a degraded one. \
+         Take one name and one `mush_core::TypedStateLens` parameter instead.\n{}",
         offenders.join("\n")
     );
 }

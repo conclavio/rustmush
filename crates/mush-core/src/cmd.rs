@@ -39,7 +39,7 @@ use mush_proto::OutputEvent;
 
 use crate::behavior::{
     BehaviorId, BehaviorRegError, BehaviorResolution, BehaviorSpec, DestroyGate, DestroyPolicy,
-    DetachGate, resolve_behavior_command_with_action_state,
+    DetachGate, resolve_behavior_command,
 };
 use crate::commands::movement;
 use crate::flags::{Powers, Privileges, Role};
@@ -1123,20 +1123,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// Run one input line through the full dispatch pipeline (module docs for
 /// the exact order). All output — including errors and `Huh?` — is queued
 /// on `out`.
-pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &mut Outbox) {
-    dispatch_with_action_state(
-        reg,
-        w,
-        actor,
-        line,
-        out,
-        crate::action_state::TypedStateLens::Detached(
-            crate::action_state::DetachedTypedState::CompatibilityCtx,
-        ),
-    );
-}
-
-pub(crate) fn dispatch_with_action_state(
+pub fn dispatch(
     reg: &Registry,
     w: &mut World,
     actor: ObjId,
@@ -1197,7 +1184,7 @@ pub(crate) fn dispatch_with_action_state(
                 ContextOutcome::PopAndRun(cmd) => {
                     let spec = restored_prompt(w, actor);
                     out.to_actor(actor, OutputEvent::Prompt(spec));
-                    dispatch_with_action_state(reg, w, actor, &cmd, out, lens);
+                    dispatch(reg, w, actor, &cmd, out, lens);
                 }
             }
             return;
@@ -1284,7 +1271,7 @@ pub(crate) fn dispatch_with_action_state(
             // missed, so a behavior verb can never shadow a core verb, a staff
             // command, or an exit. The first tier with a match wins; an
             // ambiguous tier refuses and never falls through.
-            match resolve_behavior_command_with_action_state(reg, w, actor, verb, lens) {
+            match resolve_behavior_command(reg, w, actor, verb, lens) {
                 BehaviorResolution::One { target, index } => {
                     let Some(bspec) = reg.behavior_spec(&target.behavior) else {
                         huh(reg, actor, verb, out);
@@ -1496,6 +1483,14 @@ fn huh(reg: &Registry, actor: ObjId, verb: &str, out: &mut Outbox) {
 
 #[cfg(test)]
 mod tests {
+    /// A store-less lens for the dispatch calls below: these tests pin the
+    /// answer a caller gets with no typed state at all, which is exactly what
+    /// the old store-less twin handed out by default.
+    const DETACHED: crate::action_state::TypedStateLens<'static> =
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::Test,
+        );
+
     use super::*;
 
     fn spec(name: &str, shape: ArgShape) -> CommandSpec {
@@ -1647,7 +1642,7 @@ mod tests {
         .unwrap();
         // Ann fails the lock gate before the handler runs.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, ann, "sanctify", &mut out);
+        dispatch(&reg, &mut w, ann, "sanctify", &mut out, DETACHED);
         let texts: Vec<_> = out
             .events()
             .iter()
@@ -1659,7 +1654,7 @@ mod tests {
         assert_eq!(texts, vec!["Permission denied.".to_string()]);
         // God passes.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, GOD, "sanctify", &mut out);
+        dispatch(&reg, &mut w, GOD, "sanctify", &mut out, DETACHED);
         assert!(out.events().iter().any(
             |(_, e)| matches!(e, mush_proto::OutputEvent::Sys(t) if t.to_plain_text() == "Sanctified.")
         ));
@@ -1719,13 +1714,13 @@ mod tests {
 
         // Allowed verb runs.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, ann, "look", &mut out);
+        dispatch(&reg, &mut w, ann, "look", &mut out, DETACHED);
         assert_eq!(plain(&out), vec!["ok-look".to_string()]);
 
         // A non-allowlisted command is refused with the gate's reason; its
         // handler never runs.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, ann, "pose", &mut out);
+        dispatch(&reg, &mut w, ann, "pose", &mut out, DETACHED);
         assert_eq!(plain(&out), vec!["blocked".to_string()]);
     }
 
@@ -1788,7 +1783,7 @@ mod tests {
         // The gate refuses "pub spam" before the alias stage ever sees it: the
         // channel broadcast never happens.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, ann, "pub spam", &mut out);
+        dispatch(&reg, &mut w, ann, "pub spam", &mut out, DETACHED);
         assert_eq!(plain(&out), vec!["gated".to_string()]);
         assert!(
             !plain(&out).iter().any(|l| l == "broadcast"),
@@ -1872,7 +1867,7 @@ mod tests {
         // "@dig x", and the second pass refuses THAT verb: the handler never
         // runs.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, ann, "+stat", &mut out);
+        dispatch(&reg, &mut w, ann, "+stat", &mut out, DETACHED);
         assert_eq!(plain(&out), vec!["gated".to_string()]);
         assert!(
             !plain(&out).iter().any(|l| l == "dug"),
@@ -1881,7 +1876,7 @@ mod tests {
 
         // A line no stage rewrites is gated exactly once, on its own verb.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, ann, "@dig y", &mut out);
+        dispatch(&reg, &mut w, ann, "@dig y", &mut out, DETACHED);
         assert_eq!(plain(&out), vec!["gated".to_string()]);
     }
 

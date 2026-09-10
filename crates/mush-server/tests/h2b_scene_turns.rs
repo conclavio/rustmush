@@ -16,6 +16,11 @@ use mush_npc::{NpcHostState, NpcModule};
 use mush_scenes::ScenesModule;
 use mush_testkit::{TestWorld, text_of};
 
+/// A store-less lens for this harness: it drives the engine's public event
+/// fan-out with no live typed-state snapshot and says so.
+const DETACHED: mush_core::TypedStateLens<'static> =
+    mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+
 fn boot() -> TestWorld {
     let mut tw = TestWorld::with_modules(vec![
         Box::new(ScenesModule::new()),
@@ -155,6 +160,7 @@ fn h2b_the_same_round_is_one_instance_and_a_new_round_shares_the_replaceable_key
                 actor: r.npc,
                 round,
             },
+            DETACHED,
         );
     };
     fire(&mut tw, 2);
@@ -202,6 +208,7 @@ fn h2b_a_player_a_profileless_npc_and_a_disabled_agent_get_no_request() {
                 actor,
                 round: 1,
             },
+            DETACHED,
         );
     }
     assert!(

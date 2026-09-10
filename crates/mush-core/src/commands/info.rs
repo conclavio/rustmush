@@ -405,6 +405,14 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
 
 #[cfg(test)]
 mod tests {
+    /// A store-less lens for the dispatch calls below: these tests pin the
+    /// answer a caller gets with no typed state at all, which is exactly what
+    /// the old store-less twin handed out by default.
+    const DETACHED: crate::action_state::TypedStateLens<'static> =
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::Test,
+        );
+
     use crate::clock::{CivilDate, GameClock};
     use crate::cmd::{Registry, dispatch};
     use crate::obj::{GOD, LIMBO, ObjId, ObjKind};
@@ -443,7 +451,7 @@ mod tests {
     fn time_shows_ic_date_season_and_tod() {
         let (mut w, reg, nick) = setup();
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, nick, "time", &mut out);
+        dispatch(&reg, &mut w, nick, "time", &mut out, DETACHED);
         let got = lines(&out, nick);
         assert_eq!(
             got,
@@ -465,7 +473,7 @@ mod tests {
         let mut reg = Registry::new();
         crate::commands::register_core_commands(&mut reg).unwrap();
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, nick, "time", &mut out);
+        dispatch(&reg, &mut w, nick, "time", &mut out, DETACHED);
         let got = lines(&out, nick);
         assert!(
             got[0].contains("-- an autumn night."),
@@ -477,7 +485,7 @@ mod tests {
     fn at_time_alias_is_the_same_command() {
         let (mut w, reg, nick) = setup();
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, nick, "@time", &mut out);
+        dispatch(&reg, &mut w, nick, "@time", &mut out, DETACHED);
         assert_eq!(
             lines(&out, nick),
             vec!["Game time: August 28, 2075, 02:57 -- a summer night.".to_string()],
@@ -500,7 +508,7 @@ mod tests {
 
         w.set_now(6 * 3_600);
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, nick, "time", &mut out);
+        dispatch(&reg, &mut w, nick, "time", &mut out, DETACHED);
         assert!(
             lines(&out, nick)[0].contains("January 2, 2100"),
             "{:?}",

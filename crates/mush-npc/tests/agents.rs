@@ -282,6 +282,7 @@ impl Rig {
             npc,
             correlation,
             payload,
+            mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
         );
         out
     }

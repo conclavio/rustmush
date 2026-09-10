@@ -857,6 +857,7 @@ fn destroyed_character_mailbox_is_cleaned_up() {
         &mut engine.world,
         &mut out,
         &WorldEvent::ObjDestroyed { obj: bob },
+        mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
     );
     let st = mail(&engine);
     assert!(st.entry(bob, 1).is_none(), "box entries removed");

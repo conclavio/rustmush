@@ -15,7 +15,7 @@ use crate::output::{Outbox, name_span};
 use crate::perm;
 use crate::world::World;
 
-use super::{attr_text, show_room_with_action_state};
+use super::{attr_text, show_room};
 
 fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let q = ctx.args.raw().to_string();
@@ -102,7 +102,7 @@ fn look_at(
 ) {
     let Some(o) = w.get(target) else { return };
     if o.kind == ObjKind::Room {
-        show_room_with_action_state(reg, w, looker, target, out, lens);
+        show_room(reg, w, looker, target, out, lens);
         return;
     }
     let desc =

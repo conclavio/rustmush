@@ -3895,7 +3895,7 @@ mod tests {
             .expect("the fixture installs");
         let check = resolved
             .guards()
-            .revalidate_with_action_state(
+            .revalidate(
                 &engine.world,
                 engine.action_state(),
                 engine.registry.revision_validators().unwrap(),
@@ -3997,7 +3997,7 @@ mod tests {
 
         let check = resolved
             .guards()
-            .revalidate_with_action_state(
+            .revalidate(
                 &engine.world,
                 engine.action_state(),
                 engine.registry.revision_validators().unwrap(),
@@ -4232,7 +4232,7 @@ mod tests {
         move_tactical_gate_placement(&mut engine, &state, unselected_target, 3, 0);
         let check = resolved
             .guards()
-            .revalidate_with_action_state(
+            .revalidate(
                 &engine.world,
                 engine.action_state(),
                 engine.registry.revision_validators().unwrap(),
@@ -4245,7 +4245,7 @@ mod tests {
         move_tactical_gate_placement(&mut engine, &state, selected_target, 4, 0);
         let check = resolved
             .guards()
-            .revalidate_with_action_state(
+            .revalidate(
                 &engine.world,
                 engine.action_state(),
                 engine.registry.revision_validators().unwrap(),

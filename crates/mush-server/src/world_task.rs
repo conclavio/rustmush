@@ -5169,7 +5169,7 @@ async fn run(
             &engine.registry,
             &engine.world,
             &mut out,
-            Some(engine.action_state()),
+            TypedStateLens::Live(engine.action_state()),
         );
         let mut classified_effects = fx.drain_classified();
         if let Some(pending) = pending_commit.as_mut() {
@@ -5411,7 +5411,7 @@ async fn run(
                 &engine.registry,
                 &engine.world,
                 &mut out,
-                Some(engine.action_state()),
+                TypedStateLens::Live(engine.action_state()),
             );
             let mut effects = fx.drain_classified();
             match flush_dirty(
@@ -5608,7 +5608,7 @@ async fn run(
                 &engine.registry,
                 &engine.world,
                 &mut out,
-                Some(engine.action_state()),
+                TypedStateLens::Live(engine.action_state()),
             );
             let mut effects = fx.drain_classified();
             match flush_dirty(
@@ -8431,10 +8431,15 @@ fn resolve_sends(
     world: &World,
     out: &mut Outbox,
 ) -> Vec<(SendTarget, Arc<OutputEvent>)> {
-    resolve_classified_sends(reg, world, out, None)
-        .into_iter()
-        .map(|(_class, target, event)| (target, event))
-        .collect()
+    resolve_classified_sends(
+        reg,
+        world,
+        out,
+        TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
+    )
+    .into_iter()
+    .map(|(_class, target, event)| (target, event))
+    .collect()
 }
 
 /// Resolve audiences while retaining each item's durability relationship.
@@ -8444,7 +8449,7 @@ fn resolve_classified_sends(
     reg: &Registry,
     world: &World,
     out: &mut Outbox,
-    action_state: Option<&mush_core::ActionStateStore>,
+    lens: TypedStateLens<'_>,
 ) -> Vec<ClassifiedSend> {
     let mut sends = Vec::new();
     for (class, audience, event) in out.take_classified() {
@@ -8487,20 +8492,15 @@ fn resolve_classified_sends(
                     {
                         continue;
                     }
-                    if let Some(subject) = subject {
-                        // The live/absent choice is the caller's, and it stays
-                        // explicit: a step that resolved its sends with a store
-                        // projects through it, and one without a store says so
-                        // rather than silently taking the store-less verdict.
-                        let lens = action_state.map_or(
-                            TypedStateLens::Detached(
-                                mush_core::DetachedTypedState::CompatibilityCtx,
-                            ),
-                            TypedStateLens::Live,
-                        );
-                        if !can_perceive(reg, world, occupant, subject, lens) {
-                            continue;
-                        }
+                    if let Some(subject) = subject
+                        // The live/absent choice is the caller's and it stays
+                        // explicit: every production step hands this its own
+                        // `Live` store, and a caller without one has to name
+                        // the reason rather than silently taking the
+                        // store-less verdict.
+                        && !can_perceive(reg, world, occupant, subject, lens)
+                    {
+                        continue;
                     }
                     sends.push((
                         class,
@@ -8788,7 +8788,7 @@ fn complete_pending_commit(
                         &engine.registry,
                         &engine.world,
                         &mut announce_out,
-                        Some(engine.action_state()),
+                        TypedStateLens::Live(engine.action_state()),
                     ));
                     effects.extend(announce_fx.drain_classified());
                 }
@@ -8935,7 +8935,7 @@ fn finish_pending_operational(engine: &mut Engine, gateway: &Gateway, completed:
             &engine.registry,
             &engine.world,
             &mut reattach_out,
-            Some(engine.action_state()),
+            TypedStateLens::Live(engine.action_state()),
         );
         release_classified_sends(gateway, sends, completed.outcome);
         tracing::info!(
@@ -16118,6 +16118,7 @@ mod tests {
             alice,
             &format!("examine {hall}"),
             &mut out,
+            DETACHED,
         );
         let alice_ex = examine_contents(&out, alice);
         assert!(
@@ -16129,7 +16130,14 @@ mod tests {
             "examine still lists Bob: {alice_ex:?}"
         );
         let mut out = Outbox::new();
-        dispatch(&reg, &mut world, bob, &format!("examine {hall}"), &mut out);
+        dispatch(
+            &reg,
+            &mut world,
+            bob,
+            &format!("examine {hall}"),
+            &mut out,
+            DETACHED,
+        );
         assert!(
             examine_contents(&out, bob).contains("Wraith"),
             "Bob's examine must still show Wraith"
@@ -16139,7 +16147,7 @@ mod tests {
         // is Wraith, so Alice (who cannot perceive him) is dropped from the
         // resolved recipients while Bob and Wraith himself receive it.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut world, wraith, "say boo", &mut out);
+        dispatch(&reg, &mut world, wraith, "say boo", &mut out, DETACHED);
         let sends = resolve_sends(&reg, &world, &mut out);
         let recipients: std::collections::HashSet<ObjId> = sends
             .iter()
@@ -16212,7 +16220,7 @@ mod tests {
 
         // A say reaches every connected occupant (speaker included).
         let mut out = Outbox::new();
-        dispatch(&reg, &mut world, a, "say hi", &mut out);
+        dispatch(&reg, &mut world, a, "say hi", &mut out, DETACHED);
         let recipients: std::collections::HashSet<ObjId> = resolve_sends(&reg, &world, &mut out)
             .iter()
             .filter_map(|(t, _)| match t {

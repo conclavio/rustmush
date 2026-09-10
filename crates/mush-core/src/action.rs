@@ -2331,9 +2331,9 @@ impl GuardSet {
 
     /// Unit-test convenience for guard sets whose validators do not depend on
     /// typed state. Production admission always uses
-    /// [`Self::revalidate_with_action_state`].
+    /// [`Self::revalidate`].
     #[cfg(test)]
-    fn revalidate(
+    fn revalidate_unregistered(
         &self,
         world: &World,
         revisions: &RevisionValidatorRegistry,
@@ -2341,7 +2341,7 @@ impl GuardSet {
         definitions: &DefinitionRegistry,
     ) -> Result<GuardRevalidation, GuardRevalidationError> {
         let action_state = ActionStateStore::unregistered();
-        self.revalidate_with_action_state(world, &action_state, revisions, authority, definitions)
+        self.revalidate(world, &action_state, revisions, authority, definitions)
     }
 
     /// Re-read every registered source against immutable world and typed-state
@@ -2350,7 +2350,7 @@ impl GuardSet {
     /// This method is deliberately pure. The world-task coordinator must use
     /// a current result as part of its later atomic transition into
     /// `CommitPending`; this method does not perform that transition itself.
-    pub fn revalidate_with_action_state(
+    pub fn revalidate(
         &self,
         world: &World,
         action_state: &ActionStateStore,
@@ -5874,7 +5874,7 @@ mod tests {
 
         assert!(
             guards
-                .revalidate(&world, &revisions, &authority, &definitions)
+                .revalidate_unregistered(&world, &revisions, &authority, &definitions)
                 .unwrap()
                 .is_current()
         );
@@ -5888,7 +5888,7 @@ mod tests {
             std::slice::from_ref(&channel),
         ));
         let stale = guards
-            .revalidate(&world, &revisions, &authority, &definitions)
+            .revalidate_unregistered(&world, &revisions, &authority, &definitions)
             .unwrap();
         assert_eq!(stale.stale_authority().len(), 1);
         assert!(matches!(
@@ -6118,7 +6118,7 @@ mod tests {
         let authority = engine.registry.authority_guard_validators().unwrap();
         assert!(
             guards
-                .revalidate(&engine.world, &revisions, authority, &definitions)
+                .revalidate_unregistered(&engine.world, &revisions, authority, &definitions)
                 .unwrap()
                 .is_current()
         );
@@ -6127,7 +6127,7 @@ mod tests {
         changed_grant.epoch += 1;
         engine.world.publish_command_subject(changed_grant);
         let stale = guards
-            .revalidate(&engine.world, &revisions, authority, &definitions)
+            .revalidate_unregistered(&engine.world, &revisions, authority, &definitions)
             .unwrap();
         assert_eq!(stale.stale_authority().len(), channels.len());
     }
@@ -6436,7 +6436,7 @@ mod tests {
             &readiness,
         );
         let result = guards
-            .revalidate(
+            .revalidate_unregistered(
                 &World::new_minimal(),
                 &revision_validators,
                 &authority_validators,
@@ -6488,7 +6488,7 @@ mod tests {
             &readiness,
         );
         assert!(matches!(
-            guards.revalidate(
+            guards.revalidate_unregistered(
                 &World::new_minimal(),
                 &empty_revisions,
                 &empty_authority,
@@ -6508,7 +6508,7 @@ mod tests {
             .unwrap();
         let authority_guard = authority_guard.finish().unwrap();
         assert!(matches!(
-            authority_guard.revalidate(
+            authority_guard.revalidate_unregistered(
                 &World::new_minimal(),
                 &empty_revisions,
                 &empty_authority,
@@ -6548,7 +6548,7 @@ mod tests {
             .freeze_for_owners_with_readiness(&roster, readiness)
             .unwrap();
         let error = guards
-            .revalidate(
+            .revalidate_unregistered(
                 &World::new_minimal(),
                 &empty_revisions,
                 &empty_authority,
@@ -6587,7 +6587,7 @@ mod tests {
             .freeze_for_owners_with_readiness(&roster, first_readiness.clone())
             .unwrap();
         assert!(matches!(
-            guards.revalidate(
+            guards.revalidate_unregistered(
                 &World::new_minimal(),
                 &first_revisions,
                 &first_authority,
@@ -6605,7 +6605,7 @@ mod tests {
             .freeze_for_owners_with_readiness(&roster, second_readiness)
             .unwrap();
         assert!(matches!(
-            guards.revalidate(
+            guards.revalidate_unregistered(
                 &World::new_minimal(),
                 &second_revisions,
                 &second_authority,
@@ -6663,7 +6663,7 @@ mod tests {
             &revision_readiness,
         );
         assert!(matches!(
-            guards.revalidate(
+            guards.revalidate_unregistered(
                 &World::new_minimal(),
                 &revision_validators,
                 &authority_validators,
@@ -6704,7 +6704,7 @@ mod tests {
             &authority_readiness,
         );
         assert!(matches!(
-            guards.revalidate(
+            guards.revalidate_unregistered(
                 &World::new_minimal(),
                 &revision_validators,
                 &authority_validators,

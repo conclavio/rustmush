@@ -508,15 +508,17 @@ impl fmt::Display for DetachedTypedState {
 /// How one call reaches engine-owned typed state: the live authoritative
 /// store, or a named reason there is none.
 ///
-/// This is the parameter every perception, veto and render predicate in the
-/// engine takes. It replaces the `Option<&ActionStateStore>` those predicates
-/// used to thread, and — more importantly — it replaces the *pairs* of public
-/// names that grew around that `Option`: a plain `can_perceive` that passed
-/// `None` and a `can_perceive_with_action_state` that passed the store. The
+/// This is the parameter every perception, veto, dispatch and render entry
+/// point in the engine takes. It replaces the `Option<&ActionStateStore>`
+/// those calls used to thread, and — more importantly — it replaces the
+/// *pairs* of names that grew around that `Option`: a plain `can_perceive`
+/// that passed `None`, and a longer twin beside it that passed the store. The
 /// plain name was the wrong default and the easy one to reach, so a caller
 /// that should have carried the store could quietly get the store-less answer
 /// — the wrong perception verdict, not a degraded one. With one name taking
-/// one lens, a store-less call has to say so.
+/// one lens, a store-less call has to say so. No twin is left: the pin at
+/// `crates/mush-contract-tests/typed-state-lens.toml` is what keeps it that
+/// way.
 #[derive(Copy, Clone)]
 pub enum TypedStateLens<'a> {
     /// The live authoritative snapshot the world task owns.

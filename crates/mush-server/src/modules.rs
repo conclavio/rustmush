@@ -1187,16 +1187,16 @@ async fn load_streams_for(
 /// Load only ordinary module boot data. The full public boot path is
 /// [`boot_modules`], which also hydrates the reserved typed-state partition.
 #[cfg(test)]
-async fn load_module_boot(
+async fn load_ordinary_module_boot(
     store: &dyn ObjectStore,
     modules: &[Box<dyn GameModule>],
 ) -> Result<HashMap<SmolStr, ModuleBootData>, String> {
-    let (mut boot, _) = load_module_boot_with_action_state(store, modules).await?;
+    let (mut boot, _) = load_module_boot(store, modules).await?;
     load_requested_streams(store, modules, &mut boot).await?;
     Ok(boot)
 }
 
-async fn load_module_boot_with_action_state(
+async fn load_module_boot(
     store: &dyn ObjectStore,
     modules: &[Box<dyn GameModule>],
 ) -> Result<(HashMap<SmolStr, ModuleBootData>, Vec<ActionStateBootRecord>), String> {
@@ -1372,8 +1372,7 @@ pub async fn run_module_migrations(
 /// [`Engine::with_modules`] wrapper) and spawning the world task.
 pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Result<(), String> {
     run_module_migrations(store, engine.registry.migrations()).await?;
-    let (mut boot, action_state) =
-        load_module_boot_with_action_state(store, engine.modules()).await?;
+    let (mut boot, action_state) = load_module_boot(store, engine.modules()).await?;
     engine
         .hydrate_action_state(action_state)
         .map_err(|error| format!("action-state boot failed: {error}"))?;
@@ -1958,7 +1957,7 @@ mod tests {
         .await
         .unwrap();
         let modules: Vec<Box<dyn GameModule>> = vec![Box::new(ToyMod { loaded: Vec::new() })];
-        let boot = load_module_boot(&store, &modules).await.unwrap();
+        let boot = load_ordinary_module_boot(&store, &modules).await.unwrap();
         let kv = &boot[&SmolStr::new("toy")].kv;
         assert_eq!(kv.len(), 1);
         assert_eq!(kv[0].0, "doc:1");
@@ -2254,7 +2253,7 @@ mod tests {
         .await
         .unwrap();
         let modules: Vec<Box<dyn GameModule>> = vec![Box::new(ToyMod { loaded: Vec::new() })];
-        let boot = load_module_boot(&store, &modules).await.unwrap();
+        let boot = load_ordinary_module_boot(&store, &modules).await.unwrap();
         let data = &boot[&SmolStr::new("toy")];
         assert_eq!(data.kv.len(), 1);
         assert_eq!(data.kv[0].0, "doc:1");
@@ -2294,7 +2293,7 @@ mod tests {
         .unwrap();
         let modules: Vec<Box<dyn GameModule>> = vec![Box::new(ToyMod { loaded: Vec::new() })];
 
-        let boot = load_module_boot(&store, &modules).await.unwrap();
+        let boot = load_ordinary_module_boot(&store, &modules).await.unwrap();
 
         assert_eq!(boot[&SmolStr::new("toy")].kv.len(), 1);
         assert_eq!(boot[&SmolStr::new("toy")].kv[0].0, "doc:1");
