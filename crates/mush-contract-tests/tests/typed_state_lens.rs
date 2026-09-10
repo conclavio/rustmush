@@ -64,6 +64,12 @@ const FN_QUALIFIERS: [&str; 6] = ["pub", "async", "const", "unsafe", "extern", "
 /// The twin suffixes scan 3 forbids.
 const TWIN_SUFFIXES: [&str; 2] = ["_with_action_state", "_via_action_state"];
 
+/// This file's own repo-relative path — the single exemption from scan 3,
+/// which has to name the suffixes in order to forbid them. Spelled in full
+/// rather than taken from `file!()`'s basename so that a future
+/// `crates/<other>/src/typed_state_lens.rs` is scanned like anything else.
+const SELF_PATH: &str = "crates/mush-contract-tests/tests/typed_state_lens.rs";
+
 /// The offset of the `fn` keyword that opens `trimmed`, if any: `fn` as a
 /// whole word, followed by the function's name.
 fn find_fn_keyword(trimmed: &str) -> Option<usize> {
@@ -83,29 +89,31 @@ fn find_fn_keyword(trimmed: &str) -> Option<usize> {
     None
 }
 
-/// Whether `trimmed` — a source line with its leading whitespace removed —
-/// opens a function item at ANY visibility.
+/// The offset of the `fn` keyword when `trimmed` — a source line with its
+/// leading whitespace removed — opens a function item at ANY visibility.
 ///
 /// Everything before the `fn` keyword must be a qualifier: a visibility
 /// (`pub`, `pub(crate)`, `pub(super)`, `pub(in path)`), `async`, `const`,
 /// `unsafe`, `extern "C"`, or `default`. That rejects the lines that merely
 /// mention `fn` — a `type Cb = fn(…)` alias, a comment, a `dyn Fn(…)` bound
 /// (capital F) — while accepting every real definition.
-fn opens_a_function(trimmed: &str) -> bool {
-    let Some(at) = find_fn_keyword(trimmed) else {
-        return false;
-    };
+///
+/// The OFFSET is the load-bearing half of the answer, not a convenience: a
+/// visibility qualifier carries its own parentheses, so a caller that hunts
+/// for the parameter list from the start of the line finds `(crate)` and
+/// reads `pub(crate) fn f(store: Option<&ActionStateStore>)` as taking no
+/// parameters at all. The search has to begin at the `fn`.
+fn opens_a_function(trimmed: &str) -> Option<usize> {
+    let at = find_fn_keyword(trimmed)?;
     let mut rest = &trimmed[..at];
     loop {
         rest = rest.trim_start();
         if rest.is_empty() {
-            return true;
+            return Some(at);
         }
         if let Some(after) = rest.strip_prefix('"') {
             // An `extern "C"` ABI string.
-            let Some(end) = after.find('"') else {
-                return false;
-            };
+            let end = after.find('"')?;
             rest = &after[end + 1..];
             continue;
         }
@@ -114,13 +122,11 @@ fn opens_a_function(trimmed: &str) -> bool {
             .unwrap_or(rest.len());
         let (word, mut tail) = rest.split_at(word_end);
         if !FN_QUALIFIERS.contains(&word) {
-            return false;
+            return None;
         }
         // `pub(crate)`, `pub(super)`, `pub(in crate::foo)`.
         if word == "pub" && tail.starts_with('(') {
-            let Some(end) = tail.find(')') else {
-                return false;
-            };
+            let end = tail.find(')')?;
             tail = &tail[end + 1..];
         }
         rest = tail;
@@ -294,6 +300,31 @@ fn paren_group(text: &str, start: usize) -> Option<&str> {
     None
 }
 
+/// The parameter list of the function head whose `fn` keyword sits at
+/// `fn_start`, or `None` when the head never closes.
+///
+/// It cannot simply be the first `(` on the line. A visibility qualifier puts
+/// one BEFORE the keyword (`pub(crate) fn f(…)`) and a generic bound puts one
+/// after the name but inside the angle brackets (`fn f<F: Fn(&X)>(…)`), so the
+/// walk starts at the keyword and takes the first `(` at angle depth zero. The
+/// `-` guard keeps a bound's return arrow (`Fn(u8) -> u8`) from closing a
+/// generic list that is still open.
+fn parameter_list(text: &str, fn_start: usize) -> Option<&str> {
+    let head = text.get(fn_start..)?;
+    let mut angle = 0usize;
+    let mut previous = ' ';
+    for (offset, ch) in head.char_indices() {
+        match ch {
+            '<' => angle += 1,
+            '>' if previous != '-' => angle = angle.saturating_sub(1),
+            '(' if angle == 0 => return paren_group(text, fn_start + offset),
+            _ => {}
+        }
+        previous = ch;
+    }
+    None
+}
+
 /// Whether a parameter list declares an `Option<&ActionStateStore>` in any of
 /// its spellings — bare, lifetime-bound, module-qualified, or wrapped across
 /// lines by rustfmt.
@@ -341,17 +372,23 @@ fn takes_optional_store(params: &str) -> bool {
     false
 }
 
-#[test]
-fn no_function_at_any_visibility_takes_an_optional_action_state_store() {
-    let root = repo_root();
+/// Scan 2's body, over whatever sources it is handed: every function head, at
+/// every visibility, whose parameter list declares an `Option<&…Store>`.
+///
+/// It is a free function rather than a loop inside the test so the test below
+/// can run the WHOLE scan — head matcher, parameter-list walk and type
+/// normaliser together — over a synthetic source. Exercising the matcher on
+/// its own is exactly what let a `pub(crate)` hole through review once: the
+/// matcher knew every visibility while the scan around it did not.
+fn optional_store_offenders(sources: &[(String, String)]) -> Vec<String> {
     let mut offenders = Vec::new();
-    for (relative, text) in production_sources(&root) {
+    for (relative, text) in sources {
         let mut offset = 0usize;
         for line in text.split_inclusive('\n') {
             let trimmed = line.trim_start();
             let indent = line.len() - trimmed.len();
-            if opens_a_function(trimmed)
-                && let Some(params) = paren_group(&text, offset + indent)
+            if let Some(fn_at) = opens_a_function(trimmed)
+                && let Some(params) = parameter_list(text, offset + indent + fn_at)
                 && takes_optional_store(params)
             {
                 let name = trimmed.trim_end();
@@ -360,6 +397,13 @@ fn no_function_at_any_visibility_takes_an_optional_action_state_store() {
             offset += line.len();
         }
     }
+    offenders
+}
+
+#[test]
+fn no_function_at_any_visibility_takes_an_optional_action_state_store() {
+    let root = repo_root();
+    let offenders = optional_store_offenders(&production_sources(&root));
     assert!(
         offenders.is_empty(),
         "a function still takes `Option<&ActionStateStore>`. That is the shape WS03-S7 \
@@ -391,7 +435,7 @@ fn the_function_head_matcher_recognises_every_visibility_it_must() {
         "pub extern \"C\" fn abi(",
     ] {
         assert!(
-            opens_a_function(head),
+            opens_a_function(head).is_some(),
             "the matcher must recognise `{head}`"
         );
     }
@@ -405,8 +449,60 @@ fn the_function_head_matcher_recognises_every_visibility_it_must() {
         "",
     ] {
         assert!(
-            !opens_a_function(head),
+            opens_a_function(head).is_none(),
             "the matcher must NOT flag `{head}`"
+        );
+    }
+}
+
+/// The WHOLE of scan 2 over a synthetic source, one visibility at a time.
+///
+/// The test above proves the head matcher knows `pub(crate) fn`; this one
+/// proves the scan BUILT on it does. They came apart once: the scan hunted the
+/// parameter list from the start of the line, so a visibility's own
+/// parentheses — `pub(crate)` — were read as the parameter list and every
+/// crate-private offender walked straight through a green suite. Since
+/// crate-private is precisely the population WS03-S13 widened the scan to
+/// cover, the pin was blind to almost all of what it claimed.
+#[test]
+fn the_scan_flags_an_optional_store_behind_every_visibility_and_generic() {
+    for head in [
+        "fn plain",
+        "pub fn public",
+        "pub(crate) fn crate_private",
+        "pub(super) fn super_private",
+        "pub(in crate::action_state) fn scoped",
+        "pub async fn public_async",
+        "pub(crate) const fn crate_const",
+        "pub(crate) unsafe extern \"C\" fn crate_abi",
+        "pub(crate) fn generic<F: Fn(&Registry) -> bool>",
+        "pub(crate) fn lifetimed<'a>",
+    ] {
+        let text = format!(
+            "impl Thing {{\n    {head}(action_state: Option<&ActionStateStore>) {{}}\n}}\n"
+        );
+        let sources = vec![("crates/synthetic/src/lib.rs".to_string(), text)];
+        let offenders = optional_store_offenders(&sources);
+        assert_eq!(
+            offenders.len(),
+            1,
+            "scan 2 must flag `{head}(action_state: Option<&ActionStateStore>)`, not just \
+             the matcher underneath it; it found {offenders:?}"
+        );
+    }
+    // And the shapes it must leave alone, through the same whole scan.
+    for head in [
+        "pub(crate) fn lens_taking(lens: TypedStateLens<'_>)",
+        "pub(crate) fn borrowed(action_state: &ActionStateStore)",
+        "type Callback = fn(action_state: Option<&ActionStateStore>);",
+    ] {
+        let sources = vec![(
+            "crates/synthetic/src/lib.rs".to_string(),
+            format!("{head} {{}}\n"),
+        )];
+        assert!(
+            optional_store_offenders(&sources).is_empty(),
+            "scan 2 must NOT flag `{head}`"
         );
     }
 }
@@ -443,14 +539,16 @@ fn every_source(root: &Path) -> Vec<(String, String)> {
 #[test]
 fn no_action_state_twin_names_remain() {
     let root = repo_root();
-    let self_path = Path::new(file!())
-        .file_name()
-        .expect("this test file has a name")
-        .to_string_lossy()
-        .to_string();
+    assert!(
+        root.join(SELF_PATH).is_file(),
+        "{SELF_PATH} is this test's own repo-relative path and the ONE file the scan \
+         exempts; if the file moved, move the constant with it — matching on the \
+         bare basename would exempt any other `typed_state_lens.rs` in the \
+         workspace too."
+    );
     let mut offenders = Vec::new();
     for (relative, text) in every_source(&root) {
-        if relative.ends_with(&self_path) {
+        if relative == SELF_PATH {
             continue;
         }
         for suffix in TWIN_SUFFIXES {
