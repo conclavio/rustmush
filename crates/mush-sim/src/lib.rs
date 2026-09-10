@@ -32,6 +32,7 @@ pub mod seat;
 pub mod station;
 pub mod tick;
 pub mod transition;
+pub mod window;
 
 use std::sync::Arc;
 
@@ -52,9 +53,10 @@ pub use data::{
     CapacitySpec, DEFAULT_RECOVERY_ROOM, Derived, DomainClock, DomainId, DomainRecord,
     DomainStatus, EgressSpec, HeldPlacement, HostAssignments, HostMounts, HostStations,
     InteriorSpaceRecord, MAX_GRANTED_CHANNELS, MAX_SEATS_PER_UNIT, MAX_SPATIAL_DEPTH, MountId,
-    MountSpec, NS, PASSIVE_DRIVER, PlacementRecord, Presence, RulesValue, SlotId, SpaceAnchor,
-    SpatialCounterError, SpatialParent, SpatialState, StationAssignment, StationId, StationSpec,
-    UnplacedInfo, cgen_key, passive_definition_ref, passive_rules_value,
+    MountSpec, NS, PASSIVE_DRIVER, PlacementRecord, Pose, Presence, ResolveFn, RoomResolver,
+    RulesValue, SlotId, SpaceAnchor, SpatialCounterError, SpatialParent, SpatialState,
+    StationAssignment, StationId, StationSpec, UnplacedInfo, WindowBox, WindowOpener, WindowPin,
+    WindowRec, WindowSurface, cgen_key, passive_definition_ref, passive_rules_value,
 };
 pub use domain::{
     ActivationBook, DomainActivation, DomainActivationWire, DomainSummary, DomainSummaryWire,
@@ -86,6 +88,10 @@ pub use seat::{
 };
 pub use station::{MAX_STATION_FALLBACKS, StationFallback, StationFallbacks};
 pub use transition::{Plan, SpatialError, Transition, apply, move_carrier_subtree, plan, run};
+pub use window::{
+    MAX_WINDOWS, OpenWindow, close_window, open_window, participants, place, pose_of,
+    register_room_resolver, unplace, update_window, window_of, windows,
+};
 
 /// Module configuration.
 #[derive(Clone, Debug)]
@@ -242,10 +248,18 @@ fn placed_or_quarantined(w: &World, obj: ObjId) -> Option<String> {
         ));
     }
     match st.parent_of(obj) {
-        SpatialParent::Direct { domain, .. } => Some(format!(
-            "{} is placed in domain #{domain}; it moves only through the simulation, or staff recovery (@spatial).",
-            mush_core::output::display_name(w, obj)
-        )),
+        SpatialParent::Direct { domain, .. } => {
+            // S4: a domain with a window is walkable ground — its participants
+            // leave by the same exits as anyone, and the window's owner re-poses
+            // or releases them on the move (doc 14 §3.4).
+            if st.domains.get(&domain).is_some_and(|d| d.window.is_some()) {
+                return None;
+            }
+            Some(format!(
+                "{} is placed in domain #{domain}; it moves only through the simulation, or staff recovery (@spatial).",
+                mush_core::output::display_name(w, obj)
+            ))
+        }
         SpatialParent::Interior { space, .. } => Some(format!(
             "{} is inside {}; it leaves only through the simulation, or staff recovery (@spatial).",
             mush_core::output::display_name(w, obj),
@@ -746,6 +760,8 @@ impl GameModule for SimulationModule {
         // composition root upgrades it from `[tacsim].ground_pulse_ms` /
         // `space_pulse_ms` after composition (cut 5's `AccountOracle` device).
         reg.state(self.pulse);
+        // S4: the room resolver a window's owner registers at its boot.
+        reg.state(crate::data::RoomResolver::default());
         reg.behavior(domain_spec())?;
         reg.behavior(interior_spec())?;
         reg.behavior(participant_spec())?;

@@ -151,7 +151,7 @@ fn validate_parent_refs(
     context: &str,
 ) -> Result<(), String> {
     match parent {
-        SpatialParent::Direct { pose, .. } => validate_rules_value(ctx, pose, context),
+        SpatialParent::Direct { pose, .. } => validate_rules_value(ctx, &pose.posture, context),
         SpatialParent::Attached {
             local_pose: Some(pose),
             ..
@@ -205,8 +205,13 @@ fn upgrade_spatial_parent(value: &mut serde_json::Value) -> Result<(), String> {
     };
     match fields.get("kind").and_then(serde_json::Value::as_str) {
         Some("Direct") => {
+            // S4: the pose is metric with the rules value as its posture; a
+            // cut-1 document carries the bare rules value, which still decodes.
             if let Some(pose) = fields.get_mut("pose") {
-                upgrade_legacy_passive(pose)?;
+                match pose.get_mut("posture") {
+                    Some(posture) => upgrade_legacy_passive(posture)?,
+                    None => upgrade_legacy_passive(pose)?,
+                }
             }
         }
         Some("Attached") => {

@@ -20,6 +20,9 @@ mush-content.workspace = true
 mush-proto.workspace = true
 mush-jobs.workspace = true
 mush-canon.workspace = true
+# S4: windows open on the simulation's domains and place through its transitions;
+# `mush-sim` reads core, economy, scenes and proto, never the atlas.
+mush-sim.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

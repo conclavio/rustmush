@@ -2072,7 +2072,9 @@ fn vf_c8_place_is_capped_too() {
             obj: fx.carrier,
             parent: SpatialParent::Direct {
                 domain: mush_sim::DomainId(1),
-                pose: mush_sim::passive_rules_value(serde_json::json!({})).expect("a pose"),
+                pose: mush_sim::Pose::passive(
+                    mush_sim::passive_rules_value(serde_json::json!({})).expect("a pose"),
+                ),
             },
         },
     );

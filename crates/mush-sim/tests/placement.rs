@@ -755,7 +755,7 @@ fn legacy_nested_passive_values_load_exactly_without_an_eager_rewrite() {
 
     let carrier_key = format!("placement:{}", fx.carrier.0);
     let carrier_doc = module_doc_mut(&mut kv, &carrier_key);
-    let authored = &carrier_doc["parent"]["pose"];
+    let authored = &carrier_doc["parent"]["pose"]["posture"];
     assert!(
         authored["schema"].is_object(),
         "new rules value is exact-reference v2: {authored}"
@@ -796,8 +796,8 @@ fn legacy_nested_passive_values_load_exactly_without_an_eager_rewrite() {
     else {
         panic!("carrier did not load direct");
     };
-    assert_eq!(carrier_pose.schema(), &exact);
-    assert_eq!(carrier_pose.data(), &serde_json::json!({ "x": 1 }));
+    assert_eq!(carrier_pose.posture.schema(), &exact);
+    assert_eq!(carrier_pose.posture.data(), &serde_json::json!({ "x": 1 }));
     let SpatialParent::Attached {
         local_pose: Some(local_pose),
         ..
@@ -819,8 +819,8 @@ fn legacy_nested_passive_values_load_exactly_without_an_eager_rewrite() {
     else {
         panic!("previous direct placement did not load");
     };
-    assert_eq!(previous_pose.schema(), &exact);
-    assert_eq!(previous_pose.data(), &serde_json::json!({ "x": 3 }));
+    assert_eq!(previous_pose.posture.schema(), &exact);
+    assert_eq!(previous_pose.posture.data(), &serde_json::json!({ "x": 3 }));
     let mush_sim::SpaceAnchor::FixedDomain {
         anchor_pose: Some(anchor_pose),
         ..
@@ -852,16 +852,17 @@ fn unavailable_exact_rules_references_are_held_without_rewriting_raw_documents()
     let mut kv = fold_kv(&mut tw);
 
     let atlas_key = format!("placement:{}", fx.mech.0);
-    module_doc_mut(&mut kv, &atlas_key)["parent"]["pose"]["schema"]["key"]["id"] =
+    module_doc_mut(&mut kv, &atlas_key)["parent"]["pose"]["posture"]["schema"]["key"]["id"] =
         serde_json::json!("missing");
 
     let locust_key = format!("placement:{}", fx.mech2.0);
-    let digest = module_doc_mut(&mut kv, &locust_key)["parent"]["pose"]["schema"]["digest"]
-        .as_str()
-        .expect("definition digest")
-        .to_string();
+    let digest =
+        module_doc_mut(&mut kv, &locust_key)["parent"]["pose"]["posture"]["schema"]["digest"]
+            .as_str()
+            .expect("definition digest")
+            .to_string();
     let replacement = if digest.starts_with('0') { '1' } else { '0' };
-    module_doc_mut(&mut kv, &locust_key)["parent"]["pose"]["schema"]["digest"] =
+    module_doc_mut(&mut kv, &locust_key)["parent"]["pose"]["posture"]["schema"]["digest"] =
         serde_json::json!(format!("{replacement}{}", &digest[1..]));
 
     let original_atlas = module_doc_mut(&mut kv, &atlas_key).clone();
@@ -898,11 +899,11 @@ fn unavailable_exact_rules_references_are_held_without_rewriting_raw_documents()
     // targets their keys. Keep explicit copies so this test catches a future
     // accidental in-place repair before the outbox boundary as well.
     assert_eq!(
-        original_atlas["parent"]["pose"]["schema"]["key"]["id"],
+        original_atlas["parent"]["pose"]["posture"]["schema"]["key"]["id"],
         "missing"
     );
     assert_ne!(
-        original_locust["parent"]["pose"]["schema"]["digest"],
+        original_locust["parent"]["pose"]["posture"]["schema"]["digest"],
         serde_json::to_value(mush_sim::passive_definition_ref()).unwrap()["digest"]
     );
 }

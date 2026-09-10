@@ -21,7 +21,7 @@ use crate::record::{
 use crate::terrain::TerrainClass;
 
 /// A cell grid's placement: where cell `(0, 0)` is and how big a cell is.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Grid {
     /// The low corner, centimetres.
     pub origin: PointCm,

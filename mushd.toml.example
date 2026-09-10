@@ -258,7 +258,12 @@ upkeep_per_period = 0              # the lease's rent obligation, per campaign c
 # Every key defaults. deny_unknown_fields, like [tacsim] and [npc]: a typo
 # refuses the boot rather than taking a default.
 tile_max_cells = 65536             # the most cells one map tile holds (256x256); larger footprints rasterize coarser
-nearest_room_cells = 8             # parsed, INERT until S4's windows
+nearest_room_cells = 8             # (S4) how far, in cells, a pose may stand off every room's footprint and still count as in the nearest
+# (S4) Tactical windows: the ground a window takes around a scene's rooms, in
+# metres, and the most cells one window holds -- past it the map coarsens to the
+# next registered cell size (100 -> 200 -> 500 -> 1000 cm) rather than refusing.
+window_margin_m = 10
+window_max_cells = 65536
 # Content packs, read HOST-SIDE at boot exactly like [tacsim].pack_paths: each
 # entry is a .json pack file or a directory searched for *.json in sorted order,
 # and one that cannot be read, does not parse, or whose declared digest is not

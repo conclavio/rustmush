@@ -36,7 +36,7 @@ pub struct Rect2(pub Point2, pub Point2);
 pub struct Polygon2(pub Vec<Point2>);
 
 /// A point in whole centimetres.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PointCm {
     /// East, centimetres.
     pub x: i64,
@@ -46,7 +46,7 @@ pub struct PointCm {
 
 /// A closed integer rectangle in centimetres: `min` inclusive, `max` exclusive on both
 /// axes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct RectCm {
     /// The low corner.
     pub min: PointCm,

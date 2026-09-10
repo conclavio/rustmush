@@ -445,6 +445,9 @@ pub fn atlas_config(
         // atlas, which owns the standing.
         hydration_cap: worldgen.hydration_cap,
         hydration_strikes_to_zero: worldgen.hydration_strikes_to_zero,
+        // S4: the window's margin and cell cap.
+        window_margin_m: cfg.window_margin_m,
+        window_max_cells: cfg.window_max_cells,
         packs: sources
             .into_iter()
             .map(|s| mush_atlas::PackSource {

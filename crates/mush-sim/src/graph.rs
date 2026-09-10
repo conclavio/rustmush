@@ -149,8 +149,20 @@ pub fn project(st: &SpatialState, w: &World, obj: ObjId) -> Option<ObjId> {
     let mut cur = obj;
     for _ in 0..=MAX_SPATIAL_DEPTH {
         match st.parent_of(cur) {
-            SpatialParent::Direct { domain, .. } => {
-                return st.domains.get(&domain).map(|d| d.presentation_location);
+            SpatialParent::Direct { domain, pose } => {
+                let d = st.domains.get(&domain)?;
+                // S4: a domain with a window resolves the pose to the room whose
+                // footprint holds it (doc 14 §3.4); without a resolver, or off
+                // every footprint, the presentation room stands.
+                if d.window.is_some()
+                    && let Some(room) = w
+                        .module_state::<crate::data::RoomResolver>()
+                        .and_then(|r| r.resolve.as_ref())
+                        .and_then(|resolve| resolve(w, domain, &pose))
+                {
+                    return Some(room);
+                }
+                return Some(d.presentation_location);
             }
             SpatialParent::Interior { space, .. } => return Some(space),
             SpatialParent::Attached { host, .. } => {

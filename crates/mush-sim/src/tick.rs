@@ -4681,6 +4681,7 @@ mod tests {
             clock: DomainClock::Passive,
             presentation_location: ObjId(12),
             revision: 4,
+            window: None,
         };
         let before = record.clone();
         let generation = apply_pulse(&mut record, crate::data::GROUND_PULSE_MS, &ic(50))

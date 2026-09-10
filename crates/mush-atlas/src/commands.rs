@@ -69,6 +69,7 @@ pub(crate) fn register_pack(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 SmolStr::new_static("cap"),
                 SmolStr::new_static("strike"),
                 SmolStr::new_static("standing"),
+                SmolStr::new_static("window"),
             ],
             help: "@atlas/pack list                   every pack on the shelf, and every latch\n\
                    @atlas/pack show <id>              a pack's manifest, entries, brief and secrets\n\
@@ -101,6 +102,11 @@ pub(crate) fn register_pack(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20                                  its builder\n\
                    @atlas/standing [<character>]      a character's standing and requests, or\n\
                    \x20                                  every request on the book\n\
+                   @atlas/window                      every open window: its size, rooms, opener\n\
+                   @atlas/window open [<rooms>|<x0>,<y0>,<x1>,<y1>][=<cell cm>]   open a window over\n\
+                   \x20                                  the rooms named (yours by default) or an\n\
+                   \x20                                  extent in metres; the map is drawn off-loop\n\
+                   @atlas/window close <n>            close it, releasing everyone where they stand\n\
                    Staff only (SIM_ADMIN or Royalty). A pack is content: applying the same pack\n\
                    twice changes nothing, and a retired pack stays retired across restarts."
                 .into(),
@@ -200,6 +206,9 @@ fn cmd_atlas_pack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if ctx.switches.has("theme") {
         return crate::theme_cmd::theme_admin(ctx);
+    }
+    if ctx.switches.has("window") {
+        return crate::window_cmd::window_admin(ctx);
     }
     if ctx.switches.has("propose") {
         return crate::hydrate_cmd::propose_admin(ctx);

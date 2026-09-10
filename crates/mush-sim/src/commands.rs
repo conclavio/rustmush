@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use crate::data::{
     CapacitySpec, DomainClock, DomainId, DomainRecord, DomainStatus, HostAssignments, HostMounts,
-    HostStations, MountId, MountSpec, PASSIVE_DRIVER, RECOVERY_LOG, RulesValue, SlotId,
+    HostStations, MountId, MountSpec, PASSIVE_DRIVER, Pose, RECOVERY_LOG, RulesValue, SlotId,
     SpaceAnchor, SpatialCounterError, SpatialParent, SpatialState, StationAssignment, StationId,
     StationSpec, checked_domain_revision, checked_placement_revision, passive_rules_value,
     persist_assignments, persist_control_gen, persist_del, persist_domain, persist_meta,
@@ -138,9 +138,51 @@ fn split_rhs(rhs: &str) -> (Vec<String>, Result<Option<serde_json::Value>, Strin
     (parts, json)
 }
 
-fn pose_from(json: Option<serde_json::Value>) -> Result<RulesValue, CmdError> {
+/// The passive rules value a JSON names: the mount-local pose, a station policy.
+fn passive_from(json: Option<serde_json::Value>) -> Result<RulesValue, CmdError> {
     passive_rules_value(json.unwrap_or(serde_json::Value::Null))
         .map_err(|e| CmdError::msg(format!("Invalid passive rules value: {e}")))
+}
+
+/// The pose a `@spatial/place` JSON names: `{ x, y[, z, facing_deg, posture] }`
+/// is a metric pose (S4) whose posture is the passive rules value over
+/// `posture`; anything else is the passive rules value itself, at the origin.
+fn pose_from(json: Option<serde_json::Value>) -> Result<Pose, CmdError> {
+    let json = json.unwrap_or(serde_json::Value::Null);
+    let passive = |data: serde_json::Value| {
+        passive_rules_value(data)
+            .map_err(|e| CmdError::msg(format!("Invalid passive rules value: {e}")))
+    };
+    let metric = json.as_object().and_then(|o| {
+        Some((
+            o.get("x")?.as_f64()?,
+            o.get("y")?.as_f64()?,
+            o.get("z")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0),
+            o.get("facing_deg")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u16::try_from(n).ok())
+                .unwrap_or(0),
+            o.get("posture")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
+        ))
+    });
+    match metric {
+        Some((x, y, z, facing_deg, posture)) => {
+            let pose = Pose {
+                x,
+                y,
+                z,
+                facing_deg,
+                posture: passive(posture)?,
+            };
+            pose.validate().map_err(CmdError::msg)?;
+            Ok(pose)
+        }
+        None => Ok(Pose::passive(passive(json)?)),
+    }
 }
 
 /// Resolve `<id>` or a host object reference to a domain.
@@ -287,6 +329,7 @@ fn domain_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             clock: DomainClock::Passive,
             presentation_location: presentation,
             revision: 1,
+            window: None,
         };
         s.domains.insert(id, rec.clone());
         s.derived = crate::graph::rebuild(s);
@@ -735,7 +778,7 @@ fn spatial_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         SpatialParent::Attached {
             host,
             mount,
-            local_pose: json.map(|j| pose_from(Some(j))).transpose()?,
+            local_pose: json.map(|j| passive_from(Some(j))).transpose()?,
         }
     } else {
         return Err(CmdError::msg(
@@ -1220,7 +1263,7 @@ fn spatial_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     }
     let priority = priority.unwrap_or_else(|| default_station_priority(&role));
-    let policy = pose_from(None)?;
+    let policy = passive_from(None)?;
     if ctx
         .w
         .get(host)
@@ -1966,9 +2009,12 @@ fn egress_parent(
     };
     let pose = match pose.flatten() {
         Some(pose) => pose,
-        None => pose_from(None)?,
+        None => passive_from(None)?,
     };
-    Ok(SpatialParent::Direct { domain, pose })
+    Ok(SpatialParent::Direct {
+        domain,
+        pose: Pose::passive(pose),
+    })
 }
 
 fn spatial_egress(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {

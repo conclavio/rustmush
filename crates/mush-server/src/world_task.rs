@@ -9025,6 +9025,35 @@ fn spawn_effect_list(
                             tracing::debug!(correlation, "npc completion after shutdown dropped");
                         }
                     });
+                } else if module.as_str() == mush_atlas::NS {
+                    // S4 windows: the composite is a pure function of the
+                    // snapshot the atlas took on-loop (doc 14 §3.4, P5); it
+                    // needs no service, only a thread that is not the world's.
+                    tokio::spawn(async move {
+                        let job = payload;
+                        let result = tokio::task::spawn_blocking(move || {
+                            mush_atlas::run_async(&job)
+                        })
+                        .await
+                        .unwrap_or_else(|error| {
+                            format!(
+                                "{{\"domain\":0,\"revision\":0,\"result\":{{\"Err\":\"the compositor thread failed: {error}\"}}}}"
+                            )
+                        });
+                        let done = WorldCommand::ModuleAsyncDone {
+                            module,
+                            actor,
+                            correlation,
+                            payload: result,
+                        };
+                        if tx
+                            .send(WorldMsg::Inbound(Inbound::Apply(done)))
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!(correlation, "atlas composite after shutdown dropped");
+                        }
+                    });
                 } else if module.as_str() == mush_weather::NS {
                     // M10 weather flavor top-up: `@weather/generate` runs the
                     // off-loop flavor generator against the shared LlmService

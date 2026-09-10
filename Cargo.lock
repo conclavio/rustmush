@@ -2053,6 +2053,7 @@ dependencies = [
  "mush-jobs",
  "mush-npc",
  "mush-proto",
+ "mush-sim",
  "mush-testkit",
  "serde",
  "serde_json",

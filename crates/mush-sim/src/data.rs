@@ -5,12 +5,12 @@
 //! rebuildable projection of it and is never persisted.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use mush_core::{
     ChannelId, ClockRef, ClockStamp, Deferred, DefinitionDescriptor, DefinitionId, DefinitionKind,
     DefinitionRef, DefinitionRegistryBuilder, DefinitionValidationContext, LIMBO, Ledger, ModuleOp,
-    ModuleWrite, ObjId, Outbox, OwnerId, RulesValueError,
+    ModuleWrite, ObjId, Outbox, OwnerId, RulesValueError, World,
 };
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -433,6 +433,215 @@ pub struct DomainRecord {
     pub presentation_location: ObjId,
     /// Bumped on every change.
     pub revision: u64,
+    /// The window over this domain's ground, when a scene or staff opened one
+    /// (doc 14 §2.4; S4). A domain with a window projects its direct participants
+    /// through the registered [`RoomResolver`] and lets them walk its exits.
+    #[serde(default)]
+    pub window: Option<WindowRec>,
+}
+
+/// A metric pose on a domain's surface (doc 14 §2.4, D-14-4): region metres, `z`
+/// per P2 (the surface's height at `(x, y)` plus the declared height above it), a
+/// facing in degrees clockwise from north, and the driver-private posture — the
+/// only opaque part.
+///
+/// The wire form is `{ x, y, z, facing_deg, posture }`; a bare rules value (the
+/// cut-1 opaque pose) still decodes, as the posture of a pose at the origin.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "PoseWire")]
+pub struct Pose {
+    /// East, region metres.
+    pub x: f64,
+    /// North, region metres.
+    pub y: f64,
+    /// Height against the region datum, metres.
+    pub z: f64,
+    /// Facing, degrees clockwise from north, `0..360`.
+    pub facing_deg: u16,
+    /// The driver's posture (opaque).
+    pub posture: RulesValue,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PoseWire {
+    Metric {
+        x: f64,
+        y: f64,
+        z: f64,
+        #[serde(default)]
+        facing_deg: u16,
+        posture: RulesValue,
+    },
+    Legacy(RulesValue),
+}
+
+impl From<PoseWire> for Pose {
+    fn from(wire: PoseWire) -> Pose {
+        match wire {
+            PoseWire::Metric {
+                x,
+                y,
+                z,
+                facing_deg,
+                posture,
+            } => Pose {
+                x,
+                y,
+                z,
+                facing_deg: facing_deg % 360,
+                posture,
+            },
+            PoseWire::Legacy(posture) => Pose::passive(posture),
+        }
+    }
+}
+
+impl Pose {
+    /// A pose at the origin: the shape every cut-1 placement has.
+    #[must_use]
+    pub fn passive(posture: RulesValue) -> Pose {
+        Pose {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            facing_deg: 0,
+            posture,
+        }
+    }
+
+    /// A pose at `(x, y, z)` facing north.
+    #[must_use]
+    pub fn at(x: f64, y: f64, z: f64, posture: RulesValue) -> Pose {
+        Pose {
+            x,
+            y,
+            z,
+            facing_deg: 0,
+            posture,
+        }
+    }
+
+    /// Whether every coordinate is a finite number and the facing is a bearing.
+    ///
+    /// # Errors
+    ///
+    /// A message naming what is wrong.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(self.x.is_finite() && self.y.is_finite() && self.z.is_finite()) {
+            return Err("a pose's coordinates must be finite".to_string());
+        }
+        if self.facing_deg >= 360 {
+            return Err("a pose's facing is 0..360 degrees".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// A tactical window over a domain's ground (doc 14 §2.4): the frame of the
+/// composite the atlas keeps — region, surfaces, extent and cell size — and what
+/// that composite was made from. Integer centimetres, so the domain record stays
+/// `Eq`; the record keys are the atlas's, in their display form.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowRec {
+    /// The region record the window lies in.
+    pub region: SmolStr,
+    /// The surfaces it composites, the ground first.
+    pub surfaces: Vec<WindowSurface>,
+    /// The extent, region centimetres.
+    pub bbox: WindowBox,
+    /// The cell size, centimetres.
+    pub cell_cm: u16,
+    /// The tile revisions the composite pinned.
+    #[serde(default)]
+    pub composited_from: Vec<WindowPin>,
+    /// The feature revision the composite saw.
+    #[serde(default)]
+    pub features_seen: u64,
+    /// Who opened it.
+    pub opened_by: WindowOpener,
+    /// Bumped by every re-composite.
+    pub revision: u64,
+}
+
+/// A surface a window composites.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum WindowSurface {
+    /// The region's ground.
+    Ground,
+    /// A structure's floor.
+    Floor {
+        /// The structure record, display form.
+        structure: SmolStr,
+        /// The floor index.
+        index: i16,
+    },
+}
+
+/// An axis-aligned extent, region centimetres, `x0 < x1` and `y0 < y1`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowBox {
+    /// West edge.
+    pub x0: i64,
+    /// South edge.
+    pub y0: i64,
+    /// East edge.
+    pub x1: i64,
+    /// North edge.
+    pub y1: i64,
+}
+
+/// One tile revision a composite pinned.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowPin {
+    /// The tile record, display form.
+    pub tile: SmolStr,
+    /// Its revision.
+    pub revision: u64,
+}
+
+/// Who opened a window.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum WindowOpener {
+    /// A scene: `system` names the scene system (`core` for engine scenes,
+    /// `scenes` for the scenes module's records) and `id` the scene in it.
+    Scene {
+        /// The scene system.
+        system: SmolStr,
+        /// The scene.
+        id: u64,
+    },
+    /// A staffer.
+    Staff {
+        /// Who.
+        by: ObjId,
+    },
+}
+
+/// The room a metric pose is in (doc 14 §3.4's resolver), answered by the
+/// module that owns the windows' composites.
+pub type ResolveFn = Arc<dyn Fn(&World, DomainId, &Pose) -> Option<ObjId> + Send + Sync>;
+
+/// The resolver slot: a domain with a window projects its direct participants
+/// through it (design D1's deferred `PresentationResolver`), else to its
+/// presentation room. Registered once, by the atlas, at its boot.
+#[derive(Clone, Default)]
+pub struct RoomResolver {
+    /// The resolver, when one is composed.
+    pub resolve: Option<ResolveFn>,
+}
+
+impl std::fmt::Debug for RoomResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RoomResolver")
+            .field("resolve", &self.resolve.is_some())
+            .finish()
+    }
 }
 
 /// The one authoritative spatial parent of an object (design §5.1).
@@ -443,8 +652,8 @@ pub enum SpatialParent {
     Direct {
         /// The domain.
         domain: DomainId,
-        /// The pose (opaque).
-        pose: RulesValue,
+        /// The metric pose (doc 14 §2.4); its posture is the driver's.
+        pose: Pose,
     },
     /// Inside an interior space, optionally in a named compartment.
     Interior {

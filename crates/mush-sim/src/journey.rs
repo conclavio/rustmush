@@ -1569,7 +1569,9 @@ mod tests {
     fn dest() -> SpatialParent {
         SpatialParent::Direct {
             domain: DomainId(0),
-            pose: passive_rules_value(serde_json::json!({})).expect("a canonical pose"),
+            pose: crate::data::Pose::passive(
+                passive_rules_value(serde_json::json!({})).expect("a canonical pose"),
+            ),
         }
     }
 
@@ -1760,18 +1762,24 @@ mod tests {
     fn e7c6_b3_same_place_compares_identity_not_pose() {
         let a = SpatialParent::Direct {
             domain: DomainId(0),
-            pose: passive_rules_value(serde_json::json!({ "x": 1 })).expect("pose"),
+            pose: crate::data::Pose::passive(
+                passive_rules_value(serde_json::json!({ "x": 1 })).expect("pose"),
+            ),
         };
         let b = SpatialParent::Direct {
             domain: DomainId(0),
-            pose: passive_rules_value(serde_json::json!({ "x": 2 })).expect("pose"),
+            pose: crate::data::Pose::passive(
+                passive_rules_value(serde_json::json!({ "x": 2 })).expect("pose"),
+            ),
         };
         assert!(same_place(&a, &b));
         assert!(!same_place(
             &a,
             &SpatialParent::Direct {
                 domain: DomainId(1),
-                pose: passive_rules_value(serde_json::json!({})).expect("pose"),
+                pose: crate::data::Pose::passive(
+                    passive_rules_value(serde_json::json!({})).expect("pose")
+                ),
             }
         ));
         assert!(!same_place(&a, &SpatialParent::Unplaced));

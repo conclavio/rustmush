@@ -91,6 +91,12 @@ pub struct AtlasConfig {
     /// Strikes at which a character's cap becomes zero until staff reset it
     /// (`[worldgen].hydration_strikes_to_zero`, default 3).
     pub hydration_strikes_to_zero: u32,
+    /// Metres of ground a window takes around its anchor rooms (plan §7
+    /// `window_margin_m`, default 10; S4).
+    pub window_margin_m: u32,
+    /// The most cells one window may hold before it coarsens (plan §7
+    /// `window_max_cells`, default 65 536; S4).
+    pub window_max_cells: u32,
 }
 
 /// The default `real_cap_s` table.
@@ -112,6 +118,8 @@ impl Default for AtlasConfig {
             real_cap_s: default_real_caps(),
             hydration_cap: crate::hydrate::DEFAULT_HYDRATION_CAP,
             hydration_strikes_to_zero: crate::hydrate::DEFAULT_STRIKES_TO_ZERO,
+            window_margin_m: crate::window::DEFAULT_WINDOW_MARGIN_M,
+            window_max_cells: crate::window::DEFAULT_WINDOW_MAX_CELLS,
         }
     }
 }
@@ -177,6 +185,10 @@ pub struct AtlasLimits {
     pub hydration_cap: u32,
     /// S3: strikes at which the cap becomes zero.
     pub hydration_strikes_to_zero: u32,
+    /// S4: see [`AtlasConfig::window_margin_m`].
+    pub window_margin_m: u32,
+    /// S4: see [`AtlasConfig::window_max_cells`].
+    pub window_max_cells: u32,
 }
 
 /// The module's state slot.
@@ -196,6 +208,8 @@ pub struct AtlasState {
     pub world_theme: Option<crate::theme::Theme>,
     /// Hydration (S3): standing and requests.
     pub hydration: crate::hydrate::HydrationState,
+    /// Windows (S4): the open tactical maps and their composites.
+    pub windows: crate::window::Windows,
 }
 
 impl Default for AtlasState {
@@ -208,7 +222,10 @@ impl Default for AtlasState {
                 real_cap_s: default_real_caps(),
                 hydration_cap: crate::hydrate::DEFAULT_HYDRATION_CAP,
                 hydration_strikes_to_zero: crate::hydrate::DEFAULT_STRIKES_TO_ZERO,
+                window_margin_m: crate::window::DEFAULT_WINDOW_MARGIN_M,
+                window_max_cells: crate::window::DEFAULT_WINDOW_MAX_CELLS,
             },
+            windows: crate::window::Windows::default(),
             shelf: BTreeMap::new(),
             records: Records::default(),
             last_plan: BTreeMap::new(),
@@ -293,9 +310,19 @@ impl GameModule for AtlasModule {
                 real_cap_s: self.config.real_cap_s.clone(),
                 hydration_cap: self.config.hydration_cap,
                 hydration_strikes_to_zero: self.config.hydration_strikes_to_zero.max(1),
+                window_margin_m: self.config.window_margin_m,
+                window_max_cells: self
+                    .config
+                    .window_max_cells
+                    .clamp(1, crate::cells::MAX_TILE_CELLS),
             },
             ..AtlasState::default()
         };
+        state.windows.margin_cm = i64::from(self.config.window_margin_m) * 100;
+        state.windows.max_cells = self
+            .config
+            .window_max_cells
+            .clamp(1, crate::cells::MAX_TILE_CELLS);
         for pack in &self.shelf {
             state
                 .shelf
@@ -310,6 +337,9 @@ impl GameModule for AtlasModule {
             title: "Site reviews".into(),
             min_role: Role::Builder,
         })?;
+        // S4: the composite re-enters through the module-async seam (plan §8: the
+        // world task's off-loop pattern, snapshot in, typed outcome out).
+        reg.async_completion(Arc::new(WindowCompletion))?;
         // K8.5: the read surface first, then the writer — each group declared.
         reg.classify_commands(CommandCompatibility::ReadOnly);
         crate::commands::register_views(reg)?;
@@ -357,6 +387,7 @@ impl GameModule for AtlasModule {
         let (travel, dropped_travel) = crate::travel::hydrate(&data.kv, ctx.w, &records);
         let (world_theme, dropped_theme) = hydrate_world_theme(&data.kv);
         let (hydration, dropped_hydration) = crate::hydrate::hydrate(&data.kv);
+        let (windows, dropped_windows, orphans) = crate::window::hydrate(&data.kv, ctx.w);
         {
             let slot = ctx
                 .state_mut::<AtlasState>()
@@ -365,17 +396,29 @@ impl GameModule for AtlasModule {
             slot.travel = travel;
             slot.world_theme = world_theme;
             slot.hydration = hydration;
+            slot.windows.open = windows;
         }
         for key in dropped
             .into_iter()
             .chain(dropped_travel)
             .chain(dropped_theme)
             .chain(dropped_hydration)
+            .chain(dropped_windows)
         {
             del_doc(ctx, key);
         }
         // S3: the BUILD review handler and the deny observer, when jobs is composed.
         crate::hydrate::register_review(ctx.w);
+        // S4: the resolver, and the simulation windows whose composite never
+        // landed (the process died between the open and the composite) close.
+        if let Err(error) = crate::window::register_resolver(ctx.w) {
+            tracing::debug!(%error, "atlas: no room resolver registered");
+        }
+        for domain in orphans {
+            if let Err(error) = mush_sim::close_window(ctx, domain) {
+                tracing::warn!(%domain, %error, "atlas: closing a window with no composite at boot");
+            }
+        }
         Ok(())
     }
 }
@@ -441,6 +484,7 @@ fn parse(data: &ModuleBootData, w: &World) -> Loaded {
         if crate::travel::is_travel_key(key)
             || key.starts_with("theme:")
             || crate::hydrate::is_hydration_key(key)
+            || crate::window::is_window_key(key)
         {
             continue;
         }
@@ -583,6 +627,20 @@ pub(crate) fn push_op(ctx: &mut Ctx<'_>, op: ModuleWrite) {
 /// Queue a whole-document write of a record; a record that will not serialize is
 /// logged and skipped, never a panic (this runs inside a module boot and inside
 /// commands on the world task).
+/// S4: the composite's re-entry.
+struct WindowCompletion;
+
+impl mush_core::AsyncCompletion for WindowCompletion {
+    fn on_complete(&self, ctx: &mut Ctx<'_>, correlation: u64, payload: &str) {
+        match serde_json::from_str::<crate::window::CompositeOutcome>(payload) {
+            Ok(outcome) => crate::window::on_composited(ctx, outcome),
+            Err(error) => {
+                tracing::error!(correlation, %error, "atlas: a bad composite payload");
+            }
+        }
+    }
+}
+
 pub(crate) fn put_doc<T: serde::Serialize>(ctx: &mut Ctx<'_>, key: SmolStr, record: &T) {
     match serde_json::to_value(record) {
         Ok(value) => push_op(ctx, ModuleWrite::JsonSet { key, value }),

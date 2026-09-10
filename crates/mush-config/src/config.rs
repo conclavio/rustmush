@@ -70,7 +70,9 @@
 //! | `[tacsim.recovery].upkeep_per_period` | `0` | the lease's rent obligation, per campaign cadence period |
 //! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
-//! | `[atlas].nearest_room_cells` | `8` | S1: parsed, **inert** until S4's windows |
+//! | `[atlas].nearest_room_cells` | `8` | S4: cells a pose may stand off every footprint and still resolve to the nearest room |
+//! | `[atlas].window_margin_m` | `10` | S4: metres of ground a tactical window takes around its anchor rooms |
+//! | `[atlas].window_max_cells` | `65536` | S4: the most cells one window holds before it coarsens to the next registered cell size |
 //! | `[atlas].pack_paths` | `[]` | S1: content pack files or directories, read **host-side** at boot like `[tacsim].pack_paths`; they go on the `@atlas/pack` shelf and nothing is applied by being listed |
 //! | `[atlas].dwell_floor_s` | `30` | S2: real seconds a traveler stays at every checkpoint at least, so a stake-out can act |
 //! | `[atlas].real_cap_s.<mode>` | `180` for `foot`, `car`, `transit`, `bus` | S2: real seconds a whole passage may take at most, per travel mode; a mode absent is uncapped |
@@ -824,6 +826,12 @@ pub struct AtlasCfg {
     /// 180 for `foot`, `car`, `transit` and `bus`; a mode absent here is uncapped —
     /// `ship` and `torch` campaigns set their own).
     pub real_cap_s: BTreeMap<String, u32>,
+    /// Metres of ground a tactical window takes around its anchor rooms (plan §7
+    /// `window_margin_m`; S4).
+    pub window_margin_m: u32,
+    /// The most cells one window may hold before it coarsens to the next
+    /// registered cell size (plan §7 `window_max_cells`; S4).
+    pub window_max_cells: u32,
 }
 
 impl Default for AtlasCfg {
@@ -837,6 +845,8 @@ impl Default for AtlasCfg {
                 .into_iter()
                 .map(|m| (m.to_string(), 180))
                 .collect(),
+            window_margin_m: 10,
+            window_max_cells: 65_536,
         }
     }
 }
