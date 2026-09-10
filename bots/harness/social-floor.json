@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "name": "A paced greeting with three players and a witness",
+  "timeout_ms": 60000,
+  "speaking_floor": {
+    "version": 1,
+    "speaking_window_ms": 1800,
+    "lease_ms": 5000,
+    "revoke_timeout_ms": 5000,
+    "priority_wait_ms": 10000
+  },
+  "actors": [
+    {
+      "name": "rose", "config": "../../mush-bot.toml.example", "login": "rosebot+Rosebot",
+      "goal": "", "conversation": "../conversation/independent.json",
+      "start": "/listen", "expected_status": "listening"
+    },
+    {
+      "name": "ada", "config": "../../mush-bot.toml.example", "login": "ada+Ada",
+      "goal": "", "conversation": "../conversation/independent.json",
+      "start": "/listen", "expected_status": "listening"
+    },
+    {
+      "name": "jun", "config": "../../mush-bot.toml.example", "login": "jun+Jun",
+      "goal": "", "conversation": "../conversation/independent.json",
+      "start": "/listen", "expected_status": "listening"
+    },
+    {
+      "name": "marco", "config": "../../mush-bot.toml.example", "login": "marco+Marco",
+      "goal": "", "conversation": "../conversation/spectator.json",
+      "expected_status": "paused"
+    }
+  ],
+  "steps": [
+    {
+      "name": "Ask one participant",
+      "actor": "marco", "control": "/send say Rosebot, are you ready for rehearsal?",
+      "expect": [{"actor": "rose", "kind": "speech-dispatched"}],
+      "reject": [{"actor": "ada", "kind": "speech-dispatched"}, {"actor": "jun", "kind": "speech-dispatched"}]
+    },
+    {
+      "name": "Invite the others",
+      "actor": "marco", "control": "/send say Ada and Jun, what would you each like to rehearse?",
+      "expect": [{"actor": "ada", "kind": "speech-dispatched"}, {"actor": "jun", "kind": "speech-dispatched"}]
+    }
+  ]
+}

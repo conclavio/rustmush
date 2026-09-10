@@ -48,6 +48,9 @@ pub const REPL_HELP: &str = "Local controls:\n\
   /route <place|#dbref>  Find a previously travelled route from here\n\
   /character            Inspect the authored character profile\n\
   /attention            Inspect recent speech and attention cues\n\
+  /conversation [load|save <json>] Inspect or change conversation policy\n\
+  /recap <new.json>     Save a cited recap of this session's observed episodes\n\
+  /bookmark <new.json>  Save a paused, settled bot bookmark (no world restore)\n\
   /listen               Listen and respond without pursuing a goal (/pause stops)\n\
   /model [list]         Show the active model or available profiles\n\
   /model use <profile>  Switch model and pause; memory and budget are retained\n\
@@ -75,6 +78,7 @@ pub struct Options {
     pub scenario: Option<PathBuf>,
     pub json_events: bool,
     pub test_controls: bool,
+    pub managed_floor: bool,
 }
 
 pub enum Control {
@@ -83,6 +87,7 @@ pub enum Control {
     Context(Context),
     Debug(debugger::Settings),
     Budget(crate::budget::Settings),
+    Conversation(crate::conversation::Settings),
 }
 
 pub struct Frontend {
@@ -119,6 +124,8 @@ pub struct Report {
     pub context: Context,
     pub debug: debugger::Settings,
     pub budget: Value,
+    pub conversation: Value,
+    pub provenance: Value,
     pub simulated_model: bool,
     pub probe_results: VecDeque<crate::probe::Grade>,
     pub probe_results_omitted: usize,
@@ -135,6 +142,8 @@ struct Log {
     events: Option<mpsc::Sender<Value>>,
     request: Option<u64>,
     command_sequence: Option<u64>,
+    provenance: Value,
+    started: Instant,
 }
 
 impl Log {
@@ -151,6 +160,8 @@ impl Log {
             events: None,
             request: None,
             command_sequence: None,
+            provenance: Value::Null,
+            started: Instant::now(),
         })
     }
 
@@ -158,6 +169,7 @@ impl Log {
         self.sequence += 1;
         let timestamp_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
         let event = json!({"seq":self.sequence, "timestamp_ms":timestamp_ms,
+            "elapsed_ms":self.started.elapsed().as_millis(), "provenance":self.provenance,
             "request_id":self.request, "command_sequence":self.command_sequence, "kind":kind, "data":data});
         if let Some(file) = &mut self.file {
             serde_json::to_writer(&mut *file, &event)?;
@@ -254,6 +266,21 @@ struct App {
     last_snapshot: Instant,
     tape: Option<Arc<crate::tape::Tape>>,
     ready: bool,
+    conversation: crate::conversation::Tracker,
+    speech: Option<PreparedSpeech>,
+    next_intent: u64,
+    floor_fault: Option<&'static str>,
+}
+
+struct PreparedSpeech {
+    decision: Decision,
+    id: u64,
+    observation: u64,
+    due_ms: u64,
+    advertised: bool,
+    granted: bool,
+    directed: bool,
+    request: Option<u64>,
 }
 
 pub async fn run(config: Config, options: Options) -> Result<Report> {
@@ -308,6 +335,15 @@ pub async fn run_controlled(
         .as_deref()
         .map(Scenario::load)
         .transpose()?;
+    let conversation_settings = config
+        .conversation
+        .as_deref()
+        .map(crate::conversation::Settings::load)
+        .transpose()?
+        .unwrap_or_default();
+    if options.managed_floor && (!options.json_events || options.headless || scenario.is_some()) {
+        return Err("managed floor requires interactive JSON event controls and no script".into());
+    }
     if scenario.is_some() {
         options.headless = true;
     }
@@ -367,6 +403,11 @@ pub async fn run_controlled(
     let mut log = Log::new(options.transcript.as_ref())?;
     log.echo = frontend.is_none() && !options.json_events;
     log.json_events = options.json_events;
+    log.provenance = json!({"scope":conversation_settings.scope,
+        "session":format!("{:x}-{:x}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(), std::process::id()),
+        "actor":config.ssh.username,"clock":"session_monotonic_elapsed_ms"});
+    let conversation =
+        crate::conversation::Tracker::new(conversation_settings, &config.ssh.username);
     let controls = frontend.map(|f| {
         log.events = Some(f.events);
         f.controls
@@ -398,11 +439,16 @@ pub async fn run_controlled(
     )?;
     let session = Session::connect(&config.ssh).await?;
     let now = Instant::now();
+    let started = log.started;
     let active = !options.paused && (!config.agent.goal.is_empty() || scenario.is_some());
     let state = State {
         status: if active {
             "running"
-        } else if !options.paused && attention_enabled && brain.is_some() {
+        } else if !options.paused
+            && attention_enabled
+            && (brain.is_some()
+                || conversation.settings.mode == crate::conversation::Mode::Spectator)
+        {
             "listening"
         } else {
             "paused"
@@ -467,7 +513,7 @@ pub async fn run_controlled(
         single_step: false,
         scenario: scenario.map(|s| s.steps.into()),
         next_turn: now,
-        started: now,
+        started,
         goal_started: now,
         quit: false,
         controls,
@@ -486,6 +532,10 @@ pub async fn run_controlled(
         last_snapshot: now,
         tape,
         ready: false,
+        conversation,
+        speech: None,
+        next_intent: 1,
+        floor_fault: None,
     };
     let result = app.drive().await;
     let memory_result = app.memories.flush();
@@ -511,6 +561,8 @@ pub async fn run_controlled(
         context: app.context_settings.clone(),
         debug: app.debug.clone(),
         budget: app.budget_report()?,
+        conversation: app.conversation_snapshot(),
+        provenance: app.log.provenance.clone(),
         simulated_model: app.tape.is_some(),
         probe_results: app.probe_results.clone(),
         probe_results_omitted: app.probe_results_omitted,
@@ -540,12 +592,67 @@ fn stdin_lines() -> mpsc::Receiver<String> {
 }
 
 impl App {
+    fn watermark(&self) -> crate::scene::Watermark {
+        crate::scene::Watermark {
+            session: self.log.provenance["session"]
+                .as_str()
+                .unwrap_or_default()
+                .into(),
+            scope: self.conversation.settings.scope.clone(),
+            elapsed_ms: self.elapsed_ms(),
+            output_sequence: self.log.sequence,
+            observation: self.observation_revision,
+            speech: self.attention.snapshot(),
+        }
+    }
+
+    fn bookmark(&self) -> Result<crate::scene::Bookmark> {
+        if self.state.status != "paused"
+            || self.pending.is_some()
+            || self.model_task.is_some()
+            || self.speech.is_some()
+            || self.staged.is_some()
+            || self.single_step
+            || !self.bootstrap.is_empty()
+        {
+            return Err("bookmark requires /pause, settled output and no staged decision; the world continues running".into());
+        }
+        crate::scene::Bookmark::new(self.watermark(), [
+            ("runner".into(), json!({"state":self.state,"recall_query":self.recall_query,"belief_feedback":self.belief_feedback,
+                "goal_elapsed_ms":self.goal_started.elapsed().as_millis(),"next_turn_after_ms":self.next_turn.saturating_duration_since(Instant::now()).as_millis()})),
+            ("character".into(), json!({"profile":self.character,"affiliations":self.affiliations,"condition":self.character_state})),
+            ("memory".into(), self.memories.bookmark()?),
+            ("attention".into(), self.attention.bookmark()),
+            ("conversation".into(), self.conversation_snapshot()),
+            ("configuration".into(), json!({"prompts":self.prompts,"context":self.context_settings,"debug":self.debug,
+                "budget":self.budget,"model":self.selected_model,"models":self.models.list(),"knowledge":self.knowledge.bookmark(),
+                "agent":self.config.agent,"attention_enabled":self.attention_enabled,"test_controls":self.options.test_controls,"floor_fault":self.floor_fault})),
+            ("accounting".into(), json!({"costs":self.cost_report()?,"budget":self.budget_report()?,
+                "restoration_policy":"reference append-only ledger; never refund or reset spend"})),
+        ].into_iter().collect())
+    }
+    fn elapsed_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    fn conversation_snapshot(&self) -> Value {
+        json!({"state":self.conversation.snapshot(),"managed":self.options.managed_floor,
+            "intent":self.speech.as_ref().map(|s| json!({"id":s.id,"observation_watermark":s.observation,
+                "due_elapsed_ms":s.due_ms,"advertised":s.advertised,"granted":s.granted,
+                "request_id":s.request,"command":s.decision.command,"summary":s.decision.summary})),
+            "phase":if self.speech.is_some() {"waiting"} else if self.model_task.is_some() {"preparing"}
+                else if self.state.status == "paused" {"paused"} else if self.conversation.declined {"declining"}
+                else if self.attention.has_pending() {"attending"} else {"listening"}})
+    }
+
     fn snapshot(&self) -> Result<Value> {
         Ok(
             json!({"state":self.state, "memory_store":self.memories.stats(),
             "model":self.selected_model, "models":self.models.list(), "costs":self.cost_report()?,
             "prompts":self.prompts, "context":self.context_settings, "debug":self.debug,
             "budget":self.budget_report()?,
+            "conversation":self.conversation_snapshot(),"provenance":self.log.provenance,
+            "observation_watermark":self.observation_revision,"output_watermark":self.log.sequence,
             "group_affiliations":self.affiliations,
             "pending_probe":self.pending_probe.as_ref().map(|p| &p.id),
             "last_probe":self.probe_results.back(), "probe_results_omitted":self.probe_results_omitted,
@@ -610,21 +717,35 @@ impl App {
                 )?;
                 self.log.event("paused", "Session limits changed; recorded requests and costs are retained. Use /resume or /step to continue.")?;
             }
+            Control::Conversation(settings) => {
+                settings.validate()?;
+                if settings.scope != self.conversation.settings.scope {
+                    return Err("scene provenance is fixed for a session; start a new session to change scope".into());
+                }
+                self.pause()?;
+                self.conversation
+                    .configure(settings, &self.config.ssh.username);
+                self.log
+                    .record("conversation-policy", json!(self.conversation.settings))?;
+            }
         }
         self.capture_observation = None;
         Ok(())
     }
 
     async fn receive_decision(&mut self, decision: Decision) -> Result<()> {
+        let revision = self
+            .capture_observation
+            .unwrap_or(self.observation_revision);
         if self.stage_next || self.debug.command_break(decision.command.as_deref()) {
             self.pause()?;
             self.log
                 .record("staged-decision", serde_json::to_value(&decision)?)?;
             self.log.event("breakpoint", "Decision held before applying memory or sending a command. /commit applies it; /resume replans.")?;
-            self.staged = Some((decision, self.observation_revision));
+            self.staged = Some((decision, revision));
             Ok(())
         } else {
-            self.apply(decision).await
+            self.prepare_action(decision, revision).await
         }
     }
 
@@ -645,7 +766,104 @@ impl App {
             return self.fail("Run time limit reached");
         }
         self.single_step = true;
-        self.apply(decision).await
+        self.prepare_action(decision, revision).await
+    }
+
+    async fn prepare_action(&mut self, decision: Decision, revision: u64) -> Result<()> {
+        if !decision.command.as_deref().is_some_and(is_communication) {
+            return self.apply(decision).await;
+        }
+        if decision.command.as_deref().unwrap().chars().count()
+            > self.conversation.settings.max_utterance_chars
+        {
+            return self.fail("Prepared utterance exceeds the conversation character limit; revise the goal or policy");
+        }
+        let id = self.next_intent;
+        self.next_intent += 1;
+        let directed = self.attention.records().any(|s| {
+            s.id > self.attention.handled_through()
+                && s.id <= self.model_snapshot
+                && !s.self_echo
+                && s.cues
+                    .iter()
+                    .any(|c| c == "name_or_alias" || c == "direct_message")
+        });
+        self.speech = Some(PreparedSpeech {
+            decision,
+            id,
+            observation: revision,
+            due_ms: self.elapsed_ms() + self.conversation.delay(id),
+            advertised: false,
+            granted: false,
+            directed,
+            request: self.log.request,
+        });
+        self.conversation.reason = "prepared reply held for pacing and fresh observations".into();
+        self.log
+            .record("speech-prepared", self.conversation_snapshot())?;
+        if revision != self.observation_revision {
+            self.cancel_speech("output changed during preparation")?;
+        }
+        Ok(())
+    }
+
+    fn cancel_speech(&mut self, reason: &str) -> Result<()> {
+        if let Some(speech) = self.speech.take() {
+            self.conversation.cancelled_replies += 1;
+            self.conversation.reason = reason.into();
+            self.log.record(
+                "speech-cancelled",
+                json!({"id":speech.id,"reason":reason,"request_id":speech.request}),
+            )?;
+            if speech.advertised {
+                self.log.record(
+                    "speech-complete",
+                    json!({"id":speech.id,"outcome":"cancelled"}),
+                )?;
+            }
+            self.single_step = false;
+        }
+        Ok(())
+    }
+
+    async fn dispatch_speech(&mut self) -> Result<()> {
+        let Some(speech) = &self.speech else {
+            return Ok(());
+        };
+        if speech.observation != self.observation_revision {
+            return self.cancel_speech("observations changed before dispatch");
+        }
+        let now = self.elapsed_ms();
+        if now < speech.due_ms || !self.conversation.speech_gate(now) {
+            self.conversation.reason =
+                "waiting for pacing, speech quiet or utterance window".into();
+            return Ok(());
+        }
+        let speech = self.speech.as_mut().unwrap();
+        if self.options.managed_floor && !speech.granted {
+            if !speech.advertised {
+                speech.advertised = true;
+                self.log.record(
+                    "speech-intent",
+                    json!({"id":speech.id,"directed":speech.directed}),
+                )?;
+            }
+            self.conversation.reason = "waiting for managed speaking floor".into();
+            return Ok(());
+        }
+        let speech = self.speech.take().unwrap();
+        self.apply(speech.decision).await?;
+        self.conversation.spoke(now);
+        self.log.record(
+            "speech-dispatched",
+            json!({"id":speech.id,"managed":self.options.managed_floor,
+            "observation_watermark":speech.observation,"request_id":speech.request}),
+        )?;
+        if speech.advertised {
+            self.log
+                .record("speech-complete", json!({"id":speech.id,"outcome":"sent"}))?;
+        }
+        Ok(())
     }
 
     fn cancel_request(&mut self) -> Result<()> {
@@ -665,6 +883,7 @@ impl App {
     }
 
     fn cancel_model(&mut self) -> Result<()> {
+        self.cancel_speech("runner cancelled pending reply")?;
         if let Some(probe) = self.pending_probe.take() {
             self.log.record(
                 "probe-cancelled",
@@ -736,6 +955,8 @@ impl App {
             "group_affiliations": self.affiliations,
             "character_state": self.character_state,
             "recent_speech": self.attention.context(),
+            "conversation_policy": {"max_utterance_chars":self.conversation.settings.max_utterance_chars,
+                "guidance":"Reply only when engaged or when you have a useful contribution. Silence (done) is valid. Address an open question before changing topic. Read all available recent speech; do not repeat a reply already made. A speaking floor grants timing permission only, never knowledge or social authority."},
             "decision_purpose": if question.is_some() {"runner_question"} else if self.social_turn {"conversation"} else {"goal"},
             "runner_instructions":self.state.instructions, "memory":self.state.memory,
             "terminal_history":self.state.recent, "reference_documents":self.knowledge.search(&query),
@@ -787,6 +1008,7 @@ impl App {
                             if !text.is_empty() {
                                 if self.log.echo { print!("{text}"); std::io::stdout().flush()?; }
                                 self.observation_revision += 1;
+                                self.cancel_speech("new game output invalidated the unsent reply")?;
                                 let watch = self.debug.observation_match(&self.state.recent, &text).map(str::to_owned);
                                 self.log.record("observation", json!(text))?;
                                 self.memories.observe(&text)?;
@@ -870,6 +1092,14 @@ impl App {
     }
 
     fn notice_attention(&mut self) -> Result<()> {
+        let now = self.elapsed_ms();
+        let speech_changed = self.conversation.observe(self.attention.records(), now);
+        if speech_changed && self.social_turn && self.model_task.is_some() && !self.asking {
+            self.cancel_request()?;
+            self.next_turn =
+                Instant::now() + Duration::from_millis(self.conversation.settings.debounce_ms);
+            self.log.event("attention", "New speech cancelled a social decision; collecting the exchange before reconsidering.")?;
+        }
         let revision = self.attention.revision();
         if !self.attention_enabled
             || self.scenario.is_some()
@@ -1009,6 +1239,10 @@ impl App {
             self.ready = true;
             self.log.record("ready", self.snapshot()?)?;
         }
+        if self.speech.is_some() {
+            self.dispatch_speech().await?;
+            return Ok(());
+        }
         if let Some(scenario) = &mut self.scenario {
             if let Some(step) = scenario.pop_front() {
                 if self.state.scenario_steps_passed >= self.config.agent.max_steps {
@@ -1037,7 +1271,23 @@ impl App {
             {
                 return self.fail("Set a goal with /goal before starting");
             }
-            self.start_model(None)?;
+            if self.conversation.settings.mode == crate::conversation::Mode::Spectator {
+                if self.state.status == "running" || self.single_step {
+                    return self.fail("Spectator mode does not run autonomous goals; use local /send to position the observer");
+                }
+                self.conversation.reason = "spectator; observing without model calls".into();
+            } else if self.state.status == "running"
+                && !self.single_step
+                && !self.conversation.burst_ready(self.elapsed_ms())
+            {
+                self.conversation.reason =
+                    "collecting speech burst before the next goal decision".into();
+            } else if self.state.status == "running"
+                || self.single_step
+                || self.conversation.model_gate(self.elapsed_ms())
+            {
+                self.start_model(None)?;
+            }
         }
         Ok(())
     }
@@ -1109,6 +1359,9 @@ impl App {
             .record("model-request", serde_json::to_value(&request)?)?;
         self.request_id = Some(request.id);
         self.state.model_calls += 1;
+        if self.social_turn {
+            self.conversation.requested(self.elapsed_ms());
+        }
         self.log.event(
             "model",
             if self.pending_probe.is_some() {
@@ -1176,6 +1429,7 @@ impl App {
         // the eventual answer still needs its retrieval query and partner label.
         if decision.action != Action::Recall && !self.social_followup {
             self.attention.acknowledge(self.model_snapshot, spoke);
+            self.conversation.handled(self.model_snapshot);
         }
         if !self.social_followup {
             self.social_started = None;
@@ -1188,9 +1442,11 @@ impl App {
         match decision.action {
             Action::Command => self.send(decision.command, None).await?,
             Action::Wait => {
+                self.conversation.reason = "waiting for further engagement".into();
                 self.next_turn = Instant::now() + Duration::from_millis(decision.wait_ms)
             }
             Action::Recall => {
+                self.conversation.reason = "retrieving evidence for the next decision".into();
                 self.recall_query = decision.query;
                 self.next_turn = Instant::now();
                 self.log.event(
@@ -1204,6 +1460,8 @@ impl App {
             }
             Action::Done | Action::Blocked => {
                 if self.social_turn {
+                    self.conversation.declined = true;
+                    self.conversation.reason = decision.summary.clone();
                     self.log.event("conversation", &decision.summary)?;
                     return Ok(());
                 }
@@ -1258,6 +1516,67 @@ impl App {
         self.memories.flush()?;
         self.log.record("control", json!(line))?;
         match verb {
+            "/floor" => {
+                if !self.options.managed_floor {
+                    return Err("floor controls require a managed cast session".into());
+                }
+                let (action, id) = arg
+                    .split_once(' ')
+                    .ok_or("floor control requires action and intent ID")?;
+                let id: u64 = id.parse()?;
+                if id == 0 || !["grant", "revoke"].contains(&action) {
+                    return Err("invalid floor control".into());
+                }
+                if self.floor_fault == Some("controls")
+                    || (action == "grant" && self.floor_fault == Some("grants"))
+                {
+                    return self
+                        .log
+                        .record("floor-fault", json!({"ignored":action,"id":id}));
+                }
+                if self
+                    .speech
+                    .as_ref()
+                    .is_some_and(|s| s.id == id && s.advertised)
+                {
+                    if action == "revoke" {
+                        self.cancel_speech("speaking lease revoked")?;
+                    } else {
+                        self.speech.as_mut().unwrap().granted = true;
+                    }
+                } else {
+                    // A cancellation can precede a queued grant/revoke. Acknowledge only that ID.
+                    self.log.record(
+                        "speech-complete",
+                        json!({"id":id,"outcome":"already_cancelled"}),
+                    )?;
+                }
+            }
+            "/recap" => {
+                if arg.is_empty() {
+                    return Err("use /recap <new.json>".into());
+                }
+                let recap = self.memories.observed_recap(self.watermark());
+                save_json(std::path::Path::new(arg), &recap)?;
+                self.log.record("scene-recap", json!({"path":arg,"entries":recap.entries.len(),"omitted":recap.omitted_episodes,"provider_requests":0,"scope":recap.scope}))?;
+                self.log.event("recap", "Cited local observation recap saved; no model request. Coverage is limited to this session's SSH view.")?;
+            }
+            "/bookmark" => {
+                if arg.is_empty() {
+                    return Err("use /bookmark <new.json>".into());
+                }
+                let bookmark = self.bookmark()?;
+                // Validate the serialized representation as well as the in-memory value.
+                let encoded = serde_json::to_vec(&bookmark)?;
+                let decoded: crate::scene::Bookmark = serde_json::from_slice(&encoded)?;
+                decoded.validate()?;
+                save_json(std::path::Path::new(arg), &decoded)?;
+                self.log.record(
+                    "scene-bookmark",
+                    json!({"path":arg,"id":bookmark.id,"watermark":bookmark.watermark,"world_restorable":false}),
+                )?;
+                self.log.event("bookmark", "Bot bookmark saved and round-trip validated. The game world was not frozen and cannot be restored from this artifact.")?;
+            }
             "/probe" => {
                 if arg.is_empty() {
                     return Err("use /probe <file.json>".into());
@@ -1406,12 +1725,13 @@ impl App {
                 save_json(std::path::Path::new(arg), capture)?;
                 self.log.event("capture", "Exact model request saved.")?;
             }
-            "/prompt" | "/context" | "/debug" | "/budget" => {
+            "/prompt" | "/context" | "/debug" | "/budget" | "/conversation" => {
                 if arg.is_empty() || (verb == "/budget" && arg == "show") {
                     let value = match verb {
                         "/prompt" => self.prompts.effective(),
                         "/context" => serde_json::to_value(&self.context_settings)?,
                         "/budget" => self.budget_report()?,
+                        "/conversation" => self.conversation_snapshot(),
                         _ => serde_json::to_value(&self.debug)?,
                     };
                     self.log
@@ -1421,6 +1741,7 @@ impl App {
                         "/prompt" => serde_json::to_value(&self.prompts)?,
                         "/context" => serde_json::to_value(&self.context_settings)?,
                         "/budget" => serde_json::to_value(&self.budget)?,
+                        "/conversation" => serde_json::to_value(&self.conversation.settings)?,
                         _ => serde_json::to_value(&self.debug)?,
                     };
                     save_json(std::path::Path::new(path.trim()), &value)?;
@@ -1433,6 +1754,9 @@ impl App {
                             "/prompt" => Control::Prompts(Prompts::load(path)?),
                             "/context" => Control::Context(Context::load(path)?),
                             "/budget" => Control::Budget(crate::budget::Settings::load(path)?),
+                            "/conversation" => {
+                                Control::Conversation(crate::conversation::Settings::load(path)?)
+                            }
                             _ => Control::Debug(debugger::Settings::load(path)?),
                         }
                     } else if let Some(source) = arg.strip_prefix("set ") {
@@ -1440,6 +1764,7 @@ impl App {
                             "/prompt" => Control::Prompts(serde_json::from_str(source)?),
                             "/context" => Control::Context(serde_json::from_str(source)?),
                             "/budget" => Control::Budget(serde_json::from_str(source)?),
+                            "/conversation" => Control::Conversation(serde_json::from_str(source)?),
                             _ => Control::Debug(serde_json::from_str(source)?),
                         }
                     } else {
@@ -1478,7 +1803,9 @@ impl App {
                 }
             }
             "/listen" => {
-                if self.brain.is_none() {
+                if self.brain.is_none()
+                    && self.conversation.settings.mode != crate::conversation::Mode::Spectator
+                {
                     return Err("Configure [model] before listening for conversation".into());
                 }
                 self.pause()?;
@@ -1525,6 +1852,21 @@ impl App {
                     "Closing the SSH transport to test connection-loss handling.",
                 )?;
                 self.session.close().await;
+            }
+            "/fault"
+                if self.options.test_controls
+                    && self.options.managed_floor
+                    && ["floor-grants", "floor-controls"].contains(&arg) =>
+            {
+                self.floor_fault = Some(if arg == "floor-grants" {
+                    "grants"
+                } else {
+                    "controls"
+                });
+                self.log.event(
+                    "fault",
+                    "Simulating a stalled speaking-floor control receiver (test controls only).",
+                )?;
             }
             "/send" => {
                 self.pause()?;

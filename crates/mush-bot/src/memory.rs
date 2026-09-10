@@ -211,6 +211,20 @@ pub struct Book {
 }
 
 impl Book {
+    pub fn observed_recap(&self, watermark: crate::scene::Watermark) -> crate::scene::Recap {
+        crate::scene::Recap::from_observations(watermark, self.session, &self.records)
+    }
+
+    pub fn bookmark(&self) -> Result<Value> {
+        if self.bytes > 24_000_000 {
+            return Err("journal is too large for a wave-1 bookmark (24 MB journal limit)".into());
+        }
+        Ok(
+            json!({"records":self.records,"session":self.session,"current":self.current,"exits":self.exits,
+            "source_path":self.path,"journal_bytes":self.bytes,"last_command":self.last_command}),
+        )
+    }
+
     pub fn open(config: &Memory, ssh: &Ssh) -> Result<Self> {
         let owner = serde_json::to_string(&(
             &config.namespace,

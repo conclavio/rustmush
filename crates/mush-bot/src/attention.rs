@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::{Result, character::Character};
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub enabled: bool,
@@ -72,6 +72,7 @@ pub struct Speech {
     pub incomplete: bool,
 }
 
+#[derive(Serialize)]
 struct Fragment {
     speaker: String,
     kind: String,
@@ -95,6 +96,21 @@ pub struct Attention {
 }
 
 impl Attention {
+    pub fn bookmark(&self) -> Value {
+        json!({"settings":self.settings,"names":self.names,"self_labels":self.self_labels,
+            "records":self.records,"next_id":self.next_id,"handled":self.handled,"bytes":self.bytes,
+            "dropped_unhandled":self.dropped_unhandled,"buffer":self.buffer,"fragment":self.fragment,
+            "last_input_ago_ms":self.last_input.elapsed().as_millis(),
+            "partners_elapsed_ms":self.partners.iter().map(|(name, at)| (name.clone(),at.elapsed().as_millis())).collect::<std::collections::BTreeMap<_,_>>()})
+    }
+
+    pub fn records(&self) -> impl Iterator<Item = &Speech> {
+        self.records.iter()
+    }
+    pub fn handled_through(&self) -> u64 {
+        self.handled
+    }
+
     pub fn new(settings: Settings, character: &Character, username: &str) -> Self {
         let login_name = username
             .split_once('+')

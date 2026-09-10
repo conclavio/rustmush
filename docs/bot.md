@@ -5,6 +5,9 @@ the terminal displays its game session, chosen commands, concise action summarie
 and local control messages. Its production dependency graph contains no RustMUSH
 engine, store, gateway, or world protocol. The server can run on another machine.
 
+[Conversation and scene observation](bot-conversation.md) covers reply pacing,
+managed speaking floors, the spectator, cited recaps and bot bookmarks.
+
 ## Intentional independence from NPC agents
 
 The external bot and the in-game NPC system are two independent approaches to

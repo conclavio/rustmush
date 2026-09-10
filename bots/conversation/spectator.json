@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "mode": "spectator",
+  "scope": {"campaign": "band", "branch": "main", "scene": "rehearsal"}
+}

@@ -3,6 +3,10 @@
 The bot remains a separate SSH player implementation. All executable profiles,
 scripts, captures and harness manifests use JSON. Markdown is documentation.
 
+The [five-wave social campaign roadmap](bot-social-campaign-plan.md) extends these
+foundations. [Wave 1](bot-conversation.md) adds conversation gates, managed speaking
+floors, observer recaps, scene provenance and validated bot bookmarks.
+
 - [x] Runtime model profiles and session/lifetime provider cost accounting.
 - [x] Editable, versioned system prompts and a local terminal UI.
 - [x] Captured decision replay without connecting to the game.

@@ -71,6 +71,9 @@ pub struct Manifest {
     pub matrix: Option<Matrix>,
     /// An optional server-under-test process, started afresh for each run.
     pub server: Option<Server>,
+    /// One runner-declared scene floor; no character knowledge is exchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaking_floor: Option<crate::floor::Settings>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -88,6 +91,8 @@ pub struct Actor {
     pub debug: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<PathBuf>,
     pub model_tape: Option<PathBuf>,
     pub script: Option<PathBuf>,
     /// First local control after every cast member is ready; omit to remain paused.
@@ -177,6 +182,7 @@ impl Manifest {
                 .chain(actor.context.iter_mut())
                 .chain(actor.debug.iter_mut())
                 .chain(actor.budget.iter_mut())
+                .chain(actor.conversation.iter_mut())
                 .chain(actor.model_tape.iter_mut())
                 .chain(actor.script.iter_mut())
             {
@@ -210,6 +216,27 @@ impl Manifest {
     }
 
     fn validate(&self) -> Result<()> {
+        if let Some(floor) = &self.speaking_floor {
+            floor.validate()?;
+            let mut scope = None;
+            for actor in self.actors.iter().filter(|a| a.script.is_none()) {
+                let config = Config::load(&actor.config)?;
+                let settings = actor
+                    .conversation
+                    .as_deref()
+                    .or(config.conversation.as_deref())
+                    .map(crate::conversation::Settings::load)
+                    .transpose()?
+                    .unwrap_or_default();
+                if scope.as_ref().is_some_and(|s| *s != settings.scope) {
+                    return Err(
+                        "managed cast actors must declare the same scene/branch/campaign scope"
+                            .into(),
+                    );
+                }
+                scope = Some(settings.scope);
+            }
+        }
         if self.version != 1
             || self.name.trim().is_empty()
             || self.name.len() > 200
@@ -372,14 +399,14 @@ impl Manifest {
                 // biography, private briefings, reference documents, or login secrets.
                 json!({"name":actor.name,"config":actor.config,"model":actor.model,
                     "prompts":actor.prompts,"context":actor.context,"character":actor.character,"budget":actor.budget,
-                    "script":actor.script,"model_tape":actor.model_tape,
+                    "script":actor.script,"model_tape":actor.model_tape,"conversation":actor.conversation,
                     "start":actor.start,"expected_status":actor.expected_status})
             }).collect::<Vec<_>>()})
             })
             .collect();
         Ok(
             json!({"version":1,"name":self.name,"run_count":runs.len(),"actor_sessions":runs.len()*self.actors.len(),
-            "timeout_ms_per_run":self.timeout_ms,"owns_server":self.server.is_some(),"runs":runs,"phases":phases,
+            "timeout_ms_per_run":self.timeout_ms,"owns_server":self.server.is_some(),"runs":runs,"phases":phases,"speaking_floor":self.speaking_floor,
             "assertions":self.assertions,"groups":self.groups.iter().map(|g| json!({"id":g.id,"name":g.name,"kind":g.kind,
                 "members":g.members.iter().map(|m|json!({"actor":m.actor,"role":m.role})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "notes":["This is a validated execution plan; no game or provider requests were made.",
@@ -485,6 +512,9 @@ impl Actor {
         }
         if let Some(path) = self.budget.as_ref().or(config.budget.as_ref()) {
             crate::budget::Settings::load(path)?;
+        }
+        if let Some(path) = self.conversation.as_ref().or(config.conversation.as_ref()) {
+            crate::conversation::Settings::load(path)?;
         }
         if let Some(path) = self.model_tape.as_ref().or(config.model_tape.as_ref()) {
             crate::tape::Source::load(path)?;
@@ -644,6 +674,46 @@ struct Incoming {
 }
 
 #[derive(Default)]
+struct SpeechStats {
+    independent_sends: u64,
+    near_simultaneous_sends: u64,
+    managed_sends: u64,
+    recent: std::collections::VecDeque<(String, u64)>,
+}
+impl SpeechStats {
+    fn feed(&mut self, actor: &str, event: &Value, now: u64) {
+        if event["kind"] != "speech-dispatched" {
+            return;
+        }
+        if event["data"]["managed"] == true {
+            self.managed_sends += 1;
+            return;
+        }
+        self.independent_sends += 1;
+        while self
+            .recent
+            .front()
+            .is_some_and(|(_, at)| now.saturating_sub(*at) >= 1800)
+        {
+            self.recent.pop_front();
+        }
+        if self.recent.iter().any(|(other, _)| other != actor) {
+            self.near_simultaneous_sends += 1;
+        }
+        self.recent.push_back((actor.into(), now));
+        if self.recent.len() > 256 {
+            self.recent.pop_front();
+        }
+    }
+    fn report(&self) -> Value {
+        json!({"independent_sends":self.independent_sends,"managed_sends":self.managed_sends,
+            "near_simultaneous_sends":self.near_simultaneous_sends,"window_ms":1800,
+            "near_simultaneous_rate":if self.independent_sends == 0 { Value::Null } else { json!(self.near_simultaneous_sends as f64 / self.independent_sends as f64) },
+            "measurement":"Fraction of independent autonomous speech dispatch events received within 1800ms after a different actor's event. Harness receipt clock; not server arrival time or PC typing. Explicit sends and scripts excluded."})
+    }
+}
+
+#[derive(Default)]
 struct ProbeLog {
     entries: Vec<Value>,
     omitted: usize,
@@ -682,6 +752,7 @@ async fn spawn_actor(
     sender: mpsc::Sender<Incoming>,
     affiliations: &crate::organization::Affiliations,
     bot_program: Option<&Path>,
+    managed_floor: bool,
 ) -> Result<Player> {
     std::fs::create_dir(directory)?;
     let report = directory.join("report.json");
@@ -705,6 +776,9 @@ async fn spawn_actor(
         .kill_on_drop(true);
     if actor.script.is_none() {
         command.arg("--paused");
+        if managed_floor {
+            command.arg("--managed-floor");
+        }
     }
     if !affiliations.groups.is_empty() {
         let path = directory.join("affiliations.json");
@@ -717,6 +791,7 @@ async fn spawn_actor(
         ("--context", &actor.context),
         ("--debug", &actor.debug),
         ("--budget", &actor.budget),
+        ("--conversation", &actor.conversation),
         ("--model-tape", &actor.model_tape),
         ("--script", &actor.script),
     ] {
@@ -958,6 +1033,27 @@ async fn one(
     }
     let manifest = &prepared;
     save_json(&directory.join("cast.json"), &actors)?;
+    // Freeze conversation policies once; child behavior and comparison provenance
+    // must refer to the same contents, even if an authored file later changes.
+    let mut runtime_actors = actors.to_vec();
+    let mut actor_policies = BTreeMap::new();
+    for actor in &mut runtime_actors {
+        let config = Config::load(&actor.config)?;
+        let policy = actor
+            .conversation
+            .as_deref()
+            .or(config.conversation.as_deref())
+            .map(crate::conversation::Settings::load)
+            .transpose()?
+            .unwrap_or_default();
+        let path = directory.join(format!("conversation-{}.json", actor.name));
+        save_json(&path, &policy)?;
+        actor_policies.insert(actor.name.clone(), policy);
+        actor.conversation = Some(path);
+    }
+    let conversation_conditions =
+        json!({"version":1,"speaking_floor":manifest.speaking_floor,"actors":actor_policies});
+    let actors = &runtime_actors;
     let mut server = if let Some(spec) = &manifest.server {
         let starting = server_start(spec, directory);
         tokio::pin!(starting);
@@ -994,6 +1090,7 @@ async fn one(
                 sender.clone(),
                 &crate::organization::Affiliations::for_actor(&actor.name, &manifest.groups)?,
                 bot_program.as_deref(),
+                manifest.speaking_floor.is_some(),
             )
             .await?,
         );
@@ -1010,6 +1107,12 @@ async fn one(
     let at = Instant::now();
     let mut error = None;
     let mut eof = std::collections::BTreeSet::new();
+    let mut floor = manifest
+        .speaking_floor
+        .clone()
+        .map(crate::floor::Floor::new);
+    let mut speech_stats = SpeechStats::default();
+    let mut floor_snapshot = Instant::now();
     loop {
         if observer.is_some_and(Observer::stopped) {
             error = Some("harness interrupted".into());
@@ -1023,6 +1126,43 @@ async fn one(
         }
         if error.is_some() {
             break;
+        }
+        if !closing && let Some(floor) = &mut floor {
+            if floor_snapshot.elapsed() >= Duration::from_millis(500) {
+                floor_snapshot = Instant::now();
+                debug_event(
+                    &mut joined,
+                    observer,
+                    run_index,
+                    startup_at,
+                    json!({"kind":"speaking-floor","data":{"action":"snapshot","state":floor.snapshot()}}),
+                )?;
+            }
+            let action = match floor.tick(startup_at.elapsed().as_millis() as u64) {
+                Ok(action) => action,
+                Err(e) => {
+                    error = Some(e.to_string());
+                    break;
+                }
+            };
+            if let Some(action) = action {
+                let (actor, id, verb) = match action {
+                    crate::floor::Control::Grant(actor, id) => (actor, id, "grant"),
+                    crate::floor::Control::Revoke(actor, id) => (actor, id, "revoke"),
+                };
+                debug_event(
+                    &mut joined,
+                    observer,
+                    run_index,
+                    startup_at,
+                    json!({"kind":"speaking-floor","data":{"action":verb,"actor":actor,"id":id,"state":floor.snapshot()}}),
+                )?;
+                if let Err(e) = control(&mut players, &actor, &format!("/floor {verb} {id}")).await
+                {
+                    error = Some(format!("speaking-floor control failed: {e}"));
+                    break;
+                }
+            }
         }
         if let Err(e) = debug_commands(
             &mut debug,
@@ -1235,6 +1375,41 @@ async fn one(
         )?;
         writeln!(joined)?;
         joined.flush()?;
+        speech_stats.feed(&actor, &event, startup_at.elapsed().as_millis() as u64);
+        if !closing && let Some(floor) = &mut floor {
+            let now = startup_at.elapsed().as_millis() as u64;
+            match event["kind"].as_str() {
+                Some("speech-intent") => {
+                    let id = event["data"]["id"]
+                        .as_u64()
+                        .ok_or("speech intent missing ID")?;
+                    if let Err(e) = floor.offer(&actor, id, event["data"]["directed"] == true, now)
+                    {
+                        error = Some(e.to_string());
+                        break;
+                    }
+                }
+                Some("speech-complete") => {
+                    let id = event["data"]["id"]
+                        .as_u64()
+                        .ok_or("speech completion missing ID")?;
+                    floor.complete(&actor, id, now);
+                }
+                _ => {}
+            }
+            if ["speech-intent", "speech-complete"]
+                .iter()
+                .any(|k| event["kind"] == *k)
+            {
+                debug_event(
+                    &mut joined,
+                    observer,
+                    run_index,
+                    startup_at,
+                    json!({"kind":"speaking-floor","data":{"action":"update","state":floor.snapshot()}}),
+                )?;
+            }
+        }
         monitor.feed(&actor, &event);
         probes.feed(&actor, &event);
         if let Some(active) = &mut step {
@@ -1406,6 +1581,7 @@ async fn one(
     Ok(
         json!({"success":error.is_none() && monitor.satisfied() && !probes.failed,"error":error,"elapsed_ms":elapsed.as_millis(),
         "active_elapsed_ms":elapsed.saturating_sub(held).as_millis(),"debug":debug_report,
+        "conversation":{"speech":speech_stats.report(),"floor":floor.as_ref().map(crate::floor::Floor::snapshot),"conditions":conversation_conditions},
         "probes":probes.entries,"probes_omitted":probes.omitted,
         "costs":{"cast":cast_costs,"by_group":group_costs,"missing_actor_reports":missing_costs,
             "group_totals_overlap":true,"scope":"This run's actor sessions only; lifetime ledgers are not summed."},
@@ -1523,6 +1699,25 @@ async fn run_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn independent_overlap_metric_is_bounded_scoped_and_unknown_without_sends() {
+        let mut stats = SpeechStats::default();
+        assert!(stats.report()["near_simultaneous_rate"].is_null());
+        let speech = json!({"kind":"speech-dispatched","data":{"managed":false}});
+        stats.feed("a", &speech, 0);
+        stats.feed("a", &speech, 1);
+        stats.feed("b", &speech, 2);
+        stats.feed("a", &speech, 2000);
+        stats.feed("b", &json!({"kind":"send","data":"say operator"}), 2001);
+        stats.feed(
+            "b",
+            &json!({"kind":"speech-dispatched","data":{"managed":true}}),
+            2002,
+        );
+        assert_eq!(stats.report()["near_simultaneous_rate"], 0.25);
+        assert_eq!(stats.report()["independent_sends"], 4);
+        assert_eq!(stats.report()["managed_sends"], 1);
+    }
 
     #[test]
     fn probe_evaluations_cannot_be_started_as_unawaited_raw_controls() {

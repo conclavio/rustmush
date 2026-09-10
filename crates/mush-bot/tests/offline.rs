@@ -12,6 +12,45 @@ use serde_json::{Value, json};
 const SSH_SECRET: &str = "MUSH_BOT_OFFLINE_TEST_MISSING_SSH_SECRET";
 const MODEL_SECRET: &str = "MUSH_BOT_OFFLINE_TEST_MISSING_MODEL_SECRET";
 
+#[test]
+fn conversation_validation_is_offline_strict_and_does_not_create_runtime_artifacts() {
+    let fixture = Fixture::new();
+    fixture.json(
+        "conversation.json",
+        &json!({"version":1,"mode":"spectator"}),
+    );
+    let entries = fixture.entries();
+    let output = fixture.success(&[
+        "--config",
+        "missing.toml",
+        "--check-conversation",
+        "conversation.json",
+    ]);
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["mode"], "spectator");
+    assert_eq!(entries, fixture.entries());
+    fixture.json(
+        "conversation.json",
+        &json!({"version":1,"max_utterances":0}),
+    );
+    assert!(
+        !fixture
+            .run(&["--check-conversation", "conversation.json"])
+            .status
+            .success()
+    );
+    fixture.json(
+        "conversation.json",
+        &json!({"version":1,"unknown_setting":true}),
+    );
+    assert!(
+        !fixture
+            .run(&["--check-conversation", "conversation.json"])
+            .status
+            .success()
+    );
+}
+
 struct Fixture {
     directory: PathBuf,
 }
