@@ -108,8 +108,11 @@ const RATCHET_CRATES: [&str; 9] = [
     "mush-session",
 ];
 
-/// Crates excluded wholesale, by name.
-const EXCLUDED_CRATES: [&str; 2] = ["mush-contract-tests", "mush-testkit"];
+/// Crates excluded wholesale, by name: the test harnesses, and `mush-bot`, the
+/// bot laboratory — out of the engine (no engine, store or gateway among its
+/// production dependencies; it plays the game over SSH as a player would), so an
+/// unwrap in it ends a bot, never a world. The owner's call, 2026-09-10.
+const EXCLUDED_CRATES: [&str; 3] = ["mush-contract-tests", "mush-testkit", "mush-bot"];
 
 /// Single files excluded by path, relative to the workspace root.
 const EXCLUDED_FILES: [&str; 1] = ["crates/mush-store/src/suite.rs"];

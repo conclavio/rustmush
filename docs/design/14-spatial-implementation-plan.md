@@ -1122,16 +1122,16 @@ text above, each with its reason:
 - **Help:** `npc` gains the fifth rule (the answer stays where the question was); `map` says a
   doorway on the map is the room's exit.
 - **What the gate found beside the cut.** The bot laboratory (`mush-bot`, merged at `a79afef`
-  after S7's gate) had no panic budget, no row in the restriction-lint measurement and no
-  denies at its roots: measured at this gate (44 unwraps, 6 expects, 269 index sites at
-  `7843ce3`, zero of the other three), budgeted at 50 with the reason in
-  `panic_budget/mush-bot.txt`, its row added and the three zero-count lints denied at
-  `lib.rs` and `main.rs`; the two pinned totals moved by one crate. The budget is the
-  repository's own ceiling gate (WS01-S11): the crate is still being written, and each
-  growth of its unwrap surface will need a re-bless in the same change. The review's reproduction (`review_window.rs`) drives an NPC
-  turn by writing the NPC host's slot from the atlas's tests, which the state-slot census
-  refuses without a row: baselined in `state-slot-owners.toml` with the reason, the file
-  itself untouched.
+  after S7's gate) had no panic budget and no row in the restriction-lint measurement, and
+  both censuses refuse a crate they have not measured. It is **out of the engine** — its
+  production dependencies contain no engine, store or gateway, and it plays the game over
+  SSH as a player would, so an unwrap in it ends a bot, never a world — and the owner's call
+  (2026-09-10) is that the platform's panic limits do not apply to it: both tests carry an
+  `OUT_OF_ENGINE` / `EXCLUDED_CRATES` entry naming it with that reason, and nothing was
+  added to the crate. The review's reproduction (`review_window.rs`) drives an NPC turn by
+  writing the NPC host's slot from the atlas's tests, which the state-slot census refuses
+  without a row: baselined in `state-slot-owners.toml` with the reason, the file itself
+  untouched.
 
 ### 3.10 Cut S9 — the deferred four
 

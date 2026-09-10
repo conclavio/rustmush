@@ -1,8 +1,3 @@
-// The panic-shaped restriction lints this crate has already paid for
-// (crates/mush-contract-tests/tests/restriction_lints.rs): measured at zero,
-// so the compiler holds them there.
-#![deny(clippy::panic, clippy::unreachable, clippy::panic_in_result_fn)]
-
 use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
