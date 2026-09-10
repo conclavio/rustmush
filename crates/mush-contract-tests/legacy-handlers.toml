@@ -60,12 +60,6 @@ category = "read-only"
 note = "S1 (14-spatial-implementation-plan 3.1): the atlas views -- the viewer's neighborhood as a text map and a room list, a neighborhood by name, or the region's footprints and corridors (+atlas/region). Presentation over the atlas records, filtered for the viewer (a room the viewer may not enter is absent, not blanked); no durable mutation of any kind."
 
 [[handler]]
-name = "+build"
-category = "legacy-post-image"
-family = "worldgen.proposal"
-note = "S3 (14-spatial-implementation-plan 3.4): the building agent's player surface. +build/place reserves a site request through mush-atlas (a bounded whole-document request record, mod:atlas:request:<id>, keyed by an idempotency key over character, neighborhood, kind and footprint hash, so retries converge) and writes the proposal record (mod:worldgen:proposal:<id>, strict wire, a revision an off-loop outcome must match or be dropped); /answer, /feedback and /withdraw rewrite that record; /go on a player's request rides mush-atlas's activation (a site pack applied through mush-content's latch, the site marked hydrated and pending review, one BUILD ticket), and on a staff proposal rides @atlas/pack apply's path plus a post-hoc BUILD ticket for the record; /show and /status are reads. No tool of the off-loop run touches the world (doc 14 4.1): the run is snapshot in, typed outcome out (treaty ruling 3). No authority, no prepared mechanic."
-
-[[handler]]
 name = "+banality"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
@@ -79,6 +73,12 @@ note = "baseline pinned at b0e3b52 (module, wod composition only)"
 name = "+bond"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, wod composition only)"
+
+[[handler]]
+name = "+build"
+category = "legacy-post-image"
+family = "worldgen.proposal"
+note = "S3 (14-spatial-implementation-plan 3.4): the building agent's player surface. +build/place reserves a site request through mush-atlas (a bounded whole-document request record, mod:atlas:request:<id>, keyed by an idempotency key over character, neighborhood, kind and footprint hash, so retries converge) and writes the proposal record (mod:worldgen:proposal:<id>, strict wire, a revision an off-loop outcome must match or be dropped); /answer, /feedback and /withdraw rewrite that record; /go on a player's request rides mush-atlas's activation (a site pack applied through mush-content's latch, the site marked hydrated and pending review, one BUILD ticket), and on a staff proposal rides @atlas/pack apply's path plus a post-hoc BUILD ticket for the record; /show and /status are reads. No tool of the off-loop run touches the world (doc 14 4.1): the run is snapshot in, typed outcome out (treaty ruling 3). No authority, no prepared mechanic."
 
 [[handler]]
 name = "+cantrip"
