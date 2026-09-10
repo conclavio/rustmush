@@ -50,6 +50,12 @@ header spells the mechanism out with `__KEY__` tokens; that is exactly the rule
 the test applies, so the shell and the test cannot disagree about what a
 complete render is.
 
+Ship **both** files to the box and keep them together —
+`/opt/rustmush/<name>/mushd.toml` beside `/opt/rustmush/<name>/instance.env`.
+`git archive HEAD` carries the template, never your edited `instance.env`, so
+the edited one is `scp`'d up alongside the config it produced; it is the input
+a re-render reads, and the file `scripts/reset-instance.sh` below is pointed at.
+
 `START_ROOM` / `START_ROOM_UNAPPROVED` name object ids that must EXIST in the
 world you boot. A fresh store seeds only Limbo `#0` and God `#1`, so `#2`/`#3`
 are the ids the instance's own seed — the rooms you dig before opening — will

@@ -32,9 +32,11 @@
 //!    above is a check that always says yes;
 //! 4. and the rendered WoD instance boots: `open_store` opens the J5 archive
 //!    tier the template enables, `spawn_ledger_archive` binds its handle rather
-//!    than leaving the nightly pass unscheduled, and the `hello` manifest the
-//!    gateway sends a web client advertises `tacsim` and `wod` — which is
-//!    `TACSIM_ENABLED=true` and `RULESET=wod` reaching a booted world.
+//!    than leaving the nightly pass unscheduled, `TACSIM_ENABLED=true` arrives
+//!    as an ENABLED `[tacsim]` block on the loaded config (which is where that
+//!    key is decided — see the boot case), and `RULESET=wod` comes out the
+//!    other end as `wod` in the `hello` manifest the gateway sends a web
+//!    client, with the TacSim module composed into it.
 //!
 //! # What is overridden, and why
 //!
@@ -297,8 +299,17 @@ fn the_server_binary_preflights_the_render_and_refuses_a_typod_receipt_policy() 
 ///   sealed chunks accumulate in the store forever;
 /// - `[store.archive].window` schedules the nightly pass and its handle is
 ///   BOUND (`spawn_ledger_archive` -> `Some`), not dropped detached;
-/// - `TACSIM_ENABLED=true` and `RULESET=wod` come out the other end as
-///   `tacsim` and `wod` in the `hello` manifest the gateway sends a web client.
+/// - `TACSIM_ENABLED=true` reaches the ENABLEDNESS of the layer, which is where
+///   that key is decided: `cfg.tacsim.enabled` and the typed `[tacsim]` block
+///   `config_ext::tacsim_config` parses out of it, the same pair the Shadowrun
+///   case asserts the `false` side of. It is deliberately NOT read off the
+///   manifest: `boot::game_modules` pushes `modules::tacsim_module(tacsim)`
+///   unconditionally (boot.rs — the `if tacsim.enabled` above it only logs),
+///   so `tacsim` is in the feature list of every config and an assertion there
+///   would pass with the key flipped;
+/// - `RULESET=wod` comes out the other end as `wod` in the `hello` manifest the
+///   gateway sends a web client, with `shadowrun` absent and the WoD panel feeds
+///   riding along — and the TacSim module composed into that manifest at all.
 ///
 /// `[store].store` is set to `"memory"` after loading — see this file's header.
 #[tokio::test]
@@ -321,6 +332,24 @@ async fn the_rendered_wod_instance_boots_and_advertises_its_layers() {
         cfg.server.data_dir, data,
         "the path overrides go through the same substitution as every other key"
     );
+    // `TACSIM_ENABLED=true`, asserted where the key is actually decided. The
+    // manifest cannot carry this claim (see the doc above); the typed block is
+    // what `game_modules` hands `modules::tacsim_module`, and its `enabled` is
+    // the flag every later cut reads. (The shipped template renders
+    // `pack_paths = []` — an instance turns the layer on before it has content
+    // to put in it — so there is nothing to assert about the pack list here;
+    // the Shadowrun case owns the `false` side of the same pair.)
+    assert!(
+        cfg.tacsim.enabled,
+        "TACSIM_ENABLED=true must render an enabled [tacsim] block"
+    );
+    let tacsim = mush_server::config_ext::tacsim_config(&cfg.tacsim)
+        .expect("the rendered [tacsim] block parses");
+    assert!(
+        tacsim.enabled,
+        "the typed [tacsim] block the boot composes with must be enabled too"
+    );
+
     // The one deviation from the shipped text: a throwaway backend, so this
     // case runs on every push. `open_store` allows it and says so in a warn.
     cfg.store.store = "memory".to_string();
@@ -358,9 +387,12 @@ async fn the_rendered_wod_instance_boots_and_advertises_its_layers() {
     );
 
     let (features, panels) = boot::build_hello_manifest(&booted.engine);
+    // Not a statement about TACSIM_ENABLED — see the doc: the module composes
+    // either way. It is a statement that the layer is in the roster the manifest
+    // is built from at all, i.e. that this boot composed the TacSim module.
     assert!(
         features.iter().any(|f| f == "tacsim"),
-        "TACSIM_ENABLED=true must reach the hello manifest: {features:?}"
+        "the TacSim module must compose into the hello manifest: {features:?}"
     );
     assert!(
         features.iter().any(|f| f == "wod"),

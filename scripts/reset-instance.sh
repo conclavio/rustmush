@@ -93,6 +93,13 @@ env_value() {
 	while IFS='=' read -r key value; do
 		case "$key" in '' | '#'*) continue ;; esac
 		if [ "$key" = "$wanted" ]; then
+			# Trim what the render's `sed` would have carried into the config
+			# harmlessly but a path cannot survive: leading spaces, and the CR
+			# a Windows-edited instance.env leaves on every line. `rm -rf` on
+			# "/opt/rustmush/dev3<CR>" deletes nothing and `install -d` then
+			# makes a ghost tree beside the real one.
+			value="${value#"${value%%[![:space:]]*}"}"
+			value="${value%"${value##*[![:space:]]}"}"
 			printf '%s\n' "$value"
 			return 0
 		fi
@@ -113,6 +120,29 @@ require_value() {
 instance="$(require_value INSTANCE)"
 data_dir="$(require_value DATA_DIR)"
 redis_port="$(require_value REDIS_PORT)"
+
+# `DATA_DIR` is deleted whole, as root, from a value an operator typed into a
+# text file. `require_value` only proves it is non-empty, and nothing further
+# down would blink at `/`, `/opt`, or a relative typo. Refuse anything that is
+# not plausibly one instance's own tree — here, with the other preflights,
+# before a thing is taken down.
+case "$data_dir" in
+/*) ;;
+*)
+	echo "$0: DATA_DIR must be an absolute path, got '$data_dir'" >&2
+	exit 1
+	;;
+esac
+case "$data_dir" in
+*..*)
+	echo "$0: DATA_DIR must not contain '..', got '$data_dir'" >&2
+	exit 1
+	;;
+esac
+if [ "$(dirname "$data_dir")" = "/" ]; then
+	echo "$0: DATA_DIR must be nested under a parent (got '$data_dir'); refusing to delete a top-level directory" >&2
+	exit 1
+fi
 
 # Everything this needs, checked BEFORE anything is stopped. A missing
 # `redis-cli` discovered at step 2 would leave the instance down with its store

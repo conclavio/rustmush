@@ -109,8 +109,8 @@ jobs:
       # Renders both shipped `instance.env` files, preflights each under both
       # check sets AND in the real `mush-server` binary, proves a typo'd
       # `receipt_policy` is refused by name, and boots the WoD instance (with
-      # `[store].store` overridden to "memory", the one deviation) to a hello
-      # manifest advertising `tacsim` + `wod`.
+      # `[store].store` overridden to "memory", the one deviation) to an enabled
+      # `[tacsim]` block and a hello manifest advertising `wod`.
       - name: Render, preflight and boot the shipped instances
         run: cargo test -p mush-server --test provisioning_smoke
       - name: Build the three binaries a deploy installs
