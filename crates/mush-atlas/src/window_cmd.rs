@@ -170,3 +170,55 @@ fn close_cmd(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CmdError> {
     );
     Ok(())
 }
+
+/// `@atlas/feature <feature>=<state>`: the wreckage by hand (S5's fights write
+/// it themselves). A feature is named `<pack>:<entry>`, or by its entry alone
+/// when that is unambiguous.
+///
+/// # Errors
+///
+/// A refusal to print.
+pub fn feature_admin(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    if !is_staff(ctx.w, actor) {
+        return Err(CmdError::msg("Features are staff's to set by hand."));
+    }
+    let raw = ctx.args.raw().trim().to_string();
+    let (what, state_text) = raw.split_once('=').ok_or_else(|| {
+        CmdError::msg("Usage: @atlas/feature <feature>=<intact|damaged[:n]|destroyed>")
+    })?;
+    let new_state = crate::window::parse_feature_state(state_text)
+        .ok_or_else(|| CmdError::msg("A state is intact, damaged[:n] or destroyed."))?;
+    let key = {
+        let st = ctx
+            .state::<AtlasState>()
+            .ok_or_else(|| CmdError::msg("The atlas module is not composed on this server."))?;
+        let what = what.trim();
+        let mut matches: Vec<&crate::record::RecordKey> = st
+            .records
+            .features
+            .keys()
+            .filter(|k| k.suffix() == what || k.entry.as_str() == what)
+            .collect();
+        matches.sort();
+        match matches.as_slice() {
+            [one] => (*one).clone(),
+            [] => return Err(CmdError::msg(format!("No feature {what}."))),
+            many => {
+                return Err(CmdError::msg(format!(
+                    "{} features match {what}: name one as <pack>:<entry>.",
+                    many.len()
+                )));
+            }
+        }
+    };
+    let windows = crate::window::set_feature_state(ctx, &key, new_state).map_err(CmdError::msg)?;
+    ctx.out.info(
+        actor,
+        format!(
+            "{key} is now {new_state:?}; {} window(s) redraw.",
+            windows.len()
+        ),
+    );
+    Ok(())
+}

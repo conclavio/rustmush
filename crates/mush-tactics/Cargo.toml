@@ -11,6 +11,10 @@ mush-ruleset.workspace = true
 mush-dice.workspace = true
 mush-core.workspace = true
 mush-proto.workspace = true
+# S4: `+btest` opens a real window over the actor's room (plan §3.5); the atlas
+# and the simulation read nothing from this crate.
+mush-atlas.workspace = true
+mush-sim.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
@@ -19,6 +23,10 @@ tracing.workspace = true
 
 [dev-dependencies]
 mush-testkit.workspace = true
+# The lot, for the window `+btest` opens: the content module with the starter
+# packs and the NPC applier the packs need.
+mush-content.workspace = true
+mush-npc.workspace = true
 
 [lints]
 workspace = true

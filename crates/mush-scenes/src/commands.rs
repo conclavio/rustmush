@@ -257,6 +257,7 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ),
     );
     crate::panel::publish(ctx, &rec);
+    crate::fire_started(ctx, &rec);
     Ok(())
 }
 
@@ -884,6 +885,7 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     crate::emit_scene_concluded(ctx, &updated);
     crate::panel::publish(ctx, &updated);
+    crate::fire_ended(ctx, &updated);
     // D6: an advisory poll — the scene is already over; the answers are the
     // record of who agreed with ending it here.
     let asker = ctx.actor;

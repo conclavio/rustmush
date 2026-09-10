@@ -94,28 +94,20 @@ fn battle_scene_ticks_state_persists_and_panels_stream() {
     let keyframes = panel_frames(&events, pilot, PanelFrameKind::Keyframe);
     assert_eq!(keyframes.len(), 1, "one keyframe at battle start");
     assert!(
-        keyframes[0].get("map").is_some(),
-        "keyframe carries the map"
+        keyframes[0].get("window").is_some(),
+        "keyframe names the window (none here: Limbo has no geometry)"
     );
     assert!(
         panel_frames(&events, pilot, PanelFrameKind::Delta).is_empty(),
         "no deltas before the first tick"
     );
 
-    // The map blob and the initial state snapshot were persisted as module
-    // ops under ns "tactics" — write-through, same channel as everything.
+    // The initial state snapshot was persisted as a module op under ns
+    // "tactics" — write-through, same channel as everything. (The map is the
+    // atlas's window since S4, and Limbo has none.)
     let ops = tw.take_module_ops();
     assert!(ops.iter().all(|op| op.ns == NS));
-    let map_key = format!("scene:{}:map", scene.0);
     let state_key = format!("scene:{}:state", scene.0);
-    assert!(
-        ops.iter().any(|op| matches!(
-            &op.op,
-            ModuleWrite::JsonSet { key, value } if key == map_key.as_str()
-                && value.get("hexes").is_some()
-        )),
-        "map blob must persist: {ops:?}"
-    );
     assert!(
         ops.iter().any(|op| matches!(
             &op.op,
@@ -181,7 +173,7 @@ fn battle_scene_ticks_state_persists_and_panels_stream() {
         })
         .collect();
     assert!(
-        deleted.contains(&state_key.as_str()) && deleted.contains(&map_key.as_str()),
+        deleted.contains(&state_key.as_str()),
         "ending the scene must delete its persisted state and map: {ops:?}"
     );
 

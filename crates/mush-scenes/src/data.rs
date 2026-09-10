@@ -763,6 +763,29 @@ impl SceneEvent {
 #[derive(Clone, Default)]
 pub struct SealerGateSlot(pub Option<crate::SealerGate>);
 
+/// What another module does when a scene starts or ends (S4: the atlas opens a
+/// tactical window over a timestop's room and closes it with the scene).
+pub type SceneHookFn = std::sync::Arc<dyn Fn(&mut mush_core::Ctx<'_>, &SceneRecord) + Send + Sync>;
+
+/// The hooks other modules register, each at most once (plan §3.5: "the
+/// `ScenesModule` on an engagement start").
+#[derive(Clone, Default)]
+pub struct SceneHooks {
+    /// After a scene starts and its record persists.
+    pub started: Option<SceneHookFn>,
+    /// After a scene closes and its record persists.
+    pub ended: Option<SceneHookFn>,
+}
+
+impl std::fmt::Debug for SceneHooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SceneHooks")
+            .field("started", &self.started.is_some())
+            .field("ended", &self.ended.is_some())
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for SealerGateSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(if self.0.is_some() {

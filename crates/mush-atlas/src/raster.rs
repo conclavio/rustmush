@@ -419,12 +419,46 @@ fn rasterize_at(input: &SurfaceInput<'_>, grid: Grid) -> Result<Rasterized, Stri
         let (Ok(x), Ok(y)) = (cm(p.0), cm(p.1)) else {
             continue;
         };
-        if let Some((cx, cy)) = grid.cell_of(PointCm { x, y }) {
-            cells.update(cx, cy, |c| {
-                if c.class == TerrainClass::Wall {
-                    c.class = TerrainClass::Door;
-                }
-            });
+        let point = PointCm { x, y };
+        // The wall cell the door cuts: the cell the point falls in when that is
+        // wall, else the nearest wall cell beside it — a door drawn a metre
+        // outside its wall (the threshold's far side), or just off the floor's
+        // tile, still opens the wall. The cell itself, then the four straight
+        // neighbours, then the diagonals: a point on a cell boundary is a tie
+        // the straighter cell wins.
+        let (cx, cy) = grid.clamp_cell(point);
+        let mut best: Option<(i64, u16, u16)> = None;
+        for (dx, dy) in [
+            (0i32, 0i32),
+            (0, -1),
+            (0, 1),
+            (-1, 0),
+            (1, 0),
+            (-1, -1),
+            (1, -1),
+            (-1, 1),
+            (1, 1),
+        ] {
+            let (Ok(nx), Ok(ny)) = (
+                u16::try_from(i32::from(cx) + dx),
+                u16::try_from(i32::from(cy) + dy),
+            ) else {
+                continue;
+            };
+            if !cells
+                .get(nx, ny)
+                .is_some_and(|c| c.class == TerrainClass::Wall)
+            {
+                continue;
+            }
+            let centre = grid.centre(nx, ny);
+            let d = (centre.x - point.x).pow(2) + (centre.y - point.y).pow(2);
+            if best.is_none_or(|(bd, _, _)| d < bd) {
+                best = Some((d, nx, ny));
+            }
+        }
+        if let Some((_, wx, wy)) = best {
+            cells.update(wx, wy, |c| c.class = TerrainClass::Door);
         }
     }
     Ok(Rasterized { grid, cells, rooms })

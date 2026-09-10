@@ -69,8 +69,9 @@ pub use data::{
     CONSENT_REWIND, ConsentVote, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_NUDGE_MINUTES,
     MAX_OUTCOME_NAME_BYTES, MAX_OUTCOME_NOTE_BYTES, MAX_OUTCOME_SUBJECTS,
     MAX_PENDING_STORE_READS_PER_ACTOR, NS, NUDGE_TICK_S, PauseReason, PendingArchiveRead,
-    SceneAdvanceError, SceneEvent, SceneEventKind, SceneMode, SceneOutcome, SceneRecord,
-    SceneStatus, SceneUid, ScenesState, SealerGateSlot, persist_scene_record, scene_key,
+    SceneAdvanceError, SceneEvent, SceneEventKind, SceneHookFn, SceneHooks, SceneMode,
+    SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, SealerGateSlot,
+    persist_scene_record, scene_key,
 };
 
 /// The canon kind a **sealed scene outcome** is recorded under (E6b, 08f §4.1).
@@ -199,6 +200,8 @@ impl GameModule for ScenesModule {
         reg.subscribe(WorldEventKind::Rolled, Arc::new(on_rolled));
         // Turn-gating: a mechanical command runs only on the actor's turn.
         reg.command_gate(Arc::new(TurnGate));
+        // S4: the start/end hooks another module registers at its boot.
+        reg.state(data::SceneHooks::default());
         // The `scenes` panel feed (a keyframe to every member on each
         // lifecycle transition), its same-named query, and the room-band
         // glance under `RoomView.ambient["scene"]` (interface plan I1).
@@ -461,6 +464,7 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
                     ),
                 );
                 emit_scene_concluded(ctx, &record);
+                fire_ended(ctx, &record);
             }
             Plan::Shrink {
                 record,
@@ -492,6 +496,58 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
 /// world chronicle, the seam richer consequences (deaths, obligations, faction
 /// changes) will plug into. Restricted scope: the participants and staff know
 /// it happened. A no-op if the canon module is not loaded.
+/// Register what runs when a scene starts and when it ends (S4). Each hook
+/// registers once per composition.
+///
+/// # Errors
+///
+/// A message when the scenes module is not composed or a hook is registered
+/// already.
+pub fn register_scene_hooks(
+    w: &mut World,
+    started: Option<data::SceneHookFn>,
+    ended: Option<data::SceneHookFn>,
+) -> Result<(), String> {
+    let slot = w
+        .module_state_mut::<data::SceneHooks>()
+        .ok_or_else(|| "the scenes module is not composed".to_string())?;
+    if started.is_some() && slot.started.is_some() {
+        return Err("a scene-started hook is registered already".to_string());
+    }
+    if ended.is_some() && slot.ended.is_some() {
+        return Err("a scene-ended hook is registered already".to_string());
+    }
+    if started.is_some() {
+        slot.started = started;
+    }
+    if ended.is_some() {
+        slot.ended = ended;
+    }
+    Ok(())
+}
+
+/// Run the registered start hook.
+pub(crate) fn fire_started(ctx: &mut Ctx<'_>, rec: &SceneRecord) {
+    let hook = ctx
+        .w
+        .module_state::<data::SceneHooks>()
+        .and_then(|h| h.started.clone());
+    if let Some(hook) = hook {
+        hook(ctx, rec);
+    }
+}
+
+/// Run the registered end hook.
+pub(crate) fn fire_ended(ctx: &mut Ctx<'_>, rec: &SceneRecord) {
+    let hook = ctx
+        .w
+        .module_state::<data::SceneHooks>()
+        .and_then(|h| h.ended.clone());
+    if let Some(hook) = hook {
+        hook(ctx, rec);
+    }
+}
+
 pub(crate) fn emit_scene_concluded(ctx: &mut Ctx<'_>, rec: &SceneRecord) {
     // A scene whose last participant vanished (all destroyed) records nothing —
     // there is no living entity for it to concern, and "0 participants" is not a

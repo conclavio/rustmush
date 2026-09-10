@@ -4612,15 +4612,9 @@ impl Ctx<'_> {
         };
         let ns = scene.ns.clone();
         self.persist(ModuleOp {
-            ns: ns.clone(),
-            op: ModuleWrite::Del {
-                key: scene.ruleset_state_key.clone(),
-            },
-        });
-        self.persist(ModuleOp {
             ns,
             op: ModuleWrite::Del {
-                key: SmolStr::new(map_blob_key(id)),
+                key: scene.ruleset_state_key.clone(),
             },
         });
         true
@@ -4699,30 +4693,6 @@ impl Ctx<'_> {
         Ok(())
     }
 
-    /// Read a scene's map blob.
-    #[must_use]
-    pub fn map_blob(&self, scene: SceneId) -> Option<&serde_json::Value> {
-        self.w.scene_map(scene)
-    }
-
-    /// Set a scene's map blob (core never interprets it) and persist it.
-    pub fn set_map_blob(
-        &mut self,
-        scene: SceneId,
-        value: serde_json::Value,
-    ) -> Result<(), CmdError> {
-        let (ns, _) = self.scene_persist_target(scene)?;
-        self.w.scene_map_set(scene, value.clone());
-        self.persist(ModuleOp {
-            ns,
-            op: ModuleWrite::JsonSet {
-                key: SmolStr::new(map_blob_key(scene)),
-                value,
-            },
-        });
-        Ok(())
-    }
-
     /// The `(namespace, state key)` a scene's module data persists under:
     /// always the scene's **owning** namespace (recorded at creation), so
     /// two modules touching one scene never scatter its documents.
@@ -4772,12 +4742,6 @@ pub(crate) fn restored_prompt(w: &World, actor: ObjId) -> PromptSpec {
         mode: mush_proto::InputMode::Normal,
         text: None,
     })
-}
-
-/// The persistence key a scene's map blob lives under.
-#[must_use]
-pub fn map_blob_key(scene: SceneId) -> String {
-    format!("scene:{}:map", scene.0)
 }
 
 /// A `Duration` as clamped milliseconds (>= 1).

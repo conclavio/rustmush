@@ -346,6 +346,8 @@ impl GameModule for AtlasModule {
         reg.classify_commands(CommandCompatibility::LegacyPostImage);
         crate::commands::register_pack(reg)?;
         crate::travel_cmd::register_travel(reg)?;
+        // S4: the scene's side of a window, and walking on it.
+        crate::map_cmd::register_map(reg)?;
         // S2: the travel system — one hook under three points (the movement gate and
         // the timed-portal departure queue, the transit look, the transit projection),
         // three observers, and one `Coarse` tick that drains the queue, advances every
@@ -358,6 +360,8 @@ impl GameModule for AtlasModule {
         reg.hook(HookPoint::LookRendered, Arc::clone(&hook));
         reg.hook(HookPoint::Perceive, hook);
         reg.subscribe(WorldEventKind::Moved, Arc::new(crate::travel::on_moved));
+        // S4: a character who walks onto, off or across a window's rooms.
+        reg.subscribe(WorldEventKind::Moved, Arc::new(crate::window::on_moved));
         reg.subscribe(
             WorldEventKind::Disconnected,
             Arc::new(crate::travel::on_disconnected),
@@ -413,6 +417,9 @@ impl GameModule for AtlasModule {
         // landed (the process died between the open and the composite) close.
         if let Err(error) = crate::window::register_resolver(ctx.w) {
             tracing::debug!(%error, "atlas: no room resolver registered");
+        }
+        if let Err(error) = crate::window::register_scene_hooks(ctx.w) {
+            tracing::debug!(%error, "atlas: no scene hooks registered");
         }
         for domain in orphans {
             if let Err(error) = mush_sim::close_window(ctx, domain) {

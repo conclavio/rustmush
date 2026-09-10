@@ -2053,6 +2053,7 @@ dependencies = [
  "mush-jobs",
  "mush-npc",
  "mush-proto",
+ "mush-scenes",
  "mush-sim",
  "mush-testkit",
  "serde",
@@ -2711,10 +2712,14 @@ dependencies = [
 name = "mush-tactics"
 version = "0.1.0"
 dependencies = [
+ "mush-atlas",
+ "mush-content",
  "mush-core",
  "mush-dice",
+ "mush-npc",
  "mush-proto",
  "mush-ruleset",
+ "mush-sim",
  "mush-testkit",
  "serde",
  "serde_json",

@@ -204,11 +204,12 @@ impl GameModule for TacticsStub {
                 switches: vec!["start".into(), "stop".into(), "status".into()],
                 shape: ArgShape::Raw,
                 help: "+btest/start | /stop | /status  --  The tactical seam test. \
-                       /start opens a toy battle scene around you: a 2x2 hex map blob \
-                       is stored, a per-scene reactor tick (250ms) starts bumping your \
-                       heat, and the tactics.map panel streams a keyframe then deltas. \
-                       /status reports your heat and the module pulse count; /stop \
-                       ends the scene (state and map are deleted from the store)."
+                       /start opens a toy battle scene around you: a real window is \
+                       opened over your room (its map drawn off-loop by the atlas), a \
+                       per-scene reactor tick (250ms) starts bumping your heat, and the \
+                       tactics.map panel streams a keyframe then deltas. /status reports \
+                       your heat and the module pulse count; /stop ends the scene (its \
+                       state is deleted from the store and the window closes)."
                     .into(),
                 ..CommandSpec::default()
             },
@@ -323,6 +324,10 @@ impl EventHook for SceneJanitor {
         if let Some(st) = ctx.state_mut::<TacticsState>() {
             st.battles.retain(|_, s| *s != scene);
         }
+        // S4: the battle's window closes with it; everyone stays where they stand.
+        if let Err(error) = mush_atlas::window::close_for_scene(ctx, "core", scene.0) {
+            tracing::debug!(%scene, %error, "tacseam: no window to close");
+        }
     }
 }
 
@@ -352,18 +357,31 @@ fn battle_tick(feed: &PanelFeedHandle, ctx: &mut Ctx<'_>, scene: SceneId) {
     }
 }
 
-/// A toy 2x2 hex map blob — core stores and returns it, never reads it.
-fn toy_map() -> serde_json::Value {
-    serde_json::json!({
-        "w": 2,
-        "h": 2,
-        "hexes": [
-            { "q": 0, "r": 0, "terrain": "clear", "elev": 0 },
-            { "q": 1, "r": 0, "terrain": "light-woods", "elev": 0 },
-            { "q": 0, "r": 1, "terrain": "rough", "elev": 1 },
-            { "q": 1, "r": 1, "terrain": "water", "elev": -1 },
-        ],
-    })
+/// S4: the battle's map is a real window over the actor's room (plan §3.5),
+/// composited off-loop by the atlas; a room with no geometry, or no atlas, is
+/// a battle without a map, said so.
+fn open_window(ctx: &mut Ctx<'_>, actor: ObjId, scene: SceneId) -> Option<u64> {
+    let room = ctx.w.get(actor).and_then(|o| o.location)?;
+    match mush_atlas::window::open(
+        ctx,
+        mush_atlas::OpenRequest {
+            anchors: vec![room],
+            bbox: None,
+            opened_by: mush_sim::WindowOpener::Scene {
+                system: SmolStr::new_static("core"),
+                id: scene.0,
+            },
+            cell_cm: Some(mush_atlas::STREET_CELL_CM),
+            participants: vec![actor],
+        },
+    ) {
+        Ok(domain) => Some(domain.0),
+        Err(error) => {
+            ctx.out
+                .info(actor, format!("BTEST: no map here ({error})."));
+            None
+        }
+    }
 }
 
 fn btest_cmd(feed: &PanelFeedHandle, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -378,7 +396,7 @@ fn btest_cmd(feed: &PanelFeedHandle, ctx: &mut Ctx<'_>) -> Result<(), CmdError> 
             ));
         }
         let scene = ctx.start_scene(SCENE_KIND, BTreeSet::from([actor]));
-        ctx.set_map_blob(scene, toy_map())?;
+        let window = open_window(ctx, actor, scene);
         ctx.scene_state_set(scene, actor, serde_json::json!({ "heat": 0 }))?;
         ctx.scene_tick_start(scene, BATTLE_TICK, BATTLE_PERIOD)?;
         if let Some(st) = ctx.state_mut::<TacticsState>() {
@@ -389,7 +407,7 @@ fn btest_cmd(feed: &PanelFeedHandle, ctx: &mut Ctx<'_>) -> Result<(), CmdError> 
             Audience::Actor(actor),
             serde_json::json!({
                 "scene": scene.0,
-                "map": toy_map(),
+                "window": window,
                 "units": { actor.to_string(): { "heat": 0 } },
             }),
         );

@@ -28,6 +28,7 @@ pub mod def;
 pub mod geom;
 pub mod hydrate;
 pub mod hydrate_cmd;
+pub mod map_cmd;
 pub mod module;
 pub mod place;
 pub mod raster;
@@ -72,8 +73,8 @@ pub use validate::{
     Finding, Severity, ValidateContext, ValidateScope, blocking, check_pack, validate,
 };
 pub use window::{
-    Composite, CompositeInput, CompositeJob, CompositeOutcome, DEFAULT_CELL_SIZES,
+    Compass, Composite, CompositeInput, CompositeJob, CompositeOutcome, DEFAULT_CELL_SIZES,
     DEFAULT_WINDOW_MARGIN_M, DEFAULT_WINDOW_MAX_CELLS, FeatureOverlay, OpenRequest, STREET_CELL_CM,
-    SurfaceComposite, WindowEntry, WindowFrame, Windows, capture, choose_cell, composite,
-    register_cell_size, resolve_room, run_async,
+    StepReport, StepTarget, SurfaceComposite, WindowEntry, WindowFrame, Windows, capture,
+    choose_cell, composite, register_cell_size, resolve_room, run_async,
 };

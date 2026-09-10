@@ -409,7 +409,6 @@ impl GameModule for ToyModule {
                 state(ctx).scene = Some(id);
                 ctx.scene_tick_start(id, "battle", Duration::from_millis(100))?;
                 ctx.scene_state_set(id, actor, json!({"hp": 10}))?;
-                ctx.set_map_blob(id, json!({"hex": [0, 0]}))?;
                 Ok(())
             }),
         )?;
@@ -2363,29 +2362,20 @@ fn scene_lifecycle_hooks_state_map_and_ticks() {
     assert_eq!(scene.kind, "toy.battle");
     assert!(scene.members.contains(&nick));
     assert_eq!(scene.ruleset_state_key, format!("scene:{}:state", id.0));
-    // RulesetStateStore + MapBlob in RAM.
+    // RulesetStateStore in RAM (the map blob went with S4: a map is the
+    // atlas's window, never a scene's opaque document).
     assert_eq!(engine.world.scene_state(id, nick), Some(&json!({"hp": 10})));
-    assert_eq!(engine.world.scene_map(id), Some(&json!({"hex": [0, 0]})));
-    // Persisted as module ops: a state snapshot + the map blob.
+    // Persisted as module ops: the state snapshot.
     let ops = engine.take_module_ops();
     assert_eq!(
         ops,
-        vec![
-            ModuleOp {
-                ns: "toy".into(),
-                op: ModuleWrite::JsonSet {
-                    key: SmolStr::new(format!("scene:{}:state", id.0)),
-                    value: json!({ nick.to_string(): {"hp": 10} }),
-                },
+        vec![ModuleOp {
+            ns: "toy".into(),
+            op: ModuleWrite::JsonSet {
+                key: SmolStr::new(format!("scene:{}:state", id.0)),
+                value: json!({ nick.to_string(): {"hp": 10} }),
             },
-            ModuleOp {
-                ns: "toy".into(),
-                op: ModuleWrite::JsonSet {
-                    key: SmolStr::new(format!("scene:{}:map", id.0)),
-                    value: json!({"hex": [0, 0]}),
-                },
-            },
-        ]
+        }]
     );
     // The scene ticker fires every 100ms and re-arms.
     let _ = fire(&mut engine, 1_000_100);
@@ -2401,20 +2391,12 @@ fn scene_lifecycle_hooks_state_map_and_ticks() {
     let ops = engine.take_module_ops();
     assert_eq!(
         ops,
-        vec![
-            ModuleOp {
-                ns: "toy".into(),
-                op: ModuleWrite::Del {
-                    key: SmolStr::new(format!("scene:{}:state", id.0)),
-                },
+        vec![ModuleOp {
+            ns: "toy".into(),
+            op: ModuleWrite::Del {
+                key: SmolStr::new(format!("scene:{}:state", id.0)),
             },
-            ModuleOp {
-                ns: "toy".into(),
-                op: ModuleWrite::Del {
-                    key: SmolStr::new(format!("scene:{}:map", id.0)),
-                },
-            },
-        ]
+        },]
     );
     // The ticker dies with the scene.
     let _ = fire(&mut engine, 1_000_300);
@@ -2454,7 +2436,11 @@ fn scene_persistence_uses_owning_namespace_regardless_of_caller() {
             _ => None,
         })
         .collect();
-    assert_eq!(dels.len(), 2);
+    assert_eq!(
+        dels.len(),
+        1,
+        "the scene's state document (the map went with S4)"
+    );
     assert!(
         dels.iter().all(|op| op.ns == "toy"),
         "scene deletes must land in the OWNER's namespace: {dels:?}"

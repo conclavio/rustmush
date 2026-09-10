@@ -640,6 +640,13 @@ fn create_entry(
                 }
             };
             let previous = state.records.features.get(&key).map(|r| r.revision);
+            // S4: the state is live (doc 14 §4.3 rule 8) — a pack that moves on
+            // keeps the wreckage a window wrote back; only a new feature is whole.
+            let live_state = state
+                .records
+                .features
+                .get(&key)
+                .map_or(crate::record::FeatureState::Intact, |r| r.state);
             let rec = FeatureRec {
                 key: key.clone(),
                 region,
@@ -648,7 +655,7 @@ fn create_entry(
                 geometry,
                 z_range: def.z_range,
                 blocks: def.blocks,
-                state: crate::record::FeatureState::Intact,
+                state: live_state,
                 raise_cm: def.raise_cm,
                 room,
                 revision: revision_after(previous),

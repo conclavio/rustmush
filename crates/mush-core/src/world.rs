@@ -187,8 +187,6 @@ pub struct World {
     next_scene_id: u64,
     /// Per-`(scene, obj)` ruleset state (the `RulesetStateStore`).
     scene_state: BTreeMap<(SceneId, ObjId), serde_json::Value>,
-    /// Per-scene map blobs (opaque to core).
-    scene_maps: BTreeMap<SceneId, serde_json::Value>,
     /// Typed module state slots (anymap; in-RAM working state).
     module_state: ModuleStateMap,
     /// Per-actor input-context stacks (transient parser state — empty on
@@ -1378,7 +1376,6 @@ impl World {
     pub fn scene_remove(&mut self, id: SceneId) -> Option<Scene> {
         let scene = self.scenes.remove(&id)?;
         self.scene_state.retain(|(sid, _), _| *sid != id);
-        self.scene_maps.remove(&id);
         Some(scene)
     }
 
@@ -1430,22 +1427,6 @@ impl World {
             }
         }
         serde_json::Value::Object(map)
-    }
-
-    /// A scene's map blob.
-    #[must_use]
-    pub fn scene_map(&self, scene: SceneId) -> Option<&serde_json::Value> {
-        self.scene_maps.get(&scene)
-    }
-
-    /// Set a scene's map blob (opaque to core). Returns `false` when the
-    /// scene does not exist.
-    pub fn scene_map_set(&mut self, scene: SceneId, value: serde_json::Value) -> bool {
-        if !self.scenes.contains_key(&scene) {
-            return false;
-        }
-        self.scene_maps.insert(scene, value);
-        true
     }
 
     // ------------------------------------------------------------------

@@ -532,15 +532,20 @@ pub fn composite(input: &CompositeInput) -> Result<Composite, String> {
         .map_err(|e| e.to_string())?;
         for y in 0..grid.height {
             for x in 0..grid.width {
-                let cell = sample(&views, &grid, x, y).unwrap_or_else(|| {
-                    let c = grid.centre(x, y);
-                    let ground = background(&input.region, surface, c.x, c.y);
-                    Cell {
-                        class: ground.class,
-                        elev_cm: i16::try_from(ground.elev_cm).unwrap_or(i16::MAX),
-                        cover: 0,
-                        room: 0,
+                // Off every tile: the ground has its background (P4); a floor
+                // ends at its building and is void beyond it.
+                let cell = sample(&views, &grid, x, y).unwrap_or_else(|| match surface {
+                    SurfaceRef::Ground => {
+                        let c = grid.centre(x, y);
+                        let ground = background(&input.region, surface, c.x, c.y);
+                        Cell {
+                            class: ground.class,
+                            elev_cm: i16::try_from(ground.elev_cm).unwrap_or(i16::MAX),
+                            cover: 0,
+                            room: 0,
+                        }
                     }
+                    SurfaceRef::Floor { .. } => Cell::default(),
                 });
                 cells.set(x, y, Cell { room: 0, ..cell });
             }
@@ -741,6 +746,9 @@ pub fn is_window_key(key: &str) -> bool {
 pub struct Windows {
     /// Open windows by domain.
     pub open: BTreeMap<u64, WindowEntry>,
+    /// The surface (an index into the frame's) each viewer looks at, when they
+    /// chose one (`+map/floor`); RAM-only.
+    pub viewer_floor: BTreeMap<ObjId, usize>,
     /// The registered cell sizes (doc 14 §3.4), finest first.
     pub cell_sizes: BTreeSet<u16>,
     /// The margin around the anchors, centimetres.
@@ -753,6 +761,7 @@ impl Default for Windows {
     fn default() -> Windows {
         Windows {
             open: BTreeMap::new(),
+            viewer_floor: BTreeMap::new(),
             cell_sizes: DEFAULT_CELL_SIZES.iter().copied().collect(),
             margin_cm: i64::from(DEFAULT_WINDOW_MARGIN_M) * 100,
             max_cells: DEFAULT_WINDOW_MAX_CELLS,
@@ -1296,6 +1305,8 @@ pub fn entry_cell(
     if free.is_empty() {
         return None;
     }
+    // The doorway's own cell centre is the target, so the entry cell lines up
+    // with the door rather than beside it.
     let target: PointCm = portal
         .and_then(|k| records.portals.get(k))
         .and_then(|p| match &p.geometry {
@@ -1305,6 +1316,12 @@ pub fn entry_cell(
                 Some(crate::geom::midpoint(a, b))
             }
             crate::record::PortalGeometry::Point(p) => p.xy().to_cm().ok(),
+        })
+        .map(|p| {
+            surface
+                .grid
+                .cell_of(p)
+                .map_or(p, |(x, y)| surface.grid.centre(x, y))
         })
         .unwrap_or_else(|| {
             geo.footprint
@@ -1438,4 +1455,687 @@ pub fn summary(w: &World, entry: &WindowEntry) -> String {
         },
         anchors.join(", ")
     )
+}
+
+// ---------------------------------------------------------------------------
+// Scenes: a window per engagement (plan §3.5), and the exits (doc 14 §3.4)
+// ---------------------------------------------------------------------------
+
+/// The window a scene opened, when one is open.
+#[must_use]
+pub fn window_for_scene(st: &AtlasState, system: &str, id: u64) -> Option<u64> {
+    st.windows
+        .open
+        .values()
+        .find(|e| {
+            matches!(&e.opened_by, WindowOpener::Scene { system: s, id: i } if s.as_str() == system && *i == id)
+        })
+        .map(|e| e.domain)
+}
+
+/// Open a scene's window over its anchor room, its members placed when the
+/// composite lands.
+///
+/// # Errors
+///
+/// The open's refusal, or that the scene has a window already.
+pub fn open_for_scene(
+    ctx: &mut Ctx<'_>,
+    system: &str,
+    id: u64,
+    anchor: ObjId,
+    members: Vec<ObjId>,
+) -> Result<DomainId, String> {
+    if let Some(domain) = window_for_scene(state(ctx)?, system, id) {
+        return Err(format!("the scene has window #{domain} already"));
+    }
+    open(
+        ctx,
+        OpenRequest {
+            anchors: vec![anchor],
+            bbox: None,
+            opened_by: WindowOpener::Scene {
+                system: SmolStr::new(system),
+                id,
+            },
+            cell_cm: Some(STREET_CELL_CM),
+            participants: members,
+        },
+    )
+}
+
+/// Close a scene's window, if it has one. `Ok(None)` when it has none.
+///
+/// # Errors
+///
+/// The close's refusal.
+pub fn close_for_scene(
+    ctx: &mut Ctx<'_>,
+    system: &str,
+    id: u64,
+) -> Result<Option<Vec<ObjId>>, String> {
+    let Some(domain) = window_for_scene(state(ctx)?, system, id) else {
+        return Ok(None);
+    };
+    close(ctx, DomainId(domain), "the scene ended").map(Some)
+}
+
+/// The scenes module's start hook: a timestop opens a window over its room.
+pub fn scene_started(ctx: &mut Ctx<'_>, rec: &mush_scenes::SceneRecord) {
+    if rec.kind.as_str() != mush_scenes::KIND_TIMESTOP {
+        return;
+    }
+    let members: Vec<ObjId> = rec.members().collect();
+    match open_for_scene(ctx, "scenes", rec.id.0, rec.anchor, members) {
+        Ok(domain) => {
+            if ctx.w.get(rec.facilitator).is_some() {
+                ctx.out.info(
+                    rec.facilitator,
+                    format!(
+                        "Window #{domain} opens over the scene; its map is being drawn (+map)."
+                    ),
+                );
+            }
+        }
+        Err(error) => {
+            tracing::debug!(scene = rec.id.0, %error, "atlas: no window for the scene");
+        }
+    }
+}
+
+/// The scenes module's end hook: the window closes with the scene.
+pub fn scene_ended(ctx: &mut Ctx<'_>, rec: &mush_scenes::SceneRecord) {
+    if let Err(error) = close_for_scene(ctx, "scenes", rec.id.0) {
+        tracing::warn!(scene = rec.id.0, %error, "atlas: closing the scene's window");
+    }
+}
+
+/// Register the scene hooks with the scenes module, when it is composed.
+///
+/// # Errors
+///
+/// The scenes module's refusal.
+pub fn register_scene_hooks(w: &mut World) -> Result<(), String> {
+    mush_scenes::register_scene_hooks(
+        w,
+        Some(Arc::new(scene_started)),
+        Some(Arc::new(scene_ended)),
+    )
+}
+
+/// The portal between two rooms, when the atlas knows one.
+#[must_use]
+pub fn portal_between(records: &Records, from: Option<ObjId>, to: ObjId) -> Option<RecordKey> {
+    let from = from?;
+    records
+        .portals
+        .values()
+        .find(|p| {
+            matches!(
+                (&p.from, &p.to),
+                (crate::record::Endpoint::Room(a), crate::record::Endpoint::Room(b))
+                    if (*a == from && *b == to) || (*a == to && *b == from)
+            )
+        })
+        .map(|p| p.key.clone())
+}
+
+/// The `Moved` observer (doc 14 §3.4 *Placement*): a character who walks into
+/// a room on a map is placed on a free cell by the portal they came through; one
+/// who walks off a map is released where they stand; one who walks between two
+/// rooms of one map is re-posed.
+pub fn on_moved(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEvent) {
+    let mush_core::WorldEvent::Moved { who, from, to } = ev else {
+        return;
+    };
+    let (who, from, to) = (*who, *from, *to);
+    if !ctx
+        .w
+        .get(who)
+        .is_some_and(|o| matches!(o.kind, mush_core::ObjKind::Player | mush_core::ObjKind::Npc))
+    {
+        return;
+    }
+    let placed = mush_sim::pose_of(ctx.w, who).map(|(d, _)| d);
+    let covering = state(ctx)
+        .ok()
+        .and_then(|st| st.windows.covering(to))
+        .filter(|e| e.composite.is_some())
+        .map(|e| DomainId(e.domain));
+    if let Some(d) = placed
+        && covering != Some(d)
+        && let Err(error) = mush_sim::unplace(ctx, who, "left the map")
+    {
+        tracing::warn!(%who, %error, "atlas: releasing a character who walked off a map");
+        return;
+    }
+    let Some(domain) = covering else {
+        return;
+    };
+    let portal = state(ctx)
+        .ok()
+        .and_then(|st| portal_between(&st.records, from, to));
+    if let Err(error) = place_in_room(ctx, domain, who, to, portal.as_ref()) {
+        ctx.out
+            .info(who, format!("You are off the map here: {error}."));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Steps and growth
+// ---------------------------------------------------------------------------
+
+/// A compass step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Compass {
+    /// Cells east per step.
+    pub dx: i32,
+    /// Cells north per step.
+    pub dy: i32,
+}
+
+impl Compass {
+    /// Parse `n`, `ne`, `east`, … or a cell `x,y`.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Compass> {
+        let (dx, dy) = match word.trim().to_ascii_lowercase().as_str() {
+            "n" | "north" => (0, 1),
+            "s" | "south" => (0, -1),
+            "e" | "east" => (1, 0),
+            "w" | "west" => (-1, 0),
+            "ne" | "northeast" => (1, 1),
+            "nw" | "northwest" => (-1, 1),
+            "se" | "southeast" => (1, -1),
+            "sw" | "southwest" => (-1, -1),
+            _ => return None,
+        };
+        Some(Compass { dx, dy })
+    }
+
+    /// The bearing, degrees clockwise from north.
+    #[must_use]
+    pub fn facing_deg(self) -> u16 {
+        match (self.dx.signum(), self.dy.signum()) {
+            (0, 1) => 0,
+            (1, 1) => 45,
+            (1, 0) => 90,
+            (1, -1) => 135,
+            (0, -1) => 180,
+            (-1, -1) => 225,
+            (-1, 0) => 270,
+            (-1, 1) => 315,
+            _ => 0,
+        }
+    }
+
+    /// The compass word.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match (self.dx.signum(), self.dy.signum()) {
+            (0, 1) => "north",
+            (1, 1) => "northeast",
+            (1, 0) => "east",
+            (1, -1) => "southeast",
+            (0, -1) => "south",
+            (-1, -1) => "southwest",
+            (-1, 0) => "west",
+            (-1, 1) => "northwest",
+            _ => "nowhere",
+        }
+    }
+}
+
+/// Where a step wants to go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepTarget {
+    /// `n` cells along a heading.
+    Along(Compass, u16),
+    /// Toward a cell, at most `MAX_STEP_CELLS` steps.
+    Toward(u16, u16),
+}
+
+/// The most cells one `+move` walks.
+pub const MAX_STEP_CELLS: u16 = 64;
+
+/// What a walk did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepReport {
+    /// Cells walked.
+    pub walked: u16,
+    /// Where the walk ended.
+    pub at: (u16, u16),
+    /// The room there, when the cell is on a footprint.
+    pub room: Option<ObjId>,
+    /// Why it stopped short, if it did.
+    pub stopped: Option<String>,
+}
+
+/// The surface, cell and elevation gap a pose stands at.
+fn locate(composite: &Composite, pose: &Pose) -> Option<(usize, u16, u16)> {
+    let p = pose_cm(pose)?;
+    let z_cm = cm(pose.z).ok()?;
+    composite
+        .surfaces
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| {
+            let (x, y) = s.cell_of(p)?;
+            let cell = s.cells.get(x, y)?;
+            (cell.class != TerrainClass::Void).then_some((
+                i,
+                x,
+                y,
+                (i64::from(cell.elev_cm) - z_cm).abs(),
+            ))
+        })
+        .min_by_key(|(_, _, _, dz)| *dz)
+        .map(|(i, x, y, _)| (i, x, y))
+}
+
+/// Whether a feature on the surface blocks movement into a cell. A doorway cut
+/// through a wall is the wall's own gap: the wall's feature does not block it.
+fn blocked_by_feature(
+    surface: &SurfaceComposite,
+    x: u16,
+    y: u16,
+    class: TerrainClass,
+) -> Option<&RecordKey> {
+    surface
+        .features
+        .iter()
+        .find(|f| {
+            f.blocks.movement
+                && f.state != FeatureState::Destroyed
+                && f.cells.contains(&(x, y))
+                && !(matches!(
+                    f.kind,
+                    FeatureKind::Wall | FeatureKind::Rail | FeatureKind::Gate
+                ) && class == TerrainClass::Door)
+        })
+        .map(|f| &f.key)
+}
+
+/// Walk `actor` across their window (plan §3.5 `+move`, cost one per cell until
+/// S5's table): each cell must be ground someone can stand on, free, not behind
+/// a feature that blocks movement, and — crossing into another room's footprint
+/// — a room the walker may enter (its access; staff anywhere). A step off the
+/// map's edge onto a room's footprint grows the map (doc 14 §3.4 *Growth*) and
+/// stops the walk until the new composite lands.
+///
+/// # Errors
+///
+/// A message when the actor is not on a map, or the simulation refuses the pose.
+pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepReport, String> {
+    let (domain, pose) =
+        mush_sim::pose_of(ctx.w, actor).ok_or_else(|| "you are not on a map".to_string())?;
+    let staff = crate::module::is_staff(ctx.w, actor);
+    let (walk, heading, end_surface, grow_at) = {
+        let st = state(ctx)?;
+        let entry = st
+            .windows
+            .open
+            .get(&domain.0)
+            .ok_or_else(|| "your map is closed".to_string())?;
+        let composite = entry
+            .composite
+            .as_ref()
+            .ok_or_else(|| "the map is not drawn yet".to_string())?;
+        let (mut si, mut x, mut y) =
+            locate(composite, &pose).ok_or_else(|| "you are off the map".to_string())?;
+        // Everyone else's cells, on every surface.
+        let taken: BTreeSet<(usize, u16, u16)> = mush_sim::participants(ctx.w, domain)
+            .into_iter()
+            .filter(|(o, _)| *o != actor)
+            .filter_map(|(_, p)| locate(composite, &p))
+            .collect();
+        let surface_at = |i: usize| composite.surfaces.get(i);
+        let mut current_room = surface_at(si).and_then(|s| s.room_at(x, y));
+        let (heading, budget) = match target {
+            StepTarget::Along(h, n) => (h, n.clamp(1, MAX_STEP_CELLS)),
+            StepTarget::Toward(tx, ty) => (
+                Compass {
+                    dx: i32::from(tx) - i32::from(x),
+                    dy: i32::from(ty) - i32::from(y),
+                },
+                MAX_STEP_CELLS,
+            ),
+        };
+        let mut walked = 0u16;
+        let mut stopped = None;
+        let mut grow_at: Option<PointCm> = None;
+        for _ in 0..budget {
+            let Some(surface) = surface_at(si) else {
+                stopped = Some("no such surface".to_string());
+                break;
+            };
+            let (dx, dy) = match target {
+                StepTarget::Along(h, _) => (h.dx.signum(), h.dy.signum()),
+                StepTarget::Toward(tx, ty) => {
+                    let (dx, dy) = (
+                        (i32::from(tx) - i32::from(x)).signum(),
+                        (i32::from(ty) - i32::from(y)).signum(),
+                    );
+                    if dx == 0 && dy == 0 {
+                        break;
+                    }
+                    (dx, dy)
+                }
+            };
+            let nx = i32::from(x) + dx;
+            let ny = i32::from(y) + dy;
+            let inside = nx >= 0
+                && ny >= 0
+                && nx < i32::from(surface.grid.width)
+                && ny < i32::from(surface.grid.height);
+            if !inside {
+                let res = i64::from(surface.grid.resolution_cm);
+                grow_at = Some(PointCm {
+                    x: surface.grid.origin.x + i64::from(nx) * res + res / 2,
+                    y: surface.grid.origin.y + i64::from(ny) * res + res / 2,
+                });
+                stopped = Some("the map ends here".to_string());
+                break;
+            }
+            let (Ok(cx), Ok(cy)) = (u16::try_from(nx), u16::try_from(ny)) else {
+                stopped = Some("the map ends here".to_string());
+                break;
+            };
+            // The cell ahead on this surface; when it is not ground to stand
+            // on, another surface's cell there at the same height is (a
+            // doorway out of a building onto the lot, a floor onto its
+            // stair's landing): the walk crosses onto it.
+            let here_elev = surface.cells.get(x, y).map_or(0, |c| i32::from(c.elev_cm));
+            let mut next = surface.cells.get(cx, cy).map(|c| (si, c));
+            if !next.is_some_and(|(_, c)| standable(c)) {
+                next = composite
+                    .surfaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != si)
+                    .filter_map(|(j, s)| s.cells.get(cx, cy).map(|c| (j, c)))
+                    .find(|(_, c)| standable(*c) && (i32::from(c.elev_cm) - here_elev).abs() <= 150)
+                    .or(next);
+            }
+            let Some((ni, cell)) = next else {
+                stopped = Some("the map ends here".to_string());
+                break;
+            };
+            if !standable(cell) {
+                stopped = Some(format!("{} is in the way", cell.class.label()));
+                break;
+            }
+            if taken.contains(&(ni, cx, cy)) {
+                stopped = Some("someone is standing there".to_string());
+                break;
+            }
+            let Some(next_surface) = surface_at(ni) else {
+                stopped = Some("no such surface".to_string());
+                break;
+            };
+            if let Some(key) = blocked_by_feature(next_surface, cx, cy, cell.class) {
+                stopped = Some(format!("{} is in the way", key.entry));
+                break;
+            }
+            let there = next_surface.room_at(cx, cy);
+            if there != current_room
+                && let Some(room) = there
+                && !staff
+                && st
+                    .records
+                    .roomgeo
+                    .get(&room)
+                    .is_some_and(|g| g.access == crate::record::Access::Restricted)
+            {
+                stopped = Some(format!("{} is not open to you", name(ctx.w, room)));
+                break;
+            }
+            si = ni;
+            x = cx;
+            y = cy;
+            current_room = there;
+            walked += 1;
+        }
+        (
+            StepReport {
+                walked,
+                at: (x, y),
+                room: current_room,
+                stopped,
+            },
+            heading,
+            si,
+            grow_at,
+        )
+    };
+    if walk.walked > 0 {
+        let pose = {
+            let st = state(ctx)?;
+            let composite = st
+                .windows
+                .open
+                .get(&domain.0)
+                .and_then(|e| e.composite.as_ref())
+                .ok_or_else(|| "your map closed".to_string())?;
+            let surface = composite
+                .surfaces
+                .get(end_surface)
+                .ok_or_else(|| "no such surface".to_string())?;
+            let mut new_pose =
+                pose_at(surface, walk.at.0, walk.at.1).ok_or_else(|| "no such cell".to_string())?;
+            new_pose.facing_deg = heading.facing_deg();
+            new_pose
+        };
+        mush_sim::place(ctx, actor, domain, pose)?;
+    }
+    if let Some(beyond) = grow_at {
+        let surface_ref = {
+            let st = state(ctx)?;
+            st.windows
+                .open
+                .get(&domain.0)
+                .and_then(|e| e.frame.surfaces.get(end_surface).cloned())
+        };
+        if let Some(surface_ref) = surface_ref {
+            let mut report = walk;
+            match grow(ctx, domain, beyond, &surface_ref) {
+                Ok(Some(room)) => {
+                    report.stopped = Some(format!(
+                        "the map grows to take in {}; step again when it is drawn",
+                        name(ctx.w, room)
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => report.stopped = Some(error),
+            }
+            return Ok(report);
+        }
+    }
+    Ok(walk)
+}
+
+/// Grow `domain`'s window to take in the room whose footprint holds `beyond` on
+/// `surface` (doc 14 §3.4 *Growth*): the frame widens by that footprint plus
+/// the margin, the cell size is chosen again under the cap, and a re-composite
+/// is deferred. `Ok(None)` when no footprint lies there.
+///
+/// # Errors
+///
+/// A message when the room is on another window's map, or no cell size fits.
+pub fn grow(
+    ctx: &mut Ctx<'_>,
+    domain: DomainId,
+    beyond: PointCm,
+    surface: &SurfaceRef,
+) -> Result<Option<ObjId>, String> {
+    let (room, new_frame, rooms) = {
+        let st = state(ctx)?;
+        let entry = st
+            .windows
+            .open
+            .get(&domain.0)
+            .ok_or_else(|| format!("window #{domain} is not open"))?;
+        let region = st
+            .records
+            .regions
+            .get(&entry.frame.region)
+            .ok_or_else(|| format!("no region {}", entry.frame.region))?;
+        let Some(geo) = st
+            .records
+            .roomgeo
+            .values()
+            .filter(|g| &g.surface == surface)
+            .filter(|g| {
+                st.records
+                    .neighborhoods
+                    .get(&g.neighborhood)
+                    .is_some_and(|n| n.region == entry.frame.region)
+            })
+            .find(|g| g.footprint.shape().is_ok_and(|s| s.contains(beyond)))
+        else {
+            return Ok(None);
+        };
+        if let Some(other) = st.windows.covering(geo.room)
+            && other.domain != entry.domain
+        {
+            return Err(format!(
+                "the map cannot grow into {}: it is on window #{}'s map",
+                name(ctx.w, geo.room),
+                other.domain
+            ));
+        }
+        let shape = geo.footprint.shape().map_err(|e| e.to_string())?;
+        let wanted = entry
+            .frame
+            .bbox
+            .union(&with_margin(shape.bbox(), st.windows.margin_cm));
+        let region_extent = region.extent.to_cm().map_err(|e| e.to_string())?;
+        let bbox = clip(&wanted, &region_extent)
+            .ok_or_else(|| "the window lies outside its region".to_string())?;
+        let cell_cm = choose_cell(
+            bbox,
+            entry.frame.cell_cm.min(STREET_CELL_CM),
+            &st.windows.cell_sizes,
+            st.windows.max_cells,
+        )
+        .ok_or_else(|| "the map cannot grow: no registered cell size fits".to_string())?;
+        let frame = WindowFrame {
+            region: entry.frame.region.clone(),
+            surfaces: entry.frame.surfaces.clone(),
+            bbox,
+            cell_cm,
+        };
+        let mut rooms = entry.rooms.clone();
+        for g in st.records.roomgeo.values() {
+            if !frame.surfaces.contains(&g.surface) {
+                continue;
+            }
+            if st
+                .records
+                .neighborhoods
+                .get(&g.neighborhood)
+                .is_none_or(|n| n.region != frame.region)
+            {
+                continue;
+            }
+            let Ok(s) = g.footprint.shape() else {
+                continue;
+            };
+            if !intersects(&s.bbox(), &bbox) {
+                continue;
+            }
+            if let Some(other) = st.windows.covering(g.room)
+                && other.domain != entry.domain
+            {
+                return Err(format!(
+                    "the map cannot grow into {}: it is on window #{}'s map",
+                    name(ctx.w, g.room),
+                    other.domain
+                ));
+            }
+            rooms.insert(g.room);
+        }
+        (geo.room, frame, rooms)
+    };
+    {
+        let st = state_mut(ctx)?;
+        if let Some(entry) = st.windows.open.get_mut(&domain.0) {
+            entry.frame = new_frame;
+            entry.rooms = rooms;
+        }
+    }
+    let entry = state(ctx)?
+        .windows
+        .open
+        .get(&domain.0)
+        .cloned()
+        .ok_or_else(|| format!("window #{domain} is not open"))?;
+    persist_entry(ctx, &entry);
+    recomposite(ctx, domain)?;
+    Ok(Some(room))
+}
+
+// ---------------------------------------------------------------------------
+// Write-back (doc 14 §3.4)
+// ---------------------------------------------------------------------------
+
+/// Set a feature's state — the wreckage a fight leaves — and re-composite every
+/// window over it. Returns those windows.
+///
+/// # Errors
+///
+/// A message when the feature is unknown.
+pub fn set_feature_state(
+    ctx: &mut Ctx<'_>,
+    key: &RecordKey,
+    new_state: FeatureState,
+) -> Result<Vec<DomainId>, String> {
+    let (rec, windows) = {
+        let st = state_mut(ctx)?;
+        let f = st
+            .records
+            .features
+            .get_mut(key)
+            .ok_or_else(|| format!("no feature {key}"))?;
+        f.state = new_state;
+        f.revision = f.revision.saturating_add(1);
+        let rec = f.clone();
+        let bbox = feature_bbox(&rec);
+        let windows: Vec<DomainId> = st
+            .windows
+            .open
+            .values()
+            .filter(|e| {
+                e.frame.region == rec.region
+                    && e.frame.surfaces.contains(&rec.surface)
+                    && bbox.is_some_and(|b| intersects(&b, &e.frame.bbox))
+            })
+            .map(|e| DomainId(e.domain))
+            .collect();
+        (rec, windows)
+    };
+    put_doc(
+        ctx,
+        crate::record::record_key(crate::record::KIND_FEATURE, key),
+        &rec,
+    );
+    for &domain in &windows {
+        recomposite(ctx, domain)?;
+    }
+    Ok(windows)
+}
+
+/// Parse `intact`, `damaged[:<n>]` or `destroyed`.
+#[must_use]
+pub fn parse_feature_state(text: &str) -> Option<FeatureState> {
+    let t = text.trim().to_ascii_lowercase();
+    match t.as_str() {
+        "intact" | "whole" => Some(FeatureState::Intact),
+        "destroyed" | "gone" => Some(FeatureState::Destroyed),
+        "damaged" => Some(FeatureState::Damaged(128)),
+        _ => t
+            .strip_prefix("damaged:")
+            .and_then(|n| n.parse::<u8>().ok())
+            .filter(|n| *n > 0)
+            .map(FeatureState::Damaged),
+    }
 }

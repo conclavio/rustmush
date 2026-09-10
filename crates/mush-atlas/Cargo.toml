@@ -23,6 +23,9 @@ mush-canon.workspace = true
 # S4: windows open on the simulation's domains and place through its transitions;
 # `mush-sim` reads core, economy, scenes and proto, never the atlas.
 mush-sim.workspace = true
+# S4: a timestop opens a window over its room through the scenes module's hooks,
+# and `+map/open` reads the facilitator's scene; scenes reads core, canon and proto.
+mush-scenes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
