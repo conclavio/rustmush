@@ -448,6 +448,8 @@ pub fn atlas_config(
         // S4: the window's margin and cell cap.
         window_margin_m: cfg.window_margin_m,
         window_max_cells: cfg.window_max_cells,
+        // S5: the path search's visit budget.
+        path_max_cells: cfg.path_max_cells,
         packs: sources
             .into_iter()
             .map(|s| mush_atlas::PackSource {

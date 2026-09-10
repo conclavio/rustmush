@@ -1123,3 +1123,168 @@ fn a_move_sends_a_delta_whose_units_match_the_next_keyframe() {
     );
     assert_eq!(lines, vec![delta.note.clone().expect("note")]);
 }
+
+// ---------------------------------------------------------------------------
+// S5: the walk is priced, the engine's geometry reaches propagation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_walk_costs_the_tables_price_and_stops_at_what_it_cannot_cross() {
+    let mut tw = lot();
+    let staff = GOD;
+    let coffee = room_named(&tw, "Coffee Shop");
+    let backlot = room_named(&tw, "Backlot");
+    tw.world_mut()
+        .move_to(staff, coffee)
+        .expect("staff to the coffee shop");
+    let (_, _) = open_over(&mut tw, staff, "here");
+    let rae = tw.spawn_player("Rae");
+    tw.world_mut()
+        .move_to(rae, backlot)
+        .expect("Rae to the backlot");
+    tw.run(rae, "coffee");
+    // Two cells of floor: one each.
+    let ev = tw.run(rae, "+move west 2");
+    let out = text(&tw, &ev, rae);
+    assert!(out.contains("(cost 2.00)"), "{out}");
+    // A diagonal costs its length.
+    let ev = tw.run(rae, "+move ne");
+    let out = text(&tw, &ev, rae);
+    assert!(out.contains("(cost 1.41)"), "{out}");
+    // The wall is the table's refusal, in the table's words.
+    let ev = tw.run(rae, "+move west 40");
+    let out = text(&tw, &ev, rae);
+    assert!(out.contains("wall is in the way"), "{out}");
+}
+
+#[test]
+fn propagation_over_the_lot_takes_the_metric_and_the_line_of_sight() {
+    use mush_core::{ClockRef, ClockStamp};
+    use mush_propagation::PropagationContext;
+    let mut tw = lot();
+    let staff = GOD;
+    let coffee = room_named(&tw, "Coffee Shop");
+    let backlot = room_named(&tw, "Backlot");
+    tw.world_mut()
+        .move_to(staff, coffee)
+        .expect("staff to the coffee shop");
+    let (domain, _) = open_over(&mut tw, staff, "here");
+    let rae = tw.spawn_player("Rae");
+    let kit = tw.spawn_player("Kit");
+    tw.world_mut()
+        .move_to(rae, backlot)
+        .expect("Rae to the backlot");
+    tw.world_mut()
+        .move_to(kit, backlot)
+        .expect("Kit to the backlot");
+    tw.run(rae, "coffee");
+    tw.run(kit, "coffee");
+    tw.run(kit, "+move north 3");
+    let at = ClockStamp {
+        clock: ClockRef::Utc,
+        at: 0,
+    };
+    // Both in the shop, nothing between them: the metric is the Chebyshev
+    // distance in cells and the sight is clear.
+    let (rae_cell, kit_cell) = {
+        let w = tw.world();
+        let frame = mush_atlas::frame_for(
+            w,
+            w.module_state::<mush_atlas::AtlasState>().expect("atlas"),
+            rae,
+            domain,
+        )
+        .expect("frame");
+        let cell_of = |id: ObjId| {
+            frame
+                .units
+                .iter()
+                .find(|u| u.id == id.to_string())
+                .map(|u| u.cell)
+                .expect("placed")
+        };
+        (cell_of(rae), cell_of(kit))
+    };
+    let expected_range = rae_cell
+        .0
+        .abs_diff(kit_cell.0)
+        .max(rae_cell.1.abs_diff(kit_cell.1));
+    let metric = mush_sim::metric_between(tw.world(), rae, kit).expect("a shared window");
+    assert_eq!(metric.range_cells, expected_range);
+    assert!(!metric.occluded);
+    assert_eq!(
+        mush_atlas::window::sight_between(tw.world(), rae, kit),
+        Some(mush_atlas::Sight::Clear)
+    );
+    let ctx = {
+        let w = tw.world();
+        let spatial = w.module_state::<mush_sim::SpatialState>().expect("sim");
+        PropagationContext::build(spatial, w, rae, kit, at.clone()).expect("a context")
+    };
+    assert_eq!(
+        ctx.geometry.range, expected_range,
+        "propagation's range is the metric"
+    );
+    assert!(
+        !ctx.geometry.occluded,
+        "propagation's occlusion is the line of sight"
+    );
+    // Hearing and the direct trace read the same surface.
+    let hearing = mush_atlas::window::hearing_between(tw.world(), rae, kit).expect("hearing");
+    assert_eq!(
+        hearing.attenuation,
+        expected_range * mush_atlas::trace::HEARING_PER_CELL
+    );
+    let trace = mush_atlas::window::direct_fire_between(tw.world(), rae, kit).expect("trace");
+    assert!(trace.reaches());
+    assert_eq!(trace.range_cells, expected_range);
+    // Rae steps out to the lot: a different surface of one window is occluded
+    // and no sight query answers for the pair.
+    tw.run(rae, "backlot");
+    assert!(pose_of(&tw, rae).is_some(), "the lot is on the map");
+    let metric = mush_sim::metric_between(tw.world(), rae, kit).expect("still one window");
+    assert!(metric.occluded);
+    assert_eq!(
+        mush_atlas::window::sight_between(tw.world(), rae, kit),
+        None
+    );
+    let ctx = {
+        let w = tw.world();
+        let spatial = w.module_state::<mush_sim::SpatialState>().expect("sim");
+        PropagationContext::build(spatial, w, rae, kit, at.clone()).expect("a context")
+    };
+    assert!(ctx.geometry.occluded);
+    assert_eq!(ctx.geometry.range, metric.range_cells);
+    // Staff read the same answers by hand.
+    // Staff name them by number: the two are not in the staffer's room.
+    let los = format!("@atlas/los #{}=#{}", rae.0, kit.0);
+    let ev = tw.run(staff, &los);
+    let out = text(&tw, &ev, staff);
+    assert!(out.contains("occluded"), "{out}");
+    assert!(out.contains("Sight: not on one surface"), "{out}");
+    tw.run(rae, "coffee");
+    let ev = tw.run(staff, &los);
+    let out = text(&tw, &ev, staff);
+    assert!(
+        out.contains("in sight") && out.contains("Sight: clear") && out.contains("Direct fire:"),
+        "{out}"
+    );
+    assert!(out.contains("Hearing: attenuation"), "{out}");
+    // A player may not.
+    let ev = tw.run(rae, &los);
+    let out = text(&tw, &ev, rae);
+    assert!(out.contains("staff's"), "{out}");
+}
+
+#[test]
+fn the_geometry_slot_is_filled_once_at_boot() {
+    let mut tw = lot();
+    let err =
+        mush_sim::register_window_geometry(tw.world_mut(), std::sync::Arc::new(|_, _, _| None))
+            .expect_err("the atlas filled it at boot");
+    assert!(err.contains("registered already"), "{err}");
+    // Two people on no window have no metric.
+    let rae = tw.spawn_player("Rae");
+    let kit = tw.spawn_player("Kit");
+    assert_eq!(mush_sim::metric_between(tw.world(), rae, kit), None);
+}

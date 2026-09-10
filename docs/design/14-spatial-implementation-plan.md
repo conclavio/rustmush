@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.6 — 2026-09-10 (S1, S2, S2b, S3, S4 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.7 — 2026-09-10 (S1, S2, S2b, S3, S4, S5 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -738,6 +738,51 @@ propagation's range over the lot equals the metric and its occlusion equals LOS.
 **O** (oracle-freedom — timing and reads independent of hit or miss), **X** (extension — a
 ruleset-added class or locomotion cannot change a core row).
 
+**Ledger (landed 2026-09-10).** Gates: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test` on `mush-sim` (with `testkit`), `mush-atlas`,
+`mush-propagation`, `mush-tactics`, `mush-scenes`, `mush-core`, `mush-proto`, `mush-ansi`,
+`mush-net-ssh`, `mush-gateway`, the dependents, the contract tests (the panic budget —
+`mush-atlas` still at zero sites — the restriction-lint table, the legacy-handler allowlist
+with `@atlas` gaining `/los`; no new handler), `mush-server` and `mushd` whole. Twenty new tests:
+every row the text names, the slope limits and the climb, the four sight cases, the
+direct trace's first blocker and cover, the arc over a wall and under a canopy, the beam's
+attenuation, hearing by distance, walls, features and the vacuum, the path round a wall and its
+budget, the same trace twice (D), the same cells read for a hit and a miss (O), the core row
+refused (X), propagation's range and occlusion over the lot, `+move`'s price, the slot filled
+once. Deviations from the text above, each with its reason:
+
+- **The classes stay the S1 enum, extended** (`woods_light`, `woods_heavy`, `water_deep`,
+  `ice`, `regolith` join it; `water` is the shallow kind), with `props` giving each its cover,
+  opacity and medium. A cell is one byte of class, so a ruleset's own class cannot yet be a
+  cell; the **table** accepts a ruleset's class and locomotion rows by name
+  (`LocomotionTable::extend`) and refuses a core pair, which is the X lens's actual test. Cells
+  of ruleset classes are S7's, with the TacSim driver that needs them.
+- **The vocabulary is one list**: `mush_atlas::physics::{BASE_MEDIA, BASE_LOCOMOTIONS,
+  BASE_TAGS}`; `MobilityVocabulary::base` in `mush-tactics` is built from them (the crate
+  already depended on the atlas), so `biped` joins the tactics base too. The registry type
+  itself did not move — nothing in the atlas needs it.
+- **Costs are hundredths, integers**; the table's rows are per-locomotion defaults with named
+  classes rather than a full cross product, and each locomotion has a **climb** (`climb_cm`: a
+  kerb, a doorstep, a dock — built ground a step up to that height climbs at half again the
+  cost, whatever the slope) because the lot's loading dock stopped the first walk as a
+  120 % slope. Tags amend rows (`amphibious`, `submersible` open water; `jump` doubles the slope
+  limit).
+- **The geometry reaches propagation through `mush-sim`**, not an atlas edge:
+  `WindowGeometry` is a slot beside `RoomResolver`, filled by the atlas at boot;
+  `PropagationContext::build` consults it before the graph's adjacency refusal (two ends the
+  room graph calls separate places may still share a window) and takes range and occlusion from
+  it. `mush-propagation`'s crate edges are unchanged. `Medium::from_medium_id` and
+  `medium_ids` map onto the base media.
+- **Traces are single-surface**: two ends on different surfaces of one window (a floor and the
+  ground) are occluded with the grid's range, and the sight, fire and hearing helpers answer
+  `None` for them; a line through a doorway between surfaces is S7's with the multi-storey
+  fights.
+- **`@atlas/los <a>=<b>`** is one read switch (staff), so the traces are visible by hand before a
+  ruleset reads them; `direct_fire_between`, `sight_between` and `hearing_between` are the
+  ruleset-facing reads over two objects' poses.
+- **Not built**: `[atlas].path_max_cells` is threaded through config and read by no command
+  yet (`path` is a library query for S6's NPC walks); elevation digits on the map.
+
 ### 3.7 Cut S6 — interface NPCs (D-14-32)
 
 **`mush-npc`.** `InterfaceAbilityProvider` (`abilities() -> Vec<ToolDef>`, `invoke(w, out,
@@ -893,3 +938,4 @@ square root of its pinned distance.
 - 0.4 (2026-09-09): S2b landed — theme, weather, control regions and property key on the atlas (D-14-28): `Theme` in `mush-atlas` with a world theme and `@atlas/theme`; weather cells on neighborhoods and regions; `@region/atlas`, `@property/site`; `@theme` retired; its ledger under §3.3.
 - 0.5 (2026-09-10): S3 landed — the building agent and hydration: `mush_llm::agent` (the one tool loop, the NPC turn on it), `mush_atlas::validate` (doc 14 §4.3 as typed findings, shared by `@atlas/pack plan` and the agent), `mush_atlas::hydrate` (standing, requests, activation, the BUILD queue, canon events), `mush_worldgen::{proposal, plan}` (proposals, the planning run, `+build`, `@atlas/propose`); `[worldgen]`'s five knobs and the `worldgen_plan` route; its ledger under §3.4.
 - 0.6 (2026-09-10): S4 landed — the ledger under §3.5 (the composite through the atlas's own async completion, the window document in the atlas's namespace, `WindowRec` and `Pose` in `mush-sim` with the resolver slot, the shape-driven text fallback, the map pane, `+map` as one command); the rasterizer's door snap; `[atlas].window_margin_m` and `window_max_cells`.
+- 0.7 (2026-09-10): S5 landed — `mush_atlas::physics` (the vocabularies, the locomotion table as digest-pinned data with climbs, `move_cost`, the bounded path) and `mush_atlas::trace` (sight, the direct, indirect and beam traces, hearing), `mush-sim`'s `WindowGeometry` slot and propagation on the metric, `+move` priced, `@atlas/los`; its ledger under §3.6; `[atlas].path_max_cells`.

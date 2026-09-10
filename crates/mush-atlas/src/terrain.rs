@@ -37,11 +37,21 @@ pub enum TerrainClass {
     Door = 11,
     /// A raised platform or dock.
     Platform = 12,
+    /// Light woods: trees with sight between them (S5).
+    WoodsLight = 13,
+    /// Heavy woods: a canopy and undergrowth (S5).
+    WoodsHeavy = 14,
+    /// Deep water: nothing walks it (S5; `Water` is the shallow kind).
+    WaterDeep = 15,
+    /// Ice (S5).
+    Ice = 16,
+    /// Regolith: the bare ground of an airless body (S5).
+    Regolith = 17,
 }
 
 impl TerrainClass {
     /// Every class, in code order.
-    pub const ALL: [TerrainClass; 13] = [
+    pub const ALL: [TerrainClass; 18] = [
         TerrainClass::Void,
         TerrainClass::Paved,
         TerrainClass::Ground,
@@ -55,6 +65,11 @@ impl TerrainClass {
         TerrainClass::Wall,
         TerrainClass::Door,
         TerrainClass::Platform,
+        TerrainClass::WoodsLight,
+        TerrainClass::WoodsHeavy,
+        TerrainClass::WaterDeep,
+        TerrainClass::Ice,
+        TerrainClass::Regolith,
     ];
 
     /// The byte code.
@@ -86,6 +101,11 @@ impl TerrainClass {
             TerrainClass::Wall => "wall",
             TerrainClass::Door => "door",
             TerrainClass::Platform => "platform",
+            TerrainClass::WoodsLight => "woods_light",
+            TerrainClass::WoodsHeavy => "woods_heavy",
+            TerrainClass::WaterDeep => "water_deep",
+            TerrainClass::Ice => "ice",
+            TerrainClass::Regolith => "regolith",
         }
     }
 
@@ -115,6 +135,11 @@ impl TerrainClass {
             TerrainClass::Wall => '#',
             TerrainClass::Door => '+',
             TerrainClass::Platform => 'D',
+            TerrainClass::WoodsLight => 't',
+            TerrainClass::WoodsHeavy => 'T',
+            TerrainClass::WaterDeep => 'W',
+            TerrainClass::Ice => 'i',
+            TerrainClass::Regolith => 'r',
         }
     }
 

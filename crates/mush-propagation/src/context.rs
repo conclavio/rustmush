@@ -51,6 +51,27 @@ pub enum Medium {
 }
 
 impl Medium {
+    /// The medium a base medium id (doc 14 §5.1: `ground`, `air`, `water`,
+    /// `space`) maps onto: `space` is a vacuum, everything else a surface;
+    /// an interior is a place, never a medium id.
+    #[must_use]
+    pub fn from_medium_id(id: &str) -> Self {
+        match id {
+            "space" => Self::Vacuum,
+            _ => Self::Surface,
+        }
+    }
+
+    /// The base medium ids this medium stands for.
+    #[must_use]
+    pub const fn medium_ids(self) -> &'static [&'static str] {
+        match self {
+            Self::Vacuum => &["space"],
+            Self::Surface => &["ground", "air", "water"],
+            Self::Interior => &[],
+        }
+    }
+
     /// Attenuation per range unit, in noise-floor points.
     #[must_use]
     pub const fn attenuation(self) -> u32 {
@@ -163,7 +184,10 @@ impl PropagationContext {
         let far_place = place_of(state, world, far)?;
         let same = near_place == far_place;
         let domain = domain_of_place(state, world, near_place);
-        if !same {
+        // Doc 14 §5.2 (S5): two ends on one tactical window have a metric
+        // between them whatever rooms the graph puts them in.
+        let metric = mush_sim::metric_between(world, near, far);
+        if !same && metric.is_none() {
             // Domain adjacency, bounded by MAX_CONTEXT_RECORDS inside the walk.
             // Two places are adjacent when they are in one domain — which is
             // also what makes a domain host and its presentation room adjacent,
@@ -184,6 +208,14 @@ impl PropagationContext {
             && (matches!(Medium::of_place(state, far_place), Medium::Interior)
                 || matches!(medium, Medium::Interior));
         let range = if same { 0 } else { ADJACENT_RANGE };
+        // Doc 14 §5.2 (S5): when both ends stand on one tactical window, the
+        // metric replaces the graph's 0 / ADJACENT_RANGE and the window's line
+        // of sight replaces the hull test — the swap this type reserved. The
+        // atlas answers through `mush-sim`'s geometry slot; no atlas edge here.
+        let (range, occluded) = match metric {
+            Some(metric) => (metric.range_cells, metric.occluded),
+            None => (range, occluded),
+        };
         Some(Self {
             domain,
             geometry: Geometry {
@@ -404,6 +436,20 @@ mod tests {
                 at: 0,
             },
         }
+    }
+
+    #[test]
+    fn the_media_map_onto_the_base_vocabulary_and_back() {
+        assert_eq!(Medium::from_medium_id("space"), Medium::Vacuum);
+        assert_eq!(Medium::from_medium_id("ground"), Medium::Surface);
+        assert_eq!(Medium::from_medium_id("air"), Medium::Surface);
+        assert_eq!(Medium::from_medium_id("water"), Medium::Surface);
+        for m in [Medium::Vacuum, Medium::Surface] {
+            for id in m.medium_ids() {
+                assert_eq!(Medium::from_medium_id(id), m);
+            }
+        }
+        assert!(Medium::Interior.medium_ids().is_empty());
     }
 
     #[test]

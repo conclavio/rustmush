@@ -35,6 +35,8 @@ tracing.workspace = true
 # Dev-only. `mush-npc` is here so the starter-area acceptance suite can compose the cast's
 # applier beside this crate's and assert the lot boots whole; it is not a production edge.
 [dev-dependencies]
+# S5: propagation over the lot is asserted against the metric and the line of sight.
+mush-propagation.workspace = true
 # The text renderer, so the golden map frames (P10) are asserted as the lines line mode prints.
 mush-ansi.workspace = true
 mush-testkit.workspace = true

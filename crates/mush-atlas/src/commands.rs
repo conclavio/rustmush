@@ -71,6 +71,7 @@ pub(crate) fn register_pack(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 SmolStr::new_static("standing"),
                 SmolStr::new_static("window"),
                 SmolStr::new_static("feature"),
+                SmolStr::new_static("los"),
             ],
             help: "@atlas/pack list                   every pack on the shelf, and every latch\n\
                    @atlas/pack show <id>              a pack's manifest, entries, brief and secrets\n\
@@ -215,6 +216,9 @@ fn cmd_atlas_pack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if ctx.switches.has("feature") {
         return crate::window_cmd::feature_admin(ctx);
+    }
+    if ctx.switches.has("los") {
+        return crate::window_cmd::los_admin(ctx);
     }
     if ctx.switches.has("propose") {
         return crate::hydrate_cmd::propose_admin(ctx);

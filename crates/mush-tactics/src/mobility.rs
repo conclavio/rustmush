@@ -256,23 +256,16 @@ impl MobilityVocabulary {
     /// content a ruleset declares on top.
     #[must_use]
     pub fn base() -> MobilityVocabulary {
+        // S5 (doc 14 §5.1): the atoms are the atlas's — one list, the
+        // locomotion table keyed by it — with `biped` the pedestrian default.
         let mut v = MobilityVocabulary::new();
-        for m in ["ground", "air", "water", "space"] {
+        for m in mush_atlas::physics::BASE_MEDIA {
             v.declare_medium(MediumId::new(m).expect("base medium id"));
         }
-        for l in [
-            "legged",
-            "wheeled",
-            "tracked",
-            "hover",
-            "rotor",
-            "fixed_wing",
-            "displacement",
-            "thrust",
-        ] {
+        for l in mush_atlas::physics::BASE_LOCOMOTIONS {
             v.declare_locomotion(LocomotionId::new(l).expect("base locomotion id"));
         }
-        for t in ["amphibious", "jump", "vtol", "submersible"] {
+        for t in mush_atlas::physics::BASE_TAGS {
             v.declare_tag(MobilityTag::new(t).expect("base tag id"));
         }
         v

@@ -2053,6 +2053,7 @@ dependencies = [
  "mush-core",
  "mush-jobs",
  "mush-npc",
+ "mush-propagation",
  "mush-proto",
  "mush-scenes",
  "mush-sim",

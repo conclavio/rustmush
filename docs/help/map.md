@@ -36,9 +36,13 @@ same cells the text does.
 
 ## Walking
 
-One cell costs one, until the rules supply a table. A wall, someone standing
-there, a counter, or a room that is not open to you stops the walk where it
-is and says why; a doorway is the wall's own gap. Walking through a door
+Every cell has a price from the engine's locomotion table: a road or a floor
+costs one, grass a little more, sand and rock two, rubble two and a half,
+shallow water three; a diagonal costs its length; a climb costs its slope,
+and a slope past what legs can take stops you. Deep water, walls and the
+inside of a solid do not walk at all. `+move` prints what the walk cost. A
+wall, someone standing there, a counter, or a room that is not open to you
+stops the walk where it is and says why; a doorway is the wall's own gap. Walking through a door
 into a building, or out of one, changes floor for you. Stepping off the edge
 of the map onto a room's ground **grows the map** to take that room in; the
 map redraws and you step again. Exits still work: walking `out` of a room on
@@ -56,4 +60,7 @@ opens one by hand over rooms or an extent in metres (a map over more than
 `@atlas/window close <n>` closes it. `@atlas/feature <feature>=<state>` sets a
 feature's state — `intact`, `damaged`, `destroyed` — and every map over it
 redraws: a destroyed wall is rubble, a destroyed door an open way. The
-wreckage stays through a pack update. See `help atlas`.
+wreckage stays through a pack update. `@atlas/los <a>=<b>` prints what the
+engine sees between two people on one map: the line of sight (clear, partial
+through woods, or what blocks it), the direct-fire trace's first blocker and
+the target's cover, and how well one hears the other. See `help atlas`.

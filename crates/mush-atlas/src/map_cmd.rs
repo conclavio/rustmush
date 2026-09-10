@@ -231,11 +231,13 @@ fn cmd_move(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         "You do not move".to_string()
     } else {
         format!(
-            "You move {} cell{} {heading_word} to ({}, {}) in {room}",
+            "You move {} cell{} {heading_word} to ({}, {}) in {room} (cost {}.{:02})",
             report.walked,
             if report.walked == 1 { "" } else { "s" },
             report.at.0,
-            report.at.1
+            report.at.1,
+            report.cost / 100,
+            report.cost % 100
         )
     };
     if let Some(why) = &report.stopped {

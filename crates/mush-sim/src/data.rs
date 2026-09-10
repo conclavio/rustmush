@@ -644,6 +644,37 @@ impl std::fmt::Debug for RoomResolver {
     }
 }
 
+/// The metric between two things on one window (doc 14 §5.2; S5): the
+/// range in cells and whether the line of sight between them is blocked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetricGeometry {
+    /// Chebyshev distance in the window's cells.
+    pub range_cells: u32,
+    /// Whether sight between them is blocked on the window.
+    pub occluded: bool,
+}
+
+/// The metric answer for two objects, `None` when they do not share a window
+/// with a composite; answered by the module that owns the windows.
+pub type GeometryFn = Arc<dyn Fn(&World, ObjId, ObjId) -> Option<MetricGeometry> + Send + Sync>;
+
+/// The geometry slot: `mush-propagation` takes its `Geometry { range,
+/// occluded }` from it when both ends are on one window, and keeps its
+/// graph answer otherwise. Registered once, by the atlas, at its boot.
+#[derive(Clone, Default)]
+pub struct WindowGeometry {
+    /// The answerer, when one is composed.
+    pub geometry: Option<GeometryFn>,
+}
+
+impl std::fmt::Debug for WindowGeometry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowGeometry")
+            .field("geometry", &self.geometry.is_some())
+            .finish()
+    }
+}
+
 /// The one authoritative spatial parent of an object (design §5.1).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]

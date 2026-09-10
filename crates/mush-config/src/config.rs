@@ -73,6 +73,7 @@
 //! | `[atlas].nearest_room_cells` | `8` | S4: cells a pose may stand off every footprint and still resolve to the nearest room |
 //! | `[atlas].window_margin_m` | `10` | S4: metres of ground a tactical window takes around its anchor rooms |
 //! | `[atlas].window_max_cells` | `65536` | S4: the most cells one window holds before it coarsens to the next registered cell size |
+//! | `[atlas].path_max_cells` | `4096` | S5: the most cells one path search visits before it gives up |
 //! | `[atlas].pack_paths` | `[]` | S1: content pack files or directories, read **host-side** at boot like `[tacsim].pack_paths`; they go on the `@atlas/pack` shelf and nothing is applied by being listed |
 //! | `[atlas].dwell_floor_s` | `30` | S2: real seconds a traveler stays at every checkpoint at least, so a stake-out can act |
 //! | `[atlas].real_cap_s.<mode>` | `180` for `foot`, `car`, `transit`, `bus` | S2: real seconds a whole passage may take at most, per travel mode; a mode absent is uncapped |
@@ -832,6 +833,9 @@ pub struct AtlasCfg {
     /// The most cells one window may hold before it coarsens to the next
     /// registered cell size (plan §7 `window_max_cells`; S4).
     pub window_max_cells: u32,
+    /// The most cells one path search visits before it gives up (plan §7
+    /// `path_max_cells`; S5).
+    pub path_max_cells: u32,
 }
 
 impl Default for AtlasCfg {
@@ -847,6 +851,7 @@ impl Default for AtlasCfg {
                 .collect(),
             window_margin_m: 10,
             window_max_cells: 65_536,
+            path_max_cells: 4_096,
         }
     }
 }

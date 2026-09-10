@@ -222,3 +222,91 @@ pub fn feature_admin(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     Ok(())
 }
+
+/// `@atlas/los <a>=<b>` (S5): what the engine sees, fires and hears between
+/// two people on one window — the line of sight, the direct trace's first
+/// blocker and the target's cover, the hearing — from the same queries a
+/// ruleset reads.
+///
+/// # Errors
+///
+/// A refusal to print.
+pub fn los_admin(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    if !is_staff(ctx.w, actor) {
+        return Err(CmdError::msg(
+            "The engine's traces are staff's to read by hand.",
+        ));
+    }
+    let raw = ctx.args.raw().trim().to_string();
+    let (a, b) = raw
+        .split_once('=')
+        .ok_or_else(|| CmdError::msg("Usage: @atlas/los <a>=<b>"))?;
+    let a = mush_core::match_object(ctx.w, actor, a.trim())
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+    let b = mush_core::match_object(ctx.w, actor, b.trim())
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+    let name = |o: mush_core::ObjId| mush_core::output::display_name(ctx.w, o);
+    let Some(metric) = mush_sim::metric_between(ctx.w, a, b) else {
+        return Err(CmdError::msg(format!(
+            "{} and {} do not stand on one map.",
+            name(a),
+            name(b)
+        )));
+    };
+    let mut lines = vec![format!(
+        "{} to {}: {} cell{} apart, {}.",
+        name(a),
+        name(b),
+        metric.range_cells,
+        if metric.range_cells == 1 { "" } else { "s" },
+        if metric.occluded {
+            "occluded"
+        } else {
+            "in sight"
+        }
+    )];
+    match crate::window::sight_between(ctx.w, a, b) {
+        Some(crate::trace::Sight::Clear) => lines.push("Sight: clear.".to_string()),
+        Some(crate::trace::Sight::Partial(pct)) => {
+            lines.push(format!("Sight: partial, {pct}% attenuated."));
+        }
+        Some(crate::trace::Sight::BlockedBy(b)) => {
+            lines.push(format!("Sight: blocked by {}.", b.describe()));
+        }
+        None => lines.push("Sight: not on one surface.".to_string()),
+    }
+    if let Some(trace) = crate::window::direct_fire_between(ctx.w, a, b) {
+        let stop = trace.stop.as_ref().map_or_else(
+            || "reaches the target".to_string(),
+            |(i, b)| format!("stops at cell {i} on {}", b.describe()),
+        );
+        let crossed: Vec<String> = trace
+            .crossed
+            .iter()
+            .map(|c| match c {
+                crate::trace::Crossed::Feature { key, .. } => key.entry.to_string(),
+                crate::trace::Crossed::Unit { id, .. } => name(*id),
+            })
+            .collect();
+        lines.push(format!(
+            "Direct fire: {} cells, {stop}; target cover {:?}{}.",
+            trace.cells.len(),
+            trace.target_cover,
+            if crossed.is_empty() {
+                String::new()
+            } else {
+                format!("; crosses {}", crossed.join(", "))
+            }
+        ));
+    }
+    if let Some(h) = crate::window::hearing_between(ctx.w, a, b) {
+        lines.push(if h.silent {
+            "Hearing: nothing carries here.".to_string()
+        } else {
+            format!("Hearing: attenuation {} points.", h.attenuation)
+        });
+    }
+    ctx.out.info(actor, lines.join("\n"));
+    Ok(())
+}

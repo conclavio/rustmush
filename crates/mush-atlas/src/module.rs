@@ -97,6 +97,9 @@ pub struct AtlasConfig {
     /// The most cells one window may hold before it coarsens (plan §7
     /// `window_max_cells`, default 65 536; S4).
     pub window_max_cells: u32,
+    /// The most cells one path search visits (plan §7 `path_max_cells`,
+    /// default 4 096; S5).
+    pub path_max_cells: u32,
 }
 
 /// The default `real_cap_s` table.
@@ -120,6 +123,7 @@ impl Default for AtlasConfig {
             hydration_strikes_to_zero: crate::hydrate::DEFAULT_STRIKES_TO_ZERO,
             window_margin_m: crate::window::DEFAULT_WINDOW_MARGIN_M,
             window_max_cells: crate::window::DEFAULT_WINDOW_MAX_CELLS,
+            path_max_cells: crate::physics::DEFAULT_PATH_MAX_CELLS,
         }
     }
 }
@@ -189,6 +193,8 @@ pub struct AtlasLimits {
     pub window_margin_m: u32,
     /// S4: see [`AtlasConfig::window_max_cells`].
     pub window_max_cells: u32,
+    /// S5: see [`AtlasConfig::path_max_cells`].
+    pub path_max_cells: u32,
 }
 
 /// The module's state slot.
@@ -224,6 +230,7 @@ impl Default for AtlasState {
                 hydration_strikes_to_zero: crate::hydrate::DEFAULT_STRIKES_TO_ZERO,
                 window_margin_m: crate::window::DEFAULT_WINDOW_MARGIN_M,
                 window_max_cells: crate::window::DEFAULT_WINDOW_MAX_CELLS,
+                path_max_cells: crate::physics::DEFAULT_PATH_MAX_CELLS,
             },
             windows: crate::window::Windows::default(),
             shelf: BTreeMap::new(),
@@ -315,6 +322,7 @@ impl GameModule for AtlasModule {
                     .config
                     .window_max_cells
                     .clamp(1, crate::cells::MAX_TILE_CELLS),
+                path_max_cells: self.config.path_max_cells.max(1),
             },
             ..AtlasState::default()
         };

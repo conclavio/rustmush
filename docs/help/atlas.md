@@ -94,4 +94,5 @@ model call. Staff only: `SIM_ADMIN` or Royalty.
 
 A tactical window over the atlas — a scene's rooms as a grid of cells, walked
 with `+move` — is `help map`. Staff open one by hand with `@atlas/window`,
-and set a feature's state with `@atlas/feature`.
+set a feature's state with `@atlas/feature`, and read the engine's sight,
+fire and hearing between two people with `@atlas/los`.

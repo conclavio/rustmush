@@ -1247,9 +1247,10 @@ pub fn close(ctx: &mut Ctx<'_>, domain: DomainId, reason: &str) -> Result<Vec<Ob
 /// Whether a participant may stand on a cell.
 #[must_use]
 pub fn standable(cell: Cell) -> bool {
-    !matches!(
-        cell.class,
-        TerrainClass::Void | TerrainClass::Wall | TerrainClass::Water
+    crate::physics::LocomotionTable::shipped().passable(
+        cell.class.label(),
+        crate::physics::BIPED,
+        &[],
     )
 }
 
@@ -1430,13 +1431,146 @@ pub fn resolve_room(w: &World, domain: DomainId, pose: &Pose) -> Option<ObjId> {
     best.map(|(_, room)| room)
 }
 
-/// Register the resolver with the simulation. Once, at the atlas's boot.
+/// Register the resolver and the geometry with the simulation. Once, at the
+/// atlas's boot.
 ///
 /// # Errors
 ///
 /// The simulation's refusal.
 pub fn register_resolver(w: &mut World) -> Result<(), String> {
-    mush_sim::register_room_resolver(w, Arc::new(resolve_room))
+    mush_sim::register_room_resolver(w, Arc::new(resolve_room))?;
+    mush_sim::register_window_geometry(w, Arc::new(metric_geometry))
+}
+
+/// A surface index and a cell on it.
+type Standing = (usize, u16, u16);
+
+/// Where two objects stand on one window: the domain, and each one's
+/// surface index and cell.
+fn co_located(
+    w: &World,
+    st: &AtlasState,
+    a: ObjId,
+    b: ObjId,
+) -> Option<(DomainId, Standing, Standing)> {
+    let (da, pa) = mush_sim::pose_of(w, a)?;
+    let (db, pb) = mush_sim::pose_of(w, b)?;
+    if da != db {
+        return None;
+    }
+    let composite = st.windows.open.get(&da.0)?.composite.as_ref()?;
+    Some((da, locate(composite, &pa)?, locate(composite, &pb)?))
+}
+
+/// The metric between two objects on one window (doc 14 §5.2; S5): the
+/// Chebyshev range in cells and whether the standing line of sight between
+/// them is blocked. On different surfaces of one window (a floor and the
+/// ground) sight is blocked and the range is the grid's.
+#[must_use]
+pub fn metric_geometry(w: &World, near: ObjId, far: ObjId) -> Option<mush_sim::MetricGeometry> {
+    let st = w.module_state::<AtlasState>()?;
+    let (domain, (sa, xa, ya), (sb, xb, yb)) = co_located(w, st, near, far)?;
+    let range_cells = u32::from(xa.abs_diff(xb).max(ya.abs_diff(yb)));
+    let composite = st.windows.open.get(&domain.0)?.composite.as_ref()?;
+    let occluded = if sa == sb {
+        let surface = composite.surfaces.get(sa)?;
+        !crate::trace::line_of_sight(
+            surface,
+            crate::trace::Eye::standing((xa, ya)),
+            crate::trace::Eye::standing((xb, yb)),
+        )
+        .is_clear_or_partial()
+    } else {
+        true
+    };
+    Some(mush_sim::MetricGeometry {
+        range_cells,
+        occluded,
+    })
+}
+
+/// Line of sight between two objects on one surface of one window; `None`
+/// when they do not share one (a ruleset's read).
+#[must_use]
+pub fn sight_between(w: &World, a: ObjId, b: ObjId) -> Option<crate::trace::Sight> {
+    let st = w.module_state::<AtlasState>()?;
+    let (domain, (sa, xa, ya), (sb, xb, yb)) = co_located(w, st, a, b)?;
+    if sa != sb {
+        return None;
+    }
+    let surface = st
+        .windows
+        .open
+        .get(&domain.0)?
+        .composite
+        .as_ref()?
+        .surfaces
+        .get(sa)?;
+    Some(crate::trace::line_of_sight(
+        surface,
+        crate::trace::Eye::standing((xa, ya)),
+        crate::trace::Eye::standing((xb, yb)),
+    ))
+}
+
+/// Everyone placed on `domain`, by surface index and cell.
+fn unit_cells(
+    w: &World,
+    composite: &Composite,
+    domain: DomainId,
+) -> Vec<(usize, ObjId, (u16, u16))> {
+    mush_sim::participants(w, domain)
+        .into_iter()
+        .filter_map(|(o, p)| locate(composite, &p).map(|(s, x, y)| (s, o, (x, y))))
+        .collect()
+}
+
+/// A direct-fire trace between two objects on one surface of one window,
+/// with the units on the line (a ruleset's read).
+#[must_use]
+pub fn direct_fire_between(w: &World, a: ObjId, b: ObjId) -> Option<crate::trace::Trace> {
+    let st = w.module_state::<AtlasState>()?;
+    let (domain, (sa, xa, ya), (sb, xb, yb)) = co_located(w, st, a, b)?;
+    if sa != sb {
+        return None;
+    }
+    let composite = st.windows.open.get(&domain.0)?.composite.as_ref()?;
+    let surface = composite.surfaces.get(sa)?;
+    let units: Vec<(ObjId, (u16, u16))> = unit_cells(w, composite, domain)
+        .into_iter()
+        .filter(|(s, o, _)| *s == sa && *o != a && *o != b)
+        .map(|(_, o, c)| (o, c))
+        .collect();
+    Some(crate::trace::direct_fire_path(
+        surface,
+        &units,
+        crate::trace::Eye::standing((xa, ya)),
+        crate::trace::Eye::standing((xb, yb)),
+    ))
+}
+
+/// Hearing between two objects on one surface of one window (a ruleset's
+/// and an NPC wake's read).
+#[must_use]
+pub fn hearing_between(w: &World, a: ObjId, b: ObjId) -> Option<crate::trace::Hearing> {
+    let st = w.module_state::<AtlasState>()?;
+    let (domain, (sa, xa, ya), (sb, xb, yb)) = co_located(w, st, a, b)?;
+    if sa != sb {
+        return None;
+    }
+    let surface = st
+        .windows
+        .open
+        .get(&domain.0)?
+        .composite
+        .as_ref()?
+        .surfaces
+        .get(sa)?;
+    Some(crate::trace::hearing(
+        surface,
+        crate::trace::Eye::standing((xa, ya)),
+        crate::trace::Eye::standing((xb, yb)),
+    ))
 }
 
 /// A one-line summary of an open window.
@@ -1733,6 +1867,9 @@ pub struct StepReport {
     pub room: Option<ObjId>,
     /// Why it stopped short, if it did.
     pub stopped: Option<String>,
+    /// What the walk cost, hundredths of a cell (S5: the locomotion table's
+    /// biped row, the slope and the diagonals).
+    pub cost: crate::physics::Cost,
 }
 
 /// The surface, cell and elevation gap a pose stands at.
@@ -1828,6 +1965,7 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
         let mut walked = 0u16;
         let mut stopped = None;
         let mut grow_at: Option<PointCm> = None;
+        let mut cost: crate::physics::Cost = 0;
         for _ in 0..budget {
             let Some(surface) = surface_at(si) else {
                 stopped = Some("no such surface".to_string());
@@ -1885,10 +2023,29 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
                 stopped = Some("the map ends here".to_string());
                 break;
             };
-            if !standable(cell) {
-                stopped = Some(format!("{} is in the way", cell.class.label()));
-                break;
-            }
+            // S5: the locomotion table prices the step — impassable ground and
+            // a slope past the biped limit stop the walk with the table's word.
+            let here_cell = surface.cells.get(x, y).unwrap_or(cell);
+            let kind = if dx != 0 && dy != 0 {
+                crate::physics::StepKind::Diagonal
+            } else {
+                crate::physics::StepKind::Orthogonal
+            };
+            let step_cost = match crate::physics::move_cost(
+                crate::physics::LocomotionTable::shipped(),
+                here_cell,
+                cell,
+                kind,
+                u32::from(surface.grid.resolution_cm),
+                crate::physics::BIPED,
+                &[],
+            ) {
+                Ok(c) => c,
+                Err(why) => {
+                    stopped = Some(why.to_string());
+                    break;
+                }
+            };
             if taken.contains(&(ni, cx, cy)) {
                 stopped = Some("someone is standing there".to_string());
                 break;
@@ -1919,6 +2076,7 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
             y = cy;
             current_room = there;
             walked += 1;
+            cost = cost.saturating_add(step_cost);
         }
         (
             StepReport {
@@ -1926,6 +2084,7 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
                 at: (x, y),
                 room: current_room,
                 stopped,
+                cost,
             },
             heading,
             si,

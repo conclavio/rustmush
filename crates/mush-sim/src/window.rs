@@ -7,8 +7,9 @@
 use mush_core::{BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorId, Ctx, ObjId, World};
 
 use crate::data::{
-    DomainClock, DomainId, DomainRecord, DomainStatus, Pose, ResolveFn, RoomResolver,
-    SpatialParent, SpatialState, WindowRec, passive_definition_ref, persist_domain, persist_meta,
+    DomainClock, DomainId, DomainRecord, DomainStatus, GeometryFn, MetricGeometry, Pose, ResolveFn,
+    RoomResolver, SpatialParent, SpatialState, WindowGeometry, WindowRec, passive_definition_ref,
+    persist_domain, persist_meta,
 };
 use crate::graph::rebuild;
 use crate::transition::{Transition, run};
@@ -71,6 +72,31 @@ pub fn register_room_resolver(w: &mut World, f: ResolveFn) -> Result<(), String>
     }
     slot.resolve = Some(f);
     Ok(())
+}
+
+/// Register the window geometry (doc 14 §5.2; S5). Once per composition.
+///
+/// # Errors
+///
+/// A message when the simulation module is not composed or a geometry is
+/// registered already.
+pub fn register_window_geometry(w: &mut World, f: GeometryFn) -> Result<(), String> {
+    let slot = w
+        .module_state_mut::<WindowGeometry>()
+        .ok_or_else(|| "the simulation module is not composed".to_string())?;
+    if slot.geometry.is_some() {
+        return Err("a window geometry is registered already".to_string());
+    }
+    slot.geometry = Some(f);
+    Ok(())
+}
+
+/// The metric between `near` and `far` when both stand on one window, from
+/// the registered geometry.
+#[must_use]
+pub fn metric_between(w: &World, near: ObjId, far: ObjId) -> Option<MetricGeometry> {
+    let f = w.module_state::<WindowGeometry>()?.geometry.clone()?;
+    f(w, near, far)
 }
 
 /// Open a window: a passive domain on `host` presenting in `presentation`,

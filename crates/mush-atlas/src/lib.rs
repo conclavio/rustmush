@@ -31,6 +31,7 @@ pub mod hydrate;
 pub mod hydrate_cmd;
 pub mod map_cmd;
 pub mod module;
+pub mod physics;
 pub mod place;
 pub mod raster;
 pub mod record;
@@ -38,6 +39,7 @@ pub mod starter;
 pub mod terrain;
 pub mod theme;
 pub mod theme_cmd;
+pub mod trace;
 pub mod travel;
 pub mod travel_cmd;
 pub mod validate;
@@ -59,6 +61,11 @@ pub use module::{
     ATTR_NS, AtlasConfig, AtlasLimits, AtlasModule, AtlasState, MAX_CONFIGURED_PACKS, NS,
     PackSource, is_staff, verify_sources,
 };
+pub use physics::{
+    BASE_LOCOMOTIONS, BASE_MEDIA, BASE_TAGS, BIPED, Cost, Cover, DEFAULT_PATH_MAX_CELLS,
+    Impassable, LOCOMOTION_JSON, LocomotionTable, Opacity, Path, PathOutcome, PhysicsError,
+    StepKind, SurfaceProps, move_cost, path, props, slope_pct,
+};
 pub use place::{PlaceRef, chain_for_room, find_place};
 pub use record::{
     Access, Footprint, MAX_KNOWN_PLACES, NeighborhoodRec, PortalRec, RecordError, RecordKey,
@@ -66,6 +73,10 @@ pub use record::{
 };
 pub use terrain::TerrainClass;
 pub use theme::{DescLength, Theme, resolve_place_theme, resolve_theme, world_theme};
+pub use trace::{
+    Blocker, Crossed, EYE_HEIGHT_CM, Eye, Hearing, Sight, Trace, beam_path, direct_fire_path,
+    hearing, indirect_fire_path, line_cells, line_of_sight,
+};
 pub use travel::{
     DEFAULT_DWELL_FLOOR_S, DEFAULT_REAL_CAP_S, End, Heading, HoldReason, JourneyId, JourneyRec,
     JourneyState, MAX_JOURNEYS, Node, RESUME_GRACE_S, TICK_TAG, TravelState, Traveler, Way,
