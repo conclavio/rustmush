@@ -316,9 +316,21 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
 
 [[handler]]
+name = "+map"
+category = "legacy-post-image"
+family = "atlas.window"
+note = "S4 (14-spatial-implementation-plan 3.5): the scene's side of a tactical window. +map bare and /floor are reads that answer with the viewer's own atlas.map keyframe (built per viewer: a room they may not see is void, a unit in it absent); /open and /close open and close the window over the facilitator's scene through mush-sim's window API (a passive domain on the anchor room, the composite deferred off-loop through the atlas's own ModuleAsync completion, the participants placed by planned transitions). One handler carries the writes with the reads because a switch is not a command; the writes are whole-document window records (mod:atlas:window:<domain>) and the simulation's own domain and placement documents. No authority, no prepared mechanic."
+
+[[handler]]
 name = "+market"
 category = "authoritative"
 note = "E7 residue pass 2 (P1, 10b 15.1 item 3): the category moves legacy-post-image -> authoritative because +market/accept now stages exactly one Ctx::submit_authoritative of the market-owned market_lot action, whose prepare_authoritative settles the listing's inventory reservation through cut 2's own InventoryFamilies on the DELEGATED path (InventoryModule::with_quantity_delegates([\"industry\", \"market\"])) under mush_market::listing_holder(ListingId) -- mush_industry::wo_holder's shape. A CommandSpec is one primary verb and takes the CEILING class of its switches (@station/@inv/@wo/@prop precedent), so the reads and the document writes ride the same lane. NO InventoryVerb was added; ENGINE_OWNED_RESERVATIONS is unchanged (it is matched only against HoldPurpose::Reservation, a money hold); mint_origin is called nowhere in mush-market. It retires no baseline stanza, so PINNED_BASELINE stays 157. E6c (08f 5.2/5.3): the neutral market's player surface -- listings, buyer-as-issuer quotes with a declared expiry clock, +market/sell, and the aggregate public projection. Bounded whole-document catalog/workflow records (market:listing:{id}, market:quote:{id}) with strict TryFrom wires re-running documented caps and deterministic keys: every money act still rides the economy's owner-exported offer_contract / accept_contract / accept_contract_as / cancel_contract seams under an E4 authority, a QUOTE still reserves nothing, and a stale quote refuses deterministically rather than re-pricing. The one deliberate divergence is Supply::Lot, which reserves at listing time because it advertises finite matter mush-inventory is the truth for rather than a counter of the market's own (recorded in 08f 5.6 and 10b 3.2)."
+
+[[handler]]
+name = "+move"
+category = "legacy-post-image"
+family = "sim.placement"
+note = "S4 (14-spatial-implementation-plan 3.5): walk one's own pose across the window one stands on, cost one per cell until S5's locomotion table. Every step is checked against the composite (standable ground, nobody there, no feature that blocks movement, a room open to the walker) and the pose lands through mush-sim's planned Place transition, whose projection keeps Obj.location the resolved room (P1); a step off the edge grows the window (a re-composite, off-loop) and stops the walk. Scene-class Turn: a turn-based scene gates it like +roll. Rides the placement documents the E7k whole-lane migration will move under sim.placement."
 
 [[handler]]
 name = "+muster"

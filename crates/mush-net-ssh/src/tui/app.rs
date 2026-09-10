@@ -3457,16 +3457,15 @@ mod tests {
         });
         app.feed_input(b"9");
         let text = super::super::frame_text(&mut app, 120, 34);
+        // (S4 produced the grid pane: the `atlas.map` frame, which on a
+        // server whose manifest lacks the feed reads its own no-map line.)
         assert_eq!(
             text.matches("projection (plan").count(),
-            3,
+            2,
             "one declaration per placeholder:\n{text}"
         );
-        for row in [
-            "awaiting a geometry",
-            "awaiting a weapons-cycle",
-            "awaiting a station comms",
-        ] {
+        assert!(text.contains("grid"), "the grid pane stands:\n{text}");
+        for row in ["awaiting a weapons-cycle", "awaiting a station comms"] {
             assert!(text.contains(row), "{row} missing:\n{text}");
         }
         for title in ["grid", "weapons", "comms", "contacts"] {

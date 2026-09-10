@@ -327,23 +327,6 @@ pub fn builtin_screens() -> Vec<Screen> {
                     min_h: 4,
                     selectable: true,
                 },
-                // S4 (doc 14 §6): the map of the window over this scene — the
-                // `atlas.map` frame, subscribed on entry when the manifest
-                // carries the feed, drawn as the same text grid line mode
-                // prints.
-                PaneSpec {
-                    id: PaneId("map"),
-                    title: "map",
-                    role: BorderRole::Neutral,
-                    slot: PaneSlot::Right,
-                    content: PaneContent::Panel {
-                        feed: MAP_FEED,
-                        render: render_map_rows,
-                    },
-                    min_w: 24,
-                    min_h: 6,
-                    selectable: false,
-                },
             ],
             keys: vec![
                 KeyBinding {
@@ -941,7 +924,13 @@ mod tests {
             .filter(|p| matches!(p.content, PaneContent::Placeholder(_)))
             .map(|p| p.id)
             .collect();
-        assert_eq!(placeholders.len(), 3);
+        assert_eq!(
+            placeholders.len(),
+            2,
+            "weapons and comms await; the grid is produced (S4)"
+        );
+        let grid = unit.pane(PaneId("grid")).expect("grid pane");
+        assert!(matches!(grid.content, PaneContent::Panel { feed, .. } if feed == MAP_FEED));
         // The contacts pane is live (D-I8-1): the generic-view renderer over
         // its own feed, selectable so Enter prefills the row's `+contact`.
         let contacts = unit.pane(PaneId("contacts")).expect("contacts pane");

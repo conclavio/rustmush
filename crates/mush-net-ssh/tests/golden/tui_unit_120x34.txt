@@ -15,8 +15,8 @@ The Hall #2 · Downtown · rain · IC 21:15 · North  East  quai
 │                      ││                                                 ││                                           │
 └──────────────────────┘└─────────────────────────────────────────────────┘│                                           │
 ┌grid──────────────────┐┌components───────────────────────────────────────┐│                                           │
-│awaiting a geometry   ││unit                                             ││                                           │
-│projection (plan §9)  ││  · tactics.mobility                             ││                                           │
+│(not published by this││unit                                             ││                                           │
+│                      ││  · tactics.mobility                             ││                                           │
 │                      ││center_torso                                     │└───────────────────────────────────────────┘
 │                      ││  ✓ gauss               ok                       │┌comms──────────────────────────────────────┐
 │                      ││      ammo ▰▰▰▰▱ 9/12                            ││awaiting a station comms                   │

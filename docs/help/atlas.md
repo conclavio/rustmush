@@ -89,3 +89,9 @@ The shelf holds the shipped starter packs — `region.limbo`,
 `[atlas].pack_paths` names. The starter area applies itself at a world's first
 boot when `[game].starter_area` is on; it is static content and makes no
 model call. Staff only: `SIM_ADMIN` or Royalty.
+
+## Maps
+
+A tactical window over the atlas — a scene's rooms as a grid of cells, walked
+with `+move` — is `help map`. Staff open one by hand with `@atlas/window`,
+and set a feature's state with `@atlas/feature`.

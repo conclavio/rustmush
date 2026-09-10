@@ -258,7 +258,13 @@ mod tests {
         f["you"] = json!([150, 80]);
         f["units"] =
             json!([{ "id": "#5", "name": "Rae", "cell": [150, 80], "glyph": "@", "you": true }]);
-        let lines = grid_lines(&f, PanelFrameKind::Keyframe, 80, 24);
+        // Line mode's viewport: seventy-eight by twenty.
+        let lines = grid_lines(
+            &f,
+            PanelFrameKind::Keyframe,
+            GRID_MAX_COLUMNS,
+            GRID_MAX_ROWS,
+        );
         assert_eq!(lines.len(), 2 + GRID_MAX_ROWS + 1);
         assert!(
             lines

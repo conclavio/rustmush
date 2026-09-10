@@ -8,8 +8,10 @@ the **default** and is not going anywhere.
 server-side over your SSH connection. It is built from **numbered screens**
 of titled panes: a scene screen with your scrollback, the room and who is
 about; a sheet screen; mail; channels; rolls; intel; actions; and two
-tactical screens — a damage report and a unit view — that show your unit
-whenever you hold a station on one (they are always in the strip).
+tactical screens — a damage report and a unit view, whose **grid** pane is
+the map of the window your scene stands on when one is open (`help map`) —
+that show your unit whenever you hold a station on one (they are always in
+the strip).
 Everything you type still runs the same commands and reaches the same world;
 the TUI is only a different way to *see* it.
 

@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.5 — 2026-09-10 (S1, S2, S2b, S3 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.6 — 2026-09-10 (S1, S2, S2b, S3, S4 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -661,6 +661,60 @@ followed by a delta renders the same grid as the text frame.
 text drops?), **V** (visibility — can any frame leak a hidden unit or a cell the viewer cannot
 see?), **R** (resolver — can any pose be in two rooms or none?).
 
+**Ledger (landed 2026-09-10).** Gates: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test` on `mush-sim` (with `testkit`), `mush-atlas`,
+`mush-scenes`, `mush-tactics`, `mush-core`, `mush-proto` (with `ts`, regenerating the bindings),
+`mush-ansi`, `mush-net-ssh`, `mush-gateway`, the dependents, the contract tests (the panic
+budget — `mush-atlas` still at zero sites — the restriction-lint table, the legacy-handler
+allowlist with `+map` added as legacy-post-image, family `atlas.window`, and `+move` as
+legacy-post-image, family `sim.placement`; `@atlas` gaining `/window` and `/feature`; the
+baseline pin unchanged at 151), `mush-server` and `mushd` whole, and the web client's
+`svelte-check` and vitest. Deviations from the text above, each with its reason:
+
+- **The composite re-enters through the atlas's own `Effect::ModuleAsync` completion**, not a
+  new `WorldCommand::WindowComposited` arm: `mush-core`'s engine doc forbids a core arm per
+  feature (the generic `ModuleAsyncDone` carries an opaque module payload), so the world task
+  gained an `atlas` routing arm that runs the pure compositor on a blocking thread and
+  re-enters with the typed outcome; a stale revision is dropped on-loop. §8's default stands:
+  no compositor thread of its own.
+- **The window document is `mod:atlas:window:<domain>`** — the owner's namespace, so it returns
+  to the atlas at boot — and it is the whole window (frame, anchors, rooms, pins, the composite),
+  immutable per revision: a re-composite is a new revision, never an edit. `terrain_revision` is
+  the per-tile `revision` the composite pins. A window whose composite never landed (the process
+  died between open and re-entry) is closed at boot rather than re-kicked, since boot defers no
+  effect.
+- **`WindowRec` sits on `mush-sim`'s `DomainRecord`** in integer centimetres and display-form
+  keys (the record is `Eq`); **`Pose`** replaces the opaque payload with the posture as its only
+  rules value, and a cut-1 document still decodes; **the resolver is a slot** (`RoomResolver`)
+  the atlas fills at boot, because the atlas depends on the simulation and not the reverse.
+  A domain with a window projects through it and its participants walk its exits: the
+  placement gate stands down for windowed domains, and the atlas's `Moved` observer places,
+  re-poses or releases on the far side.
+- **No separate 200 cm outdoor tiles**: the windows sample the tiles S1 made (the lot's
+  neighborhoods at 100 cm, the region's ground at 1000 cm); the window's cell size, coarsened
+  through the registered sizes past `window_max_cells`, does the coarsening (D-14-19).
+- **The text fallback is shape-driven**: a panel frame whose `schema.shape` is `grid` renders in
+  `mush-ansi` from its data alone, because the renderer sits across the IPC boundary from the
+  registry, where a `Registrar::panel_text` closure could not reach. The frame's schema is the
+  I9 convention with one more shape.
+- **The TUI's map is the unit screen's declared grid pane** (the geometry projection it
+  awaited), not a tenth screen: the nine digits are taken, and the scene screen keeps its
+  layout (its goldens unchanged); line mode prints the frame in the scrollback wherever `+map`
+  is typed.
+- **`+map` is one legacy-post-image command** (its switches write; a switch is not a command),
+  family `atlas.window`; `+move` rides `sim.placement`. `+move` outside a turn-based scene is
+  free (§8's default). A room's access stands in for the exit's lock on a walk until S5's
+  table; the walk crosses floors at a doorway at the same height; a step off the edge grows the
+  window and stops the walk until the new composite lands.
+- **Write-back is immediate**: street windows have no pulse clock, so a feature's state is
+  written when it changes (`@atlas/feature` by hand, S5's fights themselves) and every window
+  over it redraws; the applier keeps the live state through a pack update (rule 8).
+- **Rasterizer folds**: a door drawn beside its wall (the threshold's far side, or just off a
+  floor's tile) cuts the nearest wall cell; a floor is void beyond its building in a composite,
+  and the ground is void under one, so a walk changes surface at the door.
+- **Not built**: elevation digits on request (the class glyph is the band), the room-scale and
+  neighborhood-scale views on the feed (`+atlas` keeps its own text map).
+
 ### 3.6 Cut S5 — engine physics
 
 **`mush-atlas::physics`.** The engine vocabularies of doc 14 §5.1 (surface classes, cover,
@@ -838,3 +892,4 @@ square root of its pinned distance.
 - 0.3 (2026-09-09): S2 landed — one travel system in `mush-atlas` (journeys for characters, objects and the room-model bus; `+travel`, `+stakeout`, `+intercept`, `@atlas/journey`; timed portals; the clock floor and cap), `route.rs`'s runtime retired; D-P-4 amended (the carrier journey is layered until S7); its ledger and verify fold under §3.2; the starter packs at version 2.
 - 0.4 (2026-09-09): S2b landed — theme, weather, control regions and property key on the atlas (D-14-28): `Theme` in `mush-atlas` with a world theme and `@atlas/theme`; weather cells on neighborhoods and regions; `@region/atlas`, `@property/site`; `@theme` retired; its ledger under §3.3.
 - 0.5 (2026-09-10): S3 landed — the building agent and hydration: `mush_llm::agent` (the one tool loop, the NPC turn on it), `mush_atlas::validate` (doc 14 §4.3 as typed findings, shared by `@atlas/pack plan` and the agent), `mush_atlas::hydrate` (standing, requests, activation, the BUILD queue, canon events), `mush_worldgen::{proposal, plan}` (proposals, the planning run, `+build`, `@atlas/propose`); `[worldgen]`'s five knobs and the `worldgen_plan` route; its ledger under §3.4.
+- 0.6 (2026-09-10): S4 landed — the ledger under §3.5 (the composite through the atlas's own async completion, the window document in the atlas's namespace, `WindowRec` and `Pose` in `mush-sim` with the resolver slot, the shape-driven text fallback, the map pane, `+map` as one command); the rasterizer's door snap; `[atlas].window_margin_m` and `window_max_cells`.
