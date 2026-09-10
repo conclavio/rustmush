@@ -601,6 +601,14 @@ pub fn check_config(config: &Config) -> Vec<String> {
     if let Err(error) = config_ext::tacsim_config(&config.tacsim) {
         refusals.push(error);
     }
+    // S1: `[atlas].pack_paths` are read host-side and are boot-fatal for the same
+    // reason `[tacsim].pack_paths` are — an unreadable or mis-digested pack refuses
+    // the boot naming the file — so the preflight finds them at no cost too. The
+    // call also validates `[worldgen].hydration_strikes_to_zero`, which reaches the
+    // atlas through the same conversion.
+    if let Err(error) = config_ext::atlas_config(&config.atlas, &config.worldgen) {
+        refusals.push(error);
+    }
     if config.store.archive.enabled
         && let Err(error) = ArchiveConfig::parse_window(&config.store.archive.window)
     {

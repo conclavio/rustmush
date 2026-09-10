@@ -54,6 +54,7 @@
 //! | `[store.archive].enabled` | `serve_with_store` + caller store | `a_caller_supplied_store_says_the_archive_tier_is_ignored` |
 //! | `[store.archive].enabled` | `serve` (shutdown tail) | `the_split_shutdown_awaits_the_archive_job` |
 //! | `[store.archive].window` | `spawn_ledger_archive` / `check_config` | `check_config_finds_the_world_half_refusals_without_booting` |
+//! | `[atlas].pack_paths` | `game_modules` -> `build_engine` / `check_config` | `check_config_finds_the_world_half_refusals_without_booting` |
 //! | `[tacsim].enabled` / `.pack_paths` | `game_modules` -> `build_engine` | `split_build_engine_composes_the_tacsim_layer`, the matrix |
 //! | `[tacsim].seed_paths` | `build_engine` + an applied seed | `a_seeded_pack_resolves_a_route` |
 //! | `[tacsim].recovery` | `game_modules` (into the built-ins) | `the_split_boot_carries_the_operator_recovery_policy` |
@@ -257,6 +258,9 @@ fn expected_panels(ruleset_panels: &[&'static str]) -> Vec<&'static str> {
         "commands.list",
         "comsys",
         "scenes",
+        // S1/S4: the atlas composes after `mush-sim` (which advertises no feed)
+        // and before `mush-tactics`, and the map frame is the feed it publishes.
+        "atlas.map",
         "tactics.unit",
         "tactics.vitals",
         "tactics.contacts",
@@ -764,6 +768,19 @@ fn check_config_finds_the_world_half_refusals_without_booting() {
     // nothing will ever read it.
     cfg.store.archive.enabled = false;
     assert!(boot::check_config(&cfg).is_empty());
+
+    // (c) S1: `[atlas].pack_paths` is host-read and boot-fatal exactly as
+    // `[tacsim].pack_paths` is, so the preflight has to find it too — and name
+    // the file, which is the whole reason the atlas reads its packs host-side.
+    let mut atlas_cfg = wod_config("check-atlas");
+    let missing = PathBuf::from(&atlas_cfg.server.data_dir).join("no-such-pack.json");
+    atlas_cfg.atlas.pack_paths = vec![missing.display().to_string()];
+    let refusals = boot::check_config(&atlas_cfg);
+    assert!(
+        refusals.iter().any(|r| r.contains("no-such-pack.json")),
+        "the preflight must name the offending atlas pack: {refusals:?}"
+    );
+    let _ = std::fs::remove_dir_all(&atlas_cfg.server.data_dir);
 
     let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
     let _ = std::fs::remove_dir_all(&tampered_cfg.server.data_dir);
