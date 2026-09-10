@@ -1123,10 +1123,12 @@ text above, each with its reason:
   doorway on the map is the room's exit.
 - **What the gate found beside the cut.** The bot laboratory (`mush-bot`, merged at `a79afef`
   after S7's gate) had no panic budget, no row in the restriction-lint measurement and no
-  denies at its roots: measured at this gate (38 unwraps, 6 expects, 251 index sites, zero
-  of the other three), budgeted at 44 with the reason in `panic_budget/mush-bot.txt`, its row
-  added and the three zero-count lints denied at `lib.rs` and `main.rs`; the two pinned
-  totals moved by one crate. The review's reproduction (`review_window.rs`) drives an NPC
+  denies at its roots: measured at this gate (44 unwraps, 6 expects, 269 index sites at
+  `7843ce3`, zero of the other three), budgeted at 50 with the reason in
+  `panic_budget/mush-bot.txt`, its row added and the three zero-count lints denied at
+  `lib.rs` and `main.rs`; the two pinned totals moved by one crate. The budget is the
+  repository's own ceiling gate (WS01-S11): the crate is still being written, and each
+  growth of its unwrap surface will need a re-bless in the same change. The review's reproduction (`review_window.rs`) drives an NPC
   turn by writing the NPC host's slot from the atlas's tests, which the state-slot census
   refuses without a row: baselined in `state-slot-owners.toml` with the reason, the file
   itself untouched.

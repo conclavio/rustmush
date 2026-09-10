@@ -3,8 +3,9 @@
 # Regenerate with:
 #   PANIC_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test panic_budget
 # A raise is a reviewed diff, not a rounding error.
-# Born at 44: the bot laboratory's measured surface when it joined the workspace
-# (a79afef, 2026-09-10) and the S8 gate first counted it — the crate's own
-# unwrap/expect sites (38 + 6), not a raise of an existing budget.
+# Born at 44 when the bot laboratory joined the workspace (a79afef) and the S8
+# gate first counted it; 50 at 7843ce3 (wave-one conversation pacing), the
+# crate's own unwrap/expect sites (44 + 6) measured again at the merge — a
+# crate still being written, not a raise of a settled budget.
 # tier: ceiling
-44
+50

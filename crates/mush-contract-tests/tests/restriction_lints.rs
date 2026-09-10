@@ -101,10 +101,11 @@ const MEASURED: [(&str, [u32; 6]); 46] = [
     ("mush-ansi", [0, 0, 13, 0, 0, 0]),
     // S1: born with all six denied (14-spatial-implementation-plan §3.1).
     ("mush-atlas", [0, 0, 0, 0, 0, 0]),
-    // The bot laboratory (a79afef), measured at the S8 gate, 2026-09-10, with the
-    // command in this file's header over `crates/mush-bot/src`: 38 + 6 = its
-    // 44-site panic budget; three lints already at zero, denied at its roots.
-    ("mush-bot", [38, 6, 251, 0, 0, 0]),
+    // The bot laboratory (a79afef, then 7843ce3), measured at the S8 gate,
+    // 2026-09-10, with the command in this file's header over
+    // `crates/mush-bot/src`: 44 + 6 = its 50-site panic budget; three lints
+    // already at zero, denied at its roots.
+    ("mush-bot", [44, 6, 269, 0, 0, 0]),
     ("mush-campaign", [0, 0, 4, 0, 0, 0]),
     ("mush-canon", [0, 7, 0, 0, 0, 0]),
     ("mush-comsys", [0, 13, 0, 0, 1, 0]),
