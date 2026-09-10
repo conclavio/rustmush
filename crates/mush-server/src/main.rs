@@ -6,10 +6,14 @@
 //! given one itself), but it also runs standalone for testing.
 //!
 //! Usage: `mush-server [--check-config] [--config <path>] [--ipc <addr>]`.
-//! `--check-config` loads the config, reports every refusal the boot would
-//! raise, and exits without opening the store or the quarantine lifetime lock
-//! — the one preflight that covers the half a supervisor never starts
-//! directly, and where a bad `[store]`/`[tacsim]` value takes the world down.
+//! `--check-config` loads the config, reports the refusals on the preflight
+//! list — `mush_server::boot::check_config` (which is
+//! `mush_config::preflight::check` plus the world half's own), and this
+//! binary's `[ipc].listen` — and exits without opening the store or the
+//! quarantine lifetime lock. Those two functions are the list of record; the
+//! flag is not a claim that a boot raises nothing else. It is the one preflight
+//! that covers the half a supervisor never starts directly, and where a bad
+//! `[store]`/`[tacsim]` value takes the world down.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
 // held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
@@ -67,16 +71,17 @@ fn main() -> ExitCode {
         }
     };
 
-    // `--check-config` (WS04-S3): every refusal the boot would raise, without
-    // opening the store, a socket, or the quarantine spool's exclusive lifetime
-    // lock — so it is safe to run beside the live instance it preflights.
+    // `--check-config` (WS04-S3): the refusals named by
+    // `mush_server::boot::check_config` — the list of record for this half —
+    // plus `[ipc].listen`, which is boot-fatal here and in the gateway but does
+    // not exist in the all-in-one, so it hangs off `preflight::check_ipc`
+    // rather than the shared list `mushd` also reads (W1-B7-FIX). None of them
+    // opens the store, a socket, or the quarantine spool's exclusive lifetime
+    // lock, so it is safe to run beside the live instance it preflights.
     if cli.check_config {
-        return mush_config::preflight::verdict(
-            CLI.program,
-            &cli.config,
-            &mush_server::boot::check_config(&config),
-        )
-        .exit_code();
+        let mut refusals = mush_server::boot::check_config(&config);
+        refusals.extend(mush_config::preflight::check_ipc(&config));
+        return mush_config::preflight::verdict(CLI.program, &cli.config, &refusals).exit_code();
     }
 
     // Logging may create/append files, so integrity storage is structurally

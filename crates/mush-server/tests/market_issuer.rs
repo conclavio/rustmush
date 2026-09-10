@@ -244,7 +244,9 @@ fn composition_without_the_shadowrun_economy_registers_no_market_issuer() {
 /// Before this step, a non-Shadowrun server's market held `sr.market` while the
 /// economy listed nothing, so `issue_title` answered `Unauthorized` from inside a
 /// verb whose operator had never named an issuer. The needle is deliberately short:
-/// `api.rs`'s refusal carries a long run of spaces mid-sentence.
+/// it is the opening clause, so a reworded tail does not break the test. W1-B7-FIX
+/// closed the reason it USED to be short — `api.rs`'s refusal carried a thirty-space
+/// run mid-sentence — and the no-double-space assert below is what keeps it closed.
 #[test]
 fn stocking_fails_clear_without_the_shadowrun_economy() {
     let cfg = config("noissuer", "shadowrun", true);
@@ -273,6 +275,16 @@ fn stocking_fails_clear_without_the_shadowrun_economy() {
     assert!(
         refused.contains("This server registers no market title issuer"),
         "{refused}"
+    );
+    // The text an operator reads is the whole point of this refusal, so it has
+    // to read as a sentence. A wrapped Rust string literal that loses its
+    // trailing `\` keeps every space of the continuation line's indent, and the
+    // message ships with a thirty-space gap mid-sentence — invisible in the
+    // source, obvious on a terminal (W1-B7-FIX).
+    assert!(
+        !refused.contains("  "),
+        "the refusal must not carry a run of spaces from an unescaped line \
+         continuation: {refused:?}"
     );
     // …and NOT the economy's permission refusal, which is what the operator used to
     // read for a subsystem they had not enabled.

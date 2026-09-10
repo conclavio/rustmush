@@ -2235,6 +2235,19 @@ mod service_request_tests {
     /// loop down for *every* connection. The claim table is short-lived,
     /// non-reentrant state reconciled by `release`'s saturating arithmetic, so
     /// the policy is recovery — the retained claims stay usable.
+    ///
+    /// The panic HOOK is deliberately left alone (W1-B8-FIX, W1-B7-FIX).
+    /// Silencing it around the `catch_unwind` reads as tidier, but the hook is
+    /// process-global while `cargo test` runs a binary's tests on parallel
+    /// threads: two poisonings that overlap interleave their take/set/set-back
+    /// (A takes the real hook and installs the silencer, B takes the SILENCER
+    /// and installs its own, A restores the real one, B restores the silencer)
+    /// and the binary finishes the run with a hook that prints nothing — so
+    /// every later panic, in tests that have nothing to do with poisoning,
+    /// fails with no message. The cost of not swapping is one deliberate panic
+    /// line, which libtest captures and only prints for a test that actually
+    /// failed; the benefit is that this test leaves no process-global state
+    /// behind at all.
     #[test]
     fn a_poisoned_claim_table_keeps_serving_every_connection() {
         let claims = Arc::new(Mutex::new(ServerInputClaims::default()));
@@ -2245,13 +2258,10 @@ mod service_request_tests {
         );
 
         let poisoner = Arc::clone(&claims);
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
         let panicked = std::panic::catch_unwind(move || {
             let _held = poisoner.lock().expect("the table starts unpoisoned");
-            panic!("a claim path panicked mid-update");
+            panic!("a claim path panicked mid-update (expected: this test poisons the table)");
         });
-        std::panic::set_hook(hook);
         assert!(panicked.is_err());
         assert!(
             claims.lock().is_err(),

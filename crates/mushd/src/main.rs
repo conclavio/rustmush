@@ -13,8 +13,11 @@
 //! synchronous stdin REPL for offline poking (fully in-memory, no store).
 //!
 //! Usage: `mushd [--repl] [--check-config] [--config <path>]`.
-//! `--check-config` loads the config, reports every refusal the boot would
-//! raise, and exits without opening the store or the quarantine lifetime lock.
+//! `--check-config` loads the config, reports the refusals named by
+//! `mush_server::boot::check_config` (itself `mush_config::preflight::check`
+//! plus the world half's own) — that function is the list of record, not a
+//! claim that a boot raises nothing else — and exits without opening the store
+//! or the quarantine lifetime lock.
 //! The config defaults to
 //! `mushd.toml` in the working directory, and a missing *implicit* file means
 //! defaults; an explicit `--config` that names a file which is not there is a
@@ -272,10 +275,14 @@ fn main() -> ExitCode {
         }
     };
 
-    // `--check-config` (WS04-S3): every refusal the boot would raise, without
-    // opening the store, a socket, or the quarantine spool's exclusive lifetime
-    // lock. It sits here — after the config loads, before ANYTHING is opened —
-    // precisely so it is safe to run beside a live instance.
+    // `--check-config` (WS04-S3): the refusals named by
+    // `mush_server::boot::check_config`, which is the list of record for the
+    // all-in-one. `preflight::check_ipc` is deliberately NOT run here — this
+    // binary never reads `[ipc]`, so a boundary refusal would name a failure it
+    // cannot have (W1-B7-FIX). Nothing on the list opens the store, a socket,
+    // or the quarantine spool's exclusive lifetime lock. It sits here — after
+    // the config loads, before ANYTHING is opened — precisely so it is safe to
+    // run beside a live instance.
     if cli.check_config {
         return mush_config::preflight::verdict(
             CLI.program,

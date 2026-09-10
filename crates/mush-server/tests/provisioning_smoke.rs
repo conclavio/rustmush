@@ -182,10 +182,10 @@ fn load(path: &Path) -> Config {
 /// every binary shares AND under the world half's superset.
 ///
 /// Both are asserted for both envs on purpose. The gateway is the process a
-/// supervisor starts on the split deploy and it reads only the shared set; the
-/// world half is the process that dies on `[tacsim]`, and it is the one nobody
-/// starts by hand. A template that passes one and not the other is a box that
-/// comes up and then loses its world.
+/// supervisor starts on the split deploy and it reads the shared set plus the
+/// boundary; the world half is the process that dies on `[tacsim]`, and it is
+/// the one nobody starts by hand. A template that passes one and not the other
+/// is a box that comes up and then loses its world.
 #[test]
 fn both_shipped_instances_preflight_clean_under_both_check_sets() {
     let dir = scratch_dir("preflight");
@@ -204,6 +204,18 @@ fn both_shipped_instances_preflight_clean_under_both_check_sets() {
             world.is_empty(),
             "{env_file}: the world half's preflight refuses the shipped render: \
              {world:?}"
+        );
+        // W1-B7-FIX: `[ipc].listen`, which both split halves add on top of the
+        // shared set. The shipped templates all name a Unix socket, so on the
+        // deployment target this is a real validation and off Unix it is the
+        // tolerated "this host has no Unix sockets" case — either way a
+        // template must not be refused, or CI's Windows leg and the ubuntu
+        // provisioning job would disagree about the same file.
+        let boundary = mush_config::preflight::check_ipc(&cfg);
+        assert!(
+            boundary.is_empty(),
+            "{env_file}: the split halves' boundary preflight refuses the \
+             shipped render: {boundary:?}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);

@@ -17,22 +17,29 @@
 //!
 //! What lives here is the part every binary can check, named rather than
 //! implied: `[store].store`, `[store].receipt_policy` and `[game].ic_epoch`.
+//! [`check_ipc`] adds `[ipc].listen` for the two SPLIT halves only — the
+//! boundary is boot-fatal in `mush-server` and `mush-gateway` and does not
+//! exist at all in the all-in-one, so folding it into [`check`] would make
+//! `mushd --check-config` refuse a key `mushd` never reads (W1-B7-FIX).
 //! The world half's extra checks (the TacSim pack block, the `[store.archive]`
 //! window) need crates the gateway does not depend on, so they hang off
-//! `mush_server::boot::check_config`, which calls [`check`] first. One
+//! `mush_server::boot::check_config`, which calls [`check`] first — and NOT
+//! [`check_ipc`], because `mushd` reaches the boot half's list too. One
 //! [`verdict`] then turns either set into the process's ending, so the three
 //! binaries cannot drift into reporting the same finding three different ways.
 //!
 //! The list is deliberately explicit, because the previous wording — "every
 //! validation" — was a promise the code did not keep: `[game].ic_epoch` is
-//! boot-fatal in `build_engine` and was not checked here at all (W1-B8-FIX).
-//! A preflight that claims completeness has to be read as a claim about a
-//! specific set of keys; anything boot-fatal outside that set is a bug in this
-//! list, and belongs on it.
+//! boot-fatal in `build_engine` and was not checked here at all (W1-B8-FIX),
+//! and `[ipc].listen` is boot-fatal in both split halves and was not checked
+//! here either (W1-B7-FIX). A preflight that claims completeness has to be
+//! read as a claim about a specific set of keys; anything boot-fatal outside
+//! that set is a bug in this list, and belongs on it.
 
+use std::net::SocketAddr;
 use std::path::Path;
 
-use crate::config::Config;
+use crate::config::{Config, ConfigError};
 use crate::exit::ExitClass;
 
 /// The boot refusals every binary can raise from the parsed config alone,
@@ -66,6 +73,46 @@ pub fn check(config: &Config) -> Vec<String> {
     refusals
 }
 
+/// The one refusal only the SPLIT halves can raise: `[ipc].listen`, via
+/// [`Config::ipc_endpoint`] (W1-B7-FIX).
+///
+/// `mush-server` and `mush-gateway` both build the boundary endpoint during
+/// boot and both die on a bad one, so it belongs on the preflight list by the
+/// module's own rule. It is not in [`check`] because the all-in-one never reads
+/// `[ipc]` at all — a `mushd --check-config` that refused a config over the
+/// boundary would be reporting a failure that binary cannot have. So the two
+/// split `main`s call this beside [`check`] and `mushd` does not.
+///
+/// Like [`check`] this opens nothing: `ipc_endpoint` parses the stanza and, for
+/// the TCP form, compares it against the store's own authority. (It also emits
+/// the boundary's unauthenticated-TCP warn, which is the same thing an operator
+/// would see at boot and is worth seeing early.)
+///
+/// # Platform tolerance
+///
+/// A Unix-socket path — the form every shipped template uses, and the one
+/// `docs/ops.md` requires on Linux prod — cannot parse off Unix, where there
+/// are no Unix domain sockets. That refusal is NOT reported: it says the host
+/// running the preflight has no such sockets, not that the config is wrong, and
+/// treating it as a refusal would have `--check-config` on Windows condemn the
+/// very configs the deployment target runs. Everything else still refuses on
+/// every platform — a port collision with the store, and the empty value, which
+/// is the only string `IpcEndpoint::parse` rejects on Unix too.
+#[must_use]
+pub fn check_ipc(config: &Config) -> Vec<String> {
+    match config.ipc_endpoint() {
+        Ok(_) => Vec::new(),
+        Err(ConfigError::BadIpcListen { .. })
+            if !cfg!(unix)
+                && !config.ipc.listen.is_empty()
+                && config.ipc.listen.parse::<SocketAddr>().is_err() =>
+        {
+            Vec::new()
+        }
+        Err(error) => vec![error.to_string()],
+    }
+}
+
 /// Spend a set of refusals as this process's ending: each one on stderr, the
 /// verdict in the shared exit vocabulary.
 ///
@@ -91,7 +138,7 @@ pub fn verdict(program: &str, path: &Path, refusals: &[String]) -> ExitClass {
 
 #[cfg(test)]
 mod tests {
-    use super::{check, verdict};
+    use super::{check, check_ipc, verdict};
     use crate::config::Config;
     use crate::exit::ExitClass;
 
@@ -161,5 +208,64 @@ mod tests {
             verdict("mushd", std::path::Path::new("mushd.toml"), &refusals),
             ExitClass::Ok
         );
+    }
+
+    /// `[ipc].listen` is boot-fatal in both split halves, so a value neither
+    /// half could bind has to be findable here rather than from a supervisor
+    /// watching a relaunch loop (W1-B7-FIX). The empty string is the one value
+    /// `IpcEndpoint::parse` rejects on every platform, so this is the portable
+    /// proof; the refusal names the key, because "invalid" alone does not say
+    /// which line to edit.
+    #[test]
+    fn an_unparseable_ipc_listen_is_refused_by_name() {
+        let mut config = Config::default();
+        config.ipc.listen = String::new();
+        let refusals = check_ipc(&config);
+        assert_eq!(refusals.len(), 1, "{refusals:?}");
+        assert!(
+            refusals.iter().any(|r| r.contains("[ipc].listen")),
+            "{refusals:?}"
+        );
+        assert_eq!(
+            verdict("mush-server", std::path::Path::new("mushd.toml"), &refusals),
+            ExitClass::Failure
+        );
+    }
+
+    /// The form every shipped template uses. On Unix it validates outright; off
+    /// Unix `IpcEndpoint::parse` cannot take a socket path at all, and that
+    /// refusal is about the HOST running the preflight, not the config — so it
+    /// must not be reported, or `--check-config` on a Windows dev box would
+    /// condemn the exact configs the Linux target runs.
+    #[test]
+    fn the_shipped_unix_socket_form_is_not_a_refusal_on_any_platform() {
+        let mut config = Config::default();
+        config.ipc.listen = "/run/dev1mush/ipc.sock".to_owned();
+        let refusals = check_ipc(&config);
+        assert!(refusals.is_empty(), "{refusals:?}");
+    }
+
+    /// The tolerance is only for the path form: a boundary pointed at the
+    /// store's own port still refuses everywhere, because that config
+    /// crash-loops on Linux whatever platform noticed it.
+    #[test]
+    fn a_boundary_on_the_stores_own_port_is_refused_on_every_platform() {
+        let mut config = Config::default();
+        config.store.store = "redis".to_owned();
+        config.store.redis_url = "redis://127.0.0.1:6791".to_owned();
+        config.ipc.listen = "127.0.0.1:6791".to_owned();
+        let refusals = check_ipc(&config);
+        assert_eq!(refusals.len(), 1, "{refusals:?}");
+        assert!(refusals.iter().any(|r| r.contains("6791")), "{refusals:?}");
+    }
+
+    /// ...and the all-in-one never reads `[ipc]`, so the shared list must stay
+    /// silent about it: `mushd --check-config` reporting a boundary refusal
+    /// would be naming a failure that binary cannot have.
+    #[test]
+    fn the_shared_check_ignores_the_boundary_the_all_in_one_never_reads() {
+        let mut config = Config::default();
+        config.ipc.listen = String::new();
+        assert!(check(&config).is_empty(), "{:?}", check(&config));
     }
 }

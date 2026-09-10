@@ -3162,28 +3162,21 @@ mod tests {
     /// environmental facts through the generic seam. `[rulesets].enabled` is untouched
     /// by any of this: it still selects exactly one of `wod` | `shadowrun`, and TacSim
     /// is switched by `[tacsim].enabled` alone.
+    ///
+    /// W1-B7-FIX: the roster comes from [`ProductionRoster`] — the one root
+    /// `boot::game_modules` — rather than being hand-assembled here. WS04-S8's
+    /// claim is that exactly ONE hand-built roster survives, as the negative
+    /// control; this test was a second one, which made the claim false and,
+    /// worse, made *this* test's ordering proof a proof about a list no server
+    /// composes. The engine is still built from the list, because the claim is
+    /// that the order survives composition and not merely that
+    /// `game_modules` returned it in that order.
     #[test]
     fn e7c1_wiring_tacsim_composes_after_the_character_ruleset() {
         use mush_testkit::TestWorld;
         for ruleset in ["wod", "shadowrun"] {
-            let onboarding = ruleset_wod::OnboardingConfig::default();
-            let wod = ruleset_wod::WodEconomyConfig::default();
-            let shadowrun = ruleset_shadowrun::SrEconomyConfig::default();
-            let mut mods = server_modules_with(
-                mush_weather::WeatherConfig::default(),
-                mush_economy::EconomyConfig::default(),
-                mush_atlas::AtlasConfig::default(),
-                &onboarding,
-                (ruleset == "wod").then_some(&wod),
-                (ruleset == "shadowrun").then_some(&shadowrun),
-                mush_campaign::RecoveryConfig::default(),
-            );
-            mods.extend(
-                ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
-                    .expect("one production ruleset"),
-            );
-            mods.push(tacsim_module(ruleset_tacsim::fixture::config()));
-            let tw = TestWorld::with_modules(mods);
+            let mut roster = ProductionRoster::build("e7c1", ruleset);
+            let tw = TestWorld::with_modules(roster.take());
             let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
             assert_eq!(
                 names,
@@ -3213,10 +3206,17 @@ mod tests {
                     "party",
                     "market",
                     "script",
+                    // The composition root's own two, which only `game_modules`
+                    // adds.
+                    "worldgen",
+                    "npc",
                     ruleset,
-                    "tacsim"
+                    "tacsim",
+                    // S1: and the content module after it — the boot pass that
+                    // drives every other module's appliers runs last of all.
+                    "content"
                 ],
-                "the TacSim layer must be last, after the character ruleset"
+                "the TacSim layer must be last, after the character ruleset — only the                  content module composes after it"
             );
         }
     }

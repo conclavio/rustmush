@@ -588,6 +588,11 @@ pub async fn build_engine(
 ///   [`spawn_ledger_archive`] rather than leaving the nightly pass silently
 ///   unscheduled for the life of the deployment.
 ///
+/// `[ipc].listen` is deliberately absent: it is boot-fatal in the two split
+/// halves and meaningless in the all-in-one, which reaches this function too,
+/// so it hangs off [`mush_config::preflight::check_ipc`] and is added by the
+/// split `main`s (W1-B7-FIX).
+///
 /// Refusals are collected, not short-circuited: a config with three mistakes
 /// reports three.
 #[must_use]
