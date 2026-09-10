@@ -401,7 +401,6 @@ impl mush_sim::RouteCatalog for Corridor {
                     .expect("leg 1"),
                 LegDef::with_hazard(self.to, 200, 0, 0).expect("leg 2"),
             ],
-            None,
             mush_core::CanonicalId::new("fusion_torch").expect("class"),
             0,
             Some(mush_core::CanonicalId::new("belt_authority").expect("controller")),
@@ -1079,7 +1078,6 @@ fn vf_b14a_an_unauthored_route_and_journey_wire_encode_no_new_keys() {
         mush_core::CanonicalId::new("plain").expect("id"),
         (ObjId(10), ObjId(20)),
         vec![LegDef::new(ObjId(20), 100).expect("leg")],
-        None,
         mush_core::CanonicalId::new("fusion").expect("class"),
         7,
     )
@@ -1107,7 +1105,6 @@ fn vf_b14a_an_unauthored_route_and_journey_wire_encode_no_new_keys() {
         mush_core::CanonicalId::new("banded").expect("id"),
         (ObjId(10), ObjId(20)),
         vec![LegDef::with_hazard(ObjId(20), 100, 3, 2).expect("a banded leg")],
-        None,
         mush_core::CanonicalId::new("fusion").expect("class"),
         7,
     )

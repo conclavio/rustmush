@@ -276,12 +276,29 @@ fn domain_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let host = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
     let rhs = rhs_required(ctx, "@domain/create <host>=<driver>[,<presentation room>]")?;
     let (parts, _) = split_rhs(&rhs);
-    let driver = parts.first().cloned().unwrap_or_default();
-    if driver != PASSIVE_DRIVER {
-        return Err(CmdError::msg(format!(
-            "Unknown driver `{driver}` (cut 1 supports only `{PASSIVE_DRIVER}`)."
-        )));
-    }
+    let driver = parts
+        .first()
+        .cloned()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    // S7: the passive driver is the simulation's own; any other is a module's,
+    // registered at its boot (the TacSim ground driver is `tactics.ground`).
+    let registered = if driver == PASSIVE_DRIVER {
+        None
+    } else {
+        Some(crate::driver::driver_named(ctx.w, &driver).ok_or_else(|| {
+            let names = crate::driver::driver_names(ctx.w);
+            CmdError::msg(format!(
+                "Unknown driver `{driver}`: `{PASSIVE_DRIVER}`{}.",
+                if names.is_empty() {
+                    String::new()
+                } else {
+                    format!(" or one of {}", names.join(", "))
+                }
+            ))
+        })?)
+    };
     let host_obj = ctx
         .w
         .get(host)
@@ -317,6 +334,23 @@ fn domain_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(
             "The presentation location must be a live room.",
         ));
+    }
+    // S7: a registered driver creates its own domain — a window, for the
+    // ground driver — and names it; the passive path below is the simulation's.
+    if let Some(driver) = registered {
+        let id = driver
+            .create(ctx, host, presentation)
+            .map_err(|error| CmdError::msg(format!("Driver {}: {error}", driver.name())))?;
+        info(
+            ctx,
+            format!(
+                "Created domain #{id} on {} under {} (presents in {}).",
+                display_name(ctx.w, host),
+                driver.name(),
+                display_name(ctx.w, presentation)
+            ),
+        );
+        return Ok(());
     }
     let (rec, next) = {
         let s = st_mut(ctx);
@@ -459,7 +493,17 @@ fn domain_retire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     {
         return Err(CmdError::msg(format!("Domain #{id} is already retired.")));
     }
-    run(ctx, &Transition::Retire { domain: id }).map_err(sim_err)?;
+    // S7: a driver's domain is the driver's to retire — closing the ground
+    // driver's window retires its domain — else the transition is run here.
+    let driver = st(ctx)
+        .domains
+        .get(&id)
+        .map(|d| d.driver.clone())
+        .and_then(|d| crate::driver::driver_of(ctx.w, &d));
+    let retired_by_driver = driver.as_ref().is_some_and(|d| d.closed(ctx, id));
+    if !retired_by_driver {
+        run(ctx, &Transition::Retire { domain: id }).map_err(sim_err)?;
+    }
     info(
         ctx,
         format!("Domain #{id} retired; its host may now drop `sim.domain`."),
@@ -2266,7 +2310,7 @@ fn build_route(
     let parent = arrival_parent(ctx, destination)?;
     let drive_class = CanonicalId::new(STAFF_DRIVE_CLASS)
         .map_err(|e| CmdError::msg(format!("bad drive class: {e}")))?;
-    let route = RouteDef::new(id, (origin, destination), legs, None, drive_class, 0)
+    let route = RouteDef::new(id, (origin, destination), legs, drive_class, 0)
         .map_err(|e| CmdError::msg(e.to_string()))?;
     Ok((route, parent))
 }
@@ -3249,7 +3293,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             .map(SmolStr::new)
             .collect(),
             help: "@domain  --  (staff) Simulation domains. No switch: list.\n\
-                   @domain/create <host>=<driver>[,<presentation room>]   (driver: sim.passive)\n\
+                   @domain/create <host>=<driver>[,<presentation room>]   (drivers: sim.passive, or a registered one such as tactics.ground)\n\
                    @domain/status <id|host>   @domain/pause|/resume <id|host>\n\
                    @domain/retire <id|host>   (must be unreferenced; then @behavior/remove sim.domain)\n\
                    @domain/present <id|host>=<room>   (re-point the presentation room)\n\

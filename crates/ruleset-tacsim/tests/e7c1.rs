@@ -148,8 +148,9 @@ fn patch(kv: &mut Kv, key: &str, f: impl Fn(&mut serde_json::Value)) {
 /// A pack body with its declared digest filled in for it, so a test can perturb
 /// exactly one thing at a time.
 fn signed(body: &str) -> String {
+    // S7 (D-P-1): a pack's digest is the content layer's, over the authored bytes.
     let text = body.replace("DIGEST", &"0".repeat(64));
-    let parsed: RulesPack = serde_json::from_str(&text).expect("the wire parses");
+    let parsed = mush_content::parse_pack(&text).expect("the wire parses");
     let digest = parsed.computed_digest().expect("digests").to_hex();
     body.replace("DIGEST", &digest)
 }
@@ -214,7 +215,8 @@ fn e7c1_digest_excludes_the_manifests_own_digest_field() {
     let text = signed(TWO_ENTRIES);
     let good = load_pack(&text).expect("loads");
     let tampered = text.replace(&good.manifest().digest().to_hex(), &"a".repeat(64));
-    let parsed: RulesPack = serde_json::from_str(&tampered).expect("the wire still parses");
+    // S7: the hash is over the authored bytes' canonical form, the content layer's.
+    let parsed = mush_content::parse_pack(&tampered).expect("the wire still parses");
     assert_eq!(
         parsed.computed_digest().unwrap(),
         good.computed_digest().unwrap(),
@@ -829,8 +831,9 @@ fn e7c1_fixture_the_corridor_exists_after_commit_and_nowhere_else() {
         .expect("loaded")
         .clone();
     // E7 cut 3 added one `PackEntry::Deposit` at `ceres_extraction`; E7 cut 4
-    // added one `PackEntry::Facility` at `phobos_yard`.
-    assert_eq!(corridor.pack.entries().len(), 6);
+    // added one `PackEntry::Facility` at `phobos_yard`; S7 (T17) added the three
+    // bodies of the corridor's sky.
+    assert_eq!(corridor.pack.entries().len(), 9);
     assert!(
         core.pack.entries().len() + corridor.pack.entries().len() <= fixture::MAX_FIXTURE_ENTRIES
     );
@@ -857,7 +860,15 @@ fn e7c1_fixture_the_corridor_exists_after_commit_and_nowhere_else() {
     );
     assert_eq!(route.legs().len(), 2);
     assert_eq!(route.legs()[0].to(), places["transfer_node"]);
-    assert!(route.alignment_band().is_none(), "cut 6 binds the band");
+    // S7 (T17): the corridor crosses from Ceres to Mars, so the sky pinned it.
+    assert!(
+        route.distance_km().is_some_and(|km| km > 0),
+        "the ephemeris pins a distance between two bodies' places"
+    );
+    assert_eq!(
+        route.bodies().map(|(a, b)| (a.as_str(), b.as_str())),
+        Some(("ceres", "mars"))
+    );
     // The pure evaluator agrees with itself over the fixture's own drive class.
     let drive = store::nominal_drive(route.drive_class()).expect("a nominal drive");
     let a = mush_sim::route_duration(&route, &drive, 0).expect("evaluates");
@@ -1359,6 +1370,7 @@ fn vf_p5_the_entry_cap_and_the_seed_object_cap_are_separate_refusals() {
             PackEntry::Location(ruleset_tacsim::LocationDef {
                 label: "P".to_string(),
                 role: cid("yard"),
+                body: None,
             }),
         );
     }

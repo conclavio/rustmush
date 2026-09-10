@@ -48,7 +48,7 @@
 //! oversized or mis-digested pack fails the boot naming the file before any module
 //! runs; every P-lens test here is a unit test over a string.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use mush_core::{CanonicalId, DefinitionDigest};
 use serde::{Deserialize, Serialize};
@@ -58,7 +58,7 @@ use serde::{Deserialize, Serialize};
 /// `hash_parts` length-prefixes it, so this value *is* the encoding version: change
 /// the pack encoding and this string changes with it, and every previously published
 /// digest stops matching loudly rather than silently colliding.
-pub const PACK_DIGEST_DOMAIN: &str = "tacsim.pack.v1";
+pub use mush_content::PACK_DIGEST_DOMAIN;
 
 /// The most entries one pack may declare (10b §7).
 pub const MAX_PACK_ENTRIES: usize = 512;
@@ -130,224 +130,19 @@ pub const MAX_LEG_SECS: u32 = 31_536_000;
 /// together, so they cannot drift.
 pub const MAX_HAZARD_BAND: u8 = 5;
 
-/// Which of Q6A's two kinds a pack is.
-///
-/// The distinction is load-bearing: *a rules pack is re-pinned and diffed, while
-/// re-running a seed pack would duplicate a mine.*
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PackKind {
-    /// Immutable, digest-referenced rules: commodity families, recipes, route tables.
-    RulesDefinition,
-    /// Mutable world state instantiated **once**: corridor locations and their kin.
-    CampaignSeed,
-}
+/// **S7 (D-P-1)** — a pack's identity types are `mush-content`'s: one manifest,
+/// one requirement shape, one kind vocabulary and one digest discipline for every
+/// pack this server loads. A TacSim pack is a content pack whose entries this crate
+/// decodes and checks; its digest is the content digest over the authored bytes.
+pub use mush_content::{PackKind, PackManifest, PackManifestWire, PackRequirement};
 
-impl PackKind {
-    /// The word this kind renders as.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            PackKind::RulesDefinition => "rules",
-            PackKind::CampaignSeed => "seed",
-        }
-    }
-}
-
-/// One `(pack, version)` dependency a manifest declares.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackRequirement {
-    /// The pack depended on.
-    pub id: CanonicalId,
-    /// The exact version depended on — never a range (Q18A: versions coexist, and a
-    /// consumer stays pinned until an explicit migration).
-    pub version: u32,
-    /// The **content** the dependency must have (independent verify P8).
-    ///
-    /// A pack is *"immutable and referenced by digest"*, and until this field existed
-    /// the `requires` edge was the one reference in the system that was not: it named a
-    /// version, so an in-place re-signed edit of a dependency propagated invisibly
-    /// through a dependent pack whose own digest never moved. Declaring it makes
-    /// [`check_requires`] compare content, and the boot refusal names both digests.
-    ///
-    /// `Option` now, required at the next pack encoding version (which rides
-    /// [`PACK_DIGEST_DOMAIN`]). It enters the hashed value **only when it is `Some`**,
-    /// so adding the field moved no already-published digest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub digest: Option<DefinitionDigest>,
-}
-
-/// A pack's identity and provenance.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(into = "PackManifestWire")]
-pub struct PackManifest {
-    id: CanonicalId,
-    version: u32,
-    kind: PackKind,
-    digest: DefinitionDigest,
-    requires: Vec<PackRequirement>,
-}
-
-/// The strict wire form of [`PackManifest`].
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PackManifestWire {
-    /// The pack id.
-    pub id: CanonicalId,
-    /// The pack version; `1` upwards, and versions coexist.
-    pub version: u32,
-    /// Rules or seed.
-    pub kind: PackKind,
-    /// The declared digest, 64 lowercase hex digits — **not** part of what is hashed.
-    pub digest: String,
-    /// The exact `(pack, version)` pairs this pack needs.
-    #[serde(default)]
-    pub requires: Vec<PackRequirement>,
-}
-
-impl PackManifest {
-    /// The one constructor, and therefore the one place the invariants live.
-    ///
-    /// # Errors
-    ///
-    /// [`PackError::ZeroVersion`] for version `0` (versions start at one, so `0` can
-    /// mean "unset" nowhere), [`PackError::TooManyRequires`] past [`MAX_REQUIRES`],
-    /// [`PackError::SelfRequire`] for a pack that depends on itself, and
-    /// [`PackError::DuplicateRequire`] for a pack named twice.
-    pub fn new(
-        id: CanonicalId,
-        version: u32,
-        kind: PackKind,
-        digest: DefinitionDigest,
-        requires: Vec<PackRequirement>,
-    ) -> Result<PackManifest, PackError> {
-        if version == 0 {
-            return Err(PackError::ZeroVersion);
-        }
-        if requires.len() > MAX_REQUIRES {
-            return Err(PackError::TooManyRequires {
-                actual: requires.len(),
-                max: MAX_REQUIRES,
-            });
-        }
-        let mut seen: BTreeSet<&CanonicalId> = BTreeSet::new();
-        for requirement in &requires {
-            if requirement.id == id {
-                return Err(PackError::SelfRequire { id: id.to_string() });
-            }
-            if !seen.insert(&requirement.id) {
-                return Err(PackError::DuplicateRequire {
-                    id: requirement.id.to_string(),
-                });
-            }
-        }
-        Ok(PackManifest {
-            id,
-            version,
-            kind,
-            digest,
-            requires,
-        })
-    }
-
-    /// The pack id.
-    #[must_use]
-    pub fn id(&self) -> &CanonicalId {
-        &self.id
-    }
-
-    /// The pack version.
-    #[must_use]
-    pub fn version(&self) -> u32 {
-        self.version
-    }
-
-    /// Rules or seed.
-    #[must_use]
-    pub fn kind(&self) -> PackKind {
-        self.kind
-    }
-
-    /// The declared digest.
-    #[must_use]
-    pub fn digest(&self) -> DefinitionDigest {
-        self.digest
-    }
-
-    /// The exact `(pack, version)` pairs this pack needs.
-    #[must_use]
-    pub fn requires(&self) -> &[PackRequirement] {
-        &self.requires
-    }
-
-    /// The part of the manifest that is **hashed** — everything but `digest`.
-    ///
-    /// This function is the whole of the "a self-referential hash is unverifiable"
-    /// argument: there is no other path from a manifest into the hashed bytes.
-    fn hashed_value(&self) -> serde_json::Value {
-        serde_json::json!({
-            "id": self.id.as_str(),
-            "version": self.version,
-            "kind": match self.kind {
-                PackKind::RulesDefinition => "rules_definition",
-                PackKind::CampaignSeed => "campaign_seed",
-            },
-            "requires": self
-                .requires
-                .iter()
-                .map(|r| {
-                    // The declared dependency digest is inside the hash when it is
-                    // declared and absent from it when it is not, so adding the field
-                    // (P8) moved no already-published digest while a pack that *does*
-                    // bind a dependency's content cannot have that binding edited
-                    // without its own digest moving.
-                    match &r.digest {
-                        Some(digest) => serde_json::json!({
-                            "id": r.id.as_str(),
-                            "version": r.version,
-                            "digest": digest.to_hex(),
-                        }),
-                        None => serde_json::json!({ "id": r.id.as_str(), "version": r.version }),
-                    }
-                })
-                .collect::<Vec<_>>(),
-        })
-    }
-}
-
-impl From<PackManifest> for PackManifestWire {
-    fn from(value: PackManifest) -> PackManifestWire {
-        PackManifestWire {
-            id: value.id,
-            version: value.version,
-            kind: value.kind,
-            digest: value.digest.to_hex(),
-            requires: value.requires,
-        }
-    }
-}
-
-impl TryFrom<PackManifestWire> for PackManifest {
-    type Error = PackError;
-
-    fn try_from(value: PackManifestWire) -> Result<PackManifest, PackError> {
-        let digest = DefinitionDigest::from_hex(&value.digest).map_err(|error| {
-            PackError::BadDigestText {
-                detail: error.to_string(),
-            }
-        })?;
-        PackManifest::new(value.id, value.version, value.kind, digest, value.requires)
-    }
-}
-
-impl<'de> Deserialize<'de> for PackManifest {
-    fn deserialize<D>(deserializer: D) -> Result<PackManifest, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = PackManifestWire::deserialize(deserializer)?;
-        PackManifest::try_from(wire).map_err(serde::de::Error::custom)
+/// The word a pack kind renders as in this crate's refusals and listings.
+#[must_use]
+pub fn kind_word(kind: PackKind) -> &'static str {
+    match kind {
+        PackKind::RulesDefinition => "rules",
+        PackKind::CampaignSeed => "seed",
+        other => other.label(),
     }
 }
 
@@ -416,6 +211,10 @@ pub enum PackEntry {
     /// campaign layer through `CampaignModule::with_formation_kinds` at the
     /// composition root, exactly as a recipe reaches `mush-industry`.
     Formation(FormationKindDef),
+    /// **S7 (doc 10 T17)** — one body of the campaign ephemeris. A rules definition
+    /// like a commodity (the sky is not instantiated), allowed in a seed pack too so
+    /// the corridor can carry the sky its places stand under.
+    Body(BodyDef),
 }
 
 impl PackEntry {
@@ -430,6 +229,7 @@ impl PackEntry {
             PackEntry::Deposit(_) => "deposit",
             PackEntry::Facility(_) => "facility",
             PackEntry::Formation(_) => "formation",
+            PackEntry::Body(_) => "body",
         }
     }
 
@@ -444,6 +244,8 @@ impl PackEntry {
     fn check(&self) -> Result<(), PackError> {
         let too_long = |label: &str| label.len() > MAX_LABEL_BYTES;
         match self {
+            // S7: a body's bounds are the wire's (`BodyDef::from_authored`).
+            PackEntry::Body(_) => {}
             PackEntry::Commodity(def) => {
                 if too_long(&def.label) {
                     return Err(PackError::LabelTooLong {
@@ -730,6 +532,106 @@ pub struct LocationDef {
     pub label: String,
     /// What kind of place it is — prose for cut 1, a real classification later.
     pub role: CanonicalId,
+    /// **S7 (doc 10 T17)** — the body this place belongs to: the pack-local id of
+    /// a `body` entry in this same pack. A route between two places on different
+    /// bodies gets its distance pinned from the sky; a place without a body is
+    /// nowhere the sky knows. Skipped when unauthored, for the digest's sake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<CanonicalId>,
+}
+
+/// **S7 (doc 10 T17)** — one body of the campaign ephemeris: a circular, coplanar
+/// orbit and where on it the body stood at the campaign epoch.
+///
+/// Authored as `{ orbit_au, period_days, phase_deg_at_epoch }` in JSON numbers;
+/// held as integers of fixed scale (micro-AU, milli-days, milli-degrees) so the
+/// pack stays `Eq` and every derived distance is a function of integers up to the
+/// last step. The wire refuses a non-finite, non-positive or oversized orbit or
+/// period and a non-finite phase; a phase is taken modulo a turn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BodyDef {
+    /// Orbit radius, micro-AU; `1..=MAX_ORBIT_UAU`.
+    pub orbit_uau: u64,
+    /// Orbital period, milli-days; `1..=MAX_PERIOD_MDAYS`.
+    pub period_mdays: u64,
+    /// Heliocentric longitude at the epoch, milli-degrees in `0..360_000`.
+    pub phase_mdeg: i64,
+}
+
+/// The largest orbit a pack may author, micro-AU (100 000 AU).
+pub const MAX_ORBIT_UAU: u64 = 100_000_000_000;
+/// The longest period a pack may author, milli-days (a billion days).
+pub const MAX_PERIOD_MDAYS: u64 = 1_000_000_000_000;
+
+/// The authored form of a [`BodyDef`].
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BodyDefWire {
+    orbit_au: f64,
+    period_days: f64,
+    phase_deg_at_epoch: f64,
+}
+
+impl Serialize for BodyDef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[allow(clippy::cast_precision_loss)]
+        let wire = BodyDefWire {
+            orbit_au: self.orbit_uau as f64 / 1_000_000.0,
+            period_days: self.period_mdays as f64 / 1_000.0,
+            phase_deg_at_epoch: self.phase_mdeg as f64 / 1_000.0,
+        };
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BodyDef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<BodyDef, D::Error> {
+        let wire = BodyDefWire::deserialize(deserializer)?;
+        BodyDef::from_authored(wire.orbit_au, wire.period_days, wire.phase_deg_at_epoch)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl BodyDef {
+    /// From the authored numbers.
+    ///
+    /// # Errors
+    ///
+    /// A message naming the field, for a non-finite, non-positive or oversized
+    /// orbit or period, or a non-finite phase.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    pub fn from_authored(
+        orbit_au: f64,
+        period_days: f64,
+        phase_deg: f64,
+    ) -> Result<BodyDef, String> {
+        let scaled = |name: &str, value: f64, scale: f64, max: u64| -> Result<u64, String> {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(format!("a body's {name} is a positive number"));
+            }
+            let units = (value * scale).round();
+            if units < 1.0 || units > max as f64 {
+                return Err(format!("a body's {name} is out of range"));
+            }
+            Ok(units as u64)
+        };
+        let orbit_uau = scaled("orbit_au", orbit_au, 1_000_000.0, MAX_ORBIT_UAU)?;
+        let period_mdays = scaled("period_days", period_days, 1_000.0, MAX_PERIOD_MDAYS)?;
+        if !phase_deg.is_finite() {
+            return Err("a body's phase_deg_at_epoch is a number".to_string());
+        }
+        let turn = 360_000.0_f64;
+        let mdeg = (phase_deg * 1_000.0).round().rem_euclid(turn);
+        Ok(BodyDef {
+            orbit_uau,
+            period_mdays,
+            phase_mdeg: mdeg as i64,
+        })
+    }
 }
 
 /// The largest authored ore reserve a pack may declare. Matches
@@ -915,14 +817,6 @@ pub struct RouteEntry {
     pub drive_class: CanonicalId,
     /// Propellant the plan consumes.
     pub propellant: u64,
-    /// The declared cadence the body-pair alignment band is measured on.
-    ///
-    /// `None` through cut 1: no campaign cadence is declared for the corridor yet, and
-    /// a sentinel id would be exactly the fail-open shape this programme avoids. Cut 6
-    /// binds it, and `mush_sim::route_duration` never reads it — an alignment band is a
-    /// departure window, not a duration term.
-    #[serde(default)]
-    pub alignment_band: Option<u64>,
     /// **E7r1 R2** — who holds the corridor, as a symbolic id.
     ///
     /// `None` (the default) is an uncontrolled corridor. It is deliberately a
@@ -946,7 +840,7 @@ fn is_unbanded(value: &u8) -> bool {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(into = "RulesPackWire")]
 pub struct RulesPack {
-    manifest: PackManifest,
+    pack: mush_content::Pack,
     entries: BTreeMap<CanonicalId, PackEntry>,
 }
 
@@ -1043,6 +937,25 @@ impl RulesPack {
         manifest: PackManifest,
         entries: BTreeMap<CanonicalId, PackEntry>,
     ) -> Result<RulesPack, PackError> {
+        let pack = content_pack(manifest, &entries)?;
+        RulesPack::from_content(pack, entries)
+    }
+
+    /// The same checks over a content pack already loaded (S7): the pack is kept
+    /// as it arrived, so its digest is the digest of its bytes.
+    fn from_content(
+        pack: mush_content::Pack,
+        entries: BTreeMap<CanonicalId, PackEntry>,
+    ) -> Result<RulesPack, PackError> {
+        let manifest = pack.manifest();
+        if !matches!(
+            manifest.kind(),
+            PackKind::RulesDefinition | PackKind::CampaignSeed
+        ) {
+            return Err(PackError::NotATacsimPack {
+                kind: manifest.kind().label().to_string(),
+            });
+        }
         if entries.len() > MAX_PACK_ENTRIES {
             return Err(PackError::TooManyEntries {
                 actual: entries.len(),
@@ -1075,7 +988,7 @@ impl RulesPack {
             // re-running the other would duplicate a mine, so an entry on the wrong
             // side of it is refused rather than quietly ignored.
             let misplaced = matches!(
-                (manifest.kind, entry),
+                (manifest.kind(), entry),
                 (
                     PackKind::RulesDefinition,
                     PackEntry::Location(_)
@@ -1091,7 +1004,7 @@ impl RulesPack {
                 return Err(PackError::WrongKindEntry {
                     id: id.to_string(),
                     entry: entry.label(),
-                    kind: manifest.kind.label(),
+                    kind: kind_word(manifest.kind()),
                 });
             }
         }
@@ -1122,6 +1035,19 @@ impl RulesPack {
                     });
                 }
             }
+            // S7 (T17): a place's body is symbolic for the same reason, checked
+            // the same way — the sky a route is pinned against is its own pack's.
+            if let PackEntry::Location(place) = entry
+                && let Some(body) = &place.body
+            {
+                let declared = matches!(entries.get(body), Some(PackEntry::Body(_)));
+                if !declared {
+                    return Err(PackError::UnknownBody {
+                        place: id.to_string(),
+                        body: body.to_string(),
+                    });
+                }
+            }
             if let PackEntry::Route(route) = entry {
                 let mut named: Vec<&CanonicalId> = vec![&route.from, &route.to];
                 named.extend(route.legs.iter().map(|leg| &leg.to));
@@ -1136,13 +1062,20 @@ impl RulesPack {
                 }
             }
         }
-        Ok(RulesPack { manifest, entries })
+        Ok(RulesPack { pack, entries })
     }
 
     /// Identity and provenance.
     #[must_use]
     pub fn manifest(&self) -> &PackManifest {
-        &self.manifest
+        self.pack.manifest()
+    }
+
+    /// S7: the content pack this one was decoded from — what the content layer's
+    /// shelf, plan and apply take.
+    #[must_use]
+    pub fn pack(&self) -> &mush_content::Pack {
+        &self.pack
     }
 
     /// The entries, in id order — deterministic on every iteration.
@@ -1165,13 +1098,8 @@ impl RulesPack {
     /// [`PackError::Encoding`] if an entry will not encode as JSON, which a
     /// `serde_json`-round-tripped entry cannot do.
     pub fn canonical_value(&self) -> Result<serde_json::Value, PackError> {
-        let entries = serde_json::to_value(&self.entries).map_err(|error| PackError::Encoding {
-            detail: error.to_string(),
-        })?;
-        Ok(serde_json::json!({
-            "manifest": self.manifest.hashed_value(),
-            "entries": entries,
-        }))
+        // S7: the content layer's canonical form, over the authored bytes.
+        Ok(self.pack.canonical_value())
     }
 
     /// The digest this pack's content actually has.
@@ -1180,14 +1108,38 @@ impl RulesPack {
     ///
     /// [`PackError::Encoding`] and [`PackError::Oversized`].
     pub fn computed_digest(&self) -> Result<DefinitionDigest, PackError> {
-        pack_digest(&self.canonical_value()?)
+        self.pack.computed_digest().map_err(PackError::from)
     }
+}
+
+/// A content pack built from typed entries (an in-memory pack, as tests and
+/// tools make one): every entry re-encoded as it would be authored.
+fn content_pack(
+    manifest: PackManifest,
+    entries: &BTreeMap<CanonicalId, PackEntry>,
+) -> Result<mush_content::Pack, PackError> {
+    let mut raw = BTreeMap::new();
+    for (id, entry) in entries {
+        let value = serde_json::to_value(entry).map_err(|error| PackError::Encoding {
+            detail: error.to_string(),
+        })?;
+        let kind = value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|k| CanonicalId::new(k).ok())
+            .ok_or_else(|| PackError::Encoding {
+                detail: format!("entry {id} encodes no kind"),
+            })?;
+        let def = value.get("def").cloned().unwrap_or(serde_json::Value::Null);
+        raw.insert(id.clone(), mush_content::RawEntry::new(kind, def)?);
+    }
+    Ok(mush_content::Pack::new(manifest, raw, None)?)
 }
 
 impl From<RulesPack> for RulesPackWire {
     fn from(value: RulesPack) -> RulesPackWire {
         RulesPackWire {
-            manifest: PackManifestWire::from(value.manifest),
+            manifest: PackManifestWire::from(value.pack.manifest().clone()),
             entries: value.entries,
         }
     }
@@ -1232,18 +1184,7 @@ impl<'de> Deserialize<'de> for RulesPack {
 /// [`PackError::Oversized`] when the canonical encoding is past [`MAX_PACK_BYTES`],
 /// and [`PackError::Encoding`] for anything else the shared encoder refuses.
 pub fn pack_digest(canonical: &serde_json::Value) -> Result<DefinitionDigest, PackError> {
-    DefinitionDigest::for_canonical_value_with_limit(PACK_DIGEST_DOMAIN, canonical, MAX_PACK_BYTES)
-        .map_err(|error| {
-            let detail = error.to_string();
-            if detail.contains("limit") || detail.contains("byte") {
-                PackError::Oversized {
-                    max: MAX_PACK_BYTES,
-                    detail,
-                }
-            } else {
-                PackError::Encoding { detail }
-            }
-        })
+    mush_content::pack_digest(canonical).map_err(PackError::from)
 }
 
 /// **Parse and verify one pack from its bytes.** No filesystem, no world, no clock.
@@ -1264,11 +1205,24 @@ pub fn load_pack(bytes: &str) -> Result<RulesPack, PackError> {
             detail: format!("{} bytes of source", bytes.len()),
         });
     }
-    let pack: RulesPack = serde_json::from_str(bytes).map_err(|error| PackError::Parse {
-        detail: error.to_string(),
-    })?;
+    // S7 (D-P-1): the content layer parses the bytes and digests them; this crate
+    // decodes and checks the entries it owns. The entries are checked BEFORE the
+    // digest is compared, so a refusal names the rule a pack breaks — a band, a
+    // kind, an unknown key — rather than the signature it also lacks (B11).
+    let pack = mush_content::parse_pack(bytes)?;
+    let mut entries = BTreeMap::new();
+    for (id, raw) in pack.entries() {
+        let value = serde_json::json!({ "kind": raw.kind().as_str(), "def": raw.def_value() });
+        let entry: PackEntry =
+            serde_json::from_value(value).map_err(|error| PackError::EntryDecode {
+                id: id.to_string(),
+                detail: error.to_string(),
+            })?;
+        entries.insert(id.clone(), entry);
+    }
+    let pack = RulesPack::from_content(pack, entries)?;
     let computed = pack.computed_digest()?;
-    let declared = pack.manifest.digest();
+    let declared = pack.manifest().digest();
     if computed != declared {
         return Err(PackError::DigestMismatch {
             declared: declared.to_hex(),
@@ -1289,7 +1243,7 @@ pub fn check_requires(
     pack: &RulesPack,
     loaded: &BTreeMap<(CanonicalId, u32), RulesPack>,
 ) -> Result<(), PackError> {
-    for requirement in pack.manifest.requires() {
+    for requirement in pack.manifest().requires() {
         let key = (requirement.id.clone(), requirement.version);
         if let Some(dependency) = loaded.get(&key) {
             // A dependency edge names a **content**, not a version (P8): a version
@@ -1297,7 +1251,7 @@ pub fn check_requires(
             // both digests, rather than propagating invisibly through a dependent
             // pack whose own digest never moved.
             if let Some(declared) = requirement.digest {
-                let actual = dependency.manifest.digest();
+                let actual = dependency.manifest().digest();
                 if declared != actual {
                     return Err(PackError::RequireDigestMismatch {
                         id: requirement.id.to_string(),
@@ -1404,6 +1358,23 @@ pub enum PackError {
         wanted: u32,
         /// The versions actually loaded.
         present: String,
+    },
+    /// S7: the content layer's refusal — parse, size, digest, manifest.
+    #[error(transparent)]
+    Content(#[from] mush_content::PackError),
+    /// S7: an entry this crate could not decode.
+    #[error("entry {id} would not decode as a TacSim entry: {detail}")]
+    EntryDecode {
+        /// The entry.
+        id: String,
+        /// Why.
+        detail: String,
+    },
+    /// S7: a pack of a kind this crate does not own (a region, a neighborhood).
+    #[error("a {kind} pack is not a TacSim rules or seed pack")]
+    NotATacsimPack {
+        /// The kind.
+        kind: String,
     },
     /// A dependency present at the right version but with **other content**.
     #[error(
@@ -1577,6 +1548,14 @@ pub enum PackError {
         route: String,
         /// The place it named.
         place: String,
+    },
+    /// **S7** — a place named a body its pack does not declare.
+    #[error("place {place} stands on body {body}, which this pack does not declare")]
+    UnknownBody {
+        /// The place.
+        place: String,
+        /// The body it named.
+        body: String,
     },
     /// An entry on the wrong side of Q6A's rules/seed distinction.
     #[error("entry {id} is a {entry}, which a {kind} pack may not declare")]

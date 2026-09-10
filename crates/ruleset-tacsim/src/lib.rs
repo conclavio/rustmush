@@ -76,6 +76,7 @@
 
 pub mod commands;
 pub mod config;
+pub mod ephemeris;
 pub mod fixture;
 pub mod pack;
 pub mod record;
@@ -84,19 +85,22 @@ pub mod store;
 
 use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar};
 
+pub use config::EphemerisConfig;
 pub use config::{
     DEFAULT_ACTIVE_DOMAIN_LIMIT, DEFAULT_GROUND_PULSE_MS, DEFAULT_SPACE_PULSE_MS, LoadedPack,
     MAX_CONFIGURED_PACKS, MAX_RECOVERY_TIERS, PackSource, RECOVERY_INSURANCE_WORDS, TacsimConfig,
     TacsimRecoveryConfig, TacsimTimeConfig,
 };
+pub use ephemeris::{AU_KM, Body, Ephemeris, MAX_ORBIT_UAU, MAX_PERIOD_MDAYS, separation_km};
+pub use pack::BodyDef;
 pub use pack::{
     CommodityDef, FacilityDef, FormationKindDef, FormationRoleDef, LocationDef,
     MAX_FACILITY_CAPABILITIES, MAX_FACILITY_SLOTS, MAX_FORMATION_CATEGORIES, MAX_FORMATION_MEMBERS,
     MAX_FORMATION_ROLES, MAX_HAZARD_BAND, MAX_LABEL_BYTES, MAX_LEG_SECS, MAX_PACK_BYTES,
     MAX_PACK_ENTRIES, MAX_RECIPE_LINES, MAX_RECIPE_UNITS, MAX_REQUIRES, MAX_ROUTE_PROPELLANT,
     MAX_SEED_OBJECTS, PACK_DIGEST_DOMAIN, PackEntry, PackError, PackKind, PackLeg, PackManifest,
-    PackRequirement, RecipeDef, RecipeLine, RouteEntry, RulesPack, check_requires, load_pack,
-    pack_digest,
+    PackRequirement, RecipeDef, RecipeLine, RouteEntry, RulesPack, check_requires, kind_word,
+    load_pack, pack_digest,
 };
 pub use record::{PackRecord, PinRecord, SeedApplication};
 pub use seed::{PlannedObject, SeedError, SeedPlan};

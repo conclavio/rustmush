@@ -8,7 +8,7 @@
 ## 1. Design principles
 
 1. **Rulesets are compiled-in Rust crates behind a trait, not dynamically loaded.** One binary, one workspace, feature-flag optional rulesets. (Justification in §3.1.)
-2. **The core knows nothing about d10s or hexes.** It knows: sheets are versioned, schema-described documents attached to objects; rulesets register commands, tick handlers, event hooks, and web panel feeds; rulesets may own opaque per-scene state. Everything WoD-shaped lives in `ruleset-wod`; everything hex-shaped will live in `mush-tactics`.
+2. **The core knows nothing about d10s or tactical cells.** It knows: sheets are versioned, schema-described documents attached to objects; rulesets register commands, tick handlers, event hooks, and web panel feeds; rulesets may own opaque per-scene state. Everything WoD-shaped lives in `ruleset-wod`; everything tactical lives in `mush-tactics`, over the atlas's square windows (doc 14 D-14-4).
 3. **Every random outcome flows through one dice engine** with an injectable RNG, so tests are deterministic, rolls are loggable/auditable, and LLM NPCs can only *request* rolls — never invent results.
 4. **The web client is fed structured events, never scraped text.** Comsys, mail, weather, and rulesets each own a namespaced event vocabulary; the terminal rendering of the same event is produced server-side from the structured form.
 5. **LLM output is flavor, never state.** Weather states, roll results, sheet values, and damage are deterministic; LLMs narrate around them (weather ambience, NPC dialogue) and act through validated tools.
@@ -32,7 +32,7 @@ rustmush/
 
 Dependency direction: `ruleset-*` → `mush-ruleset` + `mush-dice` + core crates. `mush-comsys` / `mush-mail` / `mush-weather` / `mush-jobs` depend only on core crates (they are built-ins, not rulesets — they exist on every game regardless of ruleset). `mush-dice` depends on nothing but `rand` + parser deps, so it's unit-testable in isolation and reusable from Lua bindings.
 
-**Crates (versions verified Aug 2026):** `serde` 1, `serde_json` 1, `thiserror` 2, `rand` 0.9 + `rand_chacha` 0.9 (seedable RNG for tests/replays), `winnow` 0.7 for the dice grammar ([winnow](https://crates.io/crates/winnow)), `schemars` 1.2 for emitting JSON Schema of sheet documents to the web client ([schemars](https://crates.io/crates/schemars/versions)), `smol_str` for interned short strings, `hexx` 0.24 for TacSim hex math when that phase arrives — actively maintained as of Feb 2026 ([hexx](https://lib.rs/crates/hexx), [repo](https://github.com/ManevilleF/hexx)).
+**Crates (versions verified Aug 2026):** `serde` 1, `serde_json` 1, `thiserror` 2, `rand` 0.9 + `rand_chacha` 0.9 (seedable RNG for tests/replays), `winnow` 0.7 for the dice grammar ([winnow](https://crates.io/crates/winnow)), `schemars` 1.2 for emitting JSON Schema of sheet documents to the web client ([schemars](https://crates.io/crates/schemars/versions)), `smol_str` for interned short strings. (Doc 14 D-14-4 struck the hexagonal grid: the tactical layer rides the atlas's square windows and no grid crate is needed.)
 
 ---
 
@@ -314,7 +314,7 @@ pub struct AgentCapabilityProfile {
 
 ### 6.1 What btmux does (the requirements bar)
 
-Hex maps with terrain types and elevation per hex; unit templates (mech/vehicle/infantry variants with tonnage, movement curves, armor/internal structure by location, weapon inventories with range brackets and ammo); movement modes (walk/run/jump) resolved in real time; heat scale with shutdown/ammo-risk thresholds; weapon attacks with to-hit math (movement of both parties, range, terrain, heat) and hit-location tables; damage transfer (armor → internal → crit rolls → location destruction cascade); per-unit real-time state (facing, speed, heat, target lock) advanced continuously, not per-command.
+Square tactical windows over the atlas's tiles, with terrain classes and elevation per cell (doc 14 §5, D-14-4); unit templates (mech/vehicle/infantry variants with tonnage, movement curves, armor/internal structure by location, weapon inventories with range brackets and ammo); movement modes (walk/run/jump) resolved in real time; heat scale with shutdown/ammo-risk thresholds; weapon attacks with to-hit math (movement of both parties, range, terrain, heat) and hit-location tables; damage transfer (armor → internal → crit rolls → location destruction cascade); per-unit real-time state (facing, speed, heat, target lock) advanced continuously, not per-command.
 
 ### 6.2 Core facilities tactics needs that WoD does not
 
@@ -324,9 +324,9 @@ Hex maps with terrain types and elevation per hex; unit templates (mech/vehicle/
 | Per-battle instances | `SceneId` in core: a scene binds an object set + a ruleset + optional ticker. `HookPoint::SceneStarted/Ended` exists now; WoD uses scenes lightly (roll logs, beat awards), tactics uses them heavily. |
 | Per-unit mutable state | `RulesetStateStore`: core-provided keyed blob store `(SceneId, ObjId, RulesetId) -> Value` with in-memory working set + periodic persistence. Units are ordinary objects; their combat state lives here, not in attributes. |
 | Map storage | `MapBlob` per scene: ruleset-defined binary/CBOR blob, core provides CRUD + snapshot persistence. Core never interprets it. |
-| Web map panel | `panel_feed("tactics.map")` reserved via the existing registrar call. **Cross-area contract with the web protocol:** panel frames support (a) namespaced event types `panel.<feed>.<evt>`, (b) client capability negotiation (unknown feeds ignored gracefully), (c) a delta+keyframe pattern (full map on subscribe, hex/unit deltas after) — the protocol must not assume every event is self-contained prose-adjacent JSON. |
+| Web map panel | `panel_feed("tactics.map")` reserved via the existing registrar call. **Cross-area contract with the web protocol:** panel frames support (a) namespaced event types `panel.<feed>.<evt>`, (b) client capability negotiation (unknown feeds ignored gracefully), (c) a delta+keyframe pattern (full map on subscribe, cell/unit deltas after) — the protocol must not assume every event is self-contained prose-adjacent JSON. |
 | Command context capture | When piloting, bare input (`heading 120`, `fire 1`) routes to the unit, not the room. Same "input context stack" the parser area builds for mail compose and chargen — tactics pushes a `UnitConsole` context. Reserve it now. |
-| Movement veto/override | `HookPoint::MoveAttempt` (veto-capable) exists now — tactics replaces room-exit movement with hex movement inside scenes. |
+| Movement veto/override | `HookPoint::MoveAttempt` (veto-capable) exists now — tactics replaces room-exit movement with metric movement over the window inside scenes (doc 14 §3.4). |
 | Environment queries | `WeatherQuery` (§10.5) — tactics reads visibility/precipitation for to-hit mods. |
 
 ### 6.3 No-breaking-changes checklist
@@ -340,7 +340,7 @@ The following must be true in phase 1 even though only WoD ships, and is verifie
 5. Parser has an input context stack.
 6. `Ruleset::register` is the *only* wiring point — adding tactics touches config and `Cargo.toml`, zero core code.
 
-Hex math itself (`hexx`), heat curves, hit tables: entirely internal to `mush-tactics`, no reservation needed.
+Heat curves and hit tables: entirely internal to `mush-tactics`, no reservation needed; movement costs, sight and fire traces are the engine's (doc 14 §5).
 
 ---
 
@@ -484,7 +484,7 @@ Exposed on `WorldCtx` and to Lua as `rs.weather.current(zone)`. WoD uses visibil
 
 **Phase 6 — NPC grounding:** `agent_profile`, `wod_roll` agent tool, narration/outcome consistency check with the LLM area.
 
-**Phase 7+ — tactics:** grow the stub crate: hexx maps, unit templates, scene tickers, map panel deltas — touching only reserved seams (that's the acceptance test of this whole design).
+**Phase 7+ — tactics:** grow the stub crate: square windows over the atlas, unit templates, scene tickers, map panel deltas — touching only reserved seams (that's the acceptance test of this whole design).
 
 ## 12. Risks
 
@@ -499,4 +499,4 @@ Exposed on `WorldCtx` and to Lua as `rs.weather.current(zone)`. WoD uses visibil
 2. **`caith` for dice** — maintained but string-first and can't express CofD/oWoD mechanics; own the ~300-line winnow grammar for structured, auditable per-die results (§4).
 3. **Server-side mail threads** — rejected for flat + `reply_to`, client-derived conversations (§8.1). Likewise **`+com`-style unified channel speaking** rejected in favor of TinyMUX alias-verbs (§7.1), and **per-room weather** rejected for zone cells (per-room is state explosion with no gameplay payoff; rooms differentiate via flags).
 
-Sources: [hexx on lib.rs](https://lib.rs/crates/hexx), [hexx repo](https://github.com/ManevilleF/hexx), [caith on crates.io](https://crates.io/crates/caith), [schemars versions](https://crates.io/crates/schemars/versions), [winnow on crates.io](https://crates.io/crates/winnow)
+Sources: [caith on crates.io](https://crates.io/crates/caith), [schemars versions](https://crates.io/crates/schemars/versions), [winnow on crates.io](https://crates.io/crates/winnow)

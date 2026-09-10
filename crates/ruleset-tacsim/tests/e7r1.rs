@@ -61,8 +61,9 @@ fn snap(tw: &TestWorld) -> &TacsimStore {
 /// A pack body with its declared digest filled in for it — **re-derived, never
 /// hand-edited**, which is the only way a pack is ever signed in this tree.
 fn signed(body: &str) -> String {
+    // S7 (D-P-1): a pack's digest is the content layer's, over the authored bytes.
     let text = body.replace("DIGEST", &"0".repeat(64));
-    let parsed: RulesPack = serde_json::from_str(&text).expect("the wire parses");
+    let parsed = mush_content::parse_pack(&text).expect("the wire parses");
     let digest = parsed.computed_digest().expect("digests").to_hex();
     body.replace("DIGEST", &digest)
 }
@@ -127,7 +128,7 @@ fn e7r1_r2_the_shipped_corridors_digest_is_unmoved_by_the_new_fields() {
     let pack = load_pack(fixture::CORRIDOR_JSON).expect("the shipped corridor still loads");
     assert_eq!(
         pack.manifest().digest().to_hex(),
-        "1885f24044f15bdb63b858ed861665465e2b4527233696d237ec84389f758792",
+        "d091c39ad4a9bb0914f6d3093b0bd29b4ab2f8e379d16bbe6cf6e5e2ea27f1d3",
         "cut 1's published digest, byte for byte"
     );
     assert_eq!(
@@ -548,6 +549,7 @@ fn timed(rate: u32) -> TacsimConfig {
         catch_up_production: "pause_timeline_changed".to_string(),
         catch_up_fronts: "no_restamp".to_string(),
         catch_up_domains: "refuse_and_page".to_string(),
+        ephemeris: ruleset_tacsim::EphemerisConfig::default(),
     };
     cfg
 }

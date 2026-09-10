@@ -11,12 +11,12 @@ use std::collections::BTreeMap;
 
 use mush_core::ObjId;
 
-use crate::background::background;
+use crate::background::{Ground, background};
 use crate::cells::{Cell, Cells, MAX_TILE_DOC_BYTES, MAX_TILE_SIDE};
 use crate::geom::{PointCm, PolygonCm, RectCm, Shape, cm, midpoint};
 use crate::record::{
     FeatureKind, FeatureRec, Geometry, PortalMode, PortalRec, RESOLUTIONS_CM, RegionRec, RoomGeo,
-    RoomKind, StructureRec, SurfaceRef,
+    RoomKind, StructureRec, SurfaceRef, TileRec,
 };
 use crate::terrain::TerrainClass;
 
@@ -214,6 +214,9 @@ pub fn threshold_point(threshold: (PointCm, PointCm)) -> PointCm {
 pub struct SurfaceInput<'a> {
     /// The region (for the background).
     pub region: &'a RegionRec,
+    /// S7: the region's imported reliefs (heightfield tiles), read before the
+    /// procedural background wherever the ground's height is wanted.
+    pub imported: Vec<TileRec>,
     /// The surface.
     pub surface: &'a SurfaceRef,
     /// The area to cover, centimetres.
@@ -252,6 +255,46 @@ pub struct Rasterized {
 /// # Errors
 ///
 /// A message when no resolution fits, or a footprint will not validate.
+/// S7 (doc 14 §3.5): the ground at a point — the imported relief covering it,
+/// else the region's procedural background. Doc 14 §3.2's "heightfields refine
+/// it later through the same records": every finer tile rasterized over an
+/// import reads the import, so a street window and a ten-metre window over one
+/// relief agree.
+#[must_use]
+pub fn ground_at(
+    region: &RegionRec,
+    imported: &[TileRec],
+    surface: &SurfaceRef,
+    x_cm: i64,
+    y_cm: i64,
+) -> Ground {
+    if *surface == SurfaceRef::Ground {
+        for tile in imported {
+            let Ok(bbox) = tile.bbox.to_cm() else {
+                continue;
+            };
+            if x_cm < bbox.min.x || y_cm < bbox.min.y || x_cm >= bbox.max.x || y_cm >= bbox.max.y {
+                continue;
+            }
+            let grid = Grid {
+                origin: bbox.min,
+                resolution_cm: tile.resolution_cm,
+                width: tile.cells.width(),
+                height: tile.cells.height(),
+            };
+            if let Some((tx, ty)) = grid.cell_of(PointCm { x: x_cm, y: y_cm })
+                && let Some(cell) = tile.cells.get(tx, ty)
+            {
+                return Ground {
+                    class: cell.class,
+                    elev_cm: i32::from(cell.elev_cm),
+                };
+            }
+        }
+    }
+    background(region, surface, x_cm, y_cm)
+}
+
 pub fn rasterize(input: &SurfaceInput<'_>) -> Result<Rasterized, String> {
     let mut last_error = String::from("no resolution fits");
     for res in RESOLUTIONS_CM
@@ -287,7 +330,7 @@ fn rasterize_at(input: &SurfaceInput<'_>, grid: Grid) -> Result<Rasterized, Stri
         .map_err(|e| e.to_string())?;
     let anchor_elev = |shape: &PolygonCm| -> i32 {
         let c = shape.centre();
-        background(input.region, &SurfaceRef::Ground, c.x, c.y).elev_cm
+        ground_at(input.region, &input.imported, &SurfaceRef::Ground, c.x, c.y).elev_cm
     };
     for y in 0..grid.height {
         for x in 0..grid.width {
@@ -303,7 +346,7 @@ fn rasterize_at(input: &SurfaceInput<'_>, grid: Grid) -> Result<Rasterized, Stri
                     room: 0,
                 }
             } else {
-                let g = background(input.region, input.surface, p.x, p.y);
+                let g = ground_at(input.region, &input.imported, input.surface, p.x, p.y);
                 // Inside a building, the ground surface is not a surface at all.
                 let inside = structure_shapes.iter().any(|s| s.contains(p));
                 Cell {
@@ -651,6 +694,7 @@ mod tests {
             portals: vec![&portal],
             floor_z_cm: 0,
             max_cells: 65_536,
+            imported: Vec::new(),
         };
         let out = rasterize(&input).expect("rasterizes");
         assert_eq!((out.grid.width, out.grid.height), (10, 10));

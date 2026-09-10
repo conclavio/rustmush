@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.8 — 2026-09-10 (S1 through S6 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.9 — 2026-09-10 (S1 through S7 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -893,6 +893,80 @@ square root of its pinned distance.
 
 **Verify lenses.** **D**, **P** (pack identity across the fold), **H** (no hex left), **E** (the sky — can any path make a distance change while `rate = 0`, or two routes disagree about one pair?).
 
+**Ledger (landed 2026-09-10).** Gates: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test` on `mush-sim` (with `testkit`), `mush-atlas`,
+`mush-tactics`, `ruleset-tacsim`, `mush-content`, `mush-core`, `mush-config`, `mush-campaign`
+and the dependents, the contract tests (the panic budget, the restriction-lint table, the
+legacy-handler allowlist — no new verb: `@domain/create <host>=tactics.ground` is cut 8's verb
+with a driver word — and the new `hex_vocabulary` test), `mush-server` and `mushd` whole.
+Twenty-eight new tests: the sky (the corridor pack carries it; Mars–Ceres and Earth–Mars
+within 2 % of the geometry at the epoch; a frozen sky identical across any IC span; a moving
+sky moving every pair sharing a body together, each pair's distance equal to what the
+positions give and no triangle contradicted; a torch route scaling with the square root and a
+coaster with the distance; the nominal torch's law; an undeclared body and a nonsense orbit
+refused), the law's factors and wires, the relief (a text grid imported to a tile at its
+resolution, its le16 twin identical, scale and datum, a short grid refused naming the entry
+and the count with the region still applied, one tile composited at 1000 and at 100 cm, the
+import outranking the region's ground), the driver (a ground domain opening a ten-metre
+window over the tiles a street fight pins at one metre and closing with the domain; an
+unknown driver refused naming the registered ones; the mech engagement on the imported ridge
+composited at ten metres with the direct shot stopped and the arc clear; the five locomotions
+costing from the table at ten metres and a cliff refused at both cell sizes), and the H lens
+(no hex-grid vocabulary outside the history). Deviations from the text above, each with its
+reason:
+
+- **The fold is the loader's, not yet the latch's.** `ruleset-tacsim`'s manifest, kind,
+  requirement and digest types are `mush-content`'s (`pub use`), `load_pack` parses through
+  `mush_content::parse_pack`, decodes and checks the entries this crate owns, and only then
+  compares the declared digest (so a refusal names the band, the kind or the unknown key
+  rather than the signature — B11 kept); `RulesPack` keeps the content `Pack` it was decoded
+  from, so its digest is the digest of its bytes. The three fixtures are re-pinned under
+  `content.pack.v1` — the P test is that they load through the content parser with the digests
+  they declare. **The seed latch stays `tacsim:seed:{pack}@{version}`** and the corridor's
+  places stay seed-made rooms: the content latch is one per pack id with versions superseding
+  in place (an update-and-retire model), while the seed's is one per `(pack, version)`, never
+  re-run, with v1 and v2 coexisting for pinned consumers (Q18A, T1). Folding one onto the
+  other changes the version rule, which is the owner's call, not a mechanical one; and an
+  atlas site lies in a neighborhood, which an orbital or system region has none of, so the
+  corridor's `location`s cannot be `SiteRec`s until that rule is relaxed for non-surface
+  regions. Both are the open question D-14-33 below, for the next cut.
+- **The ground domain is the window.** A window is a simulation domain of its own on the
+  host room, so the driver does not open a second one: `mush_sim::DomainDriver` — doc 06
+  §6.1's driver word made real, registered at a module's boot — is asked by `@domain/create
+  <host>=<driver>` to *create* the domain, and `tactics.ground` creates it by opening the
+  window at `[tacsim].ground_cell_cm` (1000, live through the same post-composition device as
+  the pulse cadence) with the host room's occupants placed; `@domain/retire` closes it through
+  the driver. One record, one pulse clock, one map. The passive driver is unchanged.
+- **Indirect fire is answered, not yet gated.** The atlas registers the arc beside the
+  geometry (`arc_between`, apex `DEFAULT_ARC_APEX_CM` = 50 m) and the driver's
+  `line_of_fire` reads direct and indirect together; the pulse tick's `Fire`/`Launch` intents
+  are not refused on it. A contact's subject is the sensor layer's secret (the leak-safe
+  ledger carries no `truth_subject`), so neither the verb nor the tick can ask the atlas about
+  a target it cannot name; the gate belongs with E7k's unit family or the K6 contact guard,
+  which hold the subject. Recorded, not silently dropped.
+- **Heightfields are inline**, `text` (whitespace integers, the southern row first) or `le16`
+  (base64 over little-endian signed samples), one tile per entry (≤ 256 a side), samples
+  within ±327 m of the region datum (a tile cell is `i16` centimetres) with `scale_cm` and
+  `datum_cm`, the class the region's background. A file reference would need host-side
+  reading beside the pack; the JSON carrier keeps the digest over the data. Finer tiles
+  rasterized over an import read it (`raster::ground_at`), and at one resolution the more
+  specific owner wins (`TileOwner::Heightfield` above `Region`).
+- **The sky is circular and authored.** Bodies are `{ orbit_au, period_days,
+  phase_deg_at_epoch }` held as micro-AU, milli-days and milli-degrees; the phases are the
+  pack's, not fetched — the 2 % test is against the circular geometry of those numbers (a real
+  Mars runs up to a fifth off a circle). `rate` is permille of the real sky's motion; the
+  epoch is IC seconds. `route_duration` is unchanged at the pin; `route_duration_at` applies
+  the drive's `DistanceLaw`, and `nominal_drive` picks `Torch` for a class named so until cut
+  11's propulsion table authors it. A route within one body's places carries no pin.
+- **The hex test allows five history files** (this plan, the review, doc 14, its owner
+  questions, the design README's record of the decision) and matches grid vocabulary, not
+  hexadecimal; docs 01, 02, 04, 06, 11, PLAN, the help topic and the interface documents were
+  reworded; doc 10 had none; the tactics stub's `HexLock` is `ContestedGround` on a
+  `tacseam:contested` marker, the same seam.
+- **Not built:** the multi-storey line through a doorway (S5's note stands); cells of ruleset
+  classes (the table takes them, a cell is still one byte of the engine's classes).
+
+
 ## 4. Build discipline
 
 - **One cut, one branch, one verify fold.** Each cut lands green on `test`, `features`,
@@ -939,6 +1013,7 @@ square root of its pinned distance.
 | D-P-8 | The composite stays at `mod:tactics:map:<domain-id>` (doc 06 §9.1's key) with owner `atlas` |
 | D-P-9 | Feature-state write-back rides the domain tick's commit, never a second timer |
 | D-P-10 ★ | Aaron Samuels drives the bus from S2; Norbury (docent) and Duvall (front office) ship in S6 — **decided**: the packs carry ten cast members |
+| D-14-33 ★ | S7: the seed latch's version rule under the content latch (one per pack id, superseding, against one per version, never re-run) and the site record's neighborhood rule for orbital and system regions — the owner's call before the corridor's places and latch fold onto `mush-content` | **open** |
 
 ## 7. Constants
 
@@ -991,3 +1066,4 @@ square root of its pinned distance.
 - 0.6 (2026-09-10): S4 landed — the ledger under §3.5 (the composite through the atlas's own async completion, the window document in the atlas's namespace, `WindowRec` and `Pose` in `mush-sim` with the resolver slot, the shape-driven text fallback, the map pane, `+map` as one command); the rasterizer's door snap; `[atlas].window_margin_m` and `window_max_cells`.
 - 0.7 (2026-09-10): S5 landed — `mush_atlas::physics` (the vocabularies, the locomotion table as digest-pinned data with climbs, `move_cost`, the bounded path) and `mush_atlas::trace` (sight, the direct, indirect and beam traces, hearing), `mush-sim`'s `WindowGeometry` slot and propagation on the metric, `+move` priced, `@atlas/los`; its ledger under §3.6; `[atlas].path_max_cells`.
 - 0.8 (2026-09-10): S6 landed — `mush_core::InterfaceAbilityProvider` and its registry, `AgentProfile.interfaces`, the turn's merged manifest, the asker-threaded invoke with the answer spoken, the audit ring and `@agent/audit`, the fallback naming the command; the providers `atlas`, `travel`, `weather`, `market`, `build`, `request`, `rules`, `help`; the packs at version 3; its ledger under §3.7.
+- 0.9 (2026-09-10): S7 landed — the campaign ephemeris and the drive's distance law (`alignment_band` gone), the loader fold onto `mush-content` (the latch and the corridor's records deferred under D-14-33), heightfield import, the TacSim ground driver as `mush_sim::DomainDriver` with the domain as its window and the arc answered, the hex vocabulary removed under a contract test; its ledger under §3.8.

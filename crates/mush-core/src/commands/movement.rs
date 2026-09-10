@@ -104,7 +104,7 @@ pub fn traverse_exit(
         return;
     };
 
-    // Module veto (tactics hex movement, wod barriers): the reason is shown
+    // Module veto (tactics contested ground, wod barriers): the reason is shown
     // to the mover, the room sees nothing.
     if let Err(reason) = check_move_attempt(reg, w, actor, Some(exit), dest, lens) {
         out.to_actor(actor, OutputEvent::Sys(reason));

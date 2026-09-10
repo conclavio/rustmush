@@ -1559,7 +1559,6 @@ mod tests {
                 LegDef::new(ObjId(11), 100).expect("a positive leg"),
                 LegDef::new(ObjId(12), 200).expect("a positive leg"),
             ],
-            None,
             cid("fusion_torch"),
             0,
         )

@@ -32,11 +32,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{CanonicalId, Ctx, ModuleOp, ModuleWrite, ObjId, Outbox};
-use mush_sim::{DriveProfile, LegDef, RouteDef};
+use mush_sim::{DistanceLaw, DriveProfile, LegDef, RouteDef};
+
+use crate::ephemeris::Ephemeris;
 use smol_str::SmolStr;
 
 use crate::config::{LoadedPack, TacsimConfig};
-use crate::pack::{PackEntry, RouteEntry};
+use crate::pack::{PackEntry, RouteEntry, RulesPack};
 use crate::record::{PackRecord, PinRecord, SeedApplication};
 
 /// The module namespace (the module's own name).
@@ -522,11 +524,13 @@ impl TacsimStore {
                 continue;
             };
             let gone = self.missing.get(&key);
+            // S7 (T17): the pack's own sky, under the campaign's epoch and rate.
+            let sky = Ephemeris::from_pack(&loaded.pack, &self.cfg.time.ephemeris);
             for (id, entry) in loaded.pack.entries() {
                 let PackEntry::Route(route) = entry else {
                     continue;
                 };
-                match materialize_route(id, route, seed.placed(), gone) {
+                match materialize_route(id, route, seed.placed(), gone, &loaded.pack, &sky) {
                     // Keyed by the pack that declares it: a pack-local id is not a
                     // global one, and a later-sorting pack must not shadow an earlier
                     // one's route (S4).
@@ -557,6 +561,8 @@ fn materialize_route(
     route: &RouteEntry,
     placed: &BTreeMap<CanonicalId, ObjId>,
     gone: Option<&BTreeSet<CanonicalId>>,
+    pack: &RulesPack,
+    sky: &Ephemeris,
 ) -> Result<RouteDef, String> {
     let place = |symbol: &CanonicalId| -> Result<ObjId, String> {
         if gone.is_some_and(|set| set.contains(symbol)) {
@@ -582,16 +588,28 @@ fn materialize_route(
                 .map_err(|e| e.to_string())?,
         );
     }
-    RouteDef::controlled(
+    let def = RouteDef::controlled(
         id.clone(),
         (from, to),
         legs,
-        route.alignment_band.map(mush_sim::CadenceId),
         route.drive_class.clone(),
         route.propellant,
         route.controller.clone(),
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    // S7 (T17): a route between two bodies' places carries the distance the sky
+    // pinned at the epoch; a route within one body's places carries none.
+    let body_of = |symbol: &CanonicalId| match pack.entry(symbol) {
+        Some(PackEntry::Location(place)) => place.body.clone(),
+        _ => None,
+    };
+    if let (Some(a), Some(b)) = (body_of(&route.from), body_of(&route.to))
+        && a != b
+        && let Some(km) = sky.pinned_km(&a, &b)
+    {
+        return Ok(def.pinned(km, (a, b)));
+    }
+    Ok(def)
 }
 
 /// The drive profile a route's declared class is evaluated under.
@@ -616,7 +634,17 @@ fn materialize_route(
 /// [`MAX_ROUTE_PROPELLANT`]: crate::pack::MAX_ROUTE_PROPELLANT
 #[must_use]
 pub fn nominal_drive(class: &CanonicalId) -> Option<DriveProfile> {
-    DriveProfile::new(class.clone(), 1_000, 4_000).ok()
+    // S7 (T17): the class's distance law. A torch accelerates the whole way (time
+    // ∝ √distance); anything else coasts (time ∝ distance). Cut 11's propulsion
+    // table will author this per class; until then the name says it.
+    let law = if class.as_str().contains("torch") {
+        DistanceLaw::Torch
+    } else {
+        DistanceLaw::Coast
+    };
+    DriveProfile::new(class.clone(), 1_000, 4_000)
+        .ok()
+        .map(|drive| drive.with_law(law))
 }
 
 /// Queue one module write.

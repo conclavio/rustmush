@@ -2623,7 +2623,7 @@ fn vf_b8_the_journey_census_is_bounded() {
 fn vf_db_the_alignment_band_is_inert() {
     let (mut tw, fx) = scene();
     depart(&mut tw, &fx);
-    assert!(journey(&tw, fx.carrier).route().alignment_band().is_none());
+    assert!(journey(&tw, fx.carrier).route().distance_km().is_none());
     for src in [
         include_str!("../src/journey.rs"),
         include_str!("../src/commands.rs"),
@@ -2810,11 +2810,17 @@ fn vf_b6_an_authored_route_id_resolves_and_an_unknown_one_still_falls_back() {
             mush_core::CanonicalId::new("mars_corridor").unwrap(),
             (fx.field, fx.phobos),
             vec![mush_sim::LegDef::new(fx.phobos, 1).unwrap()],
-            Some(mush_sim::CadenceId(7)),
             mush_core::CanonicalId::new("fusion_torch").unwrap(),
             900,
         )
-        .unwrap(),
+        .unwrap()
+        .pinned(
+            225_000_000,
+            (
+                mush_core::CanonicalId::new("mars").unwrap(),
+                mush_core::CanonicalId::new("ceres").unwrap(),
+            ),
+        ),
     );
     // No place tokens at all: the id alone must resolve.
     ok(
@@ -2824,8 +2830,9 @@ fn vf_b6_an_authored_route_id_resolves_and_an_unknown_one_still_falls_back() {
     let route = journey(&tw, fx.carrier).route().clone();
     assert_eq!(route.propellant(), 900, "the authored propellant resolved");
     assert_eq!(
-        route.alignment_band().copied(),
-        Some(mush_sim::CadenceId(7))
+        route.distance_km(),
+        Some(225_000_000),
+        "the ephemeris's pin resolved with the route"
     );
     assert_eq!(route.drive_class().as_str(), "fusion_torch");
     advance(&mut tw, 1_002);
@@ -2849,7 +2856,7 @@ fn vf_b6_an_authored_route_id_resolves_and_an_unknown_one_still_falls_back() {
     );
     let route = journey(&tw, fx.carrier).route().clone();
     assert_eq!(route.propellant(), 0, "no declared propellant to reserve");
-    assert!(route.alignment_band().is_none());
+    assert!(route.distance_km().is_none());
     assert_eq!(route.drive_class().as_str(), "manual");
     advance(&mut tw, 1_002);
     assert_eq!(*journey(&tw, fx.carrier).state(), JourneyState::Arrived);
@@ -3042,11 +3049,17 @@ fn authored_elsewhere() -> (TestWorld, Fx) {
             mush_core::CanonicalId::new("mars_corridor").unwrap(),
             (fx.phobos, fx.field),
             vec![mush_sim::LegDef::new(fx.field, 1).unwrap()],
-            Some(mush_sim::CadenceId(7)),
             mush_core::CanonicalId::new("fusion_torch").unwrap(),
             900,
         )
-        .unwrap(),
+        .unwrap()
+        .pinned(
+            225_000_000,
+            (
+                mush_core::CanonicalId::new("mars").unwrap(),
+                mush_core::CanonicalId::new("ceres").unwrap(),
+            ),
+        ),
     );
     (tw, fx)
 }

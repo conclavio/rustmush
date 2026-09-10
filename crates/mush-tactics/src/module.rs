@@ -277,6 +277,9 @@ pub struct TacticsModule {
     catalog: Arc<UnitCatalog>,
     legacy_record_definition: Option<DefinitionRef>,
     current_record_definition: Option<DefinitionRef>,
+    /// S7: the ground driver's definition, registered at composition and handed
+    /// to the driver at boot.
+    ground_definition: Option<DefinitionRef>,
     /// E7c7 B3: the composition-installed observation policy the sensor ingress
     /// reads. `mush-propagation` supplies it; `mush-tactics` never learns which
     /// crate did, because the trait is `mush-core`'s. Unwired arms nothing.
@@ -297,6 +300,7 @@ impl TacticsModule {
             catalog: Arc::new(UnitCatalog::default()),
             legacy_record_definition: None,
             current_record_definition: None,
+            ground_definition: None,
             sensors: mush_core::SensorPolicyHandle::unwired(),
         }
     }
@@ -305,6 +309,7 @@ impl TacticsModule {
     pub fn with_catalog(catalog: UnitCatalog) -> TacticsModule {
         TacticsModule {
             catalog: Arc::new(catalog),
+            ground_definition: None,
             legacy_record_definition: None,
             current_record_definition: None,
             sensors: mush_core::SensorPolicyHandle::unwired(),
@@ -835,6 +840,16 @@ impl GameModule for TacticsModule {
                 sensor_outcome_descriptor.clone(),
             ]),
         )?;
+        // S7: the ground driver's definition — what a `tactics.ground` domain
+        // records — with its own exact validator, kind `driver`.
+        let ground_descriptor = crate::ground::GroundDriver::descriptor().map_err(ModError::msg)?;
+        reg.definition_validator(
+            DefinitionKind::new(crate::ground::GROUND_DEFINITION_KIND)
+                .map_err(|error| ModError::msg(error.to_string()))?,
+            exact_definition_validator(std::slice::from_ref(&ground_descriptor)),
+        )?;
+        self.ground_definition = Some(reg.definition(ground_descriptor)?);
+        reg.state(crate::ground::GroundConfig::default());
         let outcome = reg.definition(outcome_descriptor)?;
         let contact_outcome = reg.definition(contact_outcome_descriptor)?;
         let sensor_outcome = reg.definition(sensor_outcome_descriptor)?;
@@ -1055,6 +1070,13 @@ impl GameModule for TacticsModule {
         ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> Result<(), ModError> {
+        // S7: the ground driver, registered with the simulation once the world
+        // is up, so `@domain/create <host>=tactics.ground` opens its window.
+        if let Some(definition) = self.ground_definition.clone()
+            && let Err(error) = crate::ground::register(ctx.w, definition)
+        {
+            tracing::warn!(%error, "tactics: the ground driver did not register");
+        }
         let legacy = self
             .legacy_record_definition
             .clone()

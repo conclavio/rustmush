@@ -93,7 +93,7 @@ dispatch:
 - generic command-subject links published by infrastructure modules;
 - the hooks needed to keep behavior and spatial state consistent across move and destroy attempts.
 
-It does not know what a mech, vehicle, hex, weapon, or line of sight is.
+It does not know what a mech, vehicle, weapon or unit is; the metric ground, sight and fire traces are the atlas's (doc 14 §5).
 
 ### 3.2 Proposed `mush-sim`
 
@@ -128,7 +128,7 @@ not any published system). It registers the concrete setting data and formulas t
 `mush-tactics`:
 
 - unit classes, templates, and construction;
-- hex-map terrain and coordinate data;
+- unit templates, weapons and damage over the atlas's square windows (doc 14 §5.3; terrain and coordinates are the engine's, D-14-4);
 - armor, internals, heat, sensors, weapons, and damage formulas;
 - initiative / turn structure and to-hit / gunnery rolls;
 - bay, mount, and deployment validation rules.
@@ -364,7 +364,7 @@ pub struct RulesValue {
 }
 ```
 
-For example, a TacSim direct pose may contain hex coordinates, elevation, facing, and posture.
+For example, a TacSim direct pose is the metric `Pose` of doc 14 §2.4 — position and elevation on the window — with a driver-private posture and facing.
 Another system may use metric coordinates, zones, lanes, or abstract range bands.
 
 There is no independently authoritative `unit.map_id` plus `map.members` list. The placement graph
@@ -503,7 +503,7 @@ conflicts are resolved. The generic layer guarantees deterministic assignment an
 
 | Situation | Spatial relationship | Presence | Other relationship |
 |---|---|---|---|
-| Mech on a world map | `Direct(domain, hex pose)` | Independent | Pilot station optional |
+| Mech on a world map | `Direct(domain, metric pose)` | Independent | Pilot station optional |
 | Mech in a static hangar | `Interior(hangar room, bay)` | Suppressed | None |
 | Mech in a dropship bay | `Interior(bay room, berth)` | Suppressed | None |
 | Battle armor riding a mech | `Attached(mech, BA mount)` | Derived exposed | None |
@@ -525,7 +525,7 @@ pub struct DomainId(pub u64);
 pub struct DomainRecord {
     pub id: DomainId,
     pub host: ObjId,
-    pub driver: SmolStr,       // e.g. "tactics.hex"
+    pub driver: SmolStr,       // e.g. "tactics.ground" (square windows, doc 14 D-14-4)
     pub schema_version: u32,
     pub status: DomainStatus,
     pub clock: DomainClock,
@@ -927,9 +927,9 @@ effort. The projections a TacSim engagement actually needs are richer than a sin
 
 - **unit status** — the operated unit's heat, movement, weapon-by-weapon status, ammunition, and
   armor/internals by location, as a live self-updating panel;
-- **dual-scale tactical display** — a wide strategic view (roughly an N-hex radius centered on the
+- **dual-scale tactical display** — a wide strategic view (a radius of some cells centered on the
   operated unit, so the pilot reads the shape of the battle) *and* a zoomed navigation view for
-  immediate hex-by-hex movement around obstacles and terrain;
+  immediate cell-by-cell movement around obstacles and terrain;
 - **contact changes** — new/updated/lost contacts as *perceived*, never as truth (see the security
   rule below);
 - **damage report output** — incoming and outgoing hit resolution as readable events;
@@ -1166,7 +1166,7 @@ assignment scenarios work without a ruleset-specific tick.
 ### Phase D: TacSim movement slice
 
 - Replace the toy TacSim stub state with `tactics.map`, `tactics.unit`, and `tactics.unit` behavior.
-- Add a hex pose/map schema, startup state, heading, desired/current speed, and movement.
+- Add a metric pose over the atlas window (doc 14 §2.4), startup state, heading, desired/current speed, and movement.
 - Add `STARTUP`, `SHUTDOWN`, `HEADING`, `SPEED`, `TACTICAL`, and map `VIEW` as behavior commands.
 - Add control leases (§8.1). The deterministic link-loss fallback controller that rides those leases
   is companion-doc work and is not required for this slice.
@@ -1199,7 +1199,7 @@ pull the **mobility / route-interception** case (companion §9) *forward* as the
 proving ground, ahead of the full TacSim combat slice: it is the "no free teleport, routes are
 legible" payoff, it is genuinely cross-system (dropships and Uber-for-WoD alike), and it exercises
 coarse legs, connectors, fog-of-war, and promotion-to-live without needing a combat stack. Only then
-harden Phase C's full fixed-step determinism/replay and build Phase D's TacSim hex slice, with
+harden Phase C's full fixed-step determinism/replay and build Phase D's TacSim ground slice, with
 the presentation workstream (§10) running alongside D rather than after it.
 
 ---

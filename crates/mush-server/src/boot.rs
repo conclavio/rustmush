@@ -551,6 +551,13 @@ pub async fn build_engine(
             space_ms: config.tacsim.space_pulse_ms,
         };
     }
+    // S7 (doc 14 §5.4): the ground driver's cell size, on the same device. The
+    // host validated it against the atlas's cell sizes (`config_ext`).
+    if let Err(error) =
+        mush_tactics::ground::configure(&mut engine.world, config.tacsim.ground_cell_cm)
+    {
+        tracing::warn!(%error, "boot: the ground driver's cell size did not apply");
+    }
     modules::boot_modules(&mut engine, &**store).await?;
     // J5: the namespaces the nightly archive pass walks — every composed
     // module's. Only the booted engine knows the list, which is why the pass

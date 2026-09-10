@@ -428,6 +428,12 @@ fn corridor_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     )];
     // Bounded by `mush_sim::MAX_LEGS`, which the wire re-checks on load, so the walk
     // is bounded on records the definition could possibly hold.
+    // S7 (T17): the sky's pin, when the corridor crosses between bodies.
+    if let (Some(km), Some((a, b))) = (route.distance_km(), route.bodies()) {
+        rows.push(format!(
+            "  pinned at {km} km between {a} and {b}: the sky is frozen at the campaign epoch."
+        ));
+    }
     for (index, leg) in route.legs().iter().enumerate() {
         rows.push(format!(
             "  leg {}: -> #{} ({}s unladen)",
@@ -575,7 +581,7 @@ fn pack_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "{}@{} [{}] {} entries, digest {}",
             manifest.id(),
             manifest.version(),
-            manifest.kind().label(),
+            crate::pack::kind_word(manifest.kind()),
             loaded.pack.entries().len(),
             &manifest.digest().to_hex()[..12]
         ));
@@ -636,7 +642,7 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
             "{}@{} [{}]",
             manifest.id(),
             manifest.version(),
-            manifest.kind().label()
+            crate::pack::kind_word(manifest.kind())
         ),
         format!("digest {}", manifest.digest().to_hex()),
     ];
@@ -720,6 +726,13 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                         def.minimum, def.maximum, def.preferred
                     )
                 }
+            ),
+            // S7 (T17): the sky, as authored — an orbit, a period, a phase.
+            PackEntry::Body(def) => format!(
+                "body — {:.3} AU, {:.2} days, {:.1}° at the epoch",
+                def.orbit_uau as f64 / 1_000_000.0,
+                def.period_mdays as f64 / 1_000.0,
+                def.phase_mdeg as f64 / 1_000.0
             ),
         };
         rows.push(format!("  {entry_id} ({}) {detail}", entry.label()));

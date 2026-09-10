@@ -76,7 +76,7 @@ fn e7r2_p5_v2_is_published_beside_v1_and_re_prices_nothing_already_pinned() {
     assert_eq!(v1.manifest().version(), 1);
     assert_eq!(
         v1.manifest().digest().to_hex(),
-        "1885f24044f15bdb63b858ed861665465e2b4527233696d237ec84389f758792",
+        "d091c39ad4a9bb0914f6d3093b0bd29b4ab2f8e379d16bbe6cf6e5e2ea27f1d3",
         "cut 1's published digest, byte for byte — P5 edits no published pack"
     );
 
@@ -113,7 +113,7 @@ fn e7r2_p5_v2_is_published_beside_v1_and_re_prices_nothing_already_pinned() {
 #[test]
 fn e7r2_p5_a_hand_edited_v2_digest_fails_naming_both() {
     let tampered = fixture::CORRIDOR_V2_JSON.replacen(
-        "6f782bd9159e982a469635a8c7191bee1d8e97ad48e3cbaf9ee27d393a4ebe15",
+        "8dbd460a256a844ec41061e4468c461786ffe837e10f942e9d98bcbcb7c1d94b",
         &"0".repeat(64),
         1,
     );
@@ -122,7 +122,7 @@ fn e7r2_p5_a_hand_edited_v2_digest_fails_naming_both() {
     let text = error.to_string();
     assert!(text.contains(&"0".repeat(64)), "the declared one: {text}");
     assert!(
-        text.contains("6f782bd9159e982a469635a8c7191bee1d8e97ad48e3cbaf9ee27d393a4ebe15"),
+        text.contains("8dbd460a256a844ec41061e4468c461786ffe837e10f942e9d98bcbcb7c1d94b"),
         "and the real one: {text}"
     );
     // …and an edited *entry* moves the digest too, so content cannot drift silently.
@@ -189,7 +189,10 @@ fn e7r2_p5_the_seeded_v2_corridor_carries_the_whole_of_doc10_11() {
 fn e7r2_p5_the_v2_pack_is_inside_every_cap() {
     let v2 = load_pack(fixture::CORRIDOR_V2_JSON).expect("v2 loads");
     let entries = v2.entries().len();
-    assert_eq!(entries, 12, "v1's six, plus P5's six");
+    assert_eq!(
+        entries, 15,
+        "v1's six, plus P5's six, plus S7's three bodies"
+    );
     assert!(entries <= fixture::MAX_FIXTURE_ENTRIES);
     assert!(entries <= MAX_PACK_ENTRIES);
     assert_eq!(MAX_PACK_ENTRIES, 512);

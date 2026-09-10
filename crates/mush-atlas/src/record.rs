@@ -729,6 +729,23 @@ pub enum TileOwner {
     Structure,
     /// A site addition pack (S3).
     Addition,
+    /// S7 (doc 14 §3.5): an imported relief, over the region's procedural ground.
+    Heightfield,
+}
+
+impl TileOwner {
+    /// Precedence where two tiles of one resolution cover a point: the more
+    /// specific owner first.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            TileOwner::Addition => 0,
+            TileOwner::Structure => 1,
+            TileOwner::Neighborhood => 2,
+            TileOwner::Heightfield => 3,
+            TileOwner::Region => 4,
+        }
+    }
 }
 
 /// A tile (doc 14 §2.2 `TileRec`): a bounded grid of cells over one surface.

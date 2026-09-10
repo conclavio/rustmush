@@ -4,7 +4,7 @@
 //!
 //! Cut 6's verify found `@journey/plan|depart <route id>` to be a label only:
 //! `build_route` fabricated a fresh `RouteDef` at the `manual` drive class with
-//! zero declared propellant and no alignment band, so `RouteDef::propellant()`,
+//! zero declared propellant and no pinned distance, so `RouteDef::propellant()`,
 //! `alignment_band()` and `route_duration` had no caller at all. The verify's
 //! own fix ("resolve the id against cut 1's pack, which needs no edge") **cannot
 //! be built**: the authored pack store is `ruleset_tacsim::TacsimStore` and

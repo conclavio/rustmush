@@ -145,6 +145,7 @@ fn open_cmd(ctx: &mut Ctx<'_>, actor: ObjId, rest: &str) -> Result<(), CmdError>
             opened_by: WindowOpener::Staff { by: actor },
             cell_cm: cell.or(Some(STREET_CELL_CM)),
             participants: Vec::new(),
+            driver: None,
         },
     )
     .map_err(CmdError::msg)?;

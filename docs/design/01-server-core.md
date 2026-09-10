@@ -444,7 +444,7 @@ Rationale:
 3. **Module API + built-ins (wk 5-8):** Registry finalized; comsys and @mail built as modules (they are the API's proving ground); locks, zones, powers; output pipeline with ANSI renderer + proto JSON.
 4. **Scripting (wk 8-10):** mush-script, sandbox budgets, hooks; weather module implemented *using* module ticks + zone theming attrs.
 5. **LLM seams (wk 10+):** `Effects`-based integration points for worldbuilder (`@llm/desc here=<prose>` reading zone theme chain) and `NpcThink` scheduling for `mush-agents` (internals owned by LLM agent).
-6. **WoD module**, then TacSim later — tactics is the module-boundary stress test (hex state = module `state<T>` + `Typed` panel events).
+6. **WoD module**, then TacSim later — tactics is the module-boundary stress test (tactical window state = module `state<T>` + `Typed` panel events; square cells per doc 14 D-14-4).
 
 ## 10. Risks
 

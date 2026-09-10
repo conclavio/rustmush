@@ -224,17 +224,19 @@ impl<'de> Deserialize<'de> for LegDef {
 /// on (G1, D-E7-29).
 ///
 /// Immutable once published: a change publishes a new pack version that coexists,
-/// and a pinned consumer keeps the old one (Q18A). `alignment_band` is `None` until
-/// a campaign cadence is declared for the body pair; cut 6 binds it, and
-/// [`route_duration`] does not read it — a band is a *departure window*, not a
-/// duration term.
+/// and a pinned consumer keeps the old one (Q18A). **S7 (doc 10 T17):** `distance_km`
+/// is the distance the campaign ephemeris computed for the route's body pair at the
+/// epoch and pinned, with `bodies` the pair it came from; `None` is a route the sky
+/// says nothing about (both ends on one body, or no ephemeris). The unapplied
+/// `alignment_band` of E7 cut 6 is gone: a frozen sky has no departure windows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(into = "RouteDefWire")]
 pub struct RouteDef {
     id: mush_core::CanonicalId,
     endpoints: (ObjId, ObjId),
     legs: Vec<LegDef>,
-    alignment_band: Option<CadenceId>,
+    distance_km: Option<u64>,
+    bodies: Option<(mush_core::CanonicalId, mush_core::CanonicalId)>,
     drive_class: mush_core::CanonicalId,
     propellant: u64,
     /// **E7r1 R2** — who holds the corridor, as a pack-authored symbolic id.
@@ -257,9 +259,14 @@ pub struct RouteDefWire {
     pub endpoints: (ObjId, ObjId),
     /// The ordered legs; `1..=MAX_LEGS` of them.
     pub legs: Vec<LegDefWire>,
-    /// The declared cadence the body-pair alignment band is measured on (cut 6).
-    #[serde(default)]
-    pub alignment_band: Option<CadenceId>,
+    /// **S7** — the ephemeris's pinned distance for the body pair, kilometres.
+    /// Skipped when the sky says nothing, so a route stored before S7 re-enters
+    /// unpinned and an unpinned route encodes no key at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance_km: Option<u64>,
+    /// **S7** — the body pair the pinned distance came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bodies: Option<(mush_core::CanonicalId, mush_core::CanonicalId)>,
     /// Which drive class may fly it.
     pub drive_class: mush_core::CanonicalId,
     /// Propellant the plan consumes, in the drive class's own units.
@@ -285,19 +292,10 @@ impl RouteDef {
         id: mush_core::CanonicalId,
         endpoints: (ObjId, ObjId),
         legs: Vec<LegDef>,
-        alignment_band: Option<CadenceId>,
         drive_class: mush_core::CanonicalId,
         propellant: u64,
     ) -> Result<RouteDef, RouteDefError> {
-        RouteDef::controlled(
-            id,
-            endpoints,
-            legs,
-            alignment_band,
-            drive_class,
-            propellant,
-            None,
-        )
+        RouteDef::controlled(id, endpoints, legs, drive_class, propellant, None)
     }
 
     /// [`RouteDef::new`] with the corridor's pack-authored controller
@@ -306,12 +304,10 @@ impl RouteDef {
     /// # Errors
     ///
     /// Exactly [`RouteDef::new`]'s.
-    #[allow(clippy::too_many_arguments)]
     pub fn controlled(
         id: mush_core::CanonicalId,
         endpoints: (ObjId, ObjId),
         legs: Vec<LegDef>,
-        alignment_band: Option<CadenceId>,
         drive_class: mush_core::CanonicalId,
         propellant: u64,
         controller: Option<mush_core::CanonicalId>,
@@ -338,11 +334,28 @@ impl RouteDef {
             id,
             endpoints,
             legs,
-            alignment_band,
+            distance_km: None,
+            bodies: None,
             drive_class,
             propellant,
             controller,
         })
+    }
+
+    /// **S7** — pin the distance the ephemeris computed for this route's body pair.
+    ///
+    /// The pin is a fact about the frozen sky, not a term of the definition's
+    /// identity: a pack's digest covers the authored legs, and the pin is derived
+    /// from the pack's bodies at load, the same every load (T17).
+    #[must_use]
+    pub fn pinned(
+        mut self,
+        distance_km: u64,
+        bodies: (mush_core::CanonicalId, mush_core::CanonicalId),
+    ) -> RouteDef {
+        self.distance_km = Some(distance_km);
+        self.bodies = Some(bodies);
+        self
     }
 
     /// Stable definition id.
@@ -364,9 +377,16 @@ impl RouteDef {
     }
 
     /// The declared cadence the alignment band is measured on, once cut 6 binds it.
+    /// **S7** — the ephemeris's pinned distance, kilometres, if the sky pinned one.
     #[must_use]
-    pub fn alignment_band(&self) -> Option<&CadenceId> {
-        self.alignment_band.as_ref()
+    pub fn distance_km(&self) -> Option<u64> {
+        self.distance_km
+    }
+
+    /// **S7** — the body pair the pinned distance came from.
+    #[must_use]
+    pub fn bodies(&self) -> Option<&(mush_core::CanonicalId, mush_core::CanonicalId)> {
+        self.bodies.as_ref()
     }
 
     /// Which drive class may fly it.
@@ -402,7 +422,8 @@ impl From<RouteDef> for RouteDefWire {
             id: value.id,
             endpoints: value.endpoints,
             legs: value.legs.into_iter().map(LegDefWire::from).collect(),
-            alignment_band: value.alignment_band,
+            distance_km: value.distance_km,
+            bodies: value.bodies,
             drive_class: value.drive_class,
             propellant: value.propellant,
             controller: value.controller,
@@ -426,15 +447,17 @@ impl TryFrom<RouteDefWire> for RouteDef {
         for leg in value.legs {
             legs.push(LegDef::try_from(leg)?);
         }
-        RouteDef::controlled(
+        let mut route = RouteDef::controlled(
             value.id,
             value.endpoints,
             legs,
-            value.alignment_band,
             value.drive_class,
             value.propellant,
             value.controller,
-        )
+        )?;
+        route.distance_km = value.distance_km;
+        route.bodies = value.bodies;
+        Ok(route)
     }
 }
 
@@ -459,7 +482,7 @@ pub const MAX_ROUTE_ID_BYTES: usize = 64;
 /// Cut 6's fold found `@journey/plan|depart <route id>` to be a **label only**:
 /// `build_route` fabricated a fresh `RouteDef` at the `manual` drive class with
 /// zero declared propellant and no alignment band, so `RouteDef::propellant()`,
-/// `alignment_band()` and `route_duration` had no caller. The verify's proposed
+/// `route_duration` had no caller. The verify's proposed
 /// fix — "resolve the id against cut 1's pack" — **cannot be an edge**:
 /// `ruleset-tacsim` depends on `mush-sim`, so `mush-sim -> ruleset-tacsim` is a
 /// cycle. It is therefore a composition seam in the
@@ -528,17 +551,64 @@ impl RouteCatalogState {
     }
 }
 
+/// **S7 (doc 10 T17)** — how a drive class's time grows with distance.
+///
+/// A torch drive accelerates the whole way, so its time grows with the square root
+/// of the distance; a coasting transfer's grows with the distance. The law is what
+/// [`route_duration_at`] applies when the sky is asked at a distance other than the
+/// one the route's legs were authored for; with the sky frozen (`rate = 0`) that
+/// never happens and the authored times stand.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DistanceLaw {
+    /// Time ∝ √distance.
+    Torch,
+    /// Time ∝ distance.
+    #[default]
+    Coast,
+}
+
+impl DistanceLaw {
+    /// The law's word.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            DistanceLaw::Torch => "torch",
+            DistanceLaw::Coast => "coast",
+        }
+    }
+
+    /// The factor, in permille, that takes a time authored at `pinned_km` to the
+    /// time at `distance_km`: `√(d/d₀)` for a torch, `d/d₀` coasting. A pin of zero
+    /// (two places on one body) or an equal distance is a factor of one.
+    #[must_use]
+    pub fn factor_permille(self, pinned_km: u64, distance_km: u64) -> Option<u64> {
+        if pinned_km == 0 || pinned_km == distance_km {
+            return Some(1_000);
+        }
+        let d = u128::from(distance_km);
+        let d0 = u128::from(pinned_km);
+        let permille = match self {
+            DistanceLaw::Coast => d.checked_mul(1_000)? / d0,
+            // √(d/d₀) in permille is √(d × 10⁶ / d₀).
+            DistanceLaw::Torch => (d.checked_mul(1_000_000)? / d0).isqrt(),
+        };
+        u64::try_from(permille).ok()
+    }
+}
+
 /// A drive class's performance, as a rules pack declares it.
 ///
-/// Deliberately three integers: [`route_duration`] must be a **pure function** with
-/// no rounding that depends on evaluation order, so every term is checked integer
-/// arithmetic over these.
+/// Deliberately three integers and a law: [`route_duration`] must be a **pure
+/// function** with no rounding that depends on evaluation order, so every term is
+/// checked integer arithmetic over these.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(into = "DriveProfileWire")]
 pub struct DriveProfile {
     class: mush_core::CanonicalId,
     thrust_permille: u32,
     payload_capacity: u64,
+    law: DistanceLaw,
 }
 
 /// The strict wire form of [`DriveProfile`].
@@ -551,6 +621,9 @@ pub struct DriveProfileWire {
     pub thrust_permille: u32,
     /// The greatest payload the drive may carry, in the pack's own units.
     pub payload_capacity: u64,
+    /// **S7** — the drive's distance law; coasting when unauthored.
+    #[serde(default)]
+    pub law: DistanceLaw,
 }
 
 impl DriveProfile {
@@ -576,7 +649,21 @@ impl DriveProfile {
             class,
             thrust_permille,
             payload_capacity,
+            law: DistanceLaw::Coast,
         })
+    }
+
+    /// **S7** — the same profile under a distance law.
+    #[must_use]
+    pub fn with_law(mut self, law: DistanceLaw) -> DriveProfile {
+        self.law = law;
+        self
+    }
+
+    /// **S7** — the drive's distance law.
+    #[must_use]
+    pub fn law(&self) -> DistanceLaw {
+        self.law
     }
 
     /// The drive class this profile describes.
@@ -604,6 +691,7 @@ impl From<DriveProfile> for DriveProfileWire {
             class: value.class,
             thrust_permille: value.thrust_permille,
             payload_capacity: value.payload_capacity,
+            law: value.law,
         }
     }
 }
@@ -613,6 +701,7 @@ impl TryFrom<DriveProfileWire> for DriveProfile {
 
     fn try_from(value: DriveProfileWire) -> Result<DriveProfile, RouteDefError> {
         DriveProfile::new(value.class, value.thrust_permille, value.payload_capacity)
+            .map(|profile| profile.with_law(value.law))
     }
 }
 
@@ -744,6 +833,41 @@ pub fn route_duration(
     Ok(total)
 }
 
+/// **S7 (doc 10 T17)** — the duration when the sky is asked at `distance_km`.
+///
+/// [`route_duration`] is the authored time at the route's pinned distance; this is
+/// that time under the drive's [`DistanceLaw`] for another distance of the same
+/// pair — a torch route's time scales with the square root of the ratio, a
+/// coasting one's with the ratio. An unpinned route, a pin of zero and an equal
+/// distance all answer exactly what [`route_duration`] does, so with the sky frozen
+/// (`rate = 0`) the two never disagree. Pure and integer for the same reason.
+///
+/// # Errors
+///
+/// [`route_duration`]'s, plus [`RouteDefError::Overflow`] if the scaled time leaves
+/// `i64`.
+pub fn route_duration_at(
+    route: &RouteDef,
+    drive: &DriveProfile,
+    payload: u64,
+    distance_km: u64,
+) -> Result<i64, RouteDefError> {
+    let authored = route_duration(route, drive, payload)?;
+    let Some(pinned) = route.distance_km else {
+        return Ok(authored);
+    };
+    let factor = drive
+        .law
+        .factor_permille(pinned, distance_km)
+        .ok_or(RouteDefError::Overflow)?;
+    let factor = i64::try_from(factor).map_err(|_| RouteDefError::Overflow)?;
+    authored
+        .checked_mul(factor)
+        .ok_or(RouteDefError::Overflow)?
+        .checked_div(1_000)
+        .ok_or(RouteDefError::Overflow)
+}
+
 // ---- E7 cut 1: the route-definition unit tests ------------------------
 
 #[cfg(test)]
@@ -763,7 +887,6 @@ mod route_def_tests {
                 LegDef::new(ObjId(11), 86_400).expect("a positive leg"),
                 LegDef::new(ObjId(12), 172_800).expect("a positive leg"),
             ],
-            None,
             cid("fusion_torch"),
             1_200,
         )
@@ -882,5 +1005,72 @@ mod route_def_tests {
             let refused = serde_json::from_str::<RouteDef>(text).expect_err(text);
             assert!(refused.to_string().contains(needle), "{text}: {refused}");
         }
+    }
+}
+
+// ---- S7 (doc 10 T17): the distance law ------------------------------------
+
+#[cfg(test)]
+mod distance_law_tests {
+    use super::*;
+
+    #[test]
+    fn the_laws_factor_is_one_at_the_pin_and_over_nothing() {
+        for law in [DistanceLaw::Torch, DistanceLaw::Coast] {
+            assert_eq!(law.factor_permille(100, 100), Some(1_000));
+            assert_eq!(law.factor_permille(0, 5_000), Some(1_000));
+        }
+    }
+
+    #[test]
+    fn a_torch_grows_with_the_root_and_a_coaster_with_the_distance() {
+        assert_eq!(DistanceLaw::Torch.factor_permille(100, 400), Some(2_000));
+        assert_eq!(DistanceLaw::Coast.factor_permille(100, 400), Some(4_000));
+        assert_eq!(DistanceLaw::Torch.factor_permille(400, 100), Some(500));
+        assert_eq!(DistanceLaw::Coast.factor_permille(400, 100), Some(250));
+        // √2 in permille, truncated.
+        assert_eq!(DistanceLaw::Torch.factor_permille(1, 2), Some(1_414));
+    }
+
+    #[test]
+    fn a_drive_wire_without_a_law_coasts_and_round_trips_with_one() {
+        let bare: DriveProfile = serde_json::from_value(serde_json::json!({
+            "class": "fusion_torch", "thrust_permille": 1000, "payload_capacity": 4000
+        }))
+        .expect("decodes");
+        assert_eq!(bare.law(), DistanceLaw::Coast);
+        let torch = bare.with_law(DistanceLaw::Torch);
+        let encoded = serde_json::to_value(&torch).expect("encodes");
+        assert_eq!(encoded["law"], serde_json::json!("torch"));
+        let back: DriveProfile = serde_json::from_value(encoded).expect("decodes");
+        assert_eq!(back, torch);
+    }
+
+    #[test]
+    fn a_pinned_route_encodes_its_pin_and_an_unpinned_one_no_key() {
+        let cid = |s: &str| mush_core::CanonicalId::new(s).expect("id");
+        let plain = RouteDef::new(
+            cid("plain"),
+            (ObjId(1), ObjId(2)),
+            vec![LegDef::new(ObjId(2), 10).expect("leg")],
+            cid("torch"),
+            0,
+        )
+        .expect("route");
+        let encoded = serde_json::to_value(&plain).expect("encodes");
+        assert!(
+            !encoded
+                .as_object()
+                .expect("object")
+                .contains_key("distance_km")
+        );
+        assert!(!encoded.as_object().expect("object").contains_key("bodies"));
+        let pinned = plain.clone().pinned(123_456, (cid("mars"), cid("ceres")));
+        let encoded = serde_json::to_value(&pinned).expect("encodes");
+        assert_eq!(encoded["distance_km"], serde_json::json!(123_456));
+        let back: RouteDef = serde_json::from_value(encoded).expect("decodes");
+        assert_eq!(back, pinned);
+        assert_eq!(back.distance_km(), Some(123_456));
+        assert_ne!(back, plain);
     }
 }

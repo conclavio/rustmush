@@ -59,6 +59,21 @@ pub const MAX_CONFIGURED_PACKS: usize = 64;
 /// Doc 10 S1A's "≈ one OOC hour per IC day" is a value here, never a constant in
 /// code. Nothing in cut 1 reads a field of this struct; it exists so an operator can
 /// write the block once and cuts 4, 8 and 11 find it already parsed.
+/// **S7 (doc 10 T17)** — `[tacsim.time.ephemeris]`: the campaign's chosen epoch and
+/// the rate its sky moves at. **`rate = 0` is the ruling and the default**: every
+/// body's phase is the one the pack authored at the epoch, for ever, so a distance
+/// pinned at load is the distance on any IC day. The knob exists so a campaign that
+/// wants a moving sky can have one coherently (every pair sharing a body changes
+/// together); this campaign does not.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EphemerisConfig {
+    /// The epoch, IC seconds since the Unix epoch: the instant the packs' phases
+    /// are stated at. Only a nonzero rate ever reads it.
+    pub epoch: i64,
+    /// Permille of the real sky's motion per IC second; 0 is frozen.
+    pub rate: u32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TacsimTimeConfig {
     /// IC seconds per real second the campaign layer intends. **Inert:** opening a
@@ -76,6 +91,8 @@ pub struct TacsimTimeConfig {
     /// The tactical-domain catch-up policy word (*refuse to tick and page*).
     /// **Inert until cut 8.**
     pub catch_up_domains: String,
+    /// **S7** — the campaign ephemeris (T17). **Live:** read at every pack load.
+    pub ephemeris: EphemerisConfig,
 }
 
 /// The recovery provider's policy (**E7 residue pass 1, R4**; 10b §15.1 item 9,

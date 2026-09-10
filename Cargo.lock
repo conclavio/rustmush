@@ -3717,6 +3717,7 @@ dependencies = [
 name = "ruleset-tacsim"
 version = "0.1.0"
 dependencies = [
+ "mush-content",
  "mush-core",
  "mush-proto",
  "mush-sim",

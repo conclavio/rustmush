@@ -719,3 +719,145 @@ impl<'a> Resolver<'a> {
             || self.records.roomgeo.values().any(|g| &g.key == key)
     }
 }
+
+// ---------------------------------------------------------------------------
+// S7: heightfield import (doc 14 §3.5)
+// ---------------------------------------------------------------------------
+
+/// How a heightfield's samples are written.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeightfieldEncoding {
+    /// Whitespace-separated integers, `rows` lines of `cols`, the southern row first.
+    #[default]
+    Text,
+    /// Base64 over `cols × rows` little-endian signed 16-bit samples, the same order.
+    Le16,
+}
+
+/// The largest sample scale: a hundred metres per unit.
+pub const MAX_HEIGHTFIELD_SCALE_CM: i32 = 10_000;
+
+/// **S7 (doc 14 §3.5)** — an imported ground relief: a grid of elevations over a
+/// rectangle of a region, rasterized to one ground tile at the entry's own
+/// resolution. The tile's class is the region's background at each cell; only
+/// the elevation is imported. A field wider than a tile is several entries.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeightfieldDef {
+    /// The region.
+    pub region: String,
+    /// The low (south-west) corner, region metres.
+    pub origin: Point2,
+    /// The sample spacing, one of the tile resolutions.
+    pub resolution_cm: u16,
+    /// Samples east.
+    pub cols: u16,
+    /// Samples north.
+    pub rows: u16,
+    /// How `data` is written.
+    #[serde(default)]
+    pub encoding: HeightfieldEncoding,
+    /// The samples.
+    pub data: String,
+    /// Centimetres per sample unit.
+    #[serde(default = "default_scale_cm")]
+    pub scale_cm: i32,
+    /// Added to every sample: the field's own datum against the region's, centimetres.
+    #[serde(default)]
+    pub datum_cm: i32,
+}
+
+fn default_scale_cm() -> i32 {
+    1
+}
+
+impl HeightfieldDef {
+    /// The shape's own bounds: a tile's side and resolutions, a sane scale.
+    ///
+    /// # Errors
+    ///
+    /// A message naming the field.
+    pub fn check_shape(&self) -> Result<(), String> {
+        let side = crate::cells::MAX_TILE_SIDE;
+        if self.cols == 0 || self.rows == 0 || self.cols > side || self.rows > side {
+            return Err(format!(
+                "a heightfield is 1 to {side} samples a side; {}×{} is not",
+                self.cols, self.rows
+            ));
+        }
+        if !crate::record::RESOLUTIONS_CM.contains(&self.resolution_cm) {
+            return Err(format!(
+                "heightfield resolution_cm {} is not one of {:?}",
+                self.resolution_cm,
+                crate::record::RESOLUTIONS_CM
+            ));
+        }
+        if self.scale_cm < 1 || self.scale_cm > MAX_HEIGHTFIELD_SCALE_CM {
+            return Err(format!(
+                "heightfield scale_cm is 1 to {MAX_HEIGHTFIELD_SCALE_CM}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The samples as tile elevations, centimetres against the region datum,
+    /// `rows × cols` of them, the southern row first.
+    ///
+    /// # Errors
+    ///
+    /// A message naming the sample: an unreadable one, a count that disagrees with
+    /// the shape, or a relief past the tile's range.
+    pub fn samples(&self) -> Result<Vec<i16>, String> {
+        self.check_shape()?;
+        let raw: Vec<i32> = match self.encoding {
+            HeightfieldEncoding::Text => {
+                let mut out = Vec::new();
+                for (n, token) in self.data.split_whitespace().enumerate() {
+                    let value: i32 = token.parse().map_err(|_| {
+                        format!("heightfield sample {n} is not an integer: {token:?}")
+                    })?;
+                    out.push(value);
+                }
+                out
+            }
+            HeightfieldEncoding::Le16 => {
+                let bytes = crate::cells::base64_decode(self.data.trim())
+                    .ok_or_else(|| "heightfield data is not base64".to_string())?;
+                if bytes.len() % 2 != 0 {
+                    return Err("heightfield le16 data has an odd byte".to_string());
+                }
+                let (pairs, _) = bytes.as_chunks::<2>();
+                pairs
+                    .iter()
+                    .map(|pair| i32::from(i16::from_le_bytes(*pair)))
+                    .collect()
+            }
+        };
+        let expected = usize::from(self.cols) * usize::from(self.rows);
+        if raw.len() != expected {
+            return Err(format!(
+                "a heightfield of {}×{} has {expected} samples; {} were given",
+                self.cols,
+                self.rows,
+                raw.len()
+            ));
+        }
+        let mut out = Vec::with_capacity(expected);
+        for (n, value) in raw.into_iter().enumerate() {
+            let cm = value
+                .checked_mul(self.scale_cm)
+                .and_then(|v| v.checked_add(self.datum_cm))
+                .ok_or_else(|| format!("heightfield sample {n} overflows"))?;
+            let elev = i16::try_from(cm).map_err(|_| {
+                format!(
+                    "heightfield sample {n} at {cm} cm is past the tile's range of ±{} cm \
+                     about the region datum",
+                    i16::MAX
+                )
+            })?;
+            out.push(elev);
+        }
+        Ok(out)
+    }
+}

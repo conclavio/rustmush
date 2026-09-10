@@ -309,7 +309,6 @@ fn lose_a_hull(tw: &mut TestWorld, fx: &Fx, who: ObjId, state: JourneyState) -> 
         mush_core::CanonicalId::new("wreck_run").expect("route id"),
         (fx.field, LIMBO),
         vec![LegDef::new(LIMBO, 60).expect("one leg")],
-        None,
         mush_core::CanonicalId::new("torch").expect("drive class"),
         0,
     )
@@ -450,7 +449,6 @@ fn e7r2_p0b_a_wreck_outside_a_formation_and_a_formation_member_that_is_no_wreck_
         mush_core::CanonicalId::new("loose_run").expect("route id"),
         (fx.field, LIMBO),
         vec![LegDef::new(LIMBO, 60).expect("one leg")],
-        None,
         mush_core::CanonicalId::new("torch").expect("drive class"),
         0,
     )

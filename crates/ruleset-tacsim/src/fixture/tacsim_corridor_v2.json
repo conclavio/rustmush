@@ -3,19 +3,30 @@
     "id": "tacsim.corridor",
     "version": 2,
     "kind": "campaign_seed",
-    "digest": "6f782bd9159e982a469635a8c7191bee1d8e97ad48e3cbaf9ee27d393a4ebe15",
+    "digest": "8dbd460a256a844ec41061e4468c461786ffe837e10f942e9d98bcbcb7c1d94b",
     "requires": [
-      { "id": "tacsim.core", "version": 1 }
+      {
+        "id": "tacsim.core",
+        "version": 1
+      }
     ]
   },
   "entries": {
     "ceres_extraction": {
       "kind": "location",
-      "def": { "label": "Ceres Extraction Site", "role": "extraction" }
+      "def": {
+        "label": "Ceres Extraction Site",
+        "role": "extraction",
+        "body": "ceres"
+      }
     },
     "ceres_freeport": {
       "kind": "location",
-      "def": { "label": "Ceres Freeport", "role": "market" }
+      "def": {
+        "label": "Ceres Freeport",
+        "role": "market",
+        "body": "ceres"
+      }
     },
     "ceres_iron": {
       "kind": "deposit",
@@ -29,9 +40,18 @@
         "reserve_class": "reserve_major",
         "reserve": 50000,
         "curve": [
-          { "cumulative": 0, "per_cycle": 500 },
-          { "cumulative": 20000, "per_cycle": 300 },
-          { "cumulative": 40000, "per_cycle": 100 }
+          {
+            "cumulative": 0,
+            "per_cycle": 500
+          },
+          {
+            "cumulative": 20000,
+            "per_cycle": 300
+          },
+          {
+            "cumulative": 40000,
+            "per_cycle": 100
+          }
         ]
       }
     },
@@ -41,8 +61,17 @@
         "from": "ceres_extraction",
         "to": "phobos_yard",
         "legs": [
-          { "to": "transfer_node", "base_s": 86400, "hazard": 1 },
-          { "to": "phobos_yard", "base_s": 172800, "hazard": 3, "interdiction": 3 }
+          {
+            "to": "transfer_node",
+            "base_s": 86400,
+            "hazard": 1
+          },
+          {
+            "to": "phobos_yard",
+            "base_s": 172800,
+            "hazard": 3,
+            "interdiction": 3
+          }
         ],
         "drive_class": "fusion_torch",
         "propellant": 1200,
@@ -54,28 +83,46 @@
       "def": {
         "label": "Ceres Freeport Refinery",
         "at": "ceres_freeport",
-        "capabilities": ["refine", "smelt"],
+        "capabilities": [
+          "refine",
+          "smelt"
+        ],
         "slots": 2
       }
     },
     "mars_objective": {
       "kind": "location",
-      "def": { "label": "Tharsis Relay Station", "role": "objective" }
+      "def": {
+        "label": "Tharsis Relay Station",
+        "role": "objective",
+        "body": "mars"
+      }
     },
     "mars_orbit": {
       "kind": "location",
-      "def": { "label": "Mars Orbital Approach", "role": "orbit" }
+      "def": {
+        "label": "Mars Orbital Approach",
+        "role": "orbit",
+        "body": "mars"
+      }
     },
     "mars_theater": {
       "kind": "location",
-      "def": { "label": "Tharsis Ground Theater", "role": "theater" }
+      "def": {
+        "label": "Tharsis Ground Theater",
+        "role": "theater",
+        "body": "mars"
+      }
     },
     "phobos_forge": {
       "kind": "facility",
       "def": {
         "label": "Phobos Yard Forge",
         "at": "phobos_yard",
-        "capabilities": ["forge", "smelt"],
+        "capabilities": [
+          "forge",
+          "smelt"
+        ],
         "slots": 2
       }
     },
@@ -85,8 +132,18 @@
         "from": "phobos_yard",
         "to": "mars_theater",
         "legs": [
-          { "to": "mars_orbit", "base_s": 43200, "hazard": 2, "interdiction": 4 },
-          { "to": "mars_theater", "base_s": 21600, "hazard": 4, "interdiction": 4 }
+          {
+            "to": "mars_orbit",
+            "base_s": 43200,
+            "hazard": 2,
+            "interdiction": 4
+          },
+          {
+            "to": "mars_theater",
+            "base_s": 21600,
+            "hazard": 4,
+            "interdiction": 4
+          }
         ],
         "drive_class": "fusion_torch",
         "propellant": 400,
@@ -95,11 +152,43 @@
     },
     "phobos_yard": {
       "kind": "location",
-      "def": { "label": "Phobos Yard", "role": "yard" }
+      "def": {
+        "label": "Phobos Yard",
+        "role": "yard",
+        "body": "mars"
+      }
     },
     "transfer_node": {
       "kind": "location",
-      "def": { "label": "Cislunar Transfer Node", "role": "transfer" }
+      "def": {
+        "label": "Cislunar Transfer Node",
+        "role": "transfer",
+        "body": "earth"
+      }
+    },
+    "earth": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 1.0,
+        "period_days": 365.25,
+        "phase_deg_at_epoch": 300.0
+      }
+    },
+    "mars": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 1.524,
+        "period_days": 686.98,
+        "phase_deg_at_epoch": 130.0
+      }
+    },
+    "ceres": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 2.766,
+        "period_days": 1681.6,
+        "phase_deg_at_epoch": 140.0
+      }
     }
   }
 }

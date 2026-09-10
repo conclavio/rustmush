@@ -3,7 +3,7 @@
     "id": "tacsim.core",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "940dab492e7c1bae4c51b0230149a6668dceb1d46aa4a2863a29ea52ce463759",
+    "digest": "db2702631983de33bf61e3018b7cede2add8c5aa127ae49ca26e0256bd1a6049",
     "requires": []
   },
   "entries": {

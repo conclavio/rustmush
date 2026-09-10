@@ -51,9 +51,9 @@ change the plan; every one was opened in the tree.
   `damage` arm), so mockup T3 is a render of existing data. Missing: a
   keyframe on subscribe (there is no `tactics.unit` query handler), and
   neither client routes the feed.
-- **There is no map.** The "hex `MapBlob`" is the seam-test stub's toy 2x2
-  grid (`mush-tactics/src/lib.rs` `toy_map`, feed `tacseam.map`). The
-  production module registers only `tactics.unit`; there is no `hexx`
+- **There is no map.** The seam-test stub's map was a toy 2x2 grid (feed
+  `tacseam.map`; retired by doc 14's S4 for the atlas window). The
+  production module registers only `tactics.unit`; there is no grid crate
   dependency anywhere in the workspace; `mush-sim`'s `PlacementRecord` is
   parent-based with opaque poses. The grid pane has no producer until E7 cut
   8 fixes domain geometry.
@@ -159,7 +159,7 @@ are build sessions of that shape.
    stamp `last_input` (`engine.rs` pins it); a composing inbound follows that
    precedent.
 8. **Defer the grid pane, not the HUD.** Ship mockup T1 with a contacts table
-   once cut 7 exists, and add the hex render when cut 8 fixes geometry.
+   once cut 7 exists, and add the window render when cut 8 fixes geometry.
 9. **Treat mockups S1 and S2 as ruleset design inputs.** Rigging can ride the
    tactical unit model once cut 8's pulse exists, since a drone is a unit. The
    Matrix is a new abstract-space subsystem. Both deserve their own design

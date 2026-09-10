@@ -87,8 +87,9 @@ pub use validate::{
     Finding, Severity, ValidateContext, ValidateScope, blocking, check_pack, validate,
 };
 pub use window::{
-    Compass, Composite, CompositeInput, CompositeJob, CompositeOutcome, DEFAULT_CELL_SIZES,
-    DEFAULT_WINDOW_MARGIN_M, DEFAULT_WINDOW_MAX_CELLS, FeatureOverlay, OpenRequest, STREET_CELL_CM,
-    StepReport, StepTarget, SurfaceComposite, WindowEntry, WindowFrame, Windows, capture,
-    choose_cell, composite, register_cell_size, resolve_room, run_async,
+    Compass, Composite, CompositeInput, CompositeJob, CompositeOutcome, DEFAULT_ARC_APEX_CM,
+    DEFAULT_CELL_SIZES, DEFAULT_WINDOW_MARGIN_M, DEFAULT_WINDOW_MAX_CELLS, FeatureOverlay,
+    OpenRequest, STREET_CELL_CM, StepReport, StepTarget, SurfaceComposite, WindowEntry,
+    WindowFrame, Windows, arc_geometry, capture, choose_cell, composite, register_cell_size,
+    resolve_room, run_async,
 };

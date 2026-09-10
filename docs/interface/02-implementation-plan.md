@@ -563,7 +563,7 @@ allowed only for verbs on a checked-in read-only list (`look`, `WHO`,
 on the scene screen** (D-I-18, D-I-19): a probe over every screen's table
 refuses anything else, so a bare key can never fire, eject, jack out, spend
 or send. Walking is the MUSH's first verb and its undo is walking back;
-locked, hex-locked and exclusive-scene rooms already refuse the move
+locked, contested and exclusive-scene rooms already refuse the move
 server-side, so the carve-out inherits every existing guard. Mockup T1's
 `^F fire group` is a `Prefill("+fire a")`. The legend shows the screen's
 bindings plus `Enter type · ? help` in nav mode, and `↑ history · ⇥ complete

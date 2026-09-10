@@ -22,6 +22,7 @@ pub mod commands;
 pub mod custody;
 pub mod data;
 pub mod domain;
+pub mod driver;
 pub mod focus;
 pub mod graph;
 mod handoff;
@@ -78,9 +79,9 @@ pub use journey::{
     under_way_root_of,
 };
 pub use route::{
-    CadenceId, DriveProfile, DriveProfileWire, LegDef, LegDefWire, MAX_HAZARD_BAND, MAX_LEGS,
-    MAX_ROUTE_ID_BYTES, RouteCatalog, RouteCatalogState, RouteDef, RouteDefError, RouteDefWire,
-    route_duration,
+    CadenceId, DistanceLaw, DriveProfile, DriveProfileWire, LegDef, LegDefWire, MAX_HAZARD_BAND,
+    MAX_LEGS, MAX_ROUTE_ID_BYTES, RouteCatalog, RouteCatalogState, RouteDef, RouteDefError,
+    RouteDefWire, route_duration, route_duration_at,
 };
 pub use seat::{
     ControlLeaseView, MAX_LEASE_VIEW_RECORDS, MAX_STATION_SERVICE_ROWS, SeatError, SeatRequest,
@@ -90,9 +91,9 @@ pub use seat::{
 pub use station::{MAX_STATION_FALLBACKS, StationFallback, StationFallbacks};
 pub use transition::{Plan, SpatialError, Transition, apply, move_carrier_subtree, plan, run};
 pub use window::{
-    MAX_WINDOWS, OpenWindow, close_window, metric_between, open_window, participants, place,
-    pose_of, register_room_resolver, register_window_geometry, unplace, update_window, window_of,
-    windows,
+    MAX_WINDOWS, OpenWindow, arc_between, close_window, metric_between, open_window, participants,
+    place, pose_of, register_room_resolver, register_window_arc, register_window_geometry, unplace,
+    update_window, window_of, windows,
 };
 
 /// Module configuration.
@@ -766,6 +767,8 @@ impl GameModule for SimulationModule {
         reg.state(crate::data::RoomResolver::default());
         // S5: the window geometry the atlas registers, read by propagation.
         reg.state(crate::data::WindowGeometry::default());
+        // S7: the domain drivers modules register at their boot.
+        reg.state(crate::driver::DomainDrivers::default());
         reg.behavior(domain_spec())?;
         reg.behavior(interior_spec())?;
         reg.behavior(participant_spec())?;
@@ -827,3 +830,9 @@ impl GameModule for SimulationModule {
         Ok(())
     }
 }
+
+pub use data::ArcFn;
+pub use driver::{
+    DomainDriver, DomainDrivers, MAX_DOMAIN_DRIVERS, driver_named, driver_names, driver_of,
+    register_domain_driver,
+};

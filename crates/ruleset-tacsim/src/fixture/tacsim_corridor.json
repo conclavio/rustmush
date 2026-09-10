@@ -3,15 +3,22 @@
     "id": "tacsim.corridor",
     "version": 1,
     "kind": "campaign_seed",
-    "digest": "1885f24044f15bdb63b858ed861665465e2b4527233696d237ec84389f758792",
+    "digest": "d091c39ad4a9bb0914f6d3093b0bd29b4ab2f8e379d16bbe6cf6e5e2ea27f1d3",
     "requires": [
-      { "id": "tacsim.core", "version": 1 }
+      {
+        "id": "tacsim.core",
+        "version": 1
+      }
     ]
   },
   "entries": {
     "ceres_extraction": {
       "kind": "location",
-      "def": { "label": "Ceres Extraction Site", "role": "extraction" }
+      "def": {
+        "label": "Ceres Extraction Site",
+        "role": "extraction",
+        "body": "ceres"
+      }
     },
     "ceres_iron": {
       "kind": "deposit",
@@ -25,9 +32,18 @@
         "reserve_class": "reserve_major",
         "reserve": 50000,
         "curve": [
-          { "cumulative": 0, "per_cycle": 500 },
-          { "cumulative": 20000, "per_cycle": 300 },
-          { "cumulative": 40000, "per_cycle": 100 }
+          {
+            "cumulative": 0,
+            "per_cycle": 500
+          },
+          {
+            "cumulative": 20000,
+            "per_cycle": 300
+          },
+          {
+            "cumulative": 40000,
+            "per_cycle": 100
+          }
         ]
       }
     },
@@ -37,8 +53,14 @@
         "from": "ceres_extraction",
         "to": "phobos_yard",
         "legs": [
-          { "to": "transfer_node", "base_s": 86400 },
-          { "to": "phobos_yard", "base_s": 172800 }
+          {
+            "to": "transfer_node",
+            "base_s": 86400
+          },
+          {
+            "to": "phobos_yard",
+            "base_s": 172800
+          }
         ],
         "drive_class": "fusion_torch",
         "propellant": 1200
@@ -46,20 +68,55 @@
     },
     "phobos_yard": {
       "kind": "location",
-      "def": { "label": "Phobos Yard", "role": "yard" }
+      "def": {
+        "label": "Phobos Yard",
+        "role": "yard",
+        "body": "mars"
+      }
     },
     "phobos_forge": {
       "kind": "facility",
       "def": {
         "label": "Phobos Yard Forge",
         "at": "phobos_yard",
-        "capabilities": ["forge", "smelt"],
+        "capabilities": [
+          "forge",
+          "smelt"
+        ],
         "slots": 2
       }
     },
     "transfer_node": {
       "kind": "location",
-      "def": { "label": "Cislunar Transfer Node", "role": "transfer" }
+      "def": {
+        "label": "Cislunar Transfer Node",
+        "role": "transfer",
+        "body": "earth"
+      }
+    },
+    "earth": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 1.0,
+        "period_days": 365.25,
+        "phase_deg_at_epoch": 300.0
+      }
+    },
+    "mars": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 1.524,
+        "period_days": 686.98,
+        "phase_deg_at_epoch": 130.0
+      }
+    },
+    "ceres": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 2.766,
+        "period_days": 1681.6,
+        "phase_deg_at_epoch": 140.0
+      }
     }
   }
 }

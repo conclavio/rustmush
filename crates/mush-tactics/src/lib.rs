@@ -17,18 +17,20 @@
 //!    opens a `tactics.battle` [`Scene`](mush_core::Scene) and starts the
 //!    `battle` [`TickCadence::Scene`] tick for it; `+btest/stop` ends the
 //!    scene (the ticker dies with it); a `SceneEnded` hook cleans up.
-//! 3. **`RulesetStateStore` + `MapBlob`** — every battle tick bumps each
-//!    member's `heat` in the per-`(scene, obj)` state store (each change
-//!    persists a whole-scene snapshot [`ModuleOp`](mush_core::ModuleOp)),
-//!    and `+btest/start` stores a small hex map blob core never interprets.
+//! 3. **`RulesetStateStore`** — every battle tick bumps each member's
+//!    `heat` in the per-`(scene, obj)` state store (each change persists a
+//!    whole-scene snapshot [`ModuleOp`](mush_core::ModuleOp)), and
+//!    `+btest/start` opens the battle's window on the atlas (S4), which
+//!    core composites and never interprets.
 //! 4. **Panel keyframe/delta frames** — the `tactics.map` feed emits one
 //!    keyframe at battle start and a delta per tick.
 //! 5. **`MoveAttempt` veto** — rooms flagged with the registered
-//!    [`HEXLOCK_MARKER`] marker refuse entry (exit traversal *and*
+//!    [`CONTESTED_MARKER`] marker refuse entry (exit traversal *and*
 //!    `@teleport`) with a themed message.
 //!
-//! Real hex math (`hexx`), heat curves, and hit tables stay entirely out of
-//! scope until the real module lands.
+//! Real movement costs, heat curves and hit tables stay entirely out of
+//! scope until the real module lands; the ground itself is the atlas's
+//! square windows (doc 14, D-14-4).
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
 // held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
@@ -52,6 +54,7 @@ use mush_proto::RichText;
 use smol_str::SmolStr;
 
 mod contact;
+pub mod ground;
 pub mod mobility;
 pub mod module;
 pub mod sensor;
@@ -103,8 +106,8 @@ pub use view::{
 pub const NS: &str = "tacseam";
 
 /// The registered marker flag: a room carrying it refuses all movement
-/// into it (`@set here=tacseam:hexlock`).
-pub const HEXLOCK_MARKER: &str = "tacseam:hexlock";
+/// into it (`@set here=tacseam:contested`).
+pub const CONTESTED_MARKER: &str = "tacseam:contested";
 
 /// The scene kind `+btest/start` opens.
 pub const SCENE_KIND: &str = "tacseam.battle";
@@ -122,9 +125,9 @@ pub const BATTLE_TICK: &str = "battle";
 /// See [`BATTLE_TICK`].
 pub const BATTLE_PERIOD: Duration = Duration::from_millis(250);
 
-/// The veto message hexlocked ground shows the mover.
-pub const HEXLOCK_MSG: &str = "The hex grid flares crimson: that ground is contested. Movement there is \
-     locked to the battle map.";
+/// The veto message contested ground shows the mover.
+pub const CONTESTED_MSG: &str = "The ground ahead is contested: movement there is locked to the \
+     battle window.";
 
 /// In-RAM working state (a [`Registrar::state`] slot). Everything that
 /// must survive a reboot rides [`ModuleOp`](mush_core::ModuleOp)s instead.
@@ -157,8 +160,8 @@ impl GameModule for TacticsStub {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(TacticsState::default());
-        reg.marker_flag(HEXLOCK_MARKER)?;
-        reg.hook(HookPoint::MoveAttempt, Arc::new(HexLock));
+        reg.marker_flag(CONTESTED_MARKER)?;
+        reg.hook(HookPoint::MoveAttempt, Arc::new(ContestedGround));
         reg.hook(HookPoint::SceneEnded, Arc::new(SceneJanitor));
         // Scene owners MUST watch ObjDestroyed: the world silently drops a
         // destroyed husk from scene member sets, so without this a dead
@@ -298,9 +301,9 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
 
 /// Checklist 5: the veto-capable `MoveAttempt` hook. `dest` covers exit
 /// traversal and `@teleport` alike (`exit` is `None` for teleports).
-struct HexLock;
+struct ContestedGround;
 
-impl EventHook for HexLock {
+impl EventHook for ContestedGround {
     fn move_attempt(
         &self,
         ctx: &HookReadContext<'_>,
@@ -308,8 +311,8 @@ impl EventHook for HexLock {
         _exit: Option<ObjId>,
         dest: ObjId,
     ) -> Result<(), RichText> {
-        if ctx.world().has_marker(dest, HEXLOCK_MARKER) {
-            return Err(RichText::tag("error", HEXLOCK_MSG));
+        if ctx.world().has_marker(dest, CONTESTED_MARKER) {
+            return Err(RichText::tag("error", CONTESTED_MSG));
         }
         Ok(())
     }
@@ -373,6 +376,7 @@ fn open_window(ctx: &mut Ctx<'_>, actor: ObjId, scene: SceneId) -> Option<u64> {
             },
             cell_cm: Some(mush_atlas::STREET_CELL_CM),
             participants: vec![actor],
+            driver: None,
         },
     ) {
         Ok(domain) => Some(domain.0),

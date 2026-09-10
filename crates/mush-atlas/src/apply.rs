@@ -31,12 +31,14 @@ use std::sync::Arc;
 use mush_content::{Appliers, EntryApplier, Pack, PackError, RawEntry};
 use mush_core::{Attr, CanonicalId, Ctx, Flags, GOD, LIMBO, ObjId, ObjKind, WorldEvent};
 
+use crate::background::background;
+use crate::cells::{Cell, Cells};
 use crate::def::{
-    CheckpointDef, ConnectionDef, ExitDef, FeatureDef, HookDef, ItemDef, LocalityDef,
-    NeighborhoodDef, PortalAt, RegionDef, Resolver, RoomDef, SecretDef, SiteDef, StructureDef,
-    SurfaceDef,
+    CheckpointDef, ConnectionDef, ExitDef, FeatureDef, HeightfieldDef, HookDef, ItemDef,
+    LocalityDef, NeighborhoodDef, PortalAt, RegionDef, Resolver, RoomDef, SecretDef, SiteDef,
+    StructureDef, SurfaceDef,
 };
-use crate::geom::{Point3, PointCm, Shape, cm, metres};
+use crate::geom::{Point3, PointCm, RectCm, Shape, cm, metres};
 use crate::module::{ATTR_NS, AtlasState, del_doc, put_doc};
 use crate::raster::{self, Grid, SurfaceInput, overlap, shared_threshold, threshold_point};
 use crate::record::{
@@ -50,8 +52,9 @@ use crate::record::{
 };
 
 /// The entry kinds this crate owns, with their phases.
-pub const KINDS: [(&str, u8); 13] = [
+pub const KINDS: [(&str, u8); 14] = [
     ("region", 0),
+    ("heightfield", 1),
     ("locality", 1),
     ("checkpoint", 2),
     ("connection", 3),
@@ -164,8 +167,8 @@ impl EntryApplier for KindApplier {
             // In place: the object keeps its live state.
             "room" | "item" => create_entry(&kind, ctx, state, pack, id, entry, placed, existing),
             // Records: replaced under the same key, revision up.
-            "region" | "locality" | "checkpoint" | "connection" | "neighborhood" | "site"
-            | "structure" | "feature" | "hook" | "secret" => {
+            "region" | "heightfield" | "locality" | "checkpoint" | "connection"
+            | "neighborhood" | "site" | "structure" | "feature" | "hook" | "secret" => {
                 create_entry(&kind, ctx, state, pack, id, entry, placed, existing)
             }
             // Exits: remade (their live state is nothing).
@@ -356,6 +359,87 @@ fn create_entry(
             rec.validate().map_err(|e| format!("{id}: {e}"))?;
             put_doc(ctx, record_key(KIND_REGION, &key), &rec);
             state.records.regions.insert(key, rec);
+            Ok(None)
+        }
+        "heightfield" => {
+            // S7 (doc 14 §3.5): the relief is imported; the class stays the region's.
+            let def: HeightfieldDef = decode(id, entry)?;
+            let region_key = Resolver::new(pack, placed, &state.records)
+                .record(&def.region, "region")
+                .map_err(|e| format!("{id}: region: {e}"))?;
+            let region = state
+                .records
+                .regions
+                .get(&region_key)
+                .cloned()
+                .ok_or_else(|| format!("{id}: region {region_key} is not applied yet"))?;
+            let samples = def.samples().map_err(|e| format!("{id}: {e}"))?;
+            let origin = def
+                .origin
+                .to_cm()
+                .map_err(|e| format!("{id}: origin: {e}"))?;
+            let res = i64::from(def.resolution_cm);
+            let bbox = RectCm {
+                min: origin,
+                max: PointCm {
+                    x: origin.x + i64::from(def.cols) * res,
+                    y: origin.y + i64::from(def.rows) * res,
+                },
+            };
+            let grid = Grid {
+                origin,
+                resolution_cm: def.resolution_cm,
+                width: def.cols,
+                height: def.rows,
+            };
+            let mut cells = Cells::filled(
+                def.cols,
+                def.rows,
+                Cell::default(),
+                state.limits.tile_max_cells,
+            )
+            .map_err(|e| format!("{id}: {e}"))?;
+            for y in 0..def.rows {
+                for x in 0..def.cols {
+                    let c = grid.centre(x, y);
+                    let ground = background(&region, &SurfaceRef::Ground, c.x, c.y);
+                    let at = usize::from(y) * usize::from(def.cols) + usize::from(x);
+                    let elev_cm = samples.get(at).copied().unwrap_or(0);
+                    cells.set(
+                        x,
+                        y,
+                        Cell {
+                            class: ground.class,
+                            elev_cm,
+                            cover: 0,
+                            room: 0,
+                        },
+                    );
+                }
+            }
+            let previous = drop_tiles_of(ctx, state, &key);
+            let tkey = tile_key(&key, 0)?;
+            let tile = TileRec {
+                key: tkey.clone(),
+                region: region_key.clone(),
+                surface: SurfaceRef::Ground,
+                owner: TileOwner::Heightfield,
+                bbox: bbox.to_metres(),
+                resolution_cm: def.resolution_cm,
+                cells,
+                rooms: Vec::new(),
+                revision: previous.saturating_add(1),
+            };
+            tile.validate().map_err(|e| format!("{tkey}: {e}"))?;
+            put_doc(ctx, record_key(KIND_TILE, &tkey), &tile);
+            state.records.tiles.insert(tkey.clone(), tile);
+            if let Some(r) = state.records.regions.get_mut(&region_key) {
+                if !r.ground.contains(&tkey) {
+                    r.ground.push(tkey);
+                }
+                let doc = r.clone();
+                put_doc(ctx, record_key(KIND_REGION, &region_key), &doc);
+            }
             Ok(None)
         }
         "locality" => {
@@ -1459,6 +1543,28 @@ fn retire_entry(
     key: &RecordKey,
     existing: Option<ObjId>,
 ) -> Result<(), String> {
+    if kind == "heightfield" {
+        // S7: the imported tile goes, and the region's ground list forgets it.
+        let prefix = format!("{}.tile.", key.entry);
+        let old: Vec<RecordKey> = state
+            .records
+            .tiles
+            .keys()
+            .filter(|k| k.pack == key.pack && k.entry.as_str().starts_with(&prefix))
+            .cloned()
+            .collect();
+        for tkey in old {
+            if let Some(tile) = state.records.tiles.remove(&tkey)
+                && let Some(r) = state.records.regions.get_mut(&tile.region)
+            {
+                r.ground.retain(|g| g != &tkey);
+                let doc = r.clone();
+                put_doc(ctx, record_key(KIND_REGION, &tile.region), &doc);
+            }
+            del_doc(ctx, record_key(KIND_TILE, &tkey));
+        }
+        return Ok(());
+    }
     let r = &mut state.records;
     match kind {
         "region" => {
@@ -1570,6 +1676,22 @@ fn retire_entry(
 // Finish: the rasterizer, once every entry is in place
 // ---------------------------------------------------------------------------
 
+/// S7: the region's imported reliefs, for the rasterizer to read before the
+/// procedural background.
+fn imported_tiles(state: &AtlasState, region: &RecordKey) -> Vec<TileRec> {
+    state
+        .records
+        .tiles
+        .values()
+        .filter(|t| {
+            &t.region == region
+                && t.owner == TileOwner::Heightfield
+                && t.surface == SurfaceRef::Ground
+        })
+        .cloned()
+        .collect()
+}
+
 fn tile_key(owner: &RecordKey, n: usize) -> Result<RecordKey, String> {
     let entry = CanonicalId::new(format!("{}.tile.{n}", owner.entry)).map_err(|e| e.to_string())?;
     Ok(RecordKey::new(owner.pack.clone(), entry))
@@ -1610,6 +1732,7 @@ fn finish_region(ctx: &mut Ctx<'_>, state: &mut AtlasState, pack: &Pack) -> Resu
         let previous = drop_tiles_of(ctx, state, &key);
         let input = SurfaceInput {
             region: &region,
+            imported: imported_tiles(state, &key),
             surface: &SurfaceRef::Ground,
             bbox,
             resolution_cm: region.ground_resolution_cm,
@@ -1637,7 +1760,11 @@ fn finish_region(ctx: &mut Ctx<'_>, state: &mut AtlasState, pack: &Pack) -> Resu
         put_doc(ctx, record_key(KIND_TILE, &tkey), &tile);
         state.records.tiles.insert(tkey.clone(), tile);
         if let Some(r) = state.records.regions.get_mut(&key) {
-            r.ground = vec![tkey];
+            // The region's own tile is replaced; imported reliefs (S7) stay listed.
+            let prefix = format!("{}.tile.", key.entry);
+            r.ground
+                .retain(|g| !(g.pack == key.pack && g.entry.as_str().starts_with(&prefix)));
+            r.ground.push(tkey);
             let doc = r.clone();
             put_doc(ctx, record_key(KIND_REGION, &key), &doc);
         }
@@ -1740,6 +1867,7 @@ fn finish_neighborhood(
             .collect();
         let input = SurfaceInput {
             region: &region,
+            imported: imported_tiles(state, &region.key),
             surface: &SurfaceRef::Ground,
             bbox,
             resolution_cm: nb.resolution_cm,
@@ -1820,6 +1948,7 @@ fn finish_neighborhood(
                 .map_err(|_| format!("{skey}: floor {} is out of range", floor.index))?;
             let input = SurfaceInput {
                 region: &region,
+                imported: imported_tiles(state, &region.key),
                 surface: &surface,
                 bbox,
                 resolution_cm: nb.resolution_cm,

@@ -621,6 +621,11 @@ pub enum WindowOpener {
         /// Who.
         by: ObjId,
     },
+    /// S7: a domain driver opened it for the domain it created.
+    Driver {
+        /// The driver's name.
+        driver: SmolStr,
+    },
 }
 
 /// The room a metric pose is in (doc 14 §3.4's resolver), answered by the
@@ -661,16 +666,24 @@ pub type GeometryFn = Arc<dyn Fn(&World, ObjId, ObjId) -> Option<MetricGeometry>
 /// The geometry slot: `mush-propagation` takes its `Geometry { range,
 /// occluded }` from it when both ends are on one window, and keeps its
 /// graph answer otherwise. Registered once, by the atlas, at its boot.
+/// S7: whether an indirect shot from the first object clears the ground to the
+/// second — the atlas's arc trace over the window they share; `None` when they
+/// share no window.
+pub type ArcFn = Arc<dyn Fn(&World, ObjId, ObjId) -> Option<bool> + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct WindowGeometry {
     /// The answerer, when one is composed.
     pub geometry: Option<GeometryFn>,
+    /// S7: the indirect-fire arc, registered beside the geometry.
+    pub arc: Option<ArcFn>,
 }
 
 impl std::fmt::Debug for WindowGeometry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WindowGeometry")
             .field("geometry", &self.geometry.is_some())
+            .field("arc", &self.arc.is_some())
             .finish()
     }
 }

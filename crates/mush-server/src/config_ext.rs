@@ -384,6 +384,16 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, St
         packs = read_pack_sources(&cfg.pack_paths, "[tacsim].pack_paths")?;
         seeds = read_pack_sources(&cfg.seed_paths, "[tacsim].seed_paths")?;
     }
+    // S7 (doc 14 §5.4): the ground driver's cell size is LIVE — the tactics
+    // module opens every ground engagement's window at it — so it is validated
+    // here, at the host, against the atlas's default cell sizes.
+    if !mush_atlas::DEFAULT_CELL_SIZES.contains(&cfg.ground_cell_cm) {
+        return Err(format!(
+            "[tacsim].ground_cell_cm is one of {:?} centimetres, not {}",
+            mush_atlas::DEFAULT_CELL_SIZES,
+            cfg.ground_cell_cm
+        ));
+    }
     let typed = ruleset_tacsim::TacsimConfig {
         enabled: cfg.enabled,
         packs,
@@ -402,6 +412,11 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, St
             catch_up_production: cfg.time.catch_up_production.clone(),
             catch_up_fronts: cfg.time.catch_up_fronts.clone(),
             catch_up_domains: cfg.time.catch_up_domains.clone(),
+            // S7 (T17): live — the store pins every corridor's distance from it.
+            ephemeris: ruleset_tacsim::EphemerisConfig {
+                epoch: cfg.time.ephemeris.epoch,
+                rate: cfg.time.ephemeris.rate,
+            },
         },
         // ---- E7r1: R4 — `[tacsim.recovery]`, LIVE and therefore VALIDATED ----
         //
@@ -733,7 +748,7 @@ mod tests {
         let bad_digest = write(
             "bad_digest.json",
             &ruleset_tacsim::fixture::CORE_JSON.replacen(
-                "940dab492e7c1bae4c51b0230149a6668dceb1d46aa4a2863a29ea52ce463759",
+                "db2702631983de33bf61e3018b7cede2add8c5aa127ae49ca26e0256bd1a6049",
                 "0000000000000000000000000000000000000000000000000000000000000000",
                 1,
             ),

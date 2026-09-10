@@ -56,9 +56,12 @@
 //! | `[tacsim].corridor` | `""` | which seed pack `@tacsim/seed` defaults to |
 //! | `[tacsim].active_domain_limit` | `8` | parsed, **inert** until E7 cut 6 (`MAX_ACTIVE_DOMAINS`) |
 //! | `[tacsim].ground_pulse_ms` | `2000` | parsed, **inert** until E7 cut 8 |
+//! | `[tacsim].ground_cell_cm` | `1000` | S7 (doc 14 §5.4): the TacSim ground driver's cell size; one of the atlas's default cell sizes (100, 200, 500, 1000), refused at boot otherwise |
 //! | `[tacsim].space_pulse_ms` | `6000` | parsed, **inert** until E7 cut 8 |
 //! | `[tacsim.time].rate` | `0` | parsed, **inert** until E7 cuts 4/8/11 — campaign rate *policy*. It **never seeds the world timeline**: generation 1 comes from `[game]` |
 //! | `[tacsim.time].catch_up_*` | `""` | parsed, **inert** — the per-subsystem catch-up policies of cuts 4/6/8/9 |
+//! | `[tacsim.time.ephemeris].epoch` | `0` | S7 (doc 10 T17): the campaign epoch the packs' body phases are stated at, IC seconds since the Unix epoch |
+//! | `[tacsim.time.ephemeris].rate` | `0` | S7: permille of the real sky's motion per IC second. **0 is the ruling**: the sky is frozen and every pinned distance holds on any IC day |
 //! | `[tacsim.recovery].enabled` | `false` | E7 residue pass 1 (R4): the recovery provider. Disabled, `@recovery` still registers and answers "not enabled" |
 //! | `[tacsim.recovery].pool_account` | `0` | the provider's budget account. **Never minted into** — a subsidy is an ordinary staff-authored system obligation, outside this block |
 //! | `[tacsim.recovery].pool_floor` | `0` | the balance the pool may not be granted below: *funded, never infinite* |
@@ -774,6 +777,10 @@ pub struct TacsimCfg {
     pub active_domain_limit: u32,
     /// **Parsed, inert until E7 cut 8** — the ground pulse period.
     pub ground_pulse_ms: u32,
+    /// **S7 (doc 14 §5.4)** — the TacSim ground driver's cell size, centimetres:
+    /// the windows its engagements are fought on. **Live:** one of the atlas's
+    /// registered cell sizes, validated at the host.
+    pub ground_cell_cm: u16,
     /// **Parsed, inert until E7 cut 8** — the space pulse period.
     pub space_pulse_ms: u32,
     /// `[tacsim.time]`.
@@ -865,6 +872,7 @@ impl Default for TacsimCfg {
             corridor: String::new(),
             active_domain_limit: 8,
             ground_pulse_ms: 2_000,
+            ground_cell_cm: 1_000,
             space_pulse_ms: 6_000,
             time: TacsimTimeCfg::default(),
             recovery: TacsimRecoveryCfg::default(),
@@ -990,6 +998,22 @@ pub struct TacsimTimeCfg {
     pub catch_up_fronts: String,
     /// The tactical-domain catch-up policy word. **Inert until cut 8.**
     pub catch_up_domains: String,
+    /// **S7 (doc 10 T17)** — `[tacsim.time.ephemeris]`, the campaign's epoch and the
+    /// rate its sky moves at. **Live:** the TacSim layer pins every corridor's
+    /// distance from it at load.
+    pub ephemeris: EphemerisCfg,
+}
+
+/// `[tacsim.time.ephemeris]` — the frozen sky (doc 10 T17; 14-spatial-implementation-plan
+/// §3.8). `rate = 0` is the ruling and the default; `deny_unknown_fields` for the
+/// same reason as [`TacsimTimeCfg`].
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EphemerisCfg {
+    /// The epoch the packs' phases are stated at, IC seconds since the Unix epoch.
+    pub epoch: i64,
+    /// Permille of the real sky's motion per IC second; 0 is frozen.
+    pub rate: u32,
 }
 
 /// `[worldgen]` section — the M10 batch `@gen/building` knobs and, since S3, the

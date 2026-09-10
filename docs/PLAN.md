@@ -60,7 +60,7 @@ rustmush/
 │   ├── mush-mail/        # @mail module. → mush-core
 │   ├── mush-weather/     # weather module + climate data. → mush-core
 │   ├── ruleset-wod/      # oWoD20 (V20/M20/W20 splat sub-modules); CofD variant later. → mush-ruleset, mush-dice
-│   ├── mush-tactics/    # STUB seam-test ruleset from M0; real engine later (hexx). → mush-ruleset, mush-dice
+│   ├── mush-tactics/    # STUB seam-test ruleset from M0; real engine later on the atlas's square windows (doc 14). → mush-ruleset, mush-dice
 │   ├── mush-testkit/     # in-process world driver, fake connections, scripted I/O assertions
 │   └── mushd/            # binary: mushd.toml config, wiring, main loop, graceful shutdown
 ├── web/                  # Svelte 5 + Vite + TS SPA (npm; built into mush-net-web via rust-embed)
@@ -110,7 +110,7 @@ Key pinned deps (versions verified, Aug 2026): tokio 1, russh 0.63, axum 0.8, **
 - **M8 — NPC agents (wk 19–22):** AgentHost, stimuli/coalescing, action tools, memory v1, WoD grounding (validated `wod_roll`), fallback lines, `npc.thinking` indicator. *Demo: players chat with a bartender who rolls real dice.*
 - **M9 — Progression + hardening (wk 22–25):** chargen wizard (terminal + web) wired end to end; beats/XP → job approval applying sheet diffs; +note; backpressure/flood/fuzz/load pass; observability pass. *Demo: new player signs up → approved character → plays.*
 - **M10 — Depth (revised per user 2026-08-29):** batch `@gen/building` (whole-building coherent worldgen), LLM **cost dashboards** (web staff panel over the mush-llm audit/budget data), **weather LLM flavor pools** (top up the deterministic M5 line pools with generated variants), and **NPC memory + knowledge model** (memory summarization/long-term recall PLUS the episodic-vs-world-knowledge + willingness-to-share design — 3 secrecy tiers public/guarded/secret, a multi-milestone effort; see the npc-knowledge-model memory). Ruleset expansion: **Changeling (C20)** template + **Ghoul** and **Kinfolk** playable templates (mortal-plus, reusing V20 Discipline/Blood-Pool and W20 Gift/Gnosis machinery) in ruleset-wod; and **Shadowrun as a SECOND game system** (`ruleset-shadowrun`, a d6-pool `PoolMechanic` — the test of scaling the ruleset API beyond WoD). Explicitly NOT: nWoD/CofD material (user has no interest); other oWoD splats (Wraith/Demon/Hunter/Mummy) unscheduled.
-- **TacSim: DEFERRED pending a dedicated design conversation** (it's a real-time system, structurally unlike the turn/scene WoD/Shadowrun model). Seams stay reserved + the `mush-tactics` stub stays green in CI; do not implement until that design talk. Then grow it (hexx maps, unit templates, scene tickers, heat/weapons, canvas map panel) touching only reserved seams.
+- **TacSim: DEFERRED pending a dedicated design conversation** (it's a real-time system, structurally unlike the turn/scene WoD/Shadowrun model). Seams stay reserved + the `mush-tactics` stub stays green in CI; do not implement until that design talk. Then grow it (square tactical windows over the atlas per doc 14 D-14-4, unit templates, scene tickers, heat/weapons, canvas map panel) touching only reserved seams.
 
 ## Immediate next steps on approval
 

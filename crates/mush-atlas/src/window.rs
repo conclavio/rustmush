@@ -391,10 +391,13 @@ fn tile_views<'a>(tiles: &'a [TileRec], surface: &SurfaceRef) -> Vec<TileView<'a
         .collect();
     // Finest first, then by key: the neighborhood's fine ground over the region's
     // coarse ground where both cover a point.
+    // S7: at one resolution the more specific owner first — an imported relief
+    // over the region's procedural ground.
     views.sort_by(|a, b| {
         a.tile
             .resolution_cm
             .cmp(&b.tile.resolution_cm)
+            .then_with(|| a.tile.owner.rank().cmp(&b.tile.owner.rank()))
             .then_with(|| a.tile.key.cmp(&b.tile.key))
     });
     views
@@ -873,6 +876,8 @@ pub struct OpenRequest {
     pub cell_cm: Option<u16>,
     /// Who to place once the composite lands.
     pub participants: Vec<ObjId>,
+    /// S7: the driver the window's domain records; the passive one when absent.
+    pub driver: Option<mush_core::DefinitionRef>,
 }
 
 /// Open a window (doc 14 §3.4 *Creation*): the extent is the anchors' footprints
@@ -900,6 +905,7 @@ pub fn open(ctx: &mut Ctx<'_>, req: OpenRequest) -> Result<DomainId, String> {
             host,
             presentation: host,
             rec,
+            driver: req.driver.clone(),
         },
     )?;
     let input = {
@@ -1445,7 +1451,36 @@ pub fn resolve_room(w: &World, domain: DomainId, pose: &Pose) -> Option<ObjId> {
 /// The simulation's refusal.
 pub fn register_resolver(w: &mut World) -> Result<(), String> {
     mush_sim::register_room_resolver(w, Arc::new(resolve_room))?;
-    mush_sim::register_window_geometry(w, Arc::new(metric_geometry))
+    mush_sim::register_window_geometry(w, Arc::new(metric_geometry))?;
+    mush_sim::register_window_arc(w, Arc::new(arc_geometry))
+}
+
+/// S7: the apex of the ground driver's indirect fire, centimetres — fifty
+/// metres, enough to clear a ridge a mech cannot see over.
+pub const DEFAULT_ARC_APEX_CM: i32 = 5_000;
+
+/// S7: whether an indirect shot from `near` clears the ground to `far` over the
+/// window they share — the atlas's arc trace at [`DEFAULT_ARC_APEX_CM`]; `None`
+/// when they share no window, `Some(false)` across surfaces.
+#[must_use]
+pub fn arc_geometry(w: &World, near: ObjId, far: ObjId) -> Option<bool> {
+    let st = w.module_state::<AtlasState>()?;
+    let (domain, (sa, xa, ya), (sb, xb, yb)) = co_located(w, st, near, far)?;
+    if sa != sb {
+        return Some(false);
+    }
+    let composite = st.windows.open.get(&domain.0)?.composite.as_ref()?;
+    let surface = composite.surfaces.get(sa)?;
+    Some(
+        crate::trace::indirect_fire_path(
+            surface,
+            &[],
+            crate::trace::Eye::standing((xa, ya)),
+            crate::trace::Eye::standing((xb, yb)),
+            DEFAULT_ARC_APEX_CM,
+        )
+        .reaches(),
+    )
 }
 
 /// A surface index and a cell on it.
@@ -1586,6 +1621,7 @@ pub fn summary(w: &World, entry: &WindowEntry) -> String {
     let who = match &entry.opened_by {
         WindowOpener::Scene { system, id } => format!("{system} scene {id}"),
         WindowOpener::Staff { by } => name(w, *by),
+        WindowOpener::Driver { driver } => format!("driver {driver}"),
     };
     let anchors: Vec<String> = entry.anchors.iter().map(|r| name(w, *r)).collect();
     format!(
@@ -1648,6 +1684,7 @@ pub fn open_for_scene(
             },
             cell_cm: Some(STREET_CELL_CM),
             participants: members,
+            driver: None,
         },
     )
 }

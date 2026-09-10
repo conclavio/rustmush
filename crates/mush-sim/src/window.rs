@@ -27,6 +27,8 @@ pub struct OpenWindow {
     pub presentation: ObjId,
     /// The frame.
     pub rec: WindowRec,
+    /// S7: the driver the domain records; the passive one when `None`.
+    pub driver: Option<mush_core::DefinitionRef>,
 }
 
 fn state(w: &World) -> Result<&SpatialState, String> {
@@ -93,6 +95,30 @@ pub fn register_window_geometry(w: &mut World, f: GeometryFn) -> Result<(), Stri
 
 /// The metric between `near` and `far` when both stand on one window, from
 /// the registered geometry.
+/// S7: register the indirect-fire arc the atlas answers over a shared window.
+///
+/// # Errors
+///
+/// A world without the simulation, or an arc already registered.
+pub fn register_window_arc(w: &mut World, f: crate::data::ArcFn) -> Result<(), String> {
+    let slot = w
+        .module_state_mut::<WindowGeometry>()
+        .ok_or_else(|| "the simulation is not composed on this world".to_string())?;
+    if slot.arc.is_some() {
+        return Err("the window arc is already registered".to_string());
+    }
+    slot.arc = Some(f);
+    Ok(())
+}
+
+/// S7: whether an indirect shot from `near` clears the ground to `far`; `None`
+/// when no arc is registered or the two share no window.
+#[must_use]
+pub fn arc_between(w: &World, near: ObjId, far: ObjId) -> Option<bool> {
+    let f = w.module_state::<WindowGeometry>()?.arc.clone()?;
+    f(w, near, far)
+}
+
 #[must_use]
 pub fn metric_between(w: &World, near: ObjId, far: ObjId) -> Option<MetricGeometry> {
     let f = w.module_state::<WindowGeometry>()?.geometry.clone()?;
@@ -133,7 +159,7 @@ pub fn open_window(ctx: &mut Ctx<'_>, open: OpenWindow) -> Result<DomainId, Stri
         let rec = DomainRecord {
             id,
             host: open.host,
-            driver: passive_definition_ref(),
+            driver: open.driver.clone().unwrap_or_else(passive_definition_ref),
             status: DomainStatus::Active,
             clock: DomainClock::Passive,
             presentation_location: open.presentation,

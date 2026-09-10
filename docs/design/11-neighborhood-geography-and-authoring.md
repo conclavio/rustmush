@@ -76,7 +76,7 @@ Map zoom and simulation scale are different axes:
 | Regional/locality atlas | Neighborhood footprints, landmarks, roads, terrain, travel connections. | Permanent rooms or active simulation everywhere. |
 | Neighborhood map | Sites, local circulation, public access points, known connections. | Every parcel must be enterable or every building must have interiors. |
 | Site/room map | Authored floors, grounds, rooms, doors, and meaningful local paths. | Uniform room size or a square grid. |
-| Tactical overlay | Metric terrain, elevations, cover, participants, and entrances at a selected resolution. | A hex per room, or exactly one domain per neighborhood. |
+| Tactical overlay | Metric terrain, elevations, cover, participants, and entrances at a selected resolution. | A cell per room, or exactly one domain per neighborhood. (Superseded: doc 14 §3.4 — square windows over the neighborhood's tiles.) |
 
 Doc 10's interior/tactical/operational/strategic scales remain valid. A neighborhood is geography
 that several of those scales can present, not a replacement fifth simulation scale.

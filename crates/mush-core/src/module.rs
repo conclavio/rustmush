@@ -329,7 +329,7 @@ impl fmt::Display for SceneId {
 }
 
 /// One active scene: an object set bound to a ruleset-defined kind.
-/// WoD uses scenes lightly (roll logs, beat awards); tactics binds a hex map
+/// WoD uses scenes lightly (roll logs, beat awards); tactics binds a tactical window
 /// and a fast ticker to one.
 ///
 /// **Boot contract**: scenes are transient world state and scene ids
@@ -416,7 +416,7 @@ pub enum HookPoint {
     /// carried object moves. Deliberately separate from `MoveAttempt`: those
     /// are actor-enters-destination moves that emit [`WorldEvent::Moved`];
     /// carry moves emit no event, and a hook that vetoes *destinations* (a
-    /// hex-locked room) must not fire when someone drops a wrench there.
+    /// contested room) must not fire when someone drops a wrench there.
     /// `Err(reason)` blocks the carry and shows the reason to the mover.
     CarryAttempt,
     /// Append lines to a rendered room view (weather ambience, scene

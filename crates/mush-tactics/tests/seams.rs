@@ -6,7 +6,7 @@
 use mush_core::{Audience, GOD, LIMBO, ModuleWrite, SceneId};
 use mush_proto::{OutputEvent, PanelFrameKind};
 use mush_tactics::{
-    BATTLE_TICK, HEXLOCK_MSG, MAP_FEED, NS, PULSE_TICK, SCENE_KIND, TacticsState, TacticsStub,
+    BATTLE_TICK, CONTESTED_MSG, MAP_FEED, NS, PULSE_TICK, SCENE_KIND, TacticsState, TacticsStub,
 };
 use mush_testkit::{TestWorld, assert_actor_saw};
 
@@ -195,7 +195,7 @@ fn battle_scene_ticks_state_persists_and_panels_stream() {
 // ---------------------------------------------------------------------
 
 #[test]
-fn hexlock_marker_vetoes_movement_and_teleport() {
+fn contested_marker_vetoes_movement_and_teleport() {
     let mut tw = tactics_world();
     let pilot = tw.spawn_player("Natasha");
     tw.run(GOD, "@dig Arena=enter;in,out;o");
@@ -207,26 +207,26 @@ fn hexlock_marker_vetoes_movement_and_teleport() {
         .id;
 
     // The marker is registered: settable through plain @set.
-    let events = tw.run(GOD, &format!("@set #{}=tacseam:hexlock", arena.0));
+    let events = tw.run(GOD, &format!("@set #{}=tacseam:contested", arena.0));
     assert_actor_saw(&events, GOD, "Set.");
-    let (canonical, owner) = tw.registry().marker_owner("TACSEAM:HEXLOCK").unwrap();
+    let (canonical, owner) = tw.registry().marker_owner("TACSEAM:CONTESTED").unwrap();
     assert_eq!(
         (canonical.as_str(), owner.as_str()),
-        ("tacseam:hexlock", NS)
+        ("tacseam:contested", NS)
     );
 
     // Exit traversal is vetoed with the themed message; nobody moves.
     let events = tw.run(pilot, "enter");
-    assert_actor_saw(&events, pilot, HEXLOCK_MSG);
+    assert_actor_saw(&events, pilot, CONTESTED_MSG);
     assert_eq!(tw.world().get(pilot).unwrap().location, Some(LIMBO));
 
     // @teleport is vetoed through the same hook (exit = None).
     let events = tw.run(GOD, &format!("@teleport #{}", arena.0));
-    assert_actor_saw(&events, GOD, HEXLOCK_MSG);
+    assert_actor_saw(&events, GOD, CONTESTED_MSG);
     assert_eq!(tw.world().get(GOD).unwrap().location, Some(LIMBO));
 
     // Clearing the marker restores movement.
-    let events = tw.run(GOD, &format!("@set #{}=!tacseam:hexlock", arena.0));
+    let events = tw.run(GOD, &format!("@set #{}=!tacseam:contested", arena.0));
     assert_actor_saw(&events, GOD, "Cleared.");
     tw.run(pilot, "enter");
     assert_eq!(tw.world().get(pilot).unwrap().location, Some(arena));

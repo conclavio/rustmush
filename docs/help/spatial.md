@@ -6,7 +6,7 @@ durable, single-parent graph over passive **domains**, **interior spaces**, and
 of its placement — the placement graph is the truth, the room is where the
 rest of the MUSH sees it.
 
-Placement is a foundation for the tactical layer (hex maps, route dispatch,
+Placement is a foundation for the tactical layer (square windows, route dispatch,
 domain ticking): those arrive in later milestones. This cut ships the records,
 the invariants, the staff surface, boot recovery, and the movement gates.
 
@@ -49,7 +49,11 @@ from a placement arrives in a later cut.
 
 ```
 @domain                                  list
-@domain/create <host>=sim.passive[,<presentation room>]
+@domain/create <host>=<driver>[,<presentation room>]
+    drivers: sim.passive (the simulation's own; opens nothing) or tactics.ground
+    (the TacSim ground driver: the domain IS a ten-metre window over the host
+    room's tiles — [tacsim].ground_cell_cm — with the room's occupants placed;
+    @domain/retire closes it)
 @domain/status <id|host>
 @domain/pause <id|host>    @domain/resume <id|host>
 @domain/present <id|host>=<room>          re-point the presentation room
