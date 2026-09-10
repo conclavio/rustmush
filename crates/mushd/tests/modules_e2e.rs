@@ -45,6 +45,13 @@ impl GameModule for E2eProducer {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        // WS03-A1: `+tgrant` files its job through the jobs API, which writes
+        // jobs documents under this module's identity.
+        reg.persist_delegation(
+            "e2etest",
+            "jobs",
+            "+tgrant files a payload job through mush_jobs::open_job",
+        )?;
         reg.command(
             CommandSpec {
                 name: "+tgrant".into(),

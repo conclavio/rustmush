@@ -165,6 +165,13 @@ impl GameModule for JobProducer {
     }
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        // WS03-A1: `+xspend` files its job through the jobs API, which writes
+        // jobs documents under this module's identity.
+        reg.persist_delegation(
+            "e4cjobs",
+            "jobs",
+            "+xspend files a payload job through mush_jobs::open_job",
+        )?;
         reg.job_queue(JobQueueSpec {
             name: "xp".into(),
             title: "XP spends".into(),

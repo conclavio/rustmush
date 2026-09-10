@@ -2809,13 +2809,13 @@ fn deferred_persist_rides_the_outbox_side_channel() {
 }
 
 // ----------------------------------------------------------------------
-// WS03-A1: the cross-namespace persist census
+// WS03-A1: cross-namespace module writes
 // ----------------------------------------------------------------------
 
 /// A module writing its OWN namespace is the fast path: the op lands and
-/// nothing is counted.
+/// nothing is refused.
 #[test]
-fn a_module_persisting_into_its_own_namespace_is_not_counted() {
+fn a_module_persisting_into_its_own_namespace_is_untouched() {
     let mut world = World::new_minimal();
     let mut reg = Registry::new();
     register_core_commands(&mut reg).unwrap();
@@ -2836,16 +2836,15 @@ fn a_module_persisting_into_its_own_namespace_is_not_counted() {
     });
     assert_eq!(out.deferred().len(), 1);
     assert!(
-        world.foreign_namespace_writes().is_empty(),
+        world.refused_namespace_writes().is_empty(),
         "a module's own namespace is not a cross-namespace write"
     );
 }
 
-/// The census counts a foreign namespace and **still applies the write**:
-/// WS03-A1's first commit measures, it does not refuse. Counting is
-/// deduplicated per `(module, namespace)`.
+/// An undeclared foreign namespace is REFUSED: the op is dropped, nothing is
+/// queued, and the pair is recorded once however many writes it took.
 #[test]
-fn a_foreign_namespace_persist_is_counted_and_still_lands() {
+fn an_undeclared_foreign_namespace_persist_is_refused_and_nothing_is_queued() {
     let mut world = World::new_minimal();
     let mut reg = Registry::new();
     register_core_commands(&mut reg).unwrap();
@@ -2866,13 +2865,12 @@ fn a_foreign_namespace_persist_is_counted_and_still_lands() {
             op: ModuleWrite::Del { key: key.into() },
         });
     }
-    assert_eq!(
-        out.deferred().len(),
-        2,
-        "the census applies every write it counts"
+    assert!(
+        out.deferred().is_empty(),
+        "a refused write queues nothing at all"
     );
     assert_eq!(
-        world.foreign_namespace_writes(),
+        world.refused_namespace_writes(),
         vec![("housing".into(), "jobs".into(), None)],
         "one row per (module, namespace), however many writes it took"
     );
@@ -2903,7 +2901,7 @@ fn a_core_command_is_a_namespace_wildcard() {
         },
     });
     assert_eq!(out.deferred().len(), 1);
-    assert!(world.foreign_namespace_writes().is_empty());
+    assert!(world.refused_namespace_writes().is_empty());
 }
 
 /// Composition records `namespace -> owning module`: a module's name IS its
@@ -2928,30 +2926,254 @@ fn composition_records_the_namespace_owner_of_every_module() {
     );
 }
 
-/// The owning module reaches the census row, so a `warn!` (and the report a
-/// reader gets) can name who the namespace belongs to.
+// -- the delegation, end to end ---------------------------------------------
+
+/// A module that owns a namespace nobody else may write undeclared.
+struct VaultModule;
+
+impl GameModule for VaultModule {
+    fn name(&self) -> &'static str {
+        "vault"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        Ok(())
+    }
+}
+
+/// A producing module that writes the vault's namespace — declared, the way
+/// housing declares its reach into `jobs`.
+struct ClerkModule;
+
+impl GameModule for ClerkModule {
+    fn name(&self) -> &'static str {
+        "clerk"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        reg.persist_delegation(
+            "clerk",
+            "vault",
+            "the vault's deposit API takes the caller's Ctx",
+        )?;
+        reg.command(
+            CommandSpec {
+                name: "+deposit".into(),
+                shape: ArgShape::None,
+                help: "test: write a vault document".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                ctx.persist(ModuleOp {
+                    ns: "vault".into(),
+                    op: ModuleWrite::Del {
+                        key: "deposit".into(),
+                    },
+                });
+                Ok(())
+            }),
+        )
+    }
+}
+
+/// The same reach, undeclared.
+struct ThiefModule;
+
+impl GameModule for ThiefModule {
+    fn name(&self) -> &'static str {
+        "thief"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        reg.command(
+            CommandSpec {
+                name: "+withdraw".into(),
+                shape: ArgShape::None,
+                help: "test: write a vault document without a delegation".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                ctx.persist(ModuleOp {
+                    ns: "vault".into(),
+                    op: ModuleWrite::Del {
+                        key: "withdrawal".into(),
+                    },
+                });
+                Ok(())
+            }),
+        )
+    }
+}
+
+fn vault_engine() -> (Engine, ObjId) {
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let nick = world
+        .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+        .unwrap();
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    let engine = Engine::with_modules(
+        world,
+        registry,
+        vec![
+            Box::new(VaultModule),
+            Box::new(ClerkModule),
+            Box::new(ThiefModule),
+        ],
+    )
+    .expect("three modules compose");
+    (engine, nick)
+}
+
+/// **A declared delegation still persists.** This is the case the refusal
+/// exists to keep working: the producing module's write into the owning
+/// module's namespace lands exactly as it did before.
 #[test]
-fn the_census_names_the_owning_module_when_the_composition_claims_one() {
-    let (mut engine, nick) = setup();
-    let mut out = Outbox::new();
-    let registry = std::mem::replace(&mut engine.registry, Registry::new());
-    let mut ctx = Ctx {
-        w: &mut engine.world,
-        actor: nick,
-        switches: mush_core::SwitchSet::default(),
-        args: mush_core::ParsedArgs::default(),
-        out: &mut out,
-        reg: &registry,
-        module: Some("housing".into()),
-        typed_state: mush_core::ModuleActionState::unavailable(),
-    };
-    ctx.persist(ModuleOp {
-        ns: "toy".into(),
-        op: ModuleWrite::Del { key: "gone".into() },
-    });
+fn a_declared_delegation_still_persists() {
+    let (mut engine, nick) = vault_engine();
+    run(&mut engine, nick, "+deposit");
+    let ops = engine.take_module_ops();
+    assert_eq!(ops.len(), 1, "the declared write lands");
+    assert_eq!(ops[0].ns, "vault");
+    assert!(
+        engine.world.refused_namespace_writes().is_empty(),
+        "a declared delegation is not a refusal"
+    );
+}
+
+/// **An undeclared one is dropped**, and says so once.
+#[test]
+fn an_undeclared_reach_into_another_modules_namespace_is_dropped() {
+    let (mut engine, nick) = vault_engine();
+    run(&mut engine, nick, "+withdraw");
+    assert!(
+        engine.take_module_ops().is_empty(),
+        "the undeclared write must not reach the write batch"
+    );
     assert_eq!(
-        engine.world.foreign_namespace_writes(),
-        vec![("housing".into(), "toy".into(), Some("toy".into()))]
+        engine.world.refused_namespace_writes(),
+        vec![("thief".into(), "vault".into(), Some("vault".into()))],
+        "the refusal names the writer, the namespace and its owner"
+    );
+}
+
+/// The delegation is a PAIR, declared by one of the two modules it names: a
+/// module cannot declare somebody else's pair, cannot "delegate" to its own
+/// namespace, and cannot declare the same pair twice.
+#[test]
+fn a_delegation_is_declared_by_a_party_to_it_exactly_once() {
+    struct Meddler(&'static str, &'static str, &'static str);
+
+    impl GameModule for Meddler {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+            reg.persist_delegation(self.1, self.2, "test")?;
+            reg.persist_delegation(self.1, self.2, "test again")
+        }
+    }
+
+    // A pair naming neither the declaring module as writer nor as owner.
+    let third_party = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Meddler("nosy", "clerk", "vault"))],
+    );
+    assert!(
+        third_party
+            .err()
+            .expect("a third party may not declare a pair")
+            .to_string()
+            .contains("neither")
+    );
+
+    // A module "delegating" to its own namespace is not a cross-namespace
+    // write at all.
+    let self_pair = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Meddler("clerk", "clerk", "clerk"))],
+    );
+    assert!(
+        self_pair
+            .err()
+            .expect("a module's own namespace needs no delegation")
+            .to_string()
+            .contains("needs no delegation")
+    );
+
+    // The same pair twice: the first declaration wins, the second is a
+    // conflict.
+    let twice = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Meddler("clerk", "clerk", "vault"))],
+    );
+    assert!(
+        twice
+            .err()
+            .expect("a pair is declared once")
+            .to_string()
+            .contains("persist delegation")
+    );
+}
+
+/// A BOOT-phase write gets no exemption: `on_world_loaded` runs with the same
+/// module identity a command does, so a module reaching into another module's
+/// namespace at boot is the same cross-namespace write and is refused the
+/// same way.
+#[test]
+fn a_boot_phase_write_is_checked_like_any_other() {
+    struct BootRaider;
+
+    impl GameModule for BootRaider {
+        fn name(&self) -> &'static str {
+            "raider"
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+            Ok(())
+        }
+        fn on_world_loaded(
+            &mut self,
+            ctx: &mut ModuleCtx<'_>,
+            _data: ModuleBootData,
+        ) -> Result<(), ModError> {
+            // Its own namespace: fine.
+            ctx.persist(ModuleOp {
+                ns: "raider".into(),
+                op: ModuleWrite::Del { key: "mine".into() },
+            });
+            // The vault's: refused, boot or not.
+            ctx.persist(ModuleOp {
+                ns: "vault".into(),
+                op: ModuleWrite::Del {
+                    key: "not-mine".into(),
+                },
+            });
+            Ok(())
+        }
+    }
+
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(VaultModule), Box::new(BootRaider)],
+    )
+    .expect("two modules compose");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect("a refused write must not fail the boot");
+    let ops = engine.take_module_ops();
+    assert_eq!(ops.len(), 1, "only the module's own boot write lands");
+    assert_eq!(ops[0].ns, "raider");
+    assert_eq!(
+        engine.world.refused_namespace_writes(),
+        vec![("raider".into(), "vault".into(), Some("vault".into()))]
     );
 }
 

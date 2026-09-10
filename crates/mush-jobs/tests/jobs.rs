@@ -42,6 +42,16 @@ impl GameModule for TestWod {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        // WS03-A1: this stand-in writes jobs documents through the jobs API,
+        // and its payload handlers write its own namespace under the jobs
+        // module's identity — both directions, as the real ruleset declares
+        // them.
+        reg.persist_delegation("wod", "jobs", "files and closes jobs through the jobs API")?;
+        reg.persist_delegation(
+            "jobs",
+            "wod",
+            "its payload handlers run under the jobs module's identity",
+        )?;
         reg.job_queue(JobQueueSpec {
             name: "xp".into(),
             title: "XP spends".into(),

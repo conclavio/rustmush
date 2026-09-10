@@ -1,15 +1,15 @@
-//! WS03-A1: cross-namespace module writes, censused.
+//! WS03-A1: cross-namespace module writes, declared and policed.
 //!
 //! A module's [`GameModule::name`] **is** its persistence namespace, so
 //! `op.ns != ctx.module` at `Ctx::persist` is one module writing documents
 //! another module owns. Until WS03-A1 that was unverified by construction —
 //! the doc comment said so in as many words — which meant the delegation set
-//! was not merely unpoliced but *unknown*.
+//! was not merely unpoliced but *unknown*. The census commit measured it;
+//! this one refuses what nobody declared.
 //!
-//! This is the census half, in the `state_slot_owners.rs` /
-//! `legacy_handler_allowlist.rs` style: a checked-in file beside this crate's
-//! `Cargo.toml`, a scan that fails on an undeclared hit, and a message that
-//! names the file to edit. Nothing is refused yet. Two claims:
+//! In the `state_slot_owners.rs` / `legacy_handler_allowlist.rs` style: a
+//! checked-in file beside this crate's `Cargo.toml`, a scan that fails on an
+//! undeclared hit, and a message that names the file to edit. Three claims:
 //!
 //! 1. **Ownership resolves.** Every module of every production composition
 //!    claims its own namespace, and every claimed namespace belongs to a
@@ -20,22 +20,26 @@
 //!    delegator, and asserting against it would assert against a
 //!    transcription).
 //!
-//! 2. **The census is written down.** Booting each production roster records
-//!    every cross-namespace write the boot phase performs, and each one must
-//!    carry a row in `module-ns-owners.toml`. The rows measured by the wider
-//!    census RUN — the crate test suites executed with the counter installed,
-//!    which reach code no boot does — are in the same file, with the route
-//!    each takes.
+//! 2. **The declared set is pinned.** What makes a cross-namespace write land
+//!    is `Registrar::persist_delegation` in the declaring module, not a row
+//!    here; this file is what stops the set growing (or shrinking) unread. A
+//!    new delegation without a row fails, and so does a row no module declares
+//!    any more.
+//!
+//! 3. **Nothing is refused at boot.** Booting each production roster must
+//!    produce an empty `World::refused_namespace_writes`: a refusal is a write
+//!    that did not land, which is a defect to fix or a delegation to declare —
+//!    never something to leave running.
 //!
 //! # What this can and cannot see
 //!
-//! Booting a roster exercises `on_world_loaded` and nothing else, so the boot
-//! census is a floor, not the whole picture. The pairs that matter most are
-//! the ones only play reaches (the jobs API, called under a producing
-//! module's identity), and those were measured once by running the crate test
-//! suites with the counter installed and written into the file by hand. That
-//! is the honest instrument: `Ctx::persist`'s namespace is a runtime value,
-//! not a syntactic one, so no scan of the source can enumerate it.
+//! Booting a roster exercises `on_world_loaded` and nothing else, so claim 3
+//! is a floor. The pairs that matter most are the ones only play reaches (the
+//! jobs API, called under a producing module's identity), and those were
+//! measured once by running the crate test suites with the census counter
+//! installed. That is the honest instrument: `Ctx::persist`'s namespace is a
+//! runtime value, not a syntactic one, so no scan of the source can enumerate
+//! it — which is exactly why claim 2 pins the declarations instead.
 //!
 //! `Ctx::persist_engine_owned` is `pub(crate)` in `mush-core` and is not a way
 //! around any of this: it is the spelling for the writes the check would
@@ -55,7 +59,7 @@ use mush_server::world_task::base_registry;
 use serde::Deserialize;
 use smol_str::SmolStr;
 
-/// The checked-in census, beside this crate's `Cargo.toml`.
+/// The checked-in declaration set, beside this crate's `Cargo.toml`.
 const ALLOWLIST: &str = "module-ns-owners.toml";
 
 /// Every ruleset a production server can enable, plus the ruleset-less
@@ -65,25 +69,26 @@ const RULESETS: [&str; 3] = ["", "wod", "shadowrun"];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Census {
-    /// Cross-namespace writes the census RUN observed, with the route each
-    /// one takes.
+struct Declared {
+    /// The cross-namespace write delegations the composition declares.
     #[serde(default)]
-    observed: Vec<Observed>,
+    delegation: Vec<Delegation>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Observed {
-    /// The writing module, as `ctx.module` carries it.
-    module: String,
-    /// The namespace the write landed in (`op.ns`).
+struct Delegation {
+    /// The module whose identity is on the write (`ctx.module`).
+    writer: String,
+    /// The namespace the write lands in (`op.ns`).
     ns: String,
+    /// Which of the two modules declared the pair.
+    declared_by: String,
     /// How a write gets from that module into that namespace.
     reason: String,
 }
 
-fn census() -> Census {
+fn declared() -> Declared {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(ALLOWLIST);
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
@@ -93,7 +98,7 @@ fn census() -> Census {
 
 /// A production server's engine with `[rulesets].enabled = [ruleset]` (or
 /// nothing enabled, for `""`), built through the ONE composition root both
-/// halves boot and then given its boot callback.
+/// halves boot.
 fn production_engine(ruleset: &str) -> Engine {
     let mut config = mush_config::config::Config::default();
     config.rulesets.enabled = if ruleset.is_empty() {
@@ -126,6 +131,25 @@ fn module_names(engine: &Engine) -> BTreeSet<String> {
         .into_iter()
         .map(|(_, module)| module.to_string())
         .collect()
+}
+
+/// One declared pair, as both halves spell it.
+type Row = (String, String, String);
+
+/// Every delegation the compositions declare, unioned over the rulesets — a
+/// ruleset only declares its pairs on the server that composes it.
+fn composed_delegations() -> BTreeSet<Row> {
+    let mut rows = BTreeSet::new();
+    for ruleset in RULESETS {
+        for d in production_engine(ruleset).registry.persist_delegations() {
+            rows.insert((
+                d.writer.to_string(),
+                d.ns.to_string(),
+                d.declared_by.to_string(),
+            ));
+        }
+    }
+    rows
 }
 
 // ---------------------------------------------------------------------------
@@ -165,35 +189,86 @@ fn every_production_module_claims_its_own_namespace() {
             named_after_a_module.is_empty(),
             "[{ruleset}] namespaces claimed by a module of another name: \
              {named_after_a_module:?}. That is legal (Registrar::migrations' first-registrar \
-             rule), but WS03-A1's refusal has to know about it — say so here in the same commit."
+             rule), but the refusal at Ctx::persist has to know about it — say so here in the \
+             same commit."
         );
     }
 }
 
-/// **Every cross-namespace write the BOOT phase performs is written down.**
+/// **The declared set is exactly the pinned set.** A delegation is what lets a
+/// cross-namespace write land, so one arriving (or leaving) unread is the
+/// thing this file exists to prevent.
+#[test]
+fn every_declared_delegation_is_pinned_and_every_pinned_row_is_declared() {
+    let rows = declared().delegation;
+    assert!(
+        !rows.is_empty(),
+        "{ALLOWLIST} declares nothing, but the production composition delegates. An empty \
+         file would claim the delegation set is empty."
+    );
+    let mut pinned: BTreeSet<Row> = BTreeSet::new();
+    for row in &rows {
+        assert!(
+            !row.reason.trim().is_empty(),
+            "{ALLOWLIST}: {} -> {} carries no route",
+            row.writer,
+            row.ns
+        );
+        assert_ne!(
+            row.writer, row.ns,
+            "{ALLOWLIST}: {} -> {} is a module writing its OWN namespace, which is never a \
+             cross-namespace write",
+            row.writer, row.ns
+        );
+        assert!(
+            row.declared_by == row.writer || row.declared_by == row.ns,
+            "{ALLOWLIST}: {} -> {} says it was declared by {}, which is neither the writer nor \
+             the namespace's owner — Registrar::persist_delegation would have refused that",
+            row.writer,
+            row.ns,
+            row.declared_by
+        );
+        assert!(
+            pinned.insert((row.writer.clone(), row.ns.clone(), row.declared_by.clone())),
+            "{ALLOWLIST}: {} -> {} appears twice; one row per (writer, namespace) pair",
+            row.writer,
+            row.ns
+        );
+    }
+    let composed = composed_delegations();
+    let missing: Vec<&Row> = composed.difference(&pinned).collect();
+    assert!(
+        missing.is_empty(),
+        "the production composition declares delegation(s) {ALLOWLIST} does not pin: \
+         {missing:?}. Add a row with the route, so a new cross-namespace write is reviewed \
+         rather than noticed."
+    );
+    let stale: Vec<&Row> = pinned.difference(&composed).collect();
+    assert!(
+        stale.is_empty(),
+        "{ALLOWLIST} pins delegation(s) no module declares any more: {stale:?}. Delete the row \
+         in the commit that removed the Registrar::persist_delegation call."
+    );
+}
+
+/// **Nothing is refused at boot.**
 ///
 /// `on_world_loaded` runs with the same module identity a command does, so a
-/// module cleaning up another module's documents at boot is the same
-/// cross-namespace write and gets no exemption. Today no module makes one:
-/// the boot census is empty, and this is what keeps it that way.
+/// module reaching into another module's namespace at boot is the same
+/// cross-namespace write and gets no exemption. Today no module makes one, and
+/// a refusal here would be a boot write that silently stopped landing.
 #[test]
-fn booting_a_production_roster_makes_no_undeclared_cross_namespace_write() {
-    let declared: BTreeSet<(String, String)> = census()
-        .observed
-        .into_iter()
-        .map(|row| (row.module, row.ns))
-        .collect();
+fn booting_a_production_roster_refuses_no_module_write() {
     for ruleset in RULESETS {
         let mut engine = production_engine(ruleset);
         let (mut out, mut fx) = (Outbox::new(), Effects::new());
         engine
             .modules_loaded(HashMap::new(), &mut out, &mut fx)
             .expect("the production roster boots on an empty store");
-        let undeclared: Vec<String> = engine
+        let refused: Vec<String> = engine
             .world
-            .foreign_namespace_writes()
+            .refused_namespace_writes()
             .into_iter()
-            .filter(|(module, ns, _)| !declared.contains(&(module.to_string(), ns.to_string())))
             .map(|(module, ns, owner)| {
                 format!(
                     "{module} -> {ns} (owned by {})",
@@ -202,58 +277,10 @@ fn booting_a_production_roster_makes_no_undeclared_cross_namespace_write() {
             })
             .collect();
         assert!(
-            undeclared.is_empty(),
-            "[{ruleset}] boot performed cross-namespace module write(s) nobody declared: \
-             {undeclared:?}. Add a row to {ALLOWLIST} saying how the write gets there, or \
-             stop making it — WS03-A1's second commit turns this into a refusal."
-        );
-    }
-}
-
-/// **Every census row is legible.** A row names a real module, a real
-/// namespace, and the route between them; a row without a route is a row
-/// nobody can act on when the refusal drops the write it excuses.
-#[test]
-fn every_census_row_names_a_module_a_namespace_and_a_route() {
-    let rows = census().observed;
-    assert!(
-        !rows.is_empty(),
-        "{ALLOWLIST} is empty, but the WS03-A1 census run observed cross-namespace writes. \
-         An empty file would claim the delegation set is empty."
-    );
-    let mut composed: BTreeSet<String> = BTreeSet::new();
-    for ruleset in RULESETS {
-        composed.extend(module_names(&production_engine(ruleset)));
-    }
-    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
-    for row in &rows {
-        assert!(
-            !row.reason.trim().is_empty(),
-            "{ALLOWLIST}: {} -> {} carries no route",
-            row.module,
-            row.ns
-        );
-        assert_ne!(
-            row.module, row.ns,
-            "{ALLOWLIST}: {} -> {} is a module writing its OWN namespace, which is never a \
-             cross-namespace write",
-            row.module, row.ns
-        );
-        assert!(
-            seen.insert((row.module.clone(), row.ns.clone())),
-            "{ALLOWLIST}: {} -> {} appears twice; one row per (module, namespace) pair",
-            row.module,
-            row.ns
-        );
-        assert!(
-            composed.contains(&row.module),
-            "{ALLOWLIST}: {} is not a module any production composition builds",
-            row.module
-        );
-        assert!(
-            composed.contains(&row.ns),
-            "{ALLOWLIST}: {} is not a namespace any production module owns",
-            row.ns
+            refused.is_empty(),
+            "[{ruleset}] boot made cross-namespace module write(s) that did NOT land: \
+             {refused:?}. Declare the pair with Registrar::persist_delegation and add its row \
+             to {ALLOWLIST}, or stop making the write."
         );
     }
 }

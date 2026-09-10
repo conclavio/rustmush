@@ -1608,6 +1608,26 @@ struct ObserverReg {
     observer: Arc<dyn WorldObserver>,
 }
 
+/// One declared cross-namespace write delegation (WS03-A1): module `writer`
+/// may persist into namespace `ns`, which belongs to another module.
+///
+/// Declared through [`Registrar::persist_delegation`] by one of the two
+/// modules the pair names — the writer, or the namespace's owner — because
+/// only they can say why the write is legitimate. `mush-contract-tests`'
+/// `module-ns-owners.toml` pins the composed set, so a new delegation cannot
+/// arrive without a reviewed row.
+#[derive(Clone, Debug)]
+pub struct PersistDelegation {
+    /// The module whose identity is on the write (`ctx.module`).
+    pub writer: SmolStr,
+    /// The namespace the write lands in (`op.ns`).
+    pub ns: SmolStr,
+    /// Which of the two declared it.
+    pub declared_by: SmolStr,
+    /// How a write gets from that module into that namespace.
+    pub reason: &'static str,
+}
+
 /// The module-facing registration tables carried by the
 /// [`Registry`](crate::cmd::Registry) — one registry, extended (treaty
 /// ruling 4), never a second one.
@@ -1635,6 +1655,10 @@ pub struct ModuleTables {
     /// once, at composition, from the roster's module names and the
     /// migration owners; a namespace nobody claims is absent, not empty.
     namespace_owners: HashMap<SmolStr, SmolStr>,
+    /// WS03-A1: the declared cross-namespace write delegations, one row per
+    /// `(writer, namespace)` pair. Half a dozen entries at most, so a scan
+    /// beats a hash — and the scan only ever runs on a mismatch.
+    persist_delegations: Vec<PersistDelegation>,
     /// The single registered weather provider (the reserved tactics seam).
     weather: Option<(SmolStr, Arc<dyn WeatherQuery>)>,
     /// module name → its async-completion handler (the LLM re-entry seam).
@@ -2109,6 +2133,22 @@ impl Registry {
     #[must_use]
     pub fn namespace_owner(&self, ns: &str) -> Option<&SmolStr> {
         self.mods.namespace_owners.get(ns)
+    }
+
+    /// The declared delegation letting `writer` persist into `ns`, if there
+    /// is one (WS03-A1). Consulted only on a namespace mismatch.
+    #[must_use]
+    pub fn persist_delegation(&self, writer: &str, ns: &str) -> Option<&PersistDelegation> {
+        self.mods
+            .persist_delegations
+            .iter()
+            .find(|d| d.writer == writer && d.ns == ns)
+    }
+
+    /// Every declared cross-namespace write delegation, in declaration order.
+    #[must_use]
+    pub fn persist_delegations(&self) -> &[PersistDelegation] {
+        &self.mods.persist_delegations
     }
 
     /// Every claimed persistence namespace with its owning module, sorted.
@@ -3368,6 +3408,76 @@ impl<'a> Registrar<'a> {
         Ok(())
     }
 
+    /// Declare that module `writer` may persist into namespace `ns`
+    /// (WS03-A1) — the one way a cross-namespace module write is allowed to
+    /// land.
+    ///
+    /// A module's [`GameModule::name`] is its persistence namespace, so
+    /// [`Ctx::persist`](crate::cmd::Ctx::persist) refuses an op whose `ns` is
+    /// not the writing module's own unless a row here says otherwise. The
+    /// pair is what is declared, not a module or a namespace on its own: the
+    /// jobs module's public API writes `jobs` documents under the CALLER's
+    /// identity, which is a fact about that caller, not a licence for every
+    /// module.
+    ///
+    /// **Who may declare a pair**: either module it names — the writer, or
+    /// the namespace's owner. Both know why the write is legitimate; nobody
+    /// else does. A ruleset therefore declares the pair its job payload
+    /// handler produces (`jobs -> wod`: the handler runs under the jobs
+    /// module's identity and writes the ruleset's namespace), and a producing
+    /// module declares the pair its own call into the jobs API produces
+    /// (`housing -> jobs`).
+    ///
+    /// # Errors
+    /// A namespace equal to the writer (never a cross-namespace write); a
+    /// pair naming neither this module as writer nor as namespace owner; or a
+    /// pair already declared — first declaration wins, and a second is a
+    /// conflict, exactly as it is for a migration namespace.
+    pub fn persist_delegation(
+        &mut self,
+        writer: &str,
+        ns: &str,
+        reason: &'static str,
+    ) -> Result<(), ModError> {
+        if writer == ns {
+            return Err(ModError::msg(format!(
+                "module {}: {writer:?} -> {ns:?} is a module writing its own namespace,                  which needs no delegation",
+                self.module
+            )));
+        }
+        if writer != self.module && ns != self.module {
+            return Err(ModError::msg(format!(
+                "module {}: may not declare the delegation {writer:?} -> {ns:?} — a pair is                  declared by the writing module or by the namespace's owner, and this is                  neither",
+                self.module
+            )));
+        }
+        let (writer, ns) = (SmolStr::new(writer), SmolStr::new(ns));
+        if let Some(existing) = self
+            .reg
+            .persist_delegations()
+            .iter()
+            .find(|d| d.writer == writer && d.ns == ns)
+        {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "persist delegation",
+                name: SmolStr::new(format!("{writer} -> {ns}")),
+                owner: existing.declared_by.clone(),
+            });
+        }
+        let declared_by = self.module.clone();
+        self.reg
+            .tables_mut()
+            .persist_delegations
+            .push(PersistDelegation {
+                writer,
+                ns,
+                declared_by,
+                reason,
+            });
+        Ok(())
+    }
+
     /// Register the game's single weather provider (the reserved
     /// `WeatherQuery` seam — see [`WeatherQuery`]). Exactly one module may
     /// provide weather; a second registration is a conflict.
@@ -4175,19 +4285,27 @@ impl Ctx<'_> {
     /// `persist` calls never half-commits. World mutations made before the
     /// error remain best-effort — validate-then-apply is still the rule.
     ///
-    /// **Trust model** (WS03-A1, census half): `op.ns` **is** compared
-    /// against `ctx.module`, and a write into another module's namespace is
-    /// COUNTED, not refused. Compiled-in modules are trusted code, and
-    /// writing into another module's namespace is *sanctioned delegation*
-    /// (a producing module writes `jobs`-namespace docs through the jobs
-    /// module's exported helpers, which run under the CALLER's identity) —
-    /// but until this commit nothing recorded, counted or bounded the set,
-    /// so the delegation set was unknown. Every foreign pair is now recorded
-    /// on the world
-    /// ([`World::foreign_namespace_writes`](crate::world::World::foreign_namespace_writes))
-    /// and `warn!`-logged once per `(module, namespace)`, naming the owning
-    /// module. Nothing changes about what lands: the refusal comes next, and
-    /// it may only flip once the census is written down.
+    /// **Trust model** (WS03-A1): `op.ns` is verified against `ctx.module`,
+    /// and an undeclared cross-namespace write is REFUSED — the op is
+    /// dropped, nothing is queued, and nothing lands.
+    ///
+    /// A module's [`GameModule::name`] is its persistence namespace, so
+    /// `op.ns != ctx.module` is one module writing documents another module
+    /// owns. That is still *sanctioned delegation* where it is sanctioned —
+    /// the jobs module's public API takes `ctx` and writes `jobs` documents
+    /// under the CALLER's identity — but the delegation must now be
+    /// **declared**, per `(writer, namespace)` pair and with its reason, by
+    /// one of the two modules the pair names
+    /// ([`Registrar::persist_delegation`]). Compiled-in modules are trusted
+    /// code; what is not trusted is a delegation set nobody wrote down, which
+    /// is what this replaces.
+    ///
+    /// A refusal never panics — this runs on the single world task — and is
+    /// loud in two places at once: one `error!` per `(module, namespace)`
+    /// rather than one per command, and a row on the world for
+    /// [`World::refused_namespace_writes`](crate::world::World::refused_namespace_writes).
+    /// It has to be: dropping a write is silent at the call site, since
+    /// `persist` returns nothing to ignore.
     ///
     /// A core command (`module: None`) is a wildcard, exactly as it is for
     /// state slots. The engine's own namespace-crossing helpers — the scene
@@ -4197,9 +4315,12 @@ impl Ctx<'_> {
     /// engine mediates those, so they are not a module reaching across.
     pub fn persist(&mut self, op: ModuleOp) {
         // This is on every module write path, so the fast path is one
-        // SmolStr equality and nothing else.
-        if self.module.as_ref().is_some_and(|module| *module != op.ns) {
-            self.note_foreign_namespace_write(&op.ns);
+        // SmolStr equality and nothing else; the delegation table is only
+        // ever consulted on a mismatch.
+        if self.module.as_ref().is_some_and(|module| *module != op.ns)
+            && !self.may_persist_into(&op.ns)
+        {
+            return;
         }
         self.out.defer(Deferred::Persist(op));
     }
@@ -4215,15 +4336,21 @@ impl Ctx<'_> {
         self.out.defer(Deferred::Persist(op));
     }
 
-    /// Record one module write into a namespace that is not the module's own
-    /// (WS03-A1). Cold: only ever reached on a mismatch.
+    /// Whether this module may write a namespace that is not its own, and
+    /// record the refusal when it may not (WS03-A1). Cold: only ever reached
+    /// on a mismatch.
     #[cold]
-    fn note_foreign_namespace_write(&mut self, ns: &SmolStr) {
+    fn may_persist_into(&mut self, ns: &SmolStr) -> bool {
+        // A core command carries no module identity and is a wildcard.
         let Some(module) = self.module.clone() else {
-            return;
+            return true;
         };
+        if self.reg.persist_delegation(&module, ns).is_some() {
+            return true;
+        }
         let owner = self.reg.namespace_owner(ns).cloned();
-        self.w.record_foreign_namespace_write(&module, ns, owner);
+        self.w.record_refused_namespace_write(&module, ns, owner);
+        false
     }
 
     /// Open a server-initiated request to `subject` (interface plan I10,

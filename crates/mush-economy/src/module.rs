@@ -1667,6 +1667,16 @@ impl GameModule for EconomyModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::EconomyCarveOut);
         reg.state(EconomyStore::default());
+        // WS03-A1: an economy command emits an EconomicEvent and the wired
+        // observers run under THIS module's identity, so housing's observer
+        // closes its tenancy story job through the jobs API wearing the
+        // economy module's name. Two hops: our identity, housing's code, the
+        // jobs module's namespace.
+        reg.persist_delegation(
+            NS,
+            "jobs",
+            "an economy event is delivered to housing's observer under this module's identity,              and that observer closes the tenancy story job through mush_jobs::resolve_plain_job",
+        )?;
         // J2: `@econ/history` and `@econ/reverse` reach past the RAM tail through
         // the store-read seam (H1); this is where the page comes back.
         reg.store_read_completion(Arc::new(crate::commands::EconomyArchiveRead))?;

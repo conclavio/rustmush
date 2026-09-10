@@ -203,13 +203,14 @@ pub struct World {
     /// command, so the report is deduplicated here — one log line per pair
     /// per boot, not one per command in the world loop.
     module_state_foreign_writes: BTreeMap<(SmolStr, TypeId), &'static str>,
-    /// WS03-A1: every `(writing module, persistence namespace)` pair seen at
-    /// [`Ctx::persist`](crate::cmd::Ctx::persist) where the namespace is not
-    /// the writing module's own, with the namespace's owning module when the
-    /// composition claims one. Deduplicated for the same reason the slot
-    /// table is: `Ctx::persist` is on every module write path, and the world
-    /// loop must not log per command.
-    module_ns_foreign_writes: BTreeMap<(SmolStr, SmolStr), Option<SmolStr>>,
+    /// WS03-A1: every `(writing module, persistence namespace)` pair already
+    /// REFUSED at [`Ctx::persist`](crate::cmd::Ctx::persist) — an undeclared
+    /// write into a namespace that is not the writing module's own — with the
+    /// namespace's owning module when the composition claims one.
+    /// Deduplicated for the same reason the slot table is: `Ctx::persist` is
+    /// on every module write path, and the world loop must not log per
+    /// command.
+    module_ns_refused_writes: BTreeMap<(SmolStr, SmolStr), Option<SmolStr>>,
     /// Per-actor input-context stacks (transient parser state — empty on
     /// clone).
     input_stacks: InputStacks,
@@ -1558,44 +1559,46 @@ impl World {
             .collect()
     }
 
-    /// Every cross-namespace module write seen so far, as
-    /// `(writing module, namespace, owning module)` — the WS03-A1 census.
+    /// Every cross-namespace module write REFUSED so far, as
+    /// `(writing module, namespace, owning module)`.
     ///
     /// A module's [`GameModule::name`](crate::module::GameModule::name) is its
-    /// persistence namespace, so a row here is a module writing documents
-    /// another module owns: *sanctioned delegation* through the owning
-    /// module's public API (the jobs API writes `jobs` documents under the
-    /// CALLER's identity), or a defect. The owner is `None` for a namespace
-    /// no composed module claims — an engine-owned one, or a test rig's.
+    /// persistence namespace, so a row here is a module that tried to write
+    /// documents another module owns without a declared delegation
+    /// ([`Registrar::persist_delegation`](crate::module::Registrar::persist_delegation)).
+    /// WS03-A1's census collected this list while still applying the write;
+    /// the refusal drops it. A non-empty list is therefore a defect report,
+    /// not a census: some module's write did not land, and either the
+    /// delegation is missing a row or the write should never have been made.
     ///
-    /// The census applies the write and counts it. Nothing here is a refusal
-    /// yet.
+    /// The owner is `None` for a namespace no composed module claims.
     #[must_use]
-    pub fn foreign_namespace_writes(&self) -> Vec<(SmolStr, SmolStr, Option<SmolStr>)> {
-        self.module_ns_foreign_writes
+    pub fn refused_namespace_writes(&self) -> Vec<(SmolStr, SmolStr, Option<SmolStr>)> {
+        self.module_ns_refused_writes
             .iter()
             .map(|((module, ns), owner)| (module.clone(), ns.clone(), owner.clone()))
             .collect()
     }
 
-    /// Record one module write into a namespace that is not the writing
-    /// module's own (WS03-A1), warning once per `(module, namespace)`.
-    pub(crate) fn record_foreign_namespace_write(
+    /// Record one REFUSED module write into a namespace that is not the
+    /// writing module's own (WS03-A1), logging once per `(module,
+    /// namespace)`.
+    pub(crate) fn record_refused_namespace_write(
         &mut self,
         module: &SmolStr,
         ns: &SmolStr,
         owner: Option<SmolStr>,
     ) {
         if self
-            .module_ns_foreign_writes
+            .module_ns_refused_writes
             .insert((module.clone(), ns.clone()), owner.clone())
             .is_none()
         {
-            tracing::warn!(
+            tracing::error!(
                 module = %module,
                 ns = %ns,
                 owner = owner.as_deref().unwrap_or("(unclaimed)"),
-                "cross-namespace module write: op.ns is not this module's namespace (WS03-A1 census)"
+                "cross-namespace module write REFUSED: the namespace belongs to another module                  and no delegation declares the pair (WS03-A1)"
             );
         }
     }
