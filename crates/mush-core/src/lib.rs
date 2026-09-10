@@ -279,7 +279,7 @@ pub use module::{
     MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, MAX_STORE_READ_BYTES, MAX_STORE_READ_KEYS,
     Migration, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle,
     Perceive, QueryHandler, RecoveryReporter, Registrar, RelayRefusal, RelaySpeaker,
-    STORE_READ_STALE_SECS, STORE_READ_TIMEOUT_MS, Scene, SceneId, StackedContext,
+    STORE_READ_STALE_SECS, STORE_READ_TIMEOUT_MS, Scene, SceneId, StackedContext, StateSlotDenied,
     StoreReadCompletion, StoreReadError, StoreReadResult, TickCadence, TickHandler, WeatherQuery,
     WorldEvent, WorldEventKind, WorldObserver, WxSnapshot, apply_store_read_completion,
     can_perceive, is_concealed, perceives_via, room_ambient,

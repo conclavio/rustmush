@@ -1,15 +1,14 @@
-//! WS03-S8: the module-state slot ownership census, pinned.
+//! WS03-S8/S14: module-state slot ownership, pinned.
 //!
 //! A typed state slot is declared by exactly one module (`Registrar::state`),
-//! and the world now records that module as its owner — by MODULE name, not by
-//! crate, so a crate registering two modules is two owners. Nothing refuses a
-//! foreign write yet: `Ctx::state_mut` reports one `warn!` per (writing module,
-//! slot) and applies the write exactly as before, because denying it is a
-//! SILENT change no type check catches (every call site is
-//! `if let Some(s) = ctx.state_mut::<T>()`, so a denied write becomes a no-op).
-//! WS03-S14 turns the report into a refusal; this file is the truthful baseline
-//! it needs, and the tripwire that keeps the baseline from growing quietly in
-//! the meantime.
+//! and the world records that module as its owner — by MODULE name, not by
+//! crate, so a crate registering two modules is two owners. Since WS03-S14 the
+//! module-facing surface REFUSES a foreign write: `Ctx::try_state_mut` returns
+//! `Err(StateSlotDenied { requester, owner, .. })` and `Ctx::state_mut` returns
+//! `None`. That flip is silent at every call site
+//! (`if let Some(s) = ctx.state_mut::<T>()` simply becomes a no-op), which is
+//! why WS03-S8 measured the baseline first and why this file keeps it from
+//! growing quietly afterwards.
 //!
 //! Two claims, in the `legacy_handler_allowlist.rs` style — a checked-in
 //! allowlist beside this crate's `Cargo.toml`, a scan that fails on an
@@ -38,11 +37,11 @@
 //! The scan is crate-level: it knows the crate a call site is in and the crate
 //! that defines the slot type, and it treats same-crate access as in-family.
 //! Module-level truth — a crate registering two modules, one of them writing
-//! the other's slot — is only visible at RUNTIME, which is what the `warn!` is
-//! for and what the `[[observed]]` rows in the allowlist record. The two halves
-//! are deliberately different instruments: the scan cannot be fooled by a code
-//! path no test exercises, and the warn cannot be fooled by a crate boundary
-//! that is not a module boundary.
+//! the other's slot — is only visible at RUNTIME, which is what the refusal
+//! at `Ctx` is for and what the (now empty) `[[observed]]` rows recorded. The
+//! two halves are deliberately different instruments: the scan cannot be
+//! fooled by a code path no test exercises, and the runtime check cannot be
+//! fooled by a crate boundary that is not a module boundary.
 //!
 //! `World::module_state_mut` and `World::module_state_insert` stay `pub`: they
 //! are the unchecked engine accessors, carrying no module identity and doing no
@@ -50,15 +49,15 @@
 //! file — a convention pinned by a scan, not an invariant enforced by the
 //! types — and both accessors say so in their own docs.
 //!
-//! That matters more than it looks, and WS03-S14 should read it before it
-//! starts: `Ctx::w` is a `pub` field, so `ctx.w.module_state_mut::<T>()` is one
-//! character longer than `ctx.state_mut::<T>()` and skips the check entirely.
-//! The census found that four crates' production code already takes exactly
-//! that route across a module boundary (both rulesets and `mush-faction` into
-//! the economy and org stores, `mush-sim` into `scenes`). A refusal at
-//! `Ctx::state_mut`
-//! therefore does not bound the reach on its own; this scan is the other half
-//! of the enforcement, not a nicety beside it.
+//! That matters more than it looks: `Ctx::w` is a `pub` field, so
+//! `ctx.w.module_state_mut::<T>()` is one character longer than
+//! `ctx.state_mut::<T>()` and skips the refusal entirely. The census found that
+//! four crates' production code already takes exactly that route across a
+//! module boundary (both rulesets and `mush-faction` into the economy and org
+//! stores, `mush-sim` into `scenes`). WS03-S14's refusal therefore does not
+//! bound the reach on its own; this scan is the other half of the enforcement,
+//! not a nicety beside it, and it is why a `[[site]]` row may name the
+//! unchecked accessors and may NOT name `Ctx::state_mut`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -617,12 +616,13 @@ fn every_cross_owner_state_site_is_baselined() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// **The census run is recorded.** Each `[[observed]]` row is a foreign write
-/// the workspace suite actually produced with the warn installed, and each says
-/// what it is. An empty list means the run emitted nothing — which is the
-/// answer WS03-S14 wants, and is only meaningful if it was measured.
+/// **The census is spent.** Each `[[observed]]` row was a foreign write the
+/// workspace suite actually produced while WS03-S8's warn still applied it.
+/// WS03-S14 refuses those writes, so the list must now be EMPTY: a pair that
+/// still appears is a write that no longer lands, which is a defect to fix or
+/// a seam to add on the owning module — never a row to keep.
 #[test]
-fn the_observed_census_rows_are_justified() {
+fn the_observed_census_is_empty_now_that_the_refusal_is_live() {
     let list = baseline();
     for observed in &list.observed {
         assert!(
@@ -636,4 +636,45 @@ fn the_observed_census_rows_are_justified() {
             observed.slot
         );
     }
+    let pairs: Vec<String> = list
+        .observed
+        .iter()
+        .map(|o| format!("{} -> {}", o.module, o.slot))
+        .collect();
+    assert!(
+        pairs.is_empty(),
+        "{ALLOWLIST}: {} [[observed]] foreign write(s) are now REFUSED at Ctx::try_state_mut, \
+         not excused: {pairs:?}. Give the owning module a seam the caller can use, or stop the \
+         write — the row cannot make it land again.",
+        pairs.len()
+    );
+}
+
+/// **No row can excuse a `Ctx` reach.** `Ctx::state_mut` / `Ctx::try_state_mut`
+/// REFUSE a foreign module's write since WS03-S14, so a `[[site]]` row naming
+/// that accessor across an owner boundary would be an excuse for a write that
+/// does not happen — a row nobody can act on, describing a silent no-op.
+///
+/// The scan is crate-level and the refusal is module-level, so the two halves
+/// answer different questions (a crate registering two modules is one crate and
+/// two owners). This is where they meet: whatever the scan finds through `Ctx`
+/// must be fixed at the call site, and only the unchecked engine accessors —
+/// `World::module_state_mut` / `World::module_state_insert`, which carry no
+/// module identity and cannot check — remain baselineable.
+#[test]
+fn no_baselined_site_reaches_through_the_checked_accessor() {
+    let list = baseline();
+    let through_ctx: Vec<String> = list
+        .site
+        .iter()
+        .filter(|s| s.accessor == ACCESSORS[0])
+        .map(|s| format!("{} / {}", s.path, s.slot))
+        .collect();
+    assert!(
+        through_ctx.is_empty(),
+        "{ALLOWLIST}: {ctx} refuses a foreign write since WS03-S14, so these rows excuse a \
+         no-op: {through_ctx:?}. Fix the call site — route it through the owning module, or \
+         through the unchecked engine accessor with a reason that says why.",
+        ctx = ACCESSORS[0],
+    );
 }

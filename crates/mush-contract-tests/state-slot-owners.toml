@@ -1,11 +1,12 @@
-# WS03-S8: the module-state slot ownership baseline.
+# WS03-S8/S14: the module-state slot ownership baseline.
 #
 # A typed state slot has exactly one owning MODULE — the one whose
-# `Registrar::state` declared it. `Ctx::state_mut` now reports a foreign write
-# (one `warn!` per writing module and slot) and still applies it; WS03-S14 turns
-# that report into a refusal. Refusing is silent at the call site
-# (`if let Some(s) = ctx.state_mut::<T>()` becomes a no-op), so every site that
-# would start no-opping is written down here first.
+# `Registrar::state` declared it — and since WS03-S14 the module-facing surface
+# REFUSES a foreign write: `Ctx::try_state_mut` returns
+# `Err(StateSlotDenied { requester, owner, .. })`, `Ctx::state_mut` returns
+# `None`, and nothing lands. Refusing is silent at the call site
+# (`if let Some(s) = ctx.state_mut::<T>()` becomes a no-op), which is why
+# WS03-S8 wrote every site that would start no-opping down here first.
 #
 # `tests/state_slot_owners.rs` fails on:
 #
@@ -14,7 +15,10 @@
 #   * a `ctx.state_mut::<T>` / `World::module_state_mut::<T>` site whose slot is
 #     owned by a module of a DIFFERENT crate and has no row;
 #   * a row whose `owner` is not the module the composition says owns the slot;
-#   * a row naming a site the scan no longer finds (a stale excuse).
+#   * a row naming a site the scan no longer finds (a stale excuse);
+#   * a row whose `accessor` is `Ctx::state_mut` — that spelling is checked now,
+#     so such a row would excuse a write that no longer happens. Only the
+#     unchecked engine accessors can be baselined.
 #
 # Add a row in the same commit as the reach, with a reason that says why one
 # crate writes another module's state. Do not add rows to quiet the scan.
@@ -22,17 +26,18 @@
 # WHAT THE CENSUS FOUND. Every cross-owner MUTATION in the tree goes through
 # `World::module_state_mut` — the unchecked accessor that carries no module
 # identity — and not one goes through `Ctx::state_mut`, which is the surface
-# WS03-S14 refuses at. `Ctx::w` is `pub`, so `ctx.w.module_state_mut::<T>()` is
-# one character longer than `ctx.state_mut::<T>()` and skips the check; four of
-# the production rows below take exactly that route. A refusal at `Ctx` is
-# therefore worth having and is NOT a bound on its own: this file is the other
-# half.
+# WS03-S14 refuses at. That is why the flip broke nothing. `Ctx::w` is `pub`, so
+# `ctx.w.module_state_mut::<T>()` is one character longer than
+# `ctx.state_mut::<T>()` and skips the refusal; four of the production rows below
+# take exactly that route. The refusal at `Ctx` is therefore worth having and is
+# NOT a bound on its own: this file is the other half.
 #
 # The shape almost every production row shares is ID ALLOCATION: a caller needs a
 # monotonic id out of the owning module's store (`alloc_account`, `alloc_org`,
 # `alloc_scope`) before it submits that module's own operation. The obvious fix
-# is an owned seam on the owning module rather than a write into its slot, and
-# that is a design change WS03-S14 should cost, not a rename.
+# is an owned seam on the owning module rather than a write into its slot; that
+# is a design change and it is still open — WS03-S14 enforced the surface it
+# could without paying for it.
 #
 # `[[site]]` is the static, crate-level half. `[[observed]]` is the runtime,
 # module-level half: pairs the WS03-S8 census RUN actually emitted.
@@ -364,6 +369,7 @@ above.
 # wrote a foreign slot through `Ctx::state_mut`, and no composed world carried an
 # unowned slot at boot.
 #
-# So WS03-S14's refusal, as briefed, breaks nothing that runs today. What it
-# also does not reach is the 25 `[[site]]` rows above, every one of which goes
-# around `Ctx` through `World::module_state_mut`.
+# So WS03-S14's refusal, now live, broke nothing that runs today. This list must
+# stay EMPTY: a pair here is a write that is REFUSED rather than excused, and the
+# test says so. What the refusal does not reach is the 25 `[[site]]` rows above,
+# every one of which goes around `Ctx` through `World::module_state_mut`.

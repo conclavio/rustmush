@@ -24,8 +24,8 @@ use mush_core::{
     DefinitionRef, DefinitionValidationContext, GOD, IncidentId, IncidentState, LIMBO,
     MAX_BOOT_REPORT_DETAILS, MigrationPlanSummary, ModuleBootReport, ObjId, ObjKind, Outbox,
     OwnerId, RecoveryIncidentSummary, RecoveryReason, RecoveryScope, RecoverySeverity, Registry,
-    RevisionKey, RevisionKind, RevisionValidator, SubjectKey, World, register_core_commands,
-    register_engine_commands,
+    RevisionKey, RevisionKind, RevisionValidator, StateSlotDenied, SubjectKey, World,
+    register_core_commands, register_engine_commands,
 };
 use mush_proto::{InputMode, NarrativeKind, OutputEvent, PanelFrameKind, PromptSpec, RichText};
 use serde_json::json;
@@ -878,17 +878,17 @@ fn duplicate_state_slot_across_modules_fails_boot() {
 }
 
 // ----------------------------------------------------------------------
-// WS03-S8: the state-slot ownership census
+// WS03-S8 / WS03-S14: state-slot ownership, enforced
 // ----------------------------------------------------------------------
 
-/// Both census tests run under a thread-scoped subscriber, and `tracing`
-/// registers a callsite lazily on its first hit: while exactly one dispatcher
-/// is registered it evaluates that callsite's interest against the
-/// *registering thread's* default subscriber, so a sibling hitting the warn
-/// first on a thread with no subscriber would cache it as never-enabled and
-/// the capturing test would see nothing. Serialising them removes the
-/// interleaving (the shape `mush-config`'s `ipc_endpoint_validation.rs`
-/// documents).
+/// Both ownership tests that read the log run under a thread-scoped
+/// subscriber, and `tracing` registers a callsite lazily on its first hit:
+/// while exactly one dispatcher is registered it evaluates that callsite's
+/// interest against the *registering thread's* default subscriber, so a
+/// sibling hitting the refusal first on a thread with no subscriber would
+/// cache it as never-enabled and the capturing test would see nothing.
+/// Serialising them removes the interleaving (the shape `mush-config`'s
+/// `ipc_endpoint_validation.rs` documents).
 static CENSUS_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn census_serialized() -> std::sync::MutexGuard<'static, ()> {
@@ -940,6 +940,10 @@ fn with_captured_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
 #[derive(Clone, Debug, Default)]
 struct OwnedSlot(u32);
 
+/// The slot module `b` declares, in this very same crate.
+#[derive(Clone, Debug, Default)]
+struct PeerSlot(u32);
+
 /// A slot nobody declares — seeded straight onto the world.
 #[derive(Clone, Debug, Default)]
 struct SeededSlot(u32);
@@ -960,19 +964,55 @@ impl GameModule for SlotOwner {
         ctx: &mut ModuleCtx<'_>,
         _data: ModuleBootData,
     ) -> Result<(), ModError> {
-        ctx.state_mut::<OwnedSlot>().expect("its own slot").0 += 1;
+        ctx.try_state_mut::<OwnedSlot>()
+            .expect("its own slot is never refused")
+            .expect("its own slot is installed")
+            .0 += 1;
         Ok(())
     }
 }
 
-/// Module `b`: declares nothing and mutates `a`'s slot twice at boot.
-struct SlotPoacher;
+/// What a module saw when it reached for a slot it does not own.
+#[derive(Default)]
+struct PoachReport {
+    /// The refusal `try_state_mut` returned (`None` if it was allowed).
+    denied: Option<StateSlotDenied>,
+    /// Whether `state_mut` handed out a live `&mut` — it must not.
+    state_mut_was_live: bool,
+    /// What the poacher could still READ: reading stays shared.
+    read: Option<u32>,
+    /// The value it wrote into a slot it DOES own, if it owns one.
+    own_slot: Option<u32>,
+}
+
+/// Module `b`: mutates `a`'s slot at boot. `declare_own` makes it a module
+/// with state of its own — the same crate, a different owner.
+struct SlotPoacher {
+    declare_own: bool,
+    report: Arc<std::sync::Mutex<PoachReport>>,
+}
+
+impl SlotPoacher {
+    fn new(declare_own: bool) -> (Self, Arc<std::sync::Mutex<PoachReport>>) {
+        let report = Arc::new(std::sync::Mutex::new(PoachReport::default()));
+        (
+            Self {
+                declare_own,
+                report: Arc::clone(&report),
+            },
+            report,
+        )
+    }
+}
 
 impl GameModule for SlotPoacher {
     fn name(&self) -> &'static str {
         "b"
     }
-    fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        if self.declare_own {
+            reg.state(PeerSlot::default());
+        }
         Ok(())
     }
     fn on_world_loaded(
@@ -980,71 +1020,275 @@ impl GameModule for SlotPoacher {
         ctx: &mut ModuleCtx<'_>,
         _data: ModuleBootData,
     ) -> Result<(), ModError> {
+        let read = ctx.state::<OwnedSlot>().map(|s| s.0);
+        // Twice, because the refusal is reported once per (module, slot) and
+        // refused every time.
+        let mut denied = None;
         for _ in 0..2 {
-            ctx.state_mut::<OwnedSlot>().expect("a foreign slot").0 += 10;
+            match ctx.try_state_mut::<OwnedSlot>() {
+                Ok(slot) => {
+                    if let Some(slot) = slot {
+                        slot.0 += 10;
+                    }
+                }
+                Err(err) => denied = Some(err),
+            }
         }
+        let mut state_mut_was_live = false;
+        if let Some(slot) = ctx.state_mut::<OwnedSlot>() {
+            slot.0 += 100;
+            state_mut_was_live = true;
+        }
+        let own_slot = if self.declare_own {
+            ctx.try_state_mut::<PeerSlot>()
+                .expect("its own slot is never refused")
+                .map(|slot| {
+                    slot.0 += 5;
+                    slot.0
+                })
+        } else {
+            None
+        };
+        *self.report.lock().expect("the report") = PoachReport {
+            denied,
+            state_mut_was_live,
+            read,
+            own_slot,
+        };
         Ok(())
     }
 }
 
-/// WS03-S8 changes NO behaviour: a module mutating another module's slot is
-/// reported — once per (writing module, slot), however many times it writes —
-/// and the mutation still lands. The census has to be truthful before WS03-S14
-/// can refuse on top of it, because refusing is silent at every call site
-/// (`if let Some(s) = ctx.state_mut::<T>()` turns a denial into a no-op).
+/// **The refusal.** A module mutating another module's slot is refused —
+/// `try_state_mut` returns `Err(StateSlotDenied { requester, owner, .. })`,
+/// `state_mut` returns `None`, and the mutation does NOT land. Before
+/// WS03-S14 it got a live `&mut` and the write stuck.
+///
+/// The refusal is loud in three places at once, because a denial is invisible
+/// at the call site (`if let Some(s) = ctx.state_mut::<T>()` becomes a
+/// no-op): the typed error, one log line per (module, slot), and the record
+/// on the world.
 #[test]
-fn a_foreign_slot_mutation_is_reported_but_still_applies() {
+fn a_foreign_module_cannot_mutate_another_modules_slot() {
     let _serial = census_serialized();
+    let (poacher, report) = SlotPoacher::new(false);
     let mut engine = Engine::with_modules(
         World::new_minimal(),
         Registry::new(),
-        vec![Box::new(SlotOwner), Box::new(SlotPoacher)],
+        vec![Box::new(SlotOwner), Box::new(poacher)],
     )
     .expect("two modules, one slot declaration");
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
     let (loaded, logs) = with_captured_logs(|| {
         engine.modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
     });
-    loaded.expect("a foreign write must not fail the boot");
+    loaded.expect("a refused write must not fail the boot");
 
-    // The mutation stuck: a's own bump plus b's two foreign ones.
+    // `a`'s own bump, and nothing of `b`'s three attempts.
     assert_eq!(
         engine.world.module_state::<OwnedSlot>().expect("slot").0,
-        21,
-        "the census must not change what the write does"
+        1,
+        "a foreign write must not land"
     );
-    // Reported once, naming b — and a writing its OWN slot is not reported.
-    let reported = engine.world.foreign_state_writes();
-    assert_eq!(reported.len(), 1, "one pair, twice written: {reported:?}");
-    assert_eq!(reported[0].0.as_str(), "b");
+    let report = report.lock().expect("the report");
+    let denied = report.denied.clone().expect("b must be refused");
+    assert_eq!(denied.requester.as_str(), "b");
+    assert_eq!(denied.owner.as_str(), "a");
+    assert!(denied.slot.ends_with("OwnedSlot"), "{:?}", denied.slot);
     assert!(
-        reported[0].1.ends_with("OwnedSlot"),
-        "the report names the slot: {:?}",
-        reported[0].1
+        denied.to_string().contains("OwnedSlot"),
+        "the refusal names the slot: {denied}"
     );
-    assert_eq!(
-        engine
-            .world
-            .module_state_owner(std::any::TypeId::of::<OwnedSlot>())
-            .map(SmolStr::as_str),
-        Some("a"),
-        "ownership is recorded by module name"
+    assert!(
+        !report.state_mut_was_live,
+        "state_mut must not hand out a foreign slot"
     );
-    let warns = logs.matches("foreign state-slot write").count();
+    // A's write is visible to BOTH modules' reads: reading stays shared.
+    assert_eq!(report.read, Some(1), "reading a foreign slot is allowed");
     assert_eq!(
-        warns, 1,
-        "one warn per (module, slot), not per write: {logs}"
+        engine.world.module_state::<OwnedSlot>().map(|s| s.0),
+        Some(1)
+    );
+
+    // Recorded once, naming b — and a writing its OWN slot is not recorded.
+    let refused = engine.world.refused_state_writes();
+    assert_eq!(refused.len(), 1, "one pair, thrice attempted: {refused:?}");
+    assert_eq!(refused[0].0.as_str(), "b");
+    assert!(
+        refused[0].1.ends_with("OwnedSlot"),
+        "the record names the slot: {:?}",
+        refused[0].1
+    );
+    let refusals = logs.matches("foreign state-slot write REFUSED").count();
+    assert_eq!(
+        refusals, 1,
+        "one line per (module, slot), not one per attempt: {logs}"
     );
     assert!(logs.contains("module=b"), "{logs}");
     assert!(logs.contains("owner=a"), "{logs}");
     assert!(logs.contains("OwnedSlot"), "{logs}");
 }
 
+/// Ownership is by MODULE, not by crate: `b` lives in this very file
+/// alongside `a` and declares a slot of its own, and is still refused `a`'s.
+/// The crate-level half of the enforcement — `mush-contract-tests`'
+/// `state-slot-owners.toml` scan — cannot see this boundary at all, which is
+/// why the runtime check exists beside it.
+#[test]
+fn two_modules_in_one_crate_are_checked_separately() {
+    let (poacher, report) = SlotPoacher::new(true);
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SlotOwner), Box::new(poacher)],
+    )
+    .expect("two modules in one crate, one slot each");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect("boot");
+
+    let report = report.lock().expect("the report");
+    assert_eq!(
+        report.own_slot,
+        Some(5),
+        "a module's own slot is always writable"
+    );
+    let denied = report.denied.clone().expect("b must still be refused a's");
+    assert_eq!(
+        (denied.requester.as_str(), denied.owner.as_str()),
+        ("b", "a")
+    );
+    assert_eq!(
+        engine.world.module_state::<OwnedSlot>().map(|s| s.0),
+        Some(1),
+        "same crate, different module: still refused"
+    );
+    assert_eq!(
+        engine.world.module_state::<PeerSlot>().map(|s| s.0),
+        Some(5)
+    );
+    assert_eq!(
+        engine
+            .world
+            .module_state_owner(std::any::TypeId::of::<PeerSlot>())
+            .map(SmolStr::as_str),
+        Some("b"),
+        "one crate, two owners"
+    );
+}
+
+/// A core command — `module: None` — is a wildcard: the engine's own
+/// commands are not a module and are refused nothing.
+#[test]
+fn core_commands_keep_slot_access() {
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SlotOwner)],
+    )
+    .expect("one module composes");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect("boot");
+
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).expect("core commands register");
+    let mut out = Outbox::new();
+    let mut ctx = Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &reg,
+        module: None,
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    ctx.try_state_mut::<OwnedSlot>()
+        .expect("a core command is a wildcard")
+        .expect("the slot is installed")
+        .0 += 9;
+
+    assert_eq!(
+        engine.world.module_state::<OwnedSlot>().map(|s| s.0),
+        Some(10),
+        "a core command's write lands"
+    );
+    assert!(
+        engine.world.refused_state_writes().is_empty(),
+        "a wildcard is not a refusal: {:?}",
+        engine.world.refused_state_writes()
+    );
+}
+
+/// A slot seeded only through `World::module_state_insert` has no owner —
+/// there is nobody to refuse for — so it stays mutable by every module.
+/// That is today's behaviour and the hole ownership cannot see through,
+/// which is why boot NAMES those slots (the test below) instead of
+/// pretending they are owned.
+#[test]
+fn an_unowned_slot_stays_open() {
+    /// Bumps a slot nobody declared, and records what it got.
+    struct SeedWriter(Arc<std::sync::Mutex<Option<Result<u32, StateSlotDenied>>>>);
+    impl GameModule for SeedWriter {
+        fn name(&self) -> &'static str {
+            "b"
+        }
+        fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            Ok(())
+        }
+        fn on_world_loaded(
+            &mut self,
+            ctx: &mut ModuleCtx<'_>,
+            _data: ModuleBootData,
+        ) -> Result<(), ModError> {
+            let got = ctx.try_state_mut::<SeededSlot>().map(|slot| {
+                slot.map_or(0, |slot| {
+                    slot.0 += 4;
+                    slot.0
+                })
+            });
+            *self.0.lock().expect("the report") = Some(got);
+            Ok(())
+        }
+    }
+
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SlotOwner), Box::new(SeedWriter(Arc::clone(&seen)))],
+    )
+    .expect("two modules compose");
+    // Seeded before boot, exactly as `on_world_loaded` is sanctioned to do.
+    engine.world.module_state_insert(SeededSlot(3));
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect("boot");
+
+    assert_eq!(
+        seen.lock().expect("the report").clone(),
+        Some(Ok(7)),
+        "an unowned slot is open to a module that did not declare it"
+    );
+    assert_eq!(
+        engine.world.module_state::<SeededSlot>().map(|s| s.0),
+        Some(7),
+        "and the write lands"
+    );
+    assert!(
+        engine.world.refused_state_writes().is_empty(),
+        "no owner, no refusal"
+    );
+}
+
 /// A slot seeded only through `World::module_state_insert` (which
-/// `on_world_loaded` is explicitly sanctioned to use) has no owner. That stays
-/// open to every module — today's behaviour — and boot NAMES it rather than
-/// refusing it, because an unowned slot is the hole ownership cannot see
-/// through.
+/// `on_world_loaded` is explicitly sanctioned to use) has no owner. Boot
+/// NAMES it rather than refusing it, because an unowned slot is the hole
+/// ownership cannot see through.
 #[test]
 fn a_slot_with_no_stateinit_owner_is_reported_as_unowned() {
     let _serial = census_serialized();

@@ -1442,8 +1442,8 @@ struct StateSlot {
 /// A slot with `owner: None` was seeded through
 /// [`World::module_state_insert`](crate::world::World::module_state_insert)
 /// rather than declared through [`Registrar::state`]; it stays open to every
-/// module (that is today's behaviour and WS03-S8 changes no behaviour), and
-/// the engine names it in a boot `warn!` rather than refusing it.
+/// module — there is no owner to refuse for — and the engine names it in a
+/// boot `warn!` rather than refusing it.
 #[derive(Clone, Debug)]
 pub struct StateSlotInfo {
     /// The slot's type.
@@ -1453,6 +1453,41 @@ pub struct StateSlotInfo {
     /// The module that declared the slot, if one did.
     pub owner: Option<SmolStr>,
 }
+
+/// A module-facing state-slot mutation that was **refused**: `requester`
+/// asked to mutate a slot `owner` declared.
+///
+/// Returned by [`Ctx::try_state_mut`]. Nothing panics on one — the world task
+/// must never panic — and nothing is written: the refusal is total, and the
+/// engine logs it once per (requester, slot) and records it on the world
+/// ([`World::refused_state_writes`](crate::world::World::refused_state_writes)).
+///
+/// Only the module-facing surface refuses. The engine accessor
+/// [`World::module_state_mut`](crate::world::World::module_state_mut) carries
+/// no module identity and cannot, which is why the cross-owner reaches that go
+/// through it are pinned by `mush-contract-tests`' `state-slot-owners.toml`
+/// instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateSlotDenied {
+    /// The module whose handler asked for the slot.
+    pub requester: SmolStr,
+    /// The module that declared it through [`Registrar::state`].
+    pub owner: SmolStr,
+    /// The slot type's [`std::any::type_name`].
+    pub slot: &'static str,
+}
+
+impl fmt::Display for StateSlotDenied {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "module {:?} may not mutate the state slot {} — it belongs to module {:?}",
+            self.requester, self.slot, self.owner
+        )
+    }
+}
+
+impl std::error::Error for StateSlotDenied {}
 
 /// Typed module state living on the [`World`](crate::world::World): an
 /// anymap over `TypeId`. Slots are declared via [`Registrar::state`] (or
@@ -3104,18 +3139,25 @@ impl<'a> Registrar<'a> {
     }
 
     /// Declare a typed state slot, installed on the world at engine
-    /// construction and reachable via [`Ctx::state`] / [`Ctx::state_mut`].
+    /// construction and reachable via [`Ctx::state`] / [`Ctx::try_state_mut`].
     /// Two **different** modules declaring the same slot type is a boot
     /// error (checked by `Engine::with_modules`); a module re-declaring its
     /// own slot keeps the last value.
     ///
     /// Declaring the slot also records this module as its **owner**
     /// (`World::module_state_owner`), by module name and not by crate, so a
-    /// crate registering two modules is two owners. A foreign module
-    /// mutating the slot through [`Ctx::state_mut`] is reported — one
-    /// `warn!` per (writing module, slot) — and, today, still applies:
-    /// WS03-S8 is the census that makes the enforcement of WS03-S14 safe to
-    /// turn on.
+    /// crate registering two modules is two owners — and the enforced rule
+    /// is: **only the owner may mutate the slot through `Ctx`.** A foreign
+    /// module's [`Ctx::try_state_mut`] gets `Err(`[`StateSlotDenied`]`)`,
+    /// its [`Ctx::state_mut`] gets `None`, and nothing is written; the
+    /// refusal is logged once per (module, slot). Reading
+    /// ([`Ctx::state`]) stays shared, a slot nobody declared stays open to
+    /// all, and a core command (`module: None`) is a wildcard.
+    ///
+    /// The engine accessor `World::module_state_mut` carries no module
+    /// identity and is not checked; `mush-contract-tests`'
+    /// `state-slot-owners.toml` is what pins the cross-owner reaches that
+    /// take it.
     pub fn state<T: Any + Send + Clone>(&mut self, init: T) {
         self.reg.tables_mut().state_inits.push(StateInit {
             type_id: TypeId::of::<T>(),
@@ -4357,34 +4399,67 @@ impl Ctx<'_> {
 
     /// Read this world's state slot for `T` (declared via
     /// [`Registrar::state`]).
+    ///
+    /// Reading is **shared on purpose** and is not owner-checked: a module
+    /// reading another module's slot is a projection, not a write, and the
+    /// tree does it deliberately (`mush-propagation` reads `mush-tactics`'
+    /// contact ledger to decide what propagates). Mutation is the half that
+    /// belongs to one module — see [`Ctx::try_state_mut`].
     #[must_use]
     pub fn state<T: Any + Send>(&self) -> Option<&T> {
         self.w.module_state::<T>()
     }
 
-    /// Mutably access this world's state slot for `T`.
+    /// Mutably access this world's state slot for `T`, **refusing** a slot
+    /// another module declared.
     ///
-    /// A module mutating a slot **another** module declared is reported —
-    /// one `warn!` per (writing module, slot), recorded on the world for
-    /// [`World::foreign_state_writes`](crate::world::World::foreign_state_writes)
-    /// — and then applied exactly as before. That report is WS03-S8's
-    /// census: flipping this to `None` for a foreign writer is a silent
-    /// change no type check catches (every call site is
-    /// `if let Some(s) = ctx.state_mut::<T>()`, so a denied write would
-    /// become a no-op), so the truthful baseline is collected first and
-    /// WS03-S14 refuses on top of it.
+    /// `Err(`[`StateSlotDenied`]`)` names the requesting module and the
+    /// owner, and nothing is written. `Ok(None)` is the slot simply not being
+    /// installed — an optional module did not compose — which is a normal
+    /// answer and not a refusal. Nothing here ever panics: this runs on the
+    /// single world task.
     ///
     /// A slot with no recorded owner (seeded through
     /// [`World::module_state_insert`](crate::world::World::module_state_insert)
     /// rather than declared) stays open to all, and a core command —
     /// `module: None` — is a wildcard.
+    ///
+    /// This is the checked spelling, and it is the one to reach for: the
+    /// refusal is only as strong as the surface it sits on, and `Ctx::w` is a
+    /// `pub` field, so `ctx.w.module_state_mut::<T>()` skips the check
+    /// entirely. `mush-contract-tests`' `state-slot-owners.toml` is what
+    /// holds that route.
+    pub fn try_state_mut<T: Any + Send>(&mut self) -> Result<Option<&mut T>, StateSlotDenied> {
+        let slot = std::any::type_name::<T>();
+        match self
+            .w
+            .check_module_state_write(self.module.as_ref(), TypeId::of::<T>(), slot)
+        {
+            Ok(()) => Ok(self.w.module_state_mut::<T>()),
+            Err(owner) => Err(StateSlotDenied {
+                requester: self.module.clone().unwrap_or_default(),
+                owner,
+                slot,
+            }),
+        }
+    }
+
+    /// [`Ctx::try_state_mut`] for handlers that treat a missing slot and a
+    /// refused one alike.
+    ///
+    /// `None` means the write did not happen — because the slot is absent, or
+    /// because it belongs to another module. A module reaching its OWN slot
+    /// only ever sees the first, so the familiar
+    /// `if let Some(s) = ctx.state_mut::<T>()` keeps its meaning; a handler
+    /// that wants to tell the two apart (or to surface the refusal) calls
+    /// `try_state_mut` and reads the [`StateSlotDenied`]. Either way the
+    /// refusal is logged once per (module, slot) and recorded on the world
+    /// for
+    /// [`World::refused_state_writes`](crate::world::World::refused_state_writes),
+    /// so a regression is visible rather than a write that quietly stops
+    /// landing.
     pub fn state_mut<T: Any + Send>(&mut self) -> Option<&mut T> {
-        self.w.note_module_state_write(
-            self.module.as_ref(),
-            TypeId::of::<T>(),
-            std::any::type_name::<T>(),
-        );
-        self.w.module_state_mut::<T>()
+        self.try_state_mut::<T>().ok().flatten()
     }
 
     /// Read one record from an engine-owned typed family registered by this
