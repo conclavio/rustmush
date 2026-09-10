@@ -352,6 +352,15 @@ impl GameModule for AtlasModule {
         let map_feed = reg.panel_feed(crate::frame::MAP_FEED)?;
         reg.state(crate::frame::MapFeed(Some(map_feed)));
         reg.query_handler(crate::frame::MAP_FEED, Arc::new(MapQuery))?;
+        // S6: the receptionist's and the bus-watcher's interfaces (doc 14 §4.6).
+        reg.interface_provider(
+            crate::interface::ATLAS_INTERFACE,
+            Arc::new(crate::interface::AtlasInterface),
+        )?;
+        reg.interface_provider(
+            crate::interface::TRAVEL_INTERFACE,
+            Arc::new(crate::interface::TravelInterface),
+        )?;
         // K8.5: the read surface first, then the writer — each group declared.
         reg.classify_commands(CommandCompatibility::ReadOnly);
         crate::commands::register_views(reg)?;

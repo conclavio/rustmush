@@ -370,6 +370,7 @@ mod tests {
             actor: Some(ObjId(2)),
             fold_events: Vec::new(),
             seed: 7,
+            interfaces: Vec::new(),
         }
     }
 

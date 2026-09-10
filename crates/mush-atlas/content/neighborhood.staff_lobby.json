@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.staff_lobby",
-    "version": 2,
+    "version": 3,
     "kind": "neighborhood",
-    "digest": "a1dc2bbc426ab26527cd9d1ec9c4c31b4bcdee4fa0111787a65fb1d3feb3bf6c",
+    "digest": "07e1a86ffef44343c234518174d391df2cf010760683b68553cd45555222bcf0",
     "requires": [
       {
         "id": "region.limbo",
@@ -11,7 +11,7 @@
       },
       {
         "id": "neighborhood.ooc_area",
-        "version": 2
+        "version": 3
       }
     ]
   },
@@ -848,6 +848,9 @@
           "fallback": [
             "Welcome to the lot! The bus just got in — coffee shop's out back, and I'm right here if you get turned around.",
             "Breakroom's through there. Phil's off the clock, which is when he's most fun."
+          ],
+          "interfaces": [
+            "atlas"
           ]
         },
         "lore": [
@@ -896,6 +899,9 @@
           "fallback": [
             "Put it in writing. +request. I read every one.",
             "The queue is the queue. You are in it."
+          ],
+          "interfaces": [
+            "request"
           ]
         },
         "lore": [
@@ -936,6 +942,9 @@
           "fallback": [
             "I'm off the clock. Tell me about your character anyway.",
             "Scenes are just people agreeing to be in a place at a time. The rest is dice."
+          ],
+          "interfaces": [
+            "rules"
           ]
         },
         "lore": [
@@ -1033,6 +1042,9 @@
           "fallback": [
             "Hi, this is Karen Smith. It's 68 degrees, and there's a 30 percent chance that it's already raining.",
             "Bring a coat. Or don't. It'll be one of those."
+          ],
+          "interfaces": [
+            "weather"
           ]
         },
         "lore": [
@@ -1077,6 +1089,9 @@
           "fallback": [
             "The bus? It's coming. It's always coming. ...Stand back from the curb.",
             "Next one's due at the top of the hour. It was due at the top of the last hour."
+          ],
+          "interfaces": [
+            "travel"
           ]
         },
         "lore": [
@@ -1126,6 +1141,9 @@
           "fallback": [
             "The limit does not exist. The price, however, is on the board.",
             "A quote is a price for now. A hold is a price for later. A listing is hope."
+          ],
+          "interfaces": [
+            "market"
           ]
         },
         "lore": [
@@ -1175,6 +1193,9 @@
           "fallback": [
             "Tell me what the place is for. Then tell me what it looks like. In that order.",
             "A plan is not a place. Staff apply plans. I draw them."
+          ],
+          "interfaces": [
+            "build"
           ]
         },
         "lore": [

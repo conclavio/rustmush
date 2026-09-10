@@ -187,3 +187,28 @@ audited (`@llm/log`).
 
   @agent, @lore, @llm, @sheet, +roll, +intel, help intel, help perception,
   help action, help worldgen
+
+## Interface NPCs
+
+An NPC can be the conversational face of a game system: the receptionist who
+knows the lot, the meteorologist, the economist, the set designer at the
+builders' front desk, the front office, the docent. Give it **interfaces**:
+
+  @agent/set <npc>/interfaces=<id>[; <id>…]
+
+The ids are the systems the server composes: `atlas` (the lot's layout and
+who is around), `weather` (report and forecast), `travel` (the buses and
+your own journey), `market` (what is for sale, a quote), `build` (a brief
+into a proposal, its status, its questions), `rules` (character generation,
+a rules topic), `request` (file a request, your own tickets), `help` (a
+help topic). Talk to the NPC and it answers through them.
+
+Four rules keep an interface NPC exactly as powerful as the person talking
+to it. It answers with **your** authority: a place you may not see, a
+listing hidden from you, a ticket that is not yours — absent for you, however
+you ask. It **reads or proposes, never changes**: a proposal it drafts is
+yours to commit with `+build/go`, a request it files is yours. The cost lands
+where the work is: a proposal is planned on your own budget. Every call is
+**audited** — `@agent/audit [<npc>]` (Builder+) lists who fronted what for
+whom — and with the model off, the NPC's fallback line names the command
+that does the same thing.

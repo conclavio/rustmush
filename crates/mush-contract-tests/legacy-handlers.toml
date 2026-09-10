@@ -563,7 +563,7 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 [[handler]]
 name = "@agent"
 category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
+note = "baseline pinned at b0e3b52 (module, every composition) S6 (14-spatial-implementation-plan 3.7): /set gains the interfaces field (the providers an NPC fronts) and /audit reads the interface-ability audit ring (npc, asker, ability); both Builder+, neither a new command."
 
 [[handler]]
 name = "@asset"

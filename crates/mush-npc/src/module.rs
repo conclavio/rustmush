@@ -108,6 +108,11 @@ impl GameModule for NpcModule {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.attr_namespace("agent")?;
         let panel = reg.panel_feed(THINKING_FEED)?;
+        // S6: the `help` interface the docent fronts.
+        reg.interface_provider(
+            crate::interface::HELP_INTERFACE,
+            Arc::new(crate::interface::HelpInterface),
+        )?;
         let mut state = NpcHostState::new(panel);
         state.config.scene_turn_deadline_secs = self.scene_turn_deadline_secs;
         let tick_period = state.config.tick;
@@ -157,6 +162,7 @@ impl GameModule for NpcModule {
                 switches: vec![
                     "create".into(),
                     "set".into(),
+                    "audit".into(),
                     "sheet".into(),
                     "lore".into(),
                     "show".into(),
@@ -1272,6 +1278,12 @@ impl AsyncCompletion for NpcCompletion {
                 // Fallback lines are staff-authored, but hold them to the same
                 // output-hygiene invariant as every other NPC-said line
                 // (single line, no control/ANSI/bidi, length-capped).
+                // S6 rule 4: an interface NPC's fallback names the command
+                // that does the same thing.
+                let commands = read_profile_raw(ctx.w, npc)
+                    .map(|p| crate::interface::commands_for(ctx.reg, &p))
+                    .unwrap_or_default();
+                let line = crate::interface::with_command_hint(&line, &commands);
                 let line = crate::action::sanitize_line(&line, crate::action::SAY_CAP);
                 if !line.is_empty() {
                     say_as_npc(ctx, npc, room, NarrativeKind::Say, &line);
@@ -1285,9 +1297,17 @@ impl AsyncCompletion for NpcCompletion {
                     h.runtime_mut(npc).memory.summary = summary;
                 }
             }
-            TurnOutcome::Ok { actions, .. } => {
+            TurnOutcome::Ok { actions, asker, .. } => {
                 for aa in actions {
-                    apply_action(self.grounding.as_ref(), ctx, npc, room, &aa, correlation);
+                    apply_action(
+                        self.grounding.as_ref(),
+                        ctx,
+                        npc,
+                        room,
+                        &aa,
+                        correlation,
+                        asker,
+                    );
                 }
             }
         }
@@ -1329,6 +1349,7 @@ fn apply_action(
     room: ObjId,
     aa: &AppliedAction,
     correlation: u64,
+    asker: Option<ObjId>,
 ) {
     match &aa.action {
         NpcAction::Say { text } => say_as_npc(ctx, npc, room, NarrativeKind::Say, text),
@@ -1359,6 +1380,16 @@ fn apply_action(
             }
         }
         NpcAction::UseAbility { name, input } => {
+            // S6 (doc 14 §4.6): an interface ability runs as the asker, on
+            // the world loop, through the provider the profile names; the
+            // answer is what the NPC says, the refusal too (it is the asker's
+            // own command's word). Audited as (npc, asker, ability, input).
+            let fronted = read_profile_raw(ctx.w, npc)
+                .and_then(|p| crate::interface::provider_for(ctx.reg, &p, name));
+            if let Some((_provider_id, provider, _def)) = fronted {
+                invoke_interface(ctx, npc, room, asker, provider.as_ref(), name, input);
+                return;
+            }
             // H2c: an ability with a projected legal action is an **immediate
             // deterministic controller** (K7.0): the model's choice already
             // happened off-loop, the mapping is deterministic, so it enters
@@ -1405,6 +1436,80 @@ fn apply_action(
     }
 }
 
+/// S6: run one interface ability as `asker`, speak the answer, audit the call.
+fn invoke_interface(
+    ctx: &mut Ctx<'_>,
+    npc: ObjId,
+    room: ObjId,
+    asker: Option<ObjId>,
+    provider: &dyn mush_core::InterfaceAbilityProvider,
+    name: &str,
+    input: &serde_json::Value,
+) {
+    let Some(asker) = asker else {
+        // No one spoke: an ambient turn holds no one's authority.
+        record_self(
+            ctx,
+            npc,
+            &format!("(would have used {name}, but no one asked)"),
+        );
+        return;
+    };
+    let live_asker = ctx
+        .w
+        .get(asker)
+        .is_some_and(|o| o.location == Some(room) && !o.flags.contains(mush_core::Flags::GOING));
+    let result = if live_asker {
+        // Rule 1: the ability runs as the asker — the command context's actor
+        // is theirs for the call, so every read the provider makes through a
+        // command path is filtered as their own command would be and every
+        // write is theirs.
+        let saved = ctx.actor;
+        ctx.actor = asker;
+        let r = provider.invoke(ctx, mush_core::AbilityCall { npc, asker }, name, input);
+        ctx.actor = saved;
+        r
+    } else {
+        Err(mush_core::InterfaceError::Refused(
+            "the one who asked is not here any more".to_string(),
+        ))
+    };
+    let at = ctx.w.now();
+    let ok = result.is_ok();
+    if let Some(h) = ctx.state_mut::<NpcHostState>() {
+        h.audit_interface(crate::runtime::InterfaceAuditRow {
+            at,
+            npc,
+            asker,
+            ability: SmolStr::new(name),
+            input: crate::interface::abbreviate(input),
+            ok,
+        });
+    }
+    match result {
+        Ok(reply) => {
+            for line in reply.text.lines().filter(|l| !l.trim().is_empty()) {
+                let line = crate::action::sanitize_line(line, crate::action::SAY_CAP);
+                if !line.is_empty() {
+                    say_as_npc(ctx, npc, room, NarrativeKind::Say, &line);
+                }
+            }
+            record_self(ctx, npc, &format!("(answered with {name})"));
+        }
+        Err(mush_core::InterfaceError::Refused(why)) => {
+            let line = crate::action::sanitize_line(&why, crate::action::SAY_CAP);
+            if !line.is_empty() {
+                say_as_npc(ctx, npc, room, NarrativeKind::Say, &line);
+            }
+            record_self(ctx, npc, &format!("(could not: {name}: {why})"));
+        }
+        Err(error) => {
+            tracing::debug!(npc = npc.0, %name, %error, "npc: interface ability refused");
+            record_self(ctx, npc, &format!("(could not use {name})"));
+        }
+    }
+}
+
 /// If `outcome` declares a perceived power use (a ruleset ability that routed
 /// through the M14 perception director sets `data.power_use = { witnesses,
 /// detail }`), emit [`WorldEvent::PowerUsed`] carrying the director-resolved NPC
@@ -1444,6 +1549,10 @@ fn announce_power_use(
 
 fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // `create` runs before target resolution (the target does not exist yet).
+    // S6: the audit is a read over every NPC; it needs no target.
+    if ctx.switches.has("audit") {
+        return agent_audit(ctx);
+    }
     if ctx.switches.has("create") {
         return agent_create(ctx);
     }
@@ -1675,6 +1784,51 @@ fn agent_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// `@agent/set <npc>/<field>=<value>` — validated edit of the staff-authored
 /// [`AgentProfile`]. List fields split on `;`; an empty value clears a field.
+/// `@agent/audit [<npc>]` (S6, rule 4): the last interface-ability calls —
+/// who fronted, who asked, what — newest last.
+fn agent_audit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let raw = ctx.args.raw().trim().to_string();
+    let only = if raw.is_empty() {
+        None
+    } else {
+        Some(
+            mush_core::match_object(ctx.w, actor, &raw)
+                .map_err(|e| CmdError::msg(e.to_string()))?,
+        )
+    };
+    let rows: Vec<String> = ctx
+        .state::<NpcHostState>()
+        .map(|h| {
+            h.interface_audit
+                .iter()
+                .filter(|r| only.is_none_or(|o| r.npc == o))
+                .rev()
+                .take(20)
+                .map(|r| {
+                    let ago = ctx.w.now().saturating_sub(r.at);
+                    format!(
+                        "{ago}s ago {} for {}: {} {} {}",
+                        display_name(ctx.w, r.npc),
+                        display_name(ctx.w, r.asker),
+                        r.ability,
+                        r.input,
+                        if r.ok { "answered" } else { "refused" }
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if rows.is_empty() {
+        ctx.out.info(actor, "No interface calls recorded.");
+    } else {
+        for line in rows.into_iter().rev() {
+            ctx.out.info(actor, line);
+        }
+    }
+    Ok(())
+}
+
 fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
     let field = lhs
         .split_once('/')
@@ -1696,6 +1850,15 @@ fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
         "cooldown" | "cooldown_s" => profile.cooldown_s = parse_opt_u32(&value)?,
         "daily_tokens" | "budget" => profile.daily_tokens = parse_opt_u64(&value)?,
         "enabled" => profile.enabled = parse_bool(&value)?,
+        // S6: the interface providers the NPC fronts; an id the server does
+        // not compose is kept (content may run ahead of composition) and
+        // simply offers nothing.
+        "interfaces" => {
+            profile.interfaces = split_list(&value)
+                .into_iter()
+                .map(|i| SmolStr::new(i.trim().to_ascii_lowercase()))
+                .collect();
+        }
         "principal" => {
             profile.principal = if value.is_empty() {
                 None
@@ -1741,7 +1904,7 @@ fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
             return Err(CmdError::msg(format!(
                 "Unknown agent field {field:?}. Fields: persona, background, speech, goals, \
                  fallback, knows, does_not_know, tier, cooldown, daily_tokens, enabled, \
-                 principal, loyal, watch."
+                 principal, loyal, watch, interfaces."
             )));
         }
     }
@@ -2366,6 +2529,8 @@ fn build_dialogue_snapshot(
     let (summary, transcript, recalled) = memory_context(ctx, npc, &present_names);
     let stimuli = batch.iter().map(|s| render_line(ctx.w, s)).collect();
     let actor = batch.iter().find_map(Stimulus::subject);
+    // S6: the interface abilities the profile names, from the registry.
+    let interfaces = crate::interface::tools_for(ctx.reg, profile);
 
     // World / semantic knowledge: per-NPC lore UNION resolved shared-pool
     // entries, filtered to shareable (Public + Guarded) — a Secret entry never
@@ -2396,6 +2561,7 @@ fn build_dialogue_snapshot(
         actor,
         fold_events: Vec::new(),
         seed: correlation,
+        interfaces,
     }
 }
 
@@ -2457,6 +2623,7 @@ fn build_summarize_snapshot(
         actor: None,
         fold_events: fold,
         seed: correlation,
+        interfaces: Vec::new(),
     }
 }
 

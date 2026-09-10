@@ -146,6 +146,39 @@ pub struct NpcHostState {
     /// first. The tick issues **one per step** (a step that captures twice
     /// captures nothing), so this is a queue, not a set.
     pub decision_requests: VecDeque<crate::decision::NpcDecisionRequest>,
+    /// S6 (doc 14 §4.6 rule 4): every interface-ability call, newest last,
+    /// at most [`MAX_INTERFACE_AUDIT_ROWS`]; `@agent/audit` reads it.
+    pub interface_audit: VecDeque<InterfaceAuditRow>,
+}
+
+/// The most interface-ability audit rows kept.
+pub const MAX_INTERFACE_AUDIT_ROWS: usize = 256;
+
+/// One interface-ability call: who fronted it, who asked, what, with what.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InterfaceAuditRow {
+    /// Unix seconds.
+    pub at: i64,
+    /// The NPC.
+    pub npc: ObjId,
+    /// The asker the ability ran as.
+    pub asker: ObjId,
+    /// The ability name.
+    pub ability: smol_str::SmolStr,
+    /// The input, abbreviated.
+    pub input: String,
+    /// Whether it answered (else refused).
+    pub ok: bool,
+}
+
+impl NpcHostState {
+    /// Record one interface-ability call.
+    pub fn audit_interface(&mut self, row: InterfaceAuditRow) {
+        if self.interface_audit.len() >= MAX_INTERFACE_AUDIT_ROWS {
+            self.interface_audit.pop_front();
+        }
+        self.interface_audit.push_back(row);
+    }
 }
 
 impl NpcHostState {
@@ -171,6 +204,7 @@ impl NpcHostState {
             thinking: Some(thinking),
             config: NpcConfig::default(),
             decision_requests: VecDeque::new(),
+            interface_audit: VecDeque::new(),
         }
     }
 
@@ -185,6 +219,7 @@ impl NpcHostState {
             thinking: None,
             config: NpcConfig::default(),
             decision_requests: VecDeque::new(),
+            interface_audit: VecDeque::new(),
         }
     }
 

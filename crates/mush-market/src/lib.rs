@@ -105,6 +105,7 @@ mod api;
 mod boot;
 mod commands;
 mod ids;
+pub mod interface;
 mod lot;
 mod module;
 mod projection;

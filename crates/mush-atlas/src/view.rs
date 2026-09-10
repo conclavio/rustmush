@@ -125,7 +125,7 @@ fn clip(line: String) -> String {
     out
 }
 
-fn occupants(w: &World, room: ObjId, viewer: ObjId) -> Vec<String> {
+pub(crate) fn occupants(w: &World, room: ObjId, viewer: ObjId) -> Vec<String> {
     let Some(obj) = w.get(room) else {
         return Vec::new();
     };

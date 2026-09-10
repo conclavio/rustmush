@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.ooc_area",
-    "version": 2,
+    "version": 3,
     "kind": "neighborhood",
-    "digest": "ed004c353b85be4f55011285806427d7da1b4de1389abda21b2f655a99b648c1",
+    "digest": "74344b62840ef94920f8959ba8354ee4e2064b436a8084c4792f2fe1c667539d",
     "requires": [
       {
         "id": "region.limbo",
@@ -500,6 +500,9 @@
           "fallback": [
             "The tutorial is through there. I'll be here when you have questions. Raise your hand.",
             "Moving, then talking, then building. In that order, please."
+          ],
+          "interfaces": [
+            "help"
           ]
         },
         "lore": [

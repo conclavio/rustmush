@@ -239,7 +239,7 @@ fn list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String {
+pub(crate) fn listing_line(ctx: &Ctx<'_>, l: &crate::record::Listing) -> String {
     let name = ctx
         .w
         .module_state::<MarketStore>()

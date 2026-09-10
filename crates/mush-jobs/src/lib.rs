@@ -50,6 +50,7 @@
 mod api;
 mod commands;
 mod data;
+pub mod interface;
 // E4c: the economy fact provider (08c §6.1 item 1) — jobs answers `resolved` for
 // payload-bearing jobs only.
 mod facts;
@@ -130,6 +131,11 @@ impl GameModule for JobsModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        // S6: the front office's interface (doc 14 §4.6).
+        reg.interface_provider(
+            crate::interface::REQUEST_INTERFACE,
+            std::sync::Arc::new(crate::interface::RequestInterface),
+        )?;
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(JobsState::default());
         reg.state(JobsApi::default());

@@ -29,6 +29,7 @@ pub mod frame;
 pub mod geom;
 pub mod hydrate;
 pub mod hydrate_cmd;
+pub mod interface;
 pub mod map_cmd;
 pub mod module;
 pub mod physics;

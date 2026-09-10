@@ -97,6 +97,8 @@ pub struct ProfileDef {
     pub enabled: Option<bool>,
     /// Subjects of interest.
     pub watch: Vec<String>,
+    /// S6: the interface-ability providers the NPC fronts, by id.
+    pub interfaces: Vec<String>,
 }
 
 /// An `npc` entry.
@@ -157,6 +159,12 @@ fn profile_of(def: &NpcDef) -> Result<AgentProfile, String> {
         principal: None,
         loyal: true,
         watch: def.profile.watch.clone(),
+        interfaces: def
+            .profile
+            .interfaces
+            .iter()
+            .map(|i| smol_str::SmolStr::new(i.trim().to_ascii_lowercase()))
+            .collect(),
     };
     profile.validate().map_err(|e| format!("profile: {e}"))?;
     Ok(profile)

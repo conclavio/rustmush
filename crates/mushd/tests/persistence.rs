@@ -2531,6 +2531,7 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
         bartender,
         1,
         &TurnOutcome::Ok {
+            asker: None,
             npc: bartender,
             actions: vec![AppliedAction {
                 action: NpcAction::Remember {

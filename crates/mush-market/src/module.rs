@@ -214,6 +214,11 @@ impl GameModule for MarketModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        // S6: the economist's interface (doc 14 §4.6).
+        reg.interface_provider(
+            crate::interface::MARKET_INTERFACE,
+            std::sync::Arc::new(crate::interface::MarketInterface),
+        )?;
         // ---- E7r2: P1 — the lot supply's own handles, before anything else ----
         //
         // Read here and not later because `lot::register` needs them at registration

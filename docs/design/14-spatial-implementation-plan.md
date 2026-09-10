@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.7 — 2026-09-10 (S1, S2, S2b, S3, S4, S5 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.8 — 2026-09-10 (S1 through S6 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -816,6 +816,57 @@ command. *Audit:* every ability row names the asker.
 
 **Verify lenses.** **A** (authority), **M** (mutation-freedom), **$** (attribution).
 
+**Ledger (landed 2026-09-10).** Gates: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test` on `mush-core`, `mush-npc`, `mush-atlas`,
+`mush-worldgen`, `mush-jobs`, `mush-market`, `mush-weather`, `mush-ruleset`, `mush-server` and
+the dependents, the contract tests (the panic budget, the restriction-lint table, the allowlist
+with `@agent`'s note carrying `/audit` and the `interfaces` field; no new handler), `mush-server`
+and `mushd` whole. Eighteen new tests, across the seam (the manifest offered and the answer
+spoken as the asker, a refusal in the asker's words, an ambient turn holding no one's
+authority, a gone asker refused, an uncomposed provider skipped, the fallback naming the
+command, the field set and the audit read, the help topic), the lot (the Production Office
+absent for a player and present for staff from the same NPC, a DARK player absent from
+`who.nearby`, the bus on the road, four reads persisting nothing), the desk (a proposal owned
+by the asker and invisible to another, a ticket filed and shown to its opener alone, a status
+persisting nothing), the weather (the cell read without a roll, indoors refused), the market
+(the projection read, a bad listing refused) and the composition (a ruleset brings its rules
+interface). Deviations from the text above, each with its reason:
+
+- **The provider trait lives in `mush-core`** (`InterfaceAbilityProvider`, registered by id
+  through `Registrar::interface_provider`, read through `Registry::interface_provider`), not
+  beside the ruleset grounding in `mush-npc`: the crates that front abilities — `mush-weather`,
+  `mush-market`, `mush-jobs`, `mush-ruleset` — cannot depend on `mush-npc` (the ruleset is
+  its dependency). The NPC's `AgentProfile.interfaces` names provider ids; the turn merges
+  their manifests into its tool set (`TurnSnapshot.interfaces`) beside the ruleset's.
+- **`AbilityContext { npc, asker, principal, powers }` is `AbilityCall { npc, asker }`** and
+  the command context itself is re-actored to the asker for the call: every provider reads
+  through the projection its own command uses with the asker as the viewer, so principal and
+  powers are whatever that projection already derives, never a second copy.
+- **The answer is spoken.** An interface ability executes on the world loop at re-entry, like
+  `wod_roll`, after the model's turn; its reply (or its refusal, which is the asker's own
+  command's word) is what the NPC says. The model requests, the world answers; nothing is fed
+  back into the same turn's tool loop.
+- **The audit ring is the NPC module's** (`NpcHostState.interface_audit`, `@agent/audit`),
+  not the LLM audit sink, which lives off-loop; each row is `(npc, asker, ability, input,
+  answered|refused)`.
+- **The rules interface is a small module** (`mush_ruleset::interface::RulesInterfaceModule`)
+  the server composes beside the ruleset, snapshotting the chargen stages at composition: a
+  ruleset registers its own commands in `register` and cannot hand itself out as a provider.
+- **`who.nearby` is `look`'s answer**: the asker's room's occupants as they would see them
+  (DARK and disconnected absent). The "advertised" presence projection is D-14-1's excluded
+  scope; when it lands, this ability reads it.
+- **`weather.forecast` reads the transition table** (every season's row for the current state,
+  summed; the likeliest other state) and rolls nothing: there was no forecast API to front.
+- **`market.quote` writes the asker's own quote record**, reserving nothing — the one write the
+  economist makes, a proposal-shaped record under rule 2; `market.list` walks `api::visible`
+  as the asker, whose hidden-seller property is that API's own test.
+- **The authority test is the Production Office through Susie**, not a hidden control region
+  through Gretchen: a control region's hiding is not an input to `atlas.describe`, and Gretchen
+  fronts nothing (the packs name Susie, Karen Smith, Regina, Cady Heron, Janis Ian, Phil, Ron
+  Duvall and Sharon Norbury). The lens is the same: one lore, two askers, two answers.
+- **The packs are at version 3** with `interfaces` on eight profiles; the lobby's requirement
+  on the OOC Area moves to 3 with it; the digests are re-pinned.
+
 ### 3.8 Cut S7 — the TacSim ground driver, imports, and the last hexes
 
 **Scope.** `cell_cm = 1000` windows for TacSim ground engagements over the same tiles;
@@ -939,3 +990,4 @@ square root of its pinned distance.
 - 0.5 (2026-09-10): S3 landed — the building agent and hydration: `mush_llm::agent` (the one tool loop, the NPC turn on it), `mush_atlas::validate` (doc 14 §4.3 as typed findings, shared by `@atlas/pack plan` and the agent), `mush_atlas::hydrate` (standing, requests, activation, the BUILD queue, canon events), `mush_worldgen::{proposal, plan}` (proposals, the planning run, `+build`, `@atlas/propose`); `[worldgen]`'s five knobs and the `worldgen_plan` route; its ledger under §3.4.
 - 0.6 (2026-09-10): S4 landed — the ledger under §3.5 (the composite through the atlas's own async completion, the window document in the atlas's namespace, `WindowRec` and `Pose` in `mush-sim` with the resolver slot, the shape-driven text fallback, the map pane, `+map` as one command); the rasterizer's door snap; `[atlas].window_margin_m` and `window_max_cells`.
 - 0.7 (2026-09-10): S5 landed — `mush_atlas::physics` (the vocabularies, the locomotion table as digest-pinned data with climbs, `move_cost`, the bounded path) and `mush_atlas::trace` (sight, the direct, indirect and beam traces, hearing), `mush-sim`'s `WindowGeometry` slot and propagation on the metric, `+move` priced, `@atlas/los`; its ledger under §3.6; `[atlas].path_max_cells`.
+- 0.8 (2026-09-10): S6 landed — `mush_core::InterfaceAbilityProvider` and its registry, `AgentProfile.interfaces`, the turn's merged manifest, the asker-threaded invoke with the answer spoken, the audit ring and `@agent/audit`, the fallback naming the command; the providers `atlas`, `travel`, `weather`, `market`, `build`, `request`, `rules`, `help`; the packs at version 3; its ledger under §3.7.

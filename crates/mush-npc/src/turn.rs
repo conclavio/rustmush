@@ -191,6 +191,7 @@ fn finalize(snap: &TurnSnapshot, collected: Vec<AppliedAction>) -> TurnOutcome {
     TurnOutcome::Ok {
         npc: snap.npc,
         actions: meaningful,
+        asker: snap.actor,
     }
 }
 
@@ -298,7 +299,8 @@ fn degrade(snap: &TurnSnapshot, err: &LlmError) -> TurnOutcome {
     }
 }
 
-/// The action allowlist tools plus the NPC's ruleset ability tools.
+/// The action allowlist tools plus the NPC's ruleset ability tools and, S6,
+/// the interface abilities it fronts.
 fn all_tools(snap: &TurnSnapshot) -> Vec<ToolDef> {
     let mut tools = action_tools();
     if let Some(ap) = &snap.agent_profile {
@@ -310,6 +312,17 @@ fn all_tools(snap: &TurnSnapshot) -> Vec<ToolDef> {
                 strict: false,
             });
         }
+    }
+    for spec in &snap.interfaces {
+        tools.push(ToolDef {
+            name: spec.ability.name.to_string(),
+            description: format!(
+                "{} (Answers with the asker's own authority: it reads what they could read with `{}`, or drafts what they own; it never changes the world.)",
+                spec.ability.description, spec.ability.command
+            ),
+            input_schema: spec.ability.params_schema.clone(),
+            strict: false,
+        });
     }
     tools
 }

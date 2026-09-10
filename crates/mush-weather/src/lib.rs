@@ -55,6 +55,7 @@ mod cell;
 mod climate;
 mod commands;
 mod flavor;
+pub mod interface;
 mod machine;
 
 use std::collections::BTreeMap;
@@ -227,6 +228,13 @@ impl GameModule for WeatherModule {
                 panel: panel.clone(),
             }),
         );
+        // S6: the meteorologist's interface (doc 14 §4.6).
+        reg.interface_provider(
+            crate::interface::WEATHER_INTERFACE,
+            Arc::new(crate::interface::WeatherInterface {
+                climates: Arc::clone(&self.climates),
+            }),
+        )?;
         reg.weather_query(Arc::new(WeatherProvider {
             climates: Arc::clone(&self.climates),
         }))?;
@@ -804,7 +812,7 @@ pub(crate) fn current_panel_data(
 
 /// A short human phrase for a state id (falls back to the id itself for a
 /// state a climate defines that this table does not name).
-fn describe_state(state: &str) -> &str {
+pub(crate) fn describe_state(state: &str) -> &str {
     match state {
         "clear" => "clear skies",
         "overcast" => "an overcast sky",

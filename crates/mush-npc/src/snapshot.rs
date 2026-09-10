@@ -214,6 +214,19 @@ pub struct TurnSnapshot {
     /// A deterministic per-turn seed (the correlation id) for fallback picking
     /// and off-loop ability rolls.
     pub seed: u64,
+    /// S6 (doc 14 §4.6): the interface abilities this NPC fronts, merged
+    /// into the tool set beside the ruleset's; each runs as the asker.
+    #[serde(default)]
+    pub interfaces: Vec<InterfaceToolSpec>,
+}
+
+/// One interface ability on a snapshot: which provider fronts it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InterfaceToolSpec {
+    /// The provider id the profile named.
+    pub provider: smol_str::SmolStr,
+    /// The ability.
+    pub ability: mush_core::InterfaceAbility,
 }
 
 impl TurnSnapshot {
@@ -321,6 +334,10 @@ pub enum TurnOutcome {
         npc: ObjId,
         /// The applied actions (bounded, sanitized, ability-resolved).
         actions: Vec<AppliedAction>,
+        /// S6: the speaking player of the stimulus — the asker every
+        /// interface ability runs as. `None` for an ambient turn.
+        #[serde(default)]
+        asker: Option<ObjId>,
     },
     /// The NPC degraded to a fallback line (budget trip / refusal / disabled).
     /// The world task says the line through the normal formatter and fires a
@@ -483,6 +500,7 @@ mod tests {
             actor: None,
             fold_events: Vec::new(),
             seed: 1,
+            interfaces: Vec::new(),
         }
     }
 

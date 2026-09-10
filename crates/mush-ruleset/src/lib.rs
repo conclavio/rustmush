@@ -56,6 +56,7 @@
 pub mod chargen;
 pub mod commands;
 pub mod doc;
+pub mod interface;
 pub mod narration;
 pub mod render;
 pub mod schema;

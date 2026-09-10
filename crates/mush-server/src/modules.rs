@@ -690,6 +690,15 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
 /// command-collision at registration). Enable exactly one ruleset, or none (a
 /// bare comsys/mail server). Per-character ruleset dispatch across systems is a
 /// future concern.
+/// S6: the rules-interface module for `rs`: its display name and its chargen
+/// stages, snapshotted at composition.
+fn rules_interface_for<R: mush_ruleset::Ruleset>(
+    rs: &R,
+) -> mush_ruleset::interface::RulesInterfaceModule {
+    let stages = rs.chargen().map_or_else(Vec::new, |c| c.stages());
+    mush_ruleset::interface::RulesInterfaceModule::new(rs.display_name().to_string(), stages)
+}
+
 pub fn ruleset_modules(
     enabled: &[String],
     onboarding: &ruleset_wod::OnboardingConfig,
@@ -698,6 +707,10 @@ pub fn ruleset_modules(
 ) -> Result<Vec<Box<dyn GameModule>>, String> {
     let mut seen: Vec<String> = Vec::new();
     let mut mods: Vec<Box<dyn GameModule>> = Vec::new();
+    // S6 (doc 14 §4.6): beside the ruleset, the small module that fronts its
+    // chargen stages and the help topics as the off-duty gamemaster's
+    // interface; the stages are snapshotted here, before the ruleset is boxed.
+    let mut rules_interface: Option<Box<dyn GameModule>> = None;
     for id in enabled {
         let key = id.trim().to_lowercase();
         if seen.contains(&key) {
@@ -705,11 +718,11 @@ pub fn ruleset_modules(
         }
         match key.as_str() {
             "wod" => {
-                mods.push(Box::new(
-                    ruleset_wod::WodRuleset::new()
-                        .onboarding(onboarding.clone())
-                        .economy(wod.clone()),
-                ));
+                let rs = ruleset_wod::WodRuleset::new()
+                    .onboarding(onboarding.clone())
+                    .economy(wod.clone());
+                rules_interface = Some(Box::new(rules_interface_for(&rs)));
+                mods.push(Box::new(rs));
             }
             "shadowrun" => {
                 // SR5 (M10b). Single-ruleset-per-server: wod and shadowrun both
@@ -719,9 +732,9 @@ pub fn ruleset_modules(
                 // E6a: `[shadowrun.economy]` is frozen into the ruleset here, exactly
                 // as `[wod.economy]` is above. `enabled = false` off-config, so an
                 // unconfigured server keeps its pre-E6a behaviour.
-                mods.push(Box::new(
-                    ruleset_shadowrun::ShadowrunRuleset::new().economy(shadowrun.clone()),
-                ));
+                let rs = ruleset_shadowrun::ShadowrunRuleset::new().economy(shadowrun.clone());
+                rules_interface = Some(Box::new(rules_interface_for(&rs)));
+                mods.push(Box::new(rs));
             }
             _ => {
                 return Err(format!(
@@ -741,6 +754,9 @@ pub fn ruleset_modules(
              collides. Enable exactly one (e.g. [\"shadowrun\"]) or none.",
             mods.len()
         ));
+    }
+    if let Some(m) = rules_interface {
+        mods.push(m);
     }
     Ok(mods)
 }
@@ -1465,6 +1481,40 @@ const BOOT_SERIAL: u64 = 0;
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// S6 (doc 14 §4.6): a ruleset composes its rules interface beside it,
+    /// carrying the chargen stages; no ruleset, no interface.
+    #[test]
+    fn a_ruleset_brings_its_rules_interface() {
+        let mods = ruleset_modules(
+            &["wod".to_string()],
+            &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
+        )
+        .expect("wod composes");
+        let names: Vec<&str> = mods.iter().map(|m| m.name()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert_eq!(names[1], mush_ruleset::interface::RULES_INTERFACE_MODULE);
+        let none = ruleset_modules(
+            &[],
+            &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
+            &ruleset_shadowrun::SrEconomyConfig::default(),
+        )
+        .expect("nothing composes");
+        assert!(none.is_empty());
+        // Two rulesets still collide, interface or not.
+        assert!(
+            ruleset_modules(
+                &["wod".to_string(), "shadowrun".to_string()],
+                &ruleset_wod::OnboardingConfig::default(),
+                &ruleset_wod::WodEconomyConfig::default(),
+                &ruleset_shadowrun::SrEconomyConfig::default(),
+            )
+            .is_err()
+        );
+    }
     use std::sync::{Arc, Mutex};
 
     use mush_core::{
@@ -2995,6 +3045,7 @@ mod tests {
                     "market",
                     "script",
                     ruleset,
+                    "rules_interface",
                     "tacsim"
                 ],
                 "the TacSim layer must be last, after the character ruleset"
@@ -3083,8 +3134,9 @@ mod tests {
             &ruleset_shadowrun::SrEconomyConfig::default(),
         )
         .unwrap();
-        assert_eq!(mods.len(), 1);
+        assert_eq!(mods.len(), 2, "the ruleset and its rules interface");
         assert_eq!(mods[0].name(), "wod");
+        assert_eq!(mods[1].name(), "rules_interface");
         // Case/whitespace-insensitive.
         let mods = ruleset_modules(
             &["  WoD ".to_string()],
@@ -3117,8 +3169,9 @@ mod tests {
             &ruleset_shadowrun::SrEconomyConfig::default(),
         )
         .unwrap();
-        assert_eq!(mods.len(), 1);
+        assert_eq!(mods.len(), 2, "the ruleset and its rules interface");
         assert_eq!(mods[0].name(), "shadowrun");
+        assert_eq!(mods[1].name(), "rules_interface");
     }
 
     #[test]
@@ -3229,7 +3282,8 @@ mod tests {
                 "market",
                 "script",
                 "worldgen",
-                "wod"
+                "wod",
+                "rules_interface"
             ]
         );
         assert!(tw.registry().spec_of("@gen").is_some());
@@ -3374,7 +3428,8 @@ mod tests {
                 "party",
                 "market",
                 "script",
-                "wod"
+                "wod",
+                "rules_interface"
             ]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the

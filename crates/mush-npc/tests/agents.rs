@@ -2261,3 +2261,351 @@ async fn exclusive_scene_participant_is_suppressed_from_wakes() {
         "once released the NPC wakes on player speech again"
     );
 }
+
+// ---------------------------------------------------------------------------
+// S6 (doc 14 §4.6): interface abilities — the asker's authority, audited,
+// fallback-safe
+// ---------------------------------------------------------------------------
+
+/// A test provider: `echo.say` answers with the asker's name, `echo.refuse`
+/// refuses in the asker's own words, `echo.write` would mutate the world (and
+/// the probe below shows an interface turn never does but through it).
+struct EchoInterface;
+
+impl mush_core::InterfaceAbilityProvider for EchoInterface {
+    fn abilities(&self) -> Vec<mush_core::InterfaceAbility> {
+        let tool = |name: &'static str, desc: &str| mush_core::InterfaceAbility {
+            name: SmolStr::new_static(name),
+            description: desc.to_string(),
+            params_schema: serde_json::json!({ "type": "object", "properties": { "text": { "type": "string" } } }),
+            command: SmolStr::new_static("+echo"),
+        };
+        vec![
+            tool("echo.say", "Say it back."),
+            tool("echo.refuse", "Refuse."),
+            tool("echo.who", "Who is the actor of the call."),
+        ]
+    }
+
+    fn invoke(
+        &self,
+        ctx: &mut mush_core::Ctx<'_>,
+        call: mush_core::AbilityCall,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Result<mush_core::InterfaceReply, mush_core::InterfaceError> {
+        let asker = mush_core::output::display_name(ctx.w, call.asker);
+        match name {
+            "echo.say" => Ok(mush_core::InterfaceReply::text(format!(
+                "{asker} said {}",
+                input
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("nothing")
+            ))),
+            "echo.refuse" => Err(mush_core::InterfaceError::Refused(format!(
+                "That is not yours to see, {asker}."
+            ))),
+            "echo.who" => Ok(mush_core::InterfaceReply::text(format!(
+                "the actor is {}",
+                mush_core::output::display_name(ctx.w, ctx.actor)
+            ))),
+            other => Err(mush_core::InterfaceError::Unknown(other.to_string())),
+        }
+    }
+}
+
+struct EchoModule;
+
+impl mush_core::GameModule for EchoModule {
+    fn name(&self) -> &'static str {
+        "echo_test"
+    }
+
+    fn register(&mut self, reg: &mut mush_core::Registrar<'_>) -> Result<(), mush_core::ModError> {
+        reg.interface_provider("echo", Arc::new(EchoInterface))
+    }
+}
+
+fn fronting(interfaces: &[&str]) -> AgentProfile {
+    AgentProfile {
+        interfaces: interfaces.iter().map(SmolStr::new).collect(),
+        fallback_lines: vec!["Susie shrugs, friendly.".into()],
+        ..profile(NpcTier::Minor)
+    }
+}
+
+fn said_lines(events: &[(mush_core::Audience, mush_proto::OutputEvent)]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|(_, ev)| match ev {
+            mush_proto::OutputEvent::Narrative { text, .. } => Some(text.to_plain_text()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn text_of_events(events: &[(mush_core::Audience, mush_proto::OutputEvent)]) -> String {
+    events
+        .iter()
+        .filter_map(|(_, ev)| match ev {
+            mush_proto::OutputEvent::Narrative { text, .. }
+            | mush_proto::OutputEvent::Sys(text) => Some(text.to_plain_text()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn ability_payload(
+    npc: ObjId,
+    asker: Option<ObjId>,
+    name: &str,
+    input: serde_json::Value,
+) -> String {
+    serde_json::json!({
+        "status": "ok",
+        "npc": npc,
+        "asker": asker,
+        "actions": [{ "action": { "action": "use_ability", "name": name, "input": input } }]
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn an_interface_ability_is_offered_and_runs_as_the_asker() {
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new()), Box::new(EchoModule)]);
+    rig.set_now(0);
+    let lobby = rig.room("Lobby");
+    let susie = rig.npc("Susie", lobby, &fronting(&["echo", "help"]));
+    let alice = rig.player("Alice", lobby, true);
+    rig.run(alice, "say Susie, where is the coffee shop?");
+    rig.set_now(2);
+    let (_, corr, payload) = rig.one_turn().expect("turn");
+    // The snapshot carries the interface manifest, and the turn's tools name
+    // every ability with its command.
+    let snap: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+    let names: Vec<&str> = snap
+        .interfaces
+        .iter()
+        .map(|s| s.ability.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["echo.say", "echo.refuse", "echo.who", "help.topic"]
+    );
+    assert_eq!(snap.actor, Some(alice), "the asker is the speaking player");
+    // Re-enter with the model having chosen echo.say: the NPC speaks the
+    // answer, which names the asker, and the audit row names them too.
+    let out = ability_payload(
+        susie,
+        Some(alice),
+        "echo.say",
+        serde_json::json!({ "text": "hi" }),
+    );
+    let events = rig.complete(susie, corr, &out).take();
+    let lines = said_lines(&events);
+    assert!(
+        lines.iter().any(|l| l.contains("Alice said hi")),
+        "{lines:?}"
+    );
+    let audit = &rig.host().interface_audit;
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0].asker, alice);
+    assert_eq!(audit[0].npc, susie);
+    assert_eq!(audit[0].ability.as_str(), "echo.say");
+    assert!(audit[0].ok);
+    // The command context ran as the asker for the call, and is restored.
+    let out = ability_payload(susie, Some(alice), "echo.who", serde_json::json!({}));
+    rig.host_mut().begin_turn(susie, 3, 7);
+    let events = rig.complete(susie, 7, &out).take();
+    assert!(
+        said_lines(&events)
+            .iter()
+            .any(|l| l.contains("the actor is Alice"))
+    );
+}
+
+#[tokio::test]
+async fn a_refusal_is_spoken_in_the_askers_words_and_audited_as_refused() {
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new()), Box::new(EchoModule)]);
+    rig.set_now(0);
+    let lobby = rig.room("Lobby");
+    let susie = rig.npc("Susie", lobby, &fronting(&["echo"]));
+    let alice = rig.player("Alice", lobby, true);
+    rig.host_mut().begin_turn(susie, 1, 11);
+    let out = ability_payload(susie, Some(alice), "echo.refuse", serde_json::json!({}));
+    let events = rig.complete(susie, 11, &out).take();
+    assert!(
+        said_lines(&events)
+            .iter()
+            .any(|l| l.contains("not yours to see, Alice"))
+    );
+    let audit = &rig.host().interface_audit;
+    assert_eq!(audit.len(), 1);
+    assert!(!audit[0].ok);
+    assert_eq!(audit[0].asker, alice);
+}
+
+#[tokio::test]
+async fn an_ambient_turn_holds_no_ones_authority_and_a_gone_asker_is_refused() {
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new()), Box::new(EchoModule)]);
+    rig.set_now(0);
+    let lobby = rig.room("Lobby");
+    let street = rig.room("Street");
+    let susie = rig.npc("Susie", lobby, &fronting(&["echo"]));
+    // No asker: nothing is said, nothing is audited.
+    rig.host_mut().begin_turn(susie, 1, 21);
+    let events = rig
+        .complete(
+            susie,
+            21,
+            &ability_payload(susie, None, "echo.say", serde_json::json!({ "text": "x" })),
+        )
+        .take();
+    assert!(said_lines(&events).is_empty(), "{:?}", said_lines(&events));
+    assert!(rig.host().interface_audit.is_empty());
+    // An asker who has left the room: refused, audited as refused.
+    let bob = rig.player("Bob", street, true);
+    rig.host_mut().begin_turn(susie, 2, 22);
+    let events = rig
+        .complete(
+            susie,
+            22,
+            &ability_payload(
+                susie,
+                Some(bob),
+                "echo.say",
+                serde_json::json!({ "text": "x" }),
+            ),
+        )
+        .take();
+    assert!(
+        said_lines(&events)
+            .iter()
+            .any(|l| l.contains("not here any more"))
+    );
+    assert_eq!(rig.host().interface_audit.len(), 1);
+    assert!(!rig.host().interface_audit[0].ok);
+}
+
+#[tokio::test]
+async fn a_profile_without_the_provider_offers_nothing_and_an_unknown_name_falls_through() {
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new()), Box::new(EchoModule)]);
+    rig.set_now(0);
+    let lobby = rig.room("Lobby");
+    // "weather" is not composed here: skipped, never an error.
+    let susie = rig.npc("Susie", lobby, &fronting(&["weather"]));
+    let alice = rig.player("Alice", lobby, true);
+    rig.run(alice, "say Susie, hi");
+    rig.set_now(2);
+    let (_, _, payload) = rig.one_turn().expect("turn");
+    let snap: TurnSnapshot = serde_json::from_str(&payload).unwrap();
+    assert!(snap.interfaces.is_empty());
+    // A name no provider fronts goes to the ruleset grounding (none here) and
+    // is refused there, saying nothing.
+    rig.host_mut().begin_turn(susie, 3, 31);
+    let events = rig
+        .complete(
+            susie,
+            31,
+            &ability_payload(susie, Some(alice), "echo.say", serde_json::json!({})),
+        )
+        .take();
+    assert!(said_lines(&events).is_empty());
+    assert!(rig.host().interface_audit.is_empty());
+}
+
+#[tokio::test]
+async fn with_the_model_off_the_fallback_names_the_command() {
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new()), Box::new(EchoModule)]);
+    rig.set_now(0);
+    let lobby = rig.room("Lobby");
+    let susie = rig.npc("Susie", lobby, &fronting(&["echo"]));
+    let plain = rig.npc("Bartender", lobby, &profile(NpcTier::Minor));
+    let _alice = rig.player("Alice", lobby, true);
+    let degraded = |npc: ObjId| {
+        serde_json::json!({ "status": "degraded", "npc": npc, "line": "Susie shrugs, friendly.", "reason": "llm disabled" })
+            .to_string()
+    };
+    rig.host_mut().begin_turn(susie, 1, 41);
+    let events = rig.complete(susie, 41, &degraded(susie)).take();
+    let lines = said_lines(&events);
+    assert!(
+        lines.iter().any(|l| l.contains("Or just type +echo")),
+        "{lines:?}"
+    );
+    // An NPC fronting nothing keeps its line as authored.
+    rig.host_mut().begin_turn(plain, 2, 42);
+    let events = rig.complete(plain, 42, &degraded(plain)).take();
+    let lines = said_lines(&events);
+    assert!(lines.iter().any(|l| l.ends_with("friendly.")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("Or just type")));
+}
+
+#[test]
+fn staff_set_the_interfaces_and_read_the_audit() {
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new()), Box::new(EchoModule)]);
+    rig.set_now(0);
+    let lobby = rig.room("Lobby");
+    let susie = rig.npc("Susie", lobby, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", lobby, true);
+    rig.run(
+        GOD,
+        &format!("@agent/set #{}/interfaces=Echo; help", susie.0),
+    );
+    let stored = read_profile_attr(&rig, susie);
+    assert_eq!(
+        stored.interfaces,
+        vec![SmolStr::new("echo"), SmolStr::new("help")]
+    );
+    // A player may not read the audit.
+    let out = rig.run(alice, "@agent/audit");
+    assert!(
+        text_of_events(&out).contains("Permission denied"),
+        "{}",
+        text_of_events(&out)
+    );
+    rig.host_mut().begin_turn(susie, 1, 51);
+    rig.complete(
+        susie,
+        51,
+        &ability_payload(
+            susie,
+            Some(alice),
+            "echo.say",
+            serde_json::json!({ "text": "hello" }),
+        ),
+    );
+    let out = rig.run(GOD, "@agent/audit");
+    let text = text_of_events(&out);
+    assert!(text.contains("Susie for Alice: echo.say"), "{text}");
+    assert!(text.contains("answered"), "{text}");
+}
+
+#[tokio::test]
+async fn the_help_provider_reads_a_topic_verbatim_or_refuses() {
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new())]);
+    rig.set_now(0);
+    let hall = rig.room("Welcome Hall");
+    let norbury = rig.npc("Sharon Norbury", hall, &fronting(&["help"]));
+    let alice = rig.player("Alice", hall, true);
+    rig.host_mut().begin_turn(norbury, 1, 61);
+    let events = rig
+        .complete(
+            norbury,
+            61,
+            &ability_payload(
+                norbury,
+                Some(alice),
+                "help.topic",
+                serde_json::json!({ "name": "no-such-topic" }),
+            ),
+        )
+        .take();
+    assert!(
+        said_lines(&events)
+            .iter()
+            .any(|l| l.contains("no help topic called"))
+    );
+}

@@ -897,3 +897,163 @@ async fn proposals_and_their_counter_survive_a_reboot() {
         sys_to(&open, rae)
     );
 }
+
+// ---------------------------------------------------------------------------
+// S6 (doc 14 §4.6): the set designer's and the front office's interfaces —
+// the proposal and the ticket are the asker's (A, $), a status is a read (M)
+// ---------------------------------------------------------------------------
+
+fn invoke_interface(
+    tw: &mut TestWorld,
+    provider: &str,
+    asker: ObjId,
+    ability: &str,
+    input: Value,
+) -> Result<mush_core::InterfaceReply, mush_core::InterfaceError> {
+    let engine = tw.engine_mut();
+    let provider = engine
+        .registry
+        .interface_provider(provider)
+        .unwrap_or_else(|| panic!("no provider {provider}"));
+    let mut out = mush_core::Outbox::new();
+    let mut ctx = mush_core::Ctx {
+        w: &mut engine.world,
+        actor: asker,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(SmolStr::new("npc")),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    provider.invoke(
+        &mut ctx,
+        mush_core::AbilityCall { npc: GOD, asker },
+        ability,
+        &input,
+    )
+}
+
+#[test]
+fn the_set_designer_drafts_in_the_askers_name_and_never_applies() {
+    let (mut tw, _mock, _llm) = rig();
+    let alice = tw.spawn_player("Alice");
+    let bob = tw.spawn_player("Bob");
+    // Nothing on the desk yet: a read, and nothing written.
+    let _ = tw.engine_mut().take_module_ops();
+    let reply =
+        invoke_interface(&mut tw, "build", alice, "build.status", json!({})).expect("status");
+    assert!(
+        reply.text.contains("No proposals of yours"),
+        "{}",
+        reply.text
+    );
+    assert!(
+        tw.engine_mut().take_module_ops().is_empty(),
+        "a status is a read"
+    );
+    // A brief becomes a proposal owned by the asker.
+    let reply = invoke_interface(
+        &mut tw,
+        "build",
+        alice,
+        "build.propose",
+        json!({ "brief": "A noodle bar on the corner, open late, with a back room." }),
+    )
+    .expect("a proposal");
+    assert!(reply.text.contains("is being planned"), "{}", reply.text);
+    let reply =
+        invoke_interface(&mut tw, "build", alice, "build.status", json!({})).expect("status");
+    assert!(
+        reply.text.contains("1 proposal(s)") && reply.text.contains("noodle bar"),
+        "{}",
+        reply.text
+    );
+    // Bob asks the same NPC: Alice's proposal is not his to see.
+    let reply = invoke_interface(&mut tw, "build", bob, "build.status", json!({})).expect("status");
+    assert!(
+        reply.text.contains("No proposals of yours"),
+        "{}",
+        reply.text
+    );
+    // Answering a question on a proposal that is not yours is refused; an
+    // empty brief is invalid; the NPC has no `build.apply`.
+    let err = invoke_interface(
+        &mut tw,
+        "build",
+        bob,
+        "build.answer",
+        json!({ "id": 1, "n": 1, "text": "yes" }),
+    )
+    .expect_err("not Bob's");
+    assert!(
+        matches!(err, mush_core::InterfaceError::Refused(_)),
+        "{err:?}"
+    );
+    assert!(matches!(
+        invoke_interface(
+            &mut tw,
+            "build",
+            alice,
+            "build.propose",
+            json!({ "brief": "   " })
+        ),
+        Err(mush_core::InterfaceError::Invalid(_))
+    ));
+    assert!(matches!(
+        invoke_interface(&mut tw, "build", alice, "build.apply", json!({ "id": 1 })),
+        Err(mush_core::InterfaceError::Unknown(_))
+    ));
+    // The proposal record is Alice's: +build/status prints it for her alone.
+    let events = tw.run(alice, "+build/status");
+    let text: String = events
+        .iter()
+        .map(|(_, e)| mush_testkit::text_of(e))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("noodle bar"), "{text}");
+}
+
+#[test]
+fn the_front_office_files_and_shows_only_the_askers_own_tickets() {
+    let (mut tw, _mock, _llm) = rig();
+    let alice = tw.spawn_player("Alice");
+    let bob = tw.spawn_player("Bob");
+    let reply = invoke_interface(
+        &mut tw,
+        "request",
+        alice,
+        "request.file",
+        json!({ "title": "A key to the writers' room", "text": "I left my notes inside." }),
+    )
+    .expect("filed");
+    assert!(reply.text.contains("Filed as request #"), "{}", reply.text);
+    let reply =
+        invoke_interface(&mut tw, "request", alice, "request.status", json!({})).expect("status");
+    assert!(reply.text.contains("writers' room"), "{}", reply.text);
+    // Bob cannot be shown Alice's ticket through the same NPC.
+    let reply =
+        invoke_interface(&mut tw, "request", bob, "request.status", json!({})).expect("status");
+    assert!(reply.text.contains("no requests on file"), "{}", reply.text);
+    // A status is a read; a filing is the one write, the asker's.
+    let _ = tw.engine_mut().take_module_ops();
+    invoke_interface(&mut tw, "request", alice, "request.status", json!({})).expect("status");
+    assert!(tw.engine_mut().take_module_ops().is_empty());
+    assert!(matches!(
+        invoke_interface(&mut tw, "request", alice, "request.file", json!({})),
+        Err(mush_core::InterfaceError::Invalid(_))
+    ));
+    // The ticket is in the queue as Alice's, for staff to work.
+    let filed =
+        invoke_interface(&mut tw, "request", alice, "request.status", json!({})).expect("status");
+    let id: u64 = filed
+        .text
+        .trim_start_matches('#')
+        .split(' ')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .expect("the ticket number");
+    let job = mush_jobs::get_job(tw.world(), id).expect("the job");
+    assert_eq!(job.opener, alice);
+    assert!(job.tags.iter().any(|t| t == "interface"));
+}

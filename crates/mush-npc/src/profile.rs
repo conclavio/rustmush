@@ -14,6 +14,7 @@ use std::time::Duration;
 use mush_faction::Principal;
 use mush_llm::{LlmFeature, NpcTier as LlmNpcTier};
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
 /// The module's persistence namespace and [`GameModule`](mush_core::GameModule)
 /// identity.
@@ -57,6 +58,10 @@ pub const MAX_AGENT_PROFILE_BYTES: usize = 256 * 1024;
 /// Invalid persisted or staff-authored agent profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AgentProfileValidationError {
+    /// More than [`MAX_PROFILE_INTERFACES`] providers.
+    TooManyInterfaces,
+    /// An empty or over-long provider id.
+    InterfaceTooLarge,
     PersonaTooLarge,
     BackgroundTooLarge,
     SpeechTooLarge,
@@ -74,6 +79,8 @@ pub enum AgentProfileValidationError {
 impl fmt::Display for AgentProfileValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            AgentProfileValidationError::TooManyInterfaces => "too many interfaces",
+            AgentProfileValidationError::InterfaceTooLarge => "an interface id is 1 to 32 bytes",
             Self::PersonaTooLarge => "agent persona exceeds its byte limit",
             Self::BackgroundTooLarge => "agent background exceeds its byte limit",
             Self::SpeechTooLarge => "agent speech style exceeds its byte limit",
@@ -196,7 +203,18 @@ pub struct AgentProfile {
     /// notable events (a pierced concealment) are filed, keeping the log
     /// signal-rich.
     pub watch: Vec<String>,
+    /// S6 (doc 14 §4.6): the interface-ability providers this NPC fronts, by
+    /// registered id (`atlas`, `weather`, `market`, `build`, `rules`,
+    /// `travel`, `request`, `help`). Every ability runs as the asker.
+    #[serde(default)]
+    pub interfaces: Vec<SmolStr>,
 }
+
+/// The most providers one NPC fronts.
+pub const MAX_PROFILE_INTERFACES: usize = 8;
+
+/// The longest provider id.
+pub const MAX_PROFILE_INTERFACE_BYTES: usize = 32;
 
 impl Default for AgentProfile {
     fn default() -> AgentProfile {
@@ -214,6 +232,7 @@ impl Default for AgentProfile {
             principal: None,
             loyal: true,
             watch: Vec::new(),
+            interfaces: Vec::new(),
         }
     }
 }
@@ -224,6 +243,16 @@ impl AgentProfile {
     pub fn validate(&self) -> Result<(), AgentProfileValidationError> {
         if self.persona.len() > MAX_PROFILE_PERSONA_BYTES {
             return Err(AgentProfileValidationError::PersonaTooLarge);
+        }
+        if self.interfaces.len() > MAX_PROFILE_INTERFACES {
+            return Err(AgentProfileValidationError::TooManyInterfaces);
+        }
+        if self
+            .interfaces
+            .iter()
+            .any(|i| i.is_empty() || i.len() > MAX_PROFILE_INTERFACE_BYTES)
+        {
+            return Err(AgentProfileValidationError::InterfaceTooLarge);
         }
         if self.background.len() > MAX_PROFILE_BACKGROUND_BYTES {
             return Err(AgentProfileValidationError::BackgroundTooLarge);

@@ -85,6 +85,7 @@ mod build_cmd;
 mod commands;
 mod data;
 mod generate;
+pub mod interface;
 pub mod plan;
 pub mod proposal;
 
@@ -184,6 +185,11 @@ impl GameModule for WorldgenModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        // S6: the set designer's interface (doc 14 §4.6).
+        reg.interface_provider(
+            crate::interface::BUILD_INTERFACE,
+            std::sync::Arc::new(crate::interface::BuildInterface),
+        )?;
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         validate_batch_max_rooms(self.config.batch_max_rooms)?;
         validate_plan_limits(&self.config)?;

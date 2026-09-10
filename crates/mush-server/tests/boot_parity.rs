@@ -153,6 +153,8 @@ fn game_modules_pins_the_composition_order() {
             "worldgen",
             "npc",
             "wod",
+            // S6: the ruleset's rules interface composes beside it.
+            "rules_interface",
             "tacsim",
             // S1: the content module after everything whose appliers it drives.
             "content",

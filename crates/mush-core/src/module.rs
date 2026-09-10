@@ -992,6 +992,105 @@ pub trait WeatherQuery: Send + Sync {
     fn current(&self, w: &World, room: ObjId) -> Option<WxSnapshot>;
 }
 
+/// An interface ability (doc 14 §4.6; plan §3.7, S6): an ability whose provider
+/// is a game system rather than a ruleset sheet, fronted by an NPC in
+/// conversation and invoked through the same `UseAbility` seam. Each one
+/// either reads a projection the **asker** could read with a command, or
+/// writes a proposal record the asker owns; the NPC holds no authority of its
+/// own. `command` names the command that does the same thing, for the
+/// fallback lines when the model is off.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InterfaceAbility {
+    /// The tool name the model sees (`atlas.describe`).
+    pub name: SmolStr,
+    /// What it does, for the model.
+    pub description: String,
+    /// A JSON-Schema-ish parameter description.
+    pub params_schema: serde_json::Value,
+    /// The command that does the same thing (`+atlas`).
+    pub command: SmolStr,
+}
+
+/// Who an interface ability runs for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbilityCall {
+    /// The NPC fronting the ability.
+    pub npc: ObjId,
+    /// The speaking player of the stimulus: every read is filtered as this
+    /// character's own command would be, every write is theirs.
+    pub asker: ObjId,
+}
+
+/// The most bytes an interface reply carries.
+pub const MAX_INTERFACE_REPLY_BYTES: usize = 4_096;
+
+/// What an interface ability answered: text the NPC speaks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterfaceReply {
+    /// The answer, as the asker's own command would print it.
+    pub text: String,
+}
+
+impl InterfaceReply {
+    /// A reply, bounded to [`MAX_INTERFACE_REPLY_BYTES`] on a character edge.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> InterfaceReply {
+        let mut text: String = text.into();
+        if text.len() > MAX_INTERFACE_REPLY_BYTES {
+            let mut cut = MAX_INTERFACE_REPLY_BYTES;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+            text.push('…');
+        }
+        InterfaceReply { text }
+    }
+
+    /// A reply from lines.
+    #[must_use]
+    pub fn lines(lines: &[String]) -> InterfaceReply {
+        InterfaceReply::text(lines.join("\n"))
+    }
+}
+
+/// Why an interface ability refused.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum InterfaceError {
+    /// No such ability on this provider.
+    #[error("unknown ability: {0}")]
+    Unknown(String),
+    /// The input was not what the ability takes.
+    #[error("invalid input: {0}")]
+    Invalid(String),
+    /// The asker may not have that, in the words their own command would use.
+    #[error("{0}")]
+    Refused(String),
+}
+
+/// A provider of interface abilities, registered by a game system under an
+/// id an NPC's profile names (`interfaces: ["atlas"]`). `invoke` runs on the
+/// world loop with the command context and the [`AbilityCall`] naming the
+/// asker; a provider reads with the asker's visibility and writes only what
+/// the asker owns.
+pub trait InterfaceAbilityProvider: Send + Sync {
+    /// The abilities this provider fronts.
+    fn abilities(&self) -> Vec<InterfaceAbility>;
+
+    /// Invoke `name` with `input` for `call`.
+    ///
+    /// # Errors
+    ///
+    /// [`InterfaceError`].
+    fn invoke(
+        &self,
+        ctx: &mut Ctx<'_>,
+        call: AbilityCall,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Result<InterfaceReply, InterfaceError>;
+}
+
 /// A read-only query handler for web `Req` hydration (mail lists, channel
 /// backlogs, sheet reads), invoked by the engine's
 /// [`Inbound::Query`](crate::engine::Inbound::Query) handling (M4).
@@ -1553,6 +1652,9 @@ pub struct ModuleTables {
     migration_owners: HashMap<SmolStr, SmolStr>,
     /// The single registered weather provider (the reserved tactics seam).
     weather: Option<(SmolStr, Arc<dyn WeatherQuery>)>,
+    /// S6: interface-ability providers by id → (owning module, provider).
+    interface_providers:
+        std::collections::BTreeMap<SmolStr, (SmolStr, Arc<dyn InterfaceAbilityProvider>)>,
     /// module name → its async-completion handler (the LLM re-entry seam).
     async_completions: HashMap<SmolStr, Arc<dyn AsyncCompletion>>,
     /// module name → its request-completion handler (interface plan I10: the
@@ -2018,6 +2120,25 @@ impl Registry {
     #[must_use]
     pub fn weather_query(&self) -> Option<(&SmolStr, Arc<dyn WeatherQuery>)> {
         self.mods.weather.as_ref().map(|(m, p)| (m, Arc::clone(p)))
+    }
+
+    /// S6: the interface-ability provider registered under `id`, if any.
+    #[must_use]
+    pub fn interface_provider(&self, id: &str) -> Option<Arc<dyn InterfaceAbilityProvider>> {
+        self.mods
+            .interface_providers
+            .get(id)
+            .map(|(_, p)| Arc::clone(p))
+    }
+
+    /// S6: every interface-ability provider: `(id, owning module, provider)`.
+    pub fn interface_providers(
+        &self,
+    ) -> impl Iterator<Item = (&SmolStr, &SmolStr, Arc<dyn InterfaceAbilityProvider>)> {
+        self.mods
+            .interface_providers
+            .iter()
+            .map(|(id, (m, p))| (id, m, Arc::clone(p)))
     }
 
     /// The async-completion handler registered by `module`, if any (the
@@ -3224,6 +3345,33 @@ impl<'a> Registrar<'a> {
     /// Register the game's single weather provider (the reserved
     /// `WeatherQuery` seam — see [`WeatherQuery`]). Exactly one module may
     /// provide weather; a second registration is a conflict.
+    /// S6: register an interface-ability provider under `id` (doc 14 §4.6).
+    /// One provider per id across the composition.
+    ///
+    /// # Errors
+    ///
+    /// [`ModError::Conflict`] when `id` is taken.
+    pub fn interface_provider(
+        &mut self,
+        id: &str,
+        provider: Arc<dyn InterfaceAbilityProvider>,
+    ) -> Result<(), ModError> {
+        let key = SmolStr::new(id);
+        if let Some((owner, _)) = self.reg.tables_mut().interface_providers.get(&key) {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "interface provider",
+                name: key,
+                owner: owner.clone(),
+            });
+        }
+        self.reg
+            .tables_mut()
+            .interface_providers
+            .insert(key, (self.module.clone(), provider));
+        Ok(())
+    }
+
     pub fn weather_query(&mut self, provider: Arc<dyn WeatherQuery>) -> Result<(), ModError> {
         if let Some((owner, _)) = &self.reg.tables_mut().weather {
             return Err(ModError::Conflict {
