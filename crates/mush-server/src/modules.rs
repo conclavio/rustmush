@@ -1488,6 +1488,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use mush_config::config::Config;
     use mush_core::{
         AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeKey, CanonicalHash,
         CanonicalId, CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind,
@@ -2360,30 +2361,202 @@ mod tests {
         );
     }
 
+    // ---- WS04-S8: the CI-gated composition IS the production composition ----
+    //
+    // `.github/workflows/ci.yml`'s K8 kernel-contract job runs
+    // `k8_5_production_compositions_publish_command_compatibility` by name, and
+    // that test used to hand-assemble the roster it certified:
+    // `server_modules_with` + `ruleset_modules` + one
+    // `tacsim_module(ruleset_tacsim::fixture::config())`. So the one job whose
+    // name promises production fidelity asserted over a list nobody boots — no
+    // worldgen, no NPC agent, `RecoveryConfig::default()` where a server passes
+    // the operator's `[tacsim.recovery]`, and a compiled-in fixture where a
+    // server reads pack FILES off disk. That is how the split half's missing
+    // TacSim layer stayed green through review until WS04-S2 pushed it.
+    //
+    // The roster below now comes from `boot::game_modules` — the one root both
+    // halves call — so the gate reads what a server composes. It is the claim
+    // `tests/boot_parity.rs` makes from the integration side; this is the
+    // `--lib` copy, because a `--lib` test is what CI names.
+
+    /// A memory-backed config for one `[rulesets].enabled` id, on a scratch data
+    /// dir, with the corridor fixture written out as the two pack FILES a host
+    /// configures — the path an operator's own pack takes, digests and all
+    /// (`tests/boot_parity.rs`'s `enable_tacsim` shape).
+    fn production_config(tag: &str, ruleset: &str) -> Config {
+        let dir = std::env::temp_dir().join(format!(
+            "mush-{tag}-{ruleset}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        let packs = dir.join("packs");
+        std::fs::create_dir_all(&packs).expect("a scratch pack dir");
+        let core = packs.join("tacsim_core.json");
+        let corridor = packs.join("tacsim_corridor.json");
+        std::fs::write(&core, ruleset_tacsim::fixture::CORE_JSON).expect("the core pack file");
+        std::fs::write(&corridor, ruleset_tacsim::fixture::CORRIDOR_JSON)
+            .expect("the corridor seed file");
+        let mut cfg = Config::default();
+        cfg.store.store = "memory".to_string();
+        cfg.server.data_dir = dir;
+        cfg.rulesets.enabled = vec![ruleset.to_string()];
+        cfg.tacsim.enabled = true;
+        cfg.tacsim.pack_paths = vec![core.display().to_string()];
+        cfg.tacsim.seed_paths = vec![corridor.display().to_string()];
+        cfg.tacsim.corridor = ruleset_tacsim::fixture::CORRIDOR_PACK.to_string();
+        cfg
+    }
+
+    /// The production roster, composed through [`crate::boot::game_modules`],
+    /// beside the scratch dir its packs were read from — removed on drop, so a
+    /// failing case leaves nothing behind.
+    struct ProductionRoster {
+        cfg: Config,
+        modules: Vec<Box<dyn GameModule>>,
+    }
+
+    impl ProductionRoster {
+        /// `game_modules` is sync, so no runtime is needed; it composes worldgen
+        /// and the NPC agent, so it needs an `LlmService` — keyless, which still
+        /// builds and speaks to nothing.
+        fn build(tag: &str, ruleset: &str) -> Self {
+            let cfg = production_config(tag, ruleset);
+            let llm_config = crate::config_ext::llm_config(&cfg.llm).expect("[llm] parses");
+            let llm = Arc::new(
+                LlmService::from_config(&llm_config).expect("a keyless service still builds"),
+            );
+            let modules =
+                crate::boot::game_modules(&cfg, &llm).expect("the production roster composes");
+            Self { cfg, modules }
+        }
+
+        fn names(&self) -> Vec<&str> {
+            self.modules.iter().map(|m| m.name()).collect()
+        }
+
+        /// The composed list, moved out for `Engine::compose_modules`.
+        fn take(&mut self) -> Vec<Box<dyn GameModule>> {
+            std::mem::take(&mut self.modules)
+        }
+    }
+
+    impl Drop for ProductionRoster {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.cfg.server.data_dir);
+        }
+    }
+
+    /// The roster the CI gate used to hand-assemble, kept ONLY as an explicitly
+    /// documented negative control: it composes, and it is not what a server
+    /// boots — which is exactly why certifying it proved nothing.
+    fn hand_built_roster(ruleset: &str) -> Vec<Box<dyn GameModule>> {
+        let onboarding = ruleset_wod::OnboardingConfig::default();
+        let wod = ruleset_wod::WodEconomyConfig::default();
+        let shadowrun = ruleset_shadowrun::SrEconomyConfig::default();
+        let mut modules = server_modules_with(
+            mush_weather::WeatherConfig::default(),
+            mush_economy::EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
+            &onboarding,
+            (ruleset == "wod").then_some(&wod),
+            (ruleset == "shadowrun").then_some(&shadowrun),
+            mush_campaign::RecoveryConfig::default(),
+        );
+        modules.extend(
+            ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
+                .expect("one production ruleset"),
+        );
+        modules.push(tacsim_module(ruleset_tacsim::fixture::config()));
+        modules
+    }
+
+    /// WS04-S8: the roster the CI gate composes, as an ordered golden, beside
+    /// the hand-built list it replaced, as the negative control.
+    ///
+    /// Drift becomes a named failure rather than a silent re-certification: a
+    /// module added, dropped or reordered in `boot::game_modules` fails this
+    /// assert with `boot.rs` in the message. (`tests/boot_parity.rs`'s
+    /// `expected_roster` states the same golden over the whole
+    /// `{no ruleset | wod | shadowrun} x {tacsim off | on}` matrix; the two must
+    /// agree, and this is the copy the `--lib` gate can see.)
+    #[test]
+    fn the_ci_gated_composition_is_the_boot_composition() {
+        for ruleset in ["wod", "shadowrun"] {
+            let roster = ProductionRoster::build("k85-order", ruleset);
+            let expected = [
+                "comsys",
+                "canon",
+                "privileges",
+                "org",
+                "faction",
+                "scenes",
+                "sim",
+                // S1: the atlas, right after the placement graph S2's journeys read.
+                "atlas",
+                "tactics",
+                "propagation",
+                "economy",
+                "inventory",
+                "industry",
+                "campaign",
+                "mail",
+                "jobs",
+                "housing",
+                "weather",
+                "party",
+                "market",
+                "script",
+                // The composition root's own two, after the built-ins — the pair
+                // the hand-built roster never had.
+                "worldgen",
+                "npc",
+                // ...then the character ruleset `[rulesets].enabled` selected...
+                ruleset,
+                // ...the TacSim layer next: its boot reads that ruleset's facts...
+                "tacsim",
+                // ...and the content module LAST: its boot pass drives every other
+                // module's appliers, so each owner hydrates before it runs (S1).
+                "content",
+            ];
+            assert_eq!(
+                roster.names(),
+                expected,
+                "the {ruleset} roster drifted from the golden; if that was deliberate, \
+                 `boot::game_modules` and this list move together"
+            );
+
+            let hand_built: Vec<&str> = hand_built_roster(ruleset)
+                .iter()
+                .map(|m| m.name())
+                .collect();
+            assert_ne!(
+                hand_built,
+                roster.names(),
+                "the hand-built roster is kept only as a negative control; if it has \
+                 become the production roster, delete it and this half of the test"
+            );
+            for missing in ["worldgen", "npc"] {
+                assert!(
+                    !hand_built.contains(&missing) && roster.names().contains(&missing),
+                    "{missing} is what the hand-built roster leaves out"
+                );
+            }
+        }
+    }
+
     #[test]
     fn k8_5_production_compositions_publish_command_compatibility() {
         for ruleset in ["wod", "shadowrun"] {
-            let onboarding = ruleset_wod::OnboardingConfig::default();
-            let wod = ruleset_wod::WodEconomyConfig::default();
-            let shadowrun = ruleset_shadowrun::SrEconomyConfig::default();
-            let mut modules = server_modules_with(
-                mush_weather::WeatherConfig::default(),
-                mush_economy::EconomyConfig::default(),
-                mush_atlas::AtlasConfig::default(),
-                &onboarding,
-                (ruleset == "wod").then_some(&wod),
-                (ruleset == "shadowrun").then_some(&shadowrun),
-                mush_campaign::RecoveryConfig::default(),
-            );
-            modules.extend(
-                ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
-                    .expect("one production ruleset"),
-            );
-            // E7 cut 1: the TacSim layer is part of the production composition, so its
-            // `reg.classify_commands(..)` declaration is enforced here too.
-            modules.push(tacsim_module(ruleset_tacsim::fixture::config()));
-            let composition = Engine::compose_modules(crate::world_task::base_registry(), modules)
-                .expect("production composition declares every command lane");
+            // WS04-S8: the roster a server boots, read through the one root, with
+            // the TacSim layer composed from pack FILES. So this gate's `@tacsim`
+            // row fails the day `boot::game_modules` stops pushing the layer —
+            // the property the hand-built list could never have.
+            let mut roster = ProductionRoster::build("k85", ruleset);
+            let composition =
+                Engine::compose_modules(crate::world_task::base_registry(), roster.take())
+                    .expect("production composition declares every command lane");
 
             let registrations = composition
                 .registry()
@@ -2672,27 +2845,14 @@ mod tests {
     #[test]
     fn production_composition_registers_no_shadowing_verb() {
         for ruleset in ["wod", "shadowrun"] {
-            let onboarding = ruleset_wod::OnboardingConfig::default();
-            let wod = ruleset_wod::WodEconomyConfig::default();
-            let shadowrun = ruleset_shadowrun::SrEconomyConfig::default();
-            let mut modules = server_modules_with(
-                mush_weather::WeatherConfig::default(),
-                mush_economy::EconomyConfig::default(),
-                &onboarding,
-                (ruleset == "wod").then_some(&wod),
-                (ruleset == "shadowrun").then_some(&shadowrun),
-                mush_campaign::RecoveryConfig::default(),
-            );
-            modules.extend(
-                ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
-                    .expect("one production ruleset"),
-            );
-            modules.push(tacsim_module(ruleset_tacsim::fixture::config()));
-            Engine::compose_modules(crate::world_task::base_registry(), modules).unwrap_or_else(
-                |error| {
+            // WS04-S8: the same production root `k8_5` reads, for the same
+            // reason — a refusal checked over a roster nobody boots says nothing
+            // about the boot.
+            let mut roster = ProductionRoster::build("shadowing", ruleset);
+            Engine::compose_modules(crate::world_task::base_registry(), roster.take())
+                .unwrap_or_else(|error| {
                     panic!("the {ruleset} composition must not shadow a behavior verb: {error}")
-                },
-            );
+                });
         }
     }
 

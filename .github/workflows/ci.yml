@@ -130,6 +130,12 @@ jobs:
         run: |
           cargo test -p mush-server --test production_action_migrations
           cargo test -p mush-server --lib k8_5_production_compositions_publish_command_compatibility
+          # WS04-S8: the gate above composes `boot::game_modules` — the roster a
+          # server boots — instead of a hand-assembled list. This second cell is
+          # the ordered golden of that roster, so a module added, dropped or
+          # reordered fails a named test here rather than being re-certified in
+          # silence.
+          cargo test -p mush-server --lib the_ci_gated_composition_is_the_boot_composition
 
   redis-faults:
     name: K8 Redis and process-fault matrix
