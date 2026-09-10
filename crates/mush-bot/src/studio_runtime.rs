@@ -37,7 +37,10 @@ opinions, conversation starters/follow-ups, and speech mannerisms/examples. Avoi
 The synopsis is the readable option card; the structured profile must agree with it.\n\
 For ensembles write complementary but independent members. Goals should turn motivations into\n\
 something each bot can pursue through ordinary speech and action. A group's mission is not every\n\
-member's private goal. Put only facts known by ALL members in shared_knowledge. Each private briefing\n\
+member's private goal. Put only facts known by ALL members in shared_knowledge. For selective familiar\n\
+background use group.background grants: {fact:{id,revision:1,subject,predicate,value,source,confidence},known_by:[exact actor IDs]}.\n\
+Confidence is tentative, likely or strong. Grant only what each recipient already knows, including\n\
+roommate habits or known expertise; membership never grants new discoveries or private motives. Each private briefing\n\
 and each character's profile/prior_knowledge may contain ONLY what that person knows or believes.\n\
 Do not reveal another member's secret doubts, assessments or goals there. Mark mistaken beliefs\n\
 as that person's perspective, not objective truth. The runner sees the whole ensemble synopsis.\n\
@@ -478,7 +481,7 @@ pub fn prepare(
             "conversation":{"approach":"","starters":[],"follow_ups":[],"boundaries":[]},"prior_knowledge":[],"notes":""
         },
         "group_shape":{
-            "id":"group_id","name":"group name","kind":"band, party, pack, etc.","mission":"","values":[],"shared_knowledge":[],
+            "id":"group_id","name":"group name","kind":"band, party, pack, etc.","mission":"","values":[],"shared_knowledge":[],"background":[],
             "members":[{"actor":"exact_character_actor_id","role":"","responsibilities":[],"briefing":[]}]
         }
     });

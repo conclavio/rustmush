@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "id": "band-social-agency",
+  "fixture_program": "../../target/debug/examples/campaign-fixture.exe",
+  "max_requests": 80,
+  "actors": [
+    {"name":"Lead","config":"lead.toml","request_allowance":4},
+    {"name":"Bassist","config":"bassist.toml","request_allowance":4},
+    {"name":"Guitarist","config":"guitarist.toml","request_allowance":4},
+    {"name":"Drummer","config":"drummer.toml","request_allowance":4}
+  ],
+  "groups": [{
+    "id":"band","name":"The Late Shift","kind":"four-piece band",
+    "mission":"Rehearse an arrangement that gives each musician a contribution.",
+    "members":[
+      {"actor":"Lead","role":"singer and rhythm guitarist"},
+      {"actor":"Bassist","role":"trial bassist","briefing":["Your evaluation of the band is private. Decide what to disclose through ordinary conversation."]},
+      {"actor":"Guitarist","role":"lead guitarist"},
+      {"actor":"Drummer","role":"drummer"}
+    ],
+    "background":[
+      {"fact":{"id":"roommate-drink","revision":1,"subject":"Drummer","predicate":"usual drink","value":"Tea before rehearsal","source":"Lead and Drummer have shared a flat for two years","confidence":"strong"},"known_by":["Lead","Drummer"]},
+      {"fact":{"id":"bassist-agenda","revision":1,"subject":"Bassist","predicate":"private priority","value":"She is evaluating the band as much as they are evaluating her","source":"Bassist's private authored background","confidence":"strong"},"known_by":["Bassist"]}
+    ]
+  }],
+  "branches":[
+    {"name":"negotiated","steps":[
+      {"actor":"Lead","control":"/step","wait":{"kind":"command-result"}},
+      {"actor":"Bassist","control":"/step","wait":{"kind":"command-result"}},
+      {"actor":"Lead","control":"/step","wait":{"kind":"command-result"}},
+      {"actor":"Guitarist","control":"/step","wait":{"kind":"command-result"}},
+      {"actor":"Bassist","control":"/step","wait":{"kind":"command-result"}},
+      {"actor":"Lead","control":"/send page Bassist=I heard the club cancelled Friday.","wait":{"kind":"command-result"}},
+      {"actor":"Bassist","control":"/send page Guitarist=Lead told me Friday was cancelled.","wait":{"kind":"command-result"}},
+      {"actor":"Lead","control":"/social Drummer","wait":{"kind":"social"}}
+    ]},
+    {"name":"private-correction","parent":"negotiated","steps":[
+      {"actor":"Lead","control":"/send page Bassist=Correction: Friday is still on. The cancellation was a rumor.","wait":{"kind":"command-result"}},
+      {"actor":"Bassist","control":"/send say I completed [arrangement]: I have drafted a counterpoint.","wait":{"kind":"command-result"}}
+    ]},
+    {"name":"withdrawal","parent":"negotiated","steps":[
+      {"actor":"Bassist","control":"/send say I withdraw [arrangement].","wait":{"kind":"command-result"}}
+    ]},
+    {"name":"parent-again","parent":"negotiated","steps":[
+      {"actor":"Bassist","control":"/social","wait":{"kind":"social"}}
+    ]}
+  ]
+}

@@ -179,5 +179,10 @@ sessions, selected cast files and harness manifests contain the whole authored
 cast, including private briefings: keep those files with the runner rather than
 giving them to every character as knowledge documents.
 
+Group drafts also support [selectively granted background](bot-social.md): use
+`background` facts with explicit `known_by` actor IDs for roommate habits, familiar
+contacts or other established knowledge that only some members possess. The studio
+exports the same scoped affiliation format used by the harness and campaigns.
+
 See [the bot guide](bot.md) and [session budgets](bot-budgets.md) for the runtime
 controls, character profiles, organized casts and evaluation tools.

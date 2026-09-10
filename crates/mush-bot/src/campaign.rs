@@ -46,6 +46,8 @@ pub struct Manifest {
     pub from_checkpoint: Option<PathBuf>,
     pub max_requests: usize,
     pub actors: Vec<Actor>,
+    #[serde(default)]
+    pub groups: Vec<crate::organization::Group>,
     pub branches: Vec<Branch>,
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -122,6 +124,8 @@ impl Manifest {
             || self.branches.is_empty()
             || self.branches.len() > 32
             || self.max_requests > 1_000_000
+            || self.groups.len() > 8
+            || (self.from_checkpoint.is_some() && !self.groups.is_empty())
         {
             return Err(
                 "invalid campaign version, identifier or cast/branch/request limits".into(),
@@ -142,9 +146,24 @@ impl Manifest {
             }
             let config = crate::config::Config::load(&actor.config)?;
             config.validate()?;
+            if !self.groups.is_empty() && config.affiliations.is_some() {
+                return Err(
+                    "campaign groups conflict with actor affiliations; choose one authored source"
+                        .into(),
+                );
+            }
             if self.from_checkpoint.is_none() {
                 let tape = config.model_tape.as_deref().ok_or("restored fixture campaigns currently require local model tapes; paid-provider admission is unsupported")?;
                 crate::tape::Source::load(tape)?;
+            }
+        }
+        let mut group_ids = BTreeSet::new();
+        for group in &self.groups {
+            group.validate()?;
+            if !group_ids.insert(&group.id)
+                || group.members.iter().any(|m| !actors.contains(&m.actor))
+            {
+                return Err("campaign groups need unique IDs and known actors".into());
             }
         }
         let mut names = BTreeSet::new();
@@ -185,6 +204,7 @@ impl Manifest {
                         "/state",
                         "/cost",
                         "/recall",
+                        "/social",
                         "/route",
                         "/capture",
                         "/recap",
@@ -278,6 +298,28 @@ impl Checkpoint {
     fn digest(&self) -> Result<String> {
         let mut data = serde_json::to_value(self)?;
         data["id"] = json!("");
+        // v1 actor saves predate these fields. Reconstruct their original wire
+        // representation for the immutable parent identity; validation below
+        // permits only the injected defaults, never unbound new state.
+        if let Some(bots) = data["bots"].as_object_mut() {
+            for bot in bots.values_mut().filter(|b| b["version"] == 1) {
+                bot.as_object_mut().unwrap().remove("social");
+                bot["context"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("social_bytes");
+                if let Some(groups) = bot
+                    .get_mut("affiliations")
+                    .and_then(Value::as_object_mut)
+                    .and_then(|a| a.get_mut("groups"))
+                    .and_then(Value::as_array_mut)
+                {
+                    for group in groups {
+                        group.as_object_mut().unwrap().remove("background");
+                    }
+                }
+            }
+        }
         Ok(revision(&serde_json::to_vec(&data)?))
     }
     pub fn load(path: &Path) -> Result<Self> {
@@ -713,6 +755,14 @@ async fn run_branch(
             )?;
             config.model_tape = Some(bootstrap_tape);
         } else {
+            if !manifest.groups.is_empty() {
+                let path = actor_dir.join("affiliations.json");
+                save_json(
+                    &path,
+                    &crate::organization::Affiliations::for_actor(&actor.name, &manifest.groups)?,
+                )?;
+                config.affiliations = Some(path);
+            }
             freeze_config(&mut config, &actor_dir)?;
         }
         let mut conversation = if let Some(p) = &parent {
@@ -891,14 +941,20 @@ pub fn inspect(path: &Path) -> Result<Value> {
             "delta_costs":r["costs"]["session"],"probes":r["probe_results"].as_array().map(|v|v.iter().skip(r["inherited_probe_results"].as_u64().unwrap_or(0) as usize).collect::<Vec<_>>()),
             "inherited_probe_results":r["inherited_probe_results"],"trace":branch.directory.join(name).join("trace.jsonl"),
             "inherited_history":checkpoint.parent,"observation_watermark":checkpoint.bots[name].watermark,
-            "recent_scene":r["state"]["recent"]})).collect::<Vec<_>>();
+            "recent_scene":r["state"]["recent"],"social_perspective":checkpoint.bots[name].social})).collect::<Vec<_>>();
+        let views = checkpoint
+            .bots
+            .iter()
+            .filter_map(|(name, s)| s.social.as_ref().map(|v| (name.clone(), v.clone())))
+            .collect();
         branches.push(json!({"name":branch.name,"parent":branch.parent,"checkpoint":branch.checkpoint,
-            "world_command_sequence":checkpoint.world.command_sequence,"reserved_requests_cumulative":branch.reserved_requests,"actors":actors}));
+            "world_command_sequence":checkpoint.world.command_sequence,"reserved_requests_cumulative":branch.reserved_requests,"actors":actors,
+            "social_comparison":crate::social::compare(&views)}));
     }
     Ok(
         json!({"version":1,"campaign":summary.campaign,"mode":summary.mode,"provider_spend_usd":summary.provider_spend_usd,
         "ledger":summary.ledger,"shared_prefix":"referenced once by checkpoint ID; delta reports never include ancestor charges",
-        "comparison":"observed continuations; no automatic ranking or causal claim","branches":branches}),
+        "comparison":"operator-only perspectives; omissions mean unestablished, not false. Never inject this combined view into a character. No automatic ranking or causal claim.","branches":branches}),
     )
 }
 

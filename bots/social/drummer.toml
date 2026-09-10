@@ -1,0 +1,9 @@
+character = "../campaign/drummer.json"
+model_tape = "silent-replies.json"
+conversation = "conversation.json"
+[agent]
+role = "The drummer; listen without inventing what other members know."
+goal = "Help the band rehearse."
+bootstrap = ["help", "look"]
+settle_ms = 50
+observation_ms = 500

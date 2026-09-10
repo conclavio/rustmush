@@ -71,6 +71,9 @@ pub struct Snapshot {
     pub affiliations: Option<crate::organization::Affiliations>,
     pub condition: crate::character::Condition,
     pub memory: crate::memory::Checkpoint,
+    /// Required in v2. Legacy v1 checkpoints have no social journal events.
+    #[serde(default)]
+    pub social: Option<crate::social::Ledger>,
     pub attention: crate::attention::Checkpoint,
     pub knowledge: crate::knowledge::Knowledge,
     pub conversation: crate::conversation::Tracker,
@@ -107,7 +110,7 @@ impl Snapshot {
         Ok(revision(&serde_json::to_vec(self)?))
     }
     pub fn validate(&self) -> Result<()> {
-        if self.version != 1
+        if ![1, 2].contains(&self.version)
             || !crate::organization::identifier(&self.epoch)
             || self.actor.is_empty()
             || self.actor.len() > 200
@@ -126,6 +129,26 @@ impl Snapshot {
         }
         self.watermark.scope.validate()?;
         self.memory.validate()?;
+        let projected = crate::social::Ledger::project(&self.memory.records, &self.actor)?;
+        match (self.version, &self.social) {
+            (2, Some(social))
+                if social.version == 1
+                    && serde_json::to_value(social)? == serde_json::to_value(&projected)? => {}
+            (1, None)
+                if projected.interpretations.is_empty()
+                    && projected.commitments.is_empty()
+                    && self.context.social_bytes
+                        == crate::experiment::Context::default().social_bytes
+                    && self
+                        .affiliations
+                        .as_ref()
+                        .is_none_or(|a| a.groups.iter().all(|g| g.background.is_empty())) => {}
+            _ => {
+                return Err(
+                    "unsupported or inconsistent required social checkpoint contribution".into(),
+                );
+            }
+        }
         crate::attention::Attention::restore(self.attention.clone())?;
         self.knowledge.validate_snapshot()?;
         self.conversation

@@ -147,7 +147,7 @@ struct View {
     capture: Value,
 }
 
-const PANELS: [&str; 11] = [
+const PANELS: [&str; 12] = [
     "State",
     "Costs",
     "Memory",
@@ -159,6 +159,7 @@ const PANELS: [&str; 11] = [
     "Groups",
     "Budget",
     "Conversation",
+    "Social perspective",
 ];
 
 impl View {
@@ -195,6 +196,7 @@ impl View {
                 "prompt",
                 "prompt-inspection",
                 "group",
+                "social",
                 "character-state",
                 "context",
                 "debug",
@@ -275,6 +277,7 @@ impl View {
             "group_affiliations",
             "budget",
             "conversation",
+            "social",
         ][self.panel];
         let info = if self.panel == 6 {
             self.last_result.clone()
@@ -655,7 +658,7 @@ struct CastView {
     pending_control: Option<(usize, u64)>,
 }
 
-const CAST_PANELS: usize = 8;
+const CAST_PANELS: usize = 9;
 
 impl CastView {
     fn sync_debug(&mut self, state: crate::cast_debug::Snapshot) {
@@ -744,6 +747,7 @@ impl CastView {
                         "character_state",
                         "probe_results_omitted",
                         "conversation",
+                        "social",
                         "provenance",
                     ] {
                         if let Some(value) = data.get(field) {
@@ -960,6 +964,10 @@ impl CastView {
                 panes[0],
             );
             let (title, value) = match self.panel {
+                8 => (
+                    "Selected actor social perspective",
+                    actor.state["social"].clone(),
+                ),
                 7 => (
                     "Conversation and floor",
                     serde_json::json!({"conversation":actor.state["conversation"],
@@ -1163,6 +1171,33 @@ pub async fn run_cast_debugged(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn social_panel_and_repl_results_display_only_acknowledged_perspective() {
+        let mut view = View::default();
+        view.event(serde_json::json!({"kind":"snapshot","data":{"state":{"status":"paused"},"social":{"observer":"Lead","assessment":"RESPECT_WITH_RESENTMENT"}}}));
+        view.panel = PANELS
+            .iter()
+            .position(|p| *p == "Social perspective")
+            .unwrap();
+        for (w, h) in [(160, 48), (30, 10), (1, 1)] {
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            terminal.draw(|f| view.draw(f)).unwrap();
+            if w == 160 {
+                assert!(
+                    terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .map(|c| c.symbol())
+                        .collect::<String>()
+                        .contains("RESPECT_WITH_RESENTMENT")
+                );
+            }
+        }
+        view.event(serde_json::json!({"kind":"social","data":"A recalled background fact"}));
+        assert_eq!(view.last_result, "A recalled background fact");
+    }
     #[test]
     fn conversation_editor_and_panels_use_acknowledged_actor_state() {
         let mut view = View::default();

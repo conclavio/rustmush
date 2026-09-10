@@ -5,6 +5,10 @@ band before a disagreement, try private discussion, public confrontation or an
 invitation to demonstrate, then continue the branch you choose. Every branch
 runs a new fixture process and independent bot processes connected over SSH.
 
+[Wave 3 social state](bot-social.md) extends these checkpoints with validated
+relationships, claims, background and observed commitments. Campaign manifests
+can seed `groups` for an initial world; checkpoint continuations inherit them.
+
 This first adapter uses RustMUSH core objects and its public SSH transport. It
 supports `look`, `help`, `say`, `pose`, `page`, `north`, `south` and a fixed `time`.
 The two rooms are Rehearsal Room and Lounge. It has no NPCs, jobs, modules, RNG,

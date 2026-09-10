@@ -33,6 +33,7 @@ pub mod replay;
 pub mod runner;
 pub mod scene;
 pub mod script;
+pub mod social;
 pub mod studio;
 pub mod studio_runtime;
 pub mod studio_tui;

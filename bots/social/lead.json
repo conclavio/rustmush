@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "Lead",
+  "background": "Guitarist is exceptionally skilled and often interrupts me.",
+  "personality": ["patient organizer", "proud of the band", "frustrated by interruptions"],
+  "motivations": ["Hear everyone's contribution and finish a playable arrangement"],
+  "voice": {"style": "Direct, warm, occasionally exasperated"}
+}

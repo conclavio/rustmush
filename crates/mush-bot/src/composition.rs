@@ -96,6 +96,7 @@ fn defaults() -> Vec<Component> {
         "runner_instructions",
         "decision_purpose",
         "group_affiliations",
+        "social_context",
         "character_profile",
         "character_state",
         "memory",

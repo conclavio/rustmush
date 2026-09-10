@@ -1,0 +1,9 @@
+character = "lead.json"
+model_tape = "lead-replies.json"
+conversation = "conversation.json"
+[agent]
+role = "Lead the rehearsal through proposals and agreement. Respect refusals."
+goal = "Agree a rehearsal plan within everyone's willingness and abilities."
+bootstrap = ["help", "look"]
+settle_ms = 50
+observation_ms = 500

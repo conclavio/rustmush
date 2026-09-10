@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "replies": [
+    {"content":"{\"action\":\"command\",\"command\":\"say I propose [arrangement] for Bassist: bring a counterpoint | condition: none | due: next rehearsal\",\"summary\":\"Offer the bassist space to contribute.\",\"social\":[{\"type\":\"relationship\",\"subject\":\"Guitarist\",\"dimension\":\"respect\",\"assessment\":\"I respect his skill.\",\"basis\":\"prior_knowledge\",\"confidence\":\"strong\",\"evidence\":[{\"episode\":4,\"quote\":\"Guitarist is exceptionally skilled\"}]},{\"type\":\"relationship\",\"subject\":\"Guitarist\",\"dimension\":\"resentment\",\"assessment\":\"His interruptions are wearing on me.\",\"basis\":\"prior_knowledge\",\"confidence\":\"likely\",\"evidence\":[{\"episode\":4,\"quote\":\"often interrupts me\"}]}]}"},
+    {"content":"{\"action\":\"command\",\"command\":\"say I propose [tuning] for Guitarist: tune the spare guitar | condition: none | due: before rehearsal\",\"summary\":\"Ask the guitarist to handle tuning.\"}"}
+  ]
+}

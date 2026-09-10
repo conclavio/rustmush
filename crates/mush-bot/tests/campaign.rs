@@ -147,6 +147,27 @@ async fn three_playable_continuations_keep_shared_history_private_knowledge_and_
         );
     }
     assert_eq!(again.world.data, parent.world.data);
+    // A pre-wave-3 save omitted newly defaulted fields. Its original immutable
+    // parent hash must survive loading, without allowing unbound new state.
+    let mut legacy = serde_json::to_value(&parent).unwrap();
+    for bot in legacy["bots"].as_object_mut().unwrap().values_mut() {
+        bot["version"] = json!(1);
+        bot.as_object_mut().unwrap().remove("social");
+        bot["context"]
+            .as_object_mut()
+            .unwrap()
+            .remove("social_bytes");
+    }
+    legacy["id"] = json!("");
+    legacy["id"] = json!(mush_bot::experiment::revision(
+        &serde_json::to_vec(&legacy).unwrap()
+    ));
+    let legacy_path = dir.join("legacy-v1.json");
+    save_json(&legacy_path, &legacy).unwrap();
+    let mut loaded = Checkpoint::load(&legacy_path).unwrap();
+    assert_eq!(loaded.id, legacy["id"]);
+    loaded.bots.get_mut("Bassist").unwrap().context.social_bytes = 0;
+    assert!(loaded.validate().is_err());
     assert_ne!(private.world.data, parent.world.data);
     assert_eq!(std::fs::read(&parent_path).unwrap(), original_bytes);
     let trace = std::fs::read_to_string(output.join("demonstration/Bassist/trace.jsonl")).unwrap();

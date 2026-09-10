@@ -114,6 +114,13 @@ fn detail(branch: &serde_json::Value) -> String {
                 actor["trace"],
                 crate::tail(actor["recent_scene"].as_str().unwrap_or_default(),12000)
             ));
+            if !actor["social_perspective"].is_null() {
+                text.push_str(&format!(
+                    "Operator-only social perspective ({}):\n{}\n\n",
+                    actor["actor"],
+                    serde_json::to_string_pretty(&actor["social_perspective"]).unwrap_or_default()
+                ));
+            }
         }
     }
     // World observations can contain terminal escapes; never render them as controls.

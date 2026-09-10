@@ -59,6 +59,7 @@ pub const REPL_HELP: &str = "Local controls:\n\
   /prompt [load|save <json>]  Inspect effective prompts or load/save a profile\n\
   /inspect [preview [question]] Show last request, or prepare a free preview\n\
   /group                Show this actor's authored group affiliations\n\
+  /social [query|save <new.json>] Inspect social memory or export this perspective\n\
   /character-state [set <json>|clear] Inspect or change a temporary condition\n\
   /context [load|save <json>] Inspect context controls or load/save settings\n\
   /debug [load|save <json>]   Inspect breakpoints/watches or load/save settings\n\
@@ -117,6 +118,7 @@ pub struct Report {
     pub state: State,
     pub character: Character,
     pub affiliations: Option<crate::organization::Affiliations>,
+    pub social: crate::social::Ledger,
     pub character_state: crate::character::Condition,
     pub elapsed_ms: u128,
     pub success: bool,
@@ -441,7 +443,19 @@ pub async fn run_controlled(
         for fact in affiliations.prior_facts() {
             memories.seed_prior(&fact)?;
         }
+        for group in &affiliations.groups {
+            for fact in &group.background {
+                memories.seed_background(
+                    &group.id,
+                    fact,
+                    &config.ssh.username,
+                    &conversation_settings.scope,
+                )?;
+            }
+        }
     }
+    // Validate durable social versions/evidence before connecting or bootstrapping.
+    memories.social(&config.ssh.username)?;
     let attention = Attention::new(config.attention.clone(), &character, &config.ssh.username);
     let attention_enabled = config.attention.enabled;
     let brain = if scenario.is_none() {
@@ -621,6 +635,7 @@ pub async fn run_controlled(
         script,
         prompts: app.prompts.clone(),
         affiliations: app.affiliations.clone(),
+        social: app.memories.social(&app.config.ssh.username)?,
         character_state: app.character_state.clone(),
         context: app.context_settings.clone(),
         debug: app.debug.clone(),
@@ -711,7 +726,7 @@ impl App {
 
     fn checkpoint_snapshot(&self, resume_status: String) -> Result<crate::checkpoint::Snapshot> {
         let value = crate::checkpoint::Snapshot {
-            version: 1,
+            version: 2,
             actor: self.config.ssh.username.clone(),
             epoch: self
                 .options
@@ -725,6 +740,7 @@ impl App {
             affiliations: self.affiliations.clone(),
             condition: self.character_state.clone(),
             memory: self.memories.checkpoint()?,
+            social: Some(self.memories.social(&self.config.ssh.username)?),
             attention: self.attention.checkpoint()?,
             knowledge: self.knowledge.clone(),
             conversation: self.conversation.clone(),
@@ -846,6 +862,7 @@ impl App {
                 "goal_elapsed_ms":self.goal_started.elapsed().as_millis(),"next_turn_after_ms":self.next_turn.saturating_duration_since(Instant::now()).as_millis()})),
             ("character".into(), json!({"profile":self.character,"affiliations":self.affiliations,"condition":self.character_state})),
             ("memory".into(), self.memories.bookmark()?),
+            ("social".into(), serde_json::to_value(self.memories.social(&self.config.ssh.username)?)?),
             ("attention".into(), self.attention.bookmark()),
             ("conversation".into(), self.conversation_snapshot()),
             ("configuration".into(), json!({"prompts":self.prompts,"context":self.context_settings,"debug":self.debug,
@@ -878,6 +895,7 @@ impl App {
             "conversation":self.conversation_snapshot(),"provenance":self.log.provenance,
             "observation_watermark":self.observation_revision,"output_watermark":self.log.sequence,
             "group_affiliations":self.affiliations,
+            "social":self.memories.social(&self.config.ssh.username)?,
             "pending_probe":self.pending_probe.as_ref().map(|p| &p.id),
             "last_probe":self.probe_results.back(), "probe_results_omitted":self.probe_results_omitted,
             "character_state":self.character_state,
@@ -1157,7 +1175,7 @@ impl App {
         self.state.recent = tail(&self.state.recent, self.config.agent.context_bytes).to_owned();
     }
 
-    fn context(&self, question: Option<&str>) -> Value {
+    fn context(&self, question: Option<&str>) -> Result<Value> {
         let query = format!(
             "{} {} {} {}",
             self.state.role,
@@ -1172,7 +1190,8 @@ impl App {
             .unwrap_or(&self.state.goal);
         let mut context = json!({"runner_role":self.state.role, "runner_goal":self.state.goal,
             "character_profile": self.character,
-            "group_affiliations": self.affiliations,
+            "group_affiliations": self.affiliations.as_ref().map(crate::organization::Affiliations::prompt_view),
+            "social_context": self.memories.social(&self.config.ssh.username)?.context(recall_query,self.context_settings.social_bytes),
             "character_state": self.character_state,
             "recent_speech": self.attention.context(),
             "conversation_policy": {"max_utterance_chars":self.conversation.settings.max_utterance_chars,
@@ -1185,7 +1204,7 @@ impl App {
             "belief_feedback": self.belief_feedback,
             "model_calls_remaining":self.config.agent.max_steps.saturating_sub(self.state.model_calls)});
         self.context_settings.apply(&mut context);
-        context
+        Ok(context)
     }
 
     async fn drive(&mut self) -> Result<()> {
@@ -1565,7 +1584,7 @@ impl App {
                 .as_ref()
                 .map(|p| p.question.as_str())
                 .or(question.as_deref()),
-        );
+        )?;
         let capture = match brain.prepare(context, question, &self.prompts) {
             Ok(capture) => capture,
             Err(error) => return self.fail(&format!("Prompt preparation failed: {error}")),
@@ -1660,6 +1679,11 @@ impl App {
         self.log.event("summary", &decision.summary)?;
         self.memories.flush()?;
         self.belief_feedback = self.memories.annotate(decision.beliefs)?;
+        self.belief_feedback.extend(self.memories.annotate_social(
+            decision.social,
+            &self.config.ssh.username,
+            &self.conversation.settings.scope,
+        )?);
         for feedback in &self.belief_feedback {
             self.log.event("memory-feedback", feedback)?;
         }
@@ -1926,11 +1950,25 @@ impl App {
             "/group" => self
                 .log
                 .event("group", &serde_json::to_string_pretty(&self.affiliations)?)?,
+            "/social" => {
+                self.memories.flush()?;
+                let ledger = self.memories.social(&self.config.ssh.username)?;
+                let view = if let Some(path) = arg.strip_prefix("save ") {
+                    save_json(std::path::Path::new(path.trim()), &ledger)?;
+                    json!({"saved":path.trim(),"observer":ledger.observer,"mode":"in_world_negotiation"})
+                } else if arg.is_empty() {
+                    serde_json::to_value(ledger)?
+                } else {
+                    ledger.context(arg, self.context_settings.social_bytes)
+                };
+                self.log
+                    .event("social", &serde_json::to_string_pretty(&view)?)?;
+            }
             "/inspect" => {
                 let inspection = if arg == "preview" || arg.starts_with("preview ") {
                     let question = arg.strip_prefix("preview").unwrap().trim();
                     let question = (!question.is_empty()).then(|| question.to_owned());
-                    let context = self.context(question.as_deref());
+                    let context = self.context(question.as_deref())?;
                     let capture = self
                         .brain
                         .as_ref()

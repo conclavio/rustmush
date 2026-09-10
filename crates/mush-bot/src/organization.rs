@@ -23,6 +23,8 @@ pub struct Group {
     pub values: Vec<String>,
     #[serde(default)]
     pub shared_knowledge: Vec<String>,
+    #[serde(default)]
+    pub background: Vec<crate::social::Grant>,
     pub members: Vec<Member>,
 }
 
@@ -60,6 +62,9 @@ pub struct Membership {
     pub mission: String,
     pub values: Vec<String>,
     pub shared_knowledge: Vec<String>,
+    /// Only facts granted to this actor; never the grant list or another view.
+    #[serde(default)]
+    pub background: Vec<crate::social::Fact>,
     pub role: String,
     pub responsibilities: Vec<String>,
     pub briefing: Vec<String>,
@@ -116,6 +121,23 @@ impl Group {
         {
             return Err("invalid group identity, roster or briefing limits".into());
         }
+        if self.background.len() > 256 {
+            return Err("group background limited to 256 grants".into());
+        }
+        let mut facts = BTreeSet::new();
+        for grant in &self.background {
+            grant.fact.validate()?;
+            if !facts.insert((&grant.fact.id, grant.fact.revision))
+                || grant.known_by.is_empty()
+                || grant.known_by.len() > 16
+                || grant.known_by.iter().collect::<BTreeSet<_>>().len() != grant.known_by.len()
+                || grant.known_by.iter().any(|a| !names.contains(a))
+            {
+                return Err(
+                    "background grants require unique revisions and explicit roster members".into(),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -128,6 +150,12 @@ impl Group {
             mission: self.mission.clone(),
             values: self.values.clone(),
             shared_knowledge: self.shared_knowledge.clone(),
+            background: self
+                .background
+                .iter()
+                .filter(|g| g.known_by.iter().any(|a| a == actor))
+                .map(|g| g.fact.clone())
+                .collect(),
             role: member.role.clone(),
             responsibilities: member.responsibilities.clone(),
             briefing: member.briefing.clone(),
@@ -189,6 +217,14 @@ impl Affiliations {
                 mission: g.mission.clone(),
                 values: g.values.clone(),
                 shared_knowledge: g.shared_knowledge.clone(),
+                background: g
+                    .background
+                    .iter()
+                    .map(|fact| crate::social::Grant {
+                        fact: fact.clone(),
+                        known_by: vec![self.actor.clone()],
+                    })
+                    .collect(),
                 members: g
                     .roster
                     .iter()
@@ -222,6 +258,15 @@ impl Affiliations {
                 })
             })
             .collect()
+    }
+
+    /// Large granted background is retrieved from the durable actor journal.
+    pub fn prompt_view(&self) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).expect("serializable affiliations");
+        for group in value["groups"].as_array_mut().unwrap() {
+            group.as_object_mut().unwrap().remove("background");
+        }
+        value
     }
 }
 
@@ -262,5 +307,19 @@ mod tests {
         let mut bad = group;
         bad.members[1].actor = "scout".into();
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn grants_are_projected_before_delivery_and_roster_membership_does_not_grant_a_fact() {
+        let mut group:Group=serde_json::from_value(json!({"id":"band","name":"Band","kind":"band","mission":"rehearse","members":[{"actor":"Lead","role":"singer"},{"actor":"Bass","role":"bassist"}],
+            "background":[{"fact":{"id":"audition","revision":1,"subject":"Bass","predicate":"agenda","value":"PRIVATE: evaluating whether to stay","source":"private briefing","confidence":"strong"},"known_by":["Bass"]}]})).unwrap();
+        let lead = Affiliations::for_actor("Lead", std::slice::from_ref(&group)).unwrap();
+        let bass = Affiliations::for_actor("Bass", std::slice::from_ref(&group)).unwrap();
+        assert!(!serde_json::to_string(&lead).unwrap().contains("PRIVATE"));
+        assert!(serde_json::to_string(&bass).unwrap().contains("PRIVATE"));
+        assert!(!serde_json::to_string(&bass).unwrap().contains("known_by"));
+        assert!(!bass.prompt_view().to_string().contains("PRIVATE"));
+        group.background[0].known_by.push("stranger".into());
+        assert!(group.validate().is_err());
     }
 }

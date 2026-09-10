@@ -2104,6 +2104,7 @@ dependencies = [
  "async-trait",
  "crossterm",
  "dotenvy",
+ "mush-ansi",
  "mush-core",
  "mush-llm",
  "mush-net-ssh",

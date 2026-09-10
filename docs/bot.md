@@ -11,6 +11,9 @@ managed speaking floors, the spectator, cited recaps and bot bookmarks.
 [Checkpointed campaigns](bot-campaigns.md) adds an owned rehearsal-world adapter,
 JSON branches, character restoration, continuation selection and a comparison TUI.
 
+[Social memory and group agency](bot-social.md) adds scoped background retrieval,
+directed relationships, attributed claims, observed commitments and perspective inspection.
+
 ## Intentional independence from NPC agents
 
 The external bot and the in-game NPC system are two independent approaches to

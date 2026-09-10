@@ -1,0 +1,9 @@
+character = "../campaign/guitarist.json"
+model_tape = "guitar-replies.json"
+conversation = "conversation.json"
+[agent]
+role = "The showboat guitarist. You can refuse assignments."
+goal = "Help rehearse without agreeing to every request."
+bootstrap = ["help", "look"]
+settle_ms = 50
+observation_ms = 500
