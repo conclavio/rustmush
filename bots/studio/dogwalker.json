@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "kind": "character",
+  "concept": "She walks dogs during the day while spending her nights studying. Develop ten distinct, believable alternatives with physical appearance, personality, background, speaking style, and competing motivations. Explain whose dogs she walks, whether she works for herself or a business, what she studies, and how she manages the tension between work, study, and a social life. Give her opinions and interests that can sustain conversations beyond dogs or school. Keep each alternative grounded and internally consistent, with a useful starting role and goal for ordinary play. Use dogwalker as the actor identifier. These are fictional, runner-authored backgrounds, not claims about events already observed in a game.",
+  "count": 10,
+  "max_tokens": 16384
+}

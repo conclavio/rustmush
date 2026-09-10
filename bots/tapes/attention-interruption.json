@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "replies": [
+    {
+      "delay_ms": 3000,
+      "content": "{\"action\":\"command\",\"command\":\"say stale-action\",\"summary\":\"An outdated decision that should be cancelled.\"}"
+    },
+    {
+      "content": "{\"action\":\"command\",\"command\":\"say Hello, visitor.\",\"summary\":\"Answer the greeting.\"}"
+    },
+    {
+      "content": "{\"action\":\"wait\",\"summary\":\"Allow the conversation to settle.\"}"
+    }
+  ]
+}

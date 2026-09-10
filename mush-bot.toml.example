@@ -1,0 +1,104 @@
+# Copy to mush-bot.local.toml. Run in its own terminal:
+# cargo run -p mush-bot -- --config mush-bot.local.toml --goal "Find a flower shop and buy a rose"
+# Loads the nearest .env in the working directory or its ancestors before startup.
+# Existing environment variables take precedence; keep credentials out of this file.
+
+# Optional UTF-8 Markdown/text documents or directories (wiki exports, setting,
+# player guide). Paths here are relative to this config file. All repository
+# help topics are already embedded in the binary; no checkout needed at runtime.
+knowledge = []
+
+# Optional authored biography, motivations, opinions and voice. Relative to this config.
+# Adapt the example's fictional hometown/team to your game before use.
+# character = "bots/characters/rosebot.json"
+
+# Optional JSON affiliations for a standalone member of an organization.
+# A cast harness generates each member's private affiliation file automatically.
+# affiliations = "my-character-affiliations.json"
+
+# Optional named JSON model profiles. Replace the example's model ID placeholders.
+# model_profiles = "bots/models/example.json"
+# model_profile = "careful" # overrides the JSON catalog's default at startup
+
+# Optional JSON experiment profiles, also editable from --tui or local controls.
+# prompts = "bots/prompts/careful-observer.json"
+# prompts = "bots/prompts/composed-observer.json" # inspectable component assembly
+# context = "bots/context/full.json"
+# context = "bots/context/selected-voice.json" # up to three relevant voice examples
+# context = "bots/context/balanced-recall.json" # local relevance + recency experiment
+# debug = "bots/debug/builder-review.json"
+# budget = "bots/budgets/session.json" # session request/spend limits; /budget or F10 edits
+# model_tape = "bots/tapes/attention-interruption.json" # explicit simulation; no model API calls
+
+[costs]
+# Independent per-character ledger across restarts; paths relative to this config.
+persistent = true
+directory = ".mush-bot/costs"
+max_bytes = 64000000
+# /cost and reports show this session + all sessions, grouped by model/profile/purpose.
+# Unknown/cancelled charges remain unpriced, not zero. Does not include server @gen.
+
+[attention]
+enabled = true
+listen_when_idle = true # interactive bots can respond after completing their goal
+recent_limit = 64       # speech has its own window, independent of room/help output
+recent_bytes = 24000
+cooldown_ms = 1000      # coalesce bursts of addressed speech before deciding
+conversation_window_secs = 120 # follow-up speech after answering a speaker
+address_cues = ["excuse me", "hey you", "hello there", "can you help", "a question for you"]
+# Names/aliases and direct whispers/pages also invite a decision. /pause stops it.
+
+[memory]
+# Persistent, independent memory for this SSH character/world, relative to this config.
+persistent = true
+directory = ".mush-bot/memory"
+namespace = "default" # change for a fresh campaign/world reset
+# Optional explicit journal filename; its character/world ownership is still checked.
+# file = ".mush-bot/rosebot.jsonl"
+recall_bytes = 24000
+max_bytes = 64000000
+# Set persistent = false for disposable tests. Memory still works during the run.
+
+[ssh]
+host = "127.0.0.1"
+port = 2222
+username = "rosebot+Rosebot" # existing account + character; also works with one-character account
+password_env = "MUSH_BOT_PASSWORD"
+# Or use an SSH private key registered with the account's @sshkey/add:
+# identity_file = "C:/Users/you/.ssh/game_ed25519"
+# key_password_env = "MUSH_BOT_KEY_PASSPHRASE"
+# Key auth takes precedence over password auth; no implicit fallback.
+
+# Defaults to ~/.ssh/known_hosts. Connect with ssh normally and verify/trust the
+# game's key first, or supply an independently verified SHA256 fingerprint here.
+# known_hosts = "C:/Users/you/.ssh/known_hosts"
+# host_key_sha256 = "SHA256:..."
+timeout_secs = 15
+
+# Optional for manual REPL or deterministic --script runs (.json). This is a generic
+# chat-completions adapter, compatible with the game's existing provider style.
+# Use your provider's full endpoint and a model that can return JSON decisions.
+[model]
+endpoint = "https://openrouter.ai/api/v1/chat/completions"
+name = "YOUR_PROVIDER/MODEL"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 90
+max_tokens = 2048
+# temperature = 0.3 # omit to use the provider/model default
+# cost_currency = "USD" # needed for generic endpoints reporting usage.cost; OpenRouter is inferred
+# A local keyless endpoint can omit api_key_env.
+
+[agent]
+role = "A polite visitor unfamiliar with the town, willing to ask for directions."
+# For world creation, use a builder-capable game character and a building role/goal:
+# role = "A world builder following the game's setting and house style."
+# goal = "Build a Rose Garden north of here with a south exit back. Use @gen to describe it, review and accept the draft, and verify both exits."
+# @dig needs BUILDER and control of the source room for exits. @gen also needs
+# BUILDER_LLM, control of its target, and the server's LLM features/budget enabled.
+goal = ""
+max_steps = 100     # model requests, including waits, questions and cancelled requests; per goal
+max_seconds = 900  # wall time per goal, including pauses
+context_bytes = 32000
+settle_ms = 500    # collect output until this quiet interval
+observation_ms = 3000 # cap an ordinary observation even if ambient output continues
+bootstrap = ["help", "look"] # sent once after login in agent mode; scripts list all their own commands

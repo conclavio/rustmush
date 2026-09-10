@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "kind": "group",
+  "concept": "Create alternatives for a four-piece band whose members are in their mid-twenties. The lead guitarist is a showboat who does not follow instructions very well. The lead singer also plays rhythm guitar and spends half his time trying to rein in the guitarist. The bassist is truly talented and feels wasted playing roots and fifths; she wants melodic bass lines and counterpoint. The drummer takes out aggression on the drums but is extremely relaxed away from the throne. The lead singer and drummer have played together since high school; the guitarist joined a year ago; the bassist is still in her trial period. They think she is auditioning for them, but she is judging whether they are worth joining. Develop the group dynamic as well as each member's appearance, personality, voice, background, goals, interests, and tensions. Include shared history and member-specific private briefings without granting anyone knowledge of another member's private thoughts. Use the actor identifiers singer, guitarist, bassist, and drummer. These are fictional, runner-authored backgrounds, not records of game events.",
+  "count": 10,
+  "max_tokens": 32768
+}

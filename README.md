@@ -75,6 +75,17 @@ we don't redistribute it.
 
 ## Running
 
+For an external playing agent, see [the standalone bot](docs/bot.md): `mush-bot`
+logs in over SSH, plays from a JSON character sheet and a goal, exposes a local
+control REPL or local TUI, tracks model costs, and replays JSON scripts or captured
+model decisions. Its JSON cast harness coordinates independent bots and runs
+experiment matrices with observation assertions and joined traces. JSON prompt
+composition exposes each contribution; organized casts add roles, private briefings,
+group phases and a terminal monitor. Start with
+[mush-bot.toml.example](mush-bot.toml.example). The bot intentionally develops
+independently from the in-game NPC/LLM implementation so the two approaches can be
+compared through the game interface.
+
 Copy [mushd.toml.example](mushd.toml.example) to `mushd.toml`, adjust, and run `mushd`
 (`mushd --repl` gives an offline in-memory REPL). In-game `help` is two-layered: per-command
 usage comes from the command table, and prose topics (getting started, building, locks,

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "price-claim",
+  "question": "What price did you hear quoted for a rose, and does the supplied evidence confirm that a purchase was completed?",
+  "fields": [
+    {"name": "amount", "type": "number", "description": "The quoted numeric price, without the currency; null if unestablished."},
+    {"name": "currency", "type": "string", "description": "The currency word used in the quote, in lowercase; null if unestablished."},
+    {"name": "purchase_confirmed", "type": "boolean", "description": "Whether the supplied evidence confirms a completed purchase. A price quote alone is not purchase confirmation."}
+  ],
+  "checks": [
+    {"id": "quoted-amount", "field": "amount", "equals": 7, "evidence": {"source": "observed", "contains": "seven silver"}},
+    {"id": "quoted-currency", "field": "currency", "equals": "silver", "evidence": {"source": "observed", "contains": "seven silver"}},
+    {"id": "no-confirmed-purchase", "field": "purchase_confirmed", "equals": false}
+  ]
+}

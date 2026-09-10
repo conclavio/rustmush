@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "after_model": false,
+  "before_commands": ["@dig", "@gen/accept"],
+  "observations": ["Permission denied"]
+}

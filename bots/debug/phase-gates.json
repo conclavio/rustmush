@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "start_held": true,
+  "before_phases": [2],
+  "max_hold_ms": 300000
+}

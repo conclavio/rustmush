@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "actors": [
+    { "actor": "singer", "config": "../../mush-bot.toml", "login": "band+Singer" },
+    { "actor": "guitarist", "config": "../../mush-bot.toml", "login": "band+Guitarist" },
+    { "actor": "bassist", "config": "../../mush-bot.toml", "login": "band+Bassist" },
+    { "actor": "drummer", "config": "../../mush-bot.toml", "login": "band+Drummer" }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "default": "fast",
+  "profiles": {
+    "fast": {
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "name": "YOUR_FAST_MODEL_ID",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "timeout_secs": 90,
+      "max_tokens": 2048,
+      "temperature": 0.3
+    },
+    "careful": {
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "name": "YOUR_CAREFUL_MODEL_ID",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "timeout_secs": 120,
+      "max_tokens": 4096,
+      "temperature": 0.2
+    }
+  }
+}

@@ -1,0 +1,36 @@
+[package]
+name = "mush-bot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Standalone SSH player agent and black-box scenario runner for RustMUSH"
+
+[dependencies]
+# Independent external agent: no RustMUSH runtime or build dependencies.
+# In particular, do not reuse the NPC planner or mush-llm service/provider layer.
+russh.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["arbitrary_precision"] }
+sha2.workspace = true
+toml.workspace = true
+dotenvy.workspace = true
+ratatui = { workspace = true, features = ["crossterm"] }
+crossterm = "0.28.1"
+
+[dev-dependencies]
+# Server-under-test fixtures only. These do not participate in bot decisions
+# and are not linked into the standalone executable.
+wiremock.workspace = true
+async-trait.workspace = true
+mushd.workspace = true
+mush-core.workspace = true
+mush-store.workspace = true
+mush-session.workspace = true
+# Supplies mock SERVER @gen responses; the bot model is a separate HTTP stub.
+mush-llm.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "name": "Command help smoke test",
+  "steps": [
+    {
+      "command": "help inventory",
+      "expect": ["List everything you are carrying"],
+      "reject": ["No help available"]
+    },
+    {
+      "command": "help look",
+      "expect": ["show your current room"],
+      "reject": ["No help available"]
+    }
+  ]
+}
