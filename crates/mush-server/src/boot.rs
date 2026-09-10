@@ -296,7 +296,7 @@ pub fn game_modules(
     // S1: `[atlas]` likewise — its `pack_paths` are read host-side so a bad pack file
     // fails the boot naming the file, and the typed config reaches the atlas inside
     // the built-ins.
-    let atlas = config_ext::atlas_config(&config.atlas)?;
+    let atlas = config_ext::atlas_config(&config.atlas, &config.worldgen)?;
     let onboarding = config_ext::onboarding_ruleset(&config.onboarding);
     // E5c: `[wod.economy]`, validated here (an unknown mode is a hard boot error).
     // `None` when no WoD ruleset is enabled — that is what gates the housing title

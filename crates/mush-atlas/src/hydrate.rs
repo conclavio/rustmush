@@ -1289,6 +1289,33 @@ fn event(
     );
 }
 
+/// A staff proposal applied live (doc 14 §4.4): a post-hoc BUILD ticket carrying the
+/// pack digest, for the record; nobody has to act on it. `None` when the jobs module
+/// is not composed.
+pub fn record_staff_apply(ctx: &mut Ctx<'_>, pack: &Pack, author: ObjId) -> Option<u64> {
+    let who = mush_core::output::display_name(ctx.w, author);
+    mush_jobs::open_job(
+        ctx,
+        OpenJob {
+            queue: SmolStr::new_static(BUILD_QUEUE),
+            title: format!(
+                "Applied {}@{} by {who}",
+                pack.manifest().id(),
+                pack.manifest().version()
+            ),
+            opener: author,
+            text: Some(format!(
+                "Staff applied {} live; digest {}. For the record — nothing to do.",
+                pack.manifest().id(),
+                pack.manifest().digest().to_hex()
+            )),
+            payload: None,
+            tags: vec![SmolStr::new_static("build"), SmolStr::new_static("record")],
+        },
+    )
+    .ok()
+}
+
 /// Register the BUILD payload handler and the status observer with the jobs module,
 /// when it is composed. Called at the atlas's boot.
 pub fn register_review(w: &mut World) {

@@ -35,6 +35,9 @@ pub fn weather_config(cfg: &WeatherCfg) -> mush_weather::WeatherConfig {
 pub fn worldgen_config(cfg: &WorldgenCfg) -> mush_worldgen::WorldgenConfig {
     mush_worldgen::WorldgenConfig {
         batch_max_rooms: cfg.batch_max_rooms,
+        plan_cost_cap_usd: cfg.plan_cost_cap_usd,
+        plan_cost_target_usd: cfg.plan_cost_target_usd,
+        plan_max_rounds: cfg.plan_max_rounds,
     }
 }
 
@@ -425,13 +428,20 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, St
 /// A pack file that cannot be read or does not verify, a directory that cannot be
 /// listed, more than [`mush_atlas::MAX_CONFIGURED_PACKS`] packs, or a
 /// `tile_max_cells` outside `1..=65536`.
-pub fn atlas_config(cfg: &AtlasCfg) -> Result<mush_atlas::AtlasConfig, String> {
+pub fn atlas_config(cfg: &AtlasCfg, worldgen: &WorldgenCfg) -> Result<mush_atlas::AtlasConfig, String> {
     let sources = read_pack_sources(&cfg.pack_paths, "[atlas].pack_paths")?;
+    if worldgen.hydration_strikes_to_zero == 0 {
+        return Err("[worldgen].hydration_strikes_to_zero must be at least 1".to_string());
+    }
     let typed = mush_atlas::AtlasConfig {
         tile_max_cells: cfg.tile_max_cells,
         nearest_room_cells: cfg.nearest_room_cells,
         dwell_floor_s: cfg.dwell_floor_s,
         real_cap_s: cfg.real_cap_s.clone(),
+        // S3: the hydration knobs live under `[worldgen]` (plan §3.4) and reach the
+        // atlas, which owns the standing.
+        hydration_cap: worldgen.hydration_cap,
+        hydration_strikes_to_zero: worldgen.hydration_strikes_to_zero,
         packs: sources
             .into_iter()
             .map(|s| mush_atlas::PackSource {

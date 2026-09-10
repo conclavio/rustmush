@@ -129,6 +129,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>, llm: Arc<LlmService>) -> Result<
     reg.panel_feed(DASHBOARD_FEED)?;
     reg.query_handler(DASHBOARD_FEED, Arc::new(LlmDashboardQuery { llm }))?;
     reg.async_completion(Arc::new(WorldgenCompletion))?;
+    // S3: the building agent's player surface.
+    crate::build_cmd::register_build(reg)?;
     Ok(())
 }
 
@@ -413,6 +415,7 @@ impl AsyncCompletion for WorldgenCompletion {
             }
         };
         match outcome {
+            GenOutcome::Plan { outcome } => crate::proposal::on_outcome(ctx, outcome),
             GenOutcome::Err {
                 room,
                 builder,

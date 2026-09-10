@@ -81,9 +81,12 @@
     clippy::panic_in_result_fn
 )]
 
+mod build_cmd;
 mod commands;
 mod data;
 mod generate;
+pub mod plan;
+pub mod proposal;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -107,22 +110,47 @@ pub use generate::{
     user_prompt_inner,
 };
 pub use mush_atlas::theme::{DescLength, Theme, resolve_theme};
+pub use plan::{PlanLimits, run_plan};
+pub use proposal::{
+    MAX_PROPOSALS, PlanOutcome, PlanSnapshot, PlanStatus, ProposalRec, ProposalScope,
+    ProposalSource, ProposalStatus, Question, proposal_key,
+};
+
+/// The building agent's default per-proposal cost cap, USD (`[worldgen].plan_cost_cap_usd`).
+pub const DEFAULT_PLAN_COST_CAP_USD: f64 = 5.0;
+/// The default target told to the model, USD (`[worldgen].plan_cost_target_usd`).
+pub const DEFAULT_PLAN_COST_TARGET_USD: f64 = 2.0;
+/// The default most calls one planning run makes (`[worldgen].plan_max_rounds`).
+pub const DEFAULT_PLAN_MAX_ROUNDS: usize = 6;
+/// The most calls a planning run may be configured to make.
+pub const MAX_PLAN_ROUNDS: usize = 24;
 
 /// Tuning for the worldgen module (config knobs). Everything defaults, so a
 /// keyless/config-less server behaves exactly as before.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldgenConfig {
     /// The `@gen/building` interior-walk cap: the most rooms one batch will
     /// describe. Must be in [`MIN_BUILDING_ROOMS`]..=[`MAX_BUILDING_ROOMS`]
     /// and defaults to [`MAX_BUILDING_ROOMS`]. Invalid values fail module
     /// registration rather than creating an empty or unbounded batch.
     pub batch_max_rooms: usize,
+    /// S3: the building agent's per-proposal cost cap, USD; a run stops before
+    /// the call that would pass it (default 5.0).
+    pub plan_cost_cap_usd: f64,
+    /// S3: the target told to the model and never enforced (default 2.0).
+    pub plan_cost_target_usd: f64,
+    /// S3: the most calls one planning run makes, 1..=[`MAX_PLAN_ROUNDS`]
+    /// (default 6).
+    pub plan_max_rounds: usize,
 }
 
 impl Default for WorldgenConfig {
     fn default() -> WorldgenConfig {
         WorldgenConfig {
             batch_max_rooms: MAX_BUILDING_ROOMS,
+            plan_cost_cap_usd: DEFAULT_PLAN_COST_CAP_USD,
+            plan_cost_target_usd: DEFAULT_PLAN_COST_TARGET_USD,
+            plan_max_rounds: DEFAULT_PLAN_MAX_ROUNDS,
         }
     }
 }
@@ -158,11 +186,15 @@ impl GameModule for WorldgenModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         validate_batch_max_rooms(self.config.batch_max_rooms)?;
+        validate_plan_limits(&self.config)?;
         let panel = reg.panel_feed(DRAFT_FEED)?;
-        reg.state(WorldgenState::with_batch_max(
-            panel,
-            self.config.batch_max_rooms,
-        ));
+        let mut state = WorldgenState::with_batch_max(panel, self.config.batch_max_rooms);
+        state.plan = PlanLimits {
+            max_rounds: self.config.plan_max_rounds,
+            cap_usd: self.config.plan_cost_cap_usd,
+            target_usd: self.config.plan_cost_target_usd,
+        };
+        reg.state(state);
         commands::register(reg, Arc::clone(&self.llm))
     }
 
@@ -180,7 +212,20 @@ impl GameModule for WorldgenModule {
         // Batches reconciled at boot (a `Generating` room downgraded to
         // `Pending`) that must be re-persisted so the store matches RAM.
         let mut reconciled: Vec<BuildingBrief> = Vec::new();
+        // S3: the proposals and their id counter.
+        let (proposals, next_proposal, dropped) = proposal::hydrate_boot(&boot.kv);
+        for key in dropped {
+            ctx.persist(ModuleOp {
+                ns: SmolStr::new(NS),
+                op: ModuleWrite::Del { key },
+            });
+        }
         for (key, value) in boot.kv {
+            if key.starts_with(proposal::PROPOSAL_PREFIX)
+                || key.as_str() == proposal::PROPOSAL_META_KEY
+            {
+                continue;
+            }
             if key.starts_with("draft:") {
                 match serde_json::from_value::<StoredDraft>(value) {
                     Ok(d) => {
@@ -232,6 +277,8 @@ impl GameModule for WorldgenModule {
             .ok_or_else(|| ModError::msg("worldgen: state slot missing"))?;
         st.drafts = drafts;
         st.briefs = briefs;
+        st.proposals = proposals;
+        st.next_proposal = next_proposal;
         // Write the reconciled batches back through the store (write-through at
         // boot, like weather's orphan-cell cleanup) so the persisted doc no
         // longer carries the stale `Generating` room.
@@ -249,8 +296,34 @@ impl GameModule for WorldgenModule {
                 }
             }
         }
+        // S3: `@atlas/propose` reaches the planner through the atlas's hook.
+        if let Err(error) =
+            mush_atlas::hydrate::register_proposer(ctx.w, Arc::new(proposal::propose_hook))
+        {
+            tracing::debug!(%error, "worldgen: no @atlas/propose planner registered");
+        }
         Ok(())
     }
+}
+
+fn validate_plan_limits(config: &WorldgenConfig) -> Result<(), ModError> {
+    if config.plan_max_rounds == 0 || config.plan_max_rounds > MAX_PLAN_ROUNDS {
+        return Err(ModError::msg(format!(
+            "worldgen: plan_max_rounds must be between 1 and {MAX_PLAN_ROUNDS}, got {}",
+            config.plan_max_rounds
+        )));
+    }
+    if !config.plan_cost_cap_usd.is_finite() || config.plan_cost_cap_usd < 0.0 {
+        return Err(ModError::msg(
+            "worldgen: plan_cost_cap_usd must be a finite, non-negative number",
+        ));
+    }
+    if !config.plan_cost_target_usd.is_finite() || config.plan_cost_target_usd < 0.0 {
+        return Err(ModError::msg(
+            "worldgen: plan_cost_target_usd must be a finite, non-negative number",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_batch_max_rooms(value: usize) -> Result<(), ModError> {

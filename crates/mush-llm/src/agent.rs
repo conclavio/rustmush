@@ -153,12 +153,19 @@ pub struct RunSpec {
 
 /// Run one bounded tool loop against `llm` and report.
 ///
+/// The host is `Send` so the future is: the drivers spawn these runs on the
+/// runtime, off the world loop.
+///
 /// The loop makes at most `limits.max_rounds` calls. Before each it asks the host
 /// whether it is finished and checks the run's spend against `cap_usd`. A reply
 /// with tool calls has each answered by the host; the round continues when every
 /// answer invites more, else the run is done. A reply with no tool call is the
 /// host's to judge: done, one repair, or a nudge.
-pub async fn run(llm: &LlmService, spec: RunSpec, host: &mut dyn ToolHost) -> RunReport {
+pub async fn run<H: ToolHost + Send + ?Sized>(
+    llm: &LlmService,
+    spec: RunSpec,
+    host: &mut H,
+) -> RunReport {
     let RunSpec {
         ctx,
         system,

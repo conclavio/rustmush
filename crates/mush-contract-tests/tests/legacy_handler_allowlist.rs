@@ -123,7 +123,7 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
     let mut mods = modules::server_modules_with(
         config_ext::weather_config(&config.weather),
         config_ext::economy_config(&config.economy).expect("the default [economy] converts"),
-        config_ext::atlas_config(&config.atlas).expect("the default [atlas] converts"),
+        config_ext::atlas_config(&config.atlas, &config.worldgen).expect("the default [atlas] converts"),
         &onboarding,
         wod_selected.then_some(&wod_economy),
         sr_selected.then_some(&sr_economy),
@@ -199,7 +199,7 @@ fn published_classes(ruleset: &str) -> BTreeMap<String, CommandCompatibility> {
     let mut mods = modules::server_modules_with(
         config_ext::weather_config(&config.weather),
         config_ext::economy_config(&config.economy).expect("the default [economy] converts"),
-        config_ext::atlas_config(&config.atlas).expect("the default [atlas] converts"),
+        config_ext::atlas_config(&config.atlas, &config.worldgen).expect("the default [atlas] converts"),
         &onboarding,
         wod_selected.then_some(&wod_economy),
         sr_selected.then_some(&sr_economy),

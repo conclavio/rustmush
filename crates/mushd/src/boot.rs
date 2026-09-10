@@ -210,7 +210,7 @@ pub async fn boot_all_in_one(
     // own mapping and never through a crate edge.
     let tacsim = tacsim_config(&config.tacsim)?;
     // S1: `[atlas]`, read host-side for the same reason as `[tacsim]`.
-    let atlas = atlas_config(&config.atlas)?;
+    let atlas = atlas_config(&config.atlas, &config.worldgen)?;
     let mut mods = crate::modules::server_modules_with(
         weather_config(&config.weather),
         economy_config_with(&config.economy, &contributed)?,

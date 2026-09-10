@@ -160,6 +160,11 @@ flavor_variants = 10
 
 [worldgen]
 batch_max_rooms = 40
+plan_cost_cap_usd = 5.0
+plan_cost_target_usd = 2.0
+plan_max_rounds = 6
+hydration_cap = 2
+hydration_strikes_to_zero = 3
 
 # Exactly one character ruleset. "wod" (oWoD20) or "shadowrun" (SR5) — they
 # share the +roll/+sheet/+chargen names, so two is a hard boot error.
@@ -313,6 +318,12 @@ model = "z-ai/glm-5.3-flash"
 max_tokens = 2000
 timeout_s = 120
 reasoning = "low"
+
+[llm.routes.worldgen_plan]
+model = "z-ai/glm-5.3"
+max_tokens = 8000
+timeout_s = 180
+reasoning = "high"
 
 [llm.routes.ambience]
 model = "deepseek/deepseek-v4-flash-0731"

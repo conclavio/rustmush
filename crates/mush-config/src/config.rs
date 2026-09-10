@@ -25,6 +25,11 @@
 //! | `[rulesets].enabled` | `["wod"]` | ruleset module(s) to load; unknown ids are a hard boot error |
 //! | `[weather].flavor_variants` | `10` | M10 variants per weather bucket (`0` disables, hard max `64`) |
 //! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` room cap (valid range `2..=40`) |
+//! | `[worldgen].plan_cost_cap_usd` | `5.0` | S3 building agent: a proposal's cost cap; a run stops before the call that would pass it |
+//! | `[worldgen].plan_cost_target_usd` | `2.0` | S3: the target told to the model, never enforced |
+//! | `[worldgen].plan_max_rounds` | `6` | S3: the most provider calls one planning run makes (`1..=24`) |
+//! | `[worldgen].hydration_cap` | `2` | S3: a character's default cap on outstanding site requests (doc 14 §4.5) |
+//! | `[worldgen].hydration_strikes_to_zero` | `3` | S3: strikes at which a character's cap becomes zero until staff reset it |
 //! | `[economy].mint_obligation_cap_major` | `50000` | E4 per-period ceiling on a faucet-funded obligation, in major units |
 //! | `[economy.instruments."<code>"].mint_obligation_cap_major` | (the above) | per-instrument override of that ceiling |
 //! | `[economy.cadences."<name>"].clock` | `"world_ic"` | SP1 declared cadence: `world_ic` \| `real_utc` (D-LBK-7) |
@@ -972,7 +977,8 @@ pub struct TacsimTimeCfg {
     pub catch_up_domains: String,
 }
 
-/// `[worldgen]` section — the M10 batch `@gen/building` knobs.
+/// `[worldgen]` section — the M10 batch `@gen/building` knobs and, since S3, the
+/// building agent's (14-spatial-implementation-plan §3.4).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct WorldgenCfg {
@@ -981,14 +987,32 @@ pub struct WorldgenCfg {
     /// outside `2..=40` fail module registration. The typed conversion into
     /// `mush_worldgen::WorldgenConfig` lives in `mush-server`.
     pub batch_max_rooms: usize,
+    /// S3: a proposal's cost cap, USD; a planning run stops before the call that
+    /// would pass it (default 5.0).
+    pub plan_cost_cap_usd: f64,
+    /// S3: the target told to the model and never enforced (default 2.0).
+    pub plan_cost_target_usd: f64,
+    /// S3: the most provider calls one planning run makes (default 6, `1..=24`).
+    pub plan_max_rounds: usize,
+    /// S3: a character's default cap on outstanding site requests (default 2).
+    pub hydration_cap: u32,
+    /// S3: strikes at which a character's cap becomes zero until staff reset it
+    /// (default 3).
+    pub hydration_strikes_to_zero: u32,
 }
 
 impl Default for WorldgenCfg {
     fn default() -> Self {
-        // Mirrors `mush_worldgen::WorldgenConfig::default().batch_max_rooms`
-        // (kept as a literal so `mush-config` needs no `mush-worldgen` dep).
+        // Mirrors `mush_worldgen::WorldgenConfig::default()` and the atlas's
+        // hydration defaults (kept as literals so `mush-config` needs no
+        // `mush-worldgen` or `mush-atlas` dep).
         WorldgenCfg {
             batch_max_rooms: 40,
+            plan_cost_cap_usd: 5.0,
+            plan_cost_target_usd: 2.0,
+            plan_max_rounds: 6,
+            hydration_cap: 2,
+            hydration_strikes_to_zero: 3,
         }
     }
 }

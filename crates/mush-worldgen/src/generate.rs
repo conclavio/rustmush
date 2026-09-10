@@ -44,6 +44,9 @@ pub async fn run_worldgen_async(llm: &LlmService, payload: &str) -> String {
                 building,
                 brief,
             } => generate_room(llm, &snap, Some(building), Some(&brief)).await,
+            WorldgenReq::Plan(snap) => GenOutcome::Plan {
+                outcome: crate::plan::run_plan(llm, &snap).await,
+            },
         }
     } else {
         match serde_json::from_str::<GenSnapshot>(payload) {

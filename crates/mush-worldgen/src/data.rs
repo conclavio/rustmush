@@ -246,6 +246,11 @@ pub enum GenOutcome {
         /// Whether `@gen/retry` might succeed.
         retryable: bool,
     },
+    /// A planning run ended (S3): the outcome folds into its proposal.
+    Plan {
+        /// What the run came to.
+        outcome: crate::proposal::PlanOutcome,
+    },
 }
 
 /// In-RAM working state (a module state slot): the draft-preview panel
@@ -268,6 +273,13 @@ pub struct WorldgenState {
     /// so the batch command reads it from state; not persisted (it is a boot
     /// config value, re-applied on every boot from [`WorldgenConfig`]).
     pub batch_max_rooms: usize,
+    /// The building agent's proposals (S3), keyed by id, mirrored by the
+    /// persisted `proposal:{id}` documents.
+    pub proposals: std::collections::BTreeMap<u64, crate::proposal::ProposalRec>,
+    /// The next proposal id (persisted as `proposal_meta`).
+    pub next_proposal: u64,
+    /// The planning limits (config knobs; not persisted).
+    pub plan: crate::plan::PlanLimits,
 }
 
 impl WorldgenState {
@@ -287,6 +299,9 @@ impl WorldgenState {
             briefs: HashMap::new(),
             review: HashMap::new(),
             batch_max_rooms,
+            proposals: std::collections::BTreeMap::new(),
+            next_proposal: 1,
+            plan: crate::plan::PlanLimits::default(),
         }
     }
 
@@ -602,4 +617,7 @@ pub enum WorldgenReq {
         /// The shared brief context.
         brief: BuildingBriefContext,
     },
+    /// A planning run of the building agent (S3). Boxed: the snapshot carries the
+    /// validator's whole context.
+    Plan(Box<crate::proposal::PlanSnapshot>),
 }
