@@ -9,10 +9,17 @@ description = "mush-atlas (S1, doc 14 §2–3): the spatial records — regions,
 # 14-spatial-implementation-plan §3.1: `mush-atlas -> {core, content, proto}` plus the serde
 # vocabulary. No sim, tactics, npc, housing or worldgen edge: places know nothing about the
 # people or the fights in them. `cargo tree -p mush-atlas` is the test.
+#
+# S3 (§3.4) adds two edges for hydration (doc 14 §4.5): `mush-jobs`, for the BUILD review
+# queue and its `build.review` payload handler, and `mush-canon`, for the
+# `atlas.site.*` events. Neither runs back: jobs reads core, economy and proto; canon
+# reads core and proto.
 [dependencies]
 mush-core.workspace = true
 mush-content.workspace = true
 mush-proto.workspace = true
+mush-jobs.workspace = true
+mush-canon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

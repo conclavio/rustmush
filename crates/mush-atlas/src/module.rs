@@ -35,8 +35,8 @@ use mush_core::module::{
     WorldEventKind,
 };
 use mush_core::{
-    CanonicalId, CommandCompatibility, Ctx, ModuleOp, ModuleWrite, ObjId, Role, SceneId,
-    TickCadence, World,
+    CanonicalId, CommandCompatibility, Ctx, JobQueueSpec, ModuleOp, ModuleWrite, ObjId, Role,
+    SceneId, TickCadence, World,
 };
 use serde::de::DeserializeOwned;
 use smol_str::SmolStr;
@@ -85,6 +85,12 @@ pub struct AtlasConfig {
     /// `real_cap_s`, default 180 for `foot`, `car`, `transit` and `bus`; a mode
     /// absent here is uncapped).
     pub real_cap_s: BTreeMap<String, u32>,
+    /// The default cap on a character's outstanding site requests (S3, doc 14 §4.5;
+    /// `[worldgen].hydration_cap`, default 2).
+    pub hydration_cap: u32,
+    /// Strikes at which a character's cap becomes zero until staff reset it
+    /// (`[worldgen].hydration_strikes_to_zero`, default 3).
+    pub hydration_strikes_to_zero: u32,
 }
 
 /// The default `real_cap_s` table.
@@ -104,6 +110,8 @@ impl Default for AtlasConfig {
             packs: Vec::new(),
             dwell_floor_s: crate::travel::DEFAULT_DWELL_FLOOR_S,
             real_cap_s: default_real_caps(),
+            hydration_cap: crate::hydrate::DEFAULT_HYDRATION_CAP,
+            hydration_strikes_to_zero: crate::hydrate::DEFAULT_STRIKES_TO_ZERO,
         }
     }
 }
@@ -165,6 +173,10 @@ pub struct AtlasLimits {
     pub dwell_floor_s: u32,
     /// See [`AtlasConfig::real_cap_s`].
     pub real_cap_s: BTreeMap<String, u32>,
+    /// S3: the default cap on outstanding site requests.
+    pub hydration_cap: u32,
+    /// S3: strikes at which the cap becomes zero.
+    pub hydration_strikes_to_zero: u32,
 }
 
 /// The module's state slot.
@@ -182,6 +194,8 @@ pub struct AtlasState {
     pub travel: crate::travel::TravelState,
     /// The world theme (S2b): what every place falls to.
     pub world_theme: Option<crate::theme::Theme>,
+    /// Hydration (S3): standing and requests.
+    pub hydration: crate::hydrate::HydrationState,
 }
 
 impl Default for AtlasState {
@@ -192,12 +206,15 @@ impl Default for AtlasState {
                 nearest_room_cells: 8,
                 dwell_floor_s: crate::travel::DEFAULT_DWELL_FLOOR_S,
                 real_cap_s: default_real_caps(),
+                hydration_cap: crate::hydrate::DEFAULT_HYDRATION_CAP,
+                hydration_strikes_to_zero: crate::hydrate::DEFAULT_STRIKES_TO_ZERO,
             },
             shelf: BTreeMap::new(),
             records: Records::default(),
             last_plan: BTreeMap::new(),
             travel: crate::travel::TravelState::default(),
             world_theme: None,
+            hydration: crate::hydrate::HydrationState::default(),
         }
     }
 }
@@ -274,6 +291,8 @@ impl GameModule for AtlasModule {
                 nearest_room_cells: self.config.nearest_room_cells,
                 dwell_floor_s: self.config.dwell_floor_s,
                 real_cap_s: self.config.real_cap_s.clone(),
+                hydration_cap: self.config.hydration_cap,
+                hydration_strikes_to_zero: self.config.hydration_strikes_to_zero.max(1),
             },
             ..AtlasState::default()
         };
@@ -283,6 +302,14 @@ impl GameModule for AtlasModule {
                 .insert(pack.manifest().id().clone(), pack.clone());
         }
         reg.state(state);
+        // S3: the planner's entry (worldgen registers it at boot) and the BUILD
+        // review queue for hydrated sites (doc 14 §4.5).
+        reg.state(crate::hydrate::AtlasHooks::default());
+        reg.job_queue(JobQueueSpec {
+            name: crate::hydrate::BUILD_QUEUE.into(),
+            title: "Site reviews".into(),
+            min_role: Role::Builder,
+        })?;
         // K8.5: the read surface first, then the writer — each group declared.
         reg.classify_commands(CommandCompatibility::ReadOnly);
         crate::commands::register_views(reg)?;
@@ -329,6 +356,7 @@ impl GameModule for AtlasModule {
         let Loaded { records, dropped } = parse(&data, ctx.w);
         let (travel, dropped_travel) = crate::travel::hydrate(&data.kv, ctx.w, &records);
         let (world_theme, dropped_theme) = hydrate_world_theme(&data.kv);
+        let (hydration, dropped_hydration) = crate::hydrate::hydrate(&data.kv);
         {
             let slot = ctx
                 .state_mut::<AtlasState>()
@@ -336,14 +364,18 @@ impl GameModule for AtlasModule {
             slot.records = records;
             slot.travel = travel;
             slot.world_theme = world_theme;
+            slot.hydration = hydration;
         }
         for key in dropped
             .into_iter()
             .chain(dropped_travel)
             .chain(dropped_theme)
+            .chain(dropped_hydration)
         {
             del_doc(ctx, key);
         }
+        // S3: the BUILD review handler and the deny observer, when jobs is composed.
+        crate::hydrate::register_review(ctx.w);
         Ok(())
     }
 }
@@ -406,7 +438,10 @@ fn parse(data: &ModuleBootData, w: &World) -> Loaded {
     let mut records = Records::default();
     let mut dropped: Vec<SmolStr> = Vec::new();
     for (key, value) in &data.kv {
-        if crate::travel::is_travel_key(key) || key.starts_with("theme:") {
+        if crate::travel::is_travel_key(key)
+            || key.starts_with("theme:")
+            || crate::hydrate::is_hydration_key(key)
+        {
             continue;
         }
         let Some((kind, _)) = key.split_once(':') else {

@@ -65,6 +65,10 @@ pub(crate) fn register_pack(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 SmolStr::new_static("theme"),
                 SmolStr::new_static("show"),
                 SmolStr::new_static("exemplar"),
+                SmolStr::new_static("propose"),
+                SmolStr::new_static("cap"),
+                SmolStr::new_static("strike"),
+                SmolStr::new_static("standing"),
             ],
             help: "@atlas/pack list                   every pack on the shelf, and every latch\n\
                    @atlas/pack show <id>              a pack's manifest, entries, brief and secrets\n\
@@ -88,6 +92,15 @@ pub(crate) fn register_pack(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20                                  neighborhood or site, or on `world`\n\
                    @atlas/theme/show [<place>]        the effective theme there, or here\n\
                    @atlas/theme/exemplar <place>=<room>   copy a room's desc in as an exemplar\n\
+                   @atlas/propose <prose>             have the building agent plan a pack here\n\
+                   @atlas/propose <place>=<prose>     … for a named neighborhood or region\n\
+                   @atlas/propose --from <pack>       … reconceptualizing a pack on the shelf\n\
+                   @atlas/cap <character>=<n>         set a character's cap on outstanding site\n\
+                   \x20                                  requests (and clear their strikes)\n\
+                   @atlas/strike <site>=<reason>      retire a player-built site and strike\n\
+                   \x20                                  its builder\n\
+                   @atlas/standing [<character>]      a character's standing and requests, or\n\
+                   \x20                                  every request on the book\n\
                    Staff only (SIM_ADMIN or Royalty). A pack is content: applying the same pack\n\
                    twice changes nothing, and a retired pack stays retired across restarts."
                 .into(),
@@ -187,6 +200,18 @@ fn cmd_atlas_pack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if ctx.switches.has("theme") {
         return crate::theme_cmd::theme_admin(ctx);
+    }
+    if ctx.switches.has("propose") {
+        return crate::hydrate_cmd::propose_admin(ctx);
+    }
+    if ctx.switches.has("cap") {
+        return crate::hydrate_cmd::cap_admin(ctx);
+    }
+    if ctx.switches.has("strike") {
+        return crate::hydrate_cmd::strike_admin(ctx);
+    }
+    if ctx.switches.has("standing") {
+        return crate::hydrate_cmd::standing_admin(ctx);
     }
     if !is_staff(ctx.w, ctx.actor) {
         return Err(CmdError::msg("Permission denied."));
@@ -535,6 +560,8 @@ fn pack_retire(ctx: &mut Ctx<'_>, id: Option<&str>, reason: Option<&str>) -> Res
         .to_string();
     let (applied, report) = mush_content::module::retire_pack(ctx, &id, &reason)
         .map_err(|e| CmdError::msg(e.to_string()))?;
+    // S3: the requests the pack stood for are withdrawn with it.
+    crate::hydrate::note_pack_retired(ctx, &id, &reason);
     let mut lines = vec![format!(
         "Retired {}: {} entries removed{}.",
         applied.pack(),

@@ -53,12 +53,20 @@ use crate::data::{
 /// approver.
 pub type PayloadHandlerFn = Arc<dyn Fn(&mut Ctx<'_>, &Job) -> Result<(), String> + Send + Sync>;
 
+/// A registered status observer (S3): invoked after a job's status changes by
+/// `+job/approve`, `+job/deny` or `+job/status`, with the job as it now stands
+/// and the status it had. It rides the same command and write batch as the
+/// change; it cannot refuse it.
+pub type StatusObserverFn = Arc<dyn Fn(&mut Ctx<'_>, &Job, JobStatus) + Send + Sync>;
+
 /// The exported handle other modules use to plug into job approval — a
 /// payload-handler registry living in a module state slot on the world
-/// (see the module docs for the pattern).
+/// (see the module docs for the pattern) — and, since S3, the status observers
+/// a producing module registers to learn of a deny or a reopen.
 #[derive(Clone, Default)]
 pub struct JobsApi {
     pub(crate) handlers: HashMap<SmolStr, PayloadHandlerFn>,
+    pub(crate) observers: Vec<(SmolStr, StatusObserverFn)>,
 }
 
 impl fmt::Debug for JobsApi {
@@ -87,6 +95,35 @@ pub fn register_payload_handler(
     }
     api.handlers.insert(key, handler);
     Ok(())
+}
+
+/// Register a status observer under `name` (S3). Call it as you would
+/// [`register_payload_handler`]; a duplicate name and a world without the jobs
+/// module are errors.
+pub fn register_status_observer(
+    w: &mut World,
+    name: &str,
+    observer: StatusObserverFn,
+) -> Result<(), String> {
+    let api = w
+        .module_state_mut::<JobsApi>()
+        .ok_or_else(|| "the jobs module is not loaded".to_string())?;
+    if api.observers.iter().any(|(n, _)| n.as_str() == name) {
+        return Err(format!("status observer {name:?} is already registered"));
+    }
+    api.observers.push((SmolStr::new(name), observer));
+    Ok(())
+}
+
+/// Tell every registered observer that `job` moved from `previous`.
+pub(crate) fn notify_status(ctx: &mut Ctx<'_>, job: &Job, previous: JobStatus) {
+    let observers: Vec<StatusObserverFn> = ctx
+        .state::<JobsApi>()
+        .map(|api| api.observers.iter().map(|(_, o)| Arc::clone(o)).collect())
+        .unwrap_or_default();
+    for observer in observers {
+        observer(ctx, job, previous);
+    }
 }
 
 /// Everything needed to open a job programmatically.

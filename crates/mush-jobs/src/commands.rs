@@ -524,6 +524,7 @@ fn job_approve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (who, ts) = (ctx.actor, ctx.w.now());
     let stamp = comment.clone();
     let applied = job.payload.is_some();
+    let previous = job.status;
     let job = update_job(ctx, id, move |j| {
         j.status = JobStatus::Resolved;
         // E4c verify fold, E3: the **applied marker**, written in the same command
@@ -537,6 +538,7 @@ fn job_approve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             j.comments.push(JobComment { who, ts, text });
         }
     })?;
+    crate::api::notify_status(ctx, &job, previous);
     // Approval is durability-critical (PLAN: XP approval gates its
     // confirmation on the store ack): "Job N approved." — and the payload
     // handler's applied effects — must not be confirmed before the batch
@@ -579,6 +581,7 @@ fn job_deny(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     validate_terminal_comment(&job, &reason).map_err(CmdError::msg)?;
     let (who, ts) = (ctx.actor, ctx.w.now());
     let reason_comment = reason.clone();
+    let previous = job.status;
     let job = update_job(ctx, id, move |j| {
         j.status = JobStatus::Denied;
         j.comments.push(JobComment {
@@ -587,6 +590,7 @@ fn job_deny(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             text: reason_comment,
         });
     })?;
+    crate::api::notify_status(ctx, &job, previous);
     ctx.out.info(ctx.actor, format!("Job {id} denied."));
     let msg = format!(
         "Your job {id} ({}) has been denied by {}: {reason}",
@@ -640,9 +644,11 @@ fn job_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )));
         }
     }
+    let previous = job.status;
     let job = update_job(ctx, id, move |j| {
         j.status = status;
     })?;
+    crate::api::notify_status(ctx, &job, previous);
     ctx.out
         .info(ctx.actor, format!("Job {id} status set to {status}."));
     let msg = format!(

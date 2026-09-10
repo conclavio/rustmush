@@ -26,6 +26,8 @@ pub mod cells;
 pub mod commands;
 pub mod def;
 pub mod geom;
+pub mod hydrate;
+pub mod hydrate_cmd;
 pub mod module;
 pub mod place;
 pub mod raster;
@@ -43,6 +45,11 @@ pub use apply::{KINDS, register_appliers};
 pub use background::{Ground, background};
 pub use cells::{Cell, Cells, CellsError, MAX_TILE_CELLS, MAX_TILE_DOC_BYTES, MAX_TILE_SIDE};
 pub use geom::{GeomError, Point2, Point3, PointCm, Polygon2, Rect2, RectCm, Shape};
+pub use hydrate::{
+    Activation, AtlasHooks, BUILD_HANDLER, BUILD_QUEUE, DEFAULT_HYDRATION_CAP,
+    DEFAULT_STRIKES_TO_ZERO, HydrationState, Placement, ProposeFn, ProposeRequest, ProposeScope,
+    ProposeSource, RequestRec, RequestStatus, Requested, StandingRec, StrikeReport,
+};
 pub use module::{
     ATTR_NS, AtlasConfig, AtlasLimits, AtlasModule, AtlasState, MAX_CONFIGURED_PACKS, NS,
     PackSource, is_staff, verify_sources,

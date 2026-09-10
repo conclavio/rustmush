@@ -251,8 +251,29 @@ fn decode<T: serde::de::DeserializeOwned>(id: &CanonicalId, entry: &RawEntry) ->
 /// The pack's own neighborhood key, which every site, room, feature, hook and secret
 /// of a neighborhood pack belongs to.
 fn own_neighborhood(state: &AtlasState, pack: &Pack) -> Result<RecordKey, String> {
-    let kind = CanonicalId::new("neighborhood").map_err(|e| e.to_string())?;
     let pack_id = pack.manifest().id();
+    // S3: a site pack adds to the one applied neighborhood among the packs it
+    // requires (doc 14 §4.5); it carries no neighborhood entry of its own.
+    if pack.manifest().kind() == mush_content::PackKind::Site {
+        let mut found = pack.manifest().requires().iter().filter_map(|r| {
+            state
+                .records
+                .neighborhoods
+                .values()
+                .find(|n| n.key.pack == r.id)
+                .map(|n| n.key.clone())
+        });
+        let first = found
+            .next()
+            .ok_or_else(|| format!("{pack_id} requires no applied neighborhood pack"))?;
+        if found.next().is_some() {
+            return Err(format!(
+                "{pack_id} requires more than one neighborhood pack; a site pack adds to one"
+            ));
+        }
+        return Ok(first);
+    }
+    let kind = CanonicalId::new("neighborhood").map_err(|e| e.to_string())?;
     let mut found = pack.entries_of(&kind).map(|(id, _)| id.clone());
     let entry = found
         .next()
