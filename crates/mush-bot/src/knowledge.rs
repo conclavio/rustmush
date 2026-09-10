@@ -51,6 +51,10 @@ pub struct Knowledge {
 }
 
 impl Knowledge {
+    pub fn bookmark(&self) -> serde_json::Value {
+        serde_json::json!({"chunks":self.chunks,"bytes":self.bytes})
+    }
+
     pub fn load(paths: &[PathBuf]) -> Result<Self> {
         let mut result = Self::default();
         for (name, body) in BUNDLED_HELP {

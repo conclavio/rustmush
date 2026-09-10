@@ -28,6 +28,8 @@ knowledge = []
 # context = "bots/context/balanced-recall.json" # local relevance + recency experiment
 # debug = "bots/debug/builder-review.json"
 # budget = "bots/budgets/session.json" # session request/spend limits; /budget or F10 edits
+# conversation = "bots/conversation/independent.json" # pacing, social limits, scene IDs; F11 edits
+# conversation = "bots/conversation/spectator.json" # observe without autonomous model calls
 # model_tape = "bots/tapes/attention-interruption.json" # explicit simulation; no model API calls
 
 [costs]

@@ -26,6 +26,7 @@ Usage: mush-bot --config <file> [--goal <text>] [--role <text>]\n\
                 [--models <profiles.json>] [--model <profile>]\n\
                 [--tui | --json-events] [--prompts <file.json>]\n\
                 [--context <file.json>] [--debug <file.json>] [--budget <file.json>]\n\
+                [--conversation <file.json>]\n\
                 [--login <account+character>] [--model-tape <file.json>]\n\
                 [--test-controls] [--isolate-memory <new-directory>]\n\
        mush-bot --config <file> --replay <capture.json> --report <new.json> [--model <profile>]\n\
@@ -34,6 +35,8 @@ Usage: mush-bot --config <file> [--goal <text>] [--role <text>]\n\
        mush-bot --harness <cast.json> --output <new-directory> [--tui [--harness-debug <settings.json>]]\n\
        mush-bot --check-harness-debug <settings.json> [--report <new.json>]\n\
        mush-bot --check-budget <settings.json> [--report <new.json>]\n\
+       mush-bot --check-conversation <settings.json> [--report <new.json>]\n\
+       mush-bot --check-bookmark <bookmark.json> [--report <new.json>]\n\
        mush-bot --harness <cast.json> --check-harness\n\
        mush-bot --harness <cast.json> --plan-harness [--report <new.json>]\n\
        mush-bot --analyze-harness <summary.json|directory> [--report <new.json>] [--junit <new.xml>]\n\
@@ -87,6 +90,9 @@ fn launch() -> Result<u8> {
     let mut context = None;
     let mut debug = None;
     let mut budget = None;
+    let mut conversation = None;
+    let mut check_conversation = None;
+    let mut check_bookmark = None;
     let mut check_budget = None;
     let mut replay = None;
     let mut tape = None;
@@ -221,6 +227,23 @@ fn launch() -> Result<u8> {
                         .ok_or("--budget requires a settings JSON path")?,
                 ));
             }
+            "--conversation" => {
+                conversation = Some(PathBuf::from(
+                    args.next().ok_or("--conversation requires JSON path")?,
+                ))
+            }
+            "--check-conversation" => {
+                check_conversation = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--check-conversation requires JSON path")?,
+                ))
+            }
+            "--check-bookmark" => {
+                check_bookmark = Some(PathBuf::from(
+                    args.next().ok_or("--check-bookmark requires JSON path")?,
+                ))
+            }
+            "--managed-floor" => options.managed_floor = true,
             "--check-budget" => {
                 if check_budget.is_some() {
                     return Err("supply only one --check-budget".into());
@@ -369,11 +392,22 @@ fn launch() -> Result<u8> {
         compare_runs.is_some(),
         check_harness_debug.is_some(),
         check_budget.is_some(),
+        check_conversation.is_some(),
+        check_bookmark.is_some(),
     ];
     if offline_modes.iter().filter(|v| **v).count() > 1 {
         return Err(
             "choose only one offline validation, planning, analysis or comparison mode".into(),
         );
+    }
+    if (conversation.is_some() || options.managed_floor)
+        && (offline_modes.iter().any(|v| *v)
+            || studio.is_some()
+            || studio_session.is_some()
+            || harness.is_some()
+            || replay.is_some())
+    {
+        return Err("conversation session options cannot be combined with offline, studio, replay or harness modes; configure cast actors instead".into());
     }
     let studio_draft = if studio.is_some() || studio_session.is_some() {
         if offline_modes.iter().any(|v| *v)
@@ -443,6 +477,8 @@ fn launch() -> Result<u8> {
         || compare_runs.is_some()
         || check_harness_debug.is_some()
         || check_budget.is_some()
+        || check_conversation.is_some()
+        || check_bookmark.is_some()
     {
         if replay.is_some()
             || options.scenario.is_some()
@@ -504,6 +540,20 @@ fn launch() -> Result<u8> {
         if let Some(path) = check_budget {
             let settings = mush_bot::budget::Settings::load(&path)?;
             emit_offline_report(options.report.as_deref(), &settings)?;
+            return Ok(0);
+        }
+        if let Some(path) = check_conversation {
+            let settings = mush_bot::conversation::Settings::load(&path)?;
+            emit_offline_report(options.report.as_deref(), &settings)?;
+            return Ok(0);
+        }
+        if let Some(path) = check_bookmark {
+            let bookmark = mush_bot::scene::Bookmark::load(&path)?;
+            emit_offline_report(
+                options.report.as_deref(),
+                &serde_json::json!({"valid":true,"id":bookmark.id,"kind":bookmark.kind,
+                "watermark":bookmark.watermark,"modules":bookmark.modules.keys().collect::<Vec<_>>(),"world_restorable":false}),
+            )?;
             return Ok(0);
         }
         if let Some(path) = check_regression {
@@ -713,6 +763,9 @@ fn launch() -> Result<u8> {
     }
     if let Some(path) = budget {
         config.budget = Some(path);
+    }
+    if let Some(path) = conversation {
+        config.conversation = Some(path);
     }
     if let Some(path) = tape {
         config.model_tape = Some(path);

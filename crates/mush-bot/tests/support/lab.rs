@@ -211,7 +211,7 @@ async fn organized_cast_keeps_briefings_private_coordinates_travel_and_totals_se
         standalone
             .events
             .iter()
-            .all(|e| e.actor.is_none() && e.elapsed_ms.is_none())
+            .all(|e| e.actor.is_none() && e.elapsed_ms.is_some())
     );
     let capture: mush_bot::model::Capture = serde_json::from_value(
         events.iter().find(|e| e["kind"] == "model-input").unwrap()["data"].clone(),

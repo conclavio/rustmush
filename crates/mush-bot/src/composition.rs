@@ -104,6 +104,7 @@ fn defaults() -> Vec<Component> {
         "reference_documents",
         "terminal_history",
         "recent_speech",
+        "conversation_policy",
         "belief_feedback",
         "model_calls_remaining",
         "context_settings",

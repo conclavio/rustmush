@@ -147,9 +147,18 @@ struct View {
     capture: Value,
 }
 
-const PANELS: [&str; 10] = [
-    "State", "Costs", "Memory", "Prompts", "Context", "Debug", "Result", "Assembly", "Groups",
+const PANELS: [&str; 11] = [
+    "State",
+    "Costs",
+    "Memory",
+    "Prompts",
+    "Context",
+    "Debug",
+    "Result",
+    "Assembly",
+    "Groups",
     "Budget",
+    "Conversation",
 ];
 
 impl View {
@@ -194,6 +203,7 @@ impl View {
                 "route",
                 "character",
                 "attention",
+                "conversation",
                 "answer",
                 "probe-result",
                 "probe",
@@ -242,7 +252,7 @@ impl View {
             .as_str()
             .unwrap_or("connecting");
         let spend = &self.state["costs"]["session"]["totals"]["provider_cost_by_currency"];
-        frame.render_widget(Paragraph::new(format!("RustMUSH Bot | {status} | {model} | session {spend}\nF2 pause/resume  F3 model  F4 prompts  F5 step model  F6 context  F7 debug  F8 commit  F9 panel  F10 budget  Ctrl+Q quit")), rows[0]);
+        frame.render_widget(Paragraph::new(format!("RustMUSH Bot | {status} | {model} | session {spend}\nF2 run/pause F3 model F4 prompts F5 step F6 context F7 debug F8 commit F9 panel F10 budget F11 conversation Ctrl+Q quit")), rows[0]);
         let columns = Layout::horizontal([Constraint::Percentage(65), Constraint::Percentage(35)])
             .split(rows[1]);
         let lines: Vec<_> = self.game.lines().collect();
@@ -264,6 +274,7 @@ impl View {
             "assembly",
             "group_affiliations",
             "budget",
+            "conversation",
         ][self.panel];
         let info = if self.panel == 6 {
             self.last_result.clone()
@@ -271,6 +282,8 @@ impl View {
             serde_json::to_string_pretty(&serde_json::json!({"stale":self.state["capture_stale"],
                 "request_revision":self.capture["request_revision"],"composition":self.capture["composition"],
                 "messages":self.capture["payload"]["messages"]})).unwrap_or_default()
+        } else if self.panel == 10 {
+            serde_json::to_string_pretty(&serde_json::json!({"conversation":self.state["conversation"],"provenance":self.state["provenance"],"costs":self.state["costs"]["session"]})).unwrap_or_default()
         } else if self.panel == 2 {
             serde_json::to_string_pretty(&serde_json::json!({"working_notes":self.state["state"]["memory"],"store":self.state["memory_store"],"attention":self.state["attention"]})).unwrap_or_default()
         } else {
@@ -402,6 +415,12 @@ impl View {
                         budget.validate()?;
                         Control::Budget(budget)
                     }
+                    "conversation" => {
+                        let settings: crate::conversation::Settings =
+                            serde_json::from_str(&editor.text)?;
+                        settings.validate()?;
+                        Control::Conversation(settings)
+                    }
                     _ => {
                         let d: crate::debugger::Settings = serde_json::from_str(&editor.text)?;
                         d.validate()?;
@@ -476,15 +495,18 @@ impl View {
                 self.model_choice = Some(0);
                 None
             }
-            KeyCode::F(4) | KeyCode::F(6) | KeyCode::F(7) | KeyCode::F(10) => {
+            KeyCode::F(4) | KeyCode::F(6) | KeyCode::F(7) | KeyCode::F(10) | KeyCode::F(11) => {
                 let name = match key.code {
                     KeyCode::F(4) => "prompts",
                     KeyCode::F(6) => "context",
                     KeyCode::F(10) => "budget",
+                    KeyCode::F(11) => "conversation",
                     _ => "debug",
                 };
                 let settings = if name == "budget" {
                     &self.state[name]["settings"]
+                } else if name == "conversation" {
+                    &self.state[name]["state"]["policy"]
                 } else {
                     &self.state[name]
                 };
@@ -617,6 +639,7 @@ struct CastActor {
 
 #[derive(Default)]
 struct CastView {
+    floor: Value,
     actors: std::collections::BTreeMap<String, CastActor>,
     selected: usize,
     panel: usize,
@@ -632,7 +655,7 @@ struct CastView {
     pending_control: Option<(usize, u64)>,
 }
 
-const CAST_PANELS: usize = 7;
+const CAST_PANELS: usize = 8;
 
 impl CastView {
     fn sync_debug(&mut self, state: crate::cast_debug::Snapshot) {
@@ -646,6 +669,7 @@ impl CastView {
             self.scroll = 0;
             self.detail_scroll = 0;
             self.phase.clear();
+            self.floor = Value::Null;
             self.title = format!("{} | run {}", self.cast_name, state.run);
         }
         if (state.run, state.revision, state.notice)
@@ -674,6 +698,7 @@ impl CastView {
                 event["data"]["run"]
             );
             self.actors.clear();
+            self.floor = Value::Null;
             self.selected = 0;
             self.scroll = 0;
             self.phase.clear();
@@ -698,6 +723,8 @@ impl CastView {
                 event["data"]["name"].as_str().unwrap_or("unnamed"),
                 event["data"]["dispatch"].as_str().unwrap_or("parallel")
             );
+        } else if event["actor"] == "_harness" && event["event"]["kind"] == "speaking-floor" {
+            self.floor = event["event"]["data"].clone();
         } else if let Some(actor) = event["actor"].as_str().filter(|name| *name != "_harness") {
             let view = self.actors.entry(actor.into()).or_default();
             let data = &event["event"]["data"];
@@ -716,6 +743,8 @@ impl CastView {
                         "debug",
                         "character_state",
                         "probe_results_omitted",
+                        "conversation",
+                        "provenance",
                     ] {
                         if let Some(value) = data.get(field) {
                             view.state[field] = value.clone();
@@ -899,10 +928,11 @@ impl CastView {
             .enumerate()
             .map(|(i, (name, a))| {
                 format!(
-                    "{} {}\n  {}",
+                    "{} {}\n  {} / {}",
                     if i == self.selected { ">" } else { " " },
                     name,
-                    a.state["state"]["status"].as_str().unwrap_or("connecting")
+                    a.state["state"]["status"].as_str().unwrap_or("connecting"),
+                    a.state["conversation"]["phase"].as_str().unwrap_or("-")
                 )
             })
             .collect::<Vec<_>>()
@@ -930,6 +960,11 @@ impl CastView {
                 panes[0],
             );
             let (title, value) = match self.panel {
+                7 => (
+                    "Conversation and floor",
+                    serde_json::json!({"conversation":actor.state["conversation"],
+                    "floor":self.floor,"provenance":actor.state["provenance"],"costs":actor.state["costs"]["session"]}),
+                ),
                 1 => ("Prompt assembly", json_value(&actor.capture)),
                 2 => (
                     "Session costs and budget",
@@ -1129,6 +1164,29 @@ pub async fn run_cast_debugged(
 mod tests {
     use super::*;
     #[test]
+    fn conversation_editor_and_panels_use_acknowledged_actor_state() {
+        let mut view = View::default();
+        let initial = serde_json::json!({"state":{"status":"listening"},"conversation":{"state":{"policy":crate::conversation::Settings::default()},"phase":"waiting"}});
+        view.event(serde_json::json!({"kind":"snapshot","data":initial}));
+        assert!(
+            matches!(view.key(KeyEvent::new(KeyCode::F(11),KeyModifiers::NONE)).unwrap(),Some(Control::Line(s)) if s=="/pause")
+        );
+        view.editor.as_mut().unwrap().1 = Editor::new("{\"max_social_requests\":0}".into());
+        let save = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(view.key(save).is_err());
+        view.editor.as_mut().unwrap().1 = Editor::new("{\"reply_min_ms\":950}".into());
+        assert!(
+            matches!(view.key(save).unwrap(),Some(Control::Conversation(s)) if s.reply_min_ms==950)
+        );
+        assert_eq!(view.state, initial);
+        view.panel = PANELS.iter().position(|p| *p == "Conversation").unwrap();
+        for (width, height) in [(60, 20), (160, 48)] {
+            let mut terminal =
+                Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| view.draw(f)).unwrap();
+        }
+    }
+    #[test]
     fn budget_editor_validates_without_resetting_usage_or_optimistically_changing_state() {
         let mut view = View::default();
         let f10 = KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE);
@@ -1168,7 +1226,7 @@ mod tests {
             view.state, snapshot,
             "only runner snapshots update accepted budget and usage"
         );
-        view.panel = PANELS.len() - 1;
+        view.panel = PANELS.iter().position(|p| *p == "Budget").unwrap();
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
         terminal.draw(|frame| view.draw(frame)).unwrap();
         let screen: String = terminal

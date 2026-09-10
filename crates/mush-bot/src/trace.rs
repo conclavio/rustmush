@@ -33,7 +33,8 @@ pub struct Entry {
     pub line: usize,
     pub actor: Option<String>,
     pub kind: String,
-    /// Only the joined envelope's elapsed time, never derived from timestamps.
+    /// Joined harness elapsed time, or an explicit standalone session clock.
+    /// Never inferred from wall timestamps or compared across clock domains.
     pub elapsed_ms: Option<u64>,
     pub timestamp_ms: Option<u64>,
     pub seq: Option<u64>,
@@ -200,7 +201,7 @@ fn name(object: &Map<String, Value>, field: &str) -> std::result::Result<String,
 
 fn entry(raw: Value, line: usize) -> std::result::Result<(Format, Entry), String> {
     let row = raw.as_object().ok_or("row must be a JSON object")?;
-    let joined = ["event", "actor", "elapsed_ms"]
+    let joined = ["event", "actor"]
         .iter()
         .any(|field| row.contains_key(*field));
     let (format, actor, elapsed_ms, event) = if joined {
@@ -226,15 +227,23 @@ fn entry(raw: Value, line: usize) -> std::result::Result<(Format, Entry), String
                 .ok_or("joined event must be a JSON object")?,
         )
     } else {
-        (Format::Standalone, None, None, row)
+        (
+            Format::Standalone,
+            None,
+            integer(row, "elapsed_ms", false, false)?,
+            row,
+        )
     };
-    if ["event", "actor", "elapsed_ms"]
+    if ["event", "actor"]
         .iter()
         .any(|field| event.contains_key(*field))
     {
         return Err("event contains joined envelope fields".into());
     }
     let kind = name(event, "kind")?;
+    // Validate an actor's explicit clock even when the harness envelope owns
+    // the time used for joined filtering.
+    integer(event, "elapsed_ms", false, false)?;
     if !event.contains_key("data") {
         return Err("event is missing data".into());
     }
@@ -494,6 +503,17 @@ impl Trace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_session_clock_does_not_turn_a_standalone_trace_into_a_joined_trace() {
+        let row = serde_json::json!({"kind":"speech-prepared","data":{},"elapsed_ms":42,"provenance":{"session":"one"}});
+        let standalone = trace(&row.to_string());
+        assert_eq!(standalone.format, Format::Standalone);
+        assert_eq!(standalone.events[0].elapsed_ms, Some(42));
+        let joined =
+            trace(&serde_json::json!({"actor":"a","elapsed_ms":81,"event":row}).to_string());
+        assert_eq!(joined.events[0].elapsed_ms, Some(81));
+        assert_eq!(joined.events[0].raw["event"]["elapsed_ms"], 42);
+    }
 
     fn trace(source: &str) -> Trace {
         parse(Path::new("trace.jsonl"), source.as_bytes(), LIMITS).unwrap()

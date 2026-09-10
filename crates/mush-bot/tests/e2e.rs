@@ -44,6 +44,8 @@ const PASSWORD: &str = "bot-e2e-secret-42";
 mod budgets;
 #[path = "support/cast_debug.rs"]
 mod cast_debug;
+#[path = "support/conversation.rs"]
+mod conversation;
 #[path = "support/lab.rs"]
 mod lab;
 #[path = "support/probes.rs"]
@@ -67,6 +69,15 @@ impl Fixture {
     }
 
     async fn boot_world(builder: bool, llm: Option<Arc<LlmService>>, speaker: bool) -> Self {
+        Self::boot_players(builder, llm, speaker, &[]).await
+    }
+
+    async fn boot_players(
+        builder: bool,
+        llm: Option<Arc<LlmService>>,
+        speaker: bool,
+        extras: &[&str],
+    ) -> Self {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "mush-bot-e2e-{}-{}",
@@ -125,6 +136,18 @@ impl Fixture {
                 .create(ObjKind::Player, "Marco", GOD, Some(LIMBO))
                 .unwrap()
         });
+        let extras: Vec<_> = extras
+            .iter()
+            .map(|name| {
+                (
+                    *name,
+                    engine
+                        .world
+                        .create(ObjKind::Player, name, GOD, Some(LIMBO))
+                        .unwrap(),
+                )
+            })
+            .collect();
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         mushd::modules::boot_modules(&mut engine, &*store)
             .await
@@ -164,6 +187,23 @@ impl Fixture {
                     characters: vec![CharacterRef {
                         id,
                         name: "Marco".into(),
+                    }],
+                    ssh_keys: vec![],
+                    discord: None,
+                })
+                .await
+                .unwrap();
+        }
+        for (name, id) in extras {
+            store
+                .create_account(AccountRec {
+                    id: None,
+                    name: name.to_ascii_lowercase(),
+                    argon2_hash: hash_password(PASSWORD).unwrap(),
+                    created: 0,
+                    characters: vec![CharacterRef {
+                        id,
+                        name: name.into(),
                     }],
                     ssh_keys: vec![],
                     discord: None,

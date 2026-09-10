@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "mode": "independent",
+  "scope": {"campaign": "band", "branch": "main", "scene": "rehearsal"},
+  "seed": 41,
+  "debounce_ms": 600,
+  "reply_min_ms": 700,
+  "reply_jitter_ms": 1300,
+  "request_cooldown_ms": 1500,
+  "window_ms": 60000,
+  "max_social_requests": 12,
+  "max_utterances": 8,
+  "max_utterance_chars": 1200,
+  "thread_idle_ms": 120000
+}

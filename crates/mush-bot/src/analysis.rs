@@ -640,8 +640,13 @@ pub fn analyze(summary: &Value) -> Result<Report> {
         if !indexes.insert(index) {
             return Err("analysis run indexes must be unique".into());
         }
-        let (variant_id, cast) = variant(&entry["cast"], index)?;
+        let (mut variant_id, cast) = variant(&entry["cast"], index)?;
         let result = &entry["result"];
+        if let Some(conditions) = result.pointer("/conversation/conditions") {
+            variant_id = revision(&serde_json::to_vec(&serde_json::json!({
+                "cast":variant_id,"conversation":canonical(conditions)
+            }))?);
+        }
         let interactive_debug = if result["debug"].is_null() {
             None
         } else {
@@ -961,6 +966,24 @@ pub fn junit(report: &Report) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn conversation_policy_content_and_floor_mode_distinguish_variants() {
+        let mut a = run(1, true, "0");
+        a["result"]["conversation"]["conditions"] =
+            serde_json::json!({"speaking_floor":null,"actors":{"scout":{"reply_min_ms":700}}});
+        let mut b = a.clone();
+        b["index"] = 2.into();
+        b["result"]["conversation"]["conditions"]["speaking_floor"] =
+            serde_json::json!({"speaking_window_ms":1800});
+        let mut c = a.clone();
+        c["index"] = 3.into();
+        c["result"]["conversation"]["conditions"]["actors"]["scout"]["reply_min_ms"] = 900.into();
+        let mut d = a.clone();
+        d["index"] = 4.into();
+        let result = analyze(&serde_json::json!({"version":1,"runs":[a,b,c,d]})).unwrap();
+        assert_eq!(result.variants.len(), 3);
+        assert_eq!(result.runs[0].variant_id, result.runs[3].variant_id);
+    }
 
     fn session(amount: &str, requests: u64) -> Value {
         let mut value = serde_json::to_value(Breakdown::default()).unwrap();
