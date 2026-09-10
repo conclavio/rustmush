@@ -1519,13 +1519,53 @@ fn invoke_interface(
     }
     match result {
         Ok(reply) => {
-            for line in reply.text.lines().filter(|l| !l.trim().is_empty()) {
-                let line = crate::action::sanitize_line(line, crate::action::SAY_CAP);
-                if !line.is_empty() {
-                    say_as_npc(ctx, npc, room, NarrativeKind::Say, &line);
+            let lines: Vec<String> = reply
+                .text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| crate::action::sanitize_line(l, crate::action::SAY_CAP))
+                .filter(|l| !l.is_empty())
+                .collect();
+            match reply.audience {
+                mush_core::ReplyAudience::Room => {
+                    for line in &lines {
+                        say_as_npc(ctx, npc, room, NarrativeKind::Say, line);
+                    }
+                    record_self(ctx, npc, &format!("(answered with {name})"));
+                }
+                mush_core::ReplyAudience::Asker => {
+                    // S8.2 (14a #2): the provider read as the asker, so the
+                    // answer is theirs alone — spoken to them, not the room:
+                    // no room narrative, no `Said` event for another NPC to
+                    // overhear, and the memory keeps the ability, not the
+                    // text, so a later public turn cannot repeat it. The room
+                    // sees that a word was had.
+                    for line in &lines {
+                        speak_to(ctx, npc, asker, NarrativeKind::Say, line);
+                    }
+                    let asker_name = display_name(ctx.w, asker);
+                    if !lines.is_empty() {
+                        let aside = format!(
+                            "{} speaks quietly with {asker_name}.",
+                            display_name(ctx.w, npc)
+                        );
+                        ctx.out.to_room(
+                            room,
+                            vec![asker],
+                            OutputEvent::Narrative {
+                                kind: NarrativeKind::Emit,
+                                actor: Some(obj_ref(ctx.w, npc)),
+                                text: RichText::plain(aside),
+                            },
+                        );
+                    }
+                    record_self(
+                        ctx,
+                        npc,
+                        &format!("(answered {asker_name} with {name}, privately)"),
+                    );
                 }
             }
-            record_self(ctx, npc, &format!("(answered with {name})"));
         }
         Err(mush_core::InterfaceError::Refused(why)) => {
             let line = crate::action::sanitize_line(&why, crate::action::SAY_CAP);
@@ -2800,6 +2840,17 @@ fn say_as_npc(ctx: &mut Ctx<'_>, npc: ObjId, room: ObjId, kind: NarrativeKind, t
     });
     let name = display_name(ctx.w, npc);
     record_self(ctx, npc, &format_speech(&name, kind, text));
+}
+
+/// One narrative line from `actor` to `to` alone (S8.2): the asker hears the
+/// NPC speak; no one else does.
+fn speak_to(ctx: &mut Ctx<'_>, actor: ObjId, to: ObjId, kind: NarrativeKind, text: &str) {
+    let ev = OutputEvent::Narrative {
+        kind,
+        actor: Some(obj_ref(ctx.w, actor)),
+        text: RichText::plain(text),
+    };
+    ctx.out.to_actor(to, ev);
 }
 
 fn emit_room(ctx: &mut Ctx<'_>, room: ObjId, kind: NarrativeKind, actor: ObjId, text: &str) {

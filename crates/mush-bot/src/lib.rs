@@ -4,6 +4,11 @@
 //! This agent intentionally develops independently from in-game NPCs and
 //! `mush-llm`. Its model client, decisions, memory and runner belong to this tool;
 //! shared behavior is compared through the game interface, not shared planning.
+// The panic-shaped restriction lints this crate has already paid for
+// (crates/mush-contract-tests/tests/restriction_lints.rs): measured at zero,
+// so the compiler holds them there.
+#![deny(clippy::panic, clippy::unreachable, clippy::panic_in_result_fn)]
+
 pub mod analysis;
 pub mod attention;
 pub mod budget;

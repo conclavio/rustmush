@@ -170,6 +170,13 @@ reason = "World-task `#[cfg(test)]` rig: places objects in the sim's spatial ind
 # the failure this census exists to make impossible to ship.
 
 [[site]]
+path = "crates/mush-atlas/tests/review_window.rs"
+accessor = "World::module_state_mut"
+slot = "NpcHostState"
+owner = "npc"
+reason = "14a's S1–S7 review reproduction (kept unchanged by S8): begins an NPC host turn by hand to complete an interface ability for the asker and watch who hears the reply."
+
+[[site]]
 path = "crates/mush-campaign/tests/common/mod.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

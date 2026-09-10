@@ -105,7 +105,7 @@ fn surface_index(w: &World, st: &AtlasState, entry: &WindowEntry, viewer: ObjId)
 }
 
 /// The rooms `viewer` may see on this window.
-fn visible_rooms(
+pub(crate) fn visible_rooms(
     w: &World,
     st: &AtlasState,
     entry: &WindowEntry,
@@ -321,16 +321,22 @@ fn audience(w: &World, entry: &WindowEntry, domain: DomainId) -> Vec<ObjId> {
 
 /// Send `viewer` their keyframe of `domain`.
 pub fn send_keyframe(ctx: &mut Ctx<'_>, viewer: ObjId, domain: DomainId) -> bool {
-    let Some(feed) = feed(ctx) else {
-        return false;
-    };
     let frame = ctx
         .state::<AtlasState>()
         .and_then(|st| frame_for(ctx.w, st, viewer, domain));
     let Some(frame) = frame else {
         return false;
     };
-    match serde_json::to_value(&frame) {
+    send_frame(ctx, viewer, &frame)
+}
+
+/// Send a frame already built for `viewer` (S8.3: `+map` prints its text from
+/// the same frame it sends).
+pub fn send_frame(ctx: &mut Ctx<'_>, viewer: ObjId, frame: &AtlasMapFrame) -> bool {
+    let Some(feed) = feed(ctx) else {
+        return false;
+    };
+    match serde_json::to_value(frame) {
         Ok(data) => {
             feed.keyframe_to(ctx, Audience::Actor(viewer), data);
             true

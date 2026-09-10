@@ -129,7 +129,8 @@ impl InterfaceAbilityProvider for AtlasInterface {
                 };
                 let lines = prose_lines(crate::view::neighborhood(st, ctx.w, asker, nb, staff));
                 let lines: Vec<String> = lines.into_iter().take(MAX_DESCRIBE_LINES).collect();
-                Ok(InterfaceReply::lines(&lines))
+                // Said aloud: a place's description is anyone's to hear.
+                Ok(InterfaceReply::public_lines(&lines))
             }
             "who.nearby" => {
                 let Some(room) = here_of(ctx.w, asker) else {

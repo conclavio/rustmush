@@ -7,10 +7,9 @@ use std::sync::Arc;
 
 use mush_core::module::{ModError, Registrar};
 use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, SceneClass};
-use mush_sim::DomainId;
 
 use crate::module::{AtlasState, NS, is_staff};
-use crate::window::{Compass, StepTarget, close_for_scene, open_for_scene, step, summary};
+use crate::window::{Compass, StepTarget, close_for_scene, open_for_scene, step};
 
 /// Register `+map` and `+move`.
 pub(crate) fn register_map(reg: &mut Registrar<'_>) -> Result<(), ModError> {
@@ -130,7 +129,10 @@ fn cmd_map(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "You are not on a map. A scene's facilitator opens one with +map/open.",
         ));
     };
-    let lines: Vec<String> = {
+    // S8.3 (14a #3): the text is the frame's view — built once for this
+    // viewer, printed, then sent — so it names what the frame shows and
+    // nothing the frame hides.
+    let (lines, frame): (Vec<String>, Option<mush_proto::AtlasMapFrame>) = {
         let st = ctx
             .state::<AtlasState>()
             .ok_or_else(|| CmdError::msg("The atlas module is not composed on this server."))?;
@@ -139,7 +141,8 @@ fn cmd_map(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .open
             .get(&domain.0)
             .ok_or_else(|| CmdError::msg("Your map is closed."))?;
-        let mut lines = vec![summary(ctx.w, entry)];
+        let frame = crate::frame::frame_for(ctx.w, st, actor, domain);
+        let mut lines = vec![crate::window::summary_for(ctx.w, st, entry, actor)];
         let here = ctx.w.get(actor).and_then(|o| o.location);
         lines.push(format!(
             "You stand at ({:.1}, {:.1}, z {:.1}) facing {}°, in {}.",
@@ -162,27 +165,23 @@ fn cmd_map(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             })
             .collect();
         lines.push(format!("Surfaces: {}.", floors.join(", ")));
-        let others: Vec<String> = mush_sim::participants(ctx.w, DomainId(entry.domain))
-            .into_iter()
-            .filter(|(o, _)| *o != actor)
-            .map(|(o, p)| {
-                format!(
-                    "{} ({:.0}, {:.0})",
-                    mush_core::output::display_name(ctx.w, o),
-                    p.x,
-                    p.y
-                )
-            })
+        let others: Vec<String> = frame
+            .iter()
+            .flat_map(|f| f.units.iter())
+            .filter(|u| !u.you)
+            .map(|u| format!("{} (cell {}, {})", u.name, u.cell.0, u.cell.1))
             .collect();
         if !others.is_empty() {
             lines.push(format!("On the map: {}.", others.join(", ")));
         }
-        lines
+        (lines, frame)
     };
     say(ctx, lines.join("\n"));
     // The frame itself: line mode prints it as the text grid, a client with
     // a map pane replaces its picture.
-    crate::frame::send_keyframe(ctx, actor, domain);
+    if let Some(frame) = frame {
+        crate::frame::send_frame(ctx, actor, &frame);
+    }
     Ok(())
 }
 

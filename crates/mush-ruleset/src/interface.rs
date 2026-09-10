@@ -103,7 +103,7 @@ impl InterfaceAbilityProvider for RulesInterface {
                                 if b.rules.len() == 1 { "" } else { "s" }
                             ));
                         }
-                        Ok(InterfaceReply::lines(&lines))
+                        Ok(InterfaceReply::public_lines(&lines))
                     }
                     None => {
                         let mut lines = vec![format!(
@@ -122,7 +122,7 @@ impl InterfaceAbilityProvider for RulesInterface {
                         lines.push(
                             "`+chargen` starts it; `help chargen` has the long form.".to_string(),
                         );
-                        Ok(InterfaceReply::lines(&lines))
+                        Ok(InterfaceReply::public_lines(&lines))
                     }
                 }
             }
@@ -134,7 +134,7 @@ impl InterfaceAbilityProvider for RulesInterface {
                     .filter(|t| !t.is_empty())
                     .ok_or_else(|| InterfaceError::Invalid("a topic".to_string()))?;
                 match ctx.reg.help_topic(&topic) {
-                    Some(t) => Ok(InterfaceReply::text(format!("{}\n{}", t.title, t.body))),
+                    Some(t) => Ok(InterfaceReply::public(format!("{}\n{}", t.title, t.body))),
                     None => Err(InterfaceError::Refused(format!(
                         "Nothing in the help under {topic:?}; `help` lists the topics."
                     ))),

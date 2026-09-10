@@ -78,15 +78,10 @@ pub fn traverse_exit(
 ) {
     let Some(e) = w.get(exit) else { return };
     let exit_name = primary_name(&e.name).to_string();
-    let lock = e.locks.get(&LockType::Basic).cloned();
     let dest = e.destination;
     let from = w.get(actor).and_then(|o| o.location);
 
-    if let Some(l) = &lock
-        && !eval_lock(w, l, actor, MAX_LOCK_DEPTH)
-    {
-        let fail =
-            attr_text(w, exit, "fail").unwrap_or_else(|| "You can't go that way.".to_string());
+    if let Some(fail) = exit_lock_refusal(w, actor, exit) {
         out.error(actor, fail);
         if let Some(fr) = from
             && let Some(of) = attr_text(w, exit, "ofail")
@@ -142,6 +137,64 @@ pub fn traverse_exit(
         },
         lens,
     );
+}
+
+/// The exit's `Basic` lock, refusing `actor`: its `fail` text (`You can't go
+/// that way.` when the exit has none). `None` when there is no lock or it
+/// passes.
+fn exit_lock_refusal(w: &World, actor: ObjId, exit: ObjId) -> Option<String> {
+    let lock = w.get(exit)?.locks.get(&LockType::Basic)?;
+    if eval_lock(w, lock, actor, MAX_LOCK_DEPTH) {
+        return None;
+    }
+    Some(attr_text(w, exit, "fail").unwrap_or_else(|| "You can't go that way.".to_string()))
+}
+
+/// Why a traversal was refused (S8.1, 14a #1): the exit's own lock, or a
+/// module's veto.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TraversalRefusal {
+    /// The exit's `Basic` lock refused the mover: its `fail` text.
+    Locked(String),
+    /// A `MoveAttempt` hook vetoed the move: its reason.
+    Vetoed(RichText),
+}
+
+impl TraversalRefusal {
+    /// The refusal as the mover reads it.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        match self {
+            TraversalRefusal::Locked(text) => text.clone(),
+            TraversalRefusal::Vetoed(rich) => rich.to_plain_text(),
+        }
+    }
+}
+
+/// Authorize `actor` moving to `dest` through `exit` — or through none, a
+/// teleport-shaped move — exactly as [`traverse_exit`] does before it relocates
+/// anyone: the exit's `Basic` lock, then the `MoveAttempt` veto chain. This is
+/// the one gate: a tactical step across a room boundary (S8.1, 14a #1) asks it
+/// through [`Ctx::authorize_traversal`] with the portal's exit, so a locked
+/// doorway is locked on the map as it is in prose.
+///
+/// # Errors
+///
+/// The lock's `fail` text, or the first hook's reason.
+pub fn authorize_traversal(
+    reg: &Registry,
+    w: &World,
+    actor: ObjId,
+    exit: Option<ObjId>,
+    dest: ObjId,
+    lens: crate::action_state::TypedStateLens<'_>,
+) -> Result<(), TraversalRefusal> {
+    if let Some(exit) = exit
+        && let Some(fail) = exit_lock_refusal(w, actor, exit)
+    {
+        return Err(TraversalRefusal::Locked(fail));
+    }
+    check_move_attempt(reg, w, actor, exit, dest, lens).map_err(TraversalRefusal::Vetoed)
 }
 
 /// Send `actor` home (the `home` keyword / command). Consults the

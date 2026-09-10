@@ -1,0 +1,10 @@
+# mush-bot — production panic-surface budget (WS01-S11).
+#
+# Regenerate with:
+#   PANIC_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test panic_budget
+# A raise is a reviewed diff, not a rounding error.
+# Born at 44: the bot laboratory's measured surface when it joined the workspace
+# (a79afef, 2026-09-10) and the S8 gate first counted it — the crate's own
+# unwrap/expect sites (38 + 6), not a raise of an existing budget.
+# tier: ceiling
+44

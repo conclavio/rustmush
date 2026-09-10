@@ -86,7 +86,7 @@ impl InterfaceAbilityProvider for MarketInterface {
                 if page.next.is_some() {
                     rows.push("(There is more: +market/list shows the rest.)".to_string());
                 }
-                Ok(InterfaceReply::lines(&rows))
+                Ok(InterfaceReply::public_lines(&rows))
             }
             "market.quote" => {
                 let listing = input
@@ -114,7 +114,7 @@ impl InterfaceAbilityProvider for MarketInterface {
                     .w
                     .module_state::<MarketStore>()
                     .and_then(|s| s.quote(id).cloned());
-                Ok(InterfaceReply::text(q.map_or_else(
+                Ok(InterfaceReply::public(q.map_or_else(
                     || format!("Quote #{id}."),
                     |q| {
                         format!(

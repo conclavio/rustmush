@@ -212,3 +212,11 @@ where the work is: a proposal is planned on your own budget. Every call is
 **audited** — `@agent/audit [<npc>]` (Builder+) lists who fronted what for
 whom — and with the model off, the NPC's fallback line names the command
 that does the same thing.
+
+A fifth rule keeps the answer where the question was. What the NPC answers
+**with your authority it answers to you alone**: your tickets, your
+proposals, your journey, who is near you reach you as the NPC's words, and
+the room sees only that it spoke quietly with you — no one overhears, no
+other NPC remembers it, and the NPC itself remembers that it answered, not
+what. An answer anyone could have had — the weather, a place's description,
+a price, a rules topic — it says aloud.

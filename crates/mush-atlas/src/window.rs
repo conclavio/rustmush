@@ -1614,16 +1614,35 @@ pub fn hearing_between(w: &World, a: ObjId, b: ObjId) -> Option<crate::trace::He
     ))
 }
 
-/// A one-line summary of an open window.
+/// A one-line summary of an open window, as staff list it: every anchor named.
 #[must_use]
 pub fn summary(w: &World, entry: &WindowEntry) -> String {
+    let anchors: Vec<String> = entry.anchors.iter().map(|r| name(w, *r)).collect();
+    summarize(w, entry, &anchors)
+}
+
+/// The summary as `viewer` may read it (S8.3, 14a #3): an anchor whose room
+/// the viewer may not see is neither named nor counted — the frame shows void
+/// there, and so does the header.
+#[must_use]
+pub fn summary_for(w: &World, st: &AtlasState, entry: &WindowEntry, viewer: ObjId) -> String {
+    let visible = crate::frame::visible_rooms(w, st, entry, viewer);
+    let anchors: Vec<String> = entry
+        .anchors
+        .iter()
+        .filter(|r| visible.contains(r))
+        .map(|r| name(w, *r))
+        .collect();
+    summarize(w, entry, &anchors)
+}
+
+fn summarize(w: &World, entry: &WindowEntry, anchors: &[String]) -> String {
     let grid = entry.frame.grid();
     let who = match &entry.opened_by {
         WindowOpener::Scene { system, id } => format!("{system} scene {id}"),
         WindowOpener::Staff { by } => name(w, *by),
         WindowOpener::Driver { driver } => format!("driver {driver}"),
     };
-    let anchors: Vec<String> = entry.anchors.iter().map(|r| name(w, *r)).collect();
     format!(
         "#{} {}x{} at {} cm, {} room(s), revision {}{}; opened by {who} over {}",
         entry.domain,
@@ -2104,15 +2123,36 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
             let there = next_surface.room_at(cx, cy);
             if there != current_room
                 && let Some(room) = there
-                && !staff
-                && st
-                    .records
-                    .roomgeo
-                    .get(&room)
-                    .is_some_and(|g| g.access == crate::record::Access::Restricted)
             {
-                stopped = Some(format!("{} is not open to you", name(ctx.w, room)));
-                break;
+                // S8.1 (14a #1): a boundary is a portal or an open edge, and
+                // either way the crossing is a move. The portal's exit — the
+                // one leaving the room the walker stands in — carries its
+                // lock, and the `MoveAttempt` chain runs as it does for
+                // `traverse_exit`; two footprints that merely touch consult
+                // the chain with no exit. Then the atlas's own access rule.
+                let exit = portal_between(&st.records, current_room, room)
+                    .and_then(|key| st.records.portals.get(&key))
+                    .and_then(|p| {
+                        p.exits.iter().copied().find(|e| {
+                            ctx.w.get(*e).is_some_and(|o| {
+                                o.location == current_room && o.destination == Some(room)
+                            })
+                        })
+                    });
+                if let Err(refusal) = ctx.authorize_traversal(actor, exit, room) {
+                    stopped = Some(refusal.reason());
+                    break;
+                }
+                if !staff
+                    && st
+                        .records
+                        .roomgeo
+                        .get(&room)
+                        .is_some_and(|g| g.access == crate::record::Access::Restricted)
+                {
+                    stopped = Some(format!("{} is not open to you", name(ctx.w, room)));
+                    break;
+                }
             }
             si = ni;
             x = cx;

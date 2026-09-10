@@ -42,7 +42,10 @@ shallow water three; a diagonal costs its length; a climb costs its slope,
 and a slope past what legs can take stops you. Deep water, walls and the
 inside of a solid do not walk at all. `+move` prints what the walk cost. A
 wall, someone standing there, a counter, or a room that is not open to you
-stops the walk where it is and says why; a doorway is the wall's own gap. Walking through a door
+stops the walk where it is and says why; a doorway is the wall's own gap. A
+doorway on the map is the room's exit: one that is locked to you, or a move a
+game system would refuse in prose, stops the walk at the threshold in the same
+words `go` would use. Walking through a door
 into a building, or out of one, changes floor for you. Stepping off the edge
 of the map onto a room's ground **grows the map** to take that room in; the
 map redraws and you step again. Exits still work: walking `out` of a room on

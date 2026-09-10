@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.10 — 2026-09-10 (S1 through S7 landed; S8 and S9 planned from the S1–S7 code review, 14a).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.11 — 2026-09-10 (S1 through S8 landed; S9 planned from the S1–S7 code review, 14a).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -1068,6 +1068,69 @@ relocation of a character that does not go through `traverse_exit`: the tactical
 gated; a journey's arrival crosses a connection, not an exit, and is gated at departure by S2's
 holds; `@teleport` and `home` consult the hooks; is there a fifth?).
 
+**Ledger (landed 2026-09-10).** Gates: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test` on `mush-core`, `mush-atlas`, `mush-npc`,
+`mush-worldgen`, `mush-tactics`, `mush-sim` (with `testkit`) and the dependents, the contract
+tests, `mush-server` and `mushd` whole, and the three review targets last, by name. **The
+review's five pass unchanged** — no line of `review_window.rs`, `review_plan.rs` or
+`review_ground.rs` was touched — and twelve cases stand beside them: the veto chain stopping
+a step at the boundary with the hook's own words and refusing the prose move in the same
+words; an unlocked doorway still walked through; the coordinate form stopping short of a
+locked one; a lock refusing in the exit's own `fail` text; the header naming only the anchors
+the viewer may see (both for staff); the text's unit list equal to the frame's, name for name
+and cell for cell; a private reply reaching the asker alone with one aside, no `Said` event,
+no text in either NPC's memory; a public reply said aloud, evented and remembered; the default
+audience and an older encoding decoding as private; an author who keeps staff applying; a
+demoted author refused with the record still `Ready` and going again once re-promoted; the
+NPC enumerated on the ground window beside a thing, with a line of fire. Deviations from the
+text above, each with its reason:
+
+- **S8.1.** `authorize_traversal(reg, w, actor, exit, dest, lens)` composes the extracted lock
+  helper (`exit_lock_refusal`: the `Basic` lock through `eval_lock`, the exit's `fail` text)
+  with `check_move_attempt`, and `Ctx::authorize_traversal` hands it the command's lens;
+  `traverse_exit` calls the same helper and the same chain in its original order (the lock,
+  then the destination check, then the hooks), so its output is what it was to the byte;
+  `go_home` was already on the chain with no exit and is untouched. The refusal is typed
+  (`TraversalRefusal::{Locked, Vetoed}`) and the step reports `reason()`. The atlas's own
+  restricted-access rule runs after the gate, unchanged.
+- **S8.2.** The audience is **per reply**, not per ability — `InterfaceReply.audience:
+  ReplyAudience` with `text`/`lines` private and `public`/`public_lines`/`for_room` aloud —
+  so a provider can answer one ability both ways (a listing with nothing private in it could
+  be aloud). The `Refused` line stays aloud: it names no result. The aside is one line per
+  turn, not per line, and names the asker — the room sees who was spoken to, never what was
+  said. The NPC's memory keeps `(answered <asker> with <ability>, privately)`. `travel.next`
+  stays the asker's as planned, although a carrier's position is public knowledge; S9 can
+  loosen it. Serde: `audience` is `#[serde(default)]`, so a reply encoded before S8 decodes
+  as private.
+- **S8.3.** "On the map:" prints the frame's cells (`Viewer (cell 27, 22)`) where it printed
+  pose centimetres; the frame is built once and sent through `send_frame`. While the
+  composite is still drawing, `+map` prints the header and the standing line as before and
+  neither a unit list nor a keyframe.
+- **S8.4** and **S8.5** landed as written. The demoted author's refusal reads `Proposal N was
+  prepared with staff authority you no longer hold; a builder who has it can take it, or it
+  can go through a request.`
+- **The lenses.** **V:** `@atlas/window` (the unfiltered `summary`) is staff-only; `+map/floor`
+  prints no names; the keyframe, the TUI and the web render the filtered frame. **A:**
+  `WindowEntry.opened_by` is announcement provenance (who is told the map is drawn) and a
+  journey's `Held { by }` is a hold reason, neither an authority; `rec.staff` was the one
+  snapshot. **L:** the relocation census outside `traverse_exit` — journeys (gated at
+  departure by S2's holds), `@teleport` and `@dig/teleport` (the chain, `exit: None`),
+  `get`/`drop`/`give` (`CarryAttempt`), the simulation's domain verbs and boot recovery
+  (staff and boot), the script runtime and economy custody (system moves), chargen
+  onboarding, and the simulation's projection, which is now the gated step — no fifth
+  player-driven bypass.
+- **Help:** `npc` gains the fifth rule (the answer stays where the question was); `map` says a
+  doorway on the map is the room's exit.
+- **What the gate found beside the cut.** The bot laboratory (`mush-bot`, merged at `a79afef`
+  after S7's gate) had no panic budget, no row in the restriction-lint measurement and no
+  denies at its roots: measured at this gate (38 unwraps, 6 expects, 251 index sites, zero
+  of the other three), budgeted at 44 with the reason in `panic_budget/mush-bot.txt`, its row
+  added and the three zero-count lints denied at `lib.rs` and `main.rs`; the two pinned
+  totals moved by one crate. The review's reproduction (`review_window.rs`) drives an NPC
+  turn by writing the NPC host's slot from the atlas's tests, which the state-slot census
+  refuses without a row: baselined in `state-slot-owners.toml` with the reason, the file
+  itself untouched.
+
 ### 3.10 Cut S9 — the deferred four
 
 **Scope.** What the S7 ledger deferred and 14a's remaining scope lists, in dependency order.
@@ -1229,3 +1292,4 @@ ruleset classes. Both small, both after S9.1.
 - 0.8 (2026-09-10): S6 landed — `mush_core::InterfaceAbilityProvider` and its registry, `AgentProfile.interfaces`, the turn's merged manifest, the asker-threaded invoke with the answer spoken, the audit ring and `@agent/audit`, the fallback naming the command; the providers `atlas`, `travel`, `weather`, `market`, `build`, `request`, `rules`, `help`; the packs at version 3; its ledger under §3.7.
 - 0.9 (2026-09-10): S7 landed — the campaign ephemeris and the drive's distance law (`alignment_band` gone), the loader fold onto `mush-content` (the latch and the corridor's records deferred under D-14-33), heightfield import, the TacSim ground driver as `mush_sim::DomainDriver` with the domain as its window and the arc answered, the hex vocabulary removed under a contract test; its ledger under §3.8.
 - 0.10 (2026-09-10): S8 and S9 planned from the S1–S7 code review (14a, at `d713d17`): S8 fixes the review's five at the seams it names with the review's `review_*` tests as the cut's tests, unchanged; S9 is the deferred four (the seed latch and the corridor's records with S9.1's recommended defaults under D-14-33, the carrier journey fold as D-P-4 promised, the fire gate, the S7 leftovers). D-14-34 (a private reply by default). Cross-references from the S2 and S7 ledgers and D-P-4.
+- 0.11 (2026-09-10): S8 landed — the review's five fixed at their seams (`authorize_traversal` and `Ctx::authorize_traversal`, the window's boundary through it; `ReplyAudience` with private the default; `+map` from the frame; staff authority at apply time; NPCs on the ground window), the five `review_*` tests passing unchanged and twelve beside them; its ledger under §3.9.

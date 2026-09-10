@@ -97,10 +97,14 @@ const LINTS: [&str; 6] = [
 /// if one of them stops. A non-zero is the advisory record — the lint is off
 /// there, and this is what turning it on would cost. Changing a count is how
 /// you enable or retire a lint, and it is a reviewed diff either way.
-const MEASURED: [(&str, [u32; 6]); 45] = [
+const MEASURED: [(&str, [u32; 6]); 46] = [
     ("mush-ansi", [0, 0, 13, 0, 0, 0]),
     // S1: born with all six denied (14-spatial-implementation-plan §3.1).
     ("mush-atlas", [0, 0, 0, 0, 0, 0]),
+    // The bot laboratory (a79afef), measured at the S8 gate, 2026-09-10, with the
+    // command in this file's header over `crates/mush-bot/src`: 38 + 6 = its
+    // 44-site panic budget; three lints already at zero, denied at its roots.
+    ("mush-bot", [38, 6, 251, 0, 0, 0]),
     ("mush-campaign", [0, 0, 4, 0, 0, 0]),
     ("mush-canon", [0, 7, 0, 0, 0, 0]),
     ("mush-comsys", [0, 13, 0, 0, 1, 0]),
@@ -424,9 +428,10 @@ fn the_measurement_covers_every_crate_in_the_workspace() {
     );
     assert_eq!(
         MEASURED.len(),
-        45,
+        46,
         "the measurement in this file's header covered 43 crates; S1 added mush-atlas and \
-         mush-content, both born at zero on every lint"
+         mush-content, both born at zero on every lint; the bot laboratory (mush-bot) was \
+         measured at the S8 gate"
     );
 }
 
@@ -450,12 +455,15 @@ fn the_enabled_set_is_the_one_the_measurement_produced() {
             // S1: mush-atlas and mush-content arrive at zero on every lint, so each
             // count is the measurement's plus two; WS01-S10B denies `expect_used` in
             // mush-session too, so that one is plus three.
+            // The bot laboratory (mush-bot, measured at the S8 gate) is at zero on
+            // `panic`, `unreachable` and `panic_in_result_fn`: those three are plus
+            // one more.
             ("clippy::unwrap_used", 42),
             ("clippy::expect_used", 10),
             ("clippy::indexing_slicing", 16),
-            ("clippy::panic", 39),
-            ("clippy::unreachable", 34),
-            ("clippy::panic_in_result_fn", 43),
+            ("clippy::panic", 40),
+            ("clippy::unreachable", 35),
+            ("clippy::panic_in_result_fn", 44),
         ]),
         "the per-lint crate counts moved; re-measure before changing them"
     );

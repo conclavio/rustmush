@@ -1028,15 +1028,33 @@ pub struct AbilityCall {
 /// The most bytes an interface reply carries.
 pub const MAX_INTERFACE_REPLY_BYTES: usize = 4_096;
 
-/// What an interface ability answered: text the NPC speaks.
+/// Who hears an interface reply (S8.2, 14a #2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyAudience {
+    /// The asker alone: the NPC answers them and no one else hears. The
+    /// default, because the provider read as the asker — what the read kept
+    /// private, the delivery keeps private.
+    #[default]
+    Asker,
+    /// The room: the NPC says it aloud. A provider's explicit call, for an
+    /// answer anyone standing there could have had.
+    Room,
+}
+
+/// What an interface ability answered: text the NPC speaks, and to whom.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterfaceReply {
     /// The answer, as the asker's own command would print it.
     pub text: String,
+    /// Who hears it.
+    #[serde(default)]
+    pub audience: ReplyAudience,
 }
 
 impl InterfaceReply {
-    /// A reply, bounded to [`MAX_INTERFACE_REPLY_BYTES`] on a character edge.
+    /// A reply for the asker alone, bounded to [`MAX_INTERFACE_REPLY_BYTES`]
+    /// on a character edge.
     #[must_use]
     pub fn text(text: impl Into<String>) -> InterfaceReply {
         let mut text: String = text.into();
@@ -1048,13 +1066,36 @@ impl InterfaceReply {
             text.truncate(cut);
             text.push('…');
         }
-        InterfaceReply { text }
+        InterfaceReply {
+            text,
+            audience: ReplyAudience::Asker,
+        }
     }
 
-    /// A reply from lines.
+    /// A reply for the asker alone, from lines.
     #[must_use]
     pub fn lines(lines: &[String]) -> InterfaceReply {
         InterfaceReply::text(lines.join("\n"))
+    }
+
+    /// A reply the NPC says aloud: the provider's word that anyone in the room
+    /// could have had this answer.
+    #[must_use]
+    pub fn public(text: impl Into<String>) -> InterfaceReply {
+        InterfaceReply::text(text).for_room()
+    }
+
+    /// A reply said aloud, from lines.
+    #[must_use]
+    pub fn public_lines(lines: &[String]) -> InterfaceReply {
+        InterfaceReply::lines(lines).for_room()
+    }
+
+    /// The same reply, for the room.
+    #[must_use]
+    pub fn for_room(mut self) -> InterfaceReply {
+        self.audience = ReplyAudience::Room;
+        self
     }
 }
 
@@ -4381,6 +4422,30 @@ impl Ctx<'_> {
         dest: ObjId,
     ) -> Result<(), RichText> {
         check_move_attempt(self.reg, self.w, actor, exit, dest, self.typed_state.lens())
+    }
+
+    /// The gate a narrative move passes — the exit's `Basic` lock, then the
+    /// movement veto chain — for a move made cell by cell (S8.1): the atlas
+    /// asks it at a room boundary with the portal's exit, or with none where
+    /// two footprints simply touch.
+    ///
+    /// # Errors
+    ///
+    /// The refusal, as the mover reads it.
+    pub fn authorize_traversal(
+        &self,
+        actor: ObjId,
+        exit: Option<ObjId>,
+        dest: ObjId,
+    ) -> Result<(), crate::commands::movement::TraversalRefusal> {
+        crate::commands::movement::authorize_traversal(
+            self.reg,
+            self.w,
+            actor,
+            exit,
+            dest,
+            self.typed_state.lens(),
+        )
     }
 
     /// Consult the registered custody veto chain with this command's live

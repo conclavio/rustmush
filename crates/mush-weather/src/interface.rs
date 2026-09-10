@@ -74,7 +74,7 @@ impl InterfaceAbilityProvider for WeatherInterface {
                 if sheltered {
                     line.push_str(" You are under cover here.");
                 }
-                Ok(InterfaceReply::text(line))
+                Ok(InterfaceReply::public(line))
             }
             "weather.forecast" => {
                 let Some(climate) = self.climates.get(&cell.climate) else {
@@ -99,7 +99,7 @@ impl InterfaceAbilityProvider for WeatherInterface {
                     .max_by_key(|(_, w)| **w)
                     .map(|(to, _)| (*to).clone());
                 let now = describe_state(&cell.state);
-                Ok(InterfaceReply::text(match next {
+                Ok(InterfaceReply::public(match next {
                     Some(to) if stays == 0 || totals.get(&to).copied().unwrap_or(0) >= stays => {
                         format!(
                             "It is {now} now; I'd say it turns {} next.",

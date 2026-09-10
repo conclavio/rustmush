@@ -1075,6 +1075,14 @@ pub fn go(ctx: &mut Ctx<'_>, id: u64, actor: ObjId) -> Result<String, String> {
             made.site,
             made.job.map(|j| format!(" (job {j})")).unwrap_or_default()
         )
+    } else if rec.staff && !mush_atlas::is_staff(ctx.w, actor) {
+        // S8.4 (14a #4): `rec.staff` is provenance — who prepared the plan
+        // and under what authority — never a lasting grant. The one applying
+        // must hold staff authority *now*; the record stays `Ready` for a
+        // builder who does, or for this author once re-promoted.
+        return Err(format!(
+            "Proposal {id} was prepared with staff authority you no longer hold; a builder who has it can take it, or it can go through a request."
+        ));
     } else if rec.staff {
         let (applied, report) =
             mush_content::module::apply_pack(ctx, &pack).map_err(|e| e.to_string())?;

@@ -121,7 +121,7 @@ impl InterfaceAbilityProvider for HelpInterface {
             .filter(|t| !t.is_empty())
             .ok_or_else(|| InterfaceError::Invalid("a topic name".to_string()))?;
         match ctx.reg.help_topic(&topic) {
-            Some(t) => Ok(InterfaceReply::text(format!("{}\n{}", t.title, t.body))),
+            Some(t) => Ok(InterfaceReply::public(format!("{}\n{}", t.title, t.body))),
             None => Err(InterfaceError::Refused(format!(
                 "There is no help topic called {topic:?}; `help` lists them."
             ))),

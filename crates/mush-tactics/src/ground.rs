@@ -152,7 +152,8 @@ impl mush_sim::DomainDriver for GroundDriver {
     ) -> Result<mush_sim::DomainId, String> {
         let room = host_room(ctx.w, host)
             .ok_or_else(|| "the host is nowhere the atlas knows".to_string())?;
-        // Everyone and everything standing in the host room fights on the window.
+        // Everyone and everything standing in the host room fights on the
+        // window: players, NPCs (S8.5, 14a #5) and things.
         let participants: Vec<ObjId> = ctx
             .w
             .get(room)
@@ -163,7 +164,7 @@ impl mush_sim::DomainDriver for GroundDriver {
                     .filter(|o| {
                         ctx.w
                             .get(*o)
-                            .is_some_and(|x| matches!(x.kind, ObjKind::Player | ObjKind::Thing))
+                            .is_some_and(|x| x.kind.is_actor() || x.kind == ObjKind::Thing)
                     })
                     .collect()
             })
