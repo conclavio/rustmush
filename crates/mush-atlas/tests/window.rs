@@ -837,3 +837,289 @@ fn a_timestop_opens_a_map_over_its_room_and_closes_it_with_the_scene() {
     assert!(pose_of(&tw, rae).is_none());
     assert_eq!(location(&tw, rae), Some(coffee));
 }
+
+// ---------------------------------------------------------------------------
+// S4c: the `atlas.map` frames — text first (P10), filtered for the viewer (V)
+// ---------------------------------------------------------------------------
+
+fn panel_frames(
+    events: &[(Audience, OutputEvent)],
+    who: ObjId,
+    kind: mush_proto::PanelFrameKind,
+) -> Vec<serde_json::Value> {
+    events
+        .iter()
+        .filter(|(aud, _)| matches!(aud, Audience::Actor(a) if *a == who))
+        .filter_map(|(_, e)| match e {
+            OutputEvent::Panel {
+                feed,
+                kind: k,
+                data,
+            } if feed.as_str() == mush_atlas::MAP_FEED && *k == kind => Some(data.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn text_frame(data: &serde_json::Value) -> Vec<String> {
+    mush_ansi::grid_lines(data, mush_proto::PanelFrameKind::Keyframe, 78, 20)
+}
+
+/// The lines a frame prints, right-trimmed (P10 is about the facts, not the
+/// padding).
+fn trimmed(lines: &[String]) -> Vec<String> {
+    lines.iter().map(|l| l.trim_end().to_string()).collect()
+}
+
+fn expected(block: &str) -> Vec<String> {
+    block
+        .lines()
+        .map(|l| l.trim_end().to_string())
+        .filter(|l| !l.is_empty() || true)
+        .collect()
+}
+
+#[test]
+fn the_coffee_shop_and_the_backlot_render_as_text_at_eighty_by_twenty_four() {
+    let mut tw = lot();
+    let staff = GOD;
+    let coffee = room_named(&tw, "Coffee Shop");
+    let backlot = room_named(&tw, "Backlot");
+    tw.world_mut()
+        .move_to(staff, coffee)
+        .expect("staff to the coffee shop");
+    let (domain, _) = open_over(&mut tw, staff, "here");
+    let rae = tw.spawn_player("Rae");
+    tw.world_mut()
+        .move_to(rae, backlot)
+        .expect("Rae to the backlot");
+    tw.run(rae, "coffee");
+    let events = tw.run(rae, "+map");
+    let frames = panel_frames(&events, rae, mush_proto::PanelFrameKind::Keyframe);
+    assert_eq!(frames.len(), 1, "one keyframe: {}", text(&tw, &events, rae));
+    let coffee_frame: mush_proto::AtlasMapFrame =
+        serde_json::from_value(frames[0].clone()).expect("a typed frame");
+    assert_eq!(coffee_frame.window, domain.0);
+    assert_eq!(coffee_frame.surface, "floor 0");
+    assert_eq!(
+        coffee_frame.floors,
+        vec!["ground".to_string(), "floor 0".to_string()]
+    );
+    assert_eq!(
+        coffee_frame.units.len(),
+        1,
+        "Rae alone: {:?}",
+        coffee_frame.units
+    );
+    assert!(coffee_frame.units[0].you);
+    let golden = "\
+Coffee Shop (floor 0, 100 cm cells)  floors: ground, floor 0
+legend: _ floor  # wall  + door  @ you  o other
+
+
+
+
+
+
+        ###########+###########
+        #_____________________#
+        #_____________________#
+        #__________@__________#
+        #_____________________#
+        #_____________________#
+        #_____________________#
+        #_____________________#
+        #_____________________#
+        #_____________________#
+        #_____________________#
+        #_____________________#
+        #_____________________#
+        #_____________________#
+x 0..38  y 23..42  of 39x45  you at (19, 33)";
+    let lines = text_frame(&frames[0]);
+    assert_eq!(lines.len(), 23, "two headers, twenty rows, one footer");
+    assert!(
+        lines.iter().all(|l| l.chars().count() <= 78),
+        "fits eighty columns"
+    );
+    assert_eq!(trimmed(&lines), expected(golden));
+    // Out to the backlot: the ground surface, the dock, the buildings as walls
+    // with their insides void, the grass in the paving.
+    tw.run(rae, "backlot");
+    let events = tw.run(rae, "+map");
+    let frames = panel_frames(&events, rae, mush_proto::PanelFrameKind::Keyframe);
+    let golden = "\
+Backlot (ground, 100 cm cells)  floors: ground, floor 0
+legend: . paved  \" grass  # wall  + door  D platform  @ you  o other
+..................DDDDDDDDDDDDDDDDDDDDD
+..................DDDDDDDDDDDDDDDDDDDDD
+..................DDDDDDDDDDDDDDDDDDDDD
+..................DDDDDDDDDDDDDDDDDDDDD
+..................DDDDDDDDDDDDDDDDDDDDD
+.......................................
+...................@...................
+.......................................
+........###########+###########...#####
+........#                     #...#
+........#                     #...#
+........#                     #...#
+........#                     #...#
+........#                     #.\"\"#
+........#                     #.\"\"#
+........#                     #.\"\"#
+........#                     #.\"\"#
+........#                     #.\"\"#
+........#                     #.\"\"#
+........#                     #.\"\"#
+x 0..38  y 25..44  of 39x45  you at (19, 38)";
+    let lines = text_frame(&frames[0]);
+    assert_eq!(trimmed(&lines), expected(golden));
+    // The query handler answers the same frame the command printed.
+    let events = tw.run(rae, "+map");
+    let printed = panel_frames(&events, rae, mush_proto::PanelFrameKind::Keyframe);
+    let answered = {
+        let (_, handler) = tw
+            .registry()
+            .query_handler(mush_atlas::MAP_FEED)
+            .expect("the atlas.map query");
+        handler
+            .query(tw.world(), rae, &serde_json::json!({}))
+            .expect("an answer")
+    };
+    match answered {
+        OutputEvent::Panel { feed, kind, data } => {
+            assert_eq!(feed.as_str(), mush_atlas::MAP_FEED);
+            assert_eq!(kind, mush_proto::PanelFrameKind::Keyframe);
+            assert_eq!(data, printed[0]);
+        }
+        other => panic!("not a panel: {other:?}"),
+    }
+}
+
+#[test]
+fn a_viewer_receives_no_cell_or_unit_outside_their_visibility() {
+    let mut tw = lot();
+    let staff = GOD;
+    let lobby = room_named(&tw, "Lobby");
+    let office = room_named(&tw, "Production Office");
+    let forecourt = room_named(&tw, "Forecourt & Bus Stop");
+    tw.world_mut()
+        .move_to(staff, office)
+        .expect("staff to the office");
+    let (domain, _) = open_over(&mut tw, staff, &format!("#{},#{}", lobby.0, office.0));
+    with_ctx(&mut tw, staff, move |ctx| {
+        mush_atlas::window::place_in_room(ctx, domain, staff, office, None)
+    })
+    .expect("staff on the mezzanine");
+    let rae = tw.spawn_player("Rae");
+    tw.world_mut()
+        .move_to(rae, forecourt)
+        .expect("Rae to the forecourt");
+    tw.run(rae, "lobby");
+    assert!(pose_of(&tw, rae).is_some());
+    // Rae's floor-0 frame: the lobby, herself, and no sign of the staffer
+    // upstairs.
+    let events = tw.run(rae, "+map");
+    let frame: mush_proto::AtlasMapFrame = serde_json::from_value(
+        panel_frames(&events, rae, mush_proto::PanelFrameKind::Keyframe)[0].clone(),
+    )
+    .expect("frame");
+    assert_eq!(frame.surface, "floor 0");
+    assert_eq!(frame.units.len(), 1);
+    assert!(frame.units[0].you);
+    // Her floor-1 frame: the office is restricted, so its cells are void and
+    // the staffer standing in it is absent — only the building's walls show.
+    let events = tw.run(rae, "+map/floor 1");
+    let frame: mush_proto::AtlasMapFrame = serde_json::from_value(
+        panel_frames(&events, rae, mush_proto::PanelFrameKind::Keyframe)[0].clone(),
+    )
+    .expect("frame");
+    assert_eq!(frame.surface, "floor 1");
+    assert!(
+        frame.units.is_empty(),
+        "no unit outside her visibility: {:?}",
+        frame.units
+    );
+    let lines = text_frame(&serde_json::to_value(&frame).expect("json"));
+    let grid_rows = &lines[2..lines.len() - 1];
+    assert!(
+        grid_rows.iter().all(|l| l.trim().is_empty()),
+        "nothing of a floor she may see no room of reaches her:\n{}",
+        lines.join("\n")
+    );
+    // The staffer's own floor-1 frame has the office and both of them? No —
+    // Rae is a floor below; the staffer sees the office and themself.
+    let events = tw.run(staff, "+map");
+    let frame: mush_proto::AtlasMapFrame = serde_json::from_value(
+        panel_frames(&events, staff, mush_proto::PanelFrameKind::Keyframe)[0].clone(),
+    )
+    .expect("frame");
+    assert_eq!(frame.surface, "floor 1");
+    assert_eq!(frame.units.len(), 1);
+    let lines = text_frame(&serde_json::to_value(&frame).expect("json"));
+    assert!(
+        lines.iter().any(|l| l.contains('_')),
+        "the office floor for staff"
+    );
+}
+
+#[test]
+fn a_move_sends_a_delta_whose_units_match_the_next_keyframe() {
+    let mut tw = lot();
+    let staff = GOD;
+    let coffee = room_named(&tw, "Coffee Shop");
+    let backlot = room_named(&tw, "Backlot");
+    tw.world_mut()
+        .move_to(staff, coffee)
+        .expect("staff to the coffee shop");
+    let (_, _) = open_over(&mut tw, staff, "here");
+    let rae = tw.spawn_player("Rae");
+    let kit = tw.spawn_player("Kit");
+    tw.world_mut()
+        .move_to(rae, backlot)
+        .expect("Rae to the backlot");
+    tw.world_mut()
+        .move_to(kit, backlot)
+        .expect("Kit to the backlot");
+    tw.run(rae, "coffee");
+    let events = tw.run(kit, "coffee");
+    // Kit's arrival: Rae gets a delta naming it, and a keyframe of her own.
+    let deltas = panel_frames(&events, rae, mush_proto::PanelFrameKind::Delta);
+    assert_eq!(deltas.len(), 1, "{}", text(&tw, &events, rae));
+    let delta: mush_proto::AtlasMapDelta =
+        serde_json::from_value(deltas[0].clone()).expect("delta");
+    assert_eq!(delta.note.as_deref(), Some("Kit arrives on the map."));
+    assert_eq!(delta.units.len(), 2);
+    assert!(!panel_frames(&events, kit, mush_proto::PanelFrameKind::Keyframe).is_empty());
+    // Kit moves: both get a delta; the delta's units are the next keyframe's.
+    let events = tw.run(kit, "+move north 2");
+    let delta: mush_proto::AtlasMapDelta = serde_json::from_value(
+        panel_frames(&events, rae, mush_proto::PanelFrameKind::Delta)[0].clone(),
+    )
+    .expect("delta");
+    assert_eq!(
+        delta.note.as_deref(),
+        Some(&*format!(
+            "Kit moves north to ({}, {}).",
+            delta.units[1].cell.0, delta.units[1].cell.1
+        ))
+    );
+    let events = tw.run(rae, "+map");
+    let frame: mush_proto::AtlasMapFrame = serde_json::from_value(
+        panel_frames(&events, rae, mush_proto::PanelFrameKind::Keyframe)[0].clone(),
+    )
+    .expect("frame");
+    assert_eq!(
+        frame.units, delta.units,
+        "a keyframe after a delta shows the same units"
+    );
+    assert_eq!(frame.you, delta.you);
+    // Line mode prints the delta's note alone.
+    let lines = mush_ansi::grid_lines(
+        &serde_json::to_value(&delta).expect("json"),
+        mush_proto::PanelFrameKind::Delta,
+        78,
+        20,
+    );
+    assert_eq!(lines, vec![delta.note.clone().expect("note")]);
+}

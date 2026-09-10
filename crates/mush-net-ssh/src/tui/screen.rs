@@ -16,7 +16,7 @@
 
 use serde_json::Value;
 
-use super::panels::{CONTACTS_FEED, UNIT_FEED};
+use super::panels::{CONTACTS_FEED, MAP_FEED, UNIT_FEED};
 use super::render::{PaneRows, RenderCtx};
 
 /// The most screens a TUI can register (the hotkey digits `1`–`9`).
@@ -70,8 +70,7 @@ pub const RUN_ALLOWLIST: &[&str] = &[
 /// that fit the narrowest pane. Each names the PRODUCER that is missing,
 /// never a cut number, so the pane says what would fill it and a reader can
 /// tell "nothing yet" from "broken". The pane's title is its plain name.
-pub const AWAITING_GRID: &str = "awaiting a geometry\nprojection (plan \u{a7}9)";
-/// The weapons pane's declaration.
+/// (The grid pane's producer landed with S4: the `atlas.map` frame.)
 pub const AWAITING_WEAPONS: &str = "awaiting a weapons-cycle\nprojection (plan \u{a7}9)";
 /// The comms pane's declaration.
 pub const AWAITING_COMMS: &str = "awaiting a station comms\nprojection (plan \u{a7}9)";
@@ -269,10 +268,10 @@ impl Screen {
 #[must_use]
 pub fn builtin_screens() -> Vec<Screen> {
     use super::render::{
-        render_actions_rows, render_intel_rows, render_mail_rows, render_scene_rows,
-        render_unit_components_rows, render_unit_delta_rows, render_unit_journal_rows,
-        render_unit_plant_rows, render_unit_sections_compact_rows, render_unit_sections_rows,
-        render_view_rows,
+        render_actions_rows, render_intel_rows, render_mail_rows, render_map_rows,
+        render_scene_rows, render_unit_components_rows, render_unit_delta_rows,
+        render_unit_journal_rows, render_unit_plant_rows, render_unit_sections_compact_rows,
+        render_unit_sections_rows, render_view_rows,
     };
     let unit_query = || vec![(UNIT_FEED, Value::Object(serde_json::Map::new()))];
     vec![
@@ -327,6 +326,23 @@ pub fn builtin_screens() -> Vec<Screen> {
                     min_w: 24,
                     min_h: 4,
                     selectable: true,
+                },
+                // S4 (doc 14 §6): the map of the window over this scene — the
+                // `atlas.map` frame, subscribed on entry when the manifest
+                // carries the feed, drawn as the same text grid line mode
+                // prints.
+                PaneSpec {
+                    id: PaneId("map"),
+                    title: "map",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Panel {
+                        feed: MAP_FEED,
+                        render: render_map_rows,
+                    },
+                    min_w: 24,
+                    min_h: 6,
+                    selectable: false,
                 },
             ],
             keys: vec![
@@ -698,12 +714,17 @@ pub fn builtin_screens() -> Vec<Screen> {
                     min_h: 4,
                     selectable: false,
                 },
+                // S4: the geometry projection the grid pane awaited — the
+                // `atlas.map` frame of the window the pilot stands on.
                 PaneSpec {
                     id: PaneId("grid"),
                     title: "grid",
                     role: BorderRole::Neutral,
                     slot: PaneSlot::Left,
-                    content: PaneContent::Placeholder(AWAITING_GRID),
+                    content: PaneContent::Panel {
+                        feed: MAP_FEED,
+                        render: render_map_rows,
+                    },
                     min_w: 24,
                     min_h: 3,
                     selectable: false,

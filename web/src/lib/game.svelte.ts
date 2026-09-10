@@ -53,6 +53,7 @@ import { SessionStore } from "./stores/session.svelte";
 import { SheetStore } from "./stores/sheet.svelte";
 import { CONTACTS_FEED, UNIT_RESYNC_MS, UnitStore } from "./stores/unit.svelte";
 import { VitalsStore } from "./stores/vitals.svelte";
+import { MAP_FEED, MapStore } from "./stores/map.svelte";
 import { WhoStore } from "./stores/who.svelte";
 import { WorldgenStore } from "./stores/worldgen.svelte";
 import {
@@ -198,6 +199,7 @@ export class GameApp {
   screens = new ScreensStore();
   commands = new CommandsStore();
   vitals = new VitalsStore();
+  map = new MapStore();
   presence = new PresenceStore();
   genericViews = new GenericViewStore();
   requests = new RequestStore();
@@ -795,6 +797,14 @@ export class GameApp {
       this.llm.applyKeyframe(d.data);
     } else if (d.feed === "commands.list") {
       this.commands.apply(d.data);
+    } else if (d.feed === MAP_FEED) {
+      // The tactical map (S4): a keyframe replaces the whole grid; a delta
+      // moves the units on it and says what happened.
+      if (d.kind === "keyframe") {
+        this.map.applyKeyframe(d.data);
+      } else {
+        this.map.applyDelta(d.data);
+      }
     } else if (d.feed.endsWith(".vitals")) {
       this.vitals.apply(d.feed, d.data, Date.now());
     } else if (d.feed === "scenes") {

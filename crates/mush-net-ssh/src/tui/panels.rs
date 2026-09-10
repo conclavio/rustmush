@@ -43,6 +43,9 @@ pub const UNIT_FEED: &str = "tactics.unit";
 /// the unit screen renders with the I9 renderer, subscribed only when the
 /// manifest carries it.
 pub const CONTACTS_FEED: &str = "tactics.contacts";
+/// The tactical map (doc 14 §6, S4): a grid-shaped keyframe of the window
+/// the viewer stands on, rendered by the same lines line mode prints.
+pub const MAP_FEED: &str = "atlas.map";
 /// How long a resync request stays latched before another delta may ask
 /// again. The SSH bridge drops a throttled query silently (no reply, not
 /// even an error), so a latch cleared only by the replacement keyframe is

@@ -121,6 +121,7 @@ fn cmd_map(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .ok_or_else(|| CmdError::msg(format!("The map has no floor {n}.")))?;
         st.windows.viewer_floor.insert(actor, index);
         say(ctx, format!("You look at floor {n} of the map."));
+        crate::frame::send_keyframe(ctx, actor, domain);
         return Ok(());
     }
     // Bare: where you stand.
@@ -179,6 +180,9 @@ fn cmd_map(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         lines
     };
     say(ctx, lines.join("\n"));
+    // The frame itself: line mode prints it as the text grid, a client with
+    // a map pane replaces its picture.
+    crate::frame::send_keyframe(ctx, actor, domain);
     Ok(())
 }
 
@@ -234,10 +238,21 @@ fn cmd_move(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             report.at.1
         )
     };
-    if let Some(why) = report.stopped {
+    if let Some(why) = &report.stopped {
         line.push_str(&format!(": {why}"));
     }
     line.push('.');
     say(ctx, line);
+    if report.walked > 0
+        && let Some((domain, _)) = mush_sim::pose_of(ctx.w, actor)
+    {
+        let note = format!(
+            "{} moves {heading_word} to ({}, {}).",
+            mush_core::output::display_name(ctx.w, actor),
+            report.at.0,
+            report.at.1
+        );
+        crate::frame::publish_delta(ctx, domain, &note);
+    }
     Ok(())
 }

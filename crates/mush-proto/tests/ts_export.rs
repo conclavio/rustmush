@@ -10,7 +10,8 @@ use std::fs;
 use std::path::Path;
 
 use mush_proto::{
-    ClientCommand, Color, Envelope, OutputEvent, RoomView, Span, VitalValue, VitalsFrame, WhoEntry,
+    AtlasMapDelta, AtlasMapFrame, ClientCommand, Color, Envelope, OutputEvent, RoomView, Span,
+    VitalValue, VitalsFrame, WhoEntry,
 };
 use ts_rs::{Config, TS};
 
@@ -105,6 +106,9 @@ fn export_typescript_bindings() {
     // The vitals frame rides inside `Panel.data` (opaque to the envelope
     // graph), so it is exported explicitly with its Vital/VitalValue/… deps.
     VitalsFrame::export_all(&cfg).expect("export VitalsFrame graph");
+    // The map frame and its delta ride inside `Panel.data` too (S4).
+    AtlasMapFrame::export_all(&cfg).expect("export AtlasMapFrame graph");
+    AtlasMapDelta::export_all(&cfg).expect("export AtlasMapDelta graph");
     normalize_ts_files(dir);
 
     // Barrel: web code imports from "$lib/proto" only.

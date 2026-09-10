@@ -9,6 +9,7 @@
   import CommandPalette from "./CommandPalette.svelte";
   import Composer from "./Composer.svelte";
   import RoomBand from "./RoomBand.svelte";
+  import MapCanvas from "./MapCanvas.svelte";
   import Scrollback from "./Scrollback.svelte";
   import VitalsStrip from "./VitalsStrip.svelte";
 
@@ -31,6 +32,9 @@
 <div class="scene">
   <RoomBand {app} {onCmd} />
   <Scrollback sb={app.scrollback} {onCmd} onLoadOlder={() => app.loadOlderNarrative()} />
+  {#if app.map.loaded}
+    <MapCanvas {app} />
+  {/if}
   {#if app.vitals.loaded}
     <VitalsStrip {app} />
   {:else if promptText}

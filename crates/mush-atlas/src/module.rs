@@ -340,6 +340,10 @@ impl GameModule for AtlasModule {
         // S4: the composite re-enters through the module-async seam (plan §8: the
         // world task's off-loop pattern, snapshot in, typed outcome out).
         reg.async_completion(Arc::new(WindowCompletion))?;
+        // S4: the `atlas.map` panel feed (doc 14 §6) and its keyframe query.
+        let map_feed = reg.panel_feed(crate::frame::MAP_FEED)?;
+        reg.state(crate::frame::MapFeed(Some(map_feed)));
+        reg.query_handler(crate::frame::MAP_FEED, Arc::new(MapQuery))?;
         // K8.5: the read surface first, then the writer — each group declared.
         reg.classify_commands(CommandCompatibility::ReadOnly);
         crate::commands::register_views(reg)?;
@@ -634,6 +638,35 @@ pub(crate) fn push_op(ctx: &mut Ctx<'_>, op: ModuleWrite) {
 /// Queue a whole-document write of a record; a record that will not serialize is
 /// logged and skipped, never a panic (this runs inside a module boot and inside
 /// commands on the world task).
+/// S4: the `atlas.map` keyframe query — the asker's frame of the window they
+/// stand on (the TUI and the web subscribe through it), or the empty frame.
+struct MapQuery;
+
+impl mush_core::QueryHandler for MapQuery {
+    fn query(
+        &self,
+        w: &World,
+        actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        let domain = mush_sim::pose_of(w, actor).map(|(d, _)| d);
+        let frame = domain
+            .and_then(|d| {
+                w.module_state::<AtlasState>()
+                    .and_then(|st| crate::frame::frame_for(w, st, actor, d))
+            })
+            .unwrap_or_else(|| crate::frame::empty_frame(mush_sim::DomainId(0)));
+        let data = serde_json::to_value(frame).map_err(|e| {
+            mush_proto::RichText::tag("error", format!("the map would not encode: {e}"))
+        })?;
+        Ok(mush_proto::OutputEvent::Panel {
+            feed: SmolStr::new_static(crate::frame::MAP_FEED),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data,
+        })
+    }
+}
+
 /// S4: the composite's re-entry.
 struct WindowCompletion;
 

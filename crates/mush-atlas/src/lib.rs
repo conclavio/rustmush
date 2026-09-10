@@ -25,6 +25,7 @@ pub mod background;
 pub mod cells;
 pub mod commands;
 pub mod def;
+pub mod frame;
 pub mod geom;
 pub mod hydrate;
 pub mod hydrate_cmd;
@@ -47,6 +48,7 @@ pub mod window_cmd;
 pub use apply::{KINDS, register_appliers};
 pub use background::{Ground, background};
 pub use cells::{Cell, Cells, CellsError, MAX_TILE_CELLS, MAX_TILE_DOC_BYTES, MAX_TILE_SIDE};
+pub use frame::{MAP_FEED, MapFeed, delta_for, empty_frame, frame_for, surface_label};
 pub use geom::{GeomError, Point2, Point3, PointCm, Polygon2, Rect2, RectCm, Shape};
 pub use hydrate::{
     Activation, AtlasHooks, BUILD_HANDLER, BUILD_QUEUE, DEFAULT_HYDRATION_CAP,

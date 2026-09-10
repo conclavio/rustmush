@@ -674,6 +674,94 @@ pub struct Vital {
     pub detail: Option<String>,
 }
 
+/// The `atlas.map` panel frame (doc 14 §6, plan §3.5): a tactical window as a
+/// grid of cells — one glyph each — with a legend and the units on it,
+/// **already filtered for the viewer**. The same frame drives the text
+/// renderer (line mode and the TUI, `mush_ansi::grid_lines`) and the web
+/// canvas; the text is the acceptance test (P10). Row `y` runs from the
+/// south edge up; a row is glyph runs `[glyph, count]`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AtlasMapFrame {
+    /// The generic-view schema: `id` `atlas.map`, `shape` `grid`.
+    pub schema: MapSchema,
+    /// The window (its domain id).
+    pub window: u64,
+    /// The composite revision the cells are from.
+    pub revision: u64,
+    /// The domain tick.
+    pub tick: u64,
+    /// The viewer's room and surface, for the heading.
+    pub title: String,
+    /// The surface shown: `ground` or `floor <n>`.
+    pub surface: String,
+    /// Every surface the window has, for the floor selector.
+    pub floors: Vec<String>,
+    /// The grid's south-west corner, region centimetres.
+    pub origin: (i64, i64),
+    /// The cell size, centimetres.
+    pub cell_cm: u32,
+    /// Cells across.
+    pub width: u32,
+    /// Cells up.
+    pub height: u32,
+    /// Glyph runs per row, south edge first.
+    pub rows: Vec<Vec<(String, u32)>>,
+    /// Glyph → label.
+    pub legend: Vec<(String, String)>,
+    /// The units the viewer sees.
+    pub units: Vec<MapUnit>,
+    /// The viewer's own cell, when they stand on the map.
+    pub you: Option<(u32, u32)>,
+}
+
+/// The `schema` of an [`AtlasMapFrame`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MapSchema {
+    /// `atlas.map`.
+    pub id: String,
+    /// The frame version.
+    pub version: u32,
+    /// `grid`.
+    pub shape: String,
+}
+
+/// One unit on a map frame.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MapUnit {
+    /// The object.
+    pub id: String,
+    /// Its name, as the viewer sees it.
+    pub name: String,
+    /// Its cell.
+    pub cell: (u32, u32),
+    /// Its glyph (`@` the viewer, `o` anyone else).
+    pub glyph: String,
+    /// Whether it is the viewer.
+    pub you: bool,
+}
+
+/// An `atlas.map` delta: the units moved (the cells did not — a new
+/// composite is a new keyframe) and a line to say so.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AtlasMapDelta {
+    /// The schema, as the keyframe's.
+    pub schema: MapSchema,
+    /// The window.
+    pub window: u64,
+    /// The composite revision the units stand on.
+    pub revision: u64,
+    /// The units the viewer sees now.
+    pub units: Vec<MapUnit>,
+    /// The viewer's own cell.
+    pub you: Option<(u32, u32)>,
+    /// What happened, for line mode.
+    pub note: Option<String>,
+}
+
 /// A whole vitals frame for one subject: the `data` of a
 /// [`OutputEvent::Panel`] keyframe on a `<owner>.vitals` feed. Frames are
 /// always whole (never deltas); `revision` is monotonic per subject within

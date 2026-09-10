@@ -1148,6 +1148,7 @@ pub fn on_composited(ctx: &mut Ctx<'_>, outcome: CompositeOutcome) {
                 }
             }
             announce_ready(ctx, &entry, &opened_by, placed);
+            crate::frame::publish_keyframes(ctx, domain);
         }
         Err(error) => {
             tracing::warn!(%domain, %error, "atlas: a composite failed; the window closes");
@@ -1218,6 +1219,13 @@ pub fn close(ctx: &mut Ctx<'_>, domain: DomainId, reason: &str) -> Result<Vec<Ob
         }
     };
     del_doc(ctx, entry.key());
+    let mut told = released.clone();
+    if let WindowOpener::Staff { by } = entry.opened_by
+        && !told.contains(&by)
+    {
+        told.push(by);
+    }
+    crate::frame::publish_closed(ctx, domain, &told);
     for &obj in &released {
         if ctx.w.get(obj).is_some() {
             ctx.out.info(
@@ -1604,10 +1612,14 @@ pub fn on_moved(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEvent) {
         .map(|e| DomainId(e.domain));
     if let Some(d) = placed
         && covering != Some(d)
-        && let Err(error) = mush_sim::unplace(ctx, who, "left the map")
     {
-        tracing::warn!(%who, %error, "atlas: releasing a character who walked off a map");
-        return;
+        if let Err(error) = mush_sim::unplace(ctx, who, "left the map") {
+            tracing::warn!(%who, %error, "atlas: releasing a character who walked off a map");
+            return;
+        }
+        let line = format!("{} leaves the map.", name(ctx.w, who));
+        crate::frame::publish_delta(ctx, d, &line);
+        crate::frame::publish_closed(ctx, d, &[who]);
     }
     let Some(domain) = covering else {
         return;
@@ -1615,9 +1627,22 @@ pub fn on_moved(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEvent) {
     let portal = state(ctx)
         .ok()
         .and_then(|st| portal_between(&st.records, from, to));
-    if let Err(error) = place_in_room(ctx, domain, who, to, portal.as_ref()) {
-        ctx.out
-            .info(who, format!("You are off the map here: {error}."));
+    match place_in_room(ctx, domain, who, to, portal.as_ref()) {
+        Ok(()) => {
+            let line = if placed == Some(domain) {
+                format!("{} crosses to {}.", name(ctx.w, who), name(ctx.w, to))
+            } else {
+                format!("{} arrives on the map.", name(ctx.w, who))
+            };
+            crate::frame::publish_delta(ctx, domain, &line);
+            if placed != Some(domain) {
+                crate::frame::send_keyframe(ctx, who, domain);
+            }
+        }
+        Err(error) => {
+            ctx.out
+                .info(who, format!("You are off the map here: {error}."));
+        }
     }
 }
 

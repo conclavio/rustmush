@@ -2047,6 +2047,7 @@ dependencies = [
 name = "mush-atlas"
 version = "0.1.0"
 dependencies = [
+ "mush-ansi",
  "mush-canon",
  "mush-content",
  "mush-core",

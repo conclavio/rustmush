@@ -857,6 +857,31 @@ pub fn render_actions_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
 /// The `scenes` keyframe: the scene's title, kind and status, its round
 /// and turn, and who acts now.
 #[must_use]
+/// The `atlas.map` pane (doc 14 §6, S4): the window's grid north-up with the
+/// units overlaid — the same lines line mode prints, the whole grid so the
+/// pane scrolls, the title bold. A frame that is not a grid is nothing yet.
+pub fn render_map_rows(data: &Value, _ctx: &RenderCtx<'_>) -> PaneRows {
+    if data.is_null() || !mush_ansi::is_grid(data) {
+        return PaneRows::one("(no map: a scene's facilitator opens one with +map/open)");
+    }
+    let lines = mush_ansi::grid_lines(data, mush_proto::PanelFrameKind::Keyframe, 512, 512);
+    let mut rows = Vec::with_capacity(lines.len());
+    for (i, line) in lines.into_iter().enumerate() {
+        let style = if i == 0 {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else if i == 1 {
+            Style::default().add_modifier(Modifier::DIM)
+        } else {
+            Style::default()
+        };
+        rows.push(PaneRow::plain(Line::from(Span::styled(
+            clean(&line),
+            style,
+        ))));
+    }
+    PaneRows { rows }
+}
+
 pub fn render_scene_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if data.is_null() {
         return PaneRows::one("(no scene)");

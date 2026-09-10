@@ -88,9 +88,31 @@ pub fn render(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme, out: &m
             w.end_line();
         }
         OutputEvent::Who(entries) => render_who(&mut w, entries),
-        // Module text fallbacks register in M3 with the Registrar; until
-        // then panel frames are web-only and SSH skips them silently.
-        OutputEvent::Panel { .. } => {}
+        // A panel frame renders by its declared shape (doc 06 §10's text
+        // fallback, S4): a `grid` prints as a text map; a frame with no shape
+        // is still web-only and prints nothing.
+        OutputEvent::Panel { kind, data, .. } => {
+            if crate::panel::is_grid(data) {
+                let columns = if w.caps.width == 0 {
+                    crate::panel::GRID_MAX_COLUMNS
+                } else {
+                    usize::from(w.caps.width)
+                        .saturating_sub(2)
+                        .min(crate::panel::GRID_MAX_COLUMNS)
+                };
+                let rows = if w.caps.height == 0 {
+                    crate::panel::GRID_MAX_ROWS
+                } else {
+                    usize::from(w.caps.height)
+                        .saturating_sub(4)
+                        .min(crate::panel::GRID_MAX_ROWS)
+                };
+                for line in crate::panel::grid_lines(data, *kind, columns, rows) {
+                    w.plain(&line);
+                    w.end_line();
+                }
+            }
+        }
         OutputEvent::View(view) => {
             if view.view() == "resolution.outcome"
                 && let Ok(receipt) =
