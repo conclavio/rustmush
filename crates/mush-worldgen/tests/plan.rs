@@ -155,6 +155,25 @@ fn room(tw: &TestWorld, name: &str) -> Option<ObjId> {
         .map(|o| o.id)
 }
 
+/// WS03-A1: nothing this route wrote was DROPPED for want of a declared
+/// cross-namespace delegation. A refused write still mutates RAM, so the
+/// session looks right and only a reboot shows the loss — `+build` reaches the
+/// content latch, both crates' appliers and the jobs module's ticket under
+/// worldgen's identity, and this is what says all four landed.
+fn no_refused_writes(tw: &TestWorld, after: &str) {
+    let refused: Vec<String> = tw
+        .world()
+        .refused_namespace_writes()
+        .into_iter()
+        .map(|(module, ns, _)| format!("{module} -> {ns}"))
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "{after} made cross-namespace write(s) that did not land: {refused:?}. Declare the \
+         pair with Registrar::persist_delegation and pin its row in module-ns-owners.toml."
+    );
+}
+
 fn live_objects(tw: &TestWorld) -> usize {
     tw.world()
         .iter()
@@ -438,6 +457,7 @@ async fn a_players_brief_becomes_a_validating_pack_and_go_activates_it_pending_r
             .as_ref()
             .is_some_and(|p| p.handler.as_str() == "build.review")
     );
+    no_refused_writes(&tw, "a player's +build/go");
     // Status shows both.
     let (status, _) = step(&mut tw, rae, "+build/status");
     let status = sys_to(&status, rae);
@@ -682,13 +702,15 @@ async fn a_staff_proposal_applies_live_with_a_record_ticket_and_a_stranger_canno
         .find(|s| s.name == "The Bakery")
         .expect("site");
     assert_eq!(site.origin, mush_atlas::record::SiteOrigin::Authored);
-    // Going twice is refused.
+    // Going twice is refused — and that refusal is durable only if the latch
+    // write actually landed, so check nothing on the route was dropped.
     let (again, _) = step(&mut tw, GOD, "+build/go 1");
     assert!(
         sys_to(&again, GOD).contains("applied"),
         "{}",
         sys_to(&again, GOD)
     );
+    no_refused_writes(&tw, "a staff +build/go");
 }
 
 #[tokio::test]

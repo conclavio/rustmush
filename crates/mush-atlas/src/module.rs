@@ -337,12 +337,14 @@ impl GameModule for AtlasModule {
                 .insert(pack.manifest().id().clone(), pack.clone());
         }
         reg.state(state);
-        // WS03-A1: four other modules reach this crate's API with a `Ctx` of
-        // their own, and a write's identity is whoever's `Ctx` carries it — so
-        // each of these lands `content`/`scenes`/`tacseam`/`worldgen` on the
-        // write and `atlas` on the namespace. The atlas owns the namespace and
-        // three of the four cannot name us (the dependency runs the other way),
-        // so every pair is declared here rather than at the writers.
+        // WS03-A1: five other modules reach this crate's code with a `Ctx` of
+        // their own — four call our API, and the jobs module dispatches the
+        // handlers we registered with it. A write's identity is whoever's `Ctx`
+        // carries it, so each of these lands
+        // `content`/`scenes`/`tacseam`/`worldgen`/`jobs` on the write and
+        // `atlas` on the namespace. The atlas owns the namespace and most of
+        // the five cannot name us (the dependency runs the other way), so every
+        // pair is declared here rather than at the writers.
         reg.persist_delegation(
             "content",
             NS,
@@ -356,12 +358,24 @@ impl GameModule for AtlasModule {
         reg.persist_delegation(
             "tacseam",
             NS,
-            "the same scene hook, fired for a battle scene the tactics module starts              and ends under its own identity",
+            "the same scene hook, fired for a battle scene the `tacseam` seam stub —              mush-tactics' standing seam module, not the tactics module itself —              starts and ends under its own identity",
         )?;
         reg.persist_delegation(
             "worldgen",
             NS,
             "`+build` and the planner's activation call this crate's hydration API —              requests, standing, activation — with worldgen's Ctx",
+        )?;
+        // ...and one that comes back out of the jobs module. The BUILD payload
+        // handler and the status observer this crate registers with mush-jobs
+        // are DISPATCHED by the jobs module, so a `+job/approve` on a build
+        // ticket writes our own records under the jobs module's identity — the
+        // same shape as `jobs -> wod`.
+        reg.persist_delegation(
+            "jobs",
+            NS,
+            "`+job/approve` and a denial dispatch the BUILD payload handler and the \
+             status observer this module registers with mush-jobs, under the jobs \
+             module's identity; they write the atlas's site and request records",
         )?;
         // ...and the one that runs the other way: applying a pack writes the
         // content module's latch under OUR identity. We are the writer here, and

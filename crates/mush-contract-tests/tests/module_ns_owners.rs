@@ -267,12 +267,22 @@ fn every_declared_delegation_is_pinned_and_every_pinned_row_is_declared() {
     );
 }
 
-/// **Nothing is refused at boot.**
+/// **Nothing is refused at boot** — neither half of the refusal.
 ///
 /// `on_world_loaded` runs with the same module identity a command does, so a
 /// module reaching into another module's namespace at boot is the same
 /// cross-namespace write and gets no exemption. Today no module makes one, and
 /// a refusal here would be a boot write that silently stopped landing.
+///
+/// The sibling refusal is `World::refused_state_writes`: the checked state
+/// accessor refuses a module writing a state slot another module owns, and
+/// the boot pass that applies the starter packs runs every applier under the
+/// CONTENT module's identity, so it is exactly the pass that trips it. That
+/// was found once by 34 failing mush-atlas cases; here it is one assertion.
+///
+/// Both claims are made about a boot that did something: `[game].starter_area`
+/// defaults on, so the starter lot lands, and the room count says so. Without
+/// that the empty-refusals claim is satisfied by a boot that applied nothing.
 #[test]
 fn booting_a_production_roster_refuses_no_module_write() {
     for ruleset in RULESETS {
@@ -297,6 +307,31 @@ fn booting_a_production_roster_refuses_no_module_write() {
             "[{ruleset}] boot made cross-namespace module write(s) that did NOT land: \
              {refused:?}. Declare the pair with Registrar::persist_delegation and add its row \
              to {ALLOWLIST}, or stop making the write."
+        );
+        let slots: Vec<String> = engine
+            .world
+            .refused_state_writes()
+            .into_iter()
+            .map(|(module, slot)| format!("{module} -> {slot}"))
+            .collect();
+        assert!(
+            slots.is_empty(),
+            "[{ruleset}] boot made module state-slot write(s) that did NOT land: {slots:?}. \
+             A boot pass driving another crate's code carries ITS identity, not that code's — \
+             take the unchecked accessor where the slot is the running crate's own, or add a \
+             state-slot-owners.toml row where it is not."
+        );
+        let rooms = engine
+            .world
+            .iter()
+            .filter(|o| o.kind == mush_core::ObjKind::Room)
+            .count();
+        assert!(
+            rooms >= mush_atlas::starter::LOT_ROOMS,
+            "[{ruleset}] boot made {rooms} rooms; [game].starter_area defaults on, so the \
+             starter lot's {} should stand. A boot that applied nothing would satisfy the two \
+             assertions above vacuously.",
+            mush_atlas::starter::LOT_ROOMS
         );
     }
 }

@@ -27,6 +27,20 @@
 # plus `jobs -> shadowrun`, which the run never reached and which is declared
 # rather than discovered later by a dropped write.
 #
+# The spatial layer (S1-S5) landed AFTER that run, and mush-atlas and
+# mush-content did not exist when the counter was installed, so the block of
+# rows below it was not measured the same way: it was derived by reading every
+# route across the four crates the spatial layer gave a cross-namespace surface
+# — mush-atlas, mush-content, mush-worldgen and, as the namespace on the way
+# back out, mush-jobs — and then held to the instrument that actually catches a
+# miss. A refused write is silent in RAM and only shows after a reboot, so
+# `refused_namespace_writes()` is asserted empty at the end of the live routes
+# in `mush-worldgen/tests/plan.rs` (a staff `+build/go` and a player request's
+# activation, which between them reach the content latch, the appliers of both
+# kinds and the BUILD ticket) and in `mush-atlas/tests/hydrate.rs` (the
+# `+job/approve` that comes back the other way). Reading found five pairs the
+# rebase had left undeclared; the assertions are what keep the reading honest.
+#
 # WHAT THE CHECK CANNOT SEE. Only a write spelled `ctx.persist` reaches the
 # comparison. `Deferred::Persist` is a public variant and `Outbox::defer` is
 # public, so the crate-local `push_op` helper most modules write through is
@@ -36,6 +50,15 @@
 # governed at all; fencing the sibling path (a pinned scan over non-mush-core
 # source for a `Deferred::Persist` whose namespace is not the crate's own
 # constant) is a follow-up step, not part of this one.
+#
+# Two crossings the spatial layer makes are ungoverned for exactly that reason,
+# and the rows below are not a complete description of what S1-S5 crosses until
+# the follow-up lands: `mush_sim`'s window API and `mush_canon::commit` write
+# through `ctx.out` rather than `ctx.persist`, so `atlas -> sim` and
+# `atlas -> canon` (and the same two under the scenes and tacseam identities
+# that fire the atlas's scene hook) land UNREFUSED and undeclared — the same
+# commands, the same code path, the opposite outcome from `atlas -> jobs`,
+# decided only by which crate happened to spell its write `ctx.persist`.
 #
 # Two shapes are NOT delegations, because they are not modules reaching across:
 #
@@ -133,10 +156,12 @@ discovered by a dropped write.
 
 # ---------------------------------------------------------------------------
 # The spatial layer (S1-S5, 14-spatial-implementation-plan). Four modules reach
-# `mush-atlas`'s API with a `Ctx` of their own and one runs the other way, which
-# is the same "the identity on the write is the CALLER's" shape as the jobs
-# block above — here it is an applier registry, a scene hook and a registered
-# planner rather than a public job API.
+# `mush-atlas`'s API with a `Ctx` of their own, the jobs module dispatches the
+# handlers the atlas registered with it, and the atlas and worldgen run the
+# other way into content, npc and jobs — all the same "the identity on the
+# write is the CALLER's" shape as the jobs block above, here through an applier
+# registry, a scene hook, a registered planner and a job payload handler rather
+# than a public job API.
 # ---------------------------------------------------------------------------
 
 [[delegation]]
@@ -174,9 +199,11 @@ writer = "tacseam"
 ns = "atlas"
 declared_by = "atlas"
 reason = """
-The same scene hook, fired for a battle scene mush-tactics starts and ends. \
-Two hops: the identity is the tactics module's, the code is the atlas's, the \
-namespace is the atlas's own.
+The same scene hook, fired for a battle scene the `tacseam` seam stub starts \
+and ends — mush-tactics' standing seam module, NOT the tactics module, which \
+is what composes in production and does not open windows. Two hops: the \
+identity is the seam stub's, the code is the atlas's, the namespace is the \
+atlas's own.
 """
 
 [[delegation]]
@@ -207,4 +234,62 @@ reason = """
 `@atlas/propose` hands the proposal to the planner mush-worldgen registers with \
 the atlas at boot, so a whole planning run — and every proposal document it \
 writes — happens under the atlas module's identity.
+"""
+
+[[delegation]]
+writer = "atlas"
+ns = "npc"
+declared_by = "npc"
+reason = """
+The people half of the row above: `@atlas/pack apply` commits through \
+mush_content::apply_pack, which drives EVERY kind's applier under the calling \
+module's identity, so a pack with lore or personas in it writes the npc \
+namespace under the atlas's.
+"""
+
+# The `+build` routes. Whoever calls mush_content::apply_pack runs the whole
+# applier registry under their own identity, so worldgen reaches the content
+# latch and both crates' appliers; the hydration API it calls files the ticket.
+
+[[delegation]]
+writer = "worldgen"
+ns = "content"
+declared_by = "worldgen"
+reason = """
+`+build/go` applies a staff proposal live and a player request's activation \
+applies the same pack, both through mush_content::apply_pack, whose latch write \
+carries the worldgen module's identity. Without this the latch is set in RAM \
+only: the session looks right and the pack is un-latched after a reboot.
+"""
+
+[[delegation]]
+writer = "worldgen"
+ns = "npc"
+declared_by = "npc"
+reason = """
+The people half of that apply: a site pack carries the personas the planner \
+wrote, and their appliers run under worldgen's identity.
+"""
+
+[[delegation]]
+writer = "worldgen"
+ns = "jobs"
+declared_by = "worldgen"
+reason = """
+The atlas's hydration API files the BUILD ticket — the review ticket for a \
+hydrated site, the record ticket for a staff apply — through mush_jobs::open_job \
+under the CALLER's identity, and `+build` is worldgen's command. Two hops: the \
+identity is worldgen's, the code is the atlas's, the namespace is the jobs \
+module's.
+"""
+
+[[delegation]]
+writer = "jobs"
+ns = "atlas"
+declared_by = "atlas"
+reason = """
+The direction that comes back out of the jobs module, exactly as jobs -> wod \
+does: `+job/approve` on a BUILD ticket dispatches the payload handler the atlas \
+registered, and a denial its status observer, under the jobs module's identity; \
+both write the atlas's site and request records.
 """

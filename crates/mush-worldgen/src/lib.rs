@@ -204,6 +204,29 @@ impl GameModule for WorldgenModule {
             NS,
             "`@atlas/propose` dispatches this crate's registered planner under the              atlas module's identity, and the run writes worldgen proposals",
         )?;
+        // ...and the three that run the other way. `+build/go` builds a pack:
+        // staff apply it live, a player's request activates it through the
+        // atlas's hydration API, and either route runs under OUR identity all
+        // the way down — through the content module's pack latch, through every
+        // applier the pack's entries reach, and through the BUILD ticket the
+        // hydration API files. We are the writer on each, so they are ours to
+        // declare; the `worldgen -> npc` pair belongs to mush-npc, which we
+        // cannot name, and is declared there.
+        reg.persist_delegation(
+            NS,
+            mush_content::NS,
+            "`+build/go` and a request's activation commit the pack through \
+             mush_content::apply_pack, whose latch write carries this module's \
+             identity",
+        )?;
+        reg.persist_delegation(
+            NS,
+            "jobs",
+            "the atlas's hydration API files the BUILD ticket — the review ticket \
+             for a hydrated site, the record ticket for a staff apply — through \
+             mush_jobs::open_job under the caller's identity, and `+build` is this \
+             module's command",
+        )?;
         commands::register(reg, Arc::clone(&self.llm))
     }
 
