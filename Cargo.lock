@@ -2047,8 +2047,10 @@ dependencies = [
 name = "mush-atlas"
 version = "0.1.0"
 dependencies = [
+ "mush-canon",
  "mush-content",
  "mush-core",
+ "mush-jobs",
  "mush-npc",
  "mush-proto",
  "mush-testkit",
@@ -2755,9 +2757,12 @@ name = "mush-worldgen"
 version = "0.1.0"
 dependencies = [
  "mush-atlas",
+ "mush-canon",
  "mush-content",
  "mush-core",
+ "mush-jobs",
  "mush-llm",
+ "mush-npc",
  "mush-proto",
  "mush-testkit",
  "proptest",

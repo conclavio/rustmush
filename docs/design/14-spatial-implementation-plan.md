@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.4 — 2026-09-09 (S1, S2, S2b landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.5 — 2026-09-10 (S1, S2, S2b, S3 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -546,6 +546,77 @@ interleaving exceed the cap or dodge a strike?), **I** (idempotent requests).
 **What this cut does not do.** No interface NPCs (S6); no fine terrain: sites activate with the
 rasterizer's coarse tiles and `tactical_ready = false`.
 
+**Ledger (landed 2026-09-10).** Gates: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test` on `mush-llm`, `mush-npc`, `mush-atlas`,
+`mush-content`, `mush-jobs`, `mush-config`, `mush-worldgen`, `mush-canon`, the dependents
+(`mush-weather`, `mush-faction`, `mush-housing`, `mush-sim`), the contract tests (the panic
+budget — `mush-atlas` and `mush-worldgen` still at zero sites, no budget raised — the
+restriction-lint table, the legacy-handler allowlist with `+build` added as legacy-post-image,
+family `worldgen.proposal`, and `@atlas` gaining `/propose`, `/cap`, `/strike`, `/standing`; the
+baseline pin unchanged at 151), `mush-server` and `mushd` whole. Deviations from the text
+above, each with its reason:
+
+- **The tool loop is `mush_llm::agent::run`** over a `ToolHost` trait (`call`, `on_text`,
+  `finished`): the loop owns the rounds, the echo of only the answered tool-use blocks, one
+  repair, and the per-run cost cap; the host owns what a tool means. `mush-npc`'s dialogue
+  turn is a `DialogueHost` on it (its suites unchanged). The cap is a pre-check inside the
+  loop over the run's *reported* spend (`usage.cost_usd`), not a ledger scope: the ledger
+  meters days, a run is minutes, and a provider that reports no price spends nothing against
+  the cap, which is the honest answer. The host is `Send` so the drivers' spawned runs are.
+- **The validator** (`mush_atlas::validate`) takes a serializable `ValidateContext` captured on
+  the world loop for a scope (the world, a region, a neighborhood), so the agent's off-loop
+  `pack.validate` runs the same function over the world as it stood when the run began and
+  `@atlas/pack plan` runs it over the world as it stands; `+build/go` re-validates against the
+  present before applying. Findings are typed with the plan's five fields; an error refuses
+  the apply, a warning prints through, an info is a note. Rule 7 marks unknown travel modes,
+  missing service vehicles and NPC abilities staff-run as infos (no pack names a ruleset
+  mechanic yet, so no registry is consulted); rule 8's "never touches live-state fields" is
+  structural (the wires deny unknown fields) and its "retire has no live references" is
+  occupancy and exits from outside the pack. The site-kind taxonomy is a warning, never a
+  refusal (R1). `@atlas/pack apply` refuses a blocking finding before it reads the fingerprint.
+  The starter packs validate clean, as a regression test; the geometry suite's base map
+  gained a way in from Limbo, since every public room is now expected reached.
+- **Reservations are the request records**, not a `ReservationBook` (C8): a request at
+  `mod:atlas:request:<id>`, keyed by an idempotency key over (character, neighborhood, kind,
+  footprint hash), holds the character's slot, the neighborhood's unit and its footprint
+  while it is outstanding, and every check re-derives the three from the outstanding set.
+  Reason: they are two small counts and one footprint, the atlas takes no authoritative
+  action yet, and the K family (`reg.state_family` under the composition authority, an
+  `ActionTxn` per hold) belongs with the first one; the allowlist stanza says so. A footprint
+  left unsaid is the first unclaimed twenty-metre square. Standing is
+  `mod:atlas:standing:<char>`; `@atlas/cap` sets the cap **and clears the strikes** (the reset
+  D-14-25 names).
+- **The re-entry is the existing seam.** There is no `WorldCommand::ProposalUpdated`: the run
+  rides `Effect::ModuleAsync` in the worldgen envelope (`WorldgenReq::Plan`) and re-enters as
+  `WorldCommand::ModuleAsyncDone` carrying `GenOutcome::Plan`; the proposal's `revision`
+  (bumped by every answer, feedback and run start) is what drops a stale outcome.
+- **`@atlas/propose` hands off through `AtlasHooks`**, a function the worldgen module
+  registers at its boot, since the atlas has no LLM edge. `+job/deny` reaches the atlas through
+  a new status-observer seam on the jobs module (`register_status_observer`), beside the
+  payload handler; the `BUILD` queue (min role Builder) is the atlas's, the `build.review`
+  handler and the `atlas.build` observer register when jobs is composed. A staff `+build/go`
+  applies live and files a payload-less BUILD ticket for the record.
+- **Site packs** resolve their neighborhood through `requires` (the applier learned it), and
+  the run fixes the manifest — id, kind, version, requires — so the model gives entries only:
+  `site.hyd_<char>_<hash>` for a request, `site.p<id>_<slug>` / `neighborhood.p<id>_<slug>` /
+  `region.p<id>_<slug>` for a staff brief by scope, the pack's own id at the next version for
+  `--from`. `atlas.read` and `atlas.search_sites` answer from the captured context.
+- **`file` is not an in-game source**: packs arrive on the shelf (`[atlas].pack_paths`) and
+  `--from` reconceptualizes them; the prose form takes `<place>=<prose>`.
+- **Config**: `[worldgen]` carries the five knobs as written; the two hydration knobs reach
+  the atlas through `atlas_config(cfg, worldgen)` (`hydration_strikes_to_zero = 0` is a boot
+  error). `[llm.routes.worldgen_plan]` and `[llm.budgets.per_feature].worldgen_plan` are in the
+  example and the deploy template.
+- **Tests (28 new against the plan's ~52 scenarios; each named scenario covered)**: the loop's
+  echo, repair, round bound, cap-before-a-call, finished host and refusal (6); the validator's
+  clean starter packs and block, schema, geometry, topology, policy-secrets-theme, diff
+  safety, and the plan/apply reading (7); hydration's slot-unit-ground-convergence, activation
+  and review both ways, three strikes and the reset, allowance and a closed policy, the
+  planner hand-off, a reboot (6); the planner's brief-to-pack-to-go with zero calls at boot,
+  the resumable proposal with a stale drop, the cost cap, the target told and not enforced, a
+  staff go with a record ticket and a stranger refused, questions and answers,
+  reconceptualize keeping the way in, a secret refused, a reboot (9).
+
 ### 3.5 Cut S4 — windows, the street driver, rendering
 
 **Records.** `WindowRec` on `DomainRecord` (`window: Option<WindowRec>`); `Pose` replaces the
@@ -766,3 +837,4 @@ square root of its pinned distance.
 - 0.2 (2026-09-09): S1 landed — `mush-content`, `mush-atlas`, the starter packs, `[game].starter_area`, `[atlas]`; its ledger and verify fold recorded under §3.1; §8's tile-size question closed by measurement.
 - 0.3 (2026-09-09): S2 landed — one travel system in `mush-atlas` (journeys for characters, objects and the room-model bus; `+travel`, `+stakeout`, `+intercept`, `@atlas/journey`; timed portals; the clock floor and cap), `route.rs`'s runtime retired; D-P-4 amended (the carrier journey is layered until S7); its ledger and verify fold under §3.2; the starter packs at version 2.
 - 0.4 (2026-09-09): S2b landed — theme, weather, control regions and property key on the atlas (D-14-28): `Theme` in `mush-atlas` with a world theme and `@atlas/theme`; weather cells on neighborhoods and regions; `@region/atlas`, `@property/site`; `@theme` retired; its ledger under §3.3.
+- 0.5 (2026-09-10): S3 landed — the building agent and hydration: `mush_llm::agent` (the one tool loop, the NPC turn on it), `mush_atlas::validate` (doc 14 §4.3 as typed findings, shared by `@atlas/pack plan` and the agent), `mush_atlas::hydrate` (standing, requests, activation, the BUILD queue, canon events), `mush_worldgen::{proposal, plan}` (proposals, the planning run, `+build`, `@atlas/propose`); `[worldgen]`'s five knobs and the `worldgen_plan` route; its ledger under §3.4.

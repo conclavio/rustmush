@@ -114,5 +114,10 @@ async fn live_worldgen_openrouter_smoke() {
         GenOutcome::Brief { .. } | GenOutcome::BriefErr { .. } => {
             panic!("unexpected brief outcome from a single-room @gen smoke request")
         }
+        // S3: a planning outcome is the building agent's (`WorldgenReq::Plan`),
+        // never a bare room snapshot's.
+        GenOutcome::Plan { .. } => {
+            panic!("unexpected planning outcome from a single-room @gen smoke request")
+        }
     }
 }

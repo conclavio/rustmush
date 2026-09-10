@@ -106,6 +106,34 @@ Start to finish (a small building already dug off the entrance):
   @gen here=A long wooden wharf, tar and rope, a customs shed at the far end.
   @gen/accept                       write it, once you like the draft
 
+## The building agent (`@atlas/propose`, `+build`)
+
+Beyond one room's description, the agent plans whole **content packs** — a site
+with its rooms, exits, features, items, hooks, people and lore — from a brief
+(`help atlas`, `help build`). It reads the atlas through tools (`atlas.read`,
+`atlas.search_sites`), proposes the pack (`pack.propose`, `pack.revise`), checks
+it against the validator (`pack.validate`, the same rules `@atlas/pack plan`
+prints) and asks the author what it cannot decide (`ask`). No tool touches the
+world: the pack sits on a proposal record until `+build/go`. A run makes at most
+`[worldgen].plan_max_rounds` calls (6) and stops before the call that would pass
+the proposal's cost cap (`plan_cost_cap_usd`, $5); the target it is told to aim
+for (`plan_cost_target_usd`, $2) is advice, never enforced. Runs go through the
+`worldgen_plan` route — a strong model at high effort — under the author's daily
+budget and the feature's.
+
+  @atlas/propose <prose>             plan a pack for the neighborhood you
+                                     stand in (a site), the region (a
+                                     neighborhood) or the world (a region)
+  @atlas/propose <place>=<prose>     … for a place you name
+  @atlas/propose --from <pack>       reconceptualize a pack on the shelf
+  +build/show <id>, +build/answer, +build/feedback, +build/go, +build/withdraw
+
+A staff proposal applies live on `+build/go`, with a `BUILD` ticket filed for
+the record; a player's request (`+build/place`) stands pending review. What a
+player may build, and how much at once, is the neighborhood's hydration policy
+and their standing: `[worldgen].hydration_cap` (2 outstanding requests) and
+`hydration_strikes_to_zero` (3).
+
 ## Staff: budgets and the kill switch (Wizard)
 
   @llm/budget             Today's LLM token/cost totals.

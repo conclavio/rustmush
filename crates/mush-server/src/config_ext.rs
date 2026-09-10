@@ -428,7 +428,10 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, St
 /// A pack file that cannot be read or does not verify, a directory that cannot be
 /// listed, more than [`mush_atlas::MAX_CONFIGURED_PACKS`] packs, or a
 /// `tile_max_cells` outside `1..=65536`.
-pub fn atlas_config(cfg: &AtlasCfg, worldgen: &WorldgenCfg) -> Result<mush_atlas::AtlasConfig, String> {
+pub fn atlas_config(
+    cfg: &AtlasCfg,
+    worldgen: &WorldgenCfg,
+) -> Result<mush_atlas::AtlasConfig, String> {
     let sources = read_pack_sources(&cfg.pack_paths, "[atlas].pack_paths")?;
     if worldgen.hydration_strikes_to_zero == 0 {
         return Err("[worldgen].hydration_strikes_to_zero must be at least 1".to_string());
