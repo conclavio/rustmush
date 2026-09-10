@@ -10,13 +10,21 @@ use std::collections::HashMap;
 use mush_atlas::{AtlasModule, AtlasState, JourneyState, Node, starter};
 use mush_content::{Appliers, ContentModule, parse_pack};
 use mush_core::clock::ClockRef;
-use mush_core::{Audience, GOD, GameModule, ModuleBootData, ModuleWrite, ObjId, ObjKind, Outbox};
+use mush_core::{
+    Audience, DetachedTypedState, GOD, GameModule, ModuleBootData, ModuleWrite, ObjId, ObjKind,
+    Outbox, TypedStateLens,
+};
 use mush_proto::OutputEvent;
 use mush_testkit::TestWorld;
 use serde_json::{Value, json};
 use smol_str::SmolStr;
 
 const T0: i64 = 1_000;
+
+/// The store-less lens these engine-side calls are taken with: this suite holds
+/// no live `ActionStateStore`, and WS03-S7 made a call say so rather than let
+/// "no typed state" be the shorter spelling.
+const DETACHED: TypedStateLens<'static> = TypedStateLens::Detached(DetachedTypedState::Test);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -237,7 +245,7 @@ fn tick_at(tw: &mut TestWorld, t: i64) -> Vec<(Audience, OutputEvent)> {
 }
 
 fn can_see(tw: &TestWorld, observer: ObjId, subject: ObjId) -> bool {
-    mush_core::module::can_perceive(tw.registry(), tw.world(), observer, subject)
+    mush_core::module::can_perceive(tw.registry(), tw.world(), observer, subject, DETACHED)
 }
 
 /// What the engine does on a clean last disconnect, module-side: the hook, then
@@ -245,12 +253,20 @@ fn can_see(tw: &TestWorld, observer: ObjId, subject: ObjId) -> bool {
 fn disconnect(tw: &mut TestWorld, who: ObjId) {
     let mut out = Outbox::new();
     let engine = tw.engine_mut();
-    mush_core::module::fire_conn_hook(&engine.registry, &mut engine.world, &mut out, who, false);
+    mush_core::module::fire_conn_hook(
+        &engine.registry,
+        &mut engine.world,
+        &mut out,
+        who,
+        false,
+        DETACHED,
+    );
     mush_core::module::emit_world_event(
         &engine.registry,
         &mut engine.world,
         &mut out,
         &mush_core::WorldEvent::Disconnected { who },
+        DETACHED,
     );
 }
 
