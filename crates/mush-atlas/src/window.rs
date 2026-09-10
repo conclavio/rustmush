@@ -1486,6 +1486,83 @@ pub fn arc_geometry(w: &World, near: ObjId, far: ObjId) -> Option<bool> {
 /// A surface index and a cell on it.
 type Standing = (usize, u16, u16);
 
+/// S9.4: the height, centimetres, within which two surfaces' cells at one
+/// (x, y) are one doorway — the same rule the walk crosses surfaces by.
+pub const JUNCTION_STEP_CM: i32 = 150;
+
+/// S9.4 (S5's note, doc 14 §5): the cell where a line between two surfaces of
+/// one window passes from one to the other — a doorway out of a building onto
+/// the lot, a floor onto its landing: a cell standable on both at the same
+/// height, the one that makes the two-legged walk shortest. `None` when the
+/// surfaces share no such cell (a floor with no way down is its own world).
+#[must_use]
+pub fn junction_between(composite: &Composite, a: Standing, b: Standing) -> Option<(u16, u16)> {
+    let (sa, xa, ya) = a;
+    let (sb, xb, yb) = b;
+    if sa == sb {
+        return None;
+    }
+    let first = composite.surfaces.get(sa)?;
+    let second = composite.surfaces.get(sb)?;
+    let width = first.grid.width.min(second.grid.width);
+    let height = first.grid.height.min(second.grid.height);
+    let cheb = |x0: u16, y0: u16, x1: u16, y1: u16| u32::from(x0.abs_diff(x1).max(y0.abs_diff(y1)));
+    let mut best: Option<(u32, (u16, u16))> = None;
+    for y in 0..height {
+        for x in 0..width {
+            let (Some(c1), Some(c2)) = (first.cells.get(x, y), second.cells.get(x, y)) else {
+                continue;
+            };
+            if !standable(c1) || !standable(c2) {
+                continue;
+            }
+            if (i32::from(c1.elev_cm) - i32::from(c2.elev_cm)).abs() > JUNCTION_STEP_CM {
+                continue;
+            }
+            let cost = cheb(xa, ya, x, y) + cheb(x, y, xb, yb);
+            if best.is_none_or(|(c, _)| cost < c) {
+                best = Some((cost, (x, y)));
+            }
+        }
+    }
+    best.map(|(_, at)| at)
+}
+
+/// The worse of two sights along one line: a blocker anywhere blocks it, cover
+/// adds up to the heavier, and only two clear legs are clear.
+fn worse_sight(first: crate::trace::Sight, second: crate::trace::Sight) -> crate::trace::Sight {
+    use crate::trace::Sight;
+    match (first, second) {
+        (Sight::BlockedBy(b), _) | (_, Sight::BlockedBy(b)) => Sight::BlockedBy(b),
+        (Sight::Partial(x), Sight::Partial(y)) => Sight::Partial(x.max(y)),
+        (Sight::Partial(x), Sight::Clear) | (Sight::Clear, Sight::Partial(x)) => Sight::Partial(x),
+        (Sight::Clear, Sight::Clear) => Sight::Clear,
+    }
+}
+
+/// Two legs of one trace, joined at the doorway: the second's cells follow the
+/// first's, a stop on the second is offset by the first's length, the target's
+/// cover is the second's, and the sums add.
+fn joined_trace(
+    mut first: crate::trace::Trace,
+    second: crate::trace::Trace,
+) -> crate::trace::Trace {
+    if first.stop.is_some() {
+        return first;
+    }
+    let offset = first.cells.len();
+    first.cells.extend(second.cells);
+    first.profile.extend(second.profile);
+    first.line_cm.extend(second.line_cm);
+    first.crossed.extend(second.crossed);
+    first.stop = second.stop.map(|(i, b)| (i.saturating_add(offset), b));
+    first.target_cover = second.target_cover;
+    first.attenuation = first.attenuation.saturating_add(second.attenuation);
+    first.range_cells = first.range_cells.saturating_add(second.range_cells);
+    first.visited = first.visited.saturating_add(second.visited);
+    first
+}
+
 /// Where two objects stand on one window: the domain, and each one's
 /// surface index and cell.
 fn co_located(
@@ -1511,18 +1588,38 @@ fn co_located(
 pub fn metric_geometry(w: &World, near: ObjId, far: ObjId) -> Option<mush_sim::MetricGeometry> {
     let st = w.module_state::<AtlasState>()?;
     let (domain, (sa, xa, ya), (sb, xb, yb)) = co_located(w, st, near, far)?;
-    let range_cells = u32::from(xa.abs_diff(xb).max(ya.abs_diff(yb)));
     let composite = st.windows.open.get(&domain.0)?.composite.as_ref()?;
-    let occluded = if sa == sb {
+    let cheb = |x0: u16, y0: u16, x1: u16, y1: u16| u32::from(x0.abs_diff(x1).max(y0.abs_diff(y1)));
+    let (range_cells, occluded) = if sa == sb {
         let surface = composite.surfaces.get(sa)?;
-        !crate::trace::line_of_sight(
+        let sight = crate::trace::line_of_sight(
             surface,
             crate::trace::Eye::standing((xa, ya)),
             crate::trace::Eye::standing((xb, yb)),
+        );
+        (cheb(xa, ya, xb, yb), !sight.is_clear_or_partial())
+    } else if let Some((jx, jy)) = junction_between(composite, (sa, xa, ya), (sb, xb, yb)) {
+        // S9.4: through the doorway — two legs, each on its own surface.
+        let first = composite.surfaces.get(sa)?;
+        let second = composite.surfaces.get(sb)?;
+        let sight = worse_sight(
+            crate::trace::line_of_sight(
+                first,
+                crate::trace::Eye::standing((xa, ya)),
+                crate::trace::Eye::standing((jx, jy)),
+            ),
+            crate::trace::line_of_sight(
+                second,
+                crate::trace::Eye::standing((jx, jy)),
+                crate::trace::Eye::standing((xb, yb)),
+            ),
+        );
+        (
+            cheb(xa, ya, jx, jy).saturating_add(cheb(jx, jy, xb, yb)),
+            !sight.is_clear_or_partial(),
         )
-        .is_clear_or_partial()
     } else {
-        true
+        (cheb(xa, ya, xb, yb), true)
     };
     Some(mush_sim::MetricGeometry {
         range_cells,
@@ -1536,21 +1633,30 @@ pub fn metric_geometry(w: &World, near: ObjId, far: ObjId) -> Option<mush_sim::M
 pub fn sight_between(w: &World, a: ObjId, b: ObjId) -> Option<crate::trace::Sight> {
     let st = w.module_state::<AtlasState>()?;
     let (domain, (sa, xa, ya), (sb, xb, yb)) = co_located(w, st, a, b)?;
-    if sa != sb {
-        return None;
+    let composite = st.windows.open.get(&domain.0)?.composite.as_ref()?;
+    if sa == sb {
+        let surface = composite.surfaces.get(sa)?;
+        return Some(crate::trace::line_of_sight(
+            surface,
+            crate::trace::Eye::standing((xa, ya)),
+            crate::trace::Eye::standing((xb, yb)),
+        ));
     }
-    let surface = st
-        .windows
-        .open
-        .get(&domain.0)?
-        .composite
-        .as_ref()?
-        .surfaces
-        .get(sa)?;
-    Some(crate::trace::line_of_sight(
-        surface,
-        crate::trace::Eye::standing((xa, ya)),
-        crate::trace::Eye::standing((xb, yb)),
+    // S9.4: through the doorway between the surfaces, when there is one.
+    let (jx, jy) = junction_between(composite, (sa, xa, ya), (sb, xb, yb))?;
+    let first = composite.surfaces.get(sa)?;
+    let second = composite.surfaces.get(sb)?;
+    Some(worse_sight(
+        crate::trace::line_of_sight(
+            first,
+            crate::trace::Eye::standing((xa, ya)),
+            crate::trace::Eye::standing((jx, jy)),
+        ),
+        crate::trace::line_of_sight(
+            second,
+            crate::trace::Eye::standing((jx, jy)),
+            crate::trace::Eye::standing((xb, yb)),
+        ),
     ))
 }
 
@@ -1572,21 +1678,41 @@ fn unit_cells(
 pub fn direct_fire_between(w: &World, a: ObjId, b: ObjId) -> Option<crate::trace::Trace> {
     let st = w.module_state::<AtlasState>()?;
     let (domain, (sa, xa, ya), (sb, xb, yb)) = co_located(w, st, a, b)?;
-    if sa != sb {
-        return None;
-    }
     let composite = st.windows.open.get(&domain.0)?.composite.as_ref()?;
-    let surface = composite.surfaces.get(sa)?;
-    let units: Vec<(ObjId, (u16, u16))> = unit_cells(w, composite, domain)
-        .into_iter()
-        .filter(|(s, o, _)| *s == sa && *o != a && *o != b)
-        .map(|(_, o, c)| (o, c))
-        .collect();
-    Some(crate::trace::direct_fire_path(
-        surface,
-        &units,
-        crate::trace::Eye::standing((xa, ya)),
-        crate::trace::Eye::standing((xb, yb)),
+    let all_units = unit_cells(w, composite, domain);
+    let units_on = |s: usize| -> Vec<(ObjId, (u16, u16))> {
+        all_units
+            .iter()
+            .filter(|(si, o, _)| *si == s && *o != a && *o != b)
+            .map(|(_, o, c)| (*o, *c))
+            .collect()
+    };
+    if sa == sb {
+        let surface = composite.surfaces.get(sa)?;
+        return Some(crate::trace::direct_fire_path(
+            surface,
+            &units_on(sa),
+            crate::trace::Eye::standing((xa, ya)),
+            crate::trace::Eye::standing((xb, yb)),
+        ));
+    }
+    // S9.4: through the doorway, two legs joined.
+    let (jx, jy) = junction_between(composite, (sa, xa, ya), (sb, xb, yb))?;
+    let first = composite.surfaces.get(sa)?;
+    let second = composite.surfaces.get(sb)?;
+    Some(joined_trace(
+        crate::trace::direct_fire_path(
+            first,
+            &units_on(sa),
+            crate::trace::Eye::standing((xa, ya)),
+            crate::trace::Eye::standing((jx, jy)),
+        ),
+        crate::trace::direct_fire_path(
+            second,
+            &units_on(sb),
+            crate::trace::Eye::standing((jx, jy)),
+            crate::trace::Eye::standing((xb, yb)),
+        ),
     ))
 }
 
@@ -1596,22 +1722,34 @@ pub fn direct_fire_between(w: &World, a: ObjId, b: ObjId) -> Option<crate::trace
 pub fn hearing_between(w: &World, a: ObjId, b: ObjId) -> Option<crate::trace::Hearing> {
     let st = w.module_state::<AtlasState>()?;
     let (domain, (sa, xa, ya), (sb, xb, yb)) = co_located(w, st, a, b)?;
-    if sa != sb {
-        return None;
+    let composite = st.windows.open.get(&domain.0)?.composite.as_ref()?;
+    if sa == sb {
+        let surface = composite.surfaces.get(sa)?;
+        return Some(crate::trace::hearing(
+            surface,
+            crate::trace::Eye::standing((xa, ya)),
+            crate::trace::Eye::standing((xb, yb)),
+        ));
     }
-    let surface = st
-        .windows
-        .open
-        .get(&domain.0)?
-        .composite
-        .as_ref()?
-        .surfaces
-        .get(sa)?;
-    Some(crate::trace::hearing(
-        surface,
+    // S9.4: through the doorway, the two legs' attenuation adds.
+    let (jx, jy) = junction_between(composite, (sa, xa, ya), (sb, xb, yb))?;
+    let first = composite.surfaces.get(sa)?;
+    let second = composite.surfaces.get(sb)?;
+    let one = crate::trace::hearing(
+        first,
         crate::trace::Eye::standing((xa, ya)),
+        crate::trace::Eye::standing((jx, jy)),
+    );
+    let two = crate::trace::hearing(
+        second,
+        crate::trace::Eye::standing((jx, jy)),
         crate::trace::Eye::standing((xb, yb)),
-    ))
+    );
+    Some(crate::trace::Hearing {
+        attenuation: one.attenuation.saturating_add(two.attenuation),
+        silent: one.silent || two.silent,
+        visited: one.visited.saturating_add(two.visited),
+    })
 }
 
 /// A one-line summary of an open window, as staff list it: every anchor named.

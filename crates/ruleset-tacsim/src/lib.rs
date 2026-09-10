@@ -76,6 +76,7 @@
 
 pub mod commands;
 pub mod config;
+pub mod content;
 pub mod ephemeris;
 pub mod fixture;
 pub mod pack;
@@ -91,6 +92,7 @@ pub use config::{
     MAX_CONFIGURED_PACKS, MAX_RECOVERY_TIERS, PackSource, RECOVERY_INSURANCE_WORDS, TacsimConfig,
     TacsimRecoveryConfig, TacsimTimeConfig,
 };
+pub use content::{CORRIDOR_MODE, GM_PER_KM, SITE_HALF_GM, register_appliers};
 pub use ephemeris::{AU_KM, Body, Ephemeris, MAX_ORBIT_UAU, MAX_PERIOD_MDAYS, separation_km};
 pub use pack::BodyDef;
 pub use pack::{
@@ -103,7 +105,7 @@ pub use pack::{
     load_pack, pack_digest,
 };
 pub use record::{PackRecord, PinRecord, SeedApplication};
-pub use seed::{PlannedObject, SeedError, SeedPlan};
+pub use seed::{PlannedObject, SeedError, SeedOutcome, SeedPlan};
 pub use store::{MAX_PINS, NS, PACK_PAGE, ResolveError, TacsimStore};
 
 /// **Parse and verify every pack the host read** — the one function both the host's

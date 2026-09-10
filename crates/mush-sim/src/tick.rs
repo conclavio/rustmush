@@ -63,7 +63,7 @@ use mush_core::{
     ResolvedActionInvocation, RevisionSet, RulesValue, ScheduleActionAdapter, ScheduleActionDraft,
     ScheduleAdvance, ScheduleCatchUpOrder, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
     StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode,
-    WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy,
+    WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy, World,
     action_window_state_family_descriptor, canonical_json_bytes_with_limit,
     durable_schedule_state_family_descriptor,
 };
@@ -1568,6 +1568,51 @@ struct TacticalIntentProvider {
     families: TickFamilies,
 }
 
+/// S9.3: the refusal a fire intent gets when the window's line of fire is
+/// blocked. It names nothing about what blocks it.
+pub const NO_LINE: &str = "no line";
+
+/// S9.3: the subject a contact witness names, when the kernel answers the
+/// request with one and the subject is an object. Read here and kept nowhere:
+/// the tick's records carry the opaque contact, never this.
+fn contact_subject(engine: &Engine, request: &mush_core::AuthorityWitnessRequest) -> Option<ObjId> {
+    match engine.authority_witness(request) {
+        Ok(Some(witness)) => match witness.truth_subject() {
+            Some(mush_core::SubjectKey::Object { id }) => Some(*id),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// S9.3 (14a's deferral, doc 14 §5): whether the window `from` and `target`
+/// share answers a shot between them. `Fire` needs the standing line clear;
+/// `Launch` — an indirect shot — needs the line or the arc. Two units on no
+/// shared window, or a world with no geometry registered, are not gated: the
+/// atlas answers `None` and the intent stands as it did before S9.
+///
+/// # Errors
+///
+/// [`NO_LINE`], and nothing about what blocks it.
+pub fn line_of_fire_gate(
+    w: &World,
+    kind: IntentKind,
+    from: ObjId,
+    target: ObjId,
+) -> Result<(), &'static str> {
+    let Some(metric) = crate::window::metric_between(w, from, target) else {
+        return Ok(());
+    };
+    let clear = match kind {
+        IntentKind::Fire => !metric.occluded,
+        IntentKind::Launch => {
+            !metric.occluded || crate::window::arc_between(w, from, target).unwrap_or(false)
+        }
+        _ => true,
+    };
+    if clear { Ok(()) } else { Err(NO_LINE) }
+}
+
 impl TacticalIntentProvider {
     /// Select an audience through current crew/proxy policy, then ask tactics
     /// for its exact generation witness. No contact projection grants authority.
@@ -2010,6 +2055,9 @@ struct TickPlan {
     /// against `World::channel_grant_is_current` at apply). Every accepted
     /// intent NOT in this list is **refused with a reason**, never skipped.
     current: Vec<RequestUid>,
+    /// S9.3: the fire intents whose line of fire the window refused at plan
+    /// time — refused at commit with `no line`, never accepted.
+    no_line: Vec<RequestUid>,
     /// Commit keys that have fallen out of the retention ring, **named by a
     /// bounded scan** rather than guessed arithmetically (fold D5(a)/B3). Also
     /// carries every commit of a superseded generation.
@@ -2050,6 +2098,14 @@ impl DomainTickProvider {
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
             .ok_or_else(|| integrity("a domain tick names its revalidated set"))?;
+        let no_line: Vec<RequestUid> = parameters
+            .get("no_line")
+            .cloned()
+            .map_or_else(
+                || Some(Vec::new()),
+                |value| serde_json::from_value(value).ok(),
+            )
+            .ok_or_else(|| integrity("a domain tick names its refused-line set"))?;
         let reap_commits: Vec<TickCommitKey> = parameters
             .get("reap_commits")
             .cloned()
@@ -2097,6 +2153,7 @@ impl DomainTickProvider {
             observed_at,
             window,
             current,
+            no_line,
             reap_commits,
             reap_windows,
             reap_orders,
@@ -2299,6 +2356,19 @@ impl ActionProvider for DomainTickProvider {
             // intent is recorded as a refusal and never as an accepted one —
             // the durable commit `@domain/replay` reads no longer attributes
             // orders against stations nobody holds.
+            // S9.3: the window refused the line of fire at plan time — the
+            // refusal names nothing about what blocks it (a refusal is not an
+            // oracle), and the intent is never accepted.
+            if plan.no_line.contains(&request) {
+                deltas.push(UnitDelta {
+                    unit: doc.unit,
+                    kind: Some(doc.kind),
+                    outcome: DeltaOutcome::Refused {
+                        reason: NO_LINE.to_owned(),
+                    },
+                });
+                continue;
+            }
             if !plan.current.contains(&request) {
                 deltas.push(UnitDelta {
                     unit: doc.unit,
@@ -3001,6 +3071,7 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
         // submit, so an order whose focus was released before the tick fires is
         // refused with its reason rather than resolved.
         let mut still_current: Vec<RequestUid> = Vec::new();
+        let mut no_line: Vec<RequestUid> = Vec::new();
         if let Ok(Some(record)) = engine.action_state().get(&self.families.windows, &window) {
             for intent in record.intents() {
                 let Ok(doc) = TacticalIntentProvider::document(intent.invocation()) else {
@@ -3021,8 +3092,9 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
                     .is_some_and(|(unit, station)| {
                         unit == doc.unit && station.as_str() == doc.station
                     });
+                let contact = TacticalIntentProvider::contact_request(engine, intent.invocation());
                 if focused
-                    && TacticalIntentProvider::contact_request(engine, intent.invocation()).is_ok()
+                    && contact.is_ok()
                     && (doc.kind != IntentKind::Eject
                         || crate::focus::seat_restriction(
                             &engine.world,
@@ -3039,12 +3111,31 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
                         &channel,
                     )
                 {
-                    still_current.push(intent.invocation().request());
+                    // S9.3: a targeted fire intent is gated on the window's line
+                    // of fire here, where the contact guard's witness holds the
+                    // target's subject and nothing leaves this scope but a verdict.
+                    let blocked = matches!(doc.kind, IntentKind::Fire | IntentKind::Launch)
+                        && contact
+                            .as_ref()
+                            .ok()
+                            .and_then(|request| request.as_ref())
+                            .and_then(|request| contact_subject(engine, request))
+                            .is_some_and(|target| {
+                                line_of_fire_gate(&engine.world, doc.kind, doc.unit, target)
+                                    .is_err()
+                            });
+                    if blocked {
+                        no_line.push(intent.invocation().request());
+                    } else {
+                        still_current.push(intent.invocation().request());
+                    }
                 }
             }
         }
         still_current.sort();
         still_current.dedup();
+        no_line.sort();
+        no_line.dedup();
 
         // **The bounded reap sets** (fold D5(a)/B3/A9). The tick provider has an
         // `ActionTxn` and no scan, so the one place on this lane that CAN read
@@ -3076,6 +3167,7 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
                 "observed_at": advance.observed_at(),
                 "window": window,
                 "current": still_current,
+                "no_line": no_line,
                 "reap_commits": reap_commits,
                 "reap_windows": reap_windows,
                 "reap_orders": reap_orders,

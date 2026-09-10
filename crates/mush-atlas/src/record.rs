@@ -550,6 +550,11 @@ pub struct SiteRec {
     pub key: RecordKey,
     /// The neighborhoods it lies in.
     pub neighborhoods: Vec<RecordKey>,
+    /// S9.1: the region it lies in when it lies in no neighborhood — an orbital
+    /// or system site (a yard, a transfer node), anchored by the region alone.
+    /// `None` for a surface site, whose region is its neighborhoods'.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<RecordKey>,
     /// The name.
     pub name: String,
     /// The kind word (`site.office`, `site.shop`, …).
@@ -587,9 +592,9 @@ impl SiteRec {
             theme.validate().map_err(RecordError::Value)?;
         }
         check_word("site.kind", &self.kind)?;
-        if self.neighborhoods.is_empty() {
+        if self.neighborhoods.is_empty() && self.region.is_none() {
             return Err(RecordError::Value(
-                "a site lies in at least one neighborhood".to_string(),
+                "a site lies in at least one neighborhood, or in a region alone".to_string(),
             ));
         }
         check_count("site.neighborhoods", self.neighborhoods.len(), 4)?;
@@ -1272,7 +1277,11 @@ impl CheckpointRec {
 pub struct AccessPoint {
     /// The neighborhood **pack** it serves — a forward reference, resolved when the
     /// neighborhood is applied and travel is built (S2).
-    pub neighborhood: CanonicalId,
+    /// The neighborhood the point lies in; `None` for an endpoint in a region
+    /// with no neighborhoods (S9.1: an orbital or system site's room), which
+    /// then names its `room`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neighborhood: Option<CanonicalId>,
     /// The room, once the neighborhood exists and names one.
     #[serde(default)]
     pub room: Option<ObjId>,

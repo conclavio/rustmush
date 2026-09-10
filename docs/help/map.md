@@ -67,3 +67,9 @@ wreckage stays through a pack update. `@atlas/los <a>=<b>` prints what the
 engine sees between two people on one map: the line of sight (clear, partial
 through woods, or what blocks it), the direct-fire trace's first blocker and
 the target's cover, and how well one hears the other. See `help atlas`.
+
+A line between two surfaces of one map — a building's ground floor and the
+lot outside it — runs through the doorway they share: the cell both stand on
+at the same height, the one that makes the two legs shortest. Sight, fire and
+hearing are the worse of the two legs; an arc never crosses a doorway. A
+floor with no way down is its own world, as before.

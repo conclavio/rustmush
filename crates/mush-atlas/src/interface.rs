@@ -228,6 +228,18 @@ impl InterfaceAbilityProvider for TravelInterface {
                 let here = here_of(ctx.w, asker);
                 let line = if let Some(j) = st.travel.journey_of(asker) {
                     crate::travel::position_line(st, ctx.w, j)
+                } else if let Some(root) = crate::travel::aboard_carrier(ctx.w, asker)
+                    && let Some(journey) = ctx
+                        .w
+                        .module_state::<mush_sim::JourneyBook>()
+                        .and_then(|b| b.get(root))
+                {
+                    // S9.2: aboard a hull under way on the placement graph.
+                    format!(
+                        "You are aboard the {}: {}",
+                        mush_core::output::display_name(ctx.w, root),
+                        crate::travel::carrier_position(journey)
+                    )
                 } else if let Some(j) = here.and_then(|h| st.travel.journey_of(h)) {
                     format!(
                         "You are aboard the {}: {}",

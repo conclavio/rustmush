@@ -159,7 +159,7 @@ fn cmd_travel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let options = {
         let st = state(ctx)?;
-        options_from(st, actor, here, staff)
+        options_from(st, ctx.w, actor, here, staff)
     };
     if raw.is_empty() {
         return list_options(ctx, here, &options);
@@ -453,8 +453,8 @@ fn watchable(ctx: &Ctx<'_>, here: ObjId) -> Result<Vec<(RecordKey, String, Strin
             st.records
                 .connections_in(&nb.region)
                 .filter(|c| {
-                    c.endpoints.0.neighborhood == nb.key.pack
-                        || c.endpoints.1.neighborhood == nb.key.pack
+                    c.endpoints.0.neighborhood.as_ref() == Some(&nb.key.pack)
+                        || c.endpoints.1.neighborhood.as_ref() == Some(&nb.key.pack)
                 })
                 .collect()
         } else if let Some(cp) = st.travel.patch_at(here) {
@@ -475,7 +475,7 @@ fn watchable(ctx: &Ctx<'_>, here: ObjId) -> Result<Vec<(RecordKey, String, Strin
                 st.records
                     .neighborhoods
                     .values()
-                    .find(|n| n.key.pack == ap.neighborhood)
+                    .find(|n| Some(&n.key.pack) == ap.neighborhood.as_ref())
                     .is_some_and(|n| st.travel.knows(ctx.actor, &n.key))
             });
         if !known {
@@ -850,6 +850,12 @@ pub(crate) fn journey_admin(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         ));
                     }
                 }
+                // S9.2: the simulation's carrier journeys — a hull under way on
+                // the placement graph along a corridor the atlas records — listed
+                // beside the atlas's own, one view of everything travelling.
+                for line in travel::carrier_lines(ctx.w) {
+                    lines.push(line);
+                }
                 lines
             };
             say(ctx, lines);
@@ -950,7 +956,7 @@ pub(crate) fn journey_admin(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             };
             let options = {
                 let st = state(ctx)?;
-                options_from(st, actor, here, true)
+                options_from(st, ctx.w, actor, here, true)
             };
             let candidates: Vec<&TravelOption> = options
                 .iter()

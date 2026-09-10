@@ -94,6 +94,74 @@ pub fn register_appliers(appliers: &mut Appliers) -> Result<(), PackError> {
     Ok(())
 }
 
+/// S9.1: put a site record another crate's applier built — a `ruleset-tacsim`
+/// `location` in an orbital or system region — under the atlas's own slot,
+/// validated, its document written, its revision carried from the previous
+/// record under the same key. The record's `region` must be applied.
+///
+/// # Errors
+///
+/// The record's own refusal, or an unapplied region.
+pub fn put_site(ctx: &mut Ctx<'_>, mut rec: SiteRec) -> Result<(), String> {
+    with_atlas(ctx, |ctx, state| {
+        if let Some(region) = &rec.region
+            && !state.records.regions.contains_key(region)
+        {
+            return Err(format!("{}: region {region} is not applied", rec.key));
+        }
+        let previous = state.records.sites.get(&rec.key).cloned();
+        rec.property = rec.property.or(previous.as_ref().and_then(|p| p.property));
+        rec.revision = revision_after(previous.map(|p| p.revision));
+        rec.validate().map_err(|e| format!("{}: {e}", rec.key))?;
+        put_doc(ctx, record_key(KIND_SITE, &rec.key), &rec);
+        state.records.sites.insert(rec.key.clone(), rec);
+        Ok(())
+    })
+}
+
+/// S9.1: put a connection record another crate's applier built — a
+/// `ruleset-tacsim` `route` between two orbital sites — under the atlas's own
+/// slot, validated, its document written, its revision carried.
+///
+/// # Errors
+///
+/// The record's own refusal, or an unapplied region.
+pub fn put_connection(ctx: &mut Ctx<'_>, mut rec: ConnectionRec) -> Result<(), String> {
+    with_atlas(ctx, |ctx, state| {
+        if !state.records.regions.contains_key(&rec.region) {
+            return Err(format!("{}: region {} is not applied", rec.key, rec.region));
+        }
+        let previous = state.records.connections.get(&rec.key).map(|r| r.revision);
+        rec.revision = revision_after(previous);
+        rec.validate().map_err(|e| format!("{}: {e}", rec.key))?;
+        put_doc(ctx, record_key(KIND_CONNECTION, &rec.key), &rec);
+        state.records.connections.insert(rec.key.clone(), rec);
+        Ok(())
+    })
+}
+
+/// S9.1: retire a site or connection record another crate's applier put.
+///
+/// # Errors
+///
+/// The atlas not being composed.
+pub fn retire_record(ctx: &mut Ctx<'_>, kind: &str, key: &RecordKey) -> Result<(), String> {
+    with_atlas(ctx, |ctx, state| {
+        match kind {
+            "site" => {
+                state.records.sites.remove(key);
+                del_doc(ctx, record_key(KIND_SITE, key));
+            }
+            "connection" => {
+                state.records.connections.remove(key);
+                del_doc(ctx, record_key(KIND_CONNECTION, key));
+            }
+            other => return Err(format!("{key}: no such record kind {other:?} to retire")),
+        }
+        Ok(())
+    })
+}
+
 /// One kind's applier.
 struct KindApplier {
     kind: CanonicalId,
@@ -527,8 +595,10 @@ fn create_entry(
             };
             let access = |a: &crate::def::AccessDef| -> Result<AccessPoint, String> {
                 Ok(AccessPoint {
-                    neighborhood: CanonicalId::new(&a.neighborhood)
-                        .map_err(|e| format!("{id}: endpoint neighborhood: {e}"))?,
+                    neighborhood: Some(
+                        CanonicalId::new(&a.neighborhood)
+                            .map_err(|e| format!("{id}: endpoint neighborhood: {e}"))?,
+                    ),
                     room: None,
                     point: a.point,
                 })
@@ -656,6 +726,7 @@ fn create_entry(
             let rec = SiteRec {
                 key: key.clone(),
                 neighborhoods: vec![neighborhood],
+                region: None,
                 name: def.name,
                 kind: def.site_kind,
                 footprint: def.footprint,
@@ -813,7 +884,10 @@ fn create_entry(
 
 fn region_of_site(state: &AtlasState, site: &RecordKey) -> Option<RecordKey> {
     let s = state.records.sites.get(site)?;
-    let nb = s.neighborhoods.first()?;
+    let Some(nb) = s.neighborhoods.first() else {
+        // S9.1: a site in no neighborhood is anchored by its region alone.
+        return s.region.clone();
+    };
     state
         .records
         .neighborhoods
@@ -1728,6 +1802,11 @@ fn finish_region(ctx: &mut Ctx<'_>, state: &mut AtlasState, pack: &Pack) -> Resu
         let Some(region) = state.records.regions.get(&key).cloned() else {
             continue;
         };
+        // S9.1: only a surface has ground to rasterize. An orbital, system or
+        // interstellar region is a frame for sites and corridors, not tiles.
+        if !matches!(region.kind, RegionKind::Surface { .. }) {
+            continue;
+        }
         let bbox = region.extent.to_cm().map_err(|e| e.to_string())?;
         let previous = drop_tiles_of(ctx, state, &key);
         let input = SurfaceInput {
@@ -1784,6 +1863,16 @@ fn finish_sites(ctx: &mut Ctx<'_>, state: &mut AtlasState, pack: &Pack) -> Resul
         .cloned()
         .collect();
     for key in keys {
+        // S9.1: a site in no neighborhood has no footprint on any tile and is
+        // never tactically ready; its record says so from the start.
+        if state
+            .records
+            .sites
+            .get(&key)
+            .is_some_and(|s| s.neighborhoods.is_empty())
+        {
+            continue;
+        }
         let rooms_ready = state
             .records
             .roomgeo

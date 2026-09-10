@@ -87,7 +87,7 @@ pub const DEFAULT_DWELL_FLOOR_S: u32 = 30;
 /// The default `[atlas].real_cap_s.<mode>` for `foot`, `car`, `transit` and `bus`.
 pub const DEFAULT_REAL_CAP_S: u32 = 180;
 /// The modes a character travels by with no object of their own (doc 14 §3.3).
-pub const SELF_MODES: [&str; 3] = ["foot", "car", "transit"];
+pub const SELF_MODES: [&str; 4] = ["foot", "car", "transit", "spacecraft"];
 /// The modes `real_cap_s` defaults for.
 pub const CAPPED_MODES: [&str; 4] = ["foot", "car", "transit", "bus"];
 /// The most seconds a service vehicle dwells at a stop.
@@ -751,14 +751,16 @@ pub struct Route {
 #[must_use]
 pub fn access_room(records: &Records, ap: &crate::record::AccessPoint) -> Option<ObjId> {
     if let Some(room) = ap.room
-        && records.roomgeo.contains_key(&room)
+        && (records.roomgeo.contains_key(&room) || ap.neighborhood.is_none())
     {
+        // A room the endpoint names outright — with its footprint applied, or
+        // (S9.1) an orbital site's room, which has no footprint to check.
         return Some(room);
     }
     let nb = records
         .neighborhoods
         .values()
-        .find(|n| n.key.pack == ap.neighborhood)?;
+        .find(|n| Some(&n.key.pack) == ap.neighborhood.as_ref())?;
     let p = ap.point.xy().to_cm().ok()?;
     let mut nearest: Option<(i64, ObjId)> = None;
     for geo in records.rooms_in(&nb.key) {
@@ -2927,18 +2929,24 @@ pub struct TravelOption {
 /// The destinations `who` may travel to from `room`: every active connection out of
 /// the room's neighborhood whose far side is public or known, by a mode `who` has.
 #[must_use]
-pub fn options_from(st: &AtlasState, who: ObjId, room: ObjId, staff: bool) -> Vec<TravelOption> {
+pub fn options_from(
+    st: &AtlasState,
+    w: &World,
+    who: ObjId,
+    room: ObjId,
+    staff: bool,
+) -> Vec<TravelOption> {
     let Some(nb) = st.records.neighborhood_of_room(room) else {
-        return Vec::new();
+        return options_from_corridor_room(st, w, room, staff);
     };
     let mut out = Vec::new();
     for conn in st.records.connections_in(&nb.region) {
         if conn.status != ConnectionStatus::Active {
             continue;
         }
-        let (heading, far) = if conn.endpoints.0.neighborhood == nb.key.pack {
+        let (heading, far) = if conn.endpoints.0.neighborhood.as_ref() == Some(&nb.key.pack) {
             (Heading::Forward, &conn.endpoints.1)
-        } else if conn.endpoints.1.neighborhood == nb.key.pack {
+        } else if conn.endpoints.1.neighborhood.as_ref() == Some(&nb.key.pack) {
             if conn.direction == Direction::OneWay {
                 continue;
             }
@@ -2950,7 +2958,7 @@ pub fn options_from(st: &AtlasState, who: ObjId, room: ObjId, staff: bool) -> Ve
             .records
             .neighborhoods
             .values()
-            .find(|n| n.key.pack == far.neighborhood)
+            .find(|n| Some(&n.key.pack) == far.neighborhood.as_ref())
         else {
             continue;
         };
@@ -2989,6 +2997,114 @@ pub fn options_from(st: &AtlasState, who: ObjId, room: ObjId, staff: bool) -> Ve
         });
     }
     out
+}
+
+/// S9.1: the ways out of a room that lies in no neighborhood — an orbital or
+/// system site's room, whose connections name it as their endpoint's `room`.
+/// The far end is named by its room, the option's `place` is the way itself.
+fn options_from_corridor_room(
+    st: &AtlasState,
+    w: &World,
+    room: ObjId,
+    staff: bool,
+) -> Vec<TravelOption> {
+    let mut out = Vec::new();
+    for conn in st.records.connections.values() {
+        if conn.status != ConnectionStatus::Active {
+            continue;
+        }
+        let (heading, far) = if conn.endpoints.0.room == Some(room) {
+            (Heading::Forward, &conn.endpoints.1)
+        } else if conn.endpoints.1.room == Some(room) {
+            if conn.direction == Direction::OneWay {
+                continue;
+            }
+            (Heading::Reverse, &conn.endpoints.0)
+        } else {
+            continue;
+        };
+        let Some(far_room) = far.room else {
+            continue;
+        };
+        if !(staff || conn.visibility == Visibility::Public) {
+            continue;
+        }
+        let modes: Vec<String> = conn
+            .modes
+            .iter()
+            .filter(|m| SELF_MODES.contains(&m.as_str()))
+            .cloned()
+            .collect();
+        if modes.is_empty() {
+            continue;
+        }
+        let Ok(route) = resolve_connection(&st.records, conn, heading) else {
+            continue;
+        };
+        out.push(TravelOption {
+            connection: conn.key.clone(),
+            heading,
+            place: conn.key.clone(),
+            place_name: mush_core::output::display_name(w, far_room),
+            way_name: conn.name.clone(),
+            modes,
+            leaves_from: room,
+            route,
+        });
+    }
+    out
+}
+
+/// S9.2: the simulation's carrier journeys (`mush_sim::CarrierJourney`, a hull
+/// under way on the placement graph), one line each, for the atlas's journey
+/// listing. The record is the simulation's; the atlas reads it, since it owns
+/// the corridors those journeys run along (S9.1) and the one travel view.
+#[must_use]
+pub fn carrier_lines(w: &World) -> Vec<String> {
+    let Some(book) = w.module_state::<mush_sim::JourneyBook>() else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    for journey in book.journeys.values() {
+        lines.push(format!(
+            "  carrier {:<20} {}",
+            mush_core::output::display_name(w, journey.root()),
+            carrier_position(journey)
+        ));
+    }
+    lines
+}
+
+/// S9.2: where a carrier journey stands, in a line.
+#[must_use]
+pub fn carrier_position(journey: &mush_sim::CarrierJourney) -> String {
+    let legs = journey.route().legs().len();
+    let state = match journey.state() {
+        mush_sim::JourneyState::Cruising => "cruising".to_string(),
+        mush_sim::JourneyState::Promoted { domain } => {
+            format!("in an engagement (domain #{domain})")
+        }
+        mush_sim::JourneyState::Diverted { to } => format!("diverted toward {to}"),
+        mush_sim::JourneyState::Arrived => "arrived".to_string(),
+        mush_sim::JourneyState::Captured { by } => format!("captured by #{}", by.0),
+        mush_sim::JourneyState::Failed => "failed".to_string(),
+    };
+    format!(
+        "on {} leg {} of {legs}, {state}",
+        journey.route().id(),
+        journey
+            .cursor()
+            .saturating_add(1)
+            .min(u32::try_from(legs).unwrap_or(u32::MAX).max(1))
+    )
+}
+
+/// S9.2: the carrier `who` is aboard and under way with, when they are.
+#[must_use]
+pub fn aboard_carrier(w: &World, who: ObjId) -> Option<ObjId> {
+    let st = w.module_state::<mush_sim::SpatialState>()?;
+    let book = w.module_state::<mush_sim::JourneyBook>()?;
+    mush_sim::under_way_root_of(st, book, who)
 }
 
 /// The real seconds a route takes by `mode` at the current rate and limits.

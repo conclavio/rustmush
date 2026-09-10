@@ -205,6 +205,13 @@ owner = "sim"
 reason = "E7 residue 2: seeds the sim's journey book to stage a recovery case."
 
 [[site]]
+path = "crates/ruleset-tacsim/tests/s9_corridor.rs"
+accessor = "World::module_state_mut"
+slot = "JourneyBook"
+owner = "sim"
+reason = "S9.2: seeds one carrier journey along the seeded corridor so the atlas's journey listing and `travel.status` can be seen answering for it."
+
+[[site]]
 path = "crates/mush-campaign/tests/e7r2.rs"
 accessor = "World::module_state_mut"
 slot = "SpatialState"

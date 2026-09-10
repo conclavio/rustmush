@@ -848,6 +848,10 @@ pub fn content_module(starter_area: bool) -> Result<Box<dyn GameModule>, String>
     mush_atlas::register_appliers(&mut appliers).map_err(|e| format!("atlas appliers: {e}"))?;
     mush_npc::content::register_appliers(&mut appliers)
         .map_err(|e| format!("npc appliers: {e}"))?;
+    // S9.1: a TacSim campaign-seed pack's places and routes are the atlas's
+    // sites and connections, applied through the content latch like any pack.
+    ruleset_tacsim::register_appliers(&mut appliers)
+        .map_err(|e| format!("tacsim appliers: {e}"))?;
     let mut module = mush_content::ContentModule::new().with_appliers(appliers);
     if starter_area {
         let packs = mush_atlas::starter::packs().map_err(|e| format!("starter packs: {e}"))?;

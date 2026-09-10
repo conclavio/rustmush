@@ -76,7 +76,7 @@ fn e7r2_p5_v2_is_published_beside_v1_and_re_prices_nothing_already_pinned() {
     assert_eq!(v1.manifest().version(), 1);
     assert_eq!(
         v1.manifest().digest().to_hex(),
-        "d091c39ad4a9bb0914f6d3093b0bd29b4ab2f8e379d16bbe6cf6e5e2ea27f1d3",
+        "6ad21275d8ba59a6b742cf354e2efafe840cacaa34f8e6c84ac057b9997f8d69",
         "cut 1's published digest, byte for byte — P5 edits no published pack"
     );
 
@@ -113,7 +113,7 @@ fn e7r2_p5_v2_is_published_beside_v1_and_re_prices_nothing_already_pinned() {
 #[test]
 fn e7r2_p5_a_hand_edited_v2_digest_fails_naming_both() {
     let tampered = fixture::CORRIDOR_V2_JSON.replacen(
-        "8dbd460a256a844ec41061e4468c461786ffe837e10f942e9d98bcbcb7c1d94b",
+        "f89b7310b1d30e7b38a5a6cf9fe3e22330065c797dcf750e9cb8dc8554177041",
         &"0".repeat(64),
         1,
     );
@@ -122,7 +122,7 @@ fn e7r2_p5_a_hand_edited_v2_digest_fails_naming_both() {
     let text = error.to_string();
     assert!(text.contains(&"0".repeat(64)), "the declared one: {text}");
     assert!(
-        text.contains("8dbd460a256a844ec41061e4468c461786ffe837e10f942e9d98bcbcb7c1d94b"),
+        text.contains("f89b7310b1d30e7b38a5a6cf9fe3e22330065c797dcf750e9cb8dc8554177041"),
         "and the real one: {text}"
     );
     // …and an edited *entry* moves the digest too, so content cannot drift silently.

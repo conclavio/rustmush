@@ -275,7 +275,7 @@ pub fn los_admin(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(crate::trace::Sight::BlockedBy(b)) => {
             lines.push(format!("Sight: blocked by {}.", b.describe()));
         }
-        None => lines.push("Sight: not on one surface.".to_string()),
+        None => lines.push("Sight: no doorway joins their surfaces.".to_string()),
     }
     if let Some(trace) = crate::window::direct_fire_between(ctx.w, a, b) {
         let stop = trace.stop.as_ref().map_or_else(

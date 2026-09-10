@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mush_core::{CanonicalId, Ctx, ModuleOp, ModuleWrite, ObjId, Outbox};
+use mush_core::{CanonicalId, Ctx, ModuleOp, ModuleWrite, ObjId, Outbox, World};
 use mush_sim::{DistanceLaw, DriveProfile, LegDef, RouteDef};
 
 use crate::ephemeris::Ephemeris;
@@ -358,6 +358,73 @@ impl TacsimStore {
         })
     }
 
+    /// S9.1: the objects a pack's symbols name in this world — the content latch
+    /// (the S9 seed: one row per pack id, its `placed` map) when it applied this
+    /// version, else the legacy `tacsim:seed:` latch for a world seeded before.
+    #[must_use]
+    pub fn placed_in(
+        &self,
+        w: &World,
+        pack: &CanonicalId,
+        version: u32,
+    ) -> Option<BTreeMap<CanonicalId, ObjId>> {
+        if let Some(applied) = w
+            .module_state::<mush_content::ContentState>()
+            .and_then(|c| c.latches.applied(pack))
+            .filter(|a| a.version() == version && !a.is_retired())
+        {
+            return Some(applied.placed());
+        }
+        self.seeded
+            .get(&(pack.clone(), version))
+            .map(|seed| seed.placed().clone())
+    }
+
+    /// S9.1: the version of `pack` this world has applied, through either latch.
+    #[must_use]
+    pub fn applied_in(&self, w: &World, pack: &CanonicalId) -> Option<u32> {
+        w.module_state::<mush_content::ContentState>()
+            .and_then(|c| c.latches.applied(pack))
+            .filter(|a| !a.is_retired())
+            .map(|a| a.version())
+            .or_else(|| self.applied_version(pack))
+    }
+
+    /// S9.1: a route by id, materialized against whichever latch placed its
+    /// pack's places in this world. The legacy index answers first; a pack the
+    /// content latch applied is materialized here, the newest applied version.
+    #[must_use]
+    pub fn route_in_world(&self, w: &World, id: &CanonicalId) -> Option<RouteDef> {
+        if let Some(def) = self.route(id) {
+            return Some(def.clone());
+        }
+        let mut candidates: Vec<(&(CanonicalId, u32), &LoadedPack)> = self
+            .loaded
+            .iter()
+            .filter(|(_, loaded)| matches!(loaded.pack.entry(id), Some(PackEntry::Route(_))))
+            .collect();
+        candidates.sort_by_key(|(key, _)| std::cmp::Reverse(key.1));
+        for ((pack, version), loaded) in candidates {
+            if self.applied_in(w, pack) != Some(*version) {
+                continue;
+            }
+            let Some(placed) = self.placed_in(w, pack, *version) else {
+                continue;
+            };
+            let Some(PackEntry::Route(route)) = loaded.pack.entry(id) else {
+                continue;
+            };
+            let sky = Ephemeris::from_pack(&loaded.pack, &self.cfg.time.ephemeris);
+            match materialize_route(id, route, &placed, None, &loaded.pack, &sky) {
+                Ok(def) => return Some(def),
+                Err(detail) => {
+                    tracing::warn!(route = %id, pack = %pack, version, %detail, "tacsim: a route could not be materialized against the content latch");
+                }
+            }
+        }
+        None
+    }
+
     /// Per latch, how many of its placed objects this world no longer has (S3).
     ///
     /// Empty on a healthy world. Every entry was paged at boot, level 2, naming the
@@ -671,6 +738,32 @@ pub(crate) fn put_pack(ctx: &mut Ctx<'_>, record: PackRecord) {
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }
 
+/// Remove a pin from RAM and queue its document's deletion — the crate's one `Del`.
+///
+/// Safe because no index floor is derived from a `tacsim:pin:` key: `reindex` floors
+/// the watermark on `published_keys` and `seeded_keys` only, so removing a pin removes
+/// exactly the pin (independent verify B4).
+pub(crate) fn del_pin(ctx: &mut Ctx<'_>, subject: &CanonicalId) {
+    let key = pin_key(subject);
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.pins.remove(subject);
+    }
+    push_op(ctx.out, ModuleWrite::Del { key });
+}
+
+/// Install a pin into RAM and queue its document — the single write path.
+pub(crate) fn put_pin(ctx: &mut Ctx<'_>, record: PinRecord) {
+    let key = pin_key(record.subject());
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.pins.insert(record.subject().clone(), record.clone());
+    }
+    let Ok(value) = serde_json::to_value(&record) else {
+        tracing::error!(%key, "tacsim: a pin did not serialize");
+        return;
+    };
+    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
+}
+
 /// Install a seed latch into RAM and queue its document — the single write path, and
 /// the one that must ride the **same batch** as the objects it names.
 pub(crate) fn put_seed(ctx: &mut Ctx<'_>, record: SeedApplication) {
@@ -719,32 +812,6 @@ pub(crate) fn put_seed(ctx: &mut Ctx<'_>, record: SeedApplication) {
             }
             fallback
         }
-    };
-    push_op(ctx.out, ModuleWrite::JsonSet { key, value });
-}
-
-/// Remove a pin from RAM and queue its document's deletion — the crate's one `Del`.
-///
-/// Safe because no index floor is derived from a `tacsim:pin:` key: `reindex` floors
-/// the watermark on `published_keys` and `seeded_keys` only, so removing a pin removes
-/// exactly the pin (independent verify B4).
-pub(crate) fn del_pin(ctx: &mut Ctx<'_>, subject: &CanonicalId) {
-    let key = pin_key(subject);
-    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
-        store.pins.remove(subject);
-    }
-    push_op(ctx.out, ModuleWrite::Del { key });
-}
-
-/// Install a pin into RAM and queue its document — the single write path.
-pub(crate) fn put_pin(ctx: &mut Ctx<'_>, record: PinRecord) {
-    let key = pin_key(record.subject());
-    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
-        store.pins.insert(record.subject().clone(), record.clone());
-    }
-    let Ok(value) = serde_json::to_value(&record) else {
-        tracing::error!(%key, "tacsim: a pin did not serialize");
-        return;
     };
     push_op(ctx.out, ModuleWrite::JsonSet { key, value });
 }

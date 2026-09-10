@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.11 — 2026-09-10 (S1 through S8 landed; S9 planned from the S1–S7 code review, 14a).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.12 — 2026-09-10 (S1 through S9 landed; the audit of the plan against the build in 14b).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -1186,6 +1186,87 @@ ruleset classes. Both small, both after S9.1.
 **Verify lenses.** **P**, **E**, **S**, **T**, **O** as above; and **D** once more when
 `journey.rs` goes.
 
+**Ledger (landed 2026-09-10).** Gates: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test` on every crate group, the contract tests, `mush-server`
+and `mushd` whole, the gateway targets one at a time, and the review and S9 targets last, by
+name. Twelve cases: the corridor seeded through the content latch as three sites in a system
+region and one connection between its rooms, the legacy latch unwritten; an orbital site
+validating, rasterizing nothing and listed by `+atlas/region`; the corridor's drawn length
+equal to the route's pin within two kilometres; a second version updating in place with the
+rooms kept, the connection's revision up and a third commit a HIT; a journey under way along
+the corridor ending where it stands when the corridor is re-applied; a carrier journey along
+the corridor listed by `@atlas/journey`; the fire gate refusing `Fire` on a blocked line and
+allowing `Launch` on a clear arc, refusing both with neither, gating nothing on no shared
+window, and naming nothing; a line from the lobby floor through its door onto the lot with
+the metric and the sight agreeing both ways. The seed's own unit test and S5's propagation
+test were rewritten for the new rules, and E7's corridor suites (`e7c1`, `e7r1`, `e7r2`) pass
+unchanged on the legacy path. Deviations from the text above, each with its reason:
+
+- **S9.1 landed as recommended, with the D-14-33 defaults taken as decided by the go-ahead.**
+  `ruleset-tacsim` registers three appliers on the content module (`register_appliers`,
+  composed by the server beside the atlas's and the NPC host's): a `location` makes its room
+  *and* a `SiteRec` in the pack's one `region` entry (the corridor fixtures gain `sol`, a
+  `system` region drawn in gigametres), positioned from the pack's `body` entries at the
+  store's epoch (`GM_PER_KM`; a one-gigametre box, since the atlas's geometry counts a region
+  unit as a metre at its centimetre grain and a smaller box is degenerate); a `route` makes a
+  `ConnectionRec` straight between its two places' rooms — one leg to the far end carrying
+  the authored seconds, `modes = ["spacecraft"]`, the drive class and propellant in `cost` —
+  so its length is the sky's pin by construction (`the_corridors_length_is_the_skys_pin`);
+  the definition kinds make nothing and the store keeps reading the pack. `SiteRec.region`
+  (`Option`) anchors a site with no neighborhood; `AccessPoint.neighborhood` is `Option` and
+  such an endpoint names its `room`; the validator, rasterizer (`finish_region` skips a
+  non-surface region), `finish_sites`, the views and the travel resolver read them. The
+  content latch is the latch: `@tacsim/seed <pack>[@<version>] [dry|commit]` applies through
+  it (a required rules pack first, since the latch checks `requires`), a newer version is an
+  update in place, and the store resolves a route's places through `placed_in` and
+  `route_in_world` (the content latch first, the legacy latch for a world seeded before S9).
+  **The legacy path stays** for a composition with no content module — E7's corridor suites
+  compose the ruleset alone — and a legacy-seeded world refuses a re-seed through the content
+  latch (`SeedError::LegacySeed`): a migration by hand, never a duplicate. The loader and the
+  wire skip and carry another module's entry kinds respectively (`OWNED_KINDS`, `EntryTable`),
+  so the fixtures' digests moved once and round-trip. `+travel` from a corridor room lists the
+  connections that name it; `spacecraft` joins `SELF_MODES`.
+- **S9.2 is not the fold the plan wrote, and the plan's text was wrong to promise it.** The
+  census before the cut: `journey.rs` is 1,786 lines of placement-graph motion — the carrier
+  seal, quarantine, the pulse authority's `Promoted` state, the interception raise, capture,
+  boot healing — read by the placement gate, the transition layer, the graph projection, the
+  links, the tick, the campaign's recovery and the server's salvage, with 142 references, 121
+  of them in tests. The atlas's `JourneyRec { traveler: Carrier }` is a room-model vehicle
+  (the bus) that never moves an object. One record absorbing both would carry two disjoint
+  state machines and hand the atlas the simulation's placement semantics through a slot of
+  half a dozen callbacks, for a hundred rewritten tests and no behaviour anyone asked for.
+  What landed is the seam the design needs: the carrier journey's routes come from the atlas's
+  records through the content latch (S9.1), the atlas lists carrier journeys beside its own
+  (`travel::carrier_lines`, `@atlas/journey list`) and `travel.status` answers for a crew
+  aboard a hull under way (`travel::aboard_carrier`), reading `mush_sim::JourneyBook` directly
+  — the atlas depends on the simulation, so no slot was needed in this direction. `journey.rs`
+  and `@journey` stay. D-P-4 is closed the other way, recorded as D-14-35 below for the owner.
+- **S9.3 landed where the plan said it could not yet.** The tick already held the target's
+  subject: `TacticalIntentProvider::contact_request` matched the contact guard's witness away
+  as `Ok(Some(_))`. The gate lives in the plan predicate beside that witness —
+  `contact_subject` reads `SubjectKey::Object`, `line_of_fire_gate` reads the window slot
+  (`metric_between`, `arc_between`) — and a refused intent travels the draft as `no_line` and
+  is refused at commit with `NO_LINE` (`no line`), before the staleness check; nothing about
+  what blocks it leaves the scope. No window, or no geometry registered, gates nothing. The
+  K6 contact guard had landed; E7k's unit family was never needed.
+- **S9.4, half.** The line through a doorway landed: `junction_between` finds the cell
+  standable on both surfaces within `JUNCTION_STEP_CM` (150, the walk's own rule) that makes
+  the two legs shortest; the metric, the sight (the worse of two legs), direct fire (two
+  traces joined) and hearing (attenuation summed) run through it; an arc never crosses; the
+  staff read says `no doorway joins their surfaces` where it said `not on one surface`. The
+  junction is a scan of the grid, bounded by a tile's cells. **Cells of ruleset classes were
+  not built:** a cell is one byte of a closed `TerrainClass` matched in four crates
+  (terrain, raster, physics, trace, the frame's glyphs, the TUI and web legends); opening it
+  is a compositor-and-renderer change no driver needs yet, and the table already takes a
+  ruleset's classes by name. Recorded, still open.
+- **The lenses.** **P:** the three fixtures' digests moved once (the region entry) and are
+  re-derived, the wire round-trips, `e7r2`'s tamper test still names both digests. **E:** the
+  drawn corridor equals the pin; the site positions and the pin come from one ephemeris.
+  **S/T:** the carrier machinery is untouched, its suites unchanged. **O:** the fire refusal is
+  a constant. **D:** `journey.rs` was not deleted — see S9.2.
+- **Help:** `travel` says carriers are listed and answered for; `map` says a line runs
+  through a doorway; the TacSim verb's own help names the version form.
+
 ## 4. Build discipline
 
 - **One cut, one branch, one verify fold.** Each cut lands green on `test`, `features`,
@@ -1236,7 +1317,8 @@ ruleset classes. Both small, both after S9.1.
 | D-P-8 | The composite stays at `mod:tactics:map:<domain-id>` (doc 06 §9.1's key) with owner `atlas` |
 | D-P-9 | Feature-state write-back rides the domain tick's commit, never a second timer |
 | D-P-10 ★ | Aaron Samuels drives the bus from S2; Norbury (docent) and Duvall (front office) ship in S6 — **decided**: the packs carry ten cast members |
-| D-14-33 ★ | S7: the seed latch's version rule under the content latch (one per pack id, superseding, against one per version, never re-run) and the site record's neighborhood rule for orbital and system regions — the owner's call before the corridor's places and latch fold onto `mush-content`. **S9.1's recommended defaults** (2026-09-10): (a) the content model — one row per pack id, a re-apply an idempotent update, a journey under the old version ending at its last node; (b) `SiteRec.neighborhoods` empty for `Orbital` and `System` regions, a body's site positioned from the ephemeris at the epoch | **open** |
+| D-14-33 ★ | S7: the seed latch's version rule under the content latch and the site record's neighborhood rule for orbital and system regions. **Decided at S9 (owner's go-ahead, 2026-09-10) as recommended:** the content latch is the latch, one row per pack id, a newer version an update in place with the rooms kept, a journey under the old version ending where it stands; `SiteRec.region` anchors a site with no neighborhood in an orbital or system region, positioned from the ephemeris at the epoch. A world seeded before S9 keeps its legacy latch and refuses a re-seed through the content latch | **decided** |
+| D-14-35 ★ | S9.2: the carrier journey (`mush_sim::CarrierJourney`) and the atlas's journey (`JourneyRec`) **stay two records** — placement-graph motion and room-graph travel — with one route source (the atlas's connections through the content latch) and one view (`@atlas/journey`, `travel.status`); D-P-4's "one record absorbs both" is withdrawn by the plan for the reasons in §3.10's ledger. The owner may still call for the fold; its cost is recorded there | **open — the plan's recommendation is to leave it** |
 | D-14-34 | S8 (from 14a #2): an interface reply is **private by default** — `ReplyAudience::Asker` unless the provider says `Room` — delivered to the asker alone with no `Said` event and no text in the NPC's memory; the room sees one aside. Reason: the provider's read is already the asker's own, and the output step must keep what the read kept | plan's call, 2026-09-10 |
 
 ## 7. Constants
@@ -1295,3 +1377,4 @@ ruleset classes. Both small, both after S9.1.
 - 0.9 (2026-09-10): S7 landed — the campaign ephemeris and the drive's distance law (`alignment_band` gone), the loader fold onto `mush-content` (the latch and the corridor's records deferred under D-14-33), heightfield import, the TacSim ground driver as `mush_sim::DomainDriver` with the domain as its window and the arc answered, the hex vocabulary removed under a contract test; its ledger under §3.8.
 - 0.10 (2026-09-10): S8 and S9 planned from the S1–S7 code review (14a, at `d713d17`): S8 fixes the review's five at the seams it names with the review's `review_*` tests as the cut's tests, unchanged; S9 is the deferred four (the seed latch and the corridor's records with S9.1's recommended defaults under D-14-33, the carrier journey fold as D-P-4 promised, the fire gate, the S7 leftovers). D-14-34 (a private reply by default). Cross-references from the S2 and S7 ledgers and D-P-4.
 - 0.11 (2026-09-10): S8 landed — the review's five fixed at their seams (`authorize_traversal` and `Ctx::authorize_traversal`, the window's boundary through it; `ReplyAudience` with private the default; `+map` from the frame; staff authority at apply time; NPCs on the ground window), the five `review_*` tests passing unchanged and twelve beside them; its ledger under §3.9.
+- 0.12 (2026-09-10): S9 landed — the corridor's places and routes are the atlas's sites and connections through the content latch (D-14-33 decided), the fire gate in the tick beside the contact guard's witness, the line through a doorway; the carrier journey fold withdrawn with its census (D-14-35), cells of ruleset classes still open; its ledger under §3.10. The audit of the plan against the build is 14b.

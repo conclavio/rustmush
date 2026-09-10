@@ -3773,6 +3773,7 @@ dependencies = [
 name = "ruleset-tacsim"
 version = "0.1.0"
 dependencies = [
+ "mush-atlas",
  "mush-content",
  "mush-core",
  "mush-proto",

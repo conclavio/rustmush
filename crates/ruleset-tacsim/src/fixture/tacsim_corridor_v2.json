@@ -3,7 +3,7 @@
     "id": "tacsim.corridor",
     "version": 2,
     "kind": "campaign_seed",
-    "digest": "8dbd460a256a844ec41061e4468c461786ffe837e10f942e9d98bcbcb7c1d94b",
+    "digest": "f89b7310b1d30e7b38a5a6cf9fe3e22330065c797dcf750e9cb8dc8554177041",
     "requires": [
       {
         "id": "tacsim.core",
@@ -12,6 +12,14 @@
     ]
   },
   "entries": {
+    "ceres": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 2.766,
+        "period_days": 1681.6,
+        "phase_deg_at_epoch": 140.0
+      }
+    },
     "ceres_extraction": {
       "kind": "location",
       "def": {
@@ -90,6 +98,22 @@
         "slots": 2
       }
     },
+    "earth": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 1.0,
+        "period_days": 365.25,
+        "phase_deg_at_epoch": 300.0
+      }
+    },
+    "mars": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 1.524,
+        "period_days": 686.98,
+        "phase_deg_at_epoch": 130.0
+      }
+    },
     "mars_objective": {
       "kind": "location",
       "def": {
@@ -158,36 +182,38 @@
         "body": "mars"
       }
     },
+    "sol": {
+      "kind": "region",
+      "def": {
+        "name": "Sol",
+        "kind": "system",
+        "extent": [
+          [
+            -10.0,
+            -10.0
+          ],
+          [
+            10.0,
+            10.0
+          ]
+        ],
+        "datum_m": 0.0,
+        "background": {
+          "surface": "regolith",
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 800,
+          "seed": 1
+        },
+        "ground_resolution_cm": 1000
+      }
+    },
     "transfer_node": {
       "kind": "location",
       "def": {
         "label": "Cislunar Transfer Node",
         "role": "transfer",
         "body": "earth"
-      }
-    },
-    "earth": {
-      "kind": "body",
-      "def": {
-        "orbit_au": 1.0,
-        "period_days": 365.25,
-        "phase_deg_at_epoch": 300.0
-      }
-    },
-    "mars": {
-      "kind": "body",
-      "def": {
-        "orbit_au": 1.524,
-        "period_days": 686.98,
-        "phase_deg_at_epoch": 130.0
-      }
-    },
-    "ceres": {
-      "kind": "body",
-      "def": {
-        "orbit_au": 2.766,
-        "period_days": 1681.6,
-        "phase_deg_at_epoch": 140.0
       }
     }
   }

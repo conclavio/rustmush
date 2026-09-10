@@ -1238,30 +1238,37 @@ fn propagation_over_the_lot_takes_the_metric_and_the_line_of_sight() {
     let trace = mush_atlas::window::direct_fire_between(tw.world(), rae, kit).expect("trace");
     assert!(trace.reaches());
     assert_eq!(trace.range_cells, expected_range);
-    // Rae steps out to the lot: a different surface of one window is occluded
-    // and no sight query answers for the pair.
+    // Rae steps out to the lot: a different surface of one window. Before S9.4
+    // that was occluded at the grid's range with no sight answered; now the line
+    // runs through the doorway the two surfaces share, so a sight answers and
+    // the metric is the two-legged one (S9.4, S5's note).
     tw.run(rae, "backlot");
     assert!(pose_of(&tw, rae).is_some(), "the lot is on the map");
     let metric = mush_sim::metric_between(tw.world(), rae, kit).expect("still one window");
-    assert!(metric.occluded);
-    assert_eq!(
-        mush_atlas::window::sight_between(tw.world(), rae, kit),
-        None
-    );
+    assert!(metric.range_cells >= 1);
+    let sight = mush_atlas::window::sight_between(tw.world(), rae, kit)
+        .expect("S9.4: the doorway joins the floor to the lot");
+    assert_eq!(metric.occluded, !sight.is_clear_or_partial());
     let ctx = {
         let w = tw.world();
         let spatial = w.module_state::<mush_sim::SpatialState>().expect("sim");
         PropagationContext::build(spatial, w, rae, kit, at.clone()).expect("a context")
     };
-    assert!(ctx.geometry.occluded);
+    assert_eq!(ctx.geometry.occluded, metric.occluded);
     assert_eq!(ctx.geometry.range, metric.range_cells);
     // Staff read the same answers by hand.
     // Staff name them by number: the two are not in the staffer's room.
     let los = format!("@atlas/los #{}=#{}", rae.0, kit.0);
     let ev = tw.run(staff, &los);
     let out = text(&tw, &ev, staff);
-    assert!(out.contains("occluded"), "{out}");
-    assert!(out.contains("Sight: not on one surface"), "{out}");
+    assert!(
+        out.contains("cells apart") || out.contains("cell apart"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Sight:") && !out.contains("no doorway joins"),
+        "S9.4: the doorway carries the line: {out}"
+    );
     tw.run(rae, "coffee");
     let ev = tw.run(staff, &los);
     let out = text(&tw, &ev, staff);

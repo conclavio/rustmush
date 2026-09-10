@@ -20,6 +20,9 @@ mush-sim.workspace = true
 # S7 (D-P-1): the pack loader, manifest and digest are `mush-content`'s; this crate
 # decodes the entries it owns from the content pack.
 mush-content.workspace = true
+# S9.1 (D-14-33): a campaign-seed pack's places and routes are the atlas's sites and
+# connections; this crate's appliers build the records and the atlas puts them.
+mush-atlas.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

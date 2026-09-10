@@ -87,7 +87,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    digests against the ledger row each version was published under. It re-reads \
                    no file: a pack whose declared digest did not match its content was refused at \
                    boot, naming the file.\n\
-                   @tacsim/seed <pack> [dry|commit]    (staff) apply a campaign-seed pack ONCE. \
+                   @tacsim/seed <pack>[@<version>] [dry|commit]    (staff) apply a campaign-seed pack through the content latch; a newer version updates it in place. \
                    `dry` writes nothing and lists every planned object; `commit` applies it, and \
                    a second commit is a HIT that writes nothing.\n\
                    @tacsim/pin <subject>=<pack>@<version>\n\
@@ -407,6 +407,7 @@ fn corridor_of(ctx: &Ctx<'_>, raw: &str) -> Result<mush_sim::RouteDef, CmdError>
     };
     found
         .cloned()
+        .or_else(|| store.route_in_world(ctx.w, &id))
         .ok_or_else(|| CmdError::msg(NO_SUCH_CORRIDOR))
 }
 
@@ -862,10 +863,18 @@ fn seed_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else {
         named
     };
-    let Ok(pack) = CanonicalId::parse_canonical(target.trim()) else {
+    // S9.1: `<pack>[@<version>]` — a named version, else the newest loaded.
+    let (name, wanted) = match target.trim().rsplit_once('@') {
+        Some((name, version)) => match version.parse::<u32>() {
+            Ok(v) => (name.to_string(), Some(v)),
+            Err(_) => return Err(CmdError::msg(NO_SUCH_PACK)),
+        },
+        None => (target.trim().to_string(), None),
+    };
+    let Ok(pack) = CanonicalId::parse_canonical(&name) else {
         return Err(CmdError::msg(NO_SUCH_PACK));
     };
-    let plan = match seed::plan(store(ctx)?, &pack) {
+    let plan = match seed::plan(store(ctx)?, ctx.w, &pack, wanted) {
         Ok(plan) => plan,
         // **The HIT.** This exact `(pack, version)` is already applied, so the honest
         // answer is "done, and nothing was written" — not a refusal. A *different*
@@ -883,12 +892,20 @@ fn seed_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     match mode.as_str() {
         "dry" => {
-            let mut rows = vec![format!(
-                "{}@{} would create {} object(s). Nothing has been written.",
-                plan.pack,
-                plan.version,
-                plan.objects.len()
-            )];
+            let mut rows = vec![match plan.update_from {
+                Some(from) => format!(
+                    "{}@{} would update the corridor applied at @{from}: {} place(s), rooms kept. Nothing has been written.",
+                    plan.pack,
+                    plan.version,
+                    plan.objects.len()
+                ),
+                None => format!(
+                    "{}@{} would create {} object(s). Nothing has been written.",
+                    plan.pack,
+                    plan.version,
+                    plan.objects.len()
+                ),
+            }];
             for object in &plan.objects {
                 rows.push(format!(
                     "  {} — {} [{}]",
@@ -900,7 +917,7 @@ fn seed_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         "commit" => {
             let owner = ctx.actor;
-            let record = seed::apply(ctx, &plan, owner).map_err(|e| refuse_seed(&e))?;
+            let outcome = seed::apply(ctx, &plan, owner).map_err(|e| refuse_seed(&e))?;
             // The module's one irreversible command, so its confirmation waits on the
             // durable ack the way every other irreversible staff command on this tree
             // does (independent verify S7; `Ctx::gate_on_durable_ack`). Not strict: the
@@ -908,19 +925,34 @@ fn seed_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             // re-running after a dropped write is correct and the staffer is better off
             // being told which command may not have survived.
             ctx.gate_on_durable_ack();
-            info(
-                ctx,
+            let line = if outcome.through_content {
+                format!(
+                    "{}@{} applied through the content latch: {} created, {} updated, {} retired{}. \
+                     A second commit is a HIT.",
+                    outcome.pack,
+                    outcome.version,
+                    outcome.created,
+                    outcome.updated,
+                    outcome.retired,
+                    outcome
+                        .anomaly
+                        .as_ref()
+                        .map(|a| format!(" (stopped part way: {a})"))
+                        .unwrap_or_default()
+                )
+            } else {
                 format!(
                     "{}@{} applied: {} object(s) created, and the latch was written in the same \
                      batch. A second commit is a HIT.",
-                    record.pack(),
-                    record.version(),
-                    record.objects()
-                ),
-            );
+                    outcome.pack, outcome.version, outcome.created
+                )
+            };
+            info(ctx, line);
             Ok(())
         }
-        _ => Err(CmdError::msg("@tacsim/seed <pack> [dry|commit]")),
+        _ => Err(CmdError::msg(
+            "@tacsim/seed <pack>[@<version>] [dry|commit]",
+        )),
     }
 }
 

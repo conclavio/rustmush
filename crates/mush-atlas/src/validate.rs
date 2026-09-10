@@ -673,10 +673,14 @@ impl ValidateContext {
             .flat_map(|c| {
                 [&c.endpoints.0, &c.endpoints.1]
                     .into_iter()
-                    .map(move |end| AccessSummary {
-                        neighborhood: end.neighborhood.clone(),
-                        point: end.point,
-                        connection: c.key.clone(),
+                    // S9.1: an endpoint in no neighborhood (an orbital site's
+                    // room) is nothing a neighborhood's geometry checks.
+                    .filter_map(move |end| {
+                        Some(AccessSummary {
+                            neighborhood: end.neighborhood.clone()?,
+                            point: end.point,
+                            connection: c.key.clone(),
+                        })
                     })
             })
             .collect();

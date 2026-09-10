@@ -836,6 +836,19 @@ fn is_unbanded(value: &u8) -> bool {
     *value == 0
 }
 
+/// The entry kinds this crate decodes; any other kind in a pack is another
+/// module's, applied through the content module (S9.1).
+pub const OWNED_KINDS: [&str; 8] = [
+    "commodity",
+    "recipe",
+    "route",
+    "location",
+    "deposit",
+    "facility",
+    "formation",
+    "body",
+];
+
 /// A loaded, digest-verified pack.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(into = "RulesPackWire")]
@@ -854,8 +867,38 @@ pub struct RulesPackWire {
     ///
     /// Decoded through [`deserialize_unique_entries`], so a **repeated** id is an
     /// error rather than last-write-wins (independent verify P6).
-    #[serde(deserialize_with = "deserialize_unique_entries")]
-    pub entries: BTreeMap<CanonicalId, PackEntry>,
+    #[serde(
+        deserialize_with = "deserialize_unique_entries",
+        serialize_with = "serialize_entry_table"
+    )]
+    pub entries: EntryTable,
+}
+
+/// The entries of a pack as the wire carries them (S9.1): this crate's, decoded,
+/// and every other module's — the atlas's `region` in a campaign-seed pack —
+/// kept as authored, so a pack round-trips through the wire with its whole
+/// content and its digest unmoved.
+#[derive(Clone, Debug, Default)]
+pub struct EntryTable {
+    /// The entries this crate decodes.
+    pub owned: BTreeMap<CanonicalId, PackEntry>,
+    /// Another module's entries, `{"kind": …, "def": …}` as authored.
+    pub foreign: BTreeMap<CanonicalId, serde_json::Value>,
+}
+
+fn serialize_entry_table<S>(table: &EntryTable, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let mut merged: BTreeMap<&CanonicalId, serde_json::Value> = BTreeMap::new();
+    for (id, entry) in &table.owned {
+        let value = serde_json::to_value(entry).map_err(serde::ser::Error::custom)?;
+        merged.insert(id, value);
+    }
+    for (id, value) in &table.foreign {
+        merged.insert(id, value.clone());
+    }
+    serde::Serialize::serialize(&merged, serializer)
 }
 
 /// Decode the entry table, refusing a **duplicate id** and refusing past
@@ -870,41 +913,53 @@ pub struct RulesPackWire {
 /// subsystem whose whole premise is that the file is the authored source of truth.
 /// The bound is applied while decoding rather than after, so an absurd file is refused
 /// without being materialized first.
-fn deserialize_unique_entries<'de, D>(
-    deserializer: D,
-) -> Result<BTreeMap<CanonicalId, PackEntry>, D::Error>
+fn deserialize_unique_entries<'de, D>(deserializer: D) -> Result<EntryTable, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     struct Visitor;
 
     impl<'de> serde::de::Visitor<'de> for Visitor {
-        type Value = BTreeMap<CanonicalId, PackEntry>;
+        type Value = EntryTable;
 
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("a table of pack entries keyed by their pack-local id")
         }
 
-        fn visit_map<A>(self, mut map: A) -> Result<BTreeMap<CanonicalId, PackEntry>, A::Error>
+        fn visit_map<A>(self, mut map: A) -> Result<EntryTable, A::Error>
         where
             A: serde::de::MapAccess<'de>,
         {
-            let mut entries: BTreeMap<CanonicalId, PackEntry> = BTreeMap::new();
-            while let Some((id, entry)) = map.next_entry::<CanonicalId, PackEntry>()? {
-                if entries.contains_key(&id) {
+            let mut table = EntryTable::default();
+            while let Some((id, value)) = map.next_entry::<CanonicalId, serde_json::Value>()? {
+                if table.owned.contains_key(&id) || table.foreign.contains_key(&id) {
                     return Err(serde::de::Error::custom(PackError::DuplicateEntry {
                         id: id.to_string(),
                     }));
                 }
-                if entries.len() >= MAX_PACK_ENTRIES {
+                let total = table.owned.len() + table.foreign.len();
+                if total >= MAX_PACK_ENTRIES {
                     return Err(serde::de::Error::custom(PackError::TooManyEntries {
-                        actual: entries.len() + 1,
+                        actual: total + 1,
                         max: MAX_PACK_ENTRIES,
                     }));
                 }
-                entries.insert(id, entry);
+                // S9.1: an entry of another module's kind (the atlas's `region`)
+                // is the content module's to apply — kept as authored, decoded by
+                // no one here.
+                let foreign = value
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|k| !OWNED_KINDS.contains(&k));
+                if foreign {
+                    table.foreign.insert(id, value);
+                    continue;
+                }
+                let entry: PackEntry =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                table.owned.insert(id, entry);
             }
-            Ok(entries)
+            Ok(table)
         }
     }
 
@@ -937,7 +992,21 @@ impl RulesPack {
         manifest: PackManifest,
         entries: BTreeMap<CanonicalId, PackEntry>,
     ) -> Result<RulesPack, PackError> {
-        let pack = content_pack(manifest, &entries)?;
+        let pack = content_pack(manifest, &entries, &BTreeMap::new())?;
+        RulesPack::from_content(pack, entries)
+    }
+
+    /// S9.1: a pack from typed entries and another module's entries as authored.
+    ///
+    /// # Errors
+    ///
+    /// As [`RulesPack::new`].
+    pub fn with_foreign(
+        manifest: PackManifest,
+        entries: BTreeMap<CanonicalId, PackEntry>,
+        foreign: &BTreeMap<CanonicalId, serde_json::Value>,
+    ) -> Result<RulesPack, PackError> {
+        let pack = content_pack(manifest, &entries, foreign)?;
         RulesPack::from_content(pack, entries)
     }
 
@@ -1117,12 +1186,20 @@ impl RulesPack {
 fn content_pack(
     manifest: PackManifest,
     entries: &BTreeMap<CanonicalId, PackEntry>,
+    foreign: &BTreeMap<CanonicalId, serde_json::Value>,
 ) -> Result<mush_content::Pack, PackError> {
     let mut raw = BTreeMap::new();
+    let mut values: Vec<(CanonicalId, serde_json::Value)> = Vec::new();
     for (id, entry) in entries {
         let value = serde_json::to_value(entry).map_err(|error| PackError::Encoding {
             detail: error.to_string(),
         })?;
+        values.push((id.clone(), value));
+    }
+    for (id, value) in foreign {
+        values.push((id.clone(), value.clone()));
+    }
+    for (id, value) in values {
         let kind = value
             .get("kind")
             .and_then(serde_json::Value::as_str)
@@ -1131,16 +1208,32 @@ fn content_pack(
                 detail: format!("entry {id} encodes no kind"),
             })?;
         let def = value.get("def").cloned().unwrap_or(serde_json::Value::Null);
-        raw.insert(id.clone(), mush_content::RawEntry::new(kind, def)?);
+        raw.insert(id, mush_content::RawEntry::new(kind, def)?);
     }
     Ok(mush_content::Pack::new(manifest, raw, None)?)
 }
 
 impl From<RulesPack> for RulesPackWire {
     fn from(value: RulesPack) -> RulesPackWire {
+        // S9.1: another module's entries ride the wire as authored.
+        let foreign: BTreeMap<CanonicalId, serde_json::Value> = value
+            .pack
+            .entries()
+            .iter()
+            .filter(|(_, raw)| !OWNED_KINDS.contains(&raw.kind().as_str()))
+            .map(|(id, raw)| {
+                (
+                    id.clone(),
+                    serde_json::json!({ "kind": raw.kind().as_str(), "def": raw.def_value() }),
+                )
+            })
+            .collect();
         RulesPackWire {
             manifest: PackManifestWire::from(value.pack.manifest().clone()),
-            entries: value.entries,
+            entries: EntryTable {
+                owned: value.entries,
+                foreign,
+            },
         }
     }
 }
@@ -1151,14 +1244,15 @@ impl TryFrom<RulesPackWire> for RulesPack {
     fn try_from(value: RulesPackWire) -> Result<RulesPack, PackError> {
         // The entry cap is re-checked before the manifest is built, so an absurd
         // stored pack is refused rather than truncated (10b §3.1's review item).
-        if value.entries.len() > MAX_PACK_ENTRIES {
+        let total = value.entries.owned.len() + value.entries.foreign.len();
+        if total > MAX_PACK_ENTRIES {
             return Err(PackError::TooManyEntries {
-                actual: value.entries.len(),
+                actual: total,
                 max: MAX_PACK_ENTRIES,
             });
         }
         let manifest = PackManifest::try_from(value.manifest)?;
-        RulesPack::new(manifest, value.entries)
+        RulesPack::with_foreign(manifest, value.entries.owned, &value.entries.foreign)
     }
 }
 
@@ -1212,6 +1306,13 @@ pub fn load_pack(bytes: &str) -> Result<RulesPack, PackError> {
     let pack = mush_content::parse_pack(bytes)?;
     let mut entries = BTreeMap::new();
     for (id, raw) in pack.entries() {
+        // S9.1 (D-14-33): a campaign-seed pack also carries the atlas's entries
+        // (its `region`), applied by their owner through the content module. They
+        // stay in the content pack — digested with the rest — and are no entry of
+        // this crate's.
+        if !OWNED_KINDS.contains(&raw.kind().as_str()) {
+            continue;
+        }
         let value = serde_json::json!({ "kind": raw.kind().as_str(), "def": raw.def_value() });
         let entry: PackEntry =
             serde_json::from_value(value).map_err(|error| PackError::EntryDecode {

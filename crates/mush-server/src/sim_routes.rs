@@ -32,6 +32,8 @@ impl RouteCatalog for TacsimRouteCatalog {
         // through). A route whose places are not all placed was skipped loudly
         // at reindex time and is simply absent here — which is "fall back to the
         // manual route", never "hand out a half-resolved route".
-        world.module_state::<TacsimStore>()?.route(id).cloned()
+        world
+            .module_state::<TacsimStore>()?
+            .route_in_world(world, id)
     }
 }

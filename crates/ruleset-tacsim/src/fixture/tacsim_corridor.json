@@ -3,7 +3,7 @@
     "id": "tacsim.corridor",
     "version": 1,
     "kind": "campaign_seed",
-    "digest": "d091c39ad4a9bb0914f6d3093b0bd29b4ab2f8e379d16bbe6cf6e5e2ea27f1d3",
+    "digest": "6ad21275d8ba59a6b742cf354e2efafe840cacaa34f8e6c84ac057b9997f8d69",
     "requires": [
       {
         "id": "tacsim.core",
@@ -12,6 +12,14 @@
     ]
   },
   "entries": {
+    "ceres": {
+      "kind": "body",
+      "def": {
+        "orbit_au": 2.766,
+        "period_days": 1681.6,
+        "phase_deg_at_epoch": 140.0
+      }
+    },
     "ceres_extraction": {
       "kind": "location",
       "def": {
@@ -66,34 +74,6 @@
         "propellant": 1200
       }
     },
-    "phobos_yard": {
-      "kind": "location",
-      "def": {
-        "label": "Phobos Yard",
-        "role": "yard",
-        "body": "mars"
-      }
-    },
-    "phobos_forge": {
-      "kind": "facility",
-      "def": {
-        "label": "Phobos Yard Forge",
-        "at": "phobos_yard",
-        "capabilities": [
-          "forge",
-          "smelt"
-        ],
-        "slots": 2
-      }
-    },
-    "transfer_node": {
-      "kind": "location",
-      "def": {
-        "label": "Cislunar Transfer Node",
-        "role": "transfer",
-        "body": "earth"
-      }
-    },
     "earth": {
       "kind": "body",
       "def": {
@@ -110,12 +90,58 @@
         "phase_deg_at_epoch": 130.0
       }
     },
-    "ceres": {
-      "kind": "body",
+    "phobos_forge": {
+      "kind": "facility",
       "def": {
-        "orbit_au": 2.766,
-        "period_days": 1681.6,
-        "phase_deg_at_epoch": 140.0
+        "label": "Phobos Yard Forge",
+        "at": "phobos_yard",
+        "capabilities": [
+          "forge",
+          "smelt"
+        ],
+        "slots": 2
+      }
+    },
+    "phobos_yard": {
+      "kind": "location",
+      "def": {
+        "label": "Phobos Yard",
+        "role": "yard",
+        "body": "mars"
+      }
+    },
+    "sol": {
+      "kind": "region",
+      "def": {
+        "name": "Sol",
+        "kind": "system",
+        "extent": [
+          [
+            -10.0,
+            -10.0
+          ],
+          [
+            10.0,
+            10.0
+          ]
+        ],
+        "datum_m": 0.0,
+        "background": {
+          "surface": "regolith",
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 800,
+          "seed": 1
+        },
+        "ground_resolution_cm": 1000
+      }
+    },
+    "transfer_node": {
+      "kind": "location",
+      "def": {
+        "label": "Cislunar Transfer Node",
+        "role": "transfer",
+        "body": "earth"
       }
     }
   }

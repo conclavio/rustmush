@@ -9,7 +9,8 @@ use crate::geom::{PointCm, RectCm, Shape, cm};
 use crate::module::AtlasState;
 use crate::raster::Grid;
 use crate::record::{
-    Access, ConnectionRec, Endpoint, NeighborhoodRec, PortalRec, RegionRec, RoomGeo, SurfaceRef,
+    Access, ConnectionRec, Endpoint, NeighborhoodRec, PortalRec, RegionRec, RoomGeo, SiteRec,
+    SurfaceRef,
 };
 
 /// The widest map, in characters.
@@ -313,9 +314,10 @@ pub fn neighborhood(
         .connections_in(&nb.region)
         .filter(|c| c.visibility == crate::record::Visibility::Public || staff)
         .filter(|c| {
-            c.endpoints.0.neighborhood == nb.key.pack || c.endpoints.1.neighborhood == nb.key.pack
+            c.endpoints.0.neighborhood.as_ref() == Some(&nb.key.pack)
+                || c.endpoints.1.neighborhood.as_ref() == Some(&nb.key.pack)
         })
-        .map(|c| connection_line(state, c))
+        .map(|c| connection_line(state, w, c))
         .collect();
     if !connections.is_empty() {
         out.push(" Ways out:".to_string());
@@ -343,9 +345,19 @@ fn neighborhood_name(state: &AtlasState, pack: &mush_core::CanonicalId) -> Strin
         .map_or_else(|| pack.to_string(), |n| n.name.clone())
 }
 
-fn connection_line(state: &AtlasState, c: &ConnectionRec) -> String {
-    let from = neighborhood_name(state, &c.endpoints.0.neighborhood);
-    let to = neighborhood_name(state, &c.endpoints.1.neighborhood);
+/// What an endpoint is called: its neighborhood, or — an orbital or system
+/// site's room (S9.1) — the room itself.
+fn endpoint_name(state: &AtlasState, w: &World, ap: &crate::record::AccessPoint) -> String {
+    match (&ap.neighborhood, ap.room) {
+        (Some(nb), _) => neighborhood_name(state, nb),
+        (None, Some(room)) => mush_core::output::display_name(w, room),
+        (None, None) => "nowhere".to_string(),
+    }
+}
+
+fn connection_line(state: &AtlasState, w: &World, c: &ConnectionRec) -> String {
+    let from = endpoint_name(state, w, &c.endpoints.0);
+    let to = endpoint_name(state, w, &c.endpoints.1);
     let arrow = match c.direction {
         crate::record::Direction::Both => "<->",
         crate::record::Direction::OneWay => "->",
@@ -455,10 +467,21 @@ pub fn region(
         }
         out.push(clip(line));
     }
+    // S9.1: sites anchored by the region alone — an orbital yard, a transfer
+    // node — listed under it, since no neighborhood lists them.
+    let mut orbital: Vec<&SiteRec> = r
+        .sites
+        .values()
+        .filter(|s| s.neighborhoods.is_empty() && s.region.as_ref() == Some(&region.key))
+        .collect();
+    orbital.sort_by_key(|s| s.key.clone());
+    for site in orbital {
+        out.push(clip(format!(" * {} ({})", site.name, site.kind)));
+    }
     let connections: Vec<String> = r
         .connections_in(&region.key)
         .filter(|c| c.visibility == crate::record::Visibility::Public || staff)
-        .map(|c| connection_line(state, c))
+        .map(|c| connection_line(state, w, c))
         .collect();
     if !connections.is_empty() {
         out.push(" legend: = corridor  o checkpoint  @ you".to_string());

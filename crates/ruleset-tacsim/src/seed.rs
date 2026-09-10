@@ -34,7 +34,7 @@
 
 use std::collections::BTreeMap;
 
-use mush_core::{CanonicalId, Ctx, ObjId, ObjKind};
+use mush_core::{CanonicalId, Ctx, ObjId, ObjKind, World};
 
 use crate::pack::{MAX_SEED_OBJECTS, PackEntry, PackKind};
 use crate::record::SeedApplication;
@@ -60,6 +60,8 @@ pub struct SeedPlan {
     pub version: u32,
     /// Every object it would create, in pack-local id order.
     pub objects: Vec<PlannedObject>,
+    /// S9.1: the version the content latch holds now, when this is an update.
+    pub update_from: Option<u32>,
 }
 
 /// Why seeding refuses.
@@ -122,6 +124,50 @@ pub enum SeedError {
         /// What the record's constructor said.
         detail: String,
     },
+    /// S9.1: the content latch refused the pack — the appliers' reason.
+    #[error("the content latch refused {pack}@{version}: {detail}")]
+    Content {
+        /// The pack.
+        pack: String,
+        /// The version.
+        version: u32,
+        /// What the apply said.
+        detail: String,
+    },
+    /// S9.1: a world seeded before S9 holds the pack under the legacy latch; a
+    /// re-seed through the content latch would make its places twice.
+    #[error(
+        "{pack}@{applied} was seeded under the legacy latch; the content latch cannot update it to \
+         @{wanted}. Re-seeding a legacy world is a migration, by hand."
+    )]
+    LegacySeed {
+        /// The pack.
+        pack: String,
+        /// The version the legacy latch carries.
+        applied: u32,
+        /// The version asked for.
+        wanted: u32,
+    },
+}
+
+/// S9.1: what one seed did, through the content latch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeedOutcome {
+    /// The pack.
+    pub pack: CanonicalId,
+    /// The version applied.
+    pub version: u32,
+    /// Objects created.
+    pub created: usize,
+    /// Entries updated in place.
+    pub updated: usize,
+    /// Entries retired.
+    pub retired: usize,
+    /// The apply's anomaly, when it stopped part way.
+    pub anomaly: Option<String>,
+    /// Whether the content latch applied it (S9.1), or the legacy seed latch did
+    /// (a world composed without the content module).
+    pub through_content: bool,
 }
 
 /// **Plan a seed. Writes nothing, ever.**
@@ -130,12 +176,24 @@ pub enum SeedError {
 ///
 /// Every variant of [`SeedError`] except [`SeedError::NoOwner`] and
 /// [`SeedError::Latch`], which only [`apply`] can reach.
-pub fn plan(store: &TacsimStore, pack: &CanonicalId) -> Result<SeedPlan, SeedError> {
+pub fn plan(
+    store: &TacsimStore,
+    w: &World,
+    pack: &CanonicalId,
+    wanted: Option<u32>,
+) -> Result<SeedPlan, SeedError> {
     if !store.enabled() {
         return Err(SeedError::NotEnabled);
     }
-    let Some(version) = store.newest_loaded(pack) else {
-        return Err(SeedError::NoSuchPack);
+    // S9.1: a version may be named (`<pack>@<version>`); the newest loaded
+    // otherwise, as before.
+    let version = match wanted {
+        Some(v) if store.versions_of(pack).any(|loaded| loaded == v) => v,
+        Some(_) => return Err(SeedError::NoSuchPack),
+        None => match store.newest_loaded(pack) {
+            Some(v) => v,
+            None => return Err(SeedError::NoSuchPack),
+        },
     };
     let Some(loaded) = store.pack(pack, version) else {
         return Err(SeedError::NoSuchPack);
@@ -151,14 +209,45 @@ pub fn plan(store: &TacsimStore, pack: &CanonicalId) -> Result<SeedPlan, SeedErr
             version,
         });
     }
-    // A *different* version of the same pack: the re-derived `pack -> applied
-    // version` index answers this, and the message names the applied one.
+    // S9.1: with the content module composed, the content latch is the latch —
+    // one row per pack id, a newer version an update in place — and the legacy
+    // `tacsim:seed:` latch (a world seeded before S9) answers a HIT for its own
+    // version above and refuses any other, since re-seeding a legacy world
+    // through the content latch would make its places twice. Without the content
+    // module (a composition that has none), the legacy latch keeps its rule: one
+    // version, ever.
+    let content_composed = content_composed(w);
     if let Some(applied) = store.applied_version(pack) {
-        return Err(SeedError::VersionAlreadyApplied {
-            pack: pack.to_string(),
-            applied,
-            wanted: version,
+        return Err(if content_composed {
+            SeedError::LegacySeed {
+                pack: pack.to_string(),
+                applied,
+                wanted: version,
+            }
+        } else {
+            SeedError::VersionAlreadyApplied {
+                pack: pack.to_string(),
+                applied,
+                wanted: version,
+            }
         });
+    }
+    let mut update_from = None;
+    if let Some(applied) = store.applied_in(w, pack) {
+        if applied == version {
+            return Err(SeedError::AlreadyApplied {
+                pack: pack.to_string(),
+                version,
+            });
+        }
+        if applied > version {
+            return Err(SeedError::VersionAlreadyApplied {
+                pack: pack.to_string(),
+                applied,
+                wanted: version,
+            });
+        }
+        update_from = Some(applied);
     }
     let mut objects: Vec<PlannedObject> = Vec::new();
     for (id, entry) in loaded.pack.entries() {
@@ -182,6 +271,7 @@ pub fn plan(store: &TacsimStore, pack: &CanonicalId) -> Result<SeedPlan, SeedErr
         pack: pack.clone(),
         version,
         objects,
+        update_from,
     })
 }
 
@@ -214,54 +304,172 @@ pub fn plan(store: &TacsimStore, pack: &CanonicalId) -> Result<SeedPlan, SeedErr
 /// [`SeedError::NotASeedPack`], [`SeedError::NoSuchPack`] and [`SeedError::NoOwner`]
 /// before anything is written, and [`SeedError::Latch`] if the record's own
 /// constructor refuses.
-pub fn apply(
+pub fn apply(ctx: &mut Ctx<'_>, plan: &SeedPlan, owner: ObjId) -> Result<SeedOutcome, SeedError> {
+    if !content_composed(ctx.w) {
+        return legacy_apply(ctx, plan, owner);
+    }
+    let (pack, requirements) = {
+        let Some(store) = ctx.w.module_state::<TacsimStore>() else {
+            return Err(SeedError::NotEnabled);
+        };
+        if !store.enabled() {
+            return Err(SeedError::NotEnabled);
+        }
+        if store.is_applied(&plan.pack, plan.version) {
+            return Err(SeedError::AlreadyApplied {
+                pack: plan.pack.to_string(),
+                version: plan.version,
+            });
+        }
+        if let Some(applied) = store.applied_version(&plan.pack) {
+            return Err(SeedError::LegacySeed {
+                pack: plan.pack.to_string(),
+                applied,
+                wanted: plan.version,
+            });
+        }
+        if let Some(applied) = store.applied_in(ctx.w, &plan.pack)
+            && applied >= plan.version
+        {
+            return Err(if applied == plan.version {
+                SeedError::AlreadyApplied {
+                    pack: plan.pack.to_string(),
+                    version: plan.version,
+                }
+            } else {
+                SeedError::VersionAlreadyApplied {
+                    pack: plan.pack.to_string(),
+                    applied,
+                    wanted: plan.version,
+                }
+            });
+        }
+        let Some(loaded) = store.pack(&plan.pack, plan.version) else {
+            return Err(SeedError::NoSuchPack);
+        };
+        if loaded.pack.manifest().kind() != PackKind::CampaignSeed {
+            return Err(SeedError::NotASeedPack {
+                pack: plan.pack.to_string(),
+            });
+        }
+        if plan.objects.len() > MAX_SEED_OBJECTS {
+            return Err(SeedError::TooManyObjects {
+                pack: plan.pack.to_string(),
+                version: plan.version,
+                actual: plan.objects.len(),
+                max: MAX_SEED_OBJECTS,
+            });
+        }
+        // The rules packs it requires, as the store loaded them: applied through
+        // the latch first when the latch lacks them (their entries make no object).
+        let requirements: Vec<mush_content::Pack> = loaded
+            .pack
+            .manifest()
+            .requires()
+            .iter()
+            .filter(|req| store.applied_in(ctx.w, &req.id) != Some(req.version))
+            .filter_map(|req| {
+                store
+                    .pack(&req.id, req.version)
+                    .map(|l| l.pack.pack().clone())
+            })
+            .collect();
+        (loaded.pack.pack().clone(), requirements)
+    };
+    if ctx.w.get(owner).is_none() {
+        return Err(SeedError::NoOwner);
+    }
+    // S9.1: the content module applies the pack through its own latch and this
+    // crate's appliers (a room and a site per place, a connection per route);
+    // the rooms are owned by whoever seeds, as they were.
+    let saved = ctx.actor;
+    ctx.actor = owner;
+    for required in &requirements {
+        if let Err(error) = mush_content::module::apply_pack(ctx, required) {
+            ctx.actor = saved;
+            return Err(SeedError::Content {
+                pack: required.manifest().id().to_string(),
+                version: required.manifest().version(),
+                detail: error.to_string(),
+            });
+        }
+    }
+    let applied = mush_content::module::apply_pack(ctx, &pack);
+    ctx.actor = saved;
+    match applied {
+        Ok((applied, report)) => Ok(SeedOutcome {
+            pack: plan.pack.clone(),
+            version: applied.version(),
+            created: report.created,
+            updated: report.updated,
+            retired: report.retired,
+            anomaly: report.anomaly.clone(),
+            through_content: true,
+        }),
+        Err(error) => Err(SeedError::Content {
+            pack: plan.pack.to_string(),
+            version: plan.version,
+            detail: error.to_string(),
+        }),
+    }
+}
+
+/// Whether the content module is composed on this world (S9.1).
+fn content_composed(w: &World) -> bool {
+    w.module_state::<mush_content::ContentState>().is_some()
+}
+
+/// The S1–S7 seed, for a world composed without the content module: the rooms
+/// and the `tacsim:seed:{pack}@{version}` latch ride one batch. Kept so a
+/// composition that has no content module seeds as it did; a server with one
+/// never comes here.
+fn legacy_apply(
     ctx: &mut Ctx<'_>,
     plan: &SeedPlan,
     owner: ObjId,
-) -> Result<SeedApplication, SeedError> {
-    // ---- everything fallible, before the first mutation ----
-    let Some(store) = ctx.w.module_state::<TacsimStore>() else {
-        return Err(SeedError::NotEnabled);
+) -> Result<SeedOutcome, SeedError> {
+    let digest = {
+        let Some(store) = ctx.w.module_state::<TacsimStore>() else {
+            return Err(SeedError::NotEnabled);
+        };
+        if !store.enabled() {
+            return Err(SeedError::NotEnabled);
+        }
+        if store.is_applied(&plan.pack, plan.version) {
+            return Err(SeedError::AlreadyApplied {
+                pack: plan.pack.to_string(),
+                version: plan.version,
+            });
+        }
+        if let Some(applied) = store.applied_version(&plan.pack) {
+            return Err(SeedError::VersionAlreadyApplied {
+                pack: plan.pack.to_string(),
+                applied,
+                wanted: plan.version,
+            });
+        }
+        let Some(loaded) = store.pack(&plan.pack, plan.version) else {
+            return Err(SeedError::NoSuchPack);
+        };
+        if loaded.pack.manifest().kind() != PackKind::CampaignSeed {
+            return Err(SeedError::NotASeedPack {
+                pack: plan.pack.to_string(),
+            });
+        }
+        if plan.objects.len() > MAX_SEED_OBJECTS {
+            return Err(SeedError::TooManyObjects {
+                pack: plan.pack.to_string(),
+                version: plan.version,
+                actual: plan.objects.len(),
+                max: MAX_SEED_OBJECTS,
+            });
+        }
+        loaded.pack.manifest().digest()
     };
-    if !store.enabled() {
-        return Err(SeedError::NotEnabled);
-    }
-    if store.is_applied(&plan.pack, plan.version) {
-        return Err(SeedError::AlreadyApplied {
-            pack: plan.pack.to_string(),
-            version: plan.version,
-        });
-    }
-    if let Some(applied) = store.applied_version(&plan.pack) {
-        return Err(SeedError::VersionAlreadyApplied {
-            pack: plan.pack.to_string(),
-            applied,
-            wanted: plan.version,
-        });
-    }
-    let Some(loaded) = store.pack(&plan.pack, plan.version) else {
-        return Err(SeedError::NoSuchPack);
-    };
-    if loaded.pack.manifest().kind() != PackKind::CampaignSeed {
-        return Err(SeedError::NotASeedPack {
-            pack: plan.pack.to_string(),
-        });
-    }
-    if plan.objects.len() > MAX_SEED_OBJECTS {
-        return Err(SeedError::TooManyObjects {
-            pack: plan.pack.to_string(),
-            version: plan.version,
-            actual: plan.objects.len(),
-            max: MAX_SEED_OBJECTS,
-        });
-    }
-    let digest = loaded.pack.manifest().digest();
     if ctx.w.get(owner).is_none() {
         return Err(SeedError::NoOwner);
     }
     let applied_at = ctx.world_ic_now();
-
-    // ---- the irreversible half ----
     let mut placed: BTreeMap<CanonicalId, ObjId> = BTreeMap::new();
     let mut failed: Option<String> = None;
     for object in &plan.objects {
@@ -270,8 +478,6 @@ pub fn apply(
                 placed.insert(object.id.clone(), id);
             }
             Err(error) => {
-                // Unreachable for a room with an existing owner and no location.
-                // Stop creating, latch what exists, and page — never propagate.
                 failed = Some(error.to_string());
                 break;
             }
@@ -288,25 +494,29 @@ pub fn apply(
         };
     put_seed(ctx, record.clone());
     persist_meta(ctx);
-    if let Some(detail) = failed {
-        // 08c §4.6's ladder, level 2: the exact command, the failed invariant, and
-        // **the subject only** — nothing else about the world is stopped.
-        let runbook = format!(
-            "tacsim: a seed stopped part way; the latch records exactly what exists and the pack \
-             will never be applied again. Recommended: `@tacsim/pack show {}@{}`, then create the \
-             remainder by hand or publish a corrected version. Only this pack is stopped.",
-            plan.pack, plan.version
-        );
+    if let Some(detail) = &failed {
         tracing::error!(
             pack = %plan.pack,
             version = plan.version,
             created = record.objects(),
             planned = plan.objects.len(),
             %detail,
-            "{runbook}"
+            "tacsim: a seed stopped part way; the latch records exactly what exists and the pack \
+             will never be applied again. Recommended: `@tacsim/pack show {}@{}`, then create the \
+             remainder by hand or publish a corrected version. Only this pack is stopped.",
+            plan.pack,
+            plan.version
         );
     }
-    Ok(record)
+    Ok(SeedOutcome {
+        pack: plan.pack.clone(),
+        version: plan.version,
+        created: usize::try_from(record.objects()).unwrap_or(usize::MAX),
+        updated: 0,
+        retired: 0,
+        anomaly: failed,
+        through_content: false,
+    })
 }
 
 #[cfg(test)]
@@ -327,9 +537,15 @@ mod tests {
     /// `Engine::modules_loaded` builds one.
     #[test]
     fn vf_p9_apply_re_checks_the_latch_and_a_second_call_creates_nothing() {
-        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
-            crate::TacsimRuleset::with_config(crate::fixture::config()),
-        )]);
+        let mut appliers = mush_content::Appliers::new();
+        mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+        crate::register_appliers(&mut appliers).expect("tacsim appliers");
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(crate::TacsimRuleset::with_config(crate::fixture::config())),
+            Box::new(mush_sim::SimulationModule::new()),
+            Box::new(mush_atlas::AtlasModule::new()),
+            Box::new(mush_content::ContentModule::new().with_appliers(appliers)),
+        ]);
         let corridor = CanonicalId::new("tacsim.corridor").expect("a canonical id");
         let engine = tw.engine_mut();
         let plan = {
@@ -337,8 +553,9 @@ mod tests {
                 .world
                 .module_state::<TacsimStore>()
                 .expect("the tacsim slot");
-            plan(store, &corridor).expect("the corridor plans")
+            plan(store, &engine.world, &corridor, None).expect("the corridor plans")
         };
+        assert_eq!(plan.update_from, None);
         let mut out = mush_core::Outbox::new();
         let mut ctx = Ctx {
             w: &mut engine.world,
@@ -352,35 +569,44 @@ mod tests {
         };
 
         let first = apply(&mut ctx, &plan, mush_core::GOD).expect("the first application");
-        assert_eq!(first.objects(), 3);
-        let after_first: Vec<(CanonicalId, ObjId)> = ctx
+        assert_eq!(first.version, 1);
+        assert!(first.anomaly.is_none(), "{first:?}");
+        let rooms_after_first = ctx
+            .w
+            .iter()
+            .filter(|o| o.kind == mush_core::ObjKind::Room)
+            .count();
+        let placed = ctx
             .w
             .module_state::<TacsimStore>()
             .expect("the tacsim slot")
-            .seeded_objects()
-            .map(|(id, obj)| (id.clone(), obj))
-            .collect();
+            .placed_in(ctx.w, &corridor, 1)
+            .expect("the content latch placed the corridor");
+        assert_eq!(placed.len(), 3, "three places: {placed:?}");
 
-        // The SAME live plan, applied again.
+        // The SAME live plan, applied again: a HIT, nothing made twice.
         let refused = apply(&mut ctx, &plan, mush_core::GOD).expect_err("the second must refuse");
         assert!(
             matches!(refused, SeedError::AlreadyApplied { ref pack, version }
                      if pack == "tacsim.corridor" && version == 1),
             "{refused:?}"
         );
-        let store = ctx
+        let rooms_after_second = ctx
             .w
-            .module_state::<TacsimStore>()
-            .expect("the tacsim slot");
-        assert_eq!(store.seeded_objects().count(), 3, "three objects, not six");
+            .iter()
+            .filter(|o| o.kind == mush_core::ObjKind::Room)
+            .count();
         assert_eq!(
-            store
-                .seeded_objects()
-                .map(|(id, obj)| (id.clone(), obj))
-                .collect::<Vec<_>>(),
-            after_first,
-            "and the latch names exactly what it named before"
+            rooms_after_first, rooms_after_second,
+            "three objects, not six"
         );
-        assert_eq!(store.seed(&corridor, 1), Some(&first));
+        // And the legacy latch was not written: the content latch is the latch.
+        assert!(
+            ctx.w
+                .module_state::<TacsimStore>()
+                .expect("the tacsim slot")
+                .seed(&corridor, 1)
+                .is_none()
+        );
     }
 }

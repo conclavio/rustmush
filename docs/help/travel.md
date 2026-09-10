@@ -67,3 +67,10 @@ they join, their checkpoints as legs (the last leg names the connection itself,
 meaning its far end), the modes they carry, and — for a vehicle that runs on its
 own clock — a `service` naming the vehicle room, its dwell at each stop, and its
 driver. See `help atlas` for packs.
+
+Hulls under way on the placement graph — a TacSim carrier journey along a
+corridor — are listed by `@atlas/journey list` beside the atlas's own
+journeys, and an interface NPC's `travel.status` answers for a crew aboard
+one ("You are aboard the …"). The corridor itself is an atlas connection
+between two orbital sites, drawn between the bodies' positions at the
+campaign epoch, so its length is the sky's pinned distance.

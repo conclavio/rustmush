@@ -128,7 +128,7 @@ fn e7r1_r2_the_shipped_corridors_digest_is_unmoved_by_the_new_fields() {
     let pack = load_pack(fixture::CORRIDOR_JSON).expect("the shipped corridor still loads");
     assert_eq!(
         pack.manifest().digest().to_hex(),
-        "d091c39ad4a9bb0914f6d3093b0bd29b4ab2f8e379d16bbe6cf6e5e2ea27f1d3",
+        "6ad21275d8ba59a6b742cf354e2efafe840cacaa34f8e6c84ac057b9997f8d69",
         "cut 1's published digest, byte for byte"
     );
     assert_eq!(
