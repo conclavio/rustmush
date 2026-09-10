@@ -305,12 +305,16 @@ impl GameModule for WodRuleset {
         reg.persist_delegation(
             NS,
             "jobs",
-            "chargen_cmds and xp file approval jobs, and roll appends comments, through              mush_jobs::open_job / add_comment, whose writes carry the caller's identity",
+            "chargen_cmds and xp file approval jobs, and roll appends comments, through \
+             mush_jobs::open_job / add_comment, whose writes carry the caller's \
+             identity",
         )?;
         reg.persist_delegation(
             "jobs",
             NS,
-            "`+job/approve` dispatches this ruleset's chargen and XP payload handlers under              the jobs module's identity, and they write wod-namespace documents",
+            "`+job/approve` dispatches this ruleset's chargen and XP payload handlers \
+             under the jobs module's identity, and they write wod-namespace \
+             documents",
         )?;
         // State slot (RNG + transients).
         let state = match self.seed {

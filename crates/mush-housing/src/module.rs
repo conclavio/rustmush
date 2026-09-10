@@ -986,7 +986,9 @@ impl GameModule for HousingModule {
         reg.persist_delegation(
             NS,
             "jobs",
-            "mush_housing::flow raises and closes the tenancy story window through              mush_jobs::open_job / resolve_plain_job, whose writes carry the caller's identity",
+            "mush_housing::flow raises and closes the tenancy story window through \
+             mush_jobs::open_job / resolve_plain_job, whose writes carry the \
+             caller's identity",
         )?;
         reg.job_queue(JobQueueSpec {
             name: STORY_QUEUE.into(),

@@ -3441,13 +3441,16 @@ impl<'a> Registrar<'a> {
     ) -> Result<(), ModError> {
         if writer == ns {
             return Err(ModError::msg(format!(
-                "module {}: {writer:?} -> {ns:?} is a module writing its own namespace,                  which needs no delegation",
+                "module {}: {writer:?} -> {ns:?} is a module writing its own namespace, \
+                 which needs no delegation",
                 self.module
             )));
         }
         if writer != self.module && ns != self.module {
             return Err(ModError::msg(format!(
-                "module {}: may not declare the delegation {writer:?} -> {ns:?} — a pair is                  declared by the writing module or by the namespace's owner, and this is                  neither",
+                "module {}: may not declare the delegation {writer:?} -> {ns:?} — a pair is \
+                 declared by the writing module or by the namespace's owner, and this \
+                 is neither",
                 self.module
             )));
         }
@@ -4306,6 +4309,20 @@ impl Ctx<'_> {
     /// [`World::refused_namespace_writes`](crate::world::World::refused_namespace_writes).
     /// It has to be: dropping a write is silent at the call site, since
     /// `persist` returns nothing to ignore.
+    ///
+    /// **What the check cannot see.** `persist` is not the only spelling of a
+    /// module write. [`Deferred::Persist`](crate::engine::Deferred) is a public
+    /// variant and [`Outbox::defer`](crate::Outbox::defer) is public, so the
+    /// crate-local `push_op` helper most modules actually write through queues
+    /// the op without ever passing here: it is not compared, was not in the
+    /// census, and cannot be refused. Nothing crosses a namespace that way
+    /// today — every one of those helpers stamps its own crate's namespace
+    /// constant by construction, which is what makes that path safe rather
+    /// than checked — but a write that MEANS to cross a namespace must be
+    /// spelled `ctx.persist` to be governed at all. Fencing the sibling path
+    /// is a follow-up step, not something this one invented: a pinned scan
+    /// over non-`mush-core` source for a `Deferred::Persist` whose namespace
+    /// is not the crate's own constant.
     ///
     /// A core command (`module: None`) is a wildcard, exactly as it is for
     /// state slots. The engine's own namespace-crossing helpers — the scene

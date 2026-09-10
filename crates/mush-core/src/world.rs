@@ -1598,7 +1598,8 @@ impl World {
                 module = %module,
                 ns = %ns,
                 owner = owner.as_deref().unwrap_or("(unclaimed)"),
-                "cross-namespace module write REFUSED: the namespace belongs to another module                  and no delegation declares the pair (WS03-A1)"
+                "cross-namespace module write REFUSED: the namespace belongs to another \
+                 module and no delegation declares the pair (WS03-A1)"
             );
         }
     }

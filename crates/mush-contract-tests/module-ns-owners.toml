@@ -27,6 +27,16 @@
 # plus `jobs -> shadowrun`, which the run never reached and which is declared
 # rather than discovered later by a dropped write.
 #
+# WHAT THE CHECK CANNOT SEE. Only a write spelled `ctx.persist` reaches the
+# comparison. `Deferred::Persist` is a public variant and `Outbox::defer` is
+# public, so the crate-local `push_op` helper most modules write through is
+# neither censused nor refusable. Nothing crosses a namespace that way today:
+# every such helper stamps its own crate's namespace constant by construction.
+# A write that MEANS to cross a namespace must be spelled `ctx.persist` to be
+# governed at all; fencing the sibling path (a pinned scan over non-mush-core
+# source for a `Deferred::Persist` whose namespace is not the crate's own
+# constant) is a follow-up step, not part of this one.
+#
 # Two shapes are NOT delegations, because they are not modules reaching across:
 #
 #   * `module: None` — a core command is a wildcard, here as it is for state

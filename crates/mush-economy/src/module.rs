@@ -1675,7 +1675,9 @@ impl GameModule for EconomyModule {
         reg.persist_delegation(
             NS,
             "jobs",
-            "an economy event is delivered to housing's observer under this module's identity,              and that observer closes the tenancy story job through mush_jobs::resolve_plain_job",
+            "an economy event is delivered to housing's observer under this module's \
+             identity, and that observer closes the tenancy story job through \
+             mush_jobs::resolve_plain_job",
         )?;
         // J2: `@econ/history` and `@econ/reverse` reach past the RAM tail through
         // the store-read seam (H1); this is where the page comes back.

@@ -285,12 +285,15 @@ impl GameModule for ShadowrunRuleset {
         reg.persist_delegation(
             NS,
             "jobs",
-            "chargen_cmds and karma file approval jobs through mush_jobs::open_job, whose              writes carry the caller's identity",
+            "chargen_cmds and karma file approval jobs through mush_jobs::open_job, \
+             whose writes carry the caller's identity",
         )?;
         reg.persist_delegation(
             "jobs",
             NS,
-            "`+job/approve` dispatches this ruleset's chargen and karma payload handlers under              the jobs module's identity, and they write shadowrun-namespace documents",
+            "`+job/approve` dispatches this ruleset's chargen and karma payload handlers \
+             under the jobs module's identity, and they write \
+             shadowrun-namespace documents",
         )?;
         // Seedable dice RNG + transient roll-log / chargen state.
         let state = match self.seed {

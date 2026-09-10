@@ -41,6 +41,15 @@
 //! runtime value, not a syntactic one, so no scan of the source can enumerate
 //! it — which is exactly why claim 2 pins the declarations instead.
 //!
+//! Nor does any of this see the sibling spelling: `Deferred::Persist` is a
+//! public variant and `Outbox::defer` is public, so the crate-local `push_op`
+//! helper most modules write through never reaches `Ctx::persist`'s
+//! comparison. Every one of those helpers stamps its own crate's namespace
+//! constant by construction, so nothing crosses a namespace that way today —
+//! but a write that means to cross one has to be spelled `ctx.persist` to be
+//! governed. A pinned scan over non-`mush-core` source is the fence if one is
+//! ever wanted; it is a follow-up, not this step.
+//!
 //! `Ctx::persist_engine_owned` is `pub(crate)` in `mush-core` and is not a way
 //! around any of this: it is the spelling for the writes the check would
 //! misread — the scene API writing a scene's OWNING namespace whoever ends the
@@ -52,7 +61,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use mush_core::engine::Effects;
-use mush_core::{Engine, Outbox, World};
+use mush_core::{Engine, GameModule, Outbox, World};
 use mush_server::boot;
 use mush_server::staff::{StaffQueue, register_server_commands};
 use mush_server::world_task::base_registry;
@@ -100,6 +109,19 @@ fn declared() -> Declared {
 /// nothing enabled, for `""`), built through the ONE composition root both
 /// halves boot.
 fn production_engine(ruleset: &str) -> Engine {
+    let mods = production_roster(ruleset);
+    let staff = Arc::new(StaffQueue::new());
+    let mut registry = base_registry();
+    register_server_commands(&mut registry, &staff)
+        .expect("server command registration must not collide");
+    let composition = Engine::compose_modules(registry, mods)
+        .expect("the production composition registers without collision");
+    Engine::from_composition(World::new_minimal(), composition)
+}
+
+/// The module roster `[rulesets].enabled = [ruleset]` composes, straight from
+/// the composition root.
+fn production_roster(ruleset: &str) -> Vec<Box<dyn GameModule>> {
     let mut config = mush_config::config::Config::default();
     config.rulesets.enabled = if ruleset.is_empty() {
         Vec::new()
@@ -113,23 +135,17 @@ fn production_engine(ruleset: &str) -> Engine {
             .global_enabled(false)
             .build(),
     );
-    let mods = boot::game_modules(&config, &llm).expect("the default config composes a roster");
-    let staff = Arc::new(StaffQueue::new());
-    let mut registry = base_registry();
-    register_server_commands(&mut registry, &staff)
-        .expect("server command registration must not collide");
-    let composition = Engine::compose_modules(registry, mods)
-        .expect("the production composition registers without collision");
-    Engine::from_composition(World::new_minimal(), composition)
+    boot::game_modules(&config, &llm).expect("the default config composes a roster")
 }
 
-/// Every module name in one production composition.
-fn module_names(engine: &Engine) -> BTreeSet<String> {
-    engine
-        .registry
-        .namespace_owners()
-        .into_iter()
-        .map(|(_, module)| module.to_string())
+/// Every module name in one production roster, taken from the roster itself
+/// and NOT from the `namespace_owners` map claim 1 is about: deriving the
+/// names from the map under test would make half of that claim true by
+/// construction.
+fn module_names(ruleset: &str) -> BTreeSet<String> {
+    production_roster(ruleset)
+        .iter()
+        .map(|m| m.name().to_string())
         .collect()
 }
 
@@ -169,7 +185,7 @@ fn every_production_module_claims_its_own_namespace() {
             "[{ruleset}] only {} claimed namespaces — the composition did not build",
             owners.len()
         );
-        let modules = module_names(&engine);
+        let modules = module_names(ruleset);
         for (ns, module) in &owners {
             assert!(
                 modules.contains(module.as_str()),
