@@ -4,6 +4,7 @@
 //! This agent intentionally develops independently from in-game NPCs and
 //! `mush-llm`. Its model client, decisions, memory and runner belong to this tool;
 //! shared behavior is compared through the game interface, not shared planning.
+pub mod activity;
 pub mod analysis;
 pub mod attention;
 pub mod budget;
@@ -19,13 +20,16 @@ pub mod contracts;
 pub mod conversation;
 pub mod costs;
 pub mod debugger;
+pub mod evidence;
 pub mod experiment;
 pub mod floor;
 pub mod harness;
 pub mod knowledge;
+pub mod learning;
 pub mod memory;
 pub mod model;
 pub mod models;
+pub mod navigation;
 pub mod organization;
 pub mod probe;
 pub mod regression;

@@ -1,0 +1,23 @@
+{
+  "version":1,"id":"quiet-daily-life","fixture_program":"../../target/debug/examples/campaign-fixture.exe","max_requests":20,
+  "actors":[{"name":"Walker","config":"walker.toml","request_allowance":3},{"name":"PC","config":"pc.toml","request_allowance":0}],
+  "branches":[
+    {"name":"day","steps":[
+      {"actor":"Walker","control":"/send north","wait":{"kind":"command-result"}},
+      {"actor":"Walker","control":"/send south","wait":{"kind":"command-result"}},
+      {"actor":"Walker","control":"/send east","wait":{"kind":"command-result"}},
+      {"actor":"Walker","control":"/send west","wait":{"kind":"command-result"}},
+      {"actor":"PC","control":"/send close-door","wait":{"kind":"command-result"}},
+      {"actor":"Walker","control":"/send north","wait":{"kind":"command-result","contains":"blocked"}},
+      {"actor":"Walker","control":"/activity on","wait":{"kind":"command-result","contains":"Lounge"}},
+      {"actor":"Walker","control":"/activity advance 100","wait":{"kind":"command-result","contains":"Work receipt"}},
+      {"actor":"PC","control":"/send page Walker=Walker, can you talk before you study?","wait":{"kind":"command-result"}},
+      {"actor":"Walker","control":"/state","wait":{"kind":"command-result","contains":"Yes, I can talk"}},
+      {"actor":"Walker","control":"/activity advance 43200000","wait":{"kind":"command-result","contains":"Rehearsal Room"}},
+      {"actor":"Walker","control":"/activity advance 100","wait":{"kind":"command-result","contains":"Study receipt"}},
+      {"actor":"Walker","control":"/pause"},
+      {"actor":"Walker","control":"/learning","wait":{"kind":"learning"}}
+    ]},
+    {"name":"restored","parent":"day","steps":[{"actor":"Walker","control":"/activity","wait":{"kind":"activity"}}]}
+  ]
+}

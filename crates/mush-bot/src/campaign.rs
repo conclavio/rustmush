@@ -104,7 +104,7 @@ impl Manifest {
         }
         for branch in &mut value.branches {
             for step in branch.interventions.iter_mut().chain(&mut branch.steps) {
-                for verb in ["/tape ", "/probe "] {
+                for verb in ["/tape ", "/probe ", "/activity load "] {
                     if let Some(arg) = step.control.strip_prefix(verb) {
                         let mut path = PathBuf::from(arg.trim());
                         resolve(&mut path);
@@ -205,6 +205,10 @@ impl Manifest {
                         "/cost",
                         "/recall",
                         "/social",
+                        "/learning",
+                        "/development",
+                        "/activity",
+                        "/map",
                         "/route",
                         "/capture",
                         "/recap",
@@ -302,6 +306,17 @@ impl Checkpoint {
         // representation for the immutable parent identity; validation below
         // permits only the injected defaults, never unbound new state.
         if let Some(bots) = data["bots"].as_object_mut() {
+            for bot in bots
+                .values_mut()
+                .filter(|b| b["version"] == 1 || b["version"] == 2)
+            {
+                bot.as_object_mut().unwrap().remove("activity");
+                bot.as_object_mut().unwrap().remove("learning");
+                bot["context"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("learning_bytes");
+            }
             for bot in bots.values_mut().filter(|b| b["version"] == 1) {
                 bot.as_object_mut().unwrap().remove("social");
                 bot["context"]
@@ -432,6 +447,7 @@ impl Player {
             .arg(config)
             .arg("--paused")
             .arg("--json-events")
+            .arg("--test-controls")
             .arg("--campaign-epoch")
             .arg(epoch)
             .arg("--campaign-quota")
@@ -651,10 +667,12 @@ async fn run_branch(
         .chain(&mut branch.steps)
         .enumerate()
     {
-        for verb in ["/tape ", "/probe "] {
+        for verb in ["/tape ", "/probe ", "/activity load "] {
             if let Some(arg) = step.control.strip_prefix(verb) {
                 let source: Value = if verb == "/tape " {
                     serde_json::to_value(crate::tape::Source::load(Path::new(arg.trim()))?)?
+                } else if verb == "/activity load " {
+                    serde_json::to_value(crate::activity::Plan::load(Path::new(arg.trim()))?)?
                 } else {
                     serde_json::to_value(crate::probe::Spec::load(Path::new(arg.trim()))?)?
                 };
@@ -748,6 +766,7 @@ async fn run_branch(
             config.model_profile = None;
             config.model = snapshot.model.as_ref().map(|m| m.settings.clone());
             config.conversation = None;
+            config.activities = None;
             let bootstrap_tape = actor_dir.join("restore-bootstrap-tape.json");
             save_json(
                 &bootstrap_tape,
@@ -894,6 +913,7 @@ fn freeze_config(config: &mut crate::config::Config, directory: &Path) -> Result
         .chain(config.model_profiles.iter_mut())
         .chain(config.model_tape.iter_mut())
         .chain(config.conversation.iter_mut())
+        .chain(config.activities.iter_mut())
         .chain(config.knowledge.iter_mut())
         .enumerate()
     {
@@ -941,7 +961,8 @@ pub fn inspect(path: &Path) -> Result<Value> {
             "delta_costs":r["costs"]["session"],"probes":r["probe_results"].as_array().map(|v|v.iter().skip(r["inherited_probe_results"].as_u64().unwrap_or(0) as usize).collect::<Vec<_>>()),
             "inherited_probe_results":r["inherited_probe_results"],"trace":branch.directory.join(name).join("trace.jsonl"),
             "inherited_history":checkpoint.parent,"observation_watermark":checkpoint.bots[name].watermark,
-            "recent_scene":r["state"]["recent"],"social_perspective":checkpoint.bots[name].social})).collect::<Vec<_>>();
+            "recent_scene":r["state"]["recent"],"social_perspective":checkpoint.bots[name].social,
+            "activity":checkpoint.bots[name].activity,"learning":checkpoint.bots[name].learning})).collect::<Vec<_>>();
         let views = checkpoint
             .bots
             .iter()

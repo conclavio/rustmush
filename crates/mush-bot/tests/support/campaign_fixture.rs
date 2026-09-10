@@ -77,9 +77,9 @@ impl Fixture {
             .collect::<Vec<_>>()
             .join("  ");
         let exits = if room == state.studio {
-            "north (Lounge)"
+            "north (Lounge)  east (Lounge side door)"
         } else {
-            "south (Rehearsal Room)"
+            "south (Rehearsal Room)  west (Rehearsal Room side door)"
         };
         format!(
             "{name}(#{})\nA rehearsal space for a band finding its voice.\nContents:\n{contents}\nObvious exits:\n{exits}",
@@ -148,12 +148,27 @@ impl Fixture {
             "look" | "l" => Self::look(&state, &actor),
             "help" => "Owned rehearsal fixture: look, say <text>, pose <action>, page <actor>=<text>, north, south, time. No NPCs, jobs, RNG, builders or autonomous clock. This is a constrained test world.".into(),
             "time" => format!("Game clock: {} (fixed)", state.world.now()),
-            "north" | "south" => {
-                if (verb == "north" && location == Some(state.studio)) || (verb == "south" && location == Some(state.lounge)) {
-                    let destination = if verb == "north" { state.lounge } else { state.studio };
+            "north" | "south" | "east" | "west" => {
+                if verb=="north" && state.world.get(state.studio).unwrap().attrs.get("blocked").is_some() {
+                    "The exit is blocked.".into()
+                } else if (matches!(verb,"north"|"east") && location == Some(state.studio)) || (matches!(verb,"south"|"west") && location == Some(state.lounge)) {
+                    let destination = if matches!(verb,"north"|"east") { state.lounge } else { state.studio };
                     state.world.move_to(id, destination)?;
                     Self::look(&state, &actor)
                 } else { "There is no exit that way.".into() }
+            }
+            "close-door" => {
+                let studio=state.studio;
+                state.world.set_attr(studio,"blocked",mush_core::Attr::text("true",GOD))?;
+                "The north door is now blocked.".into()
+            }
+            "walk-dogs" if location==Some(state.lounge) => {
+                state.world.set_attr(id,"dog_walk_receipt",mush_core::Attr::text("returned",GOD))?;
+                "Work receipt: the dogs have returned from their walk.".into()
+            }
+            "study" if location==Some(state.studio) => {
+                state.world.set_attr(id,"study_receipt",mush_core::Attr::text("exercise",GOD))?;
+                "Study receipt: the exercise has been submitted.".into()
             }
             "say" | "pose" => {
                 recipients = state.connections.iter().filter(|(_, c)| state.world.get(state.players[&c.actor]).unwrap().location == location).map(|(id,_)| *id).collect();

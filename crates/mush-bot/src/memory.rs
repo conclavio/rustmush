@@ -85,7 +85,12 @@ impl RecallSettings {
 fn is_evidence(record: &Record) -> bool {
     matches!(
         record.event,
-        Event::Episode(_) | Event::Belief(_) | Event::Journey(_) | Event::Social(_)
+        Event::Episode(_)
+            | Event::Belief(_)
+            | Event::Journey(_)
+            | Event::Social(_)
+            | Event::Learning(_)
+            | Event::Navigation(_)
     )
 }
 
@@ -178,6 +183,9 @@ pub enum Event {
     WorkingNotes(String),
     Journey(Journey),
     Social(crate::social::Entry),
+    Learning(crate::learning::Entry),
+    Navigation(crate::navigation::Report),
+    Activity(Box<crate::activity::State>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -226,6 +234,8 @@ impl Checkpoint {
 
 pub struct Book {
     social_cache: std::cell::RefCell<Option<(usize, String, crate::social::Ledger)>>,
+    learning_cache: std::cell::RefCell<Option<(usize, String, crate::learning::State)>>,
+    map_cache: std::cell::RefCell<Option<(usize, crate::navigation::Map)>>,
     file: Option<File>,
     path: Option<PathBuf>,
     records: Vec<Record>,
@@ -283,6 +293,8 @@ impl Book {
         self.bytes = bytes.len() as u64;
         self.records = value.records;
         self.social_cache.get_mut().take();
+        self.learning_cache.get_mut().take();
+        self.map_cache.get_mut().take();
         self.current = value.current;
         self.exits = value.exits;
         self.session = self.records.len() as u64 + 1;
@@ -372,6 +384,8 @@ impl Book {
         let session = records.last().map_or(1, |r| r.id + 1);
         let mut book = Self {
             social_cache: Default::default(),
+            learning_cache: Default::default(),
+            map_cache: Default::default(),
             file,
             path,
             records,
@@ -580,6 +594,137 @@ impl Book {
 
     pub fn record(&self, id: u64) -> Option<&Record> {
         id.checked_sub(1).and_then(|n| self.records.get(n as usize))
+    }
+
+    pub fn records(&self) -> &[Record] {
+        &self.records
+    }
+
+    pub fn activity(&self) -> Result<crate::activity::State> {
+        let mut latest = None;
+        for record in &self.records {
+            if let Event::Activity(state) = &record.event {
+                state.validate(&self.records, record.id)?;
+                latest = Some(state);
+            }
+        }
+        Ok(latest.map(|s| *s.clone()).unwrap_or_default())
+    }
+
+    pub fn save_activity(&mut self, state: &crate::activity::State) -> Result<()> {
+        state.validate(&self.records, self.records.len() as u64 + 1)?;
+        self.append(Event::Activity(Box::new(state.clone())))?;
+        Ok(())
+    }
+
+    pub fn learning(&self, observer: &str) -> Result<crate::learning::State> {
+        let cached = self.learning_cache.borrow_mut().take();
+        let (from, mut state) = match cached {
+            Some((n, owner, state)) if owner == observer && n <= self.records.len() => (n, state),
+            _ => (0, crate::learning::State::default()),
+        };
+        for r in &self.records[from..] {
+            if let Event::Learning(entry) = &r.event {
+                state.apply(entry, &self.records, r.id, observer)?;
+            }
+        }
+        *self.learning_cache.borrow_mut() =
+            Some((self.records.len(), observer.into(), state.clone()));
+        Ok(state)
+    }
+
+    pub fn learning_policy(
+        &mut self,
+        policy: crate::learning::Policy,
+        observer: &str,
+    ) -> Result<()> {
+        let entry = crate::learning::Entry {
+            version: 1,
+            update: crate::learning::Update::Policy(policy),
+        };
+        self.learning(observer)?.apply(
+            &entry,
+            &self.records,
+            self.records.len() as u64 + 1,
+            observer,
+        )?;
+        self.append(Event::Learning(entry))?;
+        Ok(())
+    }
+
+    pub fn annotate_learning(
+        &mut self,
+        value: Option<Value>,
+        observer: &str,
+    ) -> Result<Vec<String>> {
+        let Some(value) = value else {
+            return Ok(vec![]);
+        };
+        let Some(values) = value.as_array().filter(|v| v.len() <= 8) else {
+            return Ok(vec![
+                "learning annotations must be an array of at most 8 updates".into(),
+            ]);
+        };
+        let mut feedback = vec![];
+        for value in values {
+            let update = match serde_json::from_value::<crate::learning::Update>(value.clone()) {
+                Ok(update) if !matches!(update, crate::learning::Update::Policy(_)) => update,
+                _ => {
+                    feedback.push("invalid learning annotation; policies are runner-owned".into());
+                    continue;
+                }
+            };
+            let entry = crate::learning::Entry { version: 1, update };
+            match self.learning(observer)?.apply(
+                &entry,
+                &self.records,
+                self.records.len() as u64 + 1,
+                observer,
+            ) {
+                Ok(()) => {
+                    self.append(Event::Learning(entry))?;
+                }
+                Err(error) => feedback.push(error.to_string()),
+            }
+        }
+        Ok(feedback)
+    }
+
+    pub fn annotate_navigation(&mut self, value: Option<Value>) -> Result<Vec<String>> {
+        let Some(value) = value else {
+            return Ok(vec![]);
+        };
+        let Some(values) = value.as_array().filter(|v| v.len() <= 8) else {
+            return Ok(vec!["navigation requires at most 8 cited reports".into()]);
+        };
+        let mut feedback = vec![];
+        for value in values {
+            let report = match serde_json::from_value::<crate::navigation::Report>(value.clone()) {
+                Ok(report) => report,
+                Err(_) => {
+                    feedback.push("invalid navigation report".into());
+                    continue;
+                }
+            };
+            match report.validate(&self.records, self.records.len() as u64 + 1) {
+                Ok(()) => {
+                    self.append(Event::Navigation(report))?;
+                }
+                Err(error) => feedback.push(error.to_string()),
+            }
+        }
+        Ok(feedback)
+    }
+
+    pub fn map(&self) -> crate::navigation::Map {
+        if let Some((n, map)) = &*self.map_cache.borrow()
+            && *n == self.records.len()
+        {
+            return map.clone();
+        }
+        let map = crate::navigation::Map::project(&self.records);
+        *self.map_cache.borrow_mut() = Some((self.records.len(), map.clone()));
+        map
     }
 
     fn active_beliefs(&self) -> Vec<(&Record, &Belief)> {
@@ -956,6 +1101,19 @@ impl Book {
             };
             let mut group = vec![(record, reason)];
             match &record.event {
+                Event::Learning(e) => group.extend(
+                    e.update
+                        .evidence()
+                        .iter()
+                        .filter_map(|e| self.record(e.episode))
+                        .map(|r| (r, "learning_evidence")),
+                ),
+                Event::Navigation(e) => group.extend(
+                    e.evidence
+                        .iter()
+                        .filter_map(|e| self.record(e.episode))
+                        .map(|r| (r, "navigation_evidence")),
+                ),
                 Event::Social(s) => group.extend(
                     s.update
                         .evidence()
@@ -1017,6 +1175,8 @@ impl Book {
         let mut incomplete_count: usize = 0;
         for record in &selected {
             let evidence: Vec<_> = match &record.event {
+                Event::Learning(e) => e.update.evidence().iter().map(|e| e.episode).collect(),
+                Event::Navigation(e) => e.evidence.iter().map(|e| e.episode).collect(),
                 Event::Social(s) => s.update.evidence().iter().map(|e| e.episode).collect(),
                 Event::Belief(belief) => belief.evidence.iter().map(|e| e.episode).collect(),
                 Event::Journey(journey) => journey.evidence.clone(),
@@ -1065,6 +1225,7 @@ impl Book {
 
     pub fn route(&self, destination: &str) -> Value {
         let target = destination.trim().to_lowercase();
+        let map = self.map();
         let mut places = BTreeMap::new();
         // Latest observation wins when the same exit was seen leading elsewhere.
         let mut edges = BTreeMap::new();
@@ -1075,7 +1236,9 @@ impl Book {
             {
                 places.insert(place.dbref.clone(), place.clone());
             }
-            if let Event::Journey(journey) = &record.event {
+            if let Event::Journey(journey) = &record.event
+                && map.usable(&journey.from.dbref, &journey.command, record.id)
+            {
                 edges.insert(
                     (journey.from.dbref.clone(), journey.command.clone()),
                     (record.id, journey),

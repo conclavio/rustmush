@@ -74,6 +74,10 @@ pub struct Snapshot {
     /// Required in v2. Legacy v1 checkpoints have no social journal events.
     #[serde(default)]
     pub social: Option<crate::social::Ledger>,
+    #[serde(default)]
+    pub learning: Option<crate::learning::State>,
+    #[serde(default)]
+    pub activity: Option<crate::activity::State>,
     pub attention: crate::attention::Checkpoint,
     pub knowledge: crate::knowledge::Knowledge,
     pub conversation: crate::conversation::Tracker,
@@ -110,7 +114,7 @@ impl Snapshot {
         Ok(revision(&serde_json::to_vec(self)?))
     }
     pub fn validate(&self) -> Result<()> {
-        if ![1, 2].contains(&self.version)
+        if ![1, 2, 3].contains(&self.version)
             || !crate::organization::identifier(&self.epoch)
             || self.actor.is_empty()
             || self.actor.len() > 200
@@ -131,7 +135,7 @@ impl Snapshot {
         self.memory.validate()?;
         let projected = crate::social::Ledger::project(&self.memory.records, &self.actor)?;
         match (self.version, &self.social) {
-            (2, Some(social))
+            (2 | 3, Some(social))
                 if social.version == 1
                     && serde_json::to_value(social)? == serde_json::to_value(&projected)? => {}
             (1, None)
@@ -148,6 +152,59 @@ impl Snapshot {
                     "unsupported or inconsistent required social checkpoint contribution".into(),
                 );
             }
+        }
+        let learned = crate::learning::State::project(&self.memory.records, &self.actor)?;
+        for r in &self.memory.records {
+            if let crate::memory::Event::Activity(state) = &r.event {
+                state.validate(&self.memory.records, r.id)?;
+            }
+            if let crate::memory::Event::Navigation(report) = &r.event {
+                report.validate(&self.memory.records, r.id)?;
+            }
+        }
+        if self.version == 3 {
+            let activity = self
+                .activity
+                .as_ref()
+                .ok_or("missing required activity checkpoint contribution")?;
+            activity.validate(&self.memory.records, self.memory.records.len() as u64 + 1)?;
+            if activity.pending.is_some() {
+                return Err("checkpoint has an unsettled activity".into());
+            }
+            if self
+                .learning
+                .as_ref()
+                .is_none_or(|v| serde_json::to_value(v).ok() != serde_json::to_value(&learned).ok())
+            {
+                return Err(
+                    "missing or inconsistent required learning checkpoint contribution".into(),
+                );
+            }
+            let latest = self.memory.records.iter().rev().find_map(|r| {
+                if let crate::memory::Event::Activity(v) = &r.event {
+                    Some(v)
+                } else {
+                    None
+                }
+            });
+            if latest
+                .is_none_or(|v| serde_json::to_value(v).ok() != serde_json::to_value(activity).ok())
+            {
+                return Err("activity checkpoint disagrees with journal".into());
+            }
+        } else if self.learning.is_some()
+            || self.activity.is_some()
+            || self.context.learning_bytes != crate::experiment::Context::default().learning_bytes
+            || self.memory.records.iter().any(|r| {
+                matches!(
+                    r.event,
+                    crate::memory::Event::Activity(_)
+                        | crate::memory::Event::Learning(_)
+                        | crate::memory::Event::Navigation(_)
+                )
+            })
+        {
+            return Err("legacy checkpoint cannot contain wave 4 state".into());
         }
         crate::attention::Attention::restore(self.attention.clone())?;
         self.knowledge.validate_snapshot()?;

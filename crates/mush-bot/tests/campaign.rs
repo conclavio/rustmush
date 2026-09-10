@@ -152,6 +152,16 @@ async fn three_playable_continuations_keep_shared_history_private_knowledge_and_
     let mut legacy = serde_json::to_value(&parent).unwrap();
     for bot in legacy["bots"].as_object_mut().unwrap().values_mut() {
         bot["version"] = json!(1);
+        bot.as_object_mut().unwrap().remove("learning");
+        bot.as_object_mut().unwrap().remove("activity");
+        bot["context"]
+            .as_object_mut()
+            .unwrap()
+            .remove("learning_bytes");
+        // This prefix has no activity execution: only the new final contribution.
+        let records = bot["memory"]["records"].as_array_mut().unwrap();
+        assert_eq!(records.last().unwrap()["event"]["type"], "activity");
+        records.pop();
         bot.as_object_mut().unwrap().remove("social");
         bot["context"]
             .as_object_mut()

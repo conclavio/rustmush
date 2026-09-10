@@ -1,0 +1,12 @@
+activities = 'dog-walker.json'
+character = 'walker-character.json'
+model_tape = 'reply.json'
+conversation = 'conversation.json'
+
+[agent]
+settle_ms = 50
+observation_ms = 500
+bootstrap = ['help', 'look']
+
+[attention]
+cooldown_ms = 500

@@ -1,0 +1,20 @@
+{
+  "version":1,"id":"guitar-lessons","fixture_program":"../../target/debug/examples/campaign-fixture.exe","max_requests":80,
+  "actors":[{"name":"Bot","config":"pc.toml","request_allowance":8},{"name":"PC","config":"pc.toml","request_allowance":0}],
+  "branches":[
+    {"name":"pc-teaches","steps":[
+      {"actor":"PC","control":"/send say Show me your counterpoint.","wait":{"kind":"command-result"}},
+      {"actor":"PC","control":"/send say Let the open string ring as you change position.","wait":{"kind":"command-result"}},
+      {"actor":"Bot","control":"/send pose tries changing position with the open string ringing.","wait":{"kind":"command-result"}},
+      {"actor":"PC","control":"/send say Correction: mute the open string before changing position.","wait":{"kind":"command-result"}},
+      {"actor":"Bot","control":"/send pose mutes the open string before changing position.","wait":{"kind":"command-result"}},
+      {"actor":"PC","control":"/send say Good. Your position change is clean now.","wait":{"kind":"command-result"}}
+    ]},
+    {"name":"bot-teaches","parent":"pc-teaches","steps":[
+      {"actor":"Bot","control":"/send say Play your first counterpoint for me.","wait":{"kind":"command-result"}},
+      {"actor":"Bot","control":"/send say Mute the open string before changing position.","wait":{"kind":"command-result"}},
+      {"actor":"PC","control":"/send pose mutes the open string and changes position.","wait":{"kind":"command-result"}},
+      {"actor":"Bot","control":"/send say Good. The counterpoint is clearer.","wait":{"kind":"command-result"}}
+    ]}
+  ]
+}

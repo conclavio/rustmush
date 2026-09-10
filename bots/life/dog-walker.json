@@ -1,0 +1,14 @@
+{
+  "version":1,
+  "clock":"manual_test",
+  "period_ms":86400000,
+  "limits":{"decision_ms":50,"action_ms":50,"unsolicited_speech_ms":60000,"max_decisions":12,"max_actions":8,"max_unsolicited_speech":0},
+  "routines":[
+    {"id":"work","procedure":"walk-clients-dogs","destination":"Lounge","start_ms":0,"end_ms":43200000,"priority":20},
+    {"id":"study","procedure":"evening-exercise","destination":"Rehearsal Room","start_ms":43200000,"end_ms":86400000,"priority":10,"requires":["work"]}
+  ],
+  "procedures":[
+    {"id":"walk-clients-dogs","revision":1,"applicability":"Owned rehearsal fixture's dog-walking work receipt; adapt to a live game's documented mechanics.","source":[],"failure":"suspend","steps":[{"command":"walk-dogs","expect":["Work receipt: the dogs have returned from their walk."],"reject":["Unsupported rehearsal-fixture command. Type help."]}]},
+    {"id":"evening-exercise","revision":1,"applicability":"Owned fixture exercise submission; no skill award is inferred.","source":[],"failure":"suspend","steps":[{"command":"study","expect":["Study receipt: the exercise has been submitted."]}]}
+  ]
+}

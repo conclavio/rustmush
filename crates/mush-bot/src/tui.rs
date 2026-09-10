@@ -147,7 +147,7 @@ struct View {
     capture: Value,
 }
 
-const PANELS: [&str; 12] = [
+const PANELS: [&str; 15] = [
     "State",
     "Costs",
     "Memory",
@@ -160,6 +160,9 @@ const PANELS: [&str; 12] = [
     "Budget",
     "Conversation",
     "Social perspective",
+    "Activities",
+    "Learning",
+    "Map",
 ];
 
 impl View {
@@ -197,6 +200,10 @@ impl View {
                 "prompt-inspection",
                 "group",
                 "social",
+                "activity",
+                "learning",
+                "development",
+                "map",
                 "character-state",
                 "context",
                 "debug",
@@ -278,6 +285,9 @@ impl View {
             "budget",
             "conversation",
             "social",
+            "activity",
+            "learning",
+            "map",
         ][self.panel];
         let info = if self.panel == 6 {
             self.last_result.clone()
@@ -658,7 +668,7 @@ struct CastView {
     pending_control: Option<(usize, u64)>,
 }
 
-const CAST_PANELS: usize = 9;
+const CAST_PANELS: usize = 10;
 
 impl CastView {
     fn sync_debug(&mut self, state: crate::cast_debug::Snapshot) {
@@ -964,6 +974,10 @@ impl CastView {
                 panes[0],
             );
             let (title, value) = match self.panel {
+                9 => (
+                    "Selected actor activities and learning",
+                    serde_json::json!({"activity":actor.state["activity"],"learning":actor.state["learning"],"map":actor.state["map"]}),
+                ),
                 8 => (
                     "Selected actor social perspective",
                     actor.state["social"].clone(),

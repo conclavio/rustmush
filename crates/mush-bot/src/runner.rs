@@ -60,6 +60,10 @@ pub const REPL_HELP: &str = "Local controls:\n\
   /inspect [preview [question]] Show last request, or prepare a free preview\n\
   /group                Show this actor's authored group affiliations\n\
   /social [query|save <new.json>] Inspect social memory or export this perspective\n\
+  /map                  Inspect traveled, reported and invalidated routes\n\
+  /learning [query|save <new.json>] Inspect lessons and development proposals\n\
+  /development [set <json>] Inspect or set learned-development policy\n\
+  /activity [load|save <json>|on|off|retry|advance <ms>] Inspect/control routines\n\
   /character-state [set <json>|clear] Inspect or change a temporary condition\n\
   /context [load|save <json>] Inspect context controls or load/save settings\n\
   /debug [load|save <json>]   Inspect breakpoints/watches or load/save settings\n\
@@ -119,6 +123,9 @@ pub struct Report {
     pub character: Character,
     pub affiliations: Option<crate::organization::Affiliations>,
     pub social: crate::social::Ledger,
+    pub activity: crate::activity::State,
+    pub learning: crate::learning::State,
+    pub map: crate::navigation::Map,
     pub character_state: crate::character::Condition,
     pub elapsed_ms: u128,
     pub success: bool,
@@ -221,6 +228,8 @@ impl Pending {
 }
 
 struct App {
+    activity: crate::activity::State,
+    activity_tick: Instant,
     checkpoint: Option<Boundary>,
     inherited_usage: crate::budget::Usage,
     resume_status: Option<String>,
@@ -456,6 +465,27 @@ pub async fn run_controlled(
     }
     // Validate durable social versions/evidence before connecting or bootstrapping.
     memories.social(&config.ssh.username)?;
+    memories.learning(&config.ssh.username)?;
+    for record in memories.records() {
+        if let crate::memory::Event::Navigation(report) = &record.event {
+            report.validate(memories.records(), record.id)?;
+        }
+    }
+    let mut activity = memories.activity()?;
+    if restore.is_none() {
+        activity.reconnect();
+        if let Some(path) = &config.activities {
+            activity.install(crate::activity::Plan::load(path)?, memories.records())?;
+        }
+    }
+    if activity
+        .plan
+        .as_ref()
+        .is_some_and(|p| p.clock == crate::activity::Clock::ManualTest)
+        && !options.test_controls
+    {
+        return Err("manual_test activities require explicit --test-controls".into());
+    }
     let attention = Attention::new(config.attention.clone(), &character, &config.ssh.username);
     let attention_enabled = config.attention.enabled;
     let brain = if scenario.is_none() {
@@ -540,6 +570,8 @@ pub async fn run_controlled(
     }
     let script = scenario.clone();
     let mut app = App {
+        activity,
+        activity_tick: now,
         checkpoint: None,
         inherited_usage: Default::default(),
         resume_status: None,
@@ -636,6 +668,9 @@ pub async fn run_controlled(
         prompts: app.prompts.clone(),
         affiliations: app.affiliations.clone(),
         social: app.memories.social(&app.config.ssh.username)?,
+        learning: app.memories.learning(&app.config.ssh.username)?,
+        map: app.memories.map(),
+        activity: app.activity.clone(),
         character_state: app.character_state.clone(),
         context: app.context_settings.clone(),
         debug: app.debug.clone(),
@@ -673,6 +708,8 @@ fn stdin_lines() -> mpsc::Receiver<String> {
 
 impl App {
     fn restore(&mut self, value: crate::checkpoint::Snapshot) -> Result<()> {
+        self.activity = value.activity.unwrap_or_default();
+        self.activity.cancel_unsent();
         self.character = value.character;
         self.affiliations = value.affiliations;
         self.character_state = value.condition;
@@ -726,7 +763,7 @@ impl App {
 
     fn checkpoint_snapshot(&self, resume_status: String) -> Result<crate::checkpoint::Snapshot> {
         let value = crate::checkpoint::Snapshot {
-            version: 2,
+            version: 3,
             actor: self.config.ssh.username.clone(),
             epoch: self
                 .options
@@ -741,6 +778,8 @@ impl App {
             condition: self.character_state.clone(),
             memory: self.memories.checkpoint()?,
             social: Some(self.memories.social(&self.config.ssh.username)?),
+            learning: Some(self.memories.learning(&self.config.ssh.username)?),
+            activity: Some(self.activity.clone()),
             attention: self.attention.checkpoint()?,
             knowledge: self.knowledge.clone(),
             conversation: self.conversation.clone(),
@@ -803,6 +842,7 @@ impl App {
             let status = boundary.resume_status.clone();
             self.memories.finish_command()?;
             self.attention.flush_if_quiet(0);
+            self.memories.save_activity(&self.activity)?;
             let snapshot = self.checkpoint_snapshot(status)?;
             save_json(&path, &snapshot)?;
             let checked = crate::checkpoint::Snapshot::load(&path)?;
@@ -863,6 +903,8 @@ impl App {
             ("character".into(), json!({"profile":self.character,"affiliations":self.affiliations,"condition":self.character_state})),
             ("memory".into(), self.memories.bookmark()?),
             ("social".into(), serde_json::to_value(self.memories.social(&self.config.ssh.username)?)?),
+            ("learning".into(), serde_json::to_value(self.memories.learning(&self.config.ssh.username)?)?),
+            ("activity".into(), serde_json::to_value(&self.activity)?),
             ("attention".into(), self.attention.bookmark()),
             ("conversation".into(), self.conversation_snapshot()),
             ("configuration".into(), json!({"prompts":self.prompts,"context":self.context_settings,"debug":self.debug,
@@ -896,6 +938,7 @@ impl App {
             "observation_watermark":self.observation_revision,"output_watermark":self.log.sequence,
             "group_affiliations":self.affiliations,
             "social":self.memories.social(&self.config.ssh.username)?,
+            "learning":self.memories.learning(&self.config.ssh.username)?,"activity":self.activity,"map":self.memories.map(),
             "pending_probe":self.pending_probe.as_ref().map(|p| &p.id),
             "last_probe":self.probe_results.back(), "probe_results_omitted":self.probe_results_omitted,
             "character_state":self.character_state,
@@ -1125,6 +1168,7 @@ impl App {
     }
 
     fn cancel_model(&mut self) -> Result<()> {
+        self.activity.cancel_unsent();
         self.cancel_speech("runner cancelled pending reply")?;
         if let Some(probe) = self.pending_probe.take() {
             self.log.record(
@@ -1140,6 +1184,7 @@ impl App {
     }
 
     fn pause(&mut self) -> Result<()> {
+        self.activity.cancel_unsent();
         self.social_followup = false;
         self.social_started = None;
         self.state.status = "paused".into();
@@ -1192,6 +1237,8 @@ impl App {
             "character_profile": self.character,
             "group_affiliations": self.affiliations.as_ref().map(crate::organization::Affiliations::prompt_view),
             "social_context": self.memories.social(&self.config.ssh.username)?.context(recall_query,self.context_settings.social_bytes),
+            "learning_context": self.memories.learning(&self.config.ssh.username)?.context(recall_query,self.context_settings.learning_bytes),
+            "activity_context": self.activity.context(),
             "character_state": self.character_state,
             "recent_speech": self.attention.context(),
             "conversation_policy": {"max_utterance_chars":self.conversation.settings.max_utterance_chars,
@@ -1378,6 +1425,21 @@ impl App {
             }
             self.session.send(command).await?;
             self.memories.sent(command)?;
+            if self
+                .activity
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.sent.is_none() && &p.command == command)
+            {
+                let id = self
+                    .memories
+                    .records()
+                    .last()
+                    .ok_or("sent command journal missing")?
+                    .id;
+                self.activity.dispatched(id);
+                self.memories.save_activity(&self.activity)?;
+            }
             self.state.commands_sent += 1;
             self.log.event("send", command)?;
             self.log.command_sequence = Some(self.log.sequence);
@@ -1398,6 +1460,18 @@ impl App {
     }
 
     async fn tick(&mut self) -> Result<()> {
+        let activity_now = Instant::now();
+        let delta = activity_now.duration_since(self.activity_tick).as_millis() as u64;
+        self.activity_tick = activity_now;
+        if self.checkpoint.is_none()
+            && self
+                .activity
+                .plan
+                .as_ref()
+                .is_some_and(|p| p.clock == crate::activity::Clock::SessionMonotonic)
+        {
+            self.activity.advance(delta)?;
+        }
         if (self.log.events.is_some() || self.options.json_events)
             && self.last_snapshot.elapsed() >= Duration::from_millis(500)
         {
@@ -1468,6 +1542,11 @@ impl App {
                 )?;
             }
             self.memories.finish_command()?;
+            if self.activity.reconcile(self.memories.records(), true) {
+                self.memories.save_activity(&self.activity)?;
+                self.log
+                    .record("activity", serde_json::to_value(&self.activity)?)?;
+            }
             if let Some(command) = &pending.command
                 && (command == "help" || command.starts_with("help "))
             {
@@ -1506,6 +1585,49 @@ impl App {
             self.state.status = "done".into();
             self.state.outcome = "All scenario assertions passed".into();
             return self.log.event("done", &self.state.outcome);
+        }
+        if self.state.status == "listening"
+            && self.model_task.is_none()
+            && self.staged.is_none()
+            && !self.attention.has_pending()
+            && !self.social_followup
+            && self.conversation.settings.mode != crate::conversation::Mode::Spectator
+        {
+            // A speech intent may have been invalidated by ambient output.
+            self.activity.cancel_unsent();
+            let before = (
+                self.activity.decisions,
+                self.activity.suspended,
+                self.activity.active.is_some(),
+            );
+            let command = self.activity.choose(&self.memories);
+            if command.is_some()
+                || before
+                    != (
+                        self.activity.decisions,
+                        self.activity.suspended,
+                        self.activity.active.is_some(),
+                    )
+            {
+                self.memories.save_activity(&self.activity)?;
+                self.log
+                    .record("activity", serde_json::to_value(&self.activity)?)?;
+            }
+            if let Some(command) = command {
+                let decision = Decision {
+                    action: Action::Command,
+                    command: Some(command),
+                    summary: "Performing the next scheduled activity step.".into(),
+                    memory: None,
+                    wait_ms: 0,
+                    query: None,
+                    beliefs: None,
+                    social: None,
+                    learning: None,
+                    navigation: None,
+                };
+                return self.receive_decision(decision).await;
+            }
         }
         if self.model_task.is_none()
             && now >= self.next_turn
@@ -1669,8 +1791,11 @@ impl App {
     }
 
     async fn apply(&mut self, decision: Decision) -> Result<()> {
+        let routine_action = self.activity.pending.as_ref().is_some_and(|p| {
+            p.sent.is_none() && decision.command.as_deref() == Some(p.command.as_str())
+        });
         self.capture_observation = None;
-        if self.character_state.advance() {
+        if !routine_action && self.character_state.advance() {
             self.log
                 .record("character-state-expired", json!(self.character_state))?;
         }
@@ -1678,12 +1803,27 @@ impl App {
             .record("decision", serde_json::to_value(&decision)?)?;
         self.log.event("summary", &decision.summary)?;
         self.memories.flush()?;
+        // A deterministic step is not a model/social turn. It must not inherit
+        // a prior exchange's follow-up state, acknowledge speech or age a mood.
+        if routine_action {
+            if self.single_step {
+                self.state.status = "paused".into();
+                self.single_step = false;
+            }
+            return self.send(decision.command, None).await;
+        }
         self.belief_feedback = self.memories.annotate(decision.beliefs)?;
         self.belief_feedback.extend(self.memories.annotate_social(
             decision.social,
             &self.config.ssh.username,
             &self.conversation.settings.scope,
         )?);
+        self.belief_feedback.extend(
+            self.memories
+                .annotate_learning(decision.learning, &self.config.ssh.username)?,
+        );
+        self.belief_feedback
+            .extend(self.memories.annotate_navigation(decision.navigation)?);
         for feedback in &self.belief_feedback {
             self.log.event("memory-feedback", feedback)?;
         }
@@ -1963,6 +2103,102 @@ impl App {
                 };
                 self.log
                     .event("social", &serde_json::to_string_pretty(&view)?)?;
+            }
+            "/map" => {
+                self.memories.flush()?;
+                self.log
+                    .event("map", &serde_json::to_string_pretty(&self.memories.map())?)?;
+            }
+            "/learning" => {
+                self.memories.flush()?;
+                let state = self.memories.learning(&self.config.ssh.username)?;
+                let view = if let Some(path) = arg.strip_prefix("save ") {
+                    save_json(std::path::Path::new(path.trim()), &state)?;
+                    json!({"saved":path.trim()})
+                } else if arg.is_empty() {
+                    serde_json::to_value(state)?
+                } else {
+                    state.context(arg, self.context_settings.learning_bytes)
+                };
+                self.log
+                    .event("learning", &serde_json::to_string_pretty(&view)?)?;
+            }
+            "/development" => {
+                if let Some(source) = arg.strip_prefix("set ") {
+                    let policy: crate::learning::Policy = serde_json::from_str(source)?;
+                    policy.validate()?;
+                    self.pause()?;
+                    self.memories
+                        .learning_policy(policy, &self.config.ssh.username)?;
+                } else if !arg.is_empty() {
+                    return Err("use /development or /development set <json>".into());
+                }
+                self.log.event(
+                    "development",
+                    &serde_json::to_string_pretty(
+                        &self.memories.learning(&self.config.ssh.username)?,
+                    )?,
+                )?;
+            }
+            "/activity" => {
+                if let Some(path) = arg.strip_prefix("load ") {
+                    if self.pending.is_some() {
+                        return Err(
+                            "wait for the pending command before replacing activities".into()
+                        );
+                    }
+                    let plan = crate::activity::Plan::load(std::path::Path::new(path.trim()))?;
+                    if plan.clock == crate::activity::Clock::ManualTest
+                        && !self.options.test_controls
+                    {
+                        return Err("manual_test clock requires --test-controls".into());
+                    }
+                    let mut next = self.activity.clone();
+                    next.install(plan, self.memories.records())?;
+                    self.pause()?;
+                    self.activity = next;
+                    self.memories.save_activity(&self.activity)?;
+                } else if let Some(path) = arg.strip_prefix("save ") {
+                    save_json(
+                        std::path::Path::new(path.trim()),
+                        self.activity.plan.as_ref().ok_or("no activity plan")?,
+                    )?;
+                } else if let Some(delta) = arg.strip_prefix("advance ") {
+                    if !self.options.test_controls
+                        || self
+                            .activity
+                            .plan
+                            .as_ref()
+                            .is_none_or(|p| p.clock != crate::activity::Clock::ManualTest)
+                    {
+                        return Err("advance requires a manual_test scheduler and --test-controls; it does not change the game clock".into());
+                    }
+                    self.activity.advance(delta.parse()?)?;
+                    self.memories.save_activity(&self.activity)?;
+                } else if matches!(arg, "on" | "off" | "retry") {
+                    if self.activity.plan.is_none() {
+                        return Err("load an activity plan first".into());
+                    }
+                    if arg == "retry" {
+                        if self.pending.is_some() {
+                            return Err("wait for the pending command before retry".into());
+                        }
+                        self.activity.suspended = false;
+                        self.activity.reason = "runner authorized retry after inspection".into();
+                    } else {
+                        self.activity.enabled = arg == "on";
+                        if arg == "off" {
+                            self.pause()?;
+                        } else if self.state.status == "paused" {
+                            self.state.status = "listening".into();
+                        }
+                    }
+                    self.memories.save_activity(&self.activity)?;
+                } else if !arg.is_empty() {
+                    return Err("use /activity [load|save <json>|on|off|retry|advance <ms>]".into());
+                }
+                self.log
+                    .event("activity", &serde_json::to_string_pretty(&self.activity)?)?;
             }
             "/inspect" => {
                 let inspection = if arg == "preview" || arg.starts_with("preview ") {

@@ -1194,6 +1194,10 @@ identical assertions.
 
 ## Regression gates for CI
 
+For daily plans, route invalidation, guitar lessons and learned character growth,
+see [activities and learning](bot-life.md). The bot and cast TUI expose the same
+actor-local state as `/activity`, `/map`, `/learning` and `/development`.
+
 After running baseline and candidate experiments, compare their saved summaries:
 
 ```powershell

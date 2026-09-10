@@ -1,7 +1,9 @@
 # Five waves for social play and branching campaigns
 
-Status: wave 1, the constrained wave 2 foundation, and the wave 3 social foundation
-implemented, 2026-09-10; waves 4–5 remain proposed.
+Status: wave 1, the constrained wave 2 foundation, wave 3 social foundation and
+wave 4 daily-life/learning foundation implemented, 2026-09-10. Wave 5 remains proposed.
+[Wave 4 behavior and limits](bot-life.md) and [its plan and reviews](bot-wave4-plan.md)
+cover quiet routines, map invalidation, cited lessons and bounded character growth.
 [Wave 3 behavior and limits](bot-social.md) and [its plan and reviews](bot-wave3-plan.md)
 cover scoped background, relationships, observed commitments and perspective inspection.
 [Wave 2 behavior and limits](bot-campaigns.md) includes

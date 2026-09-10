@@ -125,7 +125,7 @@ async fn band_negotiates_through_ssh_and_preserves_private_perspectives_across_b
     let again = checkpoint(&output, "parent-again");
     let withdrawal = checkpoint(&output, "withdrawal");
     for (actor, snapshot) in &parent.bots {
-        assert_eq!(snapshot.version, 2);
+        assert_eq!(snapshot.version, 3);
         let social = snapshot.social.as_ref().unwrap();
         assert_eq!(
             social.commitments["arrangement"].participants["Bassist"].response,

@@ -16,6 +16,7 @@ pub struct Config {
     pub debug: Option<PathBuf>,
     pub budget: Option<PathBuf>,
     pub conversation: Option<PathBuf>,
+    pub activities: Option<PathBuf>,
     pub model_tape: Option<PathBuf>,
     pub costs: crate::costs::Settings,
     pub attention: crate::attention::Settings,
@@ -186,6 +187,7 @@ impl Config {
             .chain(config.debug.iter_mut())
             .chain(config.budget.iter_mut())
             .chain(config.conversation.iter_mut())
+            .chain(config.activities.iter_mut())
             .chain(config.model_tape.iter_mut())
             .chain(std::iter::once(&mut config.costs.directory))
         {
