@@ -152,6 +152,9 @@ async fn three_playable_continuations_keep_shared_history_private_knowledge_and_
     let mut legacy = serde_json::to_value(&parent).unwrap();
     for bot in legacy["bots"].as_object_mut().unwrap().values_mut() {
         bot["version"] = json!(1);
+        for field in ["mission", "playtest", "playtest_feedback"] {
+            bot.as_object_mut().unwrap().remove(field);
+        }
         bot.as_object_mut().unwrap().remove("learning");
         bot.as_object_mut().unwrap().remove("activity");
         bot["context"]

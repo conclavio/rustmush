@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "id": "conflicting-encounter",
+  "fixture_program": "../../target/debug/examples/campaign-fixture.exe",
+  "max_requests": 10,
+  "actors": [
+    {
+      "name": "Subject",
+      "config": "conflicting-subject.toml",
+      "request_allowance": 1
+    },
+    {
+      "name": "Patron",
+      "config": "conflicting.toml",
+      "request_allowance": 0
+    },
+    {
+      "name": "QuietPatron",
+      "config": "bystander.toml",
+      "request_allowance": 0
+    }
+  ],
+  "branches": [
+    {
+      "name": "encounter",
+      "steps": [
+        {
+          "actor": "Patron",
+          "control": "/send say Play something loud right now.",
+          "wait": {
+            "kind": "command-result"
+          }
+        },
+        {
+          "actor": "QuietPatron",
+          "control": "/send say I need quiet to study. Please do not rehearse loudly.",
+          "wait": {
+            "kind": "command-result"
+          }
+        },
+        {
+          "actor": "Subject",
+          "control": "/goal Negotiate incompatible requests for rehearsal and quiet study."
+        },
+        {
+          "actor": "Subject",
+          "control": "/step",
+          "wait": {
+            "kind": "command-result"
+          }
+        }
+      ]
+    }
+  ]
+}

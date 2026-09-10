@@ -1,0 +1,11 @@
+model_tape = 'idle.json'
+conversation = 'conversation.json'
+
+[agent]
+settle_ms = 50
+observation_ms = 500
+bootstrap = ['help', 'look']
+max_steps = 10
+
+[attention]
+enabled = false

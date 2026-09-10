@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "replies": [
+    {
+      "delay_ms": 100,
+      "content": "{\"action\": \"done\", \"summary\": \"Operator controls this actor through public commands.\"}"
+    }
+  ]
+}

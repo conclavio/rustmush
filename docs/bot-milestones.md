@@ -115,3 +115,22 @@ lore eligibility, temporary state, voice selection and swappable local recall.
 A general plugin execution pipeline and semantic recall/summary jobs remain future work. Decisions
 about autonomous group authority, campaign persistence, extension execution and
 setting knowledge exports are recorded in [decision points](bot-decisions.md).
+
+
+## Wave 5: adversarial playtesting and usability review
+
+The [playtesting guide](bot-playtesting.md) covers JSON testing missions, an exact
+command permission gate, actor-local coverage, goal feedback, refutation batches,
+operator triage and a consolidated actionable backlog. Feedback and refutation
+use separate model-cost purposes and cannot act in the game or change IC beliefs.
+
+The adversarial fixture catalog includes unreliable guides, hecklers, withholding
+teammates and conflicting patrons. Fresh tape campaigns can be reduced by optional
+steps, actors and response delays, with protected setup, bounded trials and a final
+exported-regression rerun. Blind packets keep the reveal mapping separate and
+support a human rating TUI and headless validation. v4 actor saves preserve mission
+allowances and reviews; old campaign hashes remain compatible.
+
+The [wave 5 plan and reviews](bot-wave5-plan.md) records validation and deliberate
+limits: greedy reduction without global minimality, operator triage without
+semantic-proof claims, and live-model/human evaluations separate from fixture tapes.

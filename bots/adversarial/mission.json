@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "id": "travel-discovery",
+  "goal": "Find a route to the Lounge. Check help if needed and verify arrival.",
+  "permission": {
+    "type": "owned_fixture"
+  },
+  "authorization": "Operator-owned rehearsal test world; bounded travel discovery only.",
+  "max_actions": 4,
+  "commands": [
+    "help",
+    "look",
+    "north",
+    "east"
+  ],
+  "expectations": [
+    {
+      "command": "north",
+      "line": "Lounge(#3)",
+      "basis": "player_assumption"
+    }
+  ]
+}

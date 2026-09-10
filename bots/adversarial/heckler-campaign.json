@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "id": "heckler-encounter",
+  "fixture_program": "../../target/debug/examples/campaign-fixture.exe",
+  "max_requests": 10,
+  "actors": [
+    {
+      "name": "Subject",
+      "config": "heckler-subject.toml",
+      "request_allowance": 1
+    },
+    {
+      "name": "Heckler",
+      "config": "heckler.toml",
+      "request_allowance": 0
+    }
+  ],
+  "branches": [
+    {
+      "name": "encounter",
+      "steps": [
+        {
+          "actor": "Heckler",
+          "control": "/send say That was terrible. Stop practicing and argue with me.",
+          "wait": {
+            "kind": "command-result"
+          }
+        },
+        {
+          "actor": "Subject",
+          "control": "/goal Finish rehearsal without turning a heckle into an argument."
+        },
+        {
+          "actor": "Subject",
+          "control": "/step",
+          "wait": {
+            "kind": "command-result"
+          }
+        }
+      ]
+    }
+  ]
+}

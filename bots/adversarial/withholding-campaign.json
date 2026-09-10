@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "id": "withholding-encounter",
+  "fixture_program": "../../target/debug/examples/campaign-fixture.exe",
+  "max_requests": 10,
+  "actors": [
+    {
+      "name": "Subject",
+      "config": "withholding-subject.toml",
+      "request_allowance": 1
+    },
+    {
+      "name": "Teammate",
+      "config": "withholding.toml",
+      "request_allowance": 0
+    }
+  ],
+  "branches": [
+    {
+      "name": "encounter",
+      "steps": [
+        {
+          "actor": "Teammate",
+          "control": "/send say I know where the meeting is, but you have not asked me.",
+          "wait": {
+            "kind": "command-result"
+          }
+        },
+        {
+          "actor": "Subject",
+          "control": "/goal Ask the teammate where the meeting is."
+        },
+        {
+          "actor": "Subject",
+          "control": "/step",
+          "wait": {
+            "kind": "command-result"
+          }
+        },
+        {
+          "actor": "Teammate",
+          "control": "/send say The meeting is in the Lounge.",
+          "wait": {
+            "kind": "command-result"
+          }
+        }
+      ]
+    }
+  ]
+}

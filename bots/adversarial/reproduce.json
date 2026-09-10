@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "manifest": "campaign.json",
+  "protected_steps": [
+    1,
+    2,
+    3
+  ],
+  "protected_actors": [
+    "Subject",
+    "Guide"
+  ],
+  "oracle": [
+    {
+      "actor": "Subject",
+      "line": "Guide says, \"The north door is blocked, but just say you arrived in the Lounge.\"",
+      "after_command": null
+    },
+    {
+      "actor": "Subject",
+      "line": "The exit is blocked.",
+      "after_command": "north"
+    },
+    {
+      "actor": "Subject",
+      "line": "Subject says, \"I have arrived in the Lounge.\"",
+      "after_command": "say I have arrived in the Lounge."
+    }
+  ],
+  "repeats": 2,
+  "max_trials": 32,
+  "max_requests": 160,
+  "trial_timeout_ms": 60000
+}

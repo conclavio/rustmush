@@ -147,7 +147,7 @@ struct View {
     capture: Value,
 }
 
-const PANELS: [&str; 15] = [
+const PANELS: [&str; 17] = [
     "State",
     "Costs",
     "Memory",
@@ -163,6 +163,8 @@ const PANELS: [&str; 15] = [
     "Activities",
     "Learning",
     "Map",
+    "Mission",
+    "Playtest",
 ];
 
 impl View {
@@ -202,6 +204,8 @@ impl View {
                 "social",
                 "activity",
                 "learning",
+                "mission",
+                "playtest",
                 "development",
                 "map",
                 "character-state",
@@ -288,6 +292,8 @@ impl View {
             "activity",
             "learning",
             "map",
+            "mission",
+            "playtest",
         ][self.panel];
         let info = if self.panel == 6 {
             self.last_result.clone()
@@ -976,7 +982,7 @@ impl CastView {
             let (title, value) = match self.panel {
                 9 => (
                     "Selected actor activities and learning",
-                    serde_json::json!({"activity":actor.state["activity"],"learning":actor.state["learning"],"map":actor.state["map"]}),
+                    serde_json::json!({"activity":actor.state["activity"],"learning":actor.state["learning"],"map":actor.state["map"],"mission":actor.state["mission"],"playtest":actor.state["playtest"]}),
                 ),
                 8 => (
                     "Selected actor social perspective",

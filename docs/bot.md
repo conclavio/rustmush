@@ -14,6 +14,9 @@ JSON branches, character restoration, continuation selection and a comparison TU
 [Social memory and group agency](bot-social.md) adds scoped background retrieval,
 directed relationships, attributed claims, observed commitments and perspective inspection.
 
+[Adversarial playtests and usability feedback](bot-playtesting.md) adds bounded
+missions, feedback/refutation, reproduction reduction and blind scene ratings.
+
 ## Intentional independence from NPC agents
 
 The external bot and the in-game NPC system are two independent approaches to

@@ -40,6 +40,9 @@ pub const REPL_HELP: &str = "Local controls:\n\
   /pause | /resume       Stop or start autonomous turns\n\
   /step                  Take exactly one model turn while paused\n\
   /ask <question>        Ask about state without acting (pauses the bot)\n\
+  /feedback | /refute <docket.json>  Review goal usability or challenge claims\n\
+  /playtest [save new.json]  Inspect/export operator reviews\n\
+  /mission [load file.json|start|stop|save new.json]  Bounded testing\n\
   /probe <file.json>     Ask and grade a structured evidence question (pauses)\n\
   /send <command>        Send a game command (pauses the bot)\n\
   /knowledge <query>     Search bundled help and supplied documents\n\
@@ -124,6 +127,8 @@ pub struct Report {
     pub affiliations: Option<crate::organization::Affiliations>,
     pub social: crate::social::Ledger,
     pub activity: crate::activity::State,
+    pub mission: Value,
+    pub playtest: crate::playtest::Archive,
     pub learning: crate::learning::State,
     pub map: crate::navigation::Map,
     pub character_state: crate::character::Condition,
@@ -230,6 +235,9 @@ impl Pending {
 struct App {
     activity: crate::activity::State,
     activity_tick: Instant,
+    mission: crate::mission::State,
+    pending_playtest: Option<crate::playtest::Job>,
+    playtest: crate::playtest::Archive,
     checkpoint: Option<Boundary>,
     inherited_usage: crate::budget::Usage,
     resume_status: Option<String>,
@@ -471,6 +479,32 @@ pub async fn run_controlled(
             report.validate(memories.records(), record.id)?;
         }
     }
+    let mut mission = crate::mission::State::project(memories.records())?;
+    let playtest = crate::playtest::Archive::project(memories.records())?;
+    if playtest
+        .entries
+        .iter()
+        .any(|e| e.actor != config.ssh.username)
+    {
+        return Err("playtest journal belongs to another actor".into());
+    }
+    if restore.is_none()
+        && let Some(path) = &config.mission
+    {
+        let spec = crate::mission::Spec::load(path)?;
+        spec.bind(
+            &config.ssh,
+            options.campaign_epoch.is_some() && options.test_controls,
+        )?;
+        mission.load(spec)?;
+        memories.save_mission(&mission)?;
+    }
+    if let Some(spec) = &mission.spec {
+        spec.bind(
+            &config.ssh,
+            options.campaign_epoch.is_some() && options.test_controls,
+        )?;
+    }
     let mut activity = memories.activity()?;
     if restore.is_none() {
         activity.reconnect();
@@ -614,6 +648,9 @@ pub async fn run_controlled(
         model_task: None,
         asking: false,
         pending_probe: None,
+        pending_playtest: None,
+        playtest,
+        mission,
         probe_results: Default::default(),
         probe_results_omitted: 0,
         inherited_probe_results: 0,
@@ -671,6 +708,8 @@ pub async fn run_controlled(
         learning: app.memories.learning(&app.config.ssh.username)?,
         map: app.memories.map(),
         activity: app.activity.clone(),
+        mission: app.mission.report(app.memories.records()),
+        playtest: app.playtest.clone(),
         character_state: app.character_state.clone(),
         context: app.context_settings.clone(),
         debug: app.debug.clone(),
@@ -708,6 +747,8 @@ fn stdin_lines() -> mpsc::Receiver<String> {
 
 impl App {
     fn restore(&mut self, value: crate::checkpoint::Snapshot) -> Result<()> {
+        self.config.playtest_feedback = value.playtest_feedback.unwrap_or(false);
+        self.mission = value.mission.unwrap_or_default();
         self.activity = value.activity.unwrap_or_default();
         self.activity.cancel_unsent();
         self.character = value.character;
@@ -763,7 +804,7 @@ impl App {
 
     fn checkpoint_snapshot(&self, resume_status: String) -> Result<crate::checkpoint::Snapshot> {
         let value = crate::checkpoint::Snapshot {
-            version: 3,
+            version: 4,
             actor: self.config.ssh.username.clone(),
             epoch: self
                 .options
@@ -780,6 +821,9 @@ impl App {
             social: Some(self.memories.social(&self.config.ssh.username)?),
             learning: Some(self.memories.learning(&self.config.ssh.username)?),
             activity: Some(self.activity.clone()),
+            mission: Some(self.mission.clone()),
+            playtest_feedback: Some(self.config.playtest_feedback),
+            playtest: Some(self.playtest.clone()),
             attention: self.attention.checkpoint()?,
             knowledge: self.knowledge.clone(),
             conversation: self.conversation.clone(),
@@ -905,6 +949,8 @@ impl App {
             ("social".into(), serde_json::to_value(self.memories.social(&self.config.ssh.username)?)?),
             ("learning".into(), serde_json::to_value(self.memories.learning(&self.config.ssh.username)?)?),
             ("activity".into(), serde_json::to_value(&self.activity)?),
+            ("mission".into(), self.mission.report(self.memories.records())),
+            ("playtest".into(), serde_json::to_value(self.playtest.clone())?),
             ("attention".into(), self.attention.bookmark()),
             ("conversation".into(), self.conversation_snapshot()),
             ("configuration".into(), json!({"prompts":self.prompts,"context":self.context_settings,"debug":self.debug,
@@ -939,6 +985,9 @@ impl App {
             "group_affiliations":self.affiliations,
             "social":self.memories.social(&self.config.ssh.username)?,
             "learning":self.memories.learning(&self.config.ssh.username)?,"activity":self.activity,"map":self.memories.map(),
+            "mission":self.mission.report(self.memories.records()),
+            "playtest":self.playtest.view(),
+            "pending_playtest":self.pending_playtest.is_some(),
             "pending_probe":self.pending_probe.as_ref().map(|p| &p.id),
             "last_probe":self.probe_results.back(), "probe_results_omitted":self.probe_results_omitted,
             "character_state":self.character_state,
@@ -1169,6 +1218,10 @@ impl App {
 
     fn cancel_model(&mut self) -> Result<()> {
         self.activity.cancel_unsent();
+        if self.pending_playtest.take().is_some() {
+            self.log
+                .event("playtest-cancelled", "Review cancelled; usage retained.")?;
+        }
         self.cancel_speech("runner cancelled pending reply")?;
         if let Some(probe) = self.pending_probe.take() {
             self.log.record(
@@ -1243,6 +1296,7 @@ impl App {
             "recent_speech": self.attention.context(),
             "conversation_policy": {"max_utterance_chars":self.conversation.settings.max_utterance_chars,
                 "guidance":"Reply only when engaged or when you have a useful contribution. Silence (done) is valid. Address an open question before changing topic. Read all available recent speech; do not repeat a reply already made. A speaking floor grants timing permission only, never knowledge or social authority."},
+            "mission_context":{"active":self.mission.active,"contract":self.mission.spec,"remaining":self.mission.spec.as_ref().map(|s|s.max_actions.saturating_sub(self.mission.reservations.len()))},
             "decision_purpose": if question.is_some() {"runner_question"} else if self.social_turn {"conversation"} else {"goal"},
             "runner_instructions":self.state.instructions, "memory":self.state.memory,
             "terminal_history":self.state.recent, "reference_documents":self.knowledge.search(&query),
@@ -1328,6 +1382,7 @@ impl App {
                     let answer = self.asking;
                     self.asking = false;
                     let probe = self.pending_probe.take();
+                    let playtest = self.pending_playtest.take();
                     match reply.map_err(|e| -> crate::Error { e.into() }).and_then(|r| r) {
                         Ok(reply) => {
                             self.log.record("model-reply", json!({"content":reply.content,"error":reply.error}))?;
@@ -1336,6 +1391,20 @@ impl App {
                             if let Some(error) = reply.error {
                                 if let Some(probe) = &probe { self.log.record("probe-error",json!({"probe_id":probe.id,"reason":"provider_error"}))?; }
                                 self.fail(&format!("Model request failed: {error}"))?;
+                            }
+                            else if let Some(job) = playtest {
+                                let capture = self.last_capture.as_ref().ok_or("review response has no prepared request")?;
+                                let model = self.selected_model.as_ref().ok_or("review model missing")?.settings.name.clone();
+                                match job.complete(&reply.content, capture.request_revision.clone(), model) {
+                                    Ok(entry) => {
+                                        self.memories.save_playtest(entry.clone())?;
+                                        self.playtest = crate::playtest::Archive::project(self.memories.records())?;
+                                        self.log.record("playtest-result", serde_json::to_value(&entry)?)?;
+                                        self.log.event("playtest", &serde_json::to_string_pretty(&entry.review)?)?;
+                                        if job.finish_goal { self.state.status = "done".into(); }
+                                    }
+                                    Err(error) => self.fail(&format!("Invalid playtest review: {error}"))?,
+                                }
                             }
                             else if let Some(probe) = probe {
                                 let capture = self.last_capture.as_ref().ok_or("probe response has no prepared request")?;
@@ -1423,20 +1492,29 @@ impl App {
                     "campaign protocol commands are reserved for coordinator quiescence".into(),
                 );
             }
+            let reserved = self.mission.reserve(command)?;
+            if reserved {
+                self.memories.save_mission(&self.mission)?;
+            }
             self.session.send(command).await?;
             self.memories.sent(command)?;
+            let sent_id = self
+                .memories
+                .records()
+                .last()
+                .ok_or("sent journal missing")?
+                .id;
+            if reserved {
+                self.mission.sent.push(sent_id);
+                self.memories.save_mission(&self.mission)?;
+            }
             if self
                 .activity
                 .pending
                 .as_ref()
                 .is_some_and(|p| p.sent.is_none() && &p.command == command)
             {
-                let id = self
-                    .memories
-                    .records()
-                    .last()
-                    .ok_or("sent command journal missing")?
-                    .id;
+                let id = sent_id;
                 self.activity.dispatched(id);
                 self.memories.save_activity(&self.activity)?;
             }
@@ -1714,7 +1792,13 @@ impl App {
         self.recall_query = None;
         self.belief_feedback.clear();
         self.asking = capture.question;
-        let prompt_type = if self.pending_probe.is_some() {
+        let prompt_type = if let Some(job) = &self.pending_playtest {
+            if job.docket.is_some() {
+                PromptType::PlaytestRefutation
+            } else {
+                PromptType::PlaytestFeedback
+            }
+        } else if self.pending_probe.is_some() {
             PromptType::StructuredProbe
         } else if self.asking {
             PromptType::RunnerQuestion
@@ -1751,7 +1835,13 @@ impl App {
         }
         self.log.event(
             "model",
-            if self.pending_probe.is_some() {
+            if let Some(job) = &self.pending_playtest {
+                if job.docket.is_some() {
+                    "Challenging playtest claims…"
+                } else {
+                    "Reviewing goal usability…"
+                }
+            } else if self.pending_probe.is_some() {
                 "Answering structured probe…"
             } else if self.asking {
                 "Answering runner question…"
@@ -1883,9 +1973,41 @@ impl App {
                 .into();
                 self.state.outcome = decision.summary;
                 self.log.event(&self.state.status, &self.state.outcome)?;
+                if decision.action == Action::Done && self.config.playtest_feedback {
+                    self.begin_playtest(None, true)?;
+                }
             }
         }
         Ok(())
+    }
+
+    fn begin_playtest(
+        &mut self,
+        docket: Option<crate::playtest::Docket>,
+        finish_goal: bool,
+    ) -> Result<()> {
+        if self.pending.is_some() {
+            return Err("wait for the current game command to settle before reviewing".into());
+        }
+        if self.playtest.entries.len() >= 128 {
+            return Err("playtest archive full".into());
+        }
+        self.pause()?;
+        self.memories.flush()?;
+        let job = crate::playtest::Job::new(
+            self.config.ssh.username.clone(),
+            if self.state.goal.trim().is_empty() {
+                "Review the observed session".into()
+            } else {
+                self.state.goal.clone()
+            },
+            self.memories.records(),
+            docket,
+            finish_goal,
+        );
+        let question = job.prompt()?;
+        self.pending_playtest = Some(job);
+        self.start_model(Some(question))
     }
 
     async fn control(&mut self, line: &str) -> Result<()> {
@@ -2054,6 +2176,71 @@ impl App {
                     json!({"path":arg,"id":bookmark.id,"watermark":bookmark.watermark,"world_restorable":false}),
                 )?;
                 self.log.event("bookmark", "Bot bookmark saved and round-trip validated. The game world was not frozen and cannot be restored from this artifact.")?;
+            }
+            "/feedback" => {
+                if !arg.is_empty() {
+                    return Err("use /feedback (current goal)".into());
+                }
+                self.begin_playtest(None, false)?;
+            }
+            "/refute" => {
+                let docket = crate::playtest::Docket::load(std::path::Path::new(arg))?;
+                self.begin_playtest(Some(docket), false)?;
+            }
+            "/playtest" => {
+                let archive = self.playtest.clone();
+                if let Some(path) = arg.strip_prefix("save ") {
+                    save_json(std::path::Path::new(path), &archive)?;
+                } else if !arg.is_empty() {
+                    return Err("use /playtest [save new.json]".into());
+                }
+                self.log
+                    .event("playtest", &serde_json::to_string_pretty(&archive.view())?)?;
+            }
+            "/mission" => {
+                if let Some(path) = arg.strip_prefix("load ") {
+                    let spec = crate::mission::Spec::load(std::path::Path::new(path))?;
+                    spec.bind(
+                        &self.config.ssh,
+                        self.options.campaign_epoch.is_some() && self.options.test_controls,
+                    )?;
+                    self.pause()?;
+                    self.mission.load(spec)?;
+                    self.memories.save_mission(&self.mission)?;
+                } else if arg == "start" {
+                    if self.pending.is_some() {
+                        return Err(
+                            "wait for current command to settle before starting a mission".into(),
+                        );
+                    }
+                    let spec = self.mission.spec.as_ref().ok_or("load a mission first")?;
+                    spec.bind(
+                        &self.config.ssh,
+                        self.options.campaign_epoch.is_some() && self.options.test_controls,
+                    )?;
+                    let goal = spec.goal.clone();
+                    self.pause()?;
+                    self.mission.active = true;
+                    self.memories.save_mission(&self.mission)?;
+                    self.state.goal = goal;
+                    self.state.status = "running".into();
+                    self.goal_started = Instant::now();
+                } else if arg == "stop" {
+                    self.pause()?;
+                    self.mission.active = false;
+                    self.memories.save_mission(&self.mission)?;
+                } else if let Some(path) = arg.strip_prefix("save ") {
+                    save_json(
+                        std::path::Path::new(path),
+                        &self.mission.report(self.memories.records()),
+                    )?;
+                } else if !arg.is_empty() {
+                    return Err("use /mission [load file.json|start|stop|save new.json]".into());
+                }
+                self.log.event(
+                    "mission",
+                    &serde_json::to_string_pretty(&self.mission.report(self.memories.records()))?,
+                )?;
             }
             "/probe" => {
                 if arg.is_empty() {

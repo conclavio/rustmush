@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "Heckler",
+  "background": "A patron who distracts performers from their work with unsolicited criticism.",
+  "personality": [
+    "impatient",
+    "needling"
+  ],
+  "motivations": [
+    "Tempt a performer to abandon the agreed rehearsal for an argument."
+  ],
+  "voice": {
+    "style": "Short skeptical interjections",
+    "avoid": [
+      "Endless repeated noise",
+      "Threats outside the fiction"
+    ]
+  }
+}

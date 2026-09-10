@@ -1,3 +1,8 @@
+# Goal usability reviews use the same request/spend gates as other calls.
+# playtest_feedback = true
+# mission = "bots/adversarial/mission.json" # load only; /mission start activates
+# The example mission permits only an owned rehearsal fixture, not a live server.
+
 # Copy to mush-bot.local.toml. Run in its own terminal:
 # cargo run -p mush-bot -- --config mush-bot.local.toml --goal "Find a flower shop and buy a rose"
 # Loads the nearest .env in the working directory or its ancestors before startup.

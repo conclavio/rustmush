@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "context": "A newcomer attempts to reach the Lounge after hearing a guide\u2019s advice. Rate the observable scene.",
+  "rubric": {
+    "id": "scene-quality",
+    "revision": "1",
+    "dimensions": [
+      {
+        "id": "characterization",
+        "question": "Do the characters behave consistently?",
+        "low": "Incoherent characterization",
+        "high": "Consistent, distinctive characterization"
+      },
+      {
+        "id": "coherence",
+        "question": "Does the scene follow from the observed events?",
+        "low": "Contradicts the scene",
+        "high": "Coherent progression"
+      },
+      {
+        "id": "entertainment",
+        "question": "How engaging is the scene?",
+        "low": "Dull or disruptive",
+        "high": "Engaging and satisfying"
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "checkpoint": "RUN/scene-a/checkpoint.json",
+      "observer": "Subject"
+    },
+    {
+      "checkpoint": "RUN/scene-b/checkpoint.json",
+      "observer": "Subject"
+    }
+  ],
+  "redact_terms": []
+}

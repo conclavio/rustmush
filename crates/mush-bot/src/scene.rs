@@ -19,7 +19,7 @@ const MODULES: &[&str] = &[
     "configuration",
     "accounting",
 ];
-const OPTIONAL_MODULES: &[&str] = &["social", "learning", "activity"];
+const OPTIONAL_MODULES: &[&str] = &["social", "learning", "activity", "mission", "playtest"];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

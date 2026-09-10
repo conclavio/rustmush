@@ -1,0 +1,5 @@
+{
+  "reply_min_ms": 0,
+  "reply_jitter_ms": 0,
+  "debounce_ms": 0
+}

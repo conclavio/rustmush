@@ -17,6 +17,8 @@ pub struct Config {
     pub budget: Option<PathBuf>,
     pub conversation: Option<PathBuf>,
     pub activities: Option<PathBuf>,
+    pub mission: Option<PathBuf>,
+    pub playtest_feedback: bool,
     pub model_tape: Option<PathBuf>,
     pub costs: crate::costs::Settings,
     pub attention: crate::attention::Settings,
@@ -188,6 +190,7 @@ impl Config {
             .chain(config.budget.iter_mut())
             .chain(config.conversation.iter_mut())
             .chain(config.activities.iter_mut())
+            .chain(config.mission.iter_mut())
             .chain(config.model_tape.iter_mut())
             .chain(std::iter::once(&mut config.costs.directory))
         {

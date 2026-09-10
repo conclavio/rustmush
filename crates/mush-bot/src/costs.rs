@@ -200,6 +200,8 @@ pub enum PromptType {
     Conversation,
     RunnerQuestion,
     StructuredProbe,
+    PlaytestFeedback,
+    PlaytestRefutation,
     DecisionReplay,
     CharacterAuthoring,
     GroupAuthoring,

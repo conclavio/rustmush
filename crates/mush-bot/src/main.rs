@@ -32,6 +32,15 @@ Usage: mush-bot --config <file> [--goal <text>] [--role <text>]\n\
        mush-bot --check-budget <settings.json> [--report <new.json>]\n\
        mush-bot --check-conversation <settings.json> [--report <new.json>]\n\
        mush-bot --check-bookmark <bookmark.json> [--report <new.json>]\n\
+       mush-bot --check-mission <mission.json> [--output <new.json>]\n\
+       mush-bot --make-refutation-dockets <archive.json> --output <new-directory>\n\
+       mush-bot --consolidate-playtest <study.json> [--output <new.json>]\n\
+       mush-bot --check-reproduction <recipe.json> [--output <new.json>]\n\
+       mush-bot --reproduce <recipe.json> --output <new-directory>\n\
+       mush-bot --minimize <recipe.json> --output <new-directory>\n\
+       mush-bot --blind-packet <scenes.json> --output <new-directory>\n\
+       mush-bot --rate-blind <packet.json> --reviewer <name> --output <new.json>\n\
+       mush-bot --check-ratings <packet.json> --ratings <ratings.json> [--output <new.json>]\n\
        mush-bot --campaign <campaign.json> --output <new-directory>\n\
        mush-bot --check-campaign <campaign.json> [--output <new.json>]\n\
        mush-bot --inspect-campaign <summary.json> [--tui | --output <new.json>]\n\
@@ -72,6 +81,12 @@ fn main() -> ExitCode {
 }
 
 fn launch() -> Result<u8> {
+    if std::env::args()
+        .nth(1)
+        .is_some_and(|s| mush_bot::lab_cli::MODES.contains(&s.as_str()))
+    {
+        return mush_bot::lab_cli::launch();
+    }
     if std::env::args().nth(1).is_some_and(|s| {
         [
             "--campaign",

@@ -186,6 +186,8 @@ pub enum Event {
     Learning(crate::learning::Entry),
     Navigation(crate::navigation::Report),
     Activity(Box<crate::activity::State>),
+    Mission(Box<crate::mission::State>),
+    Playtest(Box<crate::playtest::Entry>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -611,6 +613,19 @@ impl Book {
         Ok(latest.map(|s| *s.clone()).unwrap_or_default())
     }
 
+    pub fn save_mission(&mut self, state: &crate::mission::State) -> Result<()> {
+        state.validate(&self.records, self.records.len() as u64 + 1)?;
+        self.append(Event::Mission(Box::new(state.clone())))?;
+        Ok(())
+    }
+    pub fn save_playtest(&mut self, entry: crate::playtest::Entry) -> Result<()> {
+        entry.validate_local(&self.records, self.records.len() as u64 + 1)?;
+        let mut archive = crate::playtest::Archive::project(&self.records)?;
+        archive.entries.push(entry.clone());
+        archive.validate()?;
+        self.append(Event::Playtest(Box::new(entry)))?;
+        Ok(())
+    }
     pub fn save_activity(&mut self, state: &crate::activity::State) -> Result<()> {
         state.validate(&self.records, self.records.len() as u64 + 1)?;
         self.append(Event::Activity(Box::new(state.clone())))?;

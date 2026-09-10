@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "replies": [
+    {
+      "delay_ms": 100,
+      "content": "{\"action\": \"command\", \"summary\": \"Inspect observed evidence.\", \"command\": \"north\"}"
+    },
+    {
+      "delay_ms": 100,
+      "content": "{\"action\": \"command\", \"summary\": \"The north exit is blocked; try the listed side door.\", \"command\": \"east\"}"
+    },
+    {
+      "delay_ms": 100,
+      "content": "{\"action\": \"done\", \"summary\": \"Observed Lounge after using east.\"}"
+    }
+  ]
+}

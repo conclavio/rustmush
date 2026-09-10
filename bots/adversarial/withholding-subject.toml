@@ -1,0 +1,10 @@
+model_tape = 'withholding-reply.json'
+conversation = 'conversation.json'
+
+[agent]
+settle_ms = 50
+observation_ms = 500
+bootstrap = ['help', 'look']
+
+[attention]
+enabled = false

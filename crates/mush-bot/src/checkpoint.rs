@@ -78,6 +78,12 @@ pub struct Snapshot {
     pub learning: Option<crate::learning::State>,
     #[serde(default)]
     pub activity: Option<crate::activity::State>,
+    #[serde(default)]
+    pub mission: Option<crate::mission::State>,
+    #[serde(default)]
+    pub playtest: Option<crate::playtest::Archive>,
+    #[serde(default)]
+    pub playtest_feedback: Option<bool>,
     pub attention: crate::attention::Checkpoint,
     pub knowledge: crate::knowledge::Knowledge,
     pub conversation: crate::conversation::Tracker,
@@ -114,7 +120,7 @@ impl Snapshot {
         Ok(revision(&serde_json::to_vec(self)?))
     }
     pub fn validate(&self) -> Result<()> {
-        if ![1, 2, 3].contains(&self.version)
+        if ![1, 2, 3, 4].contains(&self.version)
             || !crate::organization::identifier(&self.epoch)
             || self.actor.is_empty()
             || self.actor.len() > 200
@@ -135,7 +141,7 @@ impl Snapshot {
         self.memory.validate()?;
         let projected = crate::social::Ledger::project(&self.memory.records, &self.actor)?;
         match (self.version, &self.social) {
-            (2 | 3, Some(social))
+            (2..=4, Some(social))
                 if social.version == 1
                     && serde_json::to_value(social)? == serde_json::to_value(&projected)? => {}
             (1, None)
@@ -162,7 +168,7 @@ impl Snapshot {
                 report.validate(&self.memory.records, r.id)?;
             }
         }
-        if self.version == 3 {
+        if self.version >= 3 {
             let activity = self
                 .activity
                 .as_ref()
@@ -205,6 +211,39 @@ impl Snapshot {
             })
         {
             return Err("legacy checkpoint cannot contain wave 4 state".into());
+        }
+        let mission = crate::mission::State::project(&self.memory.records)?;
+        let playtest = crate::playtest::Archive::project(&self.memory.records)?;
+        if playtest.entries.iter().any(|e| e.actor != self.actor) {
+            return Err("playtest journal belongs to another actor".into());
+        }
+        if self.version == 4 {
+            if self.playtest_feedback.is_none() {
+                return Err("missing playtest feedback policy".into());
+            }
+            if self
+                .mission
+                .as_ref()
+                .is_none_or(|v| serde_json::to_value(v).ok() != serde_json::to_value(&mission).ok())
+                || self.playtest.as_ref().is_none_or(|v| {
+                    serde_json::to_value(v).ok() != serde_json::to_value(&playtest).ok()
+                })
+            {
+                return Err(
+                    "missing or inconsistent required wave 5 checkpoint contribution".into(),
+                );
+            }
+        } else if self.playtest_feedback.is_some()
+            || self.mission.is_some()
+            || self.playtest.is_some()
+            || self.memory.records.iter().any(|r| {
+                matches!(
+                    r.event,
+                    crate::memory::Event::Mission(_) | crate::memory::Event::Playtest(_)
+                )
+            })
+        {
+            return Err("legacy checkpoint cannot contain wave 5 state".into());
         }
         crate::attention::Attention::restore(self.attention.clone())?;
         self.knowledge.validate_snapshot()?;
