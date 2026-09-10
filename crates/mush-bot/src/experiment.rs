@@ -128,6 +128,7 @@ pub struct Context {
     pub speech_limit: usize,
     pub speech_bytes: usize,
     pub recall_bytes: usize,
+    pub social_bytes: usize,
     pub recall: crate::memory::RecallSettings,
     pub retrieval: bool,
     pub routes: bool,
@@ -146,6 +147,7 @@ impl Default for Context {
             speech_limit: 64,
             speech_bytes: 24_000,
             recall_bytes: 128_000,
+            social_bytes: 16_000,
             recall: Default::default(),
             retrieval: true,
             routes: true,
@@ -171,6 +173,7 @@ impl Context {
             || self.speech_limit > 64
             || self.speech_bytes > 24_000
             || self.recall_bytes > 128_000
+            || self.social_bytes > 128_000
             || self.voice_examples.is_some_and(|n| n > 64)
         {
             return Err("context version must be 1; history <= 1000000, speech_limit <= 64, speech_bytes <= 24000, recall_bytes <= 128000, voice_examples <= 64".into());
@@ -184,6 +187,7 @@ impl Context {
         }
         for (enabled, field) in [
             (self.retrieval, "remembered_experience"),
+            (self.retrieval, "social_context"),
             (self.routes, "route_lookup"),
             (self.references, "reference_documents"),
             (self.working_memory, "memory"),

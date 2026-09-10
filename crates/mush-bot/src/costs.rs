@@ -16,7 +16,7 @@ use crate::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub persistent: bool,
@@ -102,7 +102,7 @@ impl Amount {
         }
     }
 
-    fn add(&mut self, other: Self) -> Result<()> {
+    pub(crate) fn add(&mut self, other: Self) -> Result<()> {
         self.0 = self
             .0
             .checked_add(other.0)

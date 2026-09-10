@@ -19,6 +19,7 @@ const MODULES: &[&str] = &[
     "configuration",
     "accounting",
 ];
+const OPTIONAL_MODULES: &[&str] = &["social"];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -109,7 +110,10 @@ impl Bookmark {
         }
         for (name, module) in &self.modules {
             if !crate::organization::identifier(name)
-                || (module.required && (!MODULES.contains(&name.as_str()) || module.version != 1))
+                || (module.required
+                    && ((!MODULES.contains(&name.as_str())
+                        && !OPTIONAL_MODULES.contains(&name.as_str()))
+                        || module.version != 1))
             {
                 return Err(format!(
                     "unsupported required bookmark contribution {name} v{}",

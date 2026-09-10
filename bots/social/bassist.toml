@@ -1,0 +1,9 @@
+character = "../campaign/bassist.json"
+model_tape = "bass-replies.json"
+conversation = "conversation.json"
+[agent]
+role = "The trial bassist; cooperate without abandoning your private priorities."
+goal = "Find space for melodic bass through a negotiated arrangement."
+bootstrap = ["help", "look"]
+settle_ms = 50
+observation_ms = 500

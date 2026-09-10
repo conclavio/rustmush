@@ -32,6 +32,10 @@ Usage: mush-bot --config <file> [--goal <text>] [--role <text>]\n\
        mush-bot --check-budget <settings.json> [--report <new.json>]\n\
        mush-bot --check-conversation <settings.json> [--report <new.json>]\n\
        mush-bot --check-bookmark <bookmark.json> [--report <new.json>]\n\
+       mush-bot --campaign <campaign.json> --output <new-directory>\n\
+       mush-bot --check-campaign <campaign.json> [--output <new.json>]\n\
+       mush-bot --inspect-campaign <summary.json> [--tui | --output <new.json>]\n\
+       mush-bot --select-campaign <summary.json> --branch <name> --output <new.json>\n\
        mush-bot --harness <cast.json> --check-harness\n\
        mush-bot --harness <cast.json> --plan-harness [--report <new.json>]\n\
        mush-bot --analyze-harness <summary.json|directory> [--report <new.json>] [--junit <new.xml>]\n\
@@ -68,6 +72,17 @@ fn main() -> ExitCode {
 }
 
 fn launch() -> Result<u8> {
+    if std::env::args().nth(1).is_some_and(|s| {
+        [
+            "--campaign",
+            "--check-campaign",
+            "--inspect-campaign",
+            "--select-campaign",
+        ]
+        .contains(&s.as_str())
+    }) {
+        return mush_bot::campaign_cli::launch();
+    }
     let mut args = std::env::args().skip(1);
     let mut config_path = PathBuf::from("mush-bot.toml");
     let mut options = Options::default();
@@ -369,6 +384,20 @@ fn launch() -> Result<u8> {
                 )
             }
             "--paused" => options.paused = true,
+            "--campaign-epoch" => {
+                options.campaign_epoch =
+                    Some(args.next().ok_or("--campaign-epoch requires a token")?)
+            }
+            "--campaign-quota" => {
+                options.campaign_quota = Some(
+                    args.next()
+                        .ok_or("--campaign-quota requires a count")?
+                        .parse()?,
+                )
+            }
+            "--restore-bot" => {
+                options.restore_bot = Some(args.next().ok_or("--restore-bot requires JSON")?.into())
+            }
             _ => return Err(format!("unknown option {arg}; use --help").into()),
         }
     }

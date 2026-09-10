@@ -1580,6 +1580,7 @@ async fn one(
     );
     Ok(
         json!({"success":error.is_none() && monitor.satisfied() && !probes.failed,"error":error,"elapsed_ms":elapsed.as_millis(),
+        "execution_mode":if manifest.server.is_some() {"reconstructed_run"} else {"live_world_run"},"world_restorable":false,
         "active_elapsed_ms":elapsed.saturating_sub(held).as_millis(),"debug":debug_report,
         "conversation":{"speech":speech_stats.report(),"floor":floor.as_ref().map(crate::floor::Floor::snapshot),"conditions":conversation_conditions},
         "probes":probes.entries,"probes_omitted":probes.omitted,

@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "replies": [
+    {"content":"{\"action\":\"command\",\"command\":\"say I accept [arrangement].\",\"summary\":\"Accept the opportunity to bring a counterpoint.\"}"},
+    {"content":"{\"action\":\"command\",\"command\":\"pose starts sketching a bass line on paper.\",\"summary\":\"Begin working on my accepted assignment.\"}"}
+  ]
+}

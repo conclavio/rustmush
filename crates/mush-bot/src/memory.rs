@@ -85,7 +85,7 @@ impl RecallSettings {
 fn is_evidence(record: &Record) -> bool {
     matches!(
         record.event,
-        Event::Episode(_) | Event::Belief(_) | Event::Journey(_)
+        Event::Episode(_) | Event::Belief(_) | Event::Journey(_) | Event::Social(_)
     )
 }
 
@@ -177,6 +177,7 @@ pub enum Event {
     Belief(Belief),
     WorkingNotes(String),
     Journey(Journey),
+    Social(crate::social::Entry),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -194,7 +195,37 @@ struct Move {
     walked: bool,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checkpoint {
+    pub records: Vec<Record>,
+    pub current: Option<Place>,
+    pub exits: Vec<String>,
+    pub max_bytes: u64,
+    pub recall_bytes: usize,
+}
+impl Checkpoint {
+    pub fn validate(&self) -> Result<()> {
+        if self.records.is_empty()
+            || self.records.len() > 200_000
+            || !(1_000_000..=1_000_000_000).contains(&self.max_bytes)
+            || !(4096..=128_000).contains(&self.recall_bytes)
+            || self
+                .records
+                .iter()
+                .enumerate()
+                .any(|(i, r)| r.id != i as u64 + 1)
+            || !matches!(self.records[0].event, Event::Header { version: 1, .. })
+            || serde_json::to_vec(self)?.len() > 24_000_000
+        {
+            return Err("invalid checkpoint memory journal".into());
+        }
+        Ok(())
+    }
+}
+
 pub struct Book {
+    social_cache: std::cell::RefCell<Option<(usize, String, crate::social::Ledger)>>,
     file: Option<File>,
     path: Option<PathBuf>,
     records: Vec<Record>,
@@ -211,6 +242,53 @@ pub struct Book {
 }
 
 impl Book {
+    pub fn checkpoint(&self) -> Result<Checkpoint> {
+        if !self.buffer.is_empty() || self.pending_move.is_some() || self.last_command.is_some() {
+            return Err("checkpoint memory still has unsettled output".into());
+        }
+        let value = Checkpoint {
+            records: self.records.clone(),
+            current: self.current.clone(),
+            exits: self.exits.clone(),
+            max_bytes: self.max_bytes,
+            recall_bytes: self.recall_bytes,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub fn restore(&mut self, mut value: Checkpoint) -> Result<()> {
+        value.validate()?;
+        if self.records.len() != 2 {
+            return Err("restore requires a fresh memory namespace".into());
+        }
+        self.max_bytes = value.max_bytes;
+        self.recall_bytes = value.recall_bytes;
+        // Only the ownership header changes; all evidence IDs and text survive.
+        value.records[0].event = self.records[0].event.clone();
+        let mut bytes = Vec::new();
+        for record in &value.records {
+            serde_json::to_writer(&mut bytes, record)?;
+            bytes.push(b'\n');
+        }
+        if bytes.len() as u64 + 512 > self.max_bytes {
+            return Err("restored memory exceeds journal capacity".into());
+        }
+        if let Some(file) = &mut self.file {
+            file.set_len(0)?;
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(&bytes)?;
+            file.sync_data()?;
+        }
+        self.bytes = bytes.len() as u64;
+        self.records = value.records;
+        self.social_cache.get_mut().take();
+        self.current = value.current;
+        self.exits = value.exits;
+        self.session = self.records.len() as u64 + 1;
+        self.append(Event::Session)?;
+        Ok(())
+    }
     pub fn observed_recap(&self, watermark: crate::scene::Watermark) -> crate::scene::Recap {
         crate::scene::Recap::from_observations(watermark, self.session, &self.records)
     }
@@ -293,6 +371,7 @@ impl Book {
         }
         let session = records.last().map_or(1, |r| r.id + 1);
         let mut book = Self {
+            social_cache: Default::default(),
             file,
             path,
             records,
@@ -667,6 +746,112 @@ impl Book {
             "bytes": self.bytes, "active_beliefs": self.active_beliefs().len(), "current_place": self.current})
     }
 
+    pub fn social(&self, observer: &str) -> Result<crate::social::Ledger> {
+        let cached = self.social_cache.borrow_mut().take();
+        let (start, mut ledger) = match cached {
+            Some((count, owner, ledger)) if owner == observer && count <= self.records.len() => {
+                (count, ledger)
+            }
+            _ => (0, crate::social::Ledger::empty(observer)?),
+        };
+        ledger.extend(&self.records, start)?;
+        *self.social_cache.borrow_mut() =
+            Some((self.records.len(), observer.into(), ledger.clone()));
+        Ok(ledger)
+    }
+
+    pub fn seed_background(
+        &mut self,
+        group: &str,
+        fact: &crate::social::Fact,
+        observer: &str,
+        scope: &crate::conversation::Scope,
+    ) -> Result<()> {
+        let existing = self.records.iter().find_map(|r| match &r.event {
+            Event::Social(crate::social::Entry {
+                update:
+                    crate::social::Update::Background {
+                        group: g, fact: f, ..
+                    },
+                ..
+            }) if g == group && f.id == fact.id && f.revision == fact.revision => Some(f),
+            _ => None,
+        });
+        if let Some(existing) = existing {
+            if serde_json::to_value(existing)? != serde_json::to_value(fact)? {
+                return Err("background revision changed in place; author a new revision".into());
+            }
+            return Ok(());
+        }
+        let quote = fact.prior_text(group);
+        let episode = self.seed_prior(&quote)?;
+        let entry = crate::social::Entry {
+            version: 1,
+            scope: scope.clone(),
+            update: crate::social::Update::Background {
+                group: group.into(),
+                fact: fact.clone(),
+                evidence: vec![Evidence { episode, quote }],
+            },
+        };
+        self.social(observer)?.validate_update(
+            &self.records,
+            self.records.len() as u64 + 1,
+            &entry,
+            true,
+        )?;
+        self.append(Event::Social(entry))?;
+        Ok(())
+    }
+
+    pub fn annotate_social(
+        &mut self,
+        value: Option<Value>,
+        observer: &str,
+        scope: &crate::conversation::Scope,
+    ) -> Result<Vec<String>> {
+        let Some(value) = value else {
+            return Ok(vec![]);
+        };
+        let Value::Array(values) = value else {
+            return Ok(vec!["social annotations must be an array".into()]);
+        };
+        if values.len() > 8 {
+            return Ok(vec!["at most 8 social annotations per turn".into()]);
+        }
+        let mut feedback = vec![];
+        for value in values {
+            let update = match serde_json::from_value::<crate::social::Update>(value) {
+                Ok(update) => update,
+                Err(_) => {
+                    feedback.push("invalid social annotation fields/types".into());
+                    continue;
+                }
+            };
+            let entry = crate::social::Entry {
+                version: 1,
+                scope: scope.clone(),
+                update,
+            };
+            let ledger = self.social(observer)?;
+            if ledger.interpretations.iter().any(|i| {
+                i.active
+                    && serde_json::to_value(&i.entry.update).ok()
+                        == serde_json::to_value(&entry.update).ok()
+            }) {
+                continue;
+            }
+            if let Err(error) =
+                ledger.validate_update(&self.records, self.records.len() as u64 + 1, &entry, false)
+            {
+                feedback.push(error.to_string());
+            } else {
+                self.append(Event::Social(entry))?;
+            }
+        }
+        Ok(feedback)
+    }
+
     pub fn recall(&self, query: &str) -> Value {
         self.recall_with_limit(query, self.recall_bytes)
     }
@@ -771,6 +956,13 @@ impl Book {
             };
             let mut group = vec![(record, reason)];
             match &record.event {
+                Event::Social(s) => group.extend(
+                    s.update
+                        .evidence()
+                        .iter()
+                        .filter_map(|e| self.record(e.episode))
+                        .map(|r| (r, "social_evidence")),
+                ),
                 Event::Belief(b) => group.extend(
                     b.evidence
                         .iter()
@@ -825,6 +1017,7 @@ impl Book {
         let mut incomplete_count: usize = 0;
         for record in &selected {
             let evidence: Vec<_> = match &record.event {
+                Event::Social(s) => s.update.evidence().iter().map(|e| e.episode).collect(),
                 Event::Belief(belief) => belief.evidence.iter().map(|e| e.episode).collect(),
                 Event::Journey(journey) => journey.evidence.clone(),
                 _ => continue,
@@ -938,7 +1131,7 @@ fn terms(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn speech(line: &str) -> Option<(&str, &str)> {
+pub(crate) fn speech(line: &str) -> Option<(&str, &str)> {
     [
         " says, ",
         " says: ",

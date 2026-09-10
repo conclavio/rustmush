@@ -63,7 +63,7 @@ pub async fn run(
     let currency = actual_selection.settings.currency();
     let budget_before = budget.evaluate(&costs.session_usage()?, currency.as_deref())?;
     if !budget_before.allowed {
-        let report = json!({"version":1,"mode":"decision_replay","success":false,
+        let report = json!({"version":1,"mode":"decision_replay","execution_mode":"model_only_replay","world_restorable":false,"success":false,
             "source_revision":source.request_revision,"request":null,"capture":capture,
             "content":null,"error":budget_before.message(),"decision":null,"commands_sent":0,
             "costs":costs.report()?,"budget":{"settings":budget,"revision":budget.revision(),"status":budget_before}});
@@ -110,7 +110,7 @@ pub async fn run(
         }
         Err(error) => (None, Some(error.to_string()), None),
     };
-    let report = json!({"version":1,"mode":"decision_replay", "success":error.is_none(),
+    let report = json!({"version":1,"mode":"decision_replay","execution_mode":"model_only_replay","world_restorable":false, "success":error.is_none(),
         "source_revision":source.request_revision,"request":request,"capture":capture,
         "content":content,"error":error,"decision":decision,"commands_sent":0,"costs":costs.report()?,
         "budget_check":budget_before,

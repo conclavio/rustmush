@@ -1,6 +1,12 @@
 # Five waves for social play and branching campaigns
 
-Status: wave 1 foundation implemented, 2026-09-10; waves 2–5 remain proposed.
+Status: wave 1, the constrained wave 2 foundation, and the wave 3 social foundation
+implemented, 2026-09-10; waves 4–5 remain proposed.
+[Wave 3 behavior and limits](bot-social.md) and [its plan and reviews](bot-wave3-plan.md)
+cover scoped background, relationships, observed commitments and perspective inspection.
+[Wave 2 behavior and limits](bot-campaigns.md) includes
+the tape-only rehearsal adapter, branch controls and the pending production/paid
+adapter contracts. See [the wave-2 plan and reviews](bot-wave2-plan.md).
 See [conversation and scene observation](bot-conversation.md) for shipped behavior,
 controls and deliberate limits, and [the wave-1 reviews](bot-wave1-plan.md).
 Baseline: the external bot laboratory and character/cast studio published in `a79afef`.

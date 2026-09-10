@@ -44,13 +44,28 @@ all intended drafts. Walk the created exits and inspect accepted descriptions be
 Respect permission denials, ownership boundaries, disabled generation and exhausted server budgets;\n\
 report the missing capability or partial result rather than attempting to grant yourself powers.";
 
-#[derive(Default)]
+#[derive(Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Knowledge {
     chunks: Vec<(String, String)>,
     bytes: usize,
 }
 
 impl Knowledge {
+    pub fn validate_snapshot(&self) -> Result<()> {
+        if self.chunks.len() > 100_000
+            || self.bytes > 8_000_000
+            || self.bytes
+                != self
+                    .chunks
+                    .iter()
+                    .map(|(_, text)| text.len())
+                    .sum::<usize>()
+        {
+            return Err("invalid checkpoint knowledge size".into());
+        }
+        Ok(())
+    }
     pub fn bookmark(&self) -> serde_json::Value {
         serde_json::json!({"chunks":self.chunks,"bytes":self.bytes})
     }

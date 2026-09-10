@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "name": "Bassist",
+  "pronouns": "she/her",
+  "identity": "A talented bassist in her mid-twenties, still called the trialist.",
+  "background": "Eight years of playing have taught her to listen for the line a song is missing. She joined this audition to find collaborators, and she is evaluating the band as carefully as they evaluate her.",
+  "personality": ["observant", "dryly funny", "patient until patronized"],
+  "motivations": ["Play melodic bass and counterpoints", "Find musicians who listen to one another"],
+  "tensions": ["Show what she can do without turning every rehearsal into a contest"],
+  "prior_knowledge": ["The lead singer and drummer have played together since high school."]
+}

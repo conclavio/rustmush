@@ -104,7 +104,7 @@ impl Settings {
 }
 
 /// Punctuation and temporal grouping are cues, not semantic adjudication.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Exchange {
     pub id: u64,
     pub last_elapsed_ms: u64,
@@ -114,6 +114,8 @@ pub struct Exchange {
     pub handled_through: u64,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Tracker {
     pub settings: Settings,
     seed: u64,
@@ -128,6 +130,27 @@ pub struct Tracker {
     pub declined: bool,
 }
 impl Tracker {
+    pub fn validate_snapshot(&self, elapsed: u64) -> crate::Result<()> {
+        self.settings.validate()?;
+        if self.requests.len() > 100_000
+            || self.utterances.len() > 100_000
+            || self.exchanges.len() > 16
+            || self.next_exchange == 0
+            || self
+                .requests
+                .iter()
+                .chain(&self.utterances)
+                .any(|at| *at > elapsed)
+            || self.last_speech.is_some_and(|at| at > elapsed)
+            || self
+                .exchanges
+                .iter()
+                .any(|e| e.id >= self.next_exchange || e.last_elapsed_ms > elapsed)
+        {
+            return Err("invalid checkpoint conversation scheduling".into());
+        }
+        Ok(())
+    }
     pub fn configure(&mut self, settings: Settings, actor: &str) {
         self.seed = Self::new(settings.clone(), actor).seed;
         self.settings = settings;
@@ -291,6 +314,21 @@ fn bounded_push(values: &mut Vec<u64>, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_keeps_cooldowns_allowances_and_actor_delay_sequence() {
+        let mut original = Tracker::new(Settings::default(), "Bassist");
+        original.requested(1000);
+        original.spoke(1000);
+        let mut restored: Tracker =
+            serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap();
+        restored.validate_snapshot(1100).unwrap();
+        assert!(!restored.model_gate(1100));
+        assert_eq!(restored.delay(12), original.delay(12));
+        assert_eq!(restored.utterances.len(), 1);
+        assert!(restored.model_gate(2600));
+        assert!(restored.validate_snapshot(900).is_err());
+    }
     fn speech(id: u64, text: &str) -> Speech {
         Speech {
             id,

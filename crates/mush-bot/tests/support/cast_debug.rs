@@ -214,11 +214,9 @@ impl DebuggedCast {
     }
 
     fn joined(&self, run: usize) -> Vec<Value> {
-        std::fs::read_to_string(self.output.join(format!("run-{run:04}/joined.jsonl")))
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect()
+        completed_events(
+            &std::fs::read(self.output.join(format!("run-{run:04}/joined.jsonl"))).unwrap(),
+        )
     }
 
     async fn finish(mut self) -> Value {
@@ -236,6 +234,27 @@ impl DebuggedCast {
         assert!(result.get("helper_error").is_none(), "{result}");
         result
     }
+}
+
+// A held controller still has live actors writing snapshots. Only the newline
+// certifies a complete JSONL record; even a UTF-8 code point may be mid-write.
+fn completed_events(bytes: &[u8]) -> Vec<Value> {
+    let end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    std::str::from_utf8(&bytes[..end])
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn live_joined_reader_waits_for_the_newline_but_rejects_corrupt_completed_records() {
+    assert_eq!(
+        completed_events(b"{\"n\":1}\n{\"text\":\"\xe2"),
+        vec![json!({"n":1})]
+    );
+    assert!(completed_events(b"{\"n\":1}").is_empty());
+    assert!(std::panic::catch_unwind(|| completed_events(b"not json\n")).is_err());
 }
 
 fn held_settings(max_hold_ms: u64) -> Value {

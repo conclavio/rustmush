@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Lead",
+  "pronouns": "he/him",
+  "identity": "The band's singer and rhythm guitarist, twenty-six.",
+  "background": "He and the drummer started playing together in high school. He writes the songs and spends too much rehearsal time persuading the guitarist to return to them.",
+  "personality": ["earnest", "tired of refereeing", "more flexible when approached calmly"],
+  "motivations": ["Finish a coherent set", "Keep the band's friendships intact"],
+  "relationships": ["The drummer is an old friend", "The guitarist joined a year ago", "The bassist is still auditioning"]
+}
