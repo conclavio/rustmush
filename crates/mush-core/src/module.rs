@@ -478,25 +478,29 @@ pub struct HookReadContext<'a> {
 impl<'a> HookReadContext<'a> {
     /// Construct a compatibility context for an off-loop hook call.
     ///
-    /// Typed state is deliberately unavailable in this context. Engine-owned
-    /// dispatch paths use the private constructor below to attach the live
-    /// authoritative snapshot.
+    /// Typed state is deliberately unavailable in this context — the lens is
+    /// [`DetachedTypedState::CompatibilityCtx`](crate::DetachedTypedState::CompatibilityCtx).
+    /// Engine-owned dispatch paths use the private constructor below to attach
+    /// the live authoritative snapshot.
     #[must_use]
     pub fn without_typed_state(world: &'a World, module: &str) -> Self {
-        Self::for_module(world, None, module)
+        Self::for_module(
+            world,
+            crate::action_state::TypedStateLens::Detached(
+                crate::action_state::DetachedTypedState::CompatibilityCtx,
+            ),
+            module,
+        )
     }
 
     pub(crate) fn for_module(
         world: &'a World,
-        action_state: Option<&'a crate::action_state::ActionStateStore>,
+        lens: crate::action_state::TypedStateLens<'a>,
         module: &str,
     ) -> Self {
         Self {
             world,
-            typed_state: crate::action_state::ModuleActionState::for_module(
-                action_state,
-                Some(module),
-            ),
+            typed_state: crate::action_state::ModuleActionState::for_module(lens, Some(module)),
             registry: None,
         }
     }
@@ -3408,53 +3412,39 @@ impl<'a> Registrar<'a> {
 
 /// Consult every `MoveAttempt` hook; the first veto wins. `exit` is `None`
 /// for `@teleport`.
+///
+/// `lens` is the caller's typed-state reach: a dispatched command hands over
+/// its live store ([`Ctx::check_move_attempt`] does exactly that), and a
+/// caller with no store names the reason. There is deliberately no store-less
+/// spelling of this name.
 pub fn check_move_attempt(
     reg: &Registry,
     w: &World,
     actor: ObjId,
     exit: Option<ObjId>,
     dest: ObjId,
-) -> Result<(), RichText> {
-    check_move_attempt_with_action_state(reg, w, actor, exit, dest, None)
-}
-
-pub(crate) fn check_move_attempt_with_action_state(
-    reg: &Registry,
-    w: &World,
-    actor: ObjId,
-    exit: Option<ObjId>,
-    dest: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Result<(), RichText> {
     for h in reg.hooks(HookPoint::MoveAttempt) {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         h.hook.move_attempt(&ctx, actor, exit, dest)?;
     }
     Ok(())
 }
 
 /// Consult every `CarryAttempt` hook for `mover` moving `obj` into `dest`
-/// (`get`/`drop`/`give`); the first veto wins.
+/// (`get`/`drop`/`give`); the first veto wins. `lens` is the caller's
+/// typed-state reach — see [`check_move_attempt`].
 pub fn check_carry_attempt(
     reg: &Registry,
     w: &World,
     mover: ObjId,
     obj: ObjId,
     dest: ObjId,
-) -> Result<(), RichText> {
-    check_carry_attempt_with_action_state(reg, w, mover, obj, dest, None)
-}
-
-pub(crate) fn check_carry_attempt_with_action_state(
-    reg: &Registry,
-    w: &World,
-    mover: ObjId,
-    obj: ObjId,
-    dest: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Result<(), RichText> {
     for h in reg.hooks(HookPoint::CarryAttempt) {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         h.hook.carry_attempt(&ctx, mover, obj, dest)?;
     }
     Ok(())
@@ -3470,20 +3460,23 @@ pub(crate) fn check_carry_attempt_with_action_state(
 /// for callers holding a live [`Registry`]; the off-loop script runtime
 /// snapshots the same slice and calls this directly, so the two consumers can
 /// never drift.
+///
+/// `lens` is how far this call can see into engine-owned typed state. There is
+/// exactly one name — a caller with the live store passes
+/// [`TypedStateLens::Live`](crate::TypedStateLens::Live), a caller without one
+/// names the reason. The store-less spelling used to be the *shorter* name,
+/// which made "no typed state" the accidental default and let a hook that
+/// reads a typed family answer the wrong perception verdict.
 #[must_use]
-pub fn perceives_via(hooks: &[HookReg], w: &World, observer: ObjId, subject: ObjId) -> bool {
-    perceives_via_action_state(hooks, w, observer, subject, None)
-}
-
-pub(crate) fn perceives_via_action_state(
+pub fn perceives_via(
     hooks: &[HookReg],
     w: &World,
     observer: ObjId,
     subject: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> bool {
     for h in hooks {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         if h.hook.perceives(&ctx, observer, subject) == Perceive::Conceal {
             return false;
         }
@@ -3496,28 +3489,17 @@ pub(crate) fn perceives_via_action_state(
 /// `&World` so both the `look`/`examine` render path and the live
 /// `Audience::Room` fan-out can call it. With no `Perceive` hook registered
 /// this is a free pass, preserving today's behavior exactly.
+///
+/// `lens` is the caller's typed-state reach — see [`perceives_via`].
 #[must_use]
-pub fn can_perceive(reg: &Registry, w: &World, observer: ObjId, subject: ObjId) -> bool {
-    perceives_via(reg.hooks(HookPoint::Perceive), w, observer, subject)
-}
-
-/// Production form of [`can_perceive`] with the live authoritative typed-state
-/// snapshot attached to every owner-stamped hook context.
-#[must_use]
-pub fn can_perceive_with_action_state(
+pub fn can_perceive(
     reg: &Registry,
     w: &World,
     observer: ObjId,
     subject: ObjId,
-    action_state: &crate::action_state::ActionStateStore,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> bool {
-    perceives_via_action_state(
-        reg.hooks(HookPoint::Perceive),
-        w,
-        observer,
-        subject,
-        Some(action_state),
-    )
+    perceives_via(reg.hooks(HookPoint::Perceive), w, observer, subject, lens)
 }
 
 /// Whether `subject` is under an active concealment effect according to ANY
@@ -3528,49 +3510,30 @@ pub fn can_perceive_with_action_state(
 /// concealment) it is `false`, so it is additive and free — behavior identical
 /// to a game with no concealment ruleset.
 #[must_use]
-pub fn is_concealed(reg: &Registry, w: &World, subject: ObjId) -> bool {
-    is_concealed_via_action_state(reg, w, subject, None)
-}
-
-/// Production form of [`is_concealed`] with live typed-state reads.
-#[must_use]
-pub fn is_concealed_with_action_state(
+pub fn is_concealed(
     reg: &Registry,
     w: &World,
     subject: ObjId,
-    action_state: &crate::action_state::ActionStateStore,
-) -> bool {
-    is_concealed_via_action_state(reg, w, subject, Some(action_state))
-}
-
-pub(crate) fn is_concealed_via_action_state(
-    reg: &Registry,
-    w: &World,
-    subject: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> bool {
     reg.hooks(HookPoint::Perceive).iter().any(|h| {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         h.hook.is_concealed(&ctx, subject)
     })
 }
 
 /// Collect every `LookRendered` hook's extra lines for a room render.
 #[must_use]
-pub fn look_rendered_lines(reg: &Registry, w: &World, looker: ObjId, room: ObjId) -> Vec<RichText> {
-    look_rendered_lines_with_action_state(reg, w, looker, room, None)
-}
-
-pub(crate) fn look_rendered_lines_with_action_state(
+pub fn look_rendered_lines(
     reg: &Registry,
     w: &World,
     looker: ObjId,
     room: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Vec<RichText> {
     let mut lines = Vec::new();
     for h in reg.hooks(HookPoint::LookRendered) {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         lines.extend(h.hook.look_rendered(&ctx, looker, room));
     }
     lines
@@ -3596,7 +3559,15 @@ pub fn room_ambient(
     looker: ObjId,
     room: ObjId,
 ) -> std::collections::BTreeMap<SmolStr, serde_json::Value> {
-    room_ambient_with_action_state(reg, w, looker, room, None)
+    room_ambient_with_action_state(
+        reg,
+        w,
+        looker,
+        room,
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::CompatibilityCtx,
+        ),
+    )
 }
 
 pub(crate) fn room_ambient_with_action_state(
@@ -3604,7 +3575,7 @@ pub(crate) fn room_ambient_with_action_state(
     w: &World,
     looker: ObjId,
     room: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> std::collections::BTreeMap<SmolStr, serde_json::Value> {
     let mut map = std::collections::BTreeMap::new();
     let mut bytes = 0usize;
@@ -3628,7 +3599,7 @@ pub(crate) fn room_ambient_with_action_state(
         map.insert(key, value);
     };
     for h in reg.hooks(HookPoint::RoomAmbient) {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         for (key, value) in h.hook.room_ambient(&ctx, looker, room) {
             offer(key, value, &h.module);
         }
@@ -3652,7 +3623,15 @@ pub(crate) fn room_ambient_with_action_state(
 /// Invoke every observer subscribed to `ev`'s kind, post-mutation, each
 /// with a [`Ctx`] carrying its module identity.
 pub fn emit_world_event(reg: &Registry, w: &mut World, out: &mut Outbox, ev: &WorldEvent) {
-    emit_world_event_with_action_state(reg, w, out, ev, None);
+    emit_world_event_with_action_state(
+        reg,
+        w,
+        out,
+        ev,
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::CompatibilityCtx,
+        ),
+    );
 }
 
 pub(crate) fn emit_world_event_with_action_state(
@@ -3660,13 +3639,13 @@ pub(crate) fn emit_world_event_with_action_state(
     w: &mut World,
     out: &mut Outbox,
     ev: &WorldEvent,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let observers = reg.observers_matching(ev);
     let actor = ev.subject();
     for (module, obs) in observers {
         let typed_state =
-            crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+            crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
         let mut ctx = Ctx {
             w: &mut *w,
             actor,
@@ -3703,7 +3682,9 @@ pub fn apply_async_completion(
         actor,
         correlation,
         payload,
-        None,
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::CompatibilityCtx,
+        ),
     );
 }
 
@@ -3716,14 +3697,14 @@ pub(crate) fn apply_async_completion_with_action_state(
     actor: ObjId,
     correlation: u64,
     payload: &str,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let Some(handler) = reg.async_completion(&module) else {
         tracing::warn!(%module, correlation, "async completion for unregistered module dropped");
         return;
     };
     let typed_state =
-        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+        crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor,
@@ -3831,13 +3812,13 @@ pub(crate) fn apply_relay_speak_with_action_state(
     channel: &str,
     kind: mush_proto::NarrativeKind,
     text: &str,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Result<(), RelayRefusal> {
     let Some((module, handler)) = reg.relay_speaker() else {
         return Err(RelayRefusal::NoSpeaker);
     };
     let typed_state =
-        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+        crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor,
@@ -3858,12 +3839,12 @@ pub(crate) fn apply_discord_interaction_with_action_state(
     w: &mut World,
     out: &mut Outbox,
     interaction: &DiscordInteraction,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Option<Result<String, String>> {
     let (module, handler) = reg.discord_interaction_handler(&interaction.custom_id)?;
     let actor = interaction.actor.unwrap_or(crate::GOD);
     let typed_state =
-        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+        crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor,
@@ -3891,14 +3872,14 @@ pub(crate) fn apply_request_completion_with_action_state(
     subject: ObjId,
     payload: &str,
     outcome: crate::request::RequestOutcome,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let Some(handler) = reg.request_completion(&module) else {
         tracing::warn!(%module, "request completion for unregistered module dropped");
         return;
     };
     let typed_state =
-        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+        crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor: subject,
@@ -3934,7 +3915,9 @@ pub fn apply_store_read_completion(
         actor,
         correlation,
         payload,
-        None,
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::CompatibilityCtx,
+        ),
     );
 }
 
@@ -3947,7 +3930,7 @@ pub(crate) fn apply_store_read_completion_with_action_state(
     actor: ObjId,
     correlation: u64,
     payload: &str,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let Some(handler) = reg.store_read_completion(&module) else {
         tracing::warn!(
@@ -3959,7 +3942,7 @@ pub(crate) fn apply_store_read_completion_with_action_state(
     };
     let result = StoreReadResult::from_payload(payload);
     let typed_state =
-        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+        crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor,
@@ -3981,7 +3964,16 @@ pub fn fire_conn_hook(
     actor: ObjId,
     connected: bool,
 ) {
-    fire_conn_hook_with_action_state(reg, w, out, actor, connected, None);
+    fire_conn_hook_with_action_state(
+        reg,
+        w,
+        out,
+        actor,
+        connected,
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::CompatibilityCtx,
+        ),
+    );
 }
 
 pub(crate) fn fire_conn_hook_with_action_state(
@@ -3990,7 +3982,7 @@ pub(crate) fn fire_conn_hook_with_action_state(
     out: &mut Outbox,
     actor: ObjId,
     connected: bool,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let point = if connected {
         HookPoint::Connected
@@ -3999,10 +3991,8 @@ pub(crate) fn fire_conn_hook_with_action_state(
     };
     let hooks: Vec<HookReg> = reg.hooks(point).to_vec();
     for h in hooks {
-        let typed_state = crate::action_state::ModuleActionState::for_module(
-            action_state,
-            Some(h.module.as_str()),
-        );
+        let typed_state =
+            crate::action_state::ModuleActionState::for_module(lens, Some(h.module.as_str()));
         let mut ctx = Ctx {
             w: &mut *w,
             actor,
@@ -4030,7 +4020,16 @@ pub fn fire_scene_hook(
     scene: SceneId,
     started: bool,
 ) {
-    fire_scene_hook_with_action_state(reg, w, out, scene, started, None);
+    fire_scene_hook_with_action_state(
+        reg,
+        w,
+        out,
+        scene,
+        started,
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::CompatibilityCtx,
+        ),
+    );
 }
 
 pub(crate) fn fire_scene_hook_with_action_state(
@@ -4039,7 +4038,7 @@ pub(crate) fn fire_scene_hook_with_action_state(
     out: &mut Outbox,
     scene: SceneId,
     started: bool,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let point = if started {
         HookPoint::SceneStarted
@@ -4048,10 +4047,8 @@ pub(crate) fn fire_scene_hook_with_action_state(
     };
     let hooks: Vec<HookReg> = reg.hooks(point).to_vec();
     for h in hooks {
-        let typed_state = crate::action_state::ModuleActionState::for_module(
-            action_state,
-            Some(h.module.as_str()),
-        );
+        let typed_state =
+            crate::action_state::ModuleActionState::for_module(lens, Some(h.module.as_str()));
         let mut ctx = Ctx {
             w: &mut *w,
             actor: GOD,
@@ -4081,7 +4078,7 @@ impl Ctx<'_> {
     /// receives the same live typed-state snapshot as ordinary dispatch.
     #[must_use]
     pub fn hook_read_context<'a>(&'a self, module: &str) -> HookReadContext<'a> {
-        HookReadContext::for_module(self.w, self.typed_state.store(), module)
+        HookReadContext::for_module(self.w, self.typed_state.lens(), module)
     }
 
     /// Consult the registered movement veto chain with this command's live
@@ -4092,14 +4089,7 @@ impl Ctx<'_> {
         exit: Option<ObjId>,
         dest: ObjId,
     ) -> Result<(), RichText> {
-        check_move_attempt_with_action_state(
-            self.reg,
-            self.w,
-            actor,
-            exit,
-            dest,
-            self.typed_state.store(),
-        )
+        check_move_attempt(self.reg, self.w, actor, exit, dest, self.typed_state.lens())
     }
 
     /// Consult the registered custody veto chain with this command's live
@@ -4110,32 +4100,25 @@ impl Ctx<'_> {
         obj: ObjId,
         dest: ObjId,
     ) -> Result<(), RichText> {
-        check_carry_attempt_with_action_state(
-            self.reg,
-            self.w,
-            mover,
-            obj,
-            dest,
-            self.typed_state.store(),
-        )
+        check_carry_attempt(self.reg, self.w, mover, obj, dest, self.typed_state.lens())
     }
 
     /// Resolve per-observer visibility with this command's live typed state.
     #[must_use]
     pub fn can_perceive(&self, observer: ObjId, subject: ObjId) -> bool {
-        perceives_via_action_state(
+        perceives_via(
             self.reg.hooks(HookPoint::Perceive),
             self.w,
             observer,
             subject,
-            self.typed_state.store(),
+            self.typed_state.lens(),
         )
     }
 
     /// Resolve ruleset-agnostic concealment with this command's live typed state.
     #[must_use]
     pub fn is_concealed(&self, subject: ObjId) -> bool {
-        is_concealed_via_action_state(self.reg, self.w, subject, self.typed_state.store())
+        is_concealed(self.reg, self.w, subject, self.typed_state.lens())
     }
 
     /// Render a room through perception and look hooks using this command's
@@ -4147,7 +4130,7 @@ impl Ctx<'_> {
             looker,
             room,
             self.out,
-            self.typed_state.store(),
+            self.typed_state.lens(),
         );
     }
 
@@ -4484,13 +4467,7 @@ impl Ctx<'_> {
     /// handlers that mutate the world through paths not covered by the
     /// core helpers call this themselves.
     pub fn emit_world_event(&mut self, ev: &WorldEvent) {
-        emit_world_event_with_action_state(
-            self.reg,
-            self.w,
-            self.out,
-            ev,
-            self.typed_state.store(),
-        );
+        emit_world_event_with_action_state(self.reg, self.w, self.out, ev, self.typed_state.lens());
     }
 
     // ------------------------------------------------------------------
@@ -4585,7 +4562,7 @@ impl Ctx<'_> {
             self.out,
             id,
             true,
-            self.typed_state.store(),
+            self.typed_state.lens(),
         );
         id
     }
@@ -4605,7 +4582,7 @@ impl Ctx<'_> {
             self.out,
             id,
             false,
-            self.typed_state.store(),
+            self.typed_state.lens(),
         );
         let Some(scene) = self.w.scene_remove(id) else {
             return false;
@@ -4756,15 +4733,23 @@ mod concealment_tests {
     use crate::obj::ObjId;
     use crate::world::World;
 
+    /// A store-less lens for the assertions below: these tests pin the answer
+    /// a caller gets when it has no typed state at all, which is exactly the
+    /// answer the old store-less twins handed out by default.
+    const DETACHED: crate::action_state::TypedStateLens<'static> =
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::Test,
+        );
+
     /// With no `Perceive` hook registered, the notability query defaults to
     /// `false` — additive and free (a game with no concealment ruleset).
     #[test]
     fn is_concealed_defaults_false_with_no_hook() {
         let reg = Registry::new();
         let w = World::new_minimal();
-        assert!(!is_concealed(&reg, &w, ObjId(1)));
+        assert!(!is_concealed(&reg, &w, ObjId(1), DETACHED));
         // And `can_perceive` remains a free pass on the same empty registry.
-        assert!(can_perceive(&reg, &w, ObjId(1), ObjId(2)));
+        assert!(can_perceive(&reg, &w, ObjId(1), ObjId(2), DETACHED));
     }
 
     /// A registered hook whose `is_concealed` returns true makes the firing
@@ -4780,6 +4765,6 @@ mod concealment_tests {
         let mut reg = Registry::new();
         Registrar::new(&mut reg, "test").hook(HookPoint::Perceive, Arc::new(AlwaysConcealed));
         let w = World::new_minimal();
-        assert!(is_concealed(&reg, &w, ObjId(1)));
+        assert!(is_concealed(&reg, &w, ObjId(1), DETACHED));
     }
 }

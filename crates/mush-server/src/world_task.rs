@@ -138,9 +138,9 @@ use mush_core::{
     Flags, Inbound, IncidentId, LegalActionQuery, ObjId, ObjKind, OfferExecutionContext,
     OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
     Privileges, ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind,
-    StagedAction, StepOutcome, TickCadence, World, WorldCommand, WorldEvent, can_perceive,
-    can_perceive_with_action_state, event_subject, is_ignoring, narrative_actor,
-    register_core_commands, register_engine_commands,
+    StagedAction, StepOutcome, TickCadence, TypedStateLens, World, WorldCommand, WorldEvent,
+    can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
+    register_engine_commands,
 };
 use mush_ipc::{
     ActionSend, DiscordControlOp, GatewayAction, GatewayInput, GatewayRequest,
@@ -8488,13 +8488,17 @@ fn resolve_classified_sends(
                         continue;
                     }
                     if let Some(subject) = subject {
-                        let visible = action_state.map_or_else(
-                            || can_perceive(reg, world, occupant, subject),
-                            |store| {
-                                can_perceive_with_action_state(reg, world, occupant, subject, store)
-                            },
+                        // The live/absent choice is the caller's, and it stays
+                        // explicit: a step that resolved its sends with a store
+                        // projects through it, and one without a store says so
+                        // rather than silently taking the store-less verdict.
+                        let lens = action_state.map_or(
+                            TypedStateLens::Detached(
+                                mush_core::DetachedTypedState::CompatibilityCtx,
+                            ),
+                            TypedStateLens::Live,
                         );
-                        if !visible {
+                        if !can_perceive(reg, world, occupant, subject, lens) {
                             continue;
                         }
                     }
@@ -9329,6 +9333,11 @@ fn spawn_effect_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The store-less lens these projection assertions have always been taken
+    /// with: no live authoritative store, said out loud.
+    const DETACHED: TypedStateLens<'static> =
+        TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
 
     /// H1: the store handle the effect-release helpers now carry (tests that
     /// never launch a store read hand them an empty in-memory store).
@@ -16075,14 +16084,14 @@ mod tests {
         );
 
         // D1: the gate itself. Only the one concealed pair fails.
-        assert!(!can_perceive(&reg, &world, alice, wraith));
-        assert!(can_perceive(&reg, &world, bob, wraith));
-        assert!(can_perceive(&reg, &world, alice, bob));
-        assert!(can_perceive(&reg, &world, wraith, wraith));
+        assert!(!can_perceive(&reg, &world, alice, wraith, DETACHED));
+        assert!(can_perceive(&reg, &world, bob, wraith, DETACHED));
+        assert!(can_perceive(&reg, &world, alice, bob, DETACHED));
+        assert!(can_perceive(&reg, &world, wraith, wraith, DETACHED));
 
         // D2(a): room_view drops the concealed occupant for Alice only.
         let names = |looker| -> Vec<String> {
-            room_view(&reg, &world, looker, hall)
+            room_view(&reg, &world, looker, hall, DETACHED)
                 .unwrap()
                 .contents
                 .into_iter()
@@ -16192,9 +16201,9 @@ mod tests {
         register_core_commands(&mut reg).unwrap();
 
         // Everyone is perceivable; look lists the other occupant.
-        assert!(can_perceive(&reg, &world, a, b));
+        assert!(can_perceive(&reg, &world, a, b, DETACHED));
         assert!(
-            room_view(&reg, &world, a, hall)
+            room_view(&reg, &world, a, hall, DETACHED)
                 .unwrap()
                 .contents
                 .iter()

@@ -1337,7 +1337,8 @@ fn apply_action(
             // Re-validated exactly like a player's move: a locked / vanished
             // exit simply fails.
             if let Some(e) = find_exit(ctx.w, npc, exit) {
-                traverse_exit(ctx.reg, ctx.w, npc, e, ctx.out);
+                let lens = ctx.typed_state.lens();
+                traverse_exit(ctx.reg, ctx.w, npc, e, ctx.out, lens);
             }
             record_self(ctx, npc, &format!("(tries to leave via {exit})"));
         }

@@ -15,7 +15,7 @@ use mush_proto::{
 use crate::cmd::Registry;
 use crate::engine::Deferred;
 use crate::flags::{Flags, Powers};
-use crate::module::perceives_via_action_state;
+use crate::module::perceives_via;
 use crate::obj::{ObjId, ObjKind};
 use crate::perm;
 use crate::world::World;
@@ -563,17 +563,18 @@ pub fn name_span(w: &World, id: ObjId) -> Span {
 ///   per-observer projection gate) is omitted — a free pass with no
 ///   `Perceive` hook registered, so the listing is unchanged for a game
 ///   without a concealment ruleset.
+///
+/// `lens` is the caller's typed-state reach: the one room-render path hands
+/// over the dispatching command's live store, so a `Perceive` hook that reads
+/// a typed family answers the render the same way it answers the live
+/// fan-out. A caller with no store names the reason.
 #[must_use]
-pub fn room_view(reg: &Registry, w: &World, looker: ObjId, room: ObjId) -> Option<RoomView> {
-    room_view_with_action_state(reg, w, looker, room, None)
-}
-
-pub(crate) fn room_view_with_action_state(
+pub fn room_view(
     reg: &Registry,
     w: &World,
     looker: ObjId,
     room: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Option<RoomView> {
     let r = w.get(room)?;
     let see_hidden = perm::has_power(w, looker, Powers::SEE_HIDDEN);
@@ -613,12 +614,12 @@ pub(crate) fn room_view_with_action_state(
             // M11 per-observer projection: hide an occupant this looker
             // cannot perceive (Obfuscate vs Auspex, …). Free pass with no
             // Perceive hook registered.
-            if !perceives_via_action_state(
+            if !perceives_via(
                 reg.hooks(crate::module::HookPoint::Perceive),
                 w,
                 looker,
                 c,
-                action_state,
+                lens,
             ) {
                 continue;
             }
@@ -655,7 +656,7 @@ pub(crate) fn room_view_with_action_state(
     // Structured ambience (weather, scene, the IC clock) for a client's room
     // band; the `LookRendered` prose lines still follow the `Room` event for
     // line mode (interface plan I1, D-I-4).
-    let ambient = crate::module::room_ambient_with_action_state(reg, w, looker, room, action_state);
+    let ambient = crate::module::room_ambient_with_action_state(reg, w, looker, room, lens);
 
     Some(RoomView {
         name: r.name.clone(),
@@ -673,6 +674,14 @@ mod tests {
     use super::*;
     use crate::attr::Attr;
     use crate::obj::{GOD, LIMBO};
+
+    /// A store-less lens for the assertions below: these tests pin the answer
+    /// a caller gets when it has no typed state at all, which is exactly the
+    /// answer the old store-less twins handed out by default.
+    const DETACHED: crate::action_state::TypedStateLens<'static> =
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::Test,
+        );
 
     fn setup() -> (World, ObjId, ObjId) {
         let mut w = World::new_minimal();
@@ -853,7 +862,7 @@ mod tests {
         w.add_alias(exit, "no").unwrap();
         let ball = w.create(ObjKind::Thing, "ball", GOD, Some(hall)).unwrap();
 
-        let rv = room_view(&reg, &w, nick, hall).unwrap();
+        let rv = room_view(&reg, &w, nick, hall, DETACHED).unwrap();
         assert_eq!(rv.name, "Hall");
         assert_eq!(rv.id, hall.to_string());
         assert_eq!(rv.desc.to_plain_text(), "A big hall.");
@@ -866,9 +875,9 @@ mod tests {
         assert_eq!(rv.exits[0].name, "north");
         assert_eq!(rv.exits[0].aliases, vec!["n".to_string(), "no".to_string()]);
         // Default desc when unset.
-        let rv0 = room_view(&reg, &w, nick, LIMBO).unwrap();
+        let rv0 = room_view(&reg, &w, nick, LIMBO, DETACHED).unwrap();
         assert_eq!(rv0.desc.to_plain_text(), "You see nothing special.");
-        assert!(room_view(&reg, &w, nick, ObjId(99)).is_none());
+        assert!(room_view(&reg, &w, nick, ObjId(99), DETACHED).is_none());
     }
 
     #[test]
@@ -883,27 +892,60 @@ mod tests {
         // DARK object hidden from plain players, visible to God (controls).
         // (Hall holds Nick and the ball; the looker is never listed.)
         w.set_flag(ball, Flags::DARK, true).unwrap();
-        assert!(room_view(&reg, &w, nick, hall).unwrap().contents.is_empty());
-        assert_eq!(room_view(&reg, &w, GOD, hall).unwrap().contents.len(), 2);
+        assert!(
+            room_view(&reg, &w, nick, hall, DETACHED)
+                .unwrap()
+                .contents
+                .is_empty()
+        );
+        assert_eq!(
+            room_view(&reg, &w, GOD, hall, DETACHED)
+                .unwrap()
+                .contents
+                .len(),
+            2
+        );
         w.set_flag(ball, Flags::DARK, false).unwrap();
 
         // DARK exit hidden.
         w.set_flag(exit, Flags::DARK, true).unwrap();
-        assert!(room_view(&reg, &w, nick, hall).unwrap().exits.is_empty());
+        assert!(
+            room_view(&reg, &w, nick, hall, DETACHED)
+                .unwrap()
+                .exits
+                .is_empty()
+        );
         w.set_flag(exit, Flags::DARK, false).unwrap();
 
         // DARK room hides all contents from non-controllers.
         w.set_flag(hall, Flags::DARK, true).unwrap();
-        assert!(room_view(&reg, &w, nick, hall).unwrap().contents.is_empty());
-        assert_eq!(room_view(&reg, &w, GOD, hall).unwrap().contents.len(), 2);
+        assert!(
+            room_view(&reg, &w, nick, hall, DETACHED)
+                .unwrap()
+                .contents
+                .is_empty()
+        );
+        assert_eq!(
+            room_view(&reg, &w, GOD, hall, DETACHED)
+                .unwrap()
+                .contents
+                .len(),
+            2
+        );
         w.set_flag(hall, Flags::DARK, false).unwrap();
 
         // OPAQUE hides contents from outside lookers only.
         w.set_flag(hall, Flags::OPAQUE, true).unwrap();
-        assert_eq!(room_view(&reg, &w, nick, hall).unwrap().contents.len(), 1);
+        assert_eq!(
+            room_view(&reg, &w, nick, hall, DETACHED)
+                .unwrap()
+                .contents
+                .len(),
+            1
+        );
         let outsider = w.create(ObjKind::Player, "Out", GOD, Some(LIMBO)).unwrap();
         assert!(
-            room_view(&reg, &w, outsider, hall)
+            room_view(&reg, &w, outsider, hall, DETACHED)
                 .unwrap()
                 .contents
                 .is_empty()
@@ -913,7 +955,10 @@ mod tests {
         w.set_flag(hall, Flags::DARK, true).unwrap();
         w.get_mut(outsider).unwrap().powers = Powers::SEE_HIDDEN;
         assert_eq!(
-            room_view(&reg, &w, outsider, hall).unwrap().contents.len(),
+            room_view(&reg, &w, outsider, hall, DETACHED)
+                .unwrap()
+                .contents
+                .len(),
             2
         );
     }
@@ -930,7 +975,7 @@ mod tests {
 
         // Nick (connected) looks: sees the connected... nothing of self; the
         // NPC and the thing; NOT the offline Bob.
-        let names: Vec<_> = room_view(&reg, &w, nick, hall)
+        let names: Vec<_> = room_view(&reg, &w, nick, hall, DETACHED)
             .unwrap()
             .contents
             .into_iter()
@@ -942,7 +987,7 @@ mod tests {
 
         // Not waived for staff/controllers either — God's look also hides Bob
         // (staff use `examine` to see who's offline in a room).
-        let god_names: Vec<_> = room_view(&reg, &w, GOD, hall)
+        let god_names: Vec<_> = room_view(&reg, &w, GOD, hall, DETACHED)
             .unwrap()
             .contents
             .into_iter()
@@ -953,7 +998,7 @@ mod tests {
 
         // Bob reconnecting makes him appear.
         w.set_connected(bob, true);
-        let names2: Vec<_> = room_view(&reg, &w, nick, hall)
+        let names2: Vec<_> = room_view(&reg, &w, nick, hall, DETACHED)
             .unwrap()
             .contents
             .into_iter()
@@ -973,7 +1018,7 @@ mod tests {
             .unwrap();
         w.set_flag(zmo, Flags::ZONE_MASTER, true).unwrap();
         w.set_zone(hall, Some(zmo)).unwrap();
-        let rv = room_view(&reg, &w, nick, hall).unwrap();
+        let rv = room_view(&reg, &w, nick, hall, DETACHED).unwrap();
         assert_eq!(rv.zone.unwrap().name, "Downtown");
     }
 }

@@ -459,6 +459,110 @@ impl<K: 'static, V: 'static> StateFamilyHandle<K, V> {
     }
 }
 
+/// Why a [`TypedStateLens`] carries no live [`ActionStateStore`].
+///
+/// A context that cannot read typed state is not a bug — the off-loop script
+/// snapshot, the local REPL and hand-built compatibility contexts genuinely
+/// have no store to read. What *was* a bug is not being able to tell those
+/// apart from a production call that lost its store on the way down, because
+/// both spelled themselves `None` and both silently answered "typed state is
+/// unavailable". The variants below are that missing sentence: every detached
+/// lens says which of the four it is, at the point it is built.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DetachedTypedState {
+    /// The off-loop Rhai runtime, reading a snapshot of the hook slice taken
+    /// before the world task moved on (`mush-script`). There is no live store
+    /// on that thread by construction.
+    ScriptSnapshot,
+    /// The single-player local REPL reading outside a dispatched command.
+    Repl,
+    /// A hand-built read context on a path the engine does not dispatch —
+    /// [`HookReadContext::without_typed_state`](crate::HookReadContext::without_typed_state)
+    /// and the store-less public wrappers that still shadow their
+    /// typed-state-carrying partners.
+    CompatibilityCtx,
+    /// A test that deliberately calls a perception or veto predicate with no
+    /// store, to pin the store-less answer.
+    Test,
+}
+
+impl DetachedTypedState {
+    /// The stable lower-case name used in diagnostics.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ScriptSnapshot => "script-snapshot",
+            Self::Repl => "repl",
+            Self::CompatibilityCtx => "compatibility-ctx",
+            Self::Test => "test",
+        }
+    }
+}
+
+impl fmt::Display for DetachedTypedState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// How one call reaches engine-owned typed state: the live authoritative
+/// store, or a named reason there is none.
+///
+/// This is the parameter every perception, veto and render predicate in the
+/// engine takes. It replaces the `Option<&ActionStateStore>` those predicates
+/// used to thread, and — more importantly — it replaces the *pairs* of public
+/// names that grew around that `Option`: a plain `can_perceive` that passed
+/// `None` and a `can_perceive_with_action_state` that passed the store. The
+/// plain name was the wrong default and the easy one to reach, so a caller
+/// that should have carried the store could quietly get the store-less answer
+/// — the wrong perception verdict, not a degraded one. With one name taking
+/// one lens, a store-less call has to say so.
+#[derive(Copy, Clone)]
+pub enum TypedStateLens<'a> {
+    /// The live authoritative snapshot the world task owns.
+    Live(&'a ActionStateStore),
+    /// No store, and why.
+    Detached(DetachedTypedState),
+}
+
+impl fmt::Debug for TypedStateLens<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Live(_) => formatter.write_str("TypedStateLens::Live"),
+            Self::Detached(reason) => formatter
+                .debug_tuple("TypedStateLens::Detached")
+                .field(&reason.as_str())
+                .finish(),
+        }
+    }
+}
+
+impl<'a> TypedStateLens<'a> {
+    /// The live store, or `None` for a detached lens.
+    #[must_use]
+    pub const fn store(self) -> Option<&'a ActionStateStore> {
+        match self {
+            Self::Live(store) => Some(store),
+            Self::Detached(_) => None,
+        }
+    }
+
+    /// Whether this lens carries the live authoritative store.
+    #[must_use]
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Live(_))
+    }
+
+    /// Why there is no store, or `None` when there is one.
+    #[must_use]
+    pub const fn detached(self) -> Option<DetachedTypedState> {
+        match self {
+            Self::Live(_) => None,
+            Self::Detached(reason) => Some(reason),
+        }
+    }
+}
+
 /// Read-only, owner-scoped view of engine-owned typed state supplied to an
 /// ordinary module context.
 ///
@@ -466,7 +570,7 @@ impl<K: 'static, V: 'static> StateFamilyHandle<K, V> {
 /// opaque family handle minted for its own owner; it cannot mutate state or
 /// borrow another owner's family through this surface.
 pub struct ModuleActionState<'a> {
-    store: Option<&'a ActionStateStore>,
+    lens: TypedStateLens<'a>,
     owner: Option<OwnerId>,
 }
 
@@ -474,7 +578,7 @@ impl fmt::Debug for ModuleActionState<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ModuleActionState")
-            .field("available", &self.store.is_some())
+            .field("lens", &self.lens)
             .field("owner", &self.owner)
             .finish_non_exhaustive()
     }
@@ -486,21 +590,29 @@ impl<'a> ModuleActionState<'a> {
     #[must_use]
     pub const fn unavailable() -> Self {
         Self {
-            store: None,
+            lens: TypedStateLens::Detached(DetachedTypedState::CompatibilityCtx),
             owner: None,
         }
     }
 
-    pub(crate) fn for_module(store: Option<&'a ActionStateStore>, module: Option<&str>) -> Self {
+    pub(crate) fn for_module(lens: TypedStateLens<'a>, module: Option<&str>) -> Self {
         Self {
-            store,
+            lens,
             owner: module.and_then(|name| OwnerId::parse_canonical(name).ok()),
         }
     }
 
+    /// The lens this reader was built from, so a module holding a
+    /// [`Ctx`](crate::Ctx) can hand its own live typed state to an engine
+    /// predicate instead of reaching for a store-less name.
+    #[must_use]
+    pub const fn lens(&self) -> TypedStateLens<'a> {
+        self.lens
+    }
+
     #[must_use]
     pub const fn is_available(&self) -> bool {
-        self.store.is_some() && self.owner.is_some()
+        self.lens.store().is_some() && self.owner.is_some()
     }
 
     /// Read one exact record from a family owned by this context's module.
@@ -513,7 +625,10 @@ impl<'a> ModuleActionState<'a> {
         K: Send + Sync + 'static,
         V: Clone + Send + Sync + 'static,
     {
-        let store = self.store.ok_or(ModuleActionStateReadError::Unavailable)?;
+        let store = self
+            .lens
+            .store()
+            .ok_or(ModuleActionStateReadError::Unavailable)?;
         self.require_owner(handle.owner())?;
         store.get(handle, key).map_err(Into::into)
     }
@@ -530,7 +645,10 @@ impl<'a> ModuleActionState<'a> {
         K: Send + Sync + 'static,
         V: Clone + Send + Sync + 'static,
     {
-        let store = self.store.ok_or(ModuleActionStateReadError::Unavailable)?;
+        let store = self
+            .lens
+            .store()
+            .ok_or(ModuleActionStateReadError::Unavailable)?;
         self.require_owner(handle.owner())?;
         store.scan_family(handle, after, limit).map_err(Into::into)
     }
@@ -548,7 +666,8 @@ impl<'a> ModuleActionState<'a> {
         // the reverse would leave `mush-industry` able to debit a deposit's
         // pool and unable to tell an operator what is left in it.
         if self
-            .store
+            .lens
+            .store()
             .is_some_and(|store| store.registry.delegates(family, context))
         {
             return Ok(());
@@ -557,10 +676,6 @@ impl<'a> ModuleActionState<'a> {
             context: context.clone(),
             family: family.clone(),
         })
-    }
-
-    pub(crate) const fn store(&self) -> Option<&'a ActionStateStore> {
-        self.store
     }
 }
 

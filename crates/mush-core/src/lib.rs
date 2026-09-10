@@ -122,7 +122,7 @@ pub use action::{
 };
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
-    ActionTxn, ActionTxnLimits, CanonicalStateBytes, MAX_ACTION_BUNDLE_BYTES,
+    ActionTxn, ActionTxnLimits, CanonicalStateBytes, DetachedTypedState, MAX_ACTION_BUNDLE_BYTES,
     MAX_ACTION_MUTATION_OPERATIONS, MAX_ACTION_STATE_BOOT_BYTES, MAX_ACTION_STATE_BOOT_RECORDS,
     MAX_ACTION_STATE_RECORD_BYTES, MAX_STATE_FAMILIES, MAX_STATE_FAMILIES_PER_OWNER,
     MAX_STATE_FAMILY_DELEGATES, MAX_STATE_FAMILY_SCAN_RECORDS, MAX_STATE_KEY_BYTES,
@@ -130,7 +130,7 @@ pub use action_state::{
     PreparedTxn, StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyHandle,
     StateFamilyId, StateFamilyPage, StateFamilyRegistry, StateFamilyRegistryBuilder,
     StateFamilyRegistryError, StateFamilyScanEntry, StateKey, StateKeyCodec, StateValueDecoder,
-    StateValueSerializer, StateValueValidator, is_action_state_persistence_key,
+    StateValueSerializer, StateValueValidator, TypedStateLens, is_action_state_persistence_key,
 };
 pub use action_window::{
     ActionWindow, ActionWindowDraft, ActionWindowError, ActionWindowGuardValidator, ActionWindowId,
@@ -282,8 +282,7 @@ pub use module::{
     STORE_READ_STALE_SECS, STORE_READ_TIMEOUT_MS, Scene, SceneId, StackedContext,
     StoreReadCompletion, StoreReadError, StoreReadResult, TickCadence, TickHandler, WeatherQuery,
     WorldEvent, WorldEventKind, WorldObserver, WxSnapshot, apply_store_read_completion,
-    can_perceive, can_perceive_with_action_state, is_concealed, is_concealed_with_action_state,
-    perceives_via, room_ambient,
+    can_perceive, is_concealed, perceives_via, room_ambient,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use offer::{

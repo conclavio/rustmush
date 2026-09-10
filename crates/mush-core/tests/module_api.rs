@@ -2971,3 +2971,207 @@ fn an_ambiguous_prefix_is_refused_with_the_candidate_list() {
         "{text}"
     );
 }
+
+// ----------------------------------------------------------------------
+// The typed-state lens (WS03-S7)
+// ----------------------------------------------------------------------
+
+/// A `Perceive` hook that answers PURELY from whether its read context can
+/// reach live typed state: it conceals when it cannot.
+///
+/// That is the inverse of a real ruleset hook, and deliberately so. A hook
+/// that reads a typed family (WoD's Obfuscate cache is the live example)
+/// abstains — the wrong answer, silently — when the context has no store. The
+/// old API let a production caller reach that state by typing the *shorter*
+/// name: `can_perceive` passed `None`, `can_perceive_with_action_state`
+/// passed the store, and nothing made a caller choose. This probe turns that
+/// silent wrong answer into a loud one: a store-less call on any of the three
+/// production paths below hides Bob outright.
+struct TypedStateProbeHook;
+
+impl EventHook for TypedStateProbeHook {
+    fn perceives(
+        &self,
+        ctx: &HookReadContext<'_>,
+        _observer: ObjId,
+        _subject: ObjId,
+    ) -> mush_core::module::Perceive {
+        if ctx.typed_state_available() {
+            mush_core::module::Perceive::Abstain
+        } else {
+            mush_core::module::Perceive::Conceal
+        }
+    }
+
+    fn is_concealed(&self, ctx: &HookReadContext<'_>, _subject: ObjId) -> bool {
+        !ctx.typed_state_available()
+    }
+}
+
+/// Composes the probe hook plus one command that reports what the *`Ctx`*
+/// surface sees, so the module-facing predicates are covered as well as the
+/// engine-facing ones.
+struct ProbeModule {
+    observer: ObjId,
+    subject: ObjId,
+}
+
+impl GameModule for ProbeModule {
+    fn name(&self) -> &'static str {
+        "probe"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+        reg.hook(HookPoint::Perceive, Arc::new(TypedStateProbeHook));
+        let (observer, subject) = (self.observer, self.subject);
+        reg.command(
+            CommandSpec {
+                name: "+probe".into(),
+                shape: ArgShape::None,
+                help: "+probe -- report the Ctx perception surface.".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let perceives = ctx.can_perceive(observer, subject);
+                let concealed = ctx.is_concealed(subject);
+                let actor = ctx.actor;
+                ctx.out.info(
+                    actor,
+                    format!("perceives={perceives} concealed={concealed}"),
+                );
+                Ok(())
+            }),
+        )
+    }
+}
+
+/// Every room name a `look`-shaped outbox rendered, with its contents.
+fn room_contents(out: &Outbox) -> Vec<(String, Vec<String>)> {
+    out.events()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            OutputEvent::Room(rv) => Some((
+                rv.name.clone(),
+                rv.contents.iter().map(|r| r.name.clone()).collect(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// WS03-S7. The perception gate must see the LIVE typed-state snapshot on
+/// every path production can reach it by — the `look` render, the arrival
+/// render a move produces, and the `Ctx` predicates a module calls — and a
+/// deliberately detached lens must still give the store-less answer.
+///
+/// Before the collapse each of those paths had two spellings, and the
+/// store-less one was the shorter, more reachable name. This test would have
+/// caught any of them regressing to it: the probe conceals Bob the moment a
+/// context loses its store, and concealment is the *wrong perception answer*,
+/// not a degraded one.
+#[test]
+fn a_perceive_hook_sees_live_typed_state_on_every_production_path() {
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let hall = world.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+    let vault = world.create(ObjKind::Room, "Vault", GOD, None).unwrap();
+    let alice = world
+        .create(ObjKind::Player, "Alice", GOD, Some(hall))
+        .unwrap();
+    let bob = world
+        .create(ObjKind::Player, "Bob", GOD, Some(hall))
+        .unwrap();
+    let carol = world
+        .create(ObjKind::Player, "Carol", GOD, Some(vault))
+        .unwrap();
+    for who in [alice, bob, carol] {
+        world.set_connected(who, true);
+    }
+    let door = world
+        .create(ObjKind::Exit, "north;n", GOD, Some(hall))
+        .unwrap();
+    world.link_exit(door, Some(vault)).unwrap();
+
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    let mut engine = Engine::with_modules(
+        world,
+        registry,
+        vec![Box::new(ProbeModule {
+            observer: alice,
+            subject: bob,
+        })],
+    )
+    .unwrap();
+
+    // Path 1 — the `look` room render (output::room_view under Ctx::show_room).
+    let out = run(&mut engine, alice, "look");
+    let rendered = room_contents(&out);
+    assert!(
+        rendered
+            .iter()
+            .any(|(room, contents)| room == "Hall" && contents.iter().any(|name| name == "Bob")),
+        "the look render must carry the live store, so the probe abstains: {rendered:?}"
+    );
+
+    // Path 2 — the per-target examine gate (commands::look's can_perceive).
+    let out = run(&mut engine, alice, "look Bob");
+    assert!(
+        !sys_texts(&out)
+            .iter()
+            .any(|line| line.contains("don't see")),
+        "looking at a visible player must not be refused: {:?}",
+        sys_texts(&out)
+    );
+
+    // Path 3 — the module-facing `Ctx` predicates.
+    let out = run(&mut engine, alice, "+probe");
+    assert_eq!(
+        sys_texts(&out),
+        vec!["perceives=true concealed=false".to_string()],
+        "Ctx::can_perceive / Ctx::is_concealed must read the command's live lens"
+    );
+
+    // Path 4 — the arrival render a move produces (movement::traverse_exit).
+    let out = run(&mut engine, alice, "north");
+    let rendered = room_contents(&out);
+    assert!(
+        rendered
+            .iter()
+            .any(|(room, contents)| room == "Vault" && contents.iter().any(|name| name == "Carol")),
+        "the arrival render must carry the live store too: {rendered:?}"
+    );
+
+    // And the other side of the lens: an explicitly detached call still gets
+    // the store-less verdict, which is what makes the paths above meaningful.
+    assert!(
+        mush_core::can_perceive(
+            &engine.registry,
+            &engine.world,
+            alice,
+            bob,
+            mush_core::TypedStateLens::Live(engine.action_state()),
+        ),
+        "a live lens abstains"
+    );
+    assert!(
+        !mush_core::can_perceive(
+            &engine.registry,
+            &engine.world,
+            alice,
+            bob,
+            mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
+        ),
+        "a detached lens conceals — the answer the store-less twin used to hand out"
+    );
+    assert!(
+        mush_core::is_concealed(
+            &engine.registry,
+            &engine.world,
+            bob,
+            mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
+        ),
+        "and the notability query answers the same way"
+    );
+}

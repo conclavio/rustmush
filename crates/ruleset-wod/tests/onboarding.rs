@@ -445,10 +445,10 @@ fn chargen_required_off_is_unchanged() {
 /// `HookReadContext` carried a live typed-state snapshot.
 ///
 /// 08j S2: `on_approved` used to re-render by dispatching `"look"` through the
-/// compat `mush_core::dispatch`, which is the `None` wrapper over
+/// compat `mush_core::dispatch`, which is the store-less wrapper over
 /// `dispatch_with_action_state` — so every hook in that render, and every
-/// `can_perceive` / `is_concealed` under it, ran with `typed_state.store() ==
-/// None`. Fail-closed held, but it was the one production engine dispatch that
+/// `can_perceive` / `is_concealed` under it, ran with a detached typed-state
+/// lens. Fail-closed held, but it was the one production engine dispatch that
 /// did not use the live store (09 §C2). It now goes through `Ctx::show_room`.
 struct TypedStateProbe {
     seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,

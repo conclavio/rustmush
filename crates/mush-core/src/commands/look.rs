@@ -9,7 +9,7 @@ use crate::attr::{AttrFlags, AttrValue};
 use crate::cmd::{CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Role};
 use crate::matchit::{MatchErr, is_nearby, match_object};
-use crate::module::{HookPoint, perceives_via_action_state};
+use crate::module::{HookPoint, perceives_via};
 use crate::obj::{ObjId, ObjKind};
 use crate::output::{Outbox, name_span};
 use crate::perm;
@@ -59,7 +59,7 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 ctx.actor,
                 target,
                 ctx.out,
-                ctx.typed_state.store(),
+                ctx.typed_state.lens(),
             );
             Ok(())
         }
@@ -98,11 +98,11 @@ fn look_at(
     looker: ObjId,
     target: ObjId,
     out: &mut Outbox,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let Some(o) = w.get(target) else { return };
     if o.kind == ObjKind::Room {
-        show_room_with_action_state(reg, w, looker, target, out, action_state);
+        show_room_with_action_state(reg, w, looker, target, out, lens);
         return;
     }
     let desc =
@@ -127,12 +127,12 @@ fn look_at(
                 .is_some_and(|co| !co.flags.intersects(Flags::GOING | Flags::DARK))
                 // M11 per-observer projection: never list an occupant the
                 // looker cannot perceive (free pass with no Perceive hook).
-                && perceives_via_action_state(
+                && perceives_via(
                     reg.hooks(HookPoint::Perceive),
                     w,
                     looker,
                     c,
-                    action_state,
+                    lens,
                 )
             {
                 text = text.text(" ").span(name_span(w, c));

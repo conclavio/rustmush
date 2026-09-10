@@ -1124,7 +1124,16 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// the exact order). All output — including errors and `Huh?` — is queued
 /// on `out`.
 pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &mut Outbox) {
-    dispatch_with_action_state(reg, w, actor, line, out, None);
+    dispatch_with_action_state(
+        reg,
+        w,
+        actor,
+        line,
+        out,
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::CompatibilityCtx,
+        ),
+    );
 }
 
 pub(crate) fn dispatch_with_action_state(
@@ -1133,7 +1142,7 @@ pub(crate) fn dispatch_with_action_state(
     actor: ObjId,
     line: &str,
     out: &mut Outbox,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     if w.get(actor).is_none() {
         return;
@@ -1171,7 +1180,7 @@ pub(crate) fn dispatch_with_action_state(
                     // context may write its ruleset's attr namespace).
                     module: stacked.module.clone(),
                     typed_state: crate::action_state::ModuleActionState::for_module(
-                        action_state,
+                        lens,
                         stacked.module.as_deref(),
                     ),
                 };
@@ -1188,7 +1197,7 @@ pub(crate) fn dispatch_with_action_state(
                 ContextOutcome::PopAndRun(cmd) => {
                     let spec = restored_prompt(w, actor);
                     out.to_actor(actor, OutputEvent::Prompt(spec));
-                    dispatch_with_action_state(reg, w, actor, &cmd, out, action_state);
+                    dispatch_with_action_state(reg, w, actor, &cmd, out, lens);
                 }
             }
             return;
@@ -1253,13 +1262,13 @@ pub(crate) fn dispatch_with_action_state(
 
     // 4. HOME keyword.
     if cur.trim().eq_ignore_ascii_case("home") {
-        movement::go_home_with_action_state(reg, w, actor, out, action_state);
+        movement::go_home(reg, w, actor, out, lens);
         return;
     }
 
     // 5. Exit match (room → zone → global) against the whole line.
     if let Some(exit) = movement::find_exit(w, actor, cur.trim()) {
-        movement::traverse_exit_with_action_state(reg, w, actor, exit, out, action_state);
+        movement::traverse_exit(reg, w, actor, exit, out, lens);
         return;
     }
 
@@ -1275,7 +1284,7 @@ pub(crate) fn dispatch_with_action_state(
             // missed, so a behavior verb can never shadow a core verb, a staff
             // command, or an exit. The first tier with a match wins; an
             // ambiguous tier refuses and never falls through.
-            match resolve_behavior_command_with_action_state(reg, w, actor, verb, action_state) {
+            match resolve_behavior_command_with_action_state(reg, w, actor, verb, lens) {
                 BehaviorResolution::One { target, index } => {
                     let Some(bspec) = reg.behavior_spec(&target.behavior) else {
                         huh(reg, actor, verb, out);
@@ -1290,17 +1299,9 @@ pub(crate) fn dispatch_with_action_state(
                     {
                         let handler = Arc::clone(&cmd.handler);
                         let module = Some(bspec.owner.clone());
-                        run_handler(
-                            reg,
-                            w,
-                            actor,
-                            switches,
-                            args,
-                            module,
-                            out,
-                            action_state,
-                            |ctx| handler.call(ctx, &target),
-                        );
+                        run_handler(reg, w, actor, switches, args, module, out, lens, |ctx| {
+                            handler.call(ctx, &target)
+                        });
                     }
                     return;
                 }
@@ -1347,17 +1348,9 @@ pub(crate) fn dispatch_with_action_state(
         }
         Ok((spec, handler, module)) => {
             if let Some((args, switches)) = gate_spec(w, actor, spec, &switch_names, rest, out) {
-                run_handler(
-                    reg,
-                    w,
-                    actor,
-                    switches,
-                    args,
-                    module,
-                    out,
-                    action_state,
-                    |ctx| handler.call(ctx),
-                );
+                run_handler(reg, w, actor, switches, args, module, out, lens, |ctx| {
+                    handler.call(ctx)
+                });
             }
         }
     }
@@ -1431,14 +1424,14 @@ fn run_handler(
     args: ParsedArgs,
     module: Option<SmolStr>,
     out: &mut Outbox,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
     body: impl FnOnce(&mut Ctx<'_>) -> Result<(), CmdError>,
 ) {
     let events_before = out.len();
     let deferred_before = out.deferred().len();
     let result = {
         let typed_state =
-            crate::action_state::ModuleActionState::for_module(action_state, module.as_deref());
+            crate::action_state::ModuleActionState::for_module(lens, module.as_deref());
         let mut ctx = Ctx {
             w,
             actor,

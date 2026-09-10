@@ -14,9 +14,7 @@ use mush_proto::{OutputEvent, RichText};
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::Flags;
 use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
-use crate::module::{
-    WorldEvent, check_move_attempt_with_action_state, emit_world_event_with_action_state,
-};
+use crate::module::{WorldEvent, check_move_attempt, emit_world_event_with_action_state};
 use crate::obj::{LIMBO, Obj, ObjId};
 use crate::output::{Outbox, name_span, primary_name};
 use crate::world::World;
@@ -66,17 +64,17 @@ fn exit_name_matches(o: &Obj, q: &str) -> bool {
 /// `Moved` observers. Observers never see a departure narrative for a
 /// move that failed (e.g. a destination destroyed after the exit was
 /// linked).
-pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, out: &mut Outbox) {
-    traverse_exit_with_action_state(reg, w, actor, exit, out, None);
-}
-
-pub(crate) fn traverse_exit_with_action_state(
+///
+/// `lens` is the caller's typed-state reach: a dispatched command passes
+/// `ctx.typed_state.lens()`, so the `MoveAttempt` veto chain and the arrival
+/// render read the same live typed state the command does.
+pub fn traverse_exit(
     reg: &Registry,
     w: &mut World,
     actor: ObjId,
     exit: ObjId,
     out: &mut Outbox,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let Some(e) = w.get(exit) else { return };
     let exit_name = primary_name(&e.name).to_string();
@@ -108,9 +106,7 @@ pub(crate) fn traverse_exit_with_action_state(
 
     // Module veto (tactics hex movement, wod barriers): the reason is shown
     // to the mover, the room sees nothing.
-    if let Err(reason) =
-        check_move_attempt_with_action_state(reg, w, actor, Some(exit), dest, action_state)
-    {
+    if let Err(reason) = check_move_attempt(reg, w, actor, Some(exit), dest, lens) {
         out.to_actor(actor, OutputEvent::Sys(reason));
         return;
     }
@@ -134,7 +130,7 @@ pub(crate) fn traverse_exit_with_action_state(
         .map_or_else(|| " has arrived.".to_string(), |m| format!(" {m}"));
     let text = RichText::new().span(name_span(w, actor)).text(arrive);
     out.to_room_from(dest, vec![actor], actor, narrative_emit(text));
-    show_room_with_action_state(reg, w, actor, dest, out, action_state);
+    show_room_with_action_state(reg, w, actor, dest, out, lens);
     emit_world_event_with_action_state(
         reg,
         w,
@@ -144,7 +140,7 @@ pub(crate) fn traverse_exit_with_action_state(
             from,
             to: dest,
         },
-        action_state,
+        lens,
     );
 }
 
@@ -152,16 +148,13 @@ pub(crate) fn traverse_exit_with_action_state(
 /// `MoveAttempt` hooks like every other move — a vetoed destination (a
 /// locked battle hex, a warded room) is vetoed even when it happens to be
 /// someone's home.
-pub fn go_home(reg: &Registry, w: &mut World, actor: ObjId, out: &mut Outbox) {
-    go_home_with_action_state(reg, w, actor, out, None);
-}
-
-pub(crate) fn go_home_with_action_state(
+/// `lens` is the caller's typed-state reach — see [`traverse_exit`].
+pub fn go_home(
     reg: &Registry,
     w: &mut World,
     actor: ObjId,
     out: &mut Outbox,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let Some(home) = w.get(actor).and_then(|o| o.home) else {
         out.error(actor, "You have no home.");
@@ -177,9 +170,7 @@ pub(crate) fn go_home_with_action_state(
         return;
     }
     // Module veto (`exit: None` — home is not an exit traversal).
-    if let Err(reason) =
-        check_move_attempt_with_action_state(reg, w, actor, None, home, action_state)
-    {
+    if let Err(reason) = check_move_attempt(reg, w, actor, None, home, lens) {
         out.to_actor(actor, OutputEvent::Sys(reason));
         return;
     }
@@ -199,7 +190,7 @@ pub(crate) fn go_home_with_action_state(
         .span(name_span(w, actor))
         .text(" arrives home.");
     out.to_room_from(home, vec![actor], actor, narrative_emit(text));
-    show_room_with_action_state(reg, w, actor, home, out, action_state);
+    show_room_with_action_state(reg, w, actor, home, out, lens);
     emit_world_event_with_action_state(
         reg,
         w,
@@ -209,7 +200,7 @@ pub(crate) fn go_home_with_action_state(
             from,
             to: home,
         },
-        action_state,
+        lens,
     );
 }
 
@@ -219,18 +210,18 @@ fn goto_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Go where?"));
     }
     if dir.eq_ignore_ascii_case("home") {
-        go_home_with_action_state(ctx.reg, ctx.w, ctx.actor, ctx.out, ctx.typed_state.store());
+        go_home(ctx.reg, ctx.w, ctx.actor, ctx.out, ctx.typed_state.lens());
         return Ok(());
     }
     match find_exit(ctx.w, ctx.actor, &dir) {
         Some(e) => {
-            traverse_exit_with_action_state(
+            traverse_exit(
                 ctx.reg,
                 ctx.w,
                 ctx.actor,
                 e,
                 ctx.out,
-                ctx.typed_state.store(),
+                ctx.typed_state.lens(),
             );
             Ok(())
         }
@@ -239,7 +230,7 @@ fn goto_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn home_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    go_home_with_action_state(ctx.reg, ctx.w, ctx.actor, ctx.out, ctx.typed_state.store());
+    go_home(ctx.reg, ctx.w, ctx.actor, ctx.out, ctx.typed_state.lens());
     Ok(())
 }
 

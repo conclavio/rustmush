@@ -44,6 +44,7 @@ use mush_core::{
     Attr, AttrFlags, AttrValue, Deferred, Flags, ObjId, ObjKind, Outbox, Powers, Registry, Role,
     ScheduledKind, World, match_object, perm,
 };
+use mush_core::{DetachedTypedState, TypedStateLens};
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
@@ -767,6 +768,11 @@ fn loc_of(obj: ObjId) -> Result<ObjId, Box<EvalAltResult>> {
 /// through the one shared [`perceives_via`] predicate, so a subject the
 /// output layer conceals from `owner` is invisible to scripts too. A free
 /// pass (no snapshotted hook) leaves script visibility exactly as before.
+///
+/// The lens is [`DetachedTypedState::ScriptSnapshot`]: this runs off the
+/// world-task loop, where there is no live authoritative store to read, and
+/// the hook slice itself is a boot snapshot. A hook that needs typed state
+/// abstains here — deliberately, and by a name that says so.
 fn owner_can_see(w: &World, owner: ObjId, obj: ObjId) -> bool {
     let Some(o) = w.get(obj) else { return false };
     if o.flags.contains(Flags::GOING) {
@@ -779,7 +785,13 @@ fn owner_can_see(w: &World, owner: ObjId, obj: ObjId) -> bool {
         return false;
     }
     if let Some(st) = w.module_state::<ScriptState>()
-        && !perceives_via(&st.perceive_hooks, w, owner, obj)
+        && !perceives_via(
+            &st.perceive_hooks,
+            w,
+            owner,
+            obj,
+            TypedStateLens::Detached(DetachedTypedState::ScriptSnapshot),
+        )
     {
         return false;
     }

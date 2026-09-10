@@ -810,7 +810,7 @@ impl Engine {
             channel,
             kind,
             text,
-            Some(&self.action_state),
+            crate::action_state::TypedStateLens::Live(&self.action_state),
         )
     }
 
@@ -1656,12 +1656,12 @@ impl Engine {
             ),
             crate::action::PerceivedRef::KnownObject { id, revision } => {
                 if self.world.get(*id).is_none()
-                    || !module::can_perceive_with_action_state(
+                    || !module::can_perceive(
                         &self.registry,
                         &self.world,
                         actor,
                         *id,
-                        &self.action_state,
+                        crate::action_state::TypedStateLens::Live(&self.action_state),
                     )
                 {
                     return Err(crate::offer::LegalActionSubjectError::Invalid);
@@ -1807,12 +1807,12 @@ impl Engine {
                     // well; unlike an operated subject, a target needs no
                     // station grant merely to be targetable.
                     if self.world.get(*id).is_none()
-                        || !module::can_perceive_with_action_state(
+                        || !module::can_perceive(
                             &self.registry,
                             &self.world,
                             actor,
                             *id,
-                            &self.action_state,
+                            crate::action_state::TypedStateLens::Live(&self.action_state),
                         )
                     {
                         return Err(crate::offer::LegalActionResolutionError::Resolve(
@@ -2178,7 +2178,7 @@ impl Engine {
         data.normalize();
         let module_name = SmolStr::new(modules[index].name());
         let typed_state = crate::action_state::ModuleActionState::for_module(
-            Some(&self.action_state),
+            crate::action_state::TypedStateLens::Live(&self.action_state),
             Some(module_name.as_str()),
         );
         let mut ctx = Ctx {
@@ -2899,7 +2899,7 @@ impl Engine {
             &mut self.world,
             out,
             ev,
-            Some(&self.action_state),
+            crate::action_state::TypedStateLens::Live(&self.action_state),
         );
         self.drain_deferred(out, fx);
     }
@@ -2957,7 +2957,7 @@ impl Engine {
                             actor,
                             &line,
                             out,
-                            Some(&self.action_state),
+                            crate::action_state::TypedStateLens::Live(&self.action_state),
                         );
                     }
                 } else {
@@ -3060,7 +3060,7 @@ impl Engine {
                             actor,
                             &line,
                             out,
-                            Some(&self.action_state),
+                            crate::action_state::TypedStateLens::Live(&self.action_state),
                         );
                     } else {
                         tracing::debug!(%actor, "WaitCmd for missing actor dropped");
@@ -3089,7 +3089,7 @@ impl Engine {
                                 pending.subject,
                                 &pending.payload,
                                 crate::request::RequestOutcome::Expired,
-                                Some(&self.action_state),
+                                crate::action_state::TypedStateLens::Live(&self.action_state),
                             );
                         }
                     }
@@ -3116,7 +3116,7 @@ impl Engine {
         };
         {
             let typed_state = crate::action_state::ModuleActionState::for_module(
-                Some(&self.action_state),
+                crate::action_state::TypedStateLens::Live(&self.action_state),
                 Some(module.as_str()),
             );
             let mut ctx = Ctx {
@@ -3167,7 +3167,7 @@ impl Engine {
         };
         {
             let typed_state = crate::action_state::ModuleActionState::for_module(
-                Some(&self.action_state),
+                crate::action_state::TypedStateLens::Live(&self.action_state),
                 Some(module.as_str()),
             );
             let mut ctx = Ctx {
@@ -3290,14 +3290,14 @@ impl Engine {
                         out,
                         actor,
                         true,
-                        Some(&self.action_state),
+                        crate::action_state::TypedStateLens::Live(&self.action_state),
                     );
                     module::emit_world_event_with_action_state(
                         &self.registry,
                         &mut self.world,
                         out,
                         &WorldEvent::Connected { who: actor },
-                        Some(&self.action_state),
+                        crate::action_state::TypedStateLens::Live(&self.action_state),
                     );
                 }
             }
@@ -3346,7 +3346,7 @@ impl Engine {
                 actor,
                 room,
                 out,
-                Some(&self.action_state),
+                crate::action_state::TypedStateLens::Live(&self.action_state),
             );
         }
     }
@@ -3373,14 +3373,14 @@ impl Engine {
                     out,
                     actor,
                     false,
-                    Some(&self.action_state),
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
                 );
                 module::emit_world_event_with_action_state(
                     &self.registry,
                     &mut self.world,
                     out,
                     &WorldEvent::Disconnected { who: actor },
-                    Some(&self.action_state),
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
                 );
             } else {
                 // The character stays in the room (and connected, for WHO)
@@ -3413,14 +3413,14 @@ impl Engine {
                 out,
                 actor,
                 false,
-                Some(&self.action_state),
+                crate::action_state::TypedStateLens::Live(&self.action_state),
             );
             module::emit_world_event_with_action_state(
                 &self.registry,
                 &mut self.world,
                 out,
                 &WorldEvent::Disconnected { who: actor },
-                Some(&self.action_state),
+                crate::action_state::TypedStateLens::Live(&self.action_state),
             );
         }
         self.world.session_end(actor);
@@ -3488,7 +3488,7 @@ impl Engine {
             &mut self.world,
             out,
             interaction,
-            Some(&self.action_state),
+            crate::action_state::TypedStateLens::Live(&self.action_state),
         )
     }
 
@@ -3540,7 +3540,7 @@ impl Engine {
             pending.subject,
             &pending.payload,
             crate::request::RequestOutcome::Answered(choice),
-            Some(&self.action_state),
+            crate::action_state::TypedStateLens::Live(&self.action_state),
         );
     }
 
@@ -3635,7 +3635,7 @@ impl Engine {
             Some((module, handler)) => {
                 let context = crate::module::HookReadContext::for_module(
                     &self.world,
-                    Some(&self.action_state),
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
                     module,
                 )
                 .with_registry(&self.registry);
@@ -3703,7 +3703,7 @@ impl Engine {
                     actor,
                     correlation,
                     &payload,
-                    Some(&self.action_state),
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
                 );
             }
             WorldCommand::StoreReadDone {
@@ -3723,7 +3723,7 @@ impl Engine {
                     actor,
                     correlation,
                     &payload,
-                    Some(&self.action_state),
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
                 );
             }
         }
@@ -4168,6 +4168,14 @@ mod tests {
     use crate::obj::{GOD, LIMBO, ObjKind};
     use crate::output::{Audience, DeliveryOutcome};
     use mush_proto::NarrativeKind;
+
+    /// A store-less lens for the assertions below: these tests pin the answer
+    /// a caller gets when it has no typed state at all, which is exactly the
+    /// answer the old store-less twins handed out by default.
+    const DETACHED: crate::action_state::TypedStateLens<'static> =
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::Test,
+        );
 
     /// Engine with core + engine commands, God connected via conn 1, and a
     /// player Nick (not yet connected) in Limbo.
@@ -4640,8 +4648,10 @@ mod tests {
                 if matches!(event.as_ref(), OutputEvent::Sys(text) if text.to_plain_text() == "query-typed=41")
         )));
 
-        let foreign =
-            ModuleActionState::for_module(Some(engine.action_state()), Some("different_owner"));
+        let foreign = ModuleActionState::for_module(
+            crate::action_state::TypedStateLens::Live(engine.action_state()),
+            Some("different_owner"),
+        );
         assert!(matches!(
             foreign.get(&handle, &7),
             Err(ModuleActionStateReadError::ForeignOwner { .. })
@@ -4651,7 +4661,10 @@ mod tests {
             Err(ModuleActionStateReadError::Unavailable)
         ));
 
-        let own = ModuleActionState::for_module(Some(engine.action_state()), Some("typed_reader"));
+        let own = ModuleActionState::for_module(
+            crate::action_state::TypedStateLens::Live(engine.action_state()),
+            Some("typed_reader"),
+        );
         engine
             .registry
             .freeze_mechanics_owner(
@@ -4789,6 +4802,7 @@ mod tests {
             GOD,
             Some(exit),
             destination,
+            DETACHED,
         )
         .unwrap_err();
         assert_eq!(compatibility.to_plain_text(), "typed unavailable");

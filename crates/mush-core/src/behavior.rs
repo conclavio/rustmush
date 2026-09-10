@@ -32,7 +32,7 @@ use smol_str::SmolStr;
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Role};
 use crate::matchit::match_object;
-use crate::module::{HookPoint, perceives_via_action_state};
+use crate::module::{HookPoint, perceives_via};
 use crate::obj::{ObjId, ObjKind};
 use crate::perm;
 use crate::world::{ChannelGrant, World};
@@ -549,7 +549,15 @@ pub fn resolve_behavior_command(
     actor: ObjId,
     verb: &str,
 ) -> BehaviorResolution {
-    resolve_behavior_command_with_action_state(reg, w, actor, verb, None)
+    resolve_behavior_command_with_action_state(
+        reg,
+        w,
+        actor,
+        verb,
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::CompatibilityCtx,
+        ),
+    )
 }
 
 pub(crate) fn resolve_behavior_command_with_action_state(
@@ -557,7 +565,7 @@ pub(crate) fn resolve_behavior_command_with_action_state(
     w: &World,
     actor: ObjId,
     verb: &str,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> BehaviorResolution {
     if verb.is_empty() {
         return BehaviorResolution::None;
@@ -609,13 +617,7 @@ pub(crate) fn resolve_behavior_command_with_action_state(
             continue;
         }
         if subject != actor
-            && !perceives_via_action_state(
-                reg.hooks(HookPoint::Perceive),
-                w,
-                actor,
-                subject,
-                action_state,
-            )
+            && !perceives_via(reg.hooks(HookPoint::Perceive), w, actor, subject, lens)
         {
             continue;
         }

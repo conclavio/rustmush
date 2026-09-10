@@ -20,11 +20,18 @@
 //! NPC, a ghoul), not a "mage"; the mechanic (a preternatural sense pierces the
 //! veil, mundane senses do not) is exactly as specified.
 
-use mush_core::{GOD, LIMBO, ObjId, ObjKind, can_perceive, is_concealed};
+use mush_core::{
+    DetachedTypedState, GOD, LIMBO, ObjId, ObjKind, TypedStateLens, can_perceive, is_concealed,
+};
 use mush_jobs::JobsModule;
 use mush_testkit::TestWorld;
 use ruleset_wod::WodRuleset;
 use ruleset_wod::state::WodState;
+
+/// The store-less lens these renders have always been taken with: this test
+/// holds no live authoritative store, and says so rather than reaching for a
+/// name that would have passed `None` silently.
+const DETACHED: TypedStateLens<'static> = TypedStateLens::Detached(DetachedTypedState::Test);
 
 const S: u64 = 12345;
 
@@ -254,19 +261,19 @@ fn is_concealed_query_tracks_active_obfuscate() {
     let _mort = make_mortal(&mut tw, "Mort");
 
     assert!(
-        !is_concealed(tw.registry(), tw.world(), vlad),
+        !is_concealed(tw.registry(), tw.world(), vlad, DETACHED),
         "a subject in plain sight is not concealed"
     );
 
     tw.run(vlad, "+obfuscate on");
     assert!(
-        is_concealed(tw.registry(), tw.world(), vlad),
+        is_concealed(tw.registry(), tw.world(), vlad, DETACHED),
         "an actively Obfuscated subject reads as concealed"
     );
 
     tw.run(vlad, "+obfuscate off");
     assert!(
-        !is_concealed(tw.registry(), tw.world(), vlad),
+        !is_concealed(tw.registry(), tw.world(), vlad, DETACHED),
         "revealing drops the concealment signal"
     );
 }
@@ -301,11 +308,11 @@ fn a_ghoul_bartender_reads_the_same_way_as_a_player() {
     let reg = tw.registry();
     let w = tw.world();
     assert!(
-        can_perceive(reg, w, barkeep, vlad),
+        can_perceive(reg, w, barkeep, vlad, DETACHED),
         "the Auspex ghoul bartender pierces the veil"
     );
     assert!(
-        !can_perceive(reg, w, bouncer, vlad),
+        !can_perceive(reg, w, bouncer, vlad, DETACHED),
         "the mundane bouncer cannot perceive the cloaked vampire"
     );
 }
