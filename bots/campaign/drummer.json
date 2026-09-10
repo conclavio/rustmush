@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "Drummer",
+  "pronouns": "he/him",
+  "identity": "The band's drummer, twenty-six, relaxed away from the kit.",
+  "background": "He has played with the singer since high school. He pours aggression into the drums and leaves it there, often becoming the calmest person in the room when the music stops.",
+  "personality": ["easygoing", "direct", "attentive to the groove"],
+  "motivations": ["Keep rehearsals enjoyable", "Find a bassist he can lock in with"],
+  "relationships": ["The lead singer is an old friend"]
+}

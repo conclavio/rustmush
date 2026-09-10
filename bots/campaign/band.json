@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "id": "four-piece-band",
+  "fixture_program": "../../target/debug/examples/campaign-fixture.exe",
+  "max_requests": 200,
+  "actors": [
+    {"name": "Bassist", "config": "bassist.toml", "request_allowance": 8},
+    {"name": "Lead", "config": "lead.toml", "request_allowance": 8},
+    {"name": "Guitarist", "config": "guitarist.toml", "request_allowance": 8},
+    {"name": "Drummer", "config": "drummer.toml", "request_allowance": 8}
+  ],
+  "branches": [
+    {
+      "name": "pivotal",
+      "steps": [
+        {"actor": "Lead", "control": "/send say Let's keep the bass on roots and fifths for this one.", "wait": {"kind": "command-result"}},
+        {"actor": "Bassist", "control": "/goal Find out whether this band will make room for melodic bass."}
+      ]
+    },
+    {
+      "name": "private",
+      "parent": "pivotal",
+      "interventions": [
+        {"actor": "Bassist", "control": "/note Bring this up privately with the lead singer."}
+      ],
+      "steps": [
+        {"actor": "Bassist", "control": "/send north", "wait": {"kind": "command-result"}},
+        {"actor": "Bassist", "control": "/send page Lead=Could we talk about giving the bass more space? I have a counterpoint that could lift the chorus.", "wait": {"kind": "command-result"}}
+      ]
+    },
+    {
+      "name": "public",
+      "parent": "pivotal",
+      "interventions": [
+        {"actor": "Bassist", "control": "/note Make the disagreement visible to the whole band."}
+      ],
+      "steps": [
+        {"actor": "Bassist", "control": "/send say I'm being asked to audition, but I need to hear whether you want a bassist or a metronome with strings.", "wait": {"kind": "command-result"}}
+      ]
+    },
+    {
+      "name": "demonstration",
+      "parent": "pivotal",
+      "steps": [
+        {"actor": "Lead", "control": "/send say Show us the counterpoint you have in mind. We'll try it once.", "wait": {"kind": "command-result"}},
+        {"actor": "Bassist", "control": "/step", "wait": {"kind": "command-result"}}
+      ]
+    },
+    {
+      "name": "parent-again",
+      "parent": "pivotal",
+      "steps": [
+        {"actor": "Bassist", "control": "/send look", "wait": {"kind": "command-result"}}
+      ]
+    }
+  ]
+}

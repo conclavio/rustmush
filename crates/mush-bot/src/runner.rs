@@ -8,7 +8,7 @@ use std::{
 };
 
 use russh::ChannelMsg;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
 
@@ -79,6 +79,9 @@ pub struct Options {
     pub json_events: bool,
     pub test_controls: bool,
     pub managed_floor: bool,
+    pub campaign_epoch: Option<String>,
+    pub restore_bot: Option<PathBuf>,
+    pub campaign_quota: Option<usize>,
 }
 
 pub enum Control {
@@ -95,7 +98,7 @@ pub struct Frontend {
     pub events: mpsc::Sender<Value>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct State {
     pub status: String,
     pub role: String,
@@ -129,6 +132,7 @@ pub struct Report {
     pub simulated_model: bool,
     pub probe_results: VecDeque<crate::probe::Grade>,
     pub probe_results_omitted: usize,
+    pub inherited_probe_results: usize,
     /// Canonical input record, including defaulted timeouts, for reproducibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<Scenario>,
@@ -215,6 +219,9 @@ impl Pending {
 }
 
 struct App {
+    checkpoint: Option<Boundary>,
+    inherited_usage: crate::budget::Usage,
+    resume_status: Option<String>,
     config: Config,
     options: Options,
     session: Session,
@@ -245,6 +252,7 @@ struct App {
     pending_probe: Option<crate::probe::Spec>,
     probe_results: VecDeque<crate::probe::Grade>,
     probe_results_omitted: usize,
+    inherited_probe_results: usize,
     single_step: bool,
     bootstrap: VecDeque<String>,
     scenario: Option<VecDeque<ScenarioStep>>,
@@ -272,6 +280,16 @@ struct App {
     floor_fault: Option<&'static str>,
 }
 
+struct Boundary {
+    path: PathBuf,
+    resume_status: String,
+    sent: bool,
+    received: bool,
+    output: String,
+    deadline: Instant,
+    saved: bool,
+}
+
 struct PreparedSpeech {
     decision: Decision,
     id: u64,
@@ -292,6 +310,36 @@ pub async fn run_controlled(
     mut options: Options,
     frontend: Option<Frontend>,
 ) -> Result<Report> {
+    let restore = options
+        .restore_bot
+        .as_deref()
+        .map(crate::checkpoint::Snapshot::load)
+        .transpose()?;
+    if options.campaign_epoch.is_some()
+        && (options.managed_floor
+            || options.scenario.is_some()
+            || options.headless
+            || !options.json_events
+            || config.model_tape.is_none())
+    {
+        return Err("campaign checkpoint adapter requires JSON controls, local model tape and no script or managed floor".into());
+    }
+    if restore.is_some() && options.campaign_epoch.is_none() {
+        return Err("bot restore requires a certified campaign session".into());
+    }
+    if let Some(snapshot) = &restore {
+        if snapshot.actor != config.ssh.username {
+            return Err("checkpoint actor does not match SSH login".into());
+        }
+        if snapshot.tape.is_none() {
+            return Err(
+                "restored campaign requires a local tape; live provider admission is unsupported"
+                    .into(),
+            );
+        }
+        config.agent = snapshot.agent.clone();
+        config.agent.bootstrap.clear();
+    }
     config.validate()?;
     let tape_source = config
         .model_tape
@@ -377,10 +425,19 @@ pub async fn run_controlled(
         .as_deref()
         .map(crate::organization::Affiliations::load)
         .transpose()?;
-    for fact in character.prior_facts() {
+    if let Some(snapshot) = &restore {
+        memories.restore(snapshot.memory.clone())?;
+    }
+    for fact in character
+        .prior_facts()
+        .into_iter()
+        .filter(|_| restore.is_none())
+    {
         memories.seed_prior(&fact)?;
     }
-    if let Some(affiliations) = &affiliations {
+    if let Some(affiliations) = &affiliations
+        && restore.is_none()
+    {
         for fact in affiliations.prior_facts() {
             memories.seed_prior(&fact)?;
         }
@@ -469,6 +526,9 @@ pub async fn run_controlled(
     }
     let script = scenario.clone();
     let mut app = App {
+        checkpoint: None,
+        inherited_usage: Default::default(),
+        resume_status: None,
         // A replay sends exactly the commands in its source record. Login output
         // is still collected, but agent bootstrap belongs to autonomous play.
         bootstrap: if script.is_some() {
@@ -510,6 +570,7 @@ pub async fn run_controlled(
         pending_probe: None,
         probe_results: Default::default(),
         probe_results_omitted: 0,
+        inherited_probe_results: 0,
         single_step: false,
         scenario: scenario.map(|s| s.steps.into()),
         next_turn: now,
@@ -537,6 +598,9 @@ pub async fn run_controlled(
         next_intent: 1,
         floor_fault: None,
     };
+    if let Some(snapshot) = restore {
+        app.restore(snapshot)?;
+    }
     let result = app.drive().await;
     let memory_result = app.memories.flush();
     let cancel_result = app.cancel_model();
@@ -566,6 +630,7 @@ pub async fn run_controlled(
         simulated_model: app.tape.is_some(),
         probe_results: app.probe_results.clone(),
         probe_results_omitted: app.probe_results_omitted,
+        inherited_probe_results: app.inherited_probe_results,
     };
     app.log.record("result", serde_json::to_value(&report)?)?;
     if let Some(file) = report_file {
@@ -592,6 +657,165 @@ fn stdin_lines() -> mpsc::Receiver<String> {
 }
 
 impl App {
+    fn restore(&mut self, value: crate::checkpoint::Snapshot) -> Result<()> {
+        self.character = value.character;
+        self.affiliations = value.affiliations;
+        self.character_state = value.condition;
+        self.attention = Attention::restore(value.attention)?;
+        self.knowledge = value.knowledge;
+        let scope = self.conversation.settings.scope.clone();
+        self.conversation = value.conversation;
+        // Preserve scheduling time while giving this child a distinct trace session.
+        self.conversation.settings.scope = scope;
+        self.log.provenance["scope"] = serde_json::to_value(&self.conversation.settings.scope)?;
+        self.log.provenance["scheduler_parent_elapsed_ms"] = json!(value.watermark.elapsed_ms);
+        self.models = value.models;
+        self.selected_model = value.model;
+        self.tape = value.tape.map(|t| Arc::new(crate::tape::Tape::new(t)));
+        self.brain = self
+            .selected_model
+            .as_ref()
+            .map(|m| Brain::with_tape(&m.settings, self.tape.clone()))
+            .transpose()?;
+        self.prompts = value.prompts;
+        self.context_settings = value.context;
+        self.debug = value.debug;
+        self.budget = value.budget;
+        self.inherited_usage = value.usage;
+        self.state = value.state;
+        self.resume_status = Some(value.resume_status);
+        self.recall_query = value.recall_query;
+        self.belief_feedback = value.belief_feedback;
+        self.attention_enabled = value.attention_enabled;
+        self.noticed_attention = value.noticed_attention;
+        self.social_followup = value.social_followup;
+        let now = Instant::now();
+        let ago = |ms| {
+            now.checked_sub(Duration::from_millis(ms))
+                .ok_or_else(|| -> crate::Error { "checkpoint timer out of range".into() })
+        };
+        self.started = ago(value.watermark.elapsed_ms)?;
+        self.goal_started = ago(value.goal_elapsed_ms)?;
+        self.social_started = value.social_elapsed_ms.map(ago).transpose()?;
+        self.next_turn = now + Duration::from_millis(value.next_turn_after_ms);
+        self.next_intent = value.next_intent;
+        self.observation_revision = value.watermark.observation;
+        self.probe_results = value.probe_results;
+        self.inherited_probe_results = self.probe_results.len();
+        self.probe_results_omitted = value.probe_results_omitted;
+        self.last_capture = value.last_capture;
+        self.log.record("restored", json!({"parent_epoch":value.epoch,"parent_watermark":value.watermark,
+            "inherited_usage":self.inherited_usage,"pending_actions":"invalidated; recompute on resume"}))?;
+        Ok(())
+    }
+
+    fn checkpoint_snapshot(&self, resume_status: String) -> Result<crate::checkpoint::Snapshot> {
+        let value = crate::checkpoint::Snapshot {
+            version: 1,
+            actor: self.config.ssh.username.clone(),
+            epoch: self
+                .options
+                .campaign_epoch
+                .clone()
+                .ok_or("campaign epoch missing")?,
+            watermark: self.watermark(),
+            state: self.state.clone(),
+            resume_status,
+            character: self.character.clone(),
+            affiliations: self.affiliations.clone(),
+            condition: self.character_state.clone(),
+            memory: self.memories.checkpoint()?,
+            attention: self.attention.checkpoint()?,
+            knowledge: self.knowledge.clone(),
+            conversation: self.conversation.clone(),
+            models: self.models.clone(),
+            model: self.selected_model.clone(),
+            tape: self.tape.as_ref().map(|t| t.snapshot()).transpose()?,
+            prompts: self.prompts.clone(),
+            context: self.context_settings.clone(),
+            debug: self.debug.clone(),
+            budget: self.budget.clone(),
+            usage: self.total_usage()?,
+            agent: self.config.agent.clone(),
+            recall_query: self.recall_query.clone(),
+            belief_feedback: self.belief_feedback.clone(),
+            attention_enabled: self.attention_enabled,
+            noticed_attention: self.noticed_attention,
+            social_followup: self.social_followup,
+            social_elapsed_ms: self
+                .social_started
+                .map(|at| at.elapsed().as_millis() as u64),
+            goal_elapsed_ms: self.goal_started.elapsed().as_millis() as u64,
+            next_turn_after_ms: self
+                .next_turn
+                .saturating_duration_since(Instant::now())
+                .as_millis() as u64,
+            next_intent: self.next_intent,
+            last_capture: self.last_capture.clone(),
+            probe_results: self.probe_results.clone(),
+            probe_results_omitted: self.probe_results_omitted,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    async fn checkpoint_tick(&mut self) -> Result<bool> {
+        let Some(boundary) = &mut self.checkpoint else {
+            return Ok(false);
+        };
+        if boundary.saved {
+            return Ok(true);
+        }
+        if Instant::now() > boundary.deadline {
+            return Err("checkpoint timed out: no verified frozen-world output watermark".into());
+        }
+        if self.pending.is_some() || !self.bootstrap.is_empty() {
+            return Ok(false);
+        }
+        if !boundary.sent {
+            self.session
+                .send(&format!(
+                    "__campaign_fence {}",
+                    self.options.campaign_epoch.as_ref().unwrap()
+                ))
+                .await?;
+            boundary.sent = true;
+            return Ok(true);
+        }
+        if boundary.received {
+            let path = boundary.path.clone();
+            let status = boundary.resume_status.clone();
+            self.memories.finish_command()?;
+            self.attention.flush_if_quiet(0);
+            let snapshot = self.checkpoint_snapshot(status)?;
+            save_json(&path, &snapshot)?;
+            let checked = crate::checkpoint::Snapshot::load(&path)?;
+            self.log.record("checkpoint-ready", json!({"path":path,"sha256":checked.digest()?,"epoch":checked.epoch,"watermark":checked.watermark}))?;
+            self.checkpoint.as_mut().unwrap().saved = true;
+        }
+        Ok(true)
+    }
+
+    fn total_usage(&self) -> Result<crate::budget::Usage> {
+        let mut usage = self
+            .costs
+            .lock()
+            .map_err(|_| "cost ledger lock poisoned")?
+            .session_usage()?;
+        usage.requests = usage
+            .requests
+            .checked_add(self.inherited_usage.requests)
+            .ok_or("usage overflow")?;
+        usage.unknown_cost_requests += self.inherited_usage.unknown_cost_requests;
+        for (currency, cost) in &self.inherited_usage.provider_cost_by_currency {
+            usage
+                .provider_cost_by_currency
+                .entry(currency.clone())
+                .or_default()
+                .add(*cost)?;
+        }
+        Ok(usage)
+    }
     fn watermark(&self) -> crate::scene::Watermark {
         crate::scene::Watermark {
             session: self.log.provenance["session"]
@@ -912,11 +1136,7 @@ impl App {
     }
 
     fn budget_status(&self) -> Result<crate::budget::Status> {
-        let usage = self
-            .costs
-            .lock()
-            .map_err(|_| "cost ledger lock poisoned")?
-            .session_usage()?;
+        let usage = self.total_usage()?;
         let currency = self
             .selected_model
             .as_ref()
@@ -1004,7 +1224,11 @@ impl App {
                 message = self.session.channel.wait() => {
                     match message {
                         Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                            let text = decoder.feed(&data);
+                            let mut text = decoder.feed(&data);
+                            if let Some(boundary) = &mut self.checkpoint && boundary.sent && !text.is_empty() {
+                                self.log.record("checkpoint-wire",json!(text))?;
+                                text = crate::checkpoint::fenced_output(&mut boundary.output,&mut boundary.received,&text,self.options.campaign_epoch.as_ref().unwrap())?;
+                            }
                             if !text.is_empty() {
                                 if self.log.echo { print!("{text}"); std::io::stdout().flush()?; }
                                 self.observation_revision += 1;
@@ -1054,6 +1278,7 @@ impl App {
                                 // A bounded review history; the transcript retains every result.
                                 if self.probe_results.len() == 128 {
                                     self.probe_results.pop_front();
+                                    self.inherited_probe_results = self.inherited_probe_results.saturating_sub(1);
                                     self.probe_results_omitted += 1;
                                 }
                                 self.probe_results.push_back(grade);
@@ -1127,6 +1352,11 @@ impl App {
         scenario: Option<ScenarioStep>,
     ) -> Result<()> {
         if let Some(command) = &command {
+            if command.starts_with("__campaign_") {
+                return Err(
+                    "campaign protocol commands are reserved for coordinator quiescence".into(),
+                );
+            }
             self.session.send(command).await?;
             self.memories.sent(command)?;
             self.state.commands_sent += 1;
@@ -1166,9 +1396,10 @@ impl App {
         {
             return self.fail("Run time limit reached");
         }
-        if self
-            .social_started
-            .is_some_and(|at| at.elapsed() >= Duration::from_secs(self.config.agent.max_seconds))
+        if self.checkpoint.is_none()
+            && self.social_started.is_some_and(|at| {
+                at.elapsed() >= Duration::from_secs(self.config.agent.max_seconds)
+            })
         {
             return self.fail("Conversation time limit reached");
         }
@@ -1239,6 +1470,9 @@ impl App {
             self.ready = true;
             self.log.record("ready", self.snapshot()?)?;
         }
+        if self.checkpoint_tick().await? {
+            return Ok(());
+        }
         if self.speech.is_some() {
             self.dispatch_speech().await?;
             return Ok(());
@@ -1293,6 +1527,17 @@ impl App {
     }
 
     fn start_model(&mut self, question: Option<String>) -> Result<()> {
+        if let Some(quota) = self.options.campaign_quota
+            && self
+                .costs
+                .lock()
+                .map_err(|_| "cost ledger lock poisoned")?
+                .session_usage()?
+                .requests
+                >= quota
+        {
+            return self.fail("Campaign reserved request allowance exhausted");
+        }
         // Session accounting is independent of the current goal's resettable
         // turn counter. A denied attempt never creates a ledger request/capture.
         let budget = self.budget_status()?;
@@ -1304,7 +1549,7 @@ impl App {
         if self.state.model_calls >= self.config.agent.max_steps {
             return self.fail("Model turn limit reached");
         }
-        let Some(brain) = self.brain.clone() else {
+        let Some(mut brain) = self.brain.clone() else {
             return self.fail("Configure [model] to enable autonomous play and /ask");
         };
         self.memories.flush()?;
@@ -1349,6 +1594,7 @@ impl App {
                 capture.prompt_revision.clone(),
             )?;
         self.log.request = Some(request.id);
+        brain.reserve_tape()?;
         self.log
             .record("budget-check", self.budget_record(&budget))?;
         self.log
@@ -1507,6 +1753,11 @@ impl App {
         let (verb, arg) = line
             .split_once(char::is_whitespace)
             .map_or((line, ""), |(v, a)| (v, a.trim()));
+        if self.checkpoint.is_some() && !["/quit", "/state", "/cost"].contains(&verb) {
+            return Err(
+                "checkpoint ingress is fenced; resume in a new isolated campaign branch".into(),
+            );
+        }
         // Validate before recording input, so in-band credentials never reach logs.
         if verb == "/send" {
             validate_command(arg)?;
@@ -1516,6 +1767,69 @@ impl App {
         self.memories.flush()?;
         self.log.record("control", json!(line))?;
         match verb {
+            "/checkpoint" => {
+                if self.options.campaign_epoch.is_none() || arg.is_empty() {
+                    return Err(
+                        "checkpoint requires an owned campaign adapter and a new JSON path".into(),
+                    );
+                }
+                let resume_status = self
+                    .resume_status
+                    .take()
+                    .unwrap_or_else(|| self.state.status.clone());
+                self.cancel_model()?;
+                self.state.status = "paused".into();
+                self.checkpoint = Some(Boundary {
+                    path: arg.into(),
+                    resume_status,
+                    sent: false,
+                    received: false,
+                    output: String::new(),
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    saved: false,
+                });
+                self.log.event(
+                    "quiescing",
+                    "Invalidated unsent work; draining SSH before the common world fence.",
+                )?;
+            }
+            "/continue" => {
+                self.state.status = self
+                    .resume_status
+                    .take()
+                    .ok_or("no restored execution status; use /resume")?;
+                self.log.event(
+                    "continued",
+                    "Restored unfinished work resumed with retained timers and usage.",
+                )?;
+            }
+            "/tape" if self.options.campaign_epoch.is_some() => {
+                let source = crate::tape::Source::load(std::path::Path::new(arg))?;
+                self.pause()?;
+                self.tape = Some(Arc::new(crate::tape::Tape::new(source)));
+                self.brain = self
+                    .selected_model
+                    .as_ref()
+                    .map(|m| Brain::with_tape(&m.settings, self.tape.clone()))
+                    .transpose()?;
+                self.log.event(
+                    "tape-changed",
+                    "Explicit branch response-tape intervention applied.",
+                )?;
+            }
+            "/turns" if self.options.campaign_epoch.is_some() => {
+                let turns: usize = arg.parse()?;
+                if !(1..=10_000).contains(&turns) {
+                    return Err("branch turn allowance must be 1..10000".into());
+                }
+                self.pause()?;
+                self.config.agent.max_steps = self
+                    .state
+                    .model_calls
+                    .checked_add(turns)
+                    .ok_or("turn allowance overflow")?;
+                self.log.event("turns-changed", "Remaining goal turns changed explicitly; session and campaign request usage are retained.")?;
+            }
             "/floor" => {
                 if !self.options.managed_floor {
                     return Err("floor controls require a managed cast session".into());

@@ -8,6 +8,9 @@ engine, store, gateway, or world protocol. The server can run on another machine
 [Conversation and scene observation](bot-conversation.md) covers reply pacing,
 managed speaking floors, the spectator, cited recaps and bot bookmarks.
 
+[Checkpointed campaigns](bot-campaigns.md) adds an owned rehearsal-world adapter,
+JSON branches, character restoration, continuation selection and a comparison TUI.
+
 ## Intentional independence from NPC agents
 
 The external bot and the in-game NPC system are two independent approaches to

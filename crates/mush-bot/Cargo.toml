@@ -29,6 +29,8 @@ mushd.workspace = true
 mush-core.workspace = true
 mush-store.workspace = true
 mush-session.workspace = true
+mush-net-ssh.workspace = true
+mush-proto.workspace = true
 # Supplies mock SERVER @gen responses; the bot model is a separate HTTP stub.
 mush-llm.workspace = true
 

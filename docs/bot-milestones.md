@@ -6,6 +6,8 @@ scripts, captures and harness manifests use JSON. Markdown is documentation.
 The [five-wave social campaign roadmap](bot-social-campaign-plan.md) extends these
 foundations. [Wave 1](bot-conversation.md) adds conversation gates, managed speaking
 floors, observer recaps, scene provenance and validated bot bookmarks.
+[Wave 2](bot-campaigns.md) adds certified rehearsal-world checkpoints, playable
+branches, inherited character state, campaign quotas and sibling inspection.
 
 - [x] Runtime model profiles and session/lifetime provider cost accounting.
 - [x] Editable, versioned system prompts and a local terminal UI.

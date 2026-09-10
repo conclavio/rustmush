@@ -1,0 +1,6 @@
+character = "bassist.json"
+model_tape = "replies.json"
+conversation = "../conversation/independent.json"
+[agent]
+role = "Play the trial bassist from the supplied character profile."
+bootstrap = ["help", "look"]

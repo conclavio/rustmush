@@ -7,8 +7,11 @@
 pub mod analysis;
 pub mod attention;
 pub mod budget;
+pub mod campaign;
+pub mod campaign_cli;
 pub mod cast_debug;
 pub mod character;
+pub mod checkpoint;
 pub mod comparison;
 pub mod composition;
 pub mod config;

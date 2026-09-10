@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "replies": [
+    {"content": "{\"action\":\"command\",\"command\":\"pose plays a melodic counterpoint beneath the chorus, leaving the vocal room to breathe.\",\"summary\":\"Demonstrate the suggested counterpoint.\",\"memory\":\"I demonstrated the melodic counterpoint after an invitation.\"}"},
+    {"content": "{\"action\":\"done\",\"summary\":\"The demonstration is complete. Listen to the band's response.\"}"}
+  ]
+}

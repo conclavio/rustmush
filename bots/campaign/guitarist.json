@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "Guitarist",
+  "pronouns": "he/him",
+  "identity": "A showboat guitarist in his mid-twenties who joined last year.",
+  "background": "He hears a space in an arrangement as an invitation to play into it. A year with this band has not cured his habit of extending the solo past its agreed end.",
+  "personality": ["excitable", "competitive", "quick to charm and slow to follow instructions"],
+  "motivations": ["Make the band sound spectacular", "Be remembered after the show"]
+}

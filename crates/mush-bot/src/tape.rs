@@ -26,10 +26,15 @@ pub struct Entry {
 impl Source {
     pub fn load(path: &Path) -> Result<Self> {
         let source: Self = crate::experiment::load_json(path, 2_000_000)?;
-        if source.version != 1
-            || source.replies.is_empty()
-            || source.replies.len() > 1000
-            || source.replies.iter().any(|r| {
+        source.validate(false)?;
+        Ok(source)
+    }
+    pub fn validate(&self, allow_exhausted: bool) -> Result<()> {
+        if self.version != 1
+            || (!allow_exhausted && self.replies.is_empty())
+            || self.replies.len() > 1000
+            || serde_json::to_vec(self)?.len() > 2_000_000
+            || self.replies.iter().any(|r| {
                 r.delay_ms > 300_000
                     || r.content.is_some() == r.error.is_some()
                     || r.content.as_ref().is_some_and(|c| c.len() > 128_000)
@@ -40,12 +45,37 @@ impl Source {
         {
             return Err("invalid model tape: version 1, 1..1000 replies with content OR error, delay <= 300000 ms".into());
         }
-        Ok(source)
+        Ok(())
     }
 }
 
 pub struct Tape(Mutex<VecDeque<Entry>>);
 impl Tape {
+    /// Claim a response synchronously at request admission, before a worker can
+    /// be cancelled without ever being polled.
+    pub fn reserve(&self) -> Result<Self> {
+        let entry = self
+            .0
+            .lock()
+            .map_err(|_| "model tape lock poisoned")?
+            .pop_front();
+        Ok(Self::new(Source {
+            version: 1,
+            replies: entry.into_iter().collect(),
+        }))
+    }
+    pub fn snapshot(&self) -> Result<Source> {
+        Ok(Source {
+            version: 1,
+            replies: self
+                .0
+                .lock()
+                .map_err(|_| "model tape lock poisoned")?
+                .iter()
+                .cloned()
+                .collect(),
+        })
+    }
     pub fn new(source: Source) -> Self {
         Self(Mutex::new(source.replies.into()))
     }
@@ -75,5 +105,34 @@ impl Tape {
                 ..Receipt::default()
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    #[test]
+    fn cancelling_an_unpolled_reserved_request_cannot_restore_its_response() {
+        let tape = Tape::new(Source {
+            version: 1,
+            replies: vec![
+                Entry {
+                    delay_ms: 1000,
+                    content: Some("old".into()),
+                    error: None,
+                },
+                Entry {
+                    delay_ms: 0,
+                    content: Some("next".into()),
+                    error: None,
+                },
+            ],
+        });
+        let unpolled = tape.reserve().unwrap();
+        drop(unpolled);
+        assert_eq!(
+            tape.snapshot().unwrap().replies[0].content.as_deref(),
+            Some("next")
+        );
     }
 }

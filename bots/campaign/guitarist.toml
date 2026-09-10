@@ -1,0 +1,6 @@
+character = "guitarist.json"
+model_tape = "replies.json"
+conversation = "../conversation/independent.json"
+[agent]
+role = "Play the lead guitarist from the supplied profile."
+bootstrap = ["help", "look"]

@@ -262,6 +262,12 @@ impl Capture {
 }
 
 impl Brain {
+    pub fn reserve_tape(&mut self) -> Result<()> {
+        if let Some(tape) = &self.tape {
+            self.tape = Some(std::sync::Arc::new(tape.reserve()?));
+        }
+        Ok(())
+    }
     pub fn new(config: &Model) -> Result<Self> {
         Self::with_tape(config, None)
     }

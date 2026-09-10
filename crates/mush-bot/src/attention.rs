@@ -60,7 +60,7 @@ impl Settings {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Speech {
     pub id: u64,
     pub at_ms: u64,
@@ -72,12 +72,29 @@ pub struct Speech {
     pub incomplete: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct Fragment {
     speaker: String,
     kind: String,
     text: String,
     quoted: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checkpoint {
+    settings: Settings,
+    names: Vec<String>,
+    self_labels: Vec<String>,
+    records: VecDeque<Speech>,
+    bytes: usize,
+    next_id: u64,
+    handled: u64,
+    dropped_unhandled: usize,
+    buffer: String,
+    fragment: Option<Fragment>,
+    last_input_ago_ms: u64,
+    partners_elapsed_ms: std::collections::BTreeMap<String, u64>,
 }
 
 pub struct Attention {
@@ -96,6 +113,49 @@ pub struct Attention {
 }
 
 impl Attention {
+    pub fn checkpoint(&self) -> crate::Result<Checkpoint> {
+        Ok(serde_json::from_value(self.bookmark())?)
+    }
+    pub fn restore(value: Checkpoint) -> crate::Result<Self> {
+        value.settings.validate()?;
+        if value.next_id == 0
+            || value.handled >= value.next_id
+            || value.records.len() > value.settings.recent_limit
+            || value.records.iter().any(|r| r.id >= value.next_id)
+            || value
+                .records
+                .iter()
+                .zip(value.records.iter().skip(1))
+                .any(|(a, b)| a.id >= b.id)
+            || value.partners_elapsed_ms.len() > 100_000
+            || value.bytes > value.settings.recent_bytes
+        {
+            return Err("invalid checkpoint attention state".into());
+        }
+        let now = Instant::now();
+        let ago = |ms| {
+            now.checked_sub(std::time::Duration::from_millis(ms))
+                .ok_or_else(|| -> crate::Error { "checkpoint attention timer out of range".into() })
+        };
+        Ok(Self {
+            settings: value.settings,
+            names: value.names,
+            self_labels: value.self_labels,
+            records: value.records,
+            bytes: value.bytes,
+            next_id: value.next_id,
+            handled: value.handled,
+            dropped_unhandled: value.dropped_unhandled,
+            buffer: value.buffer,
+            fragment: value.fragment,
+            last_input: ago(value.last_input_ago_ms)?,
+            partners: value
+                .partners_elapsed_ms
+                .into_iter()
+                .map(|(n, ms)| Ok((n, ago(ms)?)))
+                .collect::<crate::Result<_>>()?,
+        })
+    }
     pub fn bookmark(&self) -> Value {
         json!({"settings":self.settings,"names":self.names,"self_labels":self.self_labels,
             "records":self.records,"next_id":self.next_id,"handled":self.handled,"bytes":self.bytes,

@@ -70,7 +70,7 @@ fn currency_limits<'de, D: Deserializer<'de>>(
     deserializer.deserialize_map(LimitsVisitor)
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Usage {
     pub requests: usize,
     pub unknown_cost_requests: usize,

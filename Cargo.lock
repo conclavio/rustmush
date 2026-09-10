@@ -2106,6 +2106,8 @@ dependencies = [
  "dotenvy",
  "mush-core",
  "mush-llm",
+ "mush-net-ssh",
+ "mush-proto",
  "mush-session",
  "mush-store",
  "mushd",

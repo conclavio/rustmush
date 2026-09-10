@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub character: Option<PathBuf>,
@@ -26,7 +26,7 @@ pub struct Config {
     pub knowledge: Vec<PathBuf>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Memory {
     pub persistent: bool,
@@ -51,7 +51,7 @@ impl Default for Memory {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Ssh {
     pub host: String,

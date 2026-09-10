@@ -194,6 +194,35 @@ struct Move {
     walked: bool,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Checkpoint {
+    pub records: Vec<Record>,
+    pub current: Option<Place>,
+    pub exits: Vec<String>,
+    pub max_bytes: u64,
+    pub recall_bytes: usize,
+}
+impl Checkpoint {
+    pub fn validate(&self) -> Result<()> {
+        if self.records.is_empty()
+            || self.records.len() > 200_000
+            || !(1_000_000..=1_000_000_000).contains(&self.max_bytes)
+            || !(4096..=128_000).contains(&self.recall_bytes)
+            || self
+                .records
+                .iter()
+                .enumerate()
+                .any(|(i, r)| r.id != i as u64 + 1)
+            || !matches!(self.records[0].event, Event::Header { version: 1, .. })
+            || serde_json::to_vec(self)?.len() > 24_000_000
+        {
+            return Err("invalid checkpoint memory journal".into());
+        }
+        Ok(())
+    }
+}
+
 pub struct Book {
     file: Option<File>,
     path: Option<PathBuf>,
@@ -211,6 +240,52 @@ pub struct Book {
 }
 
 impl Book {
+    pub fn checkpoint(&self) -> Result<Checkpoint> {
+        if !self.buffer.is_empty() || self.pending_move.is_some() || self.last_command.is_some() {
+            return Err("checkpoint memory still has unsettled output".into());
+        }
+        let value = Checkpoint {
+            records: self.records.clone(),
+            current: self.current.clone(),
+            exits: self.exits.clone(),
+            max_bytes: self.max_bytes,
+            recall_bytes: self.recall_bytes,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub fn restore(&mut self, mut value: Checkpoint) -> Result<()> {
+        value.validate()?;
+        if self.records.len() != 2 {
+            return Err("restore requires a fresh memory namespace".into());
+        }
+        self.max_bytes = value.max_bytes;
+        self.recall_bytes = value.recall_bytes;
+        // Only the ownership header changes; all evidence IDs and text survive.
+        value.records[0].event = self.records[0].event.clone();
+        let mut bytes = Vec::new();
+        for record in &value.records {
+            serde_json::to_writer(&mut bytes, record)?;
+            bytes.push(b'\n');
+        }
+        if bytes.len() as u64 + 512 > self.max_bytes {
+            return Err("restored memory exceeds journal capacity".into());
+        }
+        if let Some(file) = &mut self.file {
+            file.set_len(0)?;
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(&bytes)?;
+            file.sync_data()?;
+        }
+        self.bytes = bytes.len() as u64;
+        self.records = value.records;
+        self.current = value.current;
+        self.exits = value.exits;
+        self.session = self.records.len() as u64 + 1;
+        self.append(Event::Session)?;
+        Ok(())
+    }
     pub fn observed_recap(&self, watermark: crate::scene::Watermark) -> crate::scene::Recap {
         crate::scene::Recap::from_observations(watermark, self.session, &self.records)
     }

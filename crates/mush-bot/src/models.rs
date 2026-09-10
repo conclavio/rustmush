@@ -22,6 +22,8 @@ struct Source {
     profiles: BTreeMap<String, Model>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Catalog {
     profiles: BTreeMap<String, Model>,
     initial: Option<String>,
