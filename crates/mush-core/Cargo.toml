@@ -21,6 +21,10 @@ tracing.workspace = true
 [dev-dependencies]
 # Fuzz-style property tests for the lock-expression parser (round-trip).
 proptest = { workspace = true }
+# WS03-S8: the state-slot ownership census reports through `tracing::warn!`, so
+# `tests/module_api.rs` proves the report by capturing the log a server would
+# emit — not by reading a test-only side channel.
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

@@ -1438,6 +1438,11 @@ pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Resul
             Err(e) => return Err(format!("module boot failed: {e}")),
         }
     }
+    // WS03-S8: every module is loaded, so every slot that will exist exists.
+    // This root delivers the modules one at a time (the J4 retry needs it), so
+    // it calls the end-of-boot census itself — `Engine::modules_loaded`, the
+    // all-at-once path, calls it for its own callers.
+    engine.warn_unowned_state_slots();
     // Nothing is connected yet; boot-time output has nowhere to go.
     let events = out.take();
     if !events.is_empty() {

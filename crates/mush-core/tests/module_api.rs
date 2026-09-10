@@ -877,6 +877,222 @@ fn duplicate_state_slot_across_modules_fails_boot() {
     assert_eq!(engine.world.module_state::<ToyState>().unwrap().bumps, 7);
 }
 
+// ----------------------------------------------------------------------
+// WS03-S8: the state-slot ownership census
+// ----------------------------------------------------------------------
+
+/// Both census tests run under a thread-scoped subscriber, and `tracing`
+/// registers a callsite lazily on its first hit: while exactly one dispatcher
+/// is registered it evaluates that callsite's interest against the
+/// *registering thread's* default subscriber, so a sibling hitting the warn
+/// first on a thread with no subscriber would cache it as never-enabled and
+/// the capturing test would see nothing. Serialising them removes the
+/// interleaving (the shape `mush-config`'s `ipc_endpoint_validation.rs`
+/// documents).
+static CENSUS_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn census_serialized() -> std::sync::MutexGuard<'static, ()> {
+    CENSUS_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A `MakeWriter` collecting formatted log lines into a shared buffer.
+#[derive(Clone, Default)]
+struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl LogCapture {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().expect("log buffer")).into_owned()
+    }
+}
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log buffer").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+    type Writer = LogCapture;
+    fn make_writer(&'a self) -> LogCapture {
+        self.clone()
+    }
+}
+
+/// Run `f` with a scoped subscriber; return its result and what it logged.
+fn with_captured_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
+    let capture = LogCapture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(capture.clone())
+        .finish();
+    let out = tracing::subscriber::with_default(subscriber, f);
+    (out, capture.text())
+}
+
+/// The slot module `a` declares.
+#[derive(Clone, Debug, Default)]
+struct OwnedSlot(u32);
+
+/// A slot nobody declares — seeded straight onto the world.
+#[derive(Clone, Debug, Default)]
+struct SeededSlot(u32);
+
+/// Module `a`: declares [`OwnedSlot`] and bumps its own slot at boot.
+struct SlotOwner;
+
+impl GameModule for SlotOwner {
+    fn name(&self) -> &'static str {
+        "a"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.state(OwnedSlot::default());
+        Ok(())
+    }
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        _data: ModuleBootData,
+    ) -> Result<(), ModError> {
+        ctx.state_mut::<OwnedSlot>().expect("its own slot").0 += 1;
+        Ok(())
+    }
+}
+
+/// Module `b`: declares nothing and mutates `a`'s slot twice at boot.
+struct SlotPoacher;
+
+impl GameModule for SlotPoacher {
+    fn name(&self) -> &'static str {
+        "b"
+    }
+    fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        Ok(())
+    }
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        _data: ModuleBootData,
+    ) -> Result<(), ModError> {
+        for _ in 0..2 {
+            ctx.state_mut::<OwnedSlot>().expect("a foreign slot").0 += 10;
+        }
+        Ok(())
+    }
+}
+
+/// WS03-S8 changes NO behaviour: a module mutating another module's slot is
+/// reported — once per (writing module, slot), however many times it writes —
+/// and the mutation still lands. The census has to be truthful before WS03-S14
+/// can refuse on top of it, because refusing is silent at every call site
+/// (`if let Some(s) = ctx.state_mut::<T>()` turns a denial into a no-op).
+#[test]
+fn a_foreign_slot_mutation_is_reported_but_still_applies() {
+    let _serial = census_serialized();
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SlotOwner), Box::new(SlotPoacher)],
+    )
+    .expect("two modules, one slot declaration");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    let (loaded, logs) = with_captured_logs(|| {
+        engine.modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+    });
+    loaded.expect("a foreign write must not fail the boot");
+
+    // The mutation stuck: a's own bump plus b's two foreign ones.
+    assert_eq!(
+        engine.world.module_state::<OwnedSlot>().expect("slot").0,
+        21,
+        "the census must not change what the write does"
+    );
+    // Reported once, naming b — and a writing its OWN slot is not reported.
+    let reported = engine.world.foreign_state_writes();
+    assert_eq!(reported.len(), 1, "one pair, twice written: {reported:?}");
+    assert_eq!(reported[0].0.as_str(), "b");
+    assert!(
+        reported[0].1.ends_with("OwnedSlot"),
+        "the report names the slot: {:?}",
+        reported[0].1
+    );
+    assert_eq!(
+        engine
+            .world
+            .module_state_owner(std::any::TypeId::of::<OwnedSlot>())
+            .map(SmolStr::as_str),
+        Some("a"),
+        "ownership is recorded by module name"
+    );
+    let warns = logs.matches("foreign state-slot write").count();
+    assert_eq!(
+        warns, 1,
+        "one warn per (module, slot), not per write: {logs}"
+    );
+    assert!(logs.contains("module=b"), "{logs}");
+    assert!(logs.contains("owner=a"), "{logs}");
+    assert!(logs.contains("OwnedSlot"), "{logs}");
+}
+
+/// A slot seeded only through `World::module_state_insert` (which
+/// `on_world_loaded` is explicitly sanctioned to use) has no owner. That stays
+/// open to every module — today's behaviour — and boot NAMES it rather than
+/// refusing it, because an unowned slot is the hole ownership cannot see
+/// through.
+#[test]
+fn a_slot_with_no_stateinit_owner_is_reported_as_unowned() {
+    let _serial = census_serialized();
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SlotOwner)],
+    )
+    .expect("one module composes");
+    engine.world.module_state_insert(SeededSlot(3));
+
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    let (loaded, logs) = with_captured_logs(|| {
+        engine.modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+    });
+    loaded.expect("an unowned slot must never refuse the boot");
+
+    assert!(
+        engine
+            .world
+            .module_state_owner(std::any::TypeId::of::<SeededSlot>())
+            .is_none(),
+        "a slot nobody declared resolves to no owner"
+    );
+    let unowned = engine.world.unowned_state_slots();
+    assert!(
+        unowned.iter().any(|n| n.ends_with("SeededSlot")),
+        "{unowned:?}"
+    );
+    assert!(
+        !unowned.iter().any(|n| n.ends_with("OwnedSlot")),
+        "a declared slot is owned: {unowned:?}"
+    );
+    assert!(logs.contains("no declaring module"), "{logs}");
+    assert!(logs.contains("SeededSlot"), "{logs}");
+    // Still readable, and the slot is unchanged.
+    assert_eq!(
+        engine.world.module_state::<SeededSlot>().expect("slot").0,
+        3
+    );
+    // Every declared slot resolves to exactly one owner.
+    for slot in engine.world.module_state_slots() {
+        if slot.type_name.ends_with("OwnedSlot") {
+            assert_eq!(slot.owner.as_deref(), Some("a"), "{slot:?}");
+        }
+    }
+}
+
 /// Duplicate module names would merge persistence namespaces and clobber
 /// boot data — refused at construction.
 #[test]

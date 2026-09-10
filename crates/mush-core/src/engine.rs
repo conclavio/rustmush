@@ -2140,7 +2140,34 @@ impl Engine {
             let data = boot.remove(self.modules[index].name()).unwrap_or_default();
             self.load_module_at(index, data, out, fx)?;
         }
+        self.warn_unowned_state_slots();
         Ok(())
+    }
+
+    /// Name every state slot nobody declared, once, at the end of boot
+    /// (WS03-S8).
+    ///
+    /// A slot seeded through
+    /// [`World::module_state_insert`](crate::world::World::module_state_insert)
+    /// alone has no owner, so no module can be told it is reaching into
+    /// someone else's state. That is legal — a module may seed its loaded
+    /// state that way from `on_world_loaded`, which is exactly why the case
+    /// is **warned and never refused** — but it is also the hole ownership
+    /// cannot see through, so boot says which slots are in it.
+    ///
+    /// Drivers that deliver modules one at a time (the J4 path, which calls
+    /// [`Engine::module_loaded`] per module rather than
+    /// [`Engine::modules_loaded`]) call this themselves once the last module
+    /// is loaded. Returns the names it warned about.
+    pub fn warn_unowned_state_slots(&self) -> Vec<&'static str> {
+        let unowned = self.world.unowned_state_slots();
+        for slot in &unowned {
+            tracing::warn!(
+                slot = *slot,
+                "state slot has no declaring module: open to every module (WS03-S8)"
+            );
+        }
+        unowned
     }
 
     /// [`Engine::modules_loaded`] for **one** module (J4, doc 12 §5.6): the

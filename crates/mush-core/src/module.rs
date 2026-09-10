@@ -1390,6 +1390,11 @@ fn clone_state<T: Any + Send + Clone>(v: &(dyn Any + Send)) -> Box<dyn Any + Sen
 /// [`Engine::with_modules`](crate::engine::Engine::with_modules)).
 pub struct StateInit {
     type_id: TypeId,
+    /// The slot type's [`std::any::type_name`], carried because a `TypeId`
+    /// is an opaque hash: every report about a slot — the ownership census
+    /// (WS03-S8), the boot warn for an unowned slot — has to be able to
+    /// NAME the type it is talking about.
+    type_name: &'static str,
     /// The module that declared the slot (conflict detection: two modules
     /// declaring the same `TypeId` is a boot error, not a silent replace).
     module: SmolStr,
@@ -1402,6 +1407,12 @@ impl StateInit {
     #[must_use]
     pub fn type_id(&self) -> TypeId {
         self.type_id
+    }
+
+    /// The declared slot's type name (diagnostics only).
+    #[must_use]
+    pub fn type_name(&self) -> &'static str {
+        self.type_name
     }
 
     /// The module that declared it.
@@ -1420,6 +1431,27 @@ impl fmt::Debug for StateInit {
 struct StateSlot {
     value: Box<dyn Any + Send>,
     clone_fn: StateCloneFn,
+    /// The slot type's name, kept so a report can name it (see
+    /// [`StateInit::type_name`]).
+    type_name: &'static str,
+}
+
+/// One installed state slot, as the ownership census sees it: what type the
+/// slot holds and which module — if any — declared it.
+///
+/// A slot with `owner: None` was seeded through
+/// [`World::module_state_insert`](crate::world::World::module_state_insert)
+/// rather than declared through [`Registrar::state`]; it stays open to every
+/// module (that is today's behaviour and WS03-S8 changes no behaviour), and
+/// the engine names it in a boot `warn!` rather than refusing it.
+#[derive(Clone, Debug)]
+pub struct StateSlotInfo {
+    /// The slot's type.
+    pub type_id: TypeId,
+    /// That type's [`std::any::type_name`].
+    pub type_name: &'static str,
+    /// The module that declared the slot, if one did.
+    pub owner: Option<SmolStr>,
 }
 
 /// Typed module state living on the [`World`](crate::world::World): an
@@ -1446,6 +1478,7 @@ impl Clone for ModuleStateMap {
                         StateSlot {
                             value: (v.clone_fn)(v.value.as_ref()),
                             clone_fn: v.clone_fn,
+                            type_name: v.type_name,
                         },
                     )
                 })
@@ -1468,6 +1501,7 @@ impl ModuleStateMap {
             StateSlot {
                 value: Box::new(value),
                 clone_fn: clone_state::<T>,
+                type_name: std::any::type_name::<T>(),
             },
         );
     }
@@ -1479,8 +1513,15 @@ impl ModuleStateMap {
             StateSlot {
                 value: init.value,
                 clone_fn: init.clone_fn,
+                type_name: init.type_name,
             },
         );
+    }
+
+    /// Every installed slot, as `(TypeId, type name)`, in no particular
+    /// order.
+    pub fn slots(&self) -> impl Iterator<Item = (TypeId, &'static str)> + '_ {
+        self.slots.iter().map(|(&id, slot)| (id, slot.type_name))
     }
 
     /// Read the slot for `T`.
@@ -3067,9 +3108,18 @@ impl<'a> Registrar<'a> {
     /// Two **different** modules declaring the same slot type is a boot
     /// error (checked by `Engine::with_modules`); a module re-declaring its
     /// own slot keeps the last value.
+    ///
+    /// Declaring the slot also records this module as its **owner**
+    /// (`World::module_state_owner`), by module name and not by crate, so a
+    /// crate registering two modules is two owners. A foreign module
+    /// mutating the slot through [`Ctx::state_mut`] is reported — one
+    /// `warn!` per (writing module, slot) — and, today, still applies:
+    /// WS03-S8 is the census that makes the enforcement of WS03-S14 safe to
+    /// turn on.
     pub fn state<T: Any + Send + Clone>(&mut self, init: T) {
         self.reg.tables_mut().state_inits.push(StateInit {
             type_id: TypeId::of::<T>(),
+            type_name: std::any::type_name::<T>(),
             module: self.module.clone(),
             value: Box::new(init),
             clone_fn: clone_state::<T>,
@@ -4313,7 +4363,27 @@ impl Ctx<'_> {
     }
 
     /// Mutably access this world's state slot for `T`.
+    ///
+    /// A module mutating a slot **another** module declared is reported —
+    /// one `warn!` per (writing module, slot), recorded on the world for
+    /// [`World::foreign_state_writes`](crate::world::World::foreign_state_writes)
+    /// — and then applied exactly as before. That report is WS03-S8's
+    /// census: flipping this to `None` for a foreign writer is a silent
+    /// change no type check catches (every call site is
+    /// `if let Some(s) = ctx.state_mut::<T>()`, so a denied write would
+    /// become a no-op), so the truthful baseline is collected first and
+    /// WS03-S14 refuses on top of it.
+    ///
+    /// A slot with no recorded owner (seeded through
+    /// [`World::module_state_insert`](crate::world::World::module_state_insert)
+    /// rather than declared) stays open to all, and a core command —
+    /// `module: None` — is a wildcard.
     pub fn state_mut<T: Any + Send>(&mut self) -> Option<&mut T> {
+        self.w.note_module_state_write(
+            self.module.as_ref(),
+            TypeId::of::<T>(),
+            std::any::type_name::<T>(),
+        );
         self.w.module_state_mut::<T>()
     }
 
