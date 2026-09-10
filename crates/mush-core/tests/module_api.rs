@@ -2809,6 +2809,153 @@ fn deferred_persist_rides_the_outbox_side_channel() {
 }
 
 // ----------------------------------------------------------------------
+// WS03-A1: the cross-namespace persist census
+// ----------------------------------------------------------------------
+
+/// A module writing its OWN namespace is the fast path: the op lands and
+/// nothing is counted.
+#[test]
+fn a_module_persisting_into_its_own_namespace_is_not_counted() {
+    let mut world = World::new_minimal();
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).unwrap();
+    let mut out = Outbox::new();
+    let mut ctx = Ctx {
+        w: &mut world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &reg,
+        module: Some("toy".into()),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    ctx.persist(ModuleOp {
+        ns: "toy".into(),
+        op: ModuleWrite::Del { key: "gone".into() },
+    });
+    assert_eq!(out.deferred().len(), 1);
+    assert!(
+        world.foreign_namespace_writes().is_empty(),
+        "a module's own namespace is not a cross-namespace write"
+    );
+}
+
+/// The census counts a foreign namespace and **still applies the write**:
+/// WS03-A1's first commit measures, it does not refuse. Counting is
+/// deduplicated per `(module, namespace)`.
+#[test]
+fn a_foreign_namespace_persist_is_counted_and_still_lands() {
+    let mut world = World::new_minimal();
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).unwrap();
+    let mut out = Outbox::new();
+    let mut ctx = Ctx {
+        w: &mut world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &reg,
+        module: Some("housing".into()),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    for key in ["job:1", "job:2"] {
+        ctx.persist(ModuleOp {
+            ns: "jobs".into(),
+            op: ModuleWrite::Del { key: key.into() },
+        });
+    }
+    assert_eq!(
+        out.deferred().len(),
+        2,
+        "the census applies every write it counts"
+    );
+    assert_eq!(
+        world.foreign_namespace_writes(),
+        vec![("housing".into(), "jobs".into(), None)],
+        "one row per (module, namespace), however many writes it took"
+    );
+}
+
+/// A core command carries no module identity, and is a wildcard here exactly
+/// as it is for state slots.
+#[test]
+fn a_core_command_is_a_namespace_wildcard() {
+    let mut world = World::new_minimal();
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).unwrap();
+    let mut out = Outbox::new();
+    let mut ctx = Ctx {
+        w: &mut world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &reg,
+        module: None,
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    ctx.persist(ModuleOp {
+        ns: "jobs".into(),
+        op: ModuleWrite::Del {
+            key: "job:1".into(),
+        },
+    });
+    assert_eq!(out.deferred().len(), 1);
+    assert!(world.foreign_namespace_writes().is_empty());
+}
+
+/// Composition records `namespace -> owning module`: a module's name IS its
+/// namespace, and a namespace only a migration set names belongs to the
+/// module that registered it. A namespace nobody claims stays absent.
+#[test]
+fn composition_records_the_namespace_owner_of_every_module() {
+    let (engine, _nick) = setup();
+    assert_eq!(
+        engine.registry.namespace_owner("toy").map(SmolStr::as_str),
+        Some("toy")
+    );
+    // ToyModule registers migrations for a namespace of its own name only;
+    // nothing claims a namespace no module is called after.
+    assert_eq!(engine.registry.namespace_owner("jobs"), None);
+    let owners = engine.registry.namespace_owners();
+    assert!(
+        owners
+            .iter()
+            .any(|(ns, module)| ns == "toy" && module == "toy"),
+        "{owners:?} should claim the toy namespace for the toy module"
+    );
+}
+
+/// The owning module reaches the census row, so a `warn!` (and the report a
+/// reader gets) can name who the namespace belongs to.
+#[test]
+fn the_census_names_the_owning_module_when_the_composition_claims_one() {
+    let (mut engine, nick) = setup();
+    let mut out = Outbox::new();
+    let registry = std::mem::replace(&mut engine.registry, Registry::new());
+    let mut ctx = Ctx {
+        w: &mut engine.world,
+        actor: nick,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &registry,
+        module: Some("housing".into()),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    ctx.persist(ModuleOp {
+        ns: "toy".into(),
+        op: ModuleWrite::Del { key: "gone".into() },
+    });
+    assert_eq!(
+        engine.world.foreign_namespace_writes(),
+        vec![("housing".into(), "toy".into(), Some("toy".into()))]
+    );
+}
+
+// ----------------------------------------------------------------------
 // Scenes
 // ----------------------------------------------------------------------
 

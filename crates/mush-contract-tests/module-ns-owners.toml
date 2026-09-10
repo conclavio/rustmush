@@ -1,0 +1,109 @@
+# WS03-A1: the cross-namespace module-write census.
+#
+# A module's `GameModule::name` IS its persistence namespace, so a write whose
+# `op.ns` is not the writing module's name is one module writing documents
+# another module owns. `Ctx::persist` compares the two and counts the
+# mismatches; `tests/module_ns_owners.rs` is what keeps the set from growing
+# quietly, and `World::foreign_namespace_writes` is what a running server
+# reports.
+#
+# Nothing here is refused yet. This file is the measurement WS03-A1's second
+# commit needs before it may drop a write: a delegation that stops persisting
+# is silent at the call site, exactly as a refused state slot is
+# (state-slot-owners.toml, WS03-S8/S14), so the set is written down first.
+#
+# HOW THESE ROWS WERE MEASURED. `Ctx::persist`'s namespace is a runtime value,
+# not a syntactic one, so no scan of the source can enumerate it. The counter
+# was installed and every crate that persists had its test suite run against
+# it: mush-campaign, mush-canon, mush-comsys, mush-contract-tests, mush-core,
+# mush-economy, mush-faction, mush-housing, mush-industry, mush-jobs,
+# mush-mail, mush-market, mush-npc, mush-org, mush-party, mush-privileges,
+# mush-propagation, mush-scenes, mush-script, mush-server, mush-sim,
+# mush-tactics, mush-testkit, mush-weather, mush-worldgen, mushd,
+# ruleset-shadowrun, ruleset-tacsim, ruleset-wod. Every distinct
+# (module, namespace) pair those runs produced is below.
+#
+# Two shapes did NOT survive as rows, because they are not modules reaching
+# across:
+#
+#   * `module: None` — a core command is a wildcard, here as it is for state
+#     slots. The run saw `(core) -> jobs` and `(core) -> toy`.
+#   * the engine's own namespace-crossing helpers. `Ctx::end_scene` /
+#     `scene_state_set` / `set_map_blob` write a scene's OWNING namespace
+#     whoever calls them, and `Ctx::change_world_time_rate` writes the
+#     reserved engine-owned world-timeline namespace no module may be named
+#     after (the run saw `tacsim -> rustmush_kernel_time` through it). All
+#     four now take `Ctx::persist_engine_owned`, which is `pub(crate)` in
+#     mush-core: the engine mediates those writes, and no module can reach the
+#     spelling.
+#
+# Test-only modules the run also saw — `e4cjobs -> jobs` and
+# `e2etest -> jobs`, both test rigs opening jobs through the jobs API — are
+# not listed: they are not production modules, and the second commit gives
+# them their declaration where they are defined.
+
+# ---------------------------------------------------------------------------
+# Into the jobs namespace: the jobs module's public API takes `ctx` and
+# persists under the CALLER's identity. This is the delegation the trust-model
+# paragraph named, measured at last.
+# ---------------------------------------------------------------------------
+
+[[observed]]
+module = "housing"
+ns = "jobs"
+reason = """
+mush_housing::flow calls mush_jobs::open_job / resolve_plain_job to raise and \
+close the tenancy story window (flow.rs, tick.rs). The jobs API writes jobs \
+documents through the caller's Ctx.
+"""
+
+[[observed]]
+module = "wod"
+ns = "jobs"
+reason = """
+ruleset_wod::chargen_cmds and ::xp open approval jobs, and ::roll appends a \
+roll comment, through mush_jobs::open_job / add_comment.
+"""
+
+[[observed]]
+module = "shadowrun"
+ns = "jobs"
+reason = """
+ruleset_shadowrun::chargen_cmds and ::karma open approval jobs through \
+mush_jobs::open_job, exactly as the WoD ruleset does.
+"""
+
+[[observed]]
+module = "economy"
+ns = "jobs"
+reason = """
+An economy command emits an EconomicEvent; housing's economic observer runs \
+under the EMITTING module's identity and closes the tenancy story job through \
+mush_jobs::resolve_plain_job. Two hops: the identity on the write is the \
+economy module's, the code is housing's, the namespace is the jobs module's.
+"""
+
+# ---------------------------------------------------------------------------
+# Out of the jobs namespace: a job payload handler is registered by a ruleset
+# and dispatched by the jobs module, so it runs under the JOBS module's
+# identity and writes its own ruleset's namespace.
+# ---------------------------------------------------------------------------
+
+[[observed]]
+module = "jobs"
+ns = "wod"
+reason = """
+`+job/approve` dispatches the payload handler ruleset_wod registered \
+(chargen approval, XP spend) under the jobs module's Ctx; the handler writes \
+wod-namespace documents.
+"""
+
+[[observed]]
+module = "jobs"
+ns = "shadowrun"
+reason = """
+The same route as jobs -> wod, for the two handlers ruleset_shadowrun \
+registers (chargen approval, karma spend). The census RUN did not reach it — \
+no test approves a Shadowrun payload job — but the registration is there, so \
+the pair is declared rather than discovered by a dropped write.
+"""

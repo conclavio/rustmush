@@ -1631,6 +1631,10 @@ pub struct ModuleTables {
     migrations: HashMap<SmolStr, Vec<Migration>>,
     /// migration namespace → the one module that owns its migration set.
     migration_owners: HashMap<SmolStr, SmolStr>,
+    /// WS03-A1: persistence namespace → the module that owns it. Filled in
+    /// once, at composition, from the roster's module names and the
+    /// migration owners; a namespace nobody claims is absent, not empty.
+    namespace_owners: HashMap<SmolStr, SmolStr>,
     /// The single registered weather provider (the reserved tactics seam).
     weather: Option<(SmolStr, Arc<dyn WeatherQuery>)>,
     /// module name → its async-completion handler (the LLM re-entry seam).
@@ -2091,6 +2095,53 @@ impl Registry {
     #[must_use]
     pub fn migrations(&self) -> &HashMap<SmolStr, Vec<Migration>> {
         &self.mods.migrations
+    }
+
+    /// The module that owns the persistence namespace `ns` (WS03-A1), if the
+    /// composition claims it.
+    ///
+    /// A module's [`GameModule::name`] **is** its namespace, so the roster's
+    /// names are the bulk of this map; a namespace no module is named after
+    /// belongs to whichever module first registered its migrations
+    /// ([`Registrar::migrations`]' first-registrar rule). A namespace nobody
+    /// claims — an engine-owned one such as the world timeline, or a test
+    /// rig's — is simply absent.
+    #[must_use]
+    pub fn namespace_owner(&self, ns: &str) -> Option<&SmolStr> {
+        self.mods.namespace_owners.get(ns)
+    }
+
+    /// Every claimed persistence namespace with its owning module, sorted.
+    #[must_use]
+    pub fn namespace_owners(&self) -> Vec<(SmolStr, SmolStr)> {
+        let mut owners: Vec<(SmolStr, SmolStr)> = self
+            .mods
+            .namespace_owners
+            .iter()
+            .map(|(ns, module)| (ns.clone(), module.clone()))
+            .collect();
+        owners.sort();
+        owners
+    }
+
+    /// Record `namespace -> owning module` for the composed roster (WS03-A1).
+    ///
+    /// Called once by [`Engine::compose_modules`](crate::Engine::compose_modules)
+    /// with every module's name, after registration and before the world sees
+    /// a single write. A module name always wins over a migration
+    /// registration for the same string: the name is the namespace by
+    /// definition, and the migration table only names namespaces no module is
+    /// called after.
+    pub(crate) fn record_namespace_owners<'a>(
+        &mut self,
+        module_names: impl IntoIterator<Item = &'a str>,
+    ) {
+        let mut owners: HashMap<SmolStr, SmolStr> = self.mods.migration_owners.clone();
+        for name in module_names {
+            let name = SmolStr::new(name);
+            owners.insert(name.clone(), name);
+        }
+        self.mods.namespace_owners = owners;
     }
 
     /// The registered weather provider (the reserved `WeatherQuery` seam),
@@ -4124,15 +4175,55 @@ impl Ctx<'_> {
     /// `persist` calls never half-commits. World mutations made before the
     /// error remain best-effort — validate-then-apply is still the rule.
     ///
-    /// **Trust model**: `op.ns` is not verified against `ctx.module`.
-    /// Compiled-in modules are trusted code; writing into another module's
-    /// namespace is *sanctioned delegation* (e.g. producing modules write
-    /// `jobs`-namespace docs through the jobs module's exported helpers)
-    /// and must only ever be done through the owning module's public API.
-    /// Any future enforcement will formalize that delegation rather than
-    /// check `ns == module`.
+    /// **Trust model** (WS03-A1, census half): `op.ns` **is** compared
+    /// against `ctx.module`, and a write into another module's namespace is
+    /// COUNTED, not refused. Compiled-in modules are trusted code, and
+    /// writing into another module's namespace is *sanctioned delegation*
+    /// (a producing module writes `jobs`-namespace docs through the jobs
+    /// module's exported helpers, which run under the CALLER's identity) —
+    /// but until this commit nothing recorded, counted or bounded the set,
+    /// so the delegation set was unknown. Every foreign pair is now recorded
+    /// on the world
+    /// ([`World::foreign_namespace_writes`](crate::world::World::foreign_namespace_writes))
+    /// and `warn!`-logged once per `(module, namespace)`, naming the owning
+    /// module. Nothing changes about what lands: the refusal comes next, and
+    /// it may only flip once the census is written down.
+    ///
+    /// A core command (`module: None`) is a wildcard, exactly as it is for
+    /// state slots. The engine's own namespace-crossing helpers — the scene
+    /// API, which writes the scene's OWNING namespace whoever calls it, and
+    /// the world timeline, which writes an engine-owned namespace no module
+    /// may be named after — take [`Ctx::persist_engine_owned`] instead: the
+    /// engine mediates those, so they are not a module reaching across.
     pub fn persist(&mut self, op: ModuleOp) {
+        // This is on every module write path, so the fast path is one
+        // SmolStr equality and nothing else.
+        if self.module.as_ref().is_some_and(|module| *module != op.ns) {
+            self.note_foreign_namespace_write(&op.ns);
+        }
         self.out.defer(Deferred::Persist(op));
+    }
+
+    /// Queue a persistence op whose namespace the ENGINE, not this module,
+    /// decides: the scene API's writes into a scene's owning namespace and
+    /// the world timeline's writes into its reserved one.
+    ///
+    /// Not a way around [`Ctx::persist`]'s namespace check — it is the
+    /// spelling for the writes that check would misread, and it lives in
+    /// `mush-core` alone (`pub(crate)`), so a module cannot reach it.
+    pub(crate) fn persist_engine_owned(&mut self, op: ModuleOp) {
+        self.out.defer(Deferred::Persist(op));
+    }
+
+    /// Record one module write into a namespace that is not the module's own
+    /// (WS03-A1). Cold: only ever reached on a mismatch.
+    #[cold]
+    fn note_foreign_namespace_write(&mut self, ns: &SmolStr) {
+        let Some(module) = self.module.clone() else {
+            return;
+        };
+        let owner = self.reg.namespace_owner(ns).cloned();
+        self.w.record_foreign_namespace_write(&module, ns, owner);
     }
 
     /// Open a server-initiated request to `subject` (interface plan I10,
@@ -4620,7 +4711,10 @@ impl Ctx<'_> {
             return false;
         };
         let ns = scene.ns.clone();
-        self.persist(ModuleOp {
+        // The scene's OWNING namespace, whoever ends it: engine-mediated, so
+        // it takes the spelling WS03-A1's check does not read as a module
+        // reaching across.
+        self.persist_engine_owned(ModuleOp {
             ns,
             op: ModuleWrite::Del {
                 key: scene.ruleset_state_key.clone(),
@@ -4692,7 +4786,7 @@ impl Ctx<'_> {
         let (ns, key) = self.scene_persist_target(scene)?;
         self.w.scene_state_set(scene, obj, value);
         let snapshot = self.w.scene_state_snapshot(scene);
-        self.persist(ModuleOp {
+        self.persist_engine_owned(ModuleOp {
             ns,
             op: ModuleWrite::JsonSet {
                 key,

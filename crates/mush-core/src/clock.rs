@@ -554,7 +554,11 @@ impl crate::cmd::Ctx<'_> {
         let epoch = self.w.next_world_timeline_epoch(rate)?;
         let ops = world_timeline_persistence_ops(epoch)?;
         for op in ops {
-            self.persist(op);
+            // The world timeline's namespace is engine-owned — reserved, and
+            // refused as a module name at composition — so this is the engine
+            // writing through whichever module's command asked, not that
+            // module reaching into someone else's namespace (WS03-A1).
+            self.persist_engine_owned(op);
         }
         self.gate_on_durable_ack_strict();
         self.w.append_world_timeline_epoch(epoch)?;

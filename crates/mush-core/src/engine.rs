@@ -2023,6 +2023,12 @@ impl Engine {
             let mut registrar = module::Registrar::for_composition(&mut registry, name);
             m.register(&mut registrar)?;
         }
+        // WS03-A1: a module's name IS its persistence namespace, so the roster
+        // is the namespace ownership map — recorded once, here, where the whole
+        // roster is known and before any write can happen. `Ctx::persist`
+        // reads it to name the owner of a namespace a module writes but does
+        // not own.
+        registry.record_namespace_owners(modules.iter().map(|m| m.name()));
         // fu3-4: with every module's registrations in, no global command may
         // capture a verb a behavior declares. A global always wins at
         // dispatch, so a captured behavior verb is permanently dead with

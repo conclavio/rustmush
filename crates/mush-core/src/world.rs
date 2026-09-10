@@ -203,6 +203,13 @@ pub struct World {
     /// command, so the report is deduplicated here — one log line per pair
     /// per boot, not one per command in the world loop.
     module_state_foreign_writes: BTreeMap<(SmolStr, TypeId), &'static str>,
+    /// WS03-A1: every `(writing module, persistence namespace)` pair seen at
+    /// [`Ctx::persist`](crate::cmd::Ctx::persist) where the namespace is not
+    /// the writing module's own, with the namespace's owning module when the
+    /// composition claims one. Deduplicated for the same reason the slot
+    /// table is: `Ctx::persist` is on every module write path, and the world
+    /// loop must not log per command.
+    module_ns_foreign_writes: BTreeMap<(SmolStr, SmolStr), Option<SmolStr>>,
     /// Per-actor input-context stacks (transient parser state — empty on
     /// clone).
     input_stacks: InputStacks,
@@ -1549,6 +1556,48 @@ impl World {
             .iter()
             .map(|((module, _), type_name)| (module.clone(), *type_name))
             .collect()
+    }
+
+    /// Every cross-namespace module write seen so far, as
+    /// `(writing module, namespace, owning module)` — the WS03-A1 census.
+    ///
+    /// A module's [`GameModule::name`](crate::module::GameModule::name) is its
+    /// persistence namespace, so a row here is a module writing documents
+    /// another module owns: *sanctioned delegation* through the owning
+    /// module's public API (the jobs API writes `jobs` documents under the
+    /// CALLER's identity), or a defect. The owner is `None` for a namespace
+    /// no composed module claims — an engine-owned one, or a test rig's.
+    ///
+    /// The census applies the write and counts it. Nothing here is a refusal
+    /// yet.
+    #[must_use]
+    pub fn foreign_namespace_writes(&self) -> Vec<(SmolStr, SmolStr, Option<SmolStr>)> {
+        self.module_ns_foreign_writes
+            .iter()
+            .map(|((module, ns), owner)| (module.clone(), ns.clone(), owner.clone()))
+            .collect()
+    }
+
+    /// Record one module write into a namespace that is not the writing
+    /// module's own (WS03-A1), warning once per `(module, namespace)`.
+    pub(crate) fn record_foreign_namespace_write(
+        &mut self,
+        module: &SmolStr,
+        ns: &SmolStr,
+        owner: Option<SmolStr>,
+    ) {
+        if self
+            .module_ns_foreign_writes
+            .insert((module.clone(), ns.clone()), owner.clone())
+            .is_none()
+        {
+            tracing::warn!(
+                module = %module,
+                ns = %ns,
+                owner = owner.as_deref().unwrap_or("(unclaimed)"),
+                "cross-namespace module write: op.ns is not this module's namespace (WS03-A1 census)"
+            );
+        }
     }
 
     /// Decide whether `module` may mutate the slot for `ty` through
