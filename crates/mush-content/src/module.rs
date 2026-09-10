@@ -181,12 +181,20 @@ pub fn retire_pack(
 }
 
 /// Run `f` with the latches taken out of the slot and put back afterwards.
+///
+/// WS03-S14: applying a pack is something an OWNER asks for — `@atlas/pack
+/// apply` runs under the atlas's identity, `+build` under worldgen's — so the
+/// checked `Ctx::state_mut` would refuse this write of the content module's own
+/// slot and the latch would go to the store without ever reaching RAM. Same
+/// crate, same module, only the context's name differs, so the unchecked world
+/// accessor is the right spelling and `state-slot-owners.toml` wants no row
+/// (that file baselines a crate writing ANOTHER module's slot).
 fn with_state<T>(
     ctx: &mut Ctx<'_>,
     pack: &str,
     f: impl FnOnce(&mut Ctx<'_>, &mut Latches, &Appliers) -> Result<T, ApplyError>,
 ) -> Result<T, ApplyError> {
-    let Some(slot) = ctx.state_mut::<ContentState>() else {
+    let Some(slot) = ctx.w.module_state_mut::<ContentState>() else {
         return Err(ApplyError::Held {
             pack: format!("{pack} (no content state slot on this world)"),
         });
@@ -194,7 +202,7 @@ fn with_state<T>(
     let mut latches = std::mem::take(&mut slot.latches);
     let appliers = slot.appliers.clone();
     let result = f(ctx, &mut latches, &appliers);
-    if let Some(slot) = ctx.state_mut::<ContentState>() {
+    if let Some(slot) = ctx.w.module_state_mut::<ContentState>() {
         slot.latches = latches;
     }
     result

@@ -112,6 +112,17 @@ impl GameModule for NpcModule {
         state.config.scene_turn_deadline_secs = self.scene_turn_deadline_secs;
         let tick_period = state.config.tick;
         reg.state(state);
+        // WS03-A1: `crate::content`'s entry appliers run under the CONTENT
+        // module's identity — the content module's pack pass drives every
+        // kind's applier itself — so the lore pools and people a pack places
+        // carry `content` on the write and `npc` on the namespace. We own the
+        // namespace and mush-content cannot name us, so the pair is declared
+        // here.
+        reg.persist_delegation(
+            "content",
+            crate::profile::NS,
+            "the content module's pack pass drives this crate's entry appliers under              the content module's identity, and they write the lore pools and people              the pack describes",
+        )?;
 
         // Speech + movement + presence observers build stimuli.
         for kind in [

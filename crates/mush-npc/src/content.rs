@@ -249,7 +249,13 @@ fn create_pool(
     pool.validate().map_err(|e| format!("{id}: {e}"))?;
     let value = serde_json::to_value(&pool).map_err(|e| format!("{id}: {e}"))?;
     let key = pool_key(&pool.tag);
-    if let Some(host) = ctx.state_mut::<NpcHostState>() {
+    // WS03-S14: an applier runs under the CONTENT module's context, so the
+    // checked spelling would refuse this write of the `npc` module's own slot
+    // and the pool would land in the store but not in RAM. Same crate, same
+    // module, only the context's name differs — the unchecked world accessor,
+    // and no `state-slot-owners.toml` row (that file baselines a crate writing
+    // another module's slot).
+    if let Some(host) = ctx.w.module_state_mut::<NpcHostState>() {
         host.lore_pools
             .set(pool)
             .map_err(|e| format!("{id}: {e}"))?;
@@ -385,7 +391,9 @@ impl EntryApplier for NpcApplier {
                     .strip_prefix("lore.")
                     .unwrap_or(id.as_str())
                     .to_string();
-                if let Some(host) = ctx.state_mut::<NpcHostState>() {
+                // WS03-S14, as above: the retire runs under the content
+                // module's context and reaches this crate's own slot.
+                if let Some(host) = ctx.w.module_state_mut::<NpcHostState>() {
                     host.lore_pools.remove(&tag);
                 }
                 ctx.persist(ModuleOp {

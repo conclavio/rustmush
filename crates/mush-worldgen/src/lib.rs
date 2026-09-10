@@ -195,6 +195,15 @@ impl GameModule for WorldgenModule {
             target_usd: self.config.plan_cost_target_usd,
         };
         reg.state(state);
+        // WS03-A1: `@atlas/propose` reaches the planner through the function
+        // this crate registers with the atlas at boot, so a planning run — and
+        // every proposal document it writes — happens under the ATLAS module's
+        // identity. We own this namespace, so the pair is ours to declare.
+        reg.persist_delegation(
+            "atlas",
+            NS,
+            "`@atlas/propose` dispatches this crate's registered planner under the              atlas module's identity, and the run writes worldgen proposals",
+        )?;
         commands::register(reg, Arc::clone(&self.llm))
     }
 

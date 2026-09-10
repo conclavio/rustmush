@@ -41,14 +41,15 @@
 #
 #   * `module: None` — a core command is a wildcard, here as it is for state
 #     slots. The run saw `(core) -> jobs` and `(core) -> toy`.
-#   * the engine's own namespace-crossing helpers. `Ctx::end_scene` /
-#     `scene_state_set` / `set_map_blob` write a scene's OWNING namespace
-#     whoever calls them, and `Ctx::change_world_time_rate` writes the
-#     reserved engine-owned world-timeline namespace no module may be named
-#     after (the run saw `tacsim -> rustmush_kernel_time` through it). All
-#     four take `Ctx::persist_engine_owned`, which is `pub(crate)` in
-#     mush-core: the engine mediates those writes, and no module can reach the
-#     spelling.
+#   * the engine's own namespace-crossing helpers. `Ctx::end_scene` and
+#     `Ctx::scene_state_set` write a scene's OWNING namespace whoever calls
+#     them, and `Ctx::change_world_time_rate` writes the reserved engine-owned
+#     world-timeline namespace no module may be named after (the run saw
+#     `tacsim -> rustmush_kernel_time` through it). All three take
+#     `Ctx::persist_engine_owned`, which is `pub(crate)` in mush-core: the
+#     engine mediates those writes, and no module can reach the spelling. (The
+#     census also named `Ctx::set_map_blob`, the opaque per-scene blob; S4
+#     replaced it with the atlas's own window records and deleted it.)
 #
 # WHAT THE REFUSAL CANNOT KNOW IN ADVANCE. A pair is (writing module,
 # namespace), and the writing module is whoever's identity the Ctx carries —
@@ -128,4 +129,82 @@ The same route as jobs -> wod, for the two handlers ruleset_shadowrun \
 registers (chargen approval, karma spend). The census RUN did not reach it — \
 no test approves a Shadowrun payload job — so it is declared rather than \
 discovered by a dropped write.
+"""
+
+# ---------------------------------------------------------------------------
+# The spatial layer (S1-S5, 14-spatial-implementation-plan). Four modules reach
+# `mush-atlas`'s API with a `Ctx` of their own and one runs the other way, which
+# is the same "the identity on the write is the CALLER's" shape as the jobs
+# block above — here it is an applier registry, a scene hook and a registered
+# planner rather than a public job API.
+# ---------------------------------------------------------------------------
+
+[[delegation]]
+writer = "content"
+ns = "atlas"
+declared_by = "atlas"
+reason = """
+The content module's boot pass and `@content/pack apply` drive every entry \
+kind's applier themselves, so the atlas's own appliers make places under the \
+content module's identity. mush-content cannot name the atlas (the dependency \
+runs the other way), so the atlas declares it.
+"""
+
+[[delegation]]
+writer = "content"
+ns = "npc"
+declared_by = "npc"
+reason = """
+The same route for the people half of a pack: mush_npc::content's appliers \
+write lore pools and personas under the content module's identity.
+"""
+
+[[delegation]]
+writer = "scenes"
+ns = "atlas"
+declared_by = "atlas"
+reason = """
+A scene opens a tactical window when it starts and closes it when it ends, \
+through the start/end hook the atlas registers with mush-scenes; the scenes \
+module fires it under its own identity.
+"""
+
+[[delegation]]
+writer = "tacseam"
+ns = "atlas"
+declared_by = "atlas"
+reason = """
+The same scene hook, fired for a battle scene mush-tactics starts and ends. \
+Two hops: the identity is the tactics module's, the code is the atlas's, the \
+namespace is the atlas's own.
+"""
+
+[[delegation]]
+writer = "worldgen"
+ns = "atlas"
+declared_by = "atlas"
+reason = """
+`+build/place` and a proposal's activation call the atlas's hydration API — \
+site requests, a character's standing, the activation itself — with worldgen's \
+Ctx.
+"""
+
+[[delegation]]
+writer = "atlas"
+ns = "content"
+declared_by = "atlas"
+reason = """
+The direction that runs back: `@atlas/pack apply` commits through \
+mush_content::apply_pack, and the pack latch it writes carries the atlas \
+module's identity.
+"""
+
+[[delegation]]
+writer = "atlas"
+ns = "worldgen"
+declared_by = "worldgen"
+reason = """
+`@atlas/propose` hands the proposal to the planner mush-worldgen registers with \
+the atlas at boot, so a whole planning run — and every proposal document it \
+writes — happens under the atlas module's identity.
 """

@@ -86,6 +86,19 @@ impl GameModule for Probe {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.state(ProbeQueue::default());
+        // WS03-A1: `+probe` runs the hydration API under THIS module's identity,
+        // which is the point of the rig — it stands in for worldgen, whose
+        // `+build` calls the same API the same way. A write's identity is
+        // whoever's `Ctx` carries it, so the three namespaces that API reaches
+        // are declared here, by the writer, exactly as a real caller declares
+        // its own.
+        for ns in ["atlas", "content", "jobs"] {
+            reg.persist_delegation(
+                "probe",
+                ns,
+                "the test rig calls the atlas's hydration API under its own identity,                  standing in for worldgen's +build",
+            )?;
+        }
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.command(
             CommandSpec {

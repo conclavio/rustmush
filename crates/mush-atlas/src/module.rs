@@ -337,6 +337,40 @@ impl GameModule for AtlasModule {
                 .insert(pack.manifest().id().clone(), pack.clone());
         }
         reg.state(state);
+        // WS03-A1: four other modules reach this crate's API with a `Ctx` of
+        // their own, and a write's identity is whoever's `Ctx` carries it — so
+        // each of these lands `content`/`scenes`/`tacseam`/`worldgen` on the
+        // write and `atlas` on the namespace. The atlas owns the namespace and
+        // three of the four cannot name us (the dependency runs the other way),
+        // so every pair is declared here rather than at the writers.
+        reg.persist_delegation(
+            "content",
+            NS,
+            "the content module's pack pass and boot pass drive this crate's entry              appliers under the content module's identity, and they write the atlas              records the pack describes",
+        )?;
+        reg.persist_delegation(
+            "scenes",
+            NS,
+            "a scene opens and closes its tactical window through the start/end hook              this module registers with mush-scenes, which fires it under the scenes              module's identity",
+        )?;
+        reg.persist_delegation(
+            "tacseam",
+            NS,
+            "the same scene hook, fired for a battle scene the tactics module starts              and ends under its own identity",
+        )?;
+        reg.persist_delegation(
+            "worldgen",
+            NS,
+            "`+build` and the planner's activation call this crate's hydration API —              requests, standing, activation — with worldgen's Ctx",
+        )?;
+        // ...and the one that runs the other way: applying a pack writes the
+        // content module's latch under OUR identity. We are the writer here, and
+        // we can name mush-content, so this pair is ours to declare.
+        reg.persist_delegation(
+            NS,
+            mush_content::NS,
+            "`@atlas/pack apply` commits through mush_content::apply_pack, whose latch              write carries this module's identity",
+        )?;
         // S3: the planner's entry (worldgen registers it at boot) and the BUILD
         // review queue for hydrated sites (doc 14 §4.5).
         reg.state(crate::hydrate::AtlasHooks::default());

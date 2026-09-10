@@ -429,8 +429,15 @@ fn state<'a>(ctx: &'a Ctx<'_>) -> Result<&'a WorldgenState, String> {
         .ok_or_else(|| "The worldgen module is not composed on this server.".to_string())
 }
 
+/// WS03-S14: `@atlas/propose` reaches the planner through the function this
+/// crate registers with the atlas at boot, so a planning run happens under the
+/// ATLAS module's identity and the checked spelling would refuse the write of
+/// our own slot. Same crate, same module, only the context's name differs; the
+/// unchecked world accessor is the right spelling and `state-slot-owners.toml`
+/// wants no row for it.
 fn state_mut<'a>(ctx: &'a mut Ctx<'_>) -> Result<&'a mut WorldgenState, String> {
-    ctx.state_mut::<WorldgenState>()
+    ctx.w
+        .module_state_mut::<WorldgenState>()
         .ok_or_else(|| "The worldgen module is not composed on this server.".to_string())
 }
 

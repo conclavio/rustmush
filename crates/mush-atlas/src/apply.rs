@@ -98,16 +98,30 @@ struct KindApplier {
 }
 
 /// Run `f` with the atlas state taken out of its slot and put back afterwards.
+///
+/// WS03-S14: the slot belongs to the `atlas` module, and `Ctx::state_mut`
+/// refuses a write whose `ctx.module` is not the owner. This runs under the
+/// CONTENT module's context — the content module's boot pass and
+/// `@content/pack apply` drive every kind's applier under their own identity,
+/// which is the whole point of the applier registry — so the checked spelling
+/// would return `None` here and the atlas would silently apply nothing.
+///
+/// The unchecked world accessor is the right answer rather than a delegation:
+/// this is the atlas's own code writing the atlas's own slot, and only the
+/// context's name differs. The reach is in-family (same crate, same module),
+/// which is why `state-slot-owners.toml` wants no row for it — that file
+/// baselines a crate writing ANOTHER module's slot, and a row here would be a
+/// stale excuse the scan rejects.
 fn with_atlas<T>(
     ctx: &mut Ctx<'_>,
     f: impl FnOnce(&mut Ctx<'_>, &mut AtlasState) -> Result<T, String>,
 ) -> Result<T, String> {
-    let Some(slot) = ctx.state_mut::<AtlasState>() else {
+    let Some(slot) = ctx.w.module_state_mut::<AtlasState>() else {
         return Err("the atlas is not composed on this world".to_string());
     };
     let mut state = std::mem::take(slot);
     let result = f(ctx, &mut state);
-    if let Some(slot) = ctx.state_mut::<AtlasState>() {
+    if let Some(slot) = ctx.w.module_state_mut::<AtlasState>() {
         *slot = state;
     }
     result

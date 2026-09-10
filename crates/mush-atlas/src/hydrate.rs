@@ -351,8 +351,15 @@ fn state<'a>(ctx: &'a Ctx<'_>) -> Result<&'a AtlasState, String> {
         .ok_or_else(|| "The atlas is not composed on this server.".to_string())
 }
 
+/// WS03-S14: the hydration API is worldgen's to call — `+build/place` and the
+/// planner's activation reach it with a `Ctx` carrying the WORLDGEN module's
+/// name — so the checked spelling would refuse the write of our own slot and
+/// the request would persist without ever landing in RAM. Same crate, same
+/// module, only the context's name differs; the unchecked world accessor is the
+/// right spelling here, and `state-slot-owners.toml` wants no row for it.
 fn state_mut<'a>(ctx: &'a mut Ctx<'_>) -> Result<&'a mut AtlasState, String> {
-    ctx.state_mut::<AtlasState>()
+    ctx.w
+        .module_state_mut::<AtlasState>()
         .ok_or_else(|| "The atlas is not composed on this server.".to_string())
 }
 
