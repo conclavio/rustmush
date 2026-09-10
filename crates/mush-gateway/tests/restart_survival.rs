@@ -65,6 +65,11 @@ fn test_config(tag: &str) -> Config {
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
     cfg.rulesets.enabled = vec![];
+    // WS22-S17: an abandoned supervisor EXITS the gateway in production. The
+    // crash-loop proof below is about what the still-connected player is told,
+    // so this file keeps the corpse (the exit itself is proved in
+    // `tests/supervision_abandoned.rs`).
+    cfg.ipc.exit_on_abandoned_supervision = false;
     cfg
 }
 

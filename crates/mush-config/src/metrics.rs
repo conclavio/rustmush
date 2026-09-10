@@ -129,6 +129,14 @@ pub struct Metrics {
     /// above zero means the single writer was thrown out of its own state
     /// machine and the world is frozen; it is an alert, not a trend.
     world_panics_total: AtomicU64,
+    /// Set once the gateway supervisor has GIVEN UP on the server half
+    /// (WS22-S17): the crash-loop guard tripped, an old instance's exit could
+    /// not be established, or the supervisor task itself died. A latch, not a
+    /// counter — there is no second abandonment to count, because nothing is
+    /// supervising any more. Read by `/healthz` (`supervision_ok`) and
+    /// `/metrics`, and set only in the split gateway (the all-in-one has no
+    /// supervisor, so it reads false for ever).
+    supervision_abandoned: AtomicBool,
 
     // -- world loop (published each sample) --
     loop_lag_last_ms: AtomicU64,
@@ -222,6 +230,20 @@ pub struct Metrics {
     /// down so the gateway-retained roster can retry; no partial snapshot is
     /// ever applied.
     ipc_reannounce_protocol_violations_total: AtomicU64,
+    /// Coordinator claims the server had RETAINED (custody kept, no
+    /// disposition published) and later reaped because they aged past the
+    /// retention TTL. Monotonic counter — retention is silent by design, so
+    /// this is the only operational signal that a boundary is accumulating
+    /// requests whose durable fate nothing could prove.
+    ipc_retained_claims_reaped_total: AtomicU64,
+    /// Coordinator submissions whose mandatory read-only preflight stayed
+    /// TRANSIENT to its bound, so the server deferred the work instead of
+    /// spinning on the store: the split boundary retains custody for the
+    /// gateway's next replay, the all-in-one handle answers `Busy`. Monotonic
+    /// counter and the only cheap signal that the authoritative store is
+    /// answering neither yes nor no; it climbing means players are being told
+    /// "try again" by a store hiccup, not by a rule.
+    coordinator_preflight_deferred_total: AtomicU64,
     /// High-water mark of the gateway->server (`to_server`) queue depth
     /// (`fetch_max` gauge).
     ipc_queue_high_water_to_server: AtomicU64,
@@ -303,6 +325,21 @@ impl Metrics {
         self.world_panics_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Latch the supervision-abandoned gauge (WS22-S17).
+    ///
+    /// The gateway calls this at the ONE site that gives up on the server
+    /// half. It is idempotent on purpose: the point of the gauge is that a
+    /// scraper can see the state at all, not how many ways it was reached.
+    pub fn abandon_supervision(&self) {
+        self.supervision_abandoned.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the gateway supervisor has given up on the server half.
+    #[must_use]
+    pub fn supervision_abandoned(&self) -> bool {
+        self.supervision_abandoned.load(Ordering::Relaxed)
+    }
+
     // -- world-loop sampling ----------------------------------------------
 
     /// Record one loop-iteration lag observation (feeds last/max + histogram).
@@ -351,6 +388,7 @@ impl Metrics {
             "world_loop_unixtime": self.world_loop_last_iter_unix.load(Ordering::Relaxed),
             "store_ok": !self.store_read_only.load(Ordering::Relaxed),
             "integrity_ok": !self.integrity_frozen.load(Ordering::Relaxed),
+            "supervision_ok": !self.supervision_abandoned.load(Ordering::Relaxed),
         })
     }
 
@@ -556,6 +594,23 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Count `reaped` retained coordinator claims freed by one reaper pass.
+    /// The reap publishes nothing to the gateway (which still holds its own
+    /// replay copy), so this counter and one warn are the whole signal.
+    pub fn ipc_retained_claims_reaped(&self, reaped: u64) {
+        self.ipc_retained_claims_reaped_total
+            .fetch_add(reaped, Ordering::Relaxed);
+    }
+
+    /// Count one coordinator submission deferred at the preflight bound: the
+    /// store stayed transient for the whole bounded window, so the request was
+    /// handed back to whoever still holds a copy of it rather than retried
+    /// forever inside the handler.
+    pub fn coordinator_preflight_deferred(&self) {
+        self.coordinator_preflight_deferred_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Record a gateway->server (`to_server`) queue occupancy observation,
     /// keeping the high-water mark (`fetch_max`).
     pub fn observe_ipc_to_server_depth(&self, depth: u64) {
@@ -676,6 +731,7 @@ impl Metrics {
             connections_current: self.connections_current.load(Ordering::Relaxed),
             commands_total: self.commands_total.load(Ordering::Relaxed),
             world_panics_total: self.world_panics_total.load(Ordering::Relaxed),
+            supervision_abandoned: self.supervision_abandoned.load(Ordering::Relaxed),
             loop_lag_last_ms: self.loop_lag_last_ms.load(Ordering::Relaxed),
             loop_lag_max_ms: self.loop_lag_max_ms.load(Ordering::Relaxed),
             lag_buckets: std::array::from_fn(|i| self.lag_buckets[i].load(Ordering::Relaxed)),
@@ -746,6 +802,12 @@ impl Metrics {
             ipc_to_gw_overflow_total: self.ipc_to_gw_overflow_total.load(Ordering::Relaxed),
             ipc_reannounce_protocol_violations_total: self
                 .ipc_reannounce_protocol_violations_total
+                .load(Ordering::Relaxed),
+            ipc_retained_claims_reaped_total: self
+                .ipc_retained_claims_reaped_total
+                .load(Ordering::Relaxed),
+            coordinator_preflight_deferred_total: self
+                .coordinator_preflight_deferred_total
                 .load(Ordering::Relaxed),
             ipc_queue_high_water_to_server: self
                 .ipc_queue_high_water_to_server
@@ -858,6 +920,9 @@ pub struct MetricsSnapshot {
     pub commands_total: u64,
     /// Panics caught at the world task's dispatch boundary since boot.
     pub world_panics_total: u64,
+    /// Whether the gateway supervisor has given up on the server half — see
+    /// [`Metrics::abandon_supervision`].
+    pub supervision_abandoned: bool,
     /// Most recent loop lag, ms.
     pub loop_lag_last_ms: u64,
     /// Worst loop lag since boot, ms.
@@ -977,6 +1042,11 @@ pub struct MetricsSnapshot {
     pub ipc_to_gw_overflow_total: u64,
     /// Oversized `ReAnnounce` protocol violations since boot.
     pub ipc_reannounce_protocol_violations_total: u64,
+    /// Retained coordinator claims reaped at the retention TTL since boot.
+    pub ipc_retained_claims_reaped_total: u64,
+    /// Coordinator submissions deferred at the preflight bound since boot: a
+    /// store that answered transiently for the whole bounded window.
+    pub coordinator_preflight_deferred_total: u64,
     /// High-water mark of the gateway->server (`to_server`) queue depth (M18).
     pub ipc_queue_high_water_to_server: u64,
     /// High-water mark of the server->gateway (`to_gw`) queue depth (M18).
@@ -1096,6 +1166,13 @@ impl MetricsSnapshot {
             "counter",
             "Panics caught at the world task's dispatch boundary since boot.",
             &[(&[], self.world_panics_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_supervision_abandoned",
+            "gauge",
+            "1 when the gateway supervisor gave up on the server half: players are connected, every input is refused, and no restart is coming.",
+            &[(&[], f64::from(u8::from(self.supervision_abandoned)))],
         );
 
         // Loop lag: last/max gauges + a native histogram.
@@ -1225,6 +1302,20 @@ impl MetricsSnapshot {
             "counter",
             "Oversized ReAnnounce snapshots rejected atomically before boundary teardown.",
             &[(&[], self.ipc_reannounce_protocol_violations_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ipc_retained_claims_reaped_total",
+            "counter",
+            "Retained coordinator claims freed by the server's retention reaper.",
+            &[(&[], self.ipc_retained_claims_reaped_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_coordinator_preflight_deferred_total",
+            "counter",
+            "Coordinator submissions deferred because preflight stayed transient to its bound.",
+            &[(&[], self.coordinator_preflight_deferred_total as f64)],
         );
         metric(
             &mut o,
@@ -1935,6 +2026,8 @@ mod tests {
         assert_eq!(s.ipc_write_timeouts_total, 0);
         assert_eq!(s.ipc_to_gw_overflow_total, 0);
         assert_eq!(s.ipc_reannounce_protocol_violations_total, 0);
+        assert_eq!(s.ipc_retained_claims_reaped_total, 0);
+        assert_eq!(s.coordinator_preflight_deferred_total, 0);
         assert_eq!(s.ipc_queue_high_water_to_server, 0);
         assert_eq!(s.ipc_queue_high_water_to_gw, 0);
 
@@ -1946,6 +2039,13 @@ mod tests {
         m.ipc_write_timeout();
         m.ipc_to_gw_overflow();
         m.ipc_reannounce_protocol_violation();
+        // A reaper pass frees a whole batch at once, so this counter takes the
+        // pass's count rather than one bump per claim.
+        m.ipc_retained_claims_reaped(2);
+        m.ipc_retained_claims_reaped(3);
+        // Deferral is per submission: one bump per handler that gave up
+        // at the bound, in either deployment arm.
+        m.coordinator_preflight_deferred();
 
         // High-water keeps the max, not the last observation.
         m.observe_ipc_to_server_depth(5);
@@ -1960,6 +2060,8 @@ mod tests {
         assert_eq!(s.ipc_write_timeouts_total, 2);
         assert_eq!(s.ipc_to_gw_overflow_total, 1);
         assert_eq!(s.ipc_reannounce_protocol_violations_total, 1);
+        assert_eq!(s.ipc_retained_claims_reaped_total, 5);
+        assert_eq!(s.coordinator_preflight_deferred_total, 1);
         assert_eq!(s.ipc_queue_high_water_to_server, 12);
         assert_eq!(s.ipc_queue_high_water_to_gw, 4000);
 
@@ -1971,6 +2073,8 @@ mod tests {
         assert!(text.contains("mush_ipc_write_timeouts_total 2"));
         assert!(text.contains("mush_ipc_to_gw_overflow_total 1"));
         assert!(text.contains("mush_ipc_reannounce_protocol_violations_total 1"));
+        assert!(text.contains("mush_ipc_retained_claims_reaped_total 5"));
+        assert!(text.contains("mush_coordinator_preflight_deferred_total 1"));
         assert!(text.contains("# TYPE mush_ipc_queue_high_water gauge"));
         assert!(text.contains("mush_ipc_queue_high_water{dir=\"to_server\"} 12"));
         assert!(text.contains("mush_ipc_queue_high_water{dir=\"to_gw\"} 4000"));
@@ -2029,6 +2133,37 @@ mod tests {
         assert_eq!(j["world_loop_unixtime"], 1_700_000_000);
         assert_eq!(j["store_ok"], true);
         assert_eq!(j["integrity_ok"], true);
+        assert_eq!(j["supervision_ok"], true);
+    }
+
+    /// WS22-S17: the gauge a scraper alerts on when the gateway supervisor has
+    /// given up. The failure it exists to prevent is a gateway that is up,
+    /// serving `/healthz`, holding every player — and refusing every input
+    /// they type, with nothing anywhere saying so. It is a latch: unset until
+    /// abandonment, set for ever afterwards, and visible on BOTH surfaces.
+    #[test]
+    fn abandoned_supervision_shows_on_healthz_and_metrics() {
+        let m = Metrics::new();
+        assert!(!m.supervision_abandoned());
+        assert_eq!(m.health_json(1, "9.9.9")["supervision_ok"], true);
+        assert!(
+            m.snapshot()
+                .to_prometheus(1)
+                .contains("mush_supervision_abandoned 0")
+        );
+
+        m.abandon_supervision();
+        assert!(m.supervision_abandoned());
+        assert_eq!(m.health_json(1, "9.9.9")["supervision_ok"], false);
+        assert!(
+            m.snapshot()
+                .to_prometheus(1)
+                .contains("mush_supervision_abandoned 1")
+        );
+
+        // Idempotent: a second call cannot un-set it or double it.
+        m.abandon_supervision();
+        assert!(m.supervision_abandoned());
     }
 
     #[test]
@@ -2103,6 +2238,8 @@ mod tests {
         assert!(text.contains("mush_objects{kind=\"room\"} 5"));
         assert!(text.contains("mush_store_read_only 0"));
         assert!(text.contains("mush_integrity_frozen 0"));
+        assert!(text.contains("# TYPE mush_supervision_abandoned gauge"));
+        assert!(text.contains("mush_supervision_abandoned 0"));
         assert!(text.contains("mush_store_write_queue_depth 6"));
         assert!(text.contains("mush_store_write_lane_depth{lane=\"legacy\"} 3"));
         assert!(text.contains("mush_store_write_lane_depth{lane=\"authoritative\"} 2"));

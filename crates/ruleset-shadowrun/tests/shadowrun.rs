@@ -5,7 +5,7 @@
 //! Dice are deterministic: the ruleset is built with a fixed RNG seed and the
 //! test replays the same `ChaCha8Rng` stream to predict every roll.
 
-use mush_core::{GOD, ObjId};
+use mush_core::{GOD, ObjId, ObjKind};
 use mush_dice::sr5::{Sr5Opts, Sr5Outcome, Sr5Pool, Sr5Result};
 use mush_jobs::{JobStatus, JobsModule, get_job};
 use mush_ruleset::{ApprovalState, SheetDoc};
@@ -377,6 +377,111 @@ fn contested_edge_is_spent_once_and_never_on_a_failed_roll() {
     );
 }
 
+/// The contested-roll oracle. `+roll ... contested <target>=<pool>` resolved
+/// any matched target's sheet with no gate at all — the rest of the crate
+/// checks `perm::can_examine` before it reads another character (`+sheet`,
+/// `+karma`, `+condition`) — so the `#dbref` and `*name` spellings walked the
+/// database for who exists and where they stand, and the pool spelling then
+/// read them one rating at a time off the distinct per-term refusal. All of
+/// it now answers with one sentence, and none of it costs Edge.
+#[test]
+fn contested_refusals_are_one_sentence_and_spend_no_edge() {
+    let (mut tw, nick) = world(S);
+    samurai(&mut tw);
+    // Vlad has a sheet that would resolve — and stands in another room.
+    let vlad = tw.spawn_player("Vlad");
+    set(&mut tw, "@sheet/set Vlad/reaction=4");
+    set(&mut tw, "@sheet/set Vlad/intuition=3");
+    let vault = tw
+        .world_mut()
+        .create(ObjKind::Room, "Vault", GOD, None)
+        .expect("a room off-stage");
+    tw.world_mut()
+        .move_to(vlad, vault)
+        .expect("Vlad walks off-stage");
+    // Wisp is in the room with Nick, and has no Alchemy (which never defaults).
+    let _wisp = tw.spawn_player("Wisp");
+    set(&mut tw, "@sheet/set Wisp/agility=3");
+
+    let edge_before = read_sheet(&tw, nick).number(schema::EDGE_CURRENT);
+    let lines = [
+        // Out of reach, by the dbref spelling that resolves globally.
+        format!(
+            "+roll/edge agility+pistols contested #{}=reaction+intuition",
+            vlad.0
+        ),
+        // Out of reach, by the `*name` spelling, which also resolves globally.
+        "+roll/edge agility+pistols contested *Vlad=reaction+intuition".to_string(),
+        // A dbref that names nothing at all.
+        "+roll/edge agility+pistols contested #99999=reaction+intuition".to_string(),
+        // In the room, but with no rating in the named non-defaultable skill.
+        "+roll/edge agility+pistols contested Wisp=agility+alchemy".to_string(),
+        // In the room, and the named term is not a trait on any sheet.
+        "+roll/edge agility+pistols contested Wisp=bogusattr+bogusskill".to_string(),
+    ];
+    let refusals: Vec<Vec<String>> = lines
+        .iter()
+        .map(|line| {
+            let ev = tw.run(nick, line);
+            tw.seen_by(&ev, nick)
+        })
+        .collect();
+    assert!(
+        refusals[0]
+            .iter()
+            .any(|l| l.contains("You can't contest a roll against that target.")),
+        "{:?}",
+        refusals[0]
+    );
+    for (i, seen) in refusals.iter().enumerate() {
+        assert_eq!(
+            seen, &refusals[0],
+            "refusal {i} ({}) must be byte-identical to the first",
+            lines[i]
+        );
+        assert!(
+            roll_lines(seen).is_empty(),
+            "a refused contest rolls nothing: {seen:?}"
+        );
+    }
+    assert_eq!(
+        read_sheet(&tw, nick).number(schema::EDGE_CURRENT),
+        edge_before,
+        "a refused contest must not spend Edge"
+    );
+
+    // The gate is locality-or-authority, not a ban: an in-room target still
+    // resolves and the room still sees both pools.
+    set(&mut tw, "@sheet/set Wisp/reaction=4");
+    set(&mut tw, "@sheet/set Wisp/intuition=3");
+    let ev = tw.run(
+        nick,
+        "+roll agility+pistols contested Wisp=reaction+intuition",
+    );
+    assert!(
+        tw.seen_by(&ev, nick).iter().any(|l| {
+            l.starts_with("roll  Nick  ")
+                && l.contains("  vs  Wisp  ")
+                && l.contains("  => ")
+                && (l.contains("wins") || l.contains("tie"))
+        }),
+        "{:?}",
+        tw.seen_by(&ev, nick)
+    );
+    // And staff holding EXAMINE_ALL still reach the off-stage NPC by dbref.
+    let ev = tw.run(
+        GOD,
+        &format!("+roll 4 contested #{}=reaction+intuition", vlad.0),
+    );
+    assert!(
+        tw.seen_by(&ev, GOD)
+            .iter()
+            .any(|l| l.starts_with("roll  ") && l.contains("  vs  Vlad  ")),
+        "{:?}",
+        tw.seen_by(&ev, GOD)
+    );
+}
+
 #[test]
 fn roll_last_shows_history_for_staff() {
     let (mut tw, nick) = world(S);
@@ -690,6 +795,161 @@ fn stat_requires_open_chargen() {
         tw.seen_by(&ev, nick)
             .iter()
             .any(|l| l.contains("not in chargen"))
+    );
+}
+
+// ----------------------------------------------------------------------
+// `+spec` is gated at its shared writer (WS02-S2a)
+// ----------------------------------------------------------------------
+
+/// Drive Nick all the way to an Approved sheet through the real command
+/// surface (chargen → submit → staff approval).
+fn approved_samurai(tw: &mut TestWorld, who: ObjId) {
+    full_chargen(tw, who);
+    tw.run(who, "+chargen/submit");
+    let job = match read_sheet(tw, who).approved {
+        ApprovalState::Pending(j) => j,
+        other => panic!("expected Pending, got {other:?}"),
+    };
+    tw.run(GOD, &format!("+job/approve {job}=Welcome."));
+    assert!(read_sheet(tw, who).approved.is_approved());
+}
+
+/// The `skill_specializations` map as JSON, for a byte-identical before/after.
+fn specs_json(tw: &TestWorld, who: ObjId) -> String {
+    let doc = read_sheet(tw, who);
+    serde_json::to_string(&doc.map(schema::SKILL_SPECIALIZATIONS_FIELD).cloned())
+        .expect("specializations serialize")
+}
+
+/// The bypass this gate closes: an approved runner buying unlimited free +2
+/// dice by re-running `+spec`, which used to write straight through.
+#[test]
+fn spec_is_refused_on_an_approved_sheet_and_the_map_is_unchanged() {
+    let (mut tw, nick) = world(S);
+    approved_samurai(&mut tw, nick);
+    let before = specs_json(&tw, nick);
+
+    // Ten repeats add nothing — each one is refused with the approval message.
+    for _ in 0..10 {
+        let ev = tw.run(nick, "+spec pistols=revolvers");
+        let seen = tw.seen_by(&ev, nick);
+        assert!(
+            seen.iter().any(|l| l.contains("ask a gamemaster")),
+            "approved +spec was not refused: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|l| l.contains("added to")),
+            "approved +spec reported a write: {seen:?}"
+        );
+    }
+    assert_eq!(
+        specs_json(&tw, nick),
+        before,
+        "a refused +spec still changed the specializations map"
+    );
+
+    // The refusal is not cosmetic: the pool never gets the +2.
+    let ev = tw.run(nick, "+roll pistols spec revolvers");
+    let seen = tw.seen_by(&ev, nick);
+    assert!(
+        seen.iter().any(|l| l.contains("No specialization")),
+        "an unrecorded specialization was rolled: {seen:?}"
+    );
+}
+
+/// No sheet, no session: the chargen refusal, not a silent write.
+#[test]
+fn spec_requires_open_chargen() {
+    let (mut tw, nick) = world(S);
+    let ev = tw.run(nick, "+spec pistols=revolvers");
+    let seen = tw.seen_by(&ev, nick);
+    assert!(
+        seen.iter().any(|l| l.contains("not in chargen")),
+        "sessionless +spec was not refused: {seen:?}"
+    );
+    assert!(
+        tw.world().attr(nick, "sheet:shadowrun").is_none(),
+        "a refused +spec created a sheet"
+    );
+}
+
+/// The gate does not close the legitimate routes: `+spec` in chargen, and the
+/// wizard's `spec <ability>=<text>` shortcut, both still write.
+#[test]
+fn spec_still_works_in_chargen_and_through_the_wizard() {
+    let (mut tw, nick) = world(S);
+    full_chargen(&mut tw, nick);
+    let ev = tw.run(nick, "+spec pistols=revolvers");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("added to pistols")),
+        "in-chargen +spec was refused"
+    );
+
+    // Priorities → Metatype → Attributes → Magic → Skills.
+    tw.run(nick, "+chargen/wizard");
+    for _ in 0..4 {
+        tw.run(nick, "next");
+    }
+    let ev = tw.run(nick, "spec automatics=smgs");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("Specialization added to automatics")),
+        "the wizard's spec shortcut was refused"
+    );
+    let doc = read_sheet(&tw, nick);
+    let map = doc
+        .map(schema::SKILL_SPECIALIZATIONS_FIELD)
+        .expect("specializations recorded");
+    assert!(map.contains_key("pistols") && map.contains_key("automatics"));
+}
+
+/// The coupling the gate leans on: an approved character cannot re-enter the
+/// wizard to reach `apply_spec` by the other door.
+#[test]
+fn an_approved_character_cannot_reopen_the_wizard() {
+    let (mut tw, nick) = world(S);
+    approved_samurai(&mut tw, nick);
+    let ev = tw.run(nick, "+chargen/wizard");
+    let seen = tw.seen_by(&ev, nick);
+    assert!(
+        seen.iter().any(|l| l.contains("already approved")),
+        "the wizard reopened on an approved sheet: {seen:?}"
+    );
+    assert_eq!(tw.world().input_depth(nick), 0, "the wizard opened anyway");
+}
+
+/// Staff keep the direct edit on their own approved sheet, matching the
+/// spell-learning carve-out in `magic.rs`.
+#[test]
+fn staff_may_still_add_a_specialization_to_an_approved_sheet() {
+    let (mut tw, _nick) = world(S);
+    set(&mut tw, "@sheet/set me/active_skills:pistols=4");
+    let mut doc = read_sheet(&tw, GOD);
+    doc.approved = ApprovalState::Approved { by: GOD, at: 0 };
+    tw.world_mut()
+        .set_attr(
+            GOD,
+            "sheet:shadowrun",
+            mush_core::Attr::json(serde_json::to_value(doc).expect("sheet encodes"), GOD),
+        )
+        .expect("staff sheet written");
+
+    let ev = tw.run(GOD, "+spec pistols=revolvers");
+    let seen = tw.seen_by(&ev, GOD);
+    assert!(
+        seen.iter().any(|l| l.contains("added to pistols")),
+        "staff were refused on their own approved sheet: {seen:?}"
+    );
+    assert!(
+        read_sheet(&tw, GOD)
+            .map(schema::SKILL_SPECIALIZATIONS_FIELD)
+            .and_then(|m| m.get("pistols"))
+            .is_some(),
+        "the staff write did not land"
     );
 }
 

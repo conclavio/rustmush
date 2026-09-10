@@ -671,15 +671,62 @@ fn e7c4_d2_the_durable_marker_family_stays_bounded_and_conserves() {
 /// A test recipe authority: it resolves exactly the corridor's `alloy_smelt` and
 /// answers its digest, so `@wo/draft` binds a real recipe and the command-level
 /// gates can be exercised. Anything else is unauthored (fails closed).
+///
+/// WS02-S4 gave it two more jobs: it **counts** its catalog walks, so the draft
+/// offer's cache is observable, and it can author `filler` extra runnable recipes,
+/// so the offer's recipe-book cap is reachable.
 #[derive(Debug, Default)]
-struct TestRecipes;
+struct TestRecipes {
+    catalogs: Arc<std::sync::atomic::AtomicUsize>,
+    filler: usize,
+}
+
+/// The pack-local id of one filler recipe.
+fn filler_id(index: usize) -> String {
+    format!("filler_{index:04}")
+}
+
+/// One filler recipe: a distinct input commodity, the corridor's own capability.
+fn filler_recipe(index: usize) -> (RecipeRef, PinnedRecipe) {
+    let recipe = RecipeRef::new(
+        commodity("tacsim.core"),
+        1,
+        commodity(&filler_id(index)),
+        DefinitionDigest::from_bytes([0x11; 32]),
+    )
+    .expect("filler recipe ref");
+    let pinned = PinnedRecipe::new(
+        vec![RecipeLine::new(commodity("metals"), 4).expect("input line")],
+        vec![
+            RecipeLine::new(
+                commodity("structural_alloys"),
+                u64::try_from(index % 7 + 1).unwrap(),
+            )
+            .expect("output line"),
+        ],
+        capabilities(&["smelt"]),
+        3,
+    )
+    .expect("filler pinned");
+    (recipe, pinned)
+}
+
+impl TestRecipes {
+    fn with_filler(filler: usize) -> Self {
+        Self {
+            catalogs: Arc::default(),
+            filler,
+        }
+    }
+}
 
 impl mush_industry::RecipeAuthority for TestRecipes {
     fn digest_of(&self, _world: &World, recipe: &RecipeRef) -> Option<DefinitionDigest> {
         (recipe.pack().as_str() == "tacsim.core"
             && recipe.version() == 1
-            && recipe.id().as_str() == "alloy_smelt")
-            .then(|| DefinitionDigest::from_bytes([0x11; 32]))
+            && (recipe.id().as_str() == "alloy_smelt"
+                || recipe.id().as_str().starts_with("filler_")))
+        .then(|| DefinitionDigest::from_bytes([0x11; 32]))
     }
     fn resolve(
         &self,
@@ -688,12 +735,31 @@ impl mush_industry::RecipeAuthority for TestRecipes {
         version: u32,
         id: &CanonicalId,
     ) -> Option<(RecipeRef, PinnedRecipe)> {
-        (pack.as_str() == "tacsim.core" && version == 1 && id.as_str() == "alloy_smelt")
-            .then(alloy_recipe)
+        if pack.as_str() != "tacsim.core" || version != 1 {
+            return None;
+        }
+        if id.as_str() == "alloy_smelt" {
+            return Some(alloy_recipe());
+        }
+        (0..self.filler)
+            .find(|index| filler_id(*index) == id.as_str())
+            .map(filler_recipe)
+    }
+    fn catalog_revision(&self, _world: &World) -> u64 {
+        1
+    }
+    fn catalog(&self, _world: &World) -> Vec<(RecipeRef, PinnedRecipe)> {
+        self.catalogs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut out = vec![alloy_recipe()];
+        out.extend((0..self.filler).map(filler_recipe));
+        out
     }
 }
 
-fn boot_with_recipes() -> (TestWorld, IndustryFamilies) {
+fn boot_with_authority(
+    recipes: Arc<dyn mush_industry::RecipeAuthority>,
+) -> (TestWorld, IndustryFamilies) {
     let cell: InventoryHandleCell = Arc::default();
     let world = TestWorld::with_modules(vec![
         Box::new(mush_economy::EconomyModule::new()),
@@ -705,7 +771,7 @@ fn boot_with_recipes() -> (TestWorld, IndustryFamilies) {
         Box::new(
             IndustryModule::new()
                 .with_inventory(Arc::clone(&cell))
-                .with_recipes(Arc::new(TestRecipes)),
+                .with_recipes(recipes),
         ),
     ]);
     let families = world
@@ -715,6 +781,10 @@ fn boot_with_recipes() -> (TestWorld, IndustryFamilies) {
         .0
         .clone();
     (world, families)
+}
+
+fn boot_with_recipes() -> (TestWorld, IndustryFamilies) {
+    boot_with_authority(Arc::new(TestRecipes::default()))
 }
 
 /// **E7r1 R1** — the two accounts a work order needs at draft: GOD's budget (which
@@ -735,15 +805,67 @@ fn wo_accounts(world: &mut TestWorld) -> (u64, u64) {
 }
 
 fn mine_accounts(world: &TestWorld) -> Vec<u64> {
+    accounts_of(world, GOD)
+}
+
+/// Every account one principal owns, by raw id.
+fn accounts_of(world: &TestWorld, who: ObjId) -> Vec<u64> {
     world
         .world()
         .module_state::<mush_economy::EconomyStore>()
         .expect("economy store")
         .snapshot()
         .accounts()
-        .filter(|a| a.owner == PrincipalId::Object(GOD))
+        .filter(|a| a.owner == PrincipalId::Object(who))
         .map(|a| a.id.0)
         .collect()
+}
+
+/// Every vault in the world, by raw id.
+fn vault_ids(world: &TestWorld) -> Vec<u64> {
+    world
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("economy store")
+        .snapshot()
+        .vaults()
+        .map(|vault| vault.id.0)
+        .collect()
+}
+
+/// A real container-backed E3 vault owned by `who`, and the endpoint it is.
+///
+/// WS02-S5 needs these to be REAL: `source`, `destination` and `account` are no
+/// longer free text, so a draft only resolves against endpoints
+/// `mush_inventory::live_endpoints` actually answers for the drafter.
+fn make_endpoint(world: &mut TestWorld, name: &str, who: ObjId) -> EndpointRef {
+    let object = world
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, name, who, Some(mush_core::LIMBO))
+        .expect("a backing object");
+    let before = vault_ids(world);
+    world.run(
+        GOD,
+        &format!(
+            "@vault/create {name}=container:#{} owner=#{}",
+            object.0, who.0
+        ),
+    );
+    let fresh = vault_ids(world)
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("a fresh vault");
+    EndpointRef(VaultId(fresh))
+}
+
+/// One fresh active `gold` account owned by `who`.
+fn open_account(world: &mut TestWorld, who: ObjId) -> u64 {
+    let before = accounts_of(world, who);
+    world.run(GOD, &format!("@account/open #{}=gold", who.0));
+    accounts_of(world, who)
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("a fresh account")
 }
 
 /// Build a live production schedule + job for one order id, due at `due_at`.
@@ -1206,4 +1328,1048 @@ fn vf_b5_wo_set_is_not_silently_list() {
         !out.contains("(no work orders)"),
         "@wo/set does not silently run the work-order list"
     );
+}
+
+// ============================================================================
+// ---- WS02-S4: the work-order draft offer's facility gate and its books ----
+//
+// Before this, `IndustryVerb::WoDraft`'s projection declared thirteen free
+// parameters and gated nothing: the command's owner/`acts_for` check, its
+// quarantine refusal and its per-requester cap were all reachable only by typing
+// `@wo/draft`, and a direct offer submission met none of them. These pin the
+// three layers that replaced that — the offer that refuses to exist, the books
+// that ride the fixed parameters, and the prepare that re-derives the drafter's
+// authority from them.
+// ============================================================================
+
+/// The offer id `industry_wo_draft` is projected to this actor under, if at all.
+/// The binding hashes the fixed parameters, so the id **is** the books' identity.
+fn draft_offer_id(world: &mut TestWorld, actor: ObjId) -> Option<mush_core::ActionOfferId> {
+    world.engine_mut().set_offer_keys(
+        mush_core::OfferKeyRing::new(mush_core::OfferSecret::new(2, [2; 32]).expect("secret"), [])
+            .expect("key ring"),
+    );
+    let engine = world.engine();
+    let action = mush_industry::action_ref(&engine.registry, mush_industry::IndustryVerb::WoDraft)
+        .expect("the draft action is registered");
+    let query = engine
+        .legal_action_query(
+            mush_core::PrincipalId::Object { id: actor },
+            actor,
+            mush_core::PerceivedRef::SelfActor,
+        )
+        .expect("legal action query");
+    let offers = engine
+        .project_legal_actions(&query)
+        .expect("projection succeeds");
+    offers
+        .projected_for_action(&action)
+        .map(|projected| projected.offer())
+}
+
+fn has_draft_offer(world: &mut TestWorld, actor: ObjId) -> bool {
+    draft_offer_id(world, actor).is_some()
+}
+
+/// Submit `parameters` against this actor's own live `WoDraft` offer and prepare
+/// it — the **direct offer route**, which no command gate stands in front of.
+fn draft_through_the_offer(
+    world: &mut TestWorld,
+    actor: ObjId,
+    parameters: serde_json::Value,
+    token: u8,
+) -> Result<(), String> {
+    world.engine_mut().set_offer_keys(
+        mush_core::OfferKeyRing::new(
+            mush_core::OfferSecret::new(2, [2; 32]).map_err(|_| "secret".to_owned())?,
+            [],
+        )
+        .map_err(|_| "key ring".to_owned())?,
+    );
+    let (action, resolved) = {
+        let engine = world.engine();
+        let action =
+            mush_industry::action_ref(&engine.registry, mush_industry::IndustryVerb::WoDraft)
+                .ok_or_else(|| "no draft action".to_owned())?;
+        let query = engine
+            .legal_action_query(
+                mush_core::PrincipalId::Object { id: actor },
+                actor,
+                mush_core::PerceivedRef::SelfActor,
+            )
+            .map_err(|error| error.to_string())?;
+        let offers = engine
+            .project_legal_actions(&query)
+            .map_err(|error| error.to_string())?;
+        let projected = offers
+            .projected_for_action(&action)
+            .ok_or_else(|| "no draft offer".to_owned())?;
+        let submission = mush_core::OfferSubmission {
+            offer: projected.offer(),
+            subject: projected.subject().clone(),
+            targets: Vec::new(),
+            parameters,
+        };
+        let execution = mush_core::OfferExecutionContext {
+            request: RequestUid::from_bytes([token; 16]),
+            principal: mush_core::PrincipalId::Object { id: actor },
+            actor,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: mush_core::PrincipalId::Object { id: actor },
+                    owner: action.key().owner.clone(),
+                    namespace: CanonicalId::new(action.key().id.as_str())
+                        .map_err(|_| "namespace".to_owned())?,
+                },
+                1,
+                IdempotencyKey::Request(RequestUid::from_bytes([token; 16])),
+            ),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        };
+        let resolved = engine
+            .resolve_legal_action(&offers, execution, submission)
+            .map_err(|error| format!("{error:?}"))?;
+        let (action, resolved, _guards) = resolved.into_authoritative_parts();
+        (action, resolved)
+    };
+    // WS02-S5: **install** what prepares. The offer route's whole point is that it
+    // reaches the family with no command in front of it, so a test that only
+    // prepared could never say "and nothing was written" — the family would be
+    // empty either way.
+    let prepared = world
+        .engine_mut()
+        .prepare_registered_resolved_authoritative_action(
+            &action,
+            &resolved,
+            CommitToken::from_bytes([token; 16]),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+    let (_, installation) = prepared.0.into_parts();
+    world
+        .engine_mut()
+        .install_prepared_action(installation)
+        .map_err(|error| format!("{error:?}"))
+}
+
+/// The parameters a real `@wo/draft` stages, with the facility and the three
+/// book-checked references swapped for whatever the caller names.
+///
+/// WS02-S5 took `facility_slots`, `capacity_revision`, `policy_revision` and
+/// `digest` out of the projection, so staging one of them is now refused at offer
+/// resolution rather than by the provider — which is itself the fence, and which
+/// [`ws02_s5_a_submission_that_names_capacity_revision_never_reaches_the_provider`]
+/// proves.
+fn draft_parameters(
+    actor: ObjId,
+    facility: u32,
+    source: u64,
+    destination: u64,
+    account: u64,
+) -> serde_json::Value {
+    let (_, pinned) = alloy_recipe();
+    draft_parameters_pinned(
+        actor,
+        facility,
+        source,
+        destination,
+        account,
+        serde_json::to_string(&pinned).expect("pinned json"),
+    )
+}
+
+/// The same, with the `pinned` blob written by the caller — the parameter the two
+/// upstream digest re-checks never look at.
+fn draft_parameters_pinned(
+    actor: ObjId,
+    facility: u32,
+    source: u64,
+    destination: u64,
+    account: u64,
+    pinned: String,
+) -> serde_json::Value {
+    serde_json::json!({
+        "facility": facility,
+        "pack": "tacsim.core",
+        "version": 1,
+        "recipe": "alloy_smelt",
+        "quantity": 1,
+        "account": account,
+        "source": source,
+        "destination": destination,
+        "beneficiary": format!("obj:{}", actor.0),
+        "pinned": pinned,
+    })
+}
+
+fn install_facility(world: &mut TestWorld, object: u32, owner: ObjId, slots: u32) {
+    install_facility_offering(world, object, owner, slots, &["smelt"]);
+}
+
+/// The same, with the capabilities named — WS02-S5 needs a facility the drafter
+/// really owns but that cannot run the recipe.
+fn install_facility_offering(
+    world: &mut TestWorld,
+    object: u32,
+    owner: ObjId,
+    slots: u32,
+    offers: &[&str],
+) {
+    let store = world
+        .engine_mut()
+        .world
+        .module_state_mut::<IndustryStore>()
+        .expect("industry store");
+    store.put_facility(
+        FacilityRecord::new(
+            ObjId(object),
+            PrincipalId::Object(owner),
+            capabilities(offers),
+            slots,
+        )
+        .expect("facility record"),
+    );
+}
+
+#[test]
+fn ws02_s4_an_actor_with_no_facility_is_projected_no_draft_offer() {
+    // The fog rule, on the facility axis: an actor who may draft nowhere sees
+    // exactly what an actor in a world with no facility at all sees, which is
+    // exactly what a verb that does not exist projects — nothing.
+    let (mut world, _families) = boot_with_recipes();
+    let alice = world.spawn_player("alice");
+    assert!(
+        !has_draft_offer(&mut world, GOD),
+        "no facility exists yet, so not even staff is offered a draft"
+    );
+    assert!(!has_draft_offer(&mut world, alice));
+    world.run(GOD, "@facility/open 7=2 smelt");
+    let _ = world.engine_mut().take_authoritative_submit();
+    assert!(
+        has_draft_offer(&mut world, GOD),
+        "the facility's owner is offered the draft"
+    );
+    assert!(
+        !has_draft_offer(&mut world, alice),
+        "a stranger is offered nothing — byte-identical to naming a facility that \
+         does not exist, so the projection is no existence oracle"
+    );
+}
+
+#[test]
+fn ws02_s4_the_facility_book_excludes_a_rival_and_a_quarantined_facility() {
+    let (mut world, families) = boot_with_recipes();
+    let alice = world.spawn_player("alice");
+    install_facility(&mut world, 21, alice, 2); // hers
+    install_facility(&mut world, 22, GOD, 2); // a rival's
+    install_facility(&mut world, 23, alice, 2); // hers, about to be quarantined
+    {
+        // R4's shape: a live order holding a slot at 23 whose capacity book is
+        // wholly absent quarantines it on the next reconcile.
+        let engine = world.engine_mut();
+        let running = draft_order(0x2323, ObjId(23), 1, 500, 600)
+            .acquired(Vec::new(), Vec::new(), None, WorkOrderState::Running)
+            .expect("acquire");
+        apply(engine, &families, |txn| {
+            families.open_work_order(txn, running)
+        })
+        .expect("open running order");
+    }
+    world.modules_loaded(std::collections::HashMap::new());
+    assert!(
+        world
+            .world()
+            .module_state::<IndustryStore>()
+            .expect("store")
+            .is_facility_quarantined(ObjId(23)),
+        "the fixture really quarantined 23"
+    );
+    let facilities = mush_industry::provider::draftable_facilities(world.engine(), alice, false);
+    let offered: Vec<u32> = facilities
+        .iter()
+        .map(|facility| facility.object().0)
+        .collect();
+    assert_eq!(
+        offered,
+        vec![21],
+        "the book carries only the facilities alice may draft at, and never a \
+         quarantined one"
+    );
+    let entries = mush_industry::provider::catalog_entries(&TestRecipes::default(), world.world());
+    let books =
+        mush_industry::provider::wo_offer_books(world.engine(), alice, &facilities, &entries);
+    assert!(books.facilities.contains_key("21"));
+    assert!(
+        !books.facilities.contains_key("22"),
+        "a rival's facility is absent"
+    );
+    assert!(
+        !books.facilities.contains_key("23"),
+        "a quarantined one is absent"
+    );
+    assert_eq!(
+        books.recipes.len(),
+        1,
+        "the corridor's one recipe is offered"
+    );
+    assert!(
+        !books.truncated,
+        "the corridor's own pack is nowhere near the cap"
+    );
+}
+
+#[test]
+fn ws02_s4_the_per_requester_cap_is_read_off_the_index_not_the_family() {
+    let (mut world, families) = boot_with_recipes();
+    world.run(GOD, "@facility/open 7=2 smelt");
+    let _ = world.engine_mut().take_authoritative_submit();
+    assert!(has_draft_offer(&mut world, GOD), "the owner starts offered");
+    let mut ids = Vec::new();
+    {
+        let engine = world.engine_mut();
+        for index in 0..mush_industry::MAX_WORK_ORDERS_PER_REQUESTER as u64 {
+            let order = draft_order(0x7700 + index, ObjId(7), 1, 500, 600);
+            ids.push(order.id());
+            apply(engine, &families, |txn| {
+                families.open_work_order(txn, order)
+            })
+            .expect("open order");
+        }
+    }
+    // The sweep's reconcile is what rebuilds the index from the family.
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        world
+            .world()
+            .module_state::<IndustryStore>()
+            .expect("store")
+            .open_work_orders(&PrincipalId::Object(GOD)),
+        mush_industry::MAX_WORK_ORDERS_PER_REQUESTER,
+        "reconcile counted every non-terminal order"
+    );
+    assert!(
+        !has_draft_offer(&mut world, GOD),
+        "at the per-requester cap there is no offer at all"
+    );
+    // And it really is the INDEX the projection reads, not a walk of the family:
+    // empty the index while every one of those orders is still live and open, and
+    // the offer comes back.
+    {
+        let store = world
+            .engine_mut()
+            .world
+            .module_state_mut::<IndustryStore>()
+            .expect("store");
+        for id in &ids {
+            store.note_work_order(&PrincipalId::Object(GOD), *id, false);
+        }
+        assert_eq!(store.open_requesters(), 0);
+    }
+    assert!(
+        has_draft_offer(&mut world, GOD),
+        "the family still holds 16 open orders; the projection consulted the RAM \
+         index, which is the whole point of the move"
+    );
+}
+
+#[test]
+fn ws02_s4_two_projections_agree_and_the_catalog_is_walked_once() {
+    let counted = Arc::new(TestRecipes::default());
+    let catalogs = Arc::clone(&counted.catalogs);
+    let (mut world, _families) = boot_with_authority(counted);
+    world.run(GOD, "@facility/open 7=2 smelt");
+    let _ = world.engine_mut().take_authoritative_submit();
+    let first = draft_offer_id(&mut world, GOD).expect("offered");
+    let second = draft_offer_id(&mut world, GOD).expect("offered");
+    assert_eq!(
+        first, second,
+        "the offer binding hashes the fixed parameters, so two projections in one \
+         IC second agreeing on the id is two byte-identical book sets"
+    );
+    assert_eq!(
+        catalogs.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the catalog is walked once per publish, not once per projection"
+    );
+}
+
+#[test]
+fn ws02_s4_a_large_catalog_truncates_at_the_cap_and_the_offer_still_builds() {
+    let (mut world, _families) = boot_with_authority(Arc::new(TestRecipes::with_filler(400)));
+    world.run(GOD, "@facility/open 7=2 smelt");
+    let _ = world.engine_mut().take_authoritative_submit();
+    let entries =
+        mush_industry::provider::catalog_entries(&TestRecipes::with_filler(400), world.world());
+    assert_eq!(
+        entries.len(),
+        401,
+        "the fixture really authored 401 recipes"
+    );
+    assert_eq!(
+        entries,
+        mush_industry::provider::catalog_entries(&TestRecipes::with_filler(400), world.world()),
+        "the catalog reduction is deterministic — the composition root answers a \
+         `BTreeMap` walk and this sorts on the rendered key anyway, which is what \
+         makes the offer's cache and its byte-identical projections true"
+    );
+    let facilities = mush_industry::provider::draftable_facilities(world.engine(), GOD, true);
+    let books = mush_industry::provider::wo_offer_books(world.engine(), GOD, &facilities, &entries);
+    assert_eq!(
+        books.recipes.len(),
+        mush_industry::provider::MAX_OFFERED_RECIPES,
+        "the book is cut at the cap"
+    );
+    assert!(
+        books.truncated,
+        "and says so, which is how an operator learns"
+    );
+    assert!(
+        books.recipes.contains_key("tacsim.core/1/alloy_smelt"),
+        "the cut is on a sorted key order, not an arbitrary one"
+    );
+    assert!(
+        serde_json::to_vec(&books.recipes).expect("book json").len()
+            < mush_core::MAX_PROJECTED_LEGAL_ACTION_BYTES,
+        "the book stays well inside the projected-offer bound"
+    );
+    assert!(
+        has_draft_offer(&mut world, GOD),
+        "and the offer still builds with 400 recipes in the world"
+    );
+}
+
+#[test]
+fn ws02_s4_an_offer_route_draft_cannot_name_a_facility_it_was_not_offered() {
+    // The bypass, attempted: alice has a live `WoDraft` offer of her own (she owns
+    // 21), and submits against it a `facility` naming GOD's 22 — the parameter the
+    // offer route lets any submitter choose, and the one the command's
+    // owner/`acts_for` gate was the only thing that ever checked.
+    let rig = s5_rig();
+    let (mut world, alice, source, dest, account) = (
+        rig.world,
+        rig.alice,
+        rig.source,
+        rig.destination,
+        rig.account,
+    );
+    let forged = draft_through_the_offer(
+        &mut world,
+        alice,
+        draft_parameters(alice, 22, source, dest, account),
+        0x41,
+    );
+    let message = forged.expect_err("a facility outside her book is refused");
+    assert!(
+        message.contains("You cannot do that with that work order."),
+        "and refused with the byte-identical work-order line: {message}"
+    );
+    // The same submission naming her own facility goes through — the gate refuses
+    // the forgery, not the verb. Every number the order pins (slots, both
+    // revisions, the pack digest) came out of her book, not off the wire.
+    draft_through_the_offer(
+        &mut world,
+        alice,
+        draft_parameters(alice, 21, source, dest, account),
+        0x42,
+    )
+    .expect("her own facility drafts");
+}
+
+// ============================================================================
+// ---- WS02-S5: `wo_draft` reads the pinned lines out of the fixed books ----
+//
+// The live P0, stated correctly. Upstream grew TWO digest re-checks — one at
+// `@wo/submit` (`commands.rs`) and one at the plan-stage advance (`provider.rs`) —
+// so a FORGED digest fails closed at both. Neither has ever compared the pinned
+// LINES to the authority, and `wo_deliver` mints `order.pinned().outputs()`. The
+// bypass is therefore an honest pack/version/recipe/digest carried beside a
+// `pinned` whose output units are multiplied: it passes both digest checks and
+// mints the inflated amount out of nothing.
+//
+// The fence is not a third digest check. It is: drop the four client-supplied
+// numbers from the projection (so `ProjectedParameterSchema::validate` refuses a
+// submission that even names one) and re-derive every one of them — slots, both
+// revisions, the pack digest, the pinned hash, the facility capabilities, the
+// endpoints and the account — from the server-authored books the offer carries.
+// ============================================================================
+
+/// alice, a facility she owns (21) and a rival's she does not (22), two live
+/// endpoints of her own, a rival's endpoint, her own budget account and GOD's.
+struct S5Rig {
+    world: TestWorld,
+    families: IndustryFamilies,
+    alice: ObjId,
+    source: u64,
+    destination: u64,
+    rival_endpoint: u64,
+    account: u64,
+    rival_account: u64,
+}
+
+fn s5_rig() -> S5Rig {
+    let (mut world, families) = boot_with_recipes();
+    let alice = world.spawn_player("alice");
+    install_facility(&mut world, 21, alice, 2);
+    install_facility(&mut world, 22, GOD, 2);
+    world.run(GOD, "@instrument/register gold=0");
+    // Id 0 is the crate's own "absent" spelling — `required_endpoint` and
+    // `u64_field` both refuse it — so the first vault and the first account go to
+    // a pad nobody names, and every reference in this rig is a real one that would
+    // otherwise pass. A test that refused because its id happened to be zero would
+    // be proving nothing.
+    let _pad_endpoint = make_endpoint(&mut world, "pad", GOD);
+    let source = make_endpoint(&mut world, "feed", alice).vault().0;
+    let destination = make_endpoint(&mut world, "yard", alice).vault().0;
+    let rival_endpoint = make_endpoint(&mut world, "theirs", GOD).vault().0;
+    let _pad_account = open_account(&mut world, GOD);
+    let account = open_account(&mut world, alice);
+    let rival_account = open_account(&mut world, GOD);
+    S5Rig {
+        world,
+        families,
+        alice,
+        source,
+        destination,
+        rival_endpoint,
+        account,
+        rival_account,
+    }
+}
+
+/// Every work order in the family, however many pages it takes.
+fn all_work_orders(world: &mut TestWorld, families: &IndustryFamilies) -> Vec<WorkOrderId> {
+    let state = world.engine().action_state();
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = state
+            .scan_family(&families.work_orders, cursor.as_deref(), 64)
+            .expect("scan work orders");
+        for entry in page.entries() {
+            out.push(entry.value().id());
+        }
+        match page.next_after().map(ToString::to_string) {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    out
+}
+
+#[test]
+fn ws02_s5_an_inflated_pinned_recipe_never_reaches_the_family_or_the_endpoint() {
+    // THE bypass. Honest pack, honest version, honest recipe id — and the digest
+    // is not even a parameter any more, so there is nothing to forge there. The
+    // one line nobody compared: `outputs`, multiplied by a thousand.
+    let mut rig = s5_rig();
+    let inflated = PinnedRecipe::new(
+        vec![RecipeLine::new(commodity("metals"), 4).expect("input line")],
+        vec![RecipeLine::new(commodity("structural_alloys"), 1_000).expect("output line")],
+        capabilities(&["smelt"]),
+        3,
+    )
+    .expect("an inflated pin is perfectly well-formed — that is the whole problem");
+    let refused = draft_through_the_offer(
+        &mut rig.world,
+        rig.alice,
+        draft_parameters_pinned(
+            rig.alice,
+            21,
+            rig.source,
+            rig.destination,
+            rig.account,
+            serde_json::to_string(&inflated).expect("pinned json"),
+        ),
+        0x51,
+    );
+    let message = refused.expect_err("the prepare refuses a pin the authority never published");
+    assert!(
+        message.contains("You cannot do that with that work order."),
+        "byte-identical WO_REFUSED, so a forgery and an honest pack drift read the \
+         same: {message}"
+    );
+    // Nothing was written: no `WorkOrder` reached the family, so there is nothing
+    // for `@wo/submit` to fund, nothing for the schedule to advance and nothing
+    // for `wo_deliver` to mint from.
+    assert!(
+        all_work_orders(&mut rig.world, &rig.families).is_empty(),
+        "the refusal is a prepare refusal — no draft is written"
+    );
+    // And the destination's pool for the output commodity is untouched: a full
+    // advance/deliver attempt has no order to run.
+    let alloys = commodity("structural_alloys");
+    let dest = endpoint(rig.destination);
+    let families = rig.families.clone();
+    let pooled = read(rig.world.engine_mut(), &families, |txn| {
+        families.inventory.available(txn, dest, &alloys)
+    })
+    .expect("available");
+    assert_eq!(pooled, 0, "no matter was minted at the destination");
+}
+
+#[test]
+fn ws02_s5_a_reordered_and_respaced_pinned_is_accepted() {
+    // Canonical hashing, not string equality: the comparison decodes the blob and
+    // re-serializes it through `serde_json::to_value` before hashing under the
+    // same `industry.pinned` domain the projection used, so key order and
+    // whitespace cannot matter. A player's client is free to re-spell it.
+    let mut rig = s5_rig();
+    let (_, pinned) = alloy_recipe();
+    let value = serde_json::to_value(&pinned).expect("pinned value");
+    let object = value.as_object().expect("pinned is an object");
+    // Re-spelled by hand: the keys in the reverse of serde's declaration order,
+    // and pretty-printed rather than compact.
+    let mut reversed = serde_json::Map::new();
+    for key in object.keys().rev() {
+        reversed.insert(
+            key.clone(),
+            object.get(key).expect("the key we just read").clone(),
+        );
+    }
+    let respelled = serde_json::to_string_pretty(&serde_json::Value::Object(reversed))
+        .expect("re-spaced pinned json");
+    assert_ne!(
+        respelled,
+        serde_json::to_string(&pinned).expect("pinned json"),
+        "the fixture really did re-spell the blob"
+    );
+    draft_through_the_offer(
+        &mut rig.world,
+        rig.alice,
+        draft_parameters_pinned(
+            rig.alice,
+            21,
+            rig.source,
+            rig.destination,
+            rig.account,
+            respelled,
+        ),
+        0x52,
+    )
+    .expect("a semantically identical pin is accepted");
+    assert_eq!(
+        all_work_orders(&mut rig.world, &rig.families).len(),
+        1,
+        "and it really drafted"
+    );
+}
+
+#[test]
+fn ws02_s5_a_facility_the_actor_may_not_run_refuses_byte_identically() {
+    // The same refusal an unknown work order gets, and the same one an inflated
+    // pin gets: a facility outside her book is not distinguishable from a facility
+    // that does not exist.
+    let mut rig = s5_rig();
+    let refused = draft_through_the_offer(
+        &mut rig.world,
+        rig.alice,
+        draft_parameters(rig.alice, 22, rig.source, rig.destination, rig.account),
+        0x53,
+    );
+    let message = refused.expect_err("a rival's facility refuses");
+    assert!(
+        message.contains("You cannot do that with that work order."),
+        "byte-identical: {message}"
+    );
+    assert!(all_work_orders(&mut rig.world, &rig.families).is_empty());
+}
+
+#[test]
+fn ws02_s5_a_rival_endpoint_or_a_foreign_account_refuses() {
+    // `wo_submit` reserves every material input out of the order's `source` with
+    // no ownership test and `wo_deliver` mints into its `destination` with none
+    // either, so free text there is a drain on one side and a forced gift on the
+    // other. Both are members of the drafter's own endpoint book or nothing, and
+    // the budget account is a member of her account book or nothing.
+    let mut rig = s5_rig();
+    for (label, params, token) in [
+        (
+            "a rival's endpoint as the material source",
+            draft_parameters(
+                rig.alice,
+                21,
+                rig.rival_endpoint,
+                rig.destination,
+                rig.account,
+            ),
+            0x54_u8,
+        ),
+        (
+            "a rival's endpoint as the destination",
+            draft_parameters(rig.alice, 21, rig.source, rig.rival_endpoint, rig.account),
+            0x55,
+        ),
+        (
+            "an account she does not own",
+            draft_parameters(
+                rig.alice,
+                21,
+                rig.source,
+                rig.destination,
+                rig.rival_account,
+            ),
+            0x56,
+        ),
+    ] {
+        let refused = draft_through_the_offer(&mut rig.world, rig.alice, params, token);
+        let message = refused.expect_err(label);
+        assert!(
+            message.contains("You cannot do that with that work order."),
+            "{label} refuses byte-identically: {message}"
+        );
+    }
+    assert!(
+        all_work_orders(&mut rig.world, &rig.families).is_empty(),
+        "none of the three wrote a draft"
+    );
+}
+
+#[test]
+fn ws02_s5_a_submission_that_names_capacity_revision_never_reaches_the_provider() {
+    // The removal is itself the fence: `ProjectedParameterSchema::validate`
+    // refuses any supplied key the projection does not declare, so a stale client
+    // still sending `capacity_revision` is refused at offer resolution — before
+    // the provider is even asked.
+    let mut rig = s5_rig();
+    let mut params = draft_parameters(rig.alice, 21, rig.source, rig.destination, rig.account);
+    params
+        .as_object_mut()
+        .expect("parameters are an object")
+        .insert("capacity_revision".to_owned(), serde_json::json!(1));
+    let refused = draft_through_the_offer(&mut rig.world, rig.alice, params, 0x57);
+    let message = refused.expect_err("an undeclared parameter is refused");
+    assert!(
+        message.contains("InvalidParameters"),
+        "and refused at RESOLUTION, not by the provider: {message}"
+    );
+    assert!(all_work_orders(&mut rig.world, &rig.families).is_empty());
+}
+
+#[test]
+fn ws02_s5_a_zero_input_minting_recipe_still_refuses_at_recipe_mints_from_nothing() {
+    // The free-mint floor stands where it always did: `PinnedRecipe`'s
+    // deserializer runs `new`, so a pin with outputs and no inputs cannot even be
+    // decoded — the offer route reaches `RecipeMintsFromNothing` through serde.
+    assert!(
+        matches!(
+            PinnedRecipe::new(
+                Vec::new(),
+                vec![RecipeLine::new(commodity("structural_alloys"), 1).expect("output line")],
+                capabilities(&["smelt"]),
+                3,
+            ),
+            Err(mush_industry::record::IndustryRecordError::RecipeMintsFromNothing)
+        ),
+        "the constructor is the floor"
+    );
+    let hand_written = serde_json::json!({
+        "inputs": [],
+        "outputs": [{"commodity": "structural_alloys", "units": 1}],
+        "requires": ["smelt"],
+        "work_units": 3,
+    })
+    .to_string();
+    let mut rig = s5_rig();
+    let refused = draft_through_the_offer(
+        &mut rig.world,
+        rig.alice,
+        draft_parameters_pinned(
+            rig.alice,
+            21,
+            rig.source,
+            rig.destination,
+            rig.account,
+            hand_written,
+        ),
+        0x58,
+    );
+    let message = refused.expect_err("a hand-written minting pin refuses");
+    assert!(
+        message.contains("You cannot do that with that work order."),
+        "byte-identically: {message}"
+    );
+    assert!(all_work_orders(&mut rig.world, &rig.families).is_empty());
+}
+
+#[test]
+fn ws02_s5_a_facility_of_hers_that_cannot_run_the_recipe_refuses() {
+    // The capability test lived only in `@wo/draft` — the command the offer route
+    // walks past. Facility 24 is hers, so it IS in her book and every book lookup
+    // succeeds; it just cannot smelt. The subset test is what refuses, against the
+    // capabilities the book published rather than a list the client sent.
+    let mut rig = s5_rig();
+    install_facility_offering(&mut rig.world, 24, rig.alice, 2, &["assemble"]);
+    let refused = draft_through_the_offer(
+        &mut rig.world,
+        rig.alice,
+        draft_parameters(rig.alice, 24, rig.source, rig.destination, rig.account),
+        0x59,
+    );
+    let message = refused.expect_err("an assemble-only facility cannot smelt");
+    assert!(
+        message.contains("You cannot do that with that work order."),
+        "byte-identically: {message}"
+    );
+    assert!(all_work_orders(&mut rig.world, &rig.families).is_empty());
+}
+
+// ============================================================================
+// ---- WS02-S5b: the sweep's `Draft`-drift pass ----
+//
+// WS02-S5 binds the pin to the offer's own books at DRAFT. Nothing binds it
+// afterwards: both re-checks on the submit path compare the pack DIGEST
+// (`commands.rs`'s `digest_of` and the plan-stage advance), and `wo_deliver`
+// mints `order.pinned().outputs()`. So a `Draft` whose lines stop being the
+// pack's — because the pack was republished under it, or because the lines were
+// never the authority's — passes every check on the way to the mint.
+//
+// The closure is the walk `reconcile` already makes: for each `Draft`, re-resolve
+// the recipe and compare the decoded `PinnedRecipe`s. It cannot write
+// `Cancelled` — a module tick holds a `Ctx`, whose typed-family capability is
+// read-only by construction, and one `submit_authoritative` per drifted order is
+// what cut 2's fold C4 forbids this arm (`money::sweep` records the same wall) —
+// so it marks, logs one loud line per order with the reason an operator needs to
+// tell a republication from a forgery, and `@wo/submit` refuses the mark.
+// ============================================================================
+
+/// A recipe authority whose one recipe can be republished under the test's feet:
+/// the same lines (0), new lines under the SAME digest (1), a new digest (2), or
+/// retired altogether (3).
+#[derive(Debug)]
+struct DriftRecipes {
+    mode: Arc<std::sync::atomic::AtomicU8>,
+}
+
+impl DriftRecipes {
+    fn published(&self) -> Option<(RecipeRef, PinnedRecipe)> {
+        let mode = self.mode.load(std::sync::atomic::Ordering::Relaxed);
+        if mode == 3 {
+            return None;
+        }
+        let digest = if mode == 2 { 0x22 } else { 0x11 };
+        let outputs = if mode == 1 { 9 } else { 1 };
+        let recipe = RecipeRef::new(
+            commodity("tacsim.core"),
+            1,
+            commodity("alloy_smelt"),
+            DefinitionDigest::from_bytes([digest; 32]),
+        )
+        .expect("recipe ref");
+        let pinned = PinnedRecipe::new(
+            vec![RecipeLine::new(commodity("metals"), 4).expect("input line")],
+            vec![RecipeLine::new(commodity("structural_alloys"), outputs).expect("output line")],
+            capabilities(&["smelt"]),
+            3,
+        )
+        .expect("pinned recipe");
+        Some((recipe, pinned))
+    }
+}
+
+impl mush_industry::RecipeAuthority for DriftRecipes {
+    fn digest_of(&self, _world: &World, recipe: &RecipeRef) -> Option<DefinitionDigest> {
+        let (published, _) = self.published()?;
+        (recipe.pack() == published.pack()
+            && recipe.version() == published.version()
+            && recipe.id() == published.id())
+        .then(|| published.digest())
+    }
+    fn resolve(
+        &self,
+        _world: &World,
+        pack: &CanonicalId,
+        version: u32,
+        id: &CanonicalId,
+    ) -> Option<(RecipeRef, PinnedRecipe)> {
+        let (published, pinned) = self.published()?;
+        (pack == published.pack() && version == published.version() && id == published.id())
+            .then_some((published, pinned))
+    }
+    fn catalog_revision(&self, _world: &World) -> u64 {
+        u64::from(self.mode.load(std::sync::atomic::Ordering::Relaxed))
+    }
+    fn catalog(&self, _world: &World) -> Vec<(RecipeRef, PinnedRecipe)> {
+        self.published().into_iter().collect()
+    }
+}
+
+/// The same `draft_order`, with the pin written by the caller — the one field no
+/// check on the submit path ever compares.
+fn draft_order_pinned(
+    id: u64,
+    facility: ObjId,
+    source: u64,
+    dest: u64,
+    pinned: PinnedRecipe,
+) -> WorkOrder {
+    let (recipe, _) = alloy_recipe();
+    WorkOrder::draft(
+        WorkOrderId(id),
+        PrincipalId::Object(GOD),
+        PrincipalId::Object(GOD),
+        facility,
+        2,
+        1,
+        1,
+        recipe,
+        pinned,
+        1,
+        AccountId(1),
+        Some(endpoint(source)),
+        DeliveryTarget::Endpoint {
+            endpoint: endpoint(dest),
+        },
+        EconomicVisibility::Parties,
+    )
+    .expect("draft a work order")
+}
+
+/// A pin whose output line is multiplied by a thousand — the shape that mints out
+/// of nothing at `wo_deliver`.
+fn inflated_pin() -> PinnedRecipe {
+    PinnedRecipe::new(
+        vec![RecipeLine::new(commodity("metals"), 4).expect("input line")],
+        vec![RecipeLine::new(commodity("structural_alloys"), 1_000).expect("output line")],
+        capabilities(&["smelt"]),
+        3,
+    )
+    .expect("an inflated pin is perfectly well-formed — that is the whole problem")
+}
+
+fn seed_draft(world: &mut TestWorld, families: &IndustryFamilies, order: WorkOrder) -> WorkOrderId {
+    let id = order.id();
+    let engine = world.engine_mut();
+    apply(engine, families, |txn| families.open_work_order(txn, order))
+        .expect("seed a drafted work order");
+    id
+}
+
+fn drift_of(world: &TestWorld, order: WorkOrderId) -> Option<mush_industry::DraftDrift> {
+    world
+        .world()
+        .module_state::<IndustryStore>()
+        .expect("industry store")
+        .drift_cancelled(order)
+}
+
+fn drift_count(world: &TestWorld) -> usize {
+    world
+        .world()
+        .module_state::<IndustryStore>()
+        .expect("industry store")
+        .drift_cancelled_len()
+}
+
+#[test]
+fn ws02_s5b_the_sweep_cancels_a_drafted_order_whose_pin_is_not_the_authoritys() {
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let (mut world, families) = boot_with_authority(Arc::new(DriftRecipes {
+        mode: Arc::clone(&mode),
+    }));
+    let honest = seed_draft(
+        &mut world,
+        &families,
+        draft_order(0x5B0, ObjId(7), 1, 500, 600),
+    );
+    // The pack, the version, the recipe id and the DIGEST are all honest on this
+    // one too: the two re-checks on the submit path compare exactly those.
+    let forged = seed_draft(
+        &mut world,
+        &families,
+        draft_order_pinned(0x5B1, ObjId(7), 500, 600, inflated_pin()),
+    );
+    assert_eq!(
+        drift_count(&world),
+        0,
+        "nothing is marked until a sweep walks the family"
+    );
+
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        drift_of(&world, forged),
+        Some(mush_industry::DraftDrift::LinesDiffer),
+        "the ONE thing nobody compares: the pinned lines"
+    );
+    assert_eq!(
+        drift_of(&world, honest),
+        None,
+        "an honest draft is untouched"
+    );
+    assert_eq!(drift_count(&world), 1, "and exactly one order was named");
+
+    // The mark is rebuilt from the family every sweep, never accumulated: the
+    // requester's own `@wo/cancel` — the exit the refusal leaves open, and the one
+    // thing that really writes `Cancelled` — takes it out of the set.
+    {
+        let engine = world.engine_mut();
+        apply(engine, &families, |txn| {
+            let order = families
+                .work_order(txn, forged)?
+                .expect("the order is there")
+                .clone();
+            let next = order.with_state(WorkOrderState::Cancelled)?;
+            families.put_work_order(txn, order.revision(), next)
+        })
+        .expect("cancel it");
+    }
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        drift_of(&world, forged),
+        None,
+        "a cancelled order is no longer a drifted DRAFT"
+    );
+}
+
+#[test]
+fn ws02_s5b_a_republication_cancels_the_drafts_pinned_against_the_old_pack() {
+    // The live-game half, and the reason this is fail-closed rather than clever: a
+    // staffer republishing a pack is a legitimate act that looks identical, on the
+    // record, to a forged pin. Every drift is refused and the operator's log line
+    // is where the two are told apart.
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let (mut world, families) = boot_with_authority(Arc::new(DriftRecipes {
+        mode: Arc::clone(&mode),
+    }));
+    let order = seed_draft(
+        &mut world,
+        &families,
+        draft_order(0x5B2, ObjId(7), 1, 500, 600),
+    );
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(drift_of(&world, order), None, "as drafted, it matches");
+
+    // (1) republished with new lines under the SAME digest — the drift both
+    // upstream re-checks are structurally unable to see.
+    mode.store(1, std::sync::atomic::Ordering::Relaxed);
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        drift_of(&world, order),
+        Some(mush_industry::DraftDrift::LinesDiffer),
+        "new lines, same digest: only a line comparison catches it"
+    );
+
+    // (2) the ordinary republication, under a new digest.
+    mode.store(2, std::sync::atomic::Ordering::Relaxed);
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        drift_of(&world, order),
+        Some(mush_industry::DraftDrift::DigestMoved),
+        "a moved digest is named as the ordinary drift it is"
+    );
+
+    // (3) retired: the pack version publishes no such recipe at all. Fail-closed —
+    // an unresolvable recipe is not a reason to trust the pin.
+    mode.store(3, std::sync::atomic::Ordering::Relaxed);
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(
+        drift_of(&world, order),
+        Some(mush_industry::DraftDrift::Unpublished),
+        "a retired recipe cancels the drafts pinned against it"
+    );
+
+    // And the pack coming back exactly as it was clears the mark: this is a
+    // refusal derived from the world, not a durable brand on the record.
+    mode.store(0, std::sync::atomic::Ordering::Relaxed);
+    world.modules_loaded(std::collections::HashMap::new());
+    assert_eq!(drift_of(&world, order), None, "restored, and cleared");
 }

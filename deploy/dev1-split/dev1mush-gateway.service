@@ -18,8 +18,11 @@ WorkingDirectory=/opt/rustmush/dev1
 EnvironmentFile=/opt/rustmush/dev1/dev1.env
 # The GATEWAY owns the SSH + WEB (HTTPS :6790) connections and spawns +
 # supervises the mush-server child (which it locates as a sibling of its own
-# binary in target/release, passing --config + --ipc). A server-child crash is
-# handled IN-PROCESS (auto-restart + re-attach, M16c/M16d) — never by systemd.
+# binary in target/release). It always passes --ipc; it passes --config ONLY
+# because THIS unit gives the gateway one (WS22-S1: a gateway that resolved the
+# implicit mushd.toml forges no --config, so the child resolves it the same way
+# the parent did). A server-child crash is handled IN-PROCESS (auto-restart +
+# re-attach, M16c/M16d) — never by systemd.
 # The gateway binary must be built with `--features tls` to serve HTTPS here.
 ExecStart=/opt/rustmush/dev1/build/target/release/mush-gateway --config /opt/rustmush/dev1/mushd.toml
 # A deploy = build new binaries, then `systemctl reload` → SIGHUP → the gateway

@@ -544,6 +544,44 @@ writer cannot drain, the final BGSAVE is skipped rather than snapshotting a
 possibly incomplete store. Batches that could not be flushed within the cap
 are lost — the same window a `kill -9` during the outage would lose.
 
+### Exit codes (WS22-S3)
+
+`mushd` and `mush-server` speak one exit vocabulary (`mush_config::exit`), so a
+supervisor does not have to remember which half produced a number:
+
+| code | meaning | operator response |
+|---|---|---|
+| 0 | the shutdown sequence ran to the end | none |
+| 1 | a fatal error — bad config, refused command line, unreachable store, **or a world task that faulted or panicked** | read the log; the ERROR line names which |
+| 2 | *reserved*: another live process holds the quarantine lifetime lock | you already have one of these running |
+| 3 | the world task did not join within its bound | the box is probably loaded, not broken — do not restart it harder |
+
+`1` stays the catch-all because that is what every convention already reads as
+"it failed"; the codes above it exist only where the *response* differs. The
+one that earns its own number is `3`: a world that **died** and a world that is
+merely **slow to stop** used to be the same `1`, and they are opposite
+incidents.
+
+Every join of the world task is bounded at `WORLD_JOIN_TIMEOUT` (30s: the
+world's own 15s shutdown grace plus 15s of slack for its post-loop work). The
+bound is deliberately longer than the grace, so the designed slow path — a
+shutdown waiting out a pending exact commit — is never misread as a hung world.
+A join that does expire logs `world task did not join within its bound`, skips
+the final BGSAVE (nothing can say whether that world's RAM finished reaching the
+store), and exits `3`. Before the bound existed the process simply waited
+forever and systemd escalated to `SIGKILL`, which skips the whole shutdown tail
+above and leaves an exit with no code at all.
+
+In `mushd` every step after that join is itself bounded, so the `3` really does
+reach the supervisor. In `mush-server` the joins that follow (outbox, store
+writer, IPC writer) are still unbounded — WS22-S6 bounds them — so on a wedged
+world the timeout's ERROR line is the reliable signal there and the exit code
+may still be waiting behind one of those joins.
+
+Code `2` has no producer yet. It is in the table anyway: the cost of reserving
+it now is zero, and the cost of discovering the collision later — after a unit
+file already treats `2` as something else — is a silent misclassification.
+
 ## Game systems (M5): clock, weather, scripting
 
 Three M5 subsystems are compiled in and boot with every server; none needs
@@ -1354,7 +1392,36 @@ listen = "/run/rustmush/dev1.sock"   # Linux prod: a Unix-domain socket path
 # write_timeout_ms = 5000     # per-frame IPC write timeout; a connected-but-not-draining
 #                             #   ("wedged") peer past this tears the boundary down.
 # high_water_warn_pct = 80    # edge-gated high-water warn threshold, percent of a queue's cap.
+
+# WS22-S17: what the gateway does when its supervisor GIVES UP on the server half.
+# exit_on_abandoned_supervision = true   # exit non-zero after a ~3 s grace, so
+#                             #   Restart=on-failure brings the whole gateway back.
+#                             #   Set false on a dev box to keep the corpse attached
+#                             #   for inspection; the gauge and the marker below are
+#                             #   published either way.
 ```
+
+**When the supervisor gives up.** The gateway abandons supervision when the
+crash-loop guard trips, when an old server instance's exit cannot be
+established (it will never launch a replacement over an instance that might
+still be writing the store), or if the supervisor task itself dies. That state
+used to be invisible: the process stayed healthy and idle, every held session
+stayed connected, and every line those players typed was refused for ever.
+Now it:
+
+- logs one ERROR carrying the fixed marker `SUPERVISION-ABANDONED`, with a
+  `reason` field (`crash-loop`, `uncertain-exit`, `supervisor-died`) —
+  `journalctl -u dev1mush-gateway | grep SUPERVISION-ABANDONED`;
+- latches the `mush_supervision_abandoned` gauge on `/metrics`, which
+  `/healthz` also reports as `"supervision_ok": false` (alert on either);
+- tells the connected players once ("the server is down and could not be
+  restarted");
+- and then, unless `exit_on_abandoned_supervision = false`, stops accepting new
+  SSH logins at once and exits **1** after a short grace window (the window is
+  for the notice above to reach the sessions already held, not for new arrivals;
+  the web listener stays up through it so `/healthz` keeps answering) so the
+  init system restarts the pair. Connections that refuse every input are worth
+  less than a working game.
 
 Every shed, teardown, protocol violation, and write timeout logs and increments a counter
 surfaced on `/metrics` (`mush_ipc_frames_shed_total`, `mush_ipc_write_timeouts_total`,
@@ -1402,6 +1469,27 @@ executable (same target/dir), spawns it with `--config` + `--ipc <addr>`,
 waits for the server's `Hello` handshake over the socket, then accepts SSH
 connections. Running the server standalone (`mush-server --config … --ipc …`)
 is supported for testing.
+
+**The command line is strict (WS22-S1).** All three binaries share one parser
+(`mush_config::cli`) and refuse anything it does not recognise, with the
+offending token on stderr and a non-zero exit:
+
+| line | result |
+|---|---|
+| `mushd --confg prod.toml` | refused — "unrecognised argument" naming `--confg` |
+| `mushd --config` | refused — "needs a value" |
+| `mushd --config a --config b` | refused — "given more than once" |
+| `mush-gateway --repl`, `mushd --ipc …` | refused — the flag belongs to another binary |
+| `mushd --config /nope.toml` | refused — `config file not found: /nope.toml` |
+| `mushd` (no `--config`) | the implicit `./mushd.toml`; **absent is fine**, it means the built-in defaults |
+
+That last row is the one asymmetry: a config path you *named* must exist, and a
+config path you did not name need not. It crosses the process boundary too —
+a gateway started without `--config` spawns its child without one, so the child
+resolves `mushd.toml` from the same working directory rather than being handed
+an explicit path that may not be there. Every deployed unit in `deploy/` passes
+exactly `--config <path>` and is unaffected; a wrapper script that passed an
+extra undocumented argument will now fail to start, loudly.
 
 The all-in-one `mushd` service (`deploy/README.md`) remains the default deploy;
 the split adds the **hot restart** below, and is proven by

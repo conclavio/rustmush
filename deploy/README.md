@@ -50,6 +50,12 @@ header spells the mechanism out with `__KEY__` tokens; that is exactly the rule
 the test applies, so the shell and the test cannot disagree about what a
 complete render is.
 
+Ship **both** files to the box and keep them together —
+`/opt/rustmush/<name>/mushd.toml` beside `/opt/rustmush/<name>/instance.env`.
+`git archive HEAD` carries the template, never your edited `instance.env`, so
+the edited one is `scp`'d up alongside the config it produced; it is the input
+a re-render reads, and the file `scripts/reset-instance.sh` below is pointed at.
+
 `START_ROOM` / `START_ROOM_UNAPPROVED` name object ids that must EXIST in the
 world you boot. A fresh store seeds only Limbo `#0` and God `#1`, so `#2`/`#3`
 are the ids the instance's own seed — the rooms you dig before opening — will
@@ -127,3 +133,32 @@ redis-cli -p 6788 info keyspace          # prod data (NOT the dev 6379)
 Prod data lives in the **6788** instance; the box's **6379** Redis is the
 port-forwarded development instance whose namespaces the gated test suite
 wipes — never point a live server at 6379. See [`../docs/ops.md`](../docs/ops.md).
+
+## Reset an instance (flush and rebuild)
+
+rustmush is pre-launch: there are no running games and no players, the store is
+disposable, and the deployment target is a fresh box. So flush-and-rebuild is
+the STANDARD remedy for a wedged store, a bad migration or a world someone
+tested into a corner — and a standard remedy that lives in somebody's shell
+history gets half-performed at 2am (the unit left running while Redis is
+flushed; the data dir kept, so the quarantine spool and the key rings outlive
+the world they belonged to). It is scripted instead:
+
+```bash
+sudo scripts/reset-instance.sh /opt/rustmush/dev3/instance.env --yes
+```
+
+It stops the instance's unit (either shape — `<name>mush.service` or the split
+`<name>mush-gateway.service`), `FLUSHDB`s that instance's OWN Redis on its
+`REDIS_PORT`, deletes and recreates `DATA_DIR` owned by the unit's `User=`, and
+starts the unit again. The rendered `mushd.toml` is not touched: the config is
+the thing you keep. After a reset the world is a fresh seed — Limbo `#0` and God
+`#1` — so re-dig `START_ROOM` / `START_ROOM_UNAPPROVED` before letting anyone
+connect. The script READS `instance.env` with the same loop the render recipe
+uses; it never sources it.
+
+CI's `Instance provisioning acceptance` job renders both shipped instances with
+the recipe above, runs all three binaries' `--check-config` over what it
+produced, boots the WoD one against a throwaway store, and proves a typo'd
+`receipt_policy` is refused — so the templates cannot drift past the binaries
+that read them (`crates/mush-server/tests/provisioning_smoke.rs`).

@@ -4,10 +4,15 @@
 //! ("@dig/@desc/look/say/pose/movement in in-process tests").
 
 use mush_core::{
-    AliasOutcome, AliasStage, Audience, Flags, GOD, LIMBO, ObjId, ObjKind, Outbox, Powers,
-    Registry, World, dispatch, register_core_commands,
+    AliasOutcome, AliasStage, Attr, AttrFlags, Audience, Flags, GOD, LIMBO, ObjId, ObjKind, Outbox,
+    Powers, Registry, World, dispatch, register_core_commands,
 };
 use mush_proto::{NarrativeKind, OutputEvent};
+
+/// A store-less lens for this harness: it holds no engine and never has, so
+/// it names `Test` rather than reaching for a store-less twin.
+const DETACHED: mush_core::TypedStateLens<'static> =
+    mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
 
 /// A world with the core commands, a wizardly God, a builder Bob, and a
 /// plain player Ann — everyone starting in Limbo.
@@ -31,7 +36,7 @@ impl Game {
 
     fn run(&mut self, actor: ObjId, line: &str) -> Outbox {
         let mut out = Outbox::new();
-        dispatch(&self.reg, &mut self.w, actor, line, &mut out);
+        dispatch(&self.reg, &mut self.w, actor, line, &mut out, DETACHED);
         out
     }
 
@@ -369,6 +374,150 @@ fn desc_and_look_detail() {
     // Unknown target still fails.
     let out = g.run(ann, "look unicorn");
     assert_error_contains(&out, ann, "I don't see that here.");
+}
+
+/// The dbref walk. `look #N` for every id in the database must answer the
+/// same line as a name that matched nothing, unless the target is in reach.
+/// Before the locality gate, `#N` and `*name` resolved globally in
+/// `match_object` and `look` gated only on perception (a free pass with no
+/// Perceive hook), so `#0..#next` read every desc and every room view.
+#[test]
+fn look_dbref_walk_reads_nothing_out_of_reach() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let bob = g.bob;
+    // Off-site: a room with a desc, a thing in it, and Bob standing there.
+    let vault = g.w.create(ObjKind::Room, "Vault", GOD, None).unwrap();
+    let relic =
+        g.w.create(ObjKind::Thing, "relic", GOD, Some(vault))
+            .unwrap();
+    g.w.move_to(bob, vault).unwrap();
+    g.run(
+        GOD,
+        &format!("@desc #{}=Rows of numbered drawers.", vault.0),
+    );
+    g.run(GOD, &format!("@set #{}/desc=A cracked seal.", relic.0));
+    // In reach: Ann's room, a thing she carries, a thing on the floor.
+    let coin = g.w.create(ObjKind::Thing, "coin", GOD, Some(ann)).unwrap();
+    let rug = g.w.create(ObjKind::Thing, "rug", GOD, Some(LIMBO)).unwrap();
+
+    // The refusal every out-of-reach dbref must reproduce byte for byte.
+    let baseline = actor_texts(&g.run(ann, "look zzzznotathing"), ann);
+    assert_eq!(baseline, vec!["I don't see that here.".to_string()]);
+
+    // GOD starts in Limbo alongside Ann, so it is in reach like the rest.
+    let in_reach = [ann, GOD, LIMBO, coin, rug];
+    let ids: Vec<ObjId> = g.w.iter().map(|o| o.id).collect();
+    for id in ids {
+        let out = g.run(ann, &format!("look #{}", id.0));
+        if in_reach.contains(&id) {
+            assert_ne!(
+                actor_texts(&out, ann),
+                baseline,
+                "#{} is in reach and must still render",
+                id.0
+            );
+            continue;
+        }
+        assert_eq!(
+            actor_texts(&out, ann),
+            baseline,
+            "#{} answered something other than the NoMatch line",
+            id.0
+        );
+        assert!(
+            !out.events()
+                .iter()
+                .any(|(_, e)| matches!(e, OutputEvent::Room(_))),
+            "#{} leaked a room view",
+            id.0
+        );
+    }
+    // A dbref past the end of the database reads the same.
+    let past_end = g.w.iter().map(|o| o.id.0).max().unwrap() + 7;
+    assert_eq!(
+        actor_texts(&g.run(ann, &format!("look #{past_end}")), ann),
+        baseline
+    );
+
+    // `me`, `here` and plain names are untouched by the gate.
+    assert_ne!(actor_texts(&g.run(ann, "look me"), ann), baseline);
+    assert_ne!(actor_texts(&g.run(ann, "look coin"), ann), baseline);
+    assert_ne!(actor_texts(&g.run(ann, "look rug"), ann), baseline);
+    assert!(
+        g.run(ann, "look here")
+            .events()
+            .iter()
+            .any(|(_, e)| matches!(e, OutputEvent::Room(_))),
+        "look here still renders the room"
+    );
+    // And the `detail:` keyword fallback still runs after a failed match.
+    g.run(GOD, "@set here/detail:mist=Curls of silver mist.");
+    assert_error_contains(&g.run(ann, "look mist"), ann, "Curls of silver mist.");
+}
+
+/// `*name` is the same oracle by another spelling: it resolves through the
+/// global player index, so it gets the same locality test.
+#[test]
+fn look_star_name_is_gated_by_locality() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let bob = g.bob;
+    let vault = g.w.create(ObjKind::Room, "Vault", GOD, None).unwrap();
+    let baseline = actor_texts(&g.run(ann, "look zzzznotathing"), ann);
+
+    // Same room: `*Bob` renders.
+    let out = actor_texts(&g.run(ann, "look *Bob"), ann);
+    assert_ne!(out, baseline, "a player in the room still renders");
+    assert!(
+        out.join(
+            "
+"
+        )
+        .contains("Bob"),
+        "{out:?}"
+    );
+
+    // Elsewhere: the same refusal a missing name gives.
+    g.w.move_to(bob, vault).unwrap();
+    assert_eq!(
+        actor_texts(&g.run(ann, "look *Bob"), ann),
+        baseline,
+        "*name must not reach across the map"
+    );
+    // Nor may it distinguish an absent player from a non-existent one.
+    assert_eq!(actor_texts(&g.run(ann, "look *Nobody"), ann), baseline);
+}
+
+/// Staff keep the walk: `can_examine` (control, or the `EXAMINE_ALL` power)
+/// is the exemption, so the gate hides nothing a staffer could already read.
+#[test]
+fn look_locality_exempts_examine_all() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let bob = g.bob;
+    let vault = g.w.create(ObjKind::Room, "Vault", GOD, None).unwrap();
+    g.run(
+        GOD,
+        &format!("@desc #{}=Rows of numbered drawers.", vault.0),
+    );
+    g.w.move_to(bob, vault).unwrap();
+    let baseline = actor_texts(&g.run(ann, "look zzzznotathing"), ann);
+    assert_eq!(
+        actor_texts(&g.run(ann, &format!("look #{}", vault.0)), ann),
+        baseline
+    );
+
+    g.w.get_mut(ann).unwrap().powers = Powers::EXAMINE_ALL;
+    assert!(
+        g.run(ann, &format!("look #{}", vault.0))
+            .events()
+            .iter()
+            .any(|(_, e)| matches!(e, OutputEvent::Room(_))),
+        "EXAMINE_ALL still reads a distant room"
+    );
+    let out = actor_texts(&g.run(ann, "look *Bob"), ann);
+    assert_ne!(out, baseline, "EXAMINE_ALL still reads a distant player");
 }
 
 #[test]
@@ -975,25 +1124,88 @@ fn who_lists_connected_players() {
 #[test]
 fn help_renders_specs() {
     let mut g = Game::new();
-    let ann = g.ann;
-    let out = g.run(ann, "help @dig");
-    let all = actor_texts(&out, ann).join("\n");
+    let (ann, bob) = (g.ann, g.bob);
+    // Bob holds BUILDER, so @dig is his to run and his to read about.
+    let out = g.run(bob, "help @dig");
+    let all = actor_texts(&out, bob).join("\n");
     assert!(all.contains("@dig"), "{all}");
     assert!(all.contains("Create a new room"), "{all}");
     assert!(all.contains("/teleport"), "{all}");
-    // Listing.
+    // Listing: everyone sees the ungated verbs; only the builder sees @dig.
     let out = g.run(ann, "help");
     let all = actor_texts(&out, ann).join("\n");
-    assert!(
-        all.contains("look") && all.contains("@dig") && all.contains("WHO"),
-        "{all}"
-    );
+    assert!(all.contains("look") && all.contains("WHO"), "{all}");
+    let out = g.run(bob, "help");
+    let all = actor_texts(&out, bob).join("\n");
+    assert!(all.contains("@dig"), "{all}");
     // +help is the same command.
     let out = g.run(ann, "+help say");
     assert_error_contains(&out, ann, "Speak to everyone");
     // Unknown topic.
     let out = g.run(ann, "help frobnicate");
     assert_error_contains(&out, ann, "No help available");
+}
+
+/// The listing names only what the actor could actually dispatch, and a
+/// refusal for an out-of-role verb is indistinguishable from an unknown
+/// name — `help` is not an enumeration of, or an oracle over, the staff
+/// surface.
+#[test]
+fn help_listing_is_role_filtered_and_never_confirms_a_gated_verb() {
+    let mut g = Game::new();
+    let (ann, bob) = (g.ann, g.bob);
+    let wiz =
+        g.w.create(ObjKind::Player, "Wiz", GOD, Some(LIMBO))
+            .unwrap();
+    g.w.set_flag(wiz, Flags::WIZARD, true).unwrap();
+
+    let listing = |g: &mut Game, who: ObjId| -> Vec<String> {
+        let out = g.run(who, "help");
+        actor_texts(&out, who)
+            .join("\n")
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect()
+    };
+    let player = listing(&mut g, ann);
+    let builder = listing(&mut g, bob);
+    let wizard = listing(&mut g, wiz);
+
+    // A plain player's listing names no Builder- or Wizard-gated verb.
+    assert!(player.iter().any(|n| n == "look"), "{player:?}");
+    assert!(!player.iter().any(|n| n == "@dig"), "{player:?}");
+    assert!(!player.iter().any(|n| n == "@wall"), "{player:?}");
+    // Each staff step is a strict superset of the one below it.
+    assert!(builder.iter().any(|n| n == "@dig"), "{builder:?}");
+    assert!(!builder.iter().any(|n| n == "@wall"), "{builder:?}");
+    assert!(wizard.iter().any(|n| n == "@wall"), "{wizard:?}");
+    for name in &player {
+        assert!(builder.contains(name), "builder lost {name}: {builder:?}");
+    }
+    for name in &builder {
+        assert!(wizard.contains(name), "wizard lost {name}: {wizard:?}");
+    }
+
+    // The refusal for a real-but-gated verb is the refusal an unknown name
+    // gets, word for word: no existence oracle.
+    let gated = g.run(ann, "help @wall");
+    let unknown = g.run(ann, "help frobnicate");
+    assert_error_contains(&gated, ann, "No help available");
+    assert_eq!(
+        actor_texts(&gated, ann),
+        vec!["No help available for \"@wall\".".to_string()]
+    );
+    assert_eq!(
+        actor_texts(&unknown, ann),
+        vec!["No help available for \"frobnicate\".".to_string()]
+    );
+    // And the wizard still reads it.
+    let out = g.run(wiz, "help @wall");
+    assert!(
+        actor_texts(&out, wiz).join("\n").contains("Wizards only"),
+        "{:?}",
+        actor_texts(&out, wiz)
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -1261,6 +1473,129 @@ fn speech_lock_gates_room_speech() {
     let out = g.run(ann, "whisper Bob=psst");
     assert_error_contains(&out, ann, "You whisper \"psst\" to Bob.");
     let _ = bob;
+}
+
+/// Put `name`=`value` on `id` carrying `flags`, owned by God. `@set/flag` is
+/// the in-game writer, but it is staff-only for the read guards and refuses
+/// module-owned namespaces, so probes that want a flagged `wod:*` attribute
+/// still set it through the World.
+fn set_flagged_attr(g: &mut Game, id: ObjId, name: &str, value: &str, flags: AttrFlags) {
+    let mut a = Attr::text(value, GOD);
+    a.flags = flags;
+    g.w.set_attr(id, name, a).unwrap();
+}
+
+/// A world where Ann carries `wod:secret`=`value` under `flags` and Limbo's
+/// speech lock is `key`; returns what Ann gets back for trying to speak.
+fn speech_probe(value: &str, flags: AttrFlags, key: &str) -> (Vec<String>, Vec<String>) {
+    let mut g = Game::new();
+    let ann = g.ann;
+    set_flagged_attr(&mut g, ann, "wod:secret", value, flags);
+    let set = g.run(GOD, &format!("@lock/speech here={key}"));
+    assert_error_contains(&set, GOD, "Locked.");
+    let out = g.run(ann, "say hi");
+    (actor_texts(&out, ann), room_texts(&out, LIMBO))
+}
+
+#[test]
+fn a_lock_key_cannot_probe_a_read_restricted_attribute() {
+    // The unflagged baseline: an attribute lock is a real gate, and it is the
+    // *value* that decides. This is the oracle the flags have to close.
+    let (hit, room) = speech_probe("Ventrue", AttrFlags::empty(), "wod:secret:V*");
+    assert!(
+        hit.is_empty(),
+        "an unflagged match must still pass: {hit:?}"
+    );
+    assert!(room.iter().any(|t| t == "hi"), "{room:?}");
+    let (miss, room) = speech_probe("Tremere", AttrFlags::empty(), "wod:secret:V*");
+    assert!(
+        miss.iter().any(|t| t == "You can't speak here."),
+        "an unflagged miss must still refuse: {miss:?}"
+    );
+    assert!(room.is_empty(), "{room:?}");
+
+    for flag in [AttrFlags::WIZARD_ONLY, AttrFlags::SELF_ONLY] {
+        // A key over a read-restricted attribute is refused, and refused
+        // *identically* whether the value matches the glob or not: the two
+        // outcomes differed above, so if they still differ here the lock is a
+        // one-bit read of an attribute `examine` would not show.
+        let (hit, hit_room) = speech_probe("Ventrue", flag, "wod:secret:V*");
+        let (miss, miss_room) = speech_probe("Tremere", flag, "wod:secret:V*");
+        assert!(
+            hit.iter().any(|t| t == "You can't speak here."),
+            "{flag:?} must fail closed: {hit:?}"
+        );
+        assert_eq!(hit, miss, "{flag:?} leaks the value through the refusal");
+        assert!(
+            hit_room.is_empty() && miss_room.is_empty(),
+            "speech escaped"
+        );
+
+        // Negated, the term must still be false — not true. `Tremere` does
+        // not match `V*`, so an ordinary `!` key would open here; the
+        // restricted read has to poison the `!` above it instead of handing
+        // back a plain `false` for it to invert.
+        let (neg, neg_room) = speech_probe("Tremere", flag, "!wod:secret:V*");
+        assert!(
+            neg.iter().any(|t| t == "You can't speak here."),
+            "{flag:?} negated into a pass: {neg:?}"
+        );
+        assert!(neg_room.is_empty(), "{neg_room:?}");
+
+        // And it poisons the key it sits in rather than reading as one false
+        // term: a disjunction whose other branch is reached only after the
+        // restricted read does not open either.
+        let (dis, dis_room) = speech_probe("Tremere", flag, "wod:secret:V*|#TRUE");
+        assert!(
+            dis.iter().any(|t| t == "You can't speak here."),
+            "{flag:?} was absorbed as a plain false: {dis:?}"
+        );
+        assert!(dis_room.is_empty(), "{dis_room:?}");
+    }
+
+    // HIDDEN is the documented carve-out: `examine/all` shows a hidden
+    // attribute to any examiner with no role test, so it is a display flag,
+    // not a confidentiality boundary — and honouring it would let a player
+    // defeat every attribute lock aimed at them by flagging their own
+    // attribute. It still matches. Changing that is a deliberate act.
+    let (hidden, room) = speech_probe("Ventrue", AttrFlags::HIDDEN, "wod:secret:V*");
+    assert!(hidden.is_empty(), "HIDDEN must still match: {hidden:?}");
+    assert!(room.iter().any(|t| t == "hi"), "{room:?}");
+}
+
+#[test]
+fn a_page_lock_cannot_probe_a_read_restricted_attribute() {
+    // Bob is a builder, not staff: he cannot `examine` Ann's WIZARD_ONLY
+    // attribute, so he must not be able to spell it out one `@lock/page` at a
+    // time either. Whether his page arrives is the bit he would be reading.
+    for flag in [AttrFlags::WIZARD_ONLY, AttrFlags::SELF_ONLY] {
+        let mut refusals = Vec::new();
+        for value in ["Ventrue", "Tremere"] {
+            let mut g = Game::new();
+            let (ann, bob) = (g.ann, g.bob);
+            set_flagged_attr(&mut g, ann, "wod:secret", value, flag);
+            g.run(bob, "@lock/page me=wod:secret:V*");
+            let out = g.run(ann, "page Bob=hello?");
+            assert_error_contains(&out, ann, "does not wish to be disturbed");
+            assert!(
+                out.events().iter().all(|(a, _)| *a != Audience::Actor(bob)),
+                "a refused page must deliver nothing: {:?}",
+                out.events()
+            );
+            refusals.push(actor_texts(&out, ann));
+        }
+        assert_eq!(
+            refusals[0], refusals[1],
+            "{flag:?} leaks the value through the page refusal"
+        );
+    }
+    // Unflagged, the same key still works as a lock in both directions.
+    let mut g = Game::new();
+    let (ann, bob) = (g.ann, g.bob);
+    set_flagged_attr(&mut g, ann, "wod:secret", "Ventrue", AttrFlags::empty());
+    g.run(bob, "@lock/page me=wod:secret:V*");
+    let out = g.run(ann, "page Bob=hello?");
+    assert_error_contains(&out, ann, "You paged Bob");
 }
 
 #[test]
@@ -1651,4 +1986,164 @@ fn a_page_lands_a_reply_ready_notice_on_the_target_never_the_sender_nor_via_an_i
             .any(|(a, e)| *a == Audience::Actor(bob) && matches!(e, OutputEvent::Notice { .. })),
         "an ignored sender's page never notifies"
     );
+}
+
+// ---------------------------------------------------------------------
+// @set/flag: the writer for attribute flags
+// ---------------------------------------------------------------------
+
+/// The flags on `id`'s attribute `name`, or a panic if it is gone.
+fn attr_flags(g: &Game, id: ObjId, name: &str) -> AttrFlags {
+    g.w.get(id)
+        .and_then(|o| o.attrs.get(name))
+        .unwrap_or_else(|| panic!("no {name} on {id}"))
+        .flags
+}
+
+#[test]
+fn a_wizard_can_flag_an_attribute_wizard_only_and_take_it_back() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    g.run(ann, "@set me/diary=dear diary");
+    let out = g.run(GOD, "@set/flag Ann/diary=wizard_only");
+    assert_error_contains(&out, GOD, "diary - WIZARD_ONLY set.");
+    assert_eq!(attr_flags(&g, ann, "diary"), AttrFlags::WIZARD_ONLY);
+
+    // The owner is not exempt: WIZARD_ONLY is withheld from her own examine,
+    // with or without /all.
+    let all = actor_texts(&g.run(ann, "examine me"), ann).join("\n");
+    assert!(!all.contains("dear diary"), "{all}");
+    let all = actor_texts(&g.run(ann, "examine/all me"), ann).join("\n");
+    assert!(!all.contains("dear diary"), "{all}");
+    // Staff see the value and the flag that is hiding it.
+    let all = actor_texts(&g.run(GOD, "examine/all Ann"), GOD).join("\n");
+    assert!(all.contains("dear diary"), "{all}");
+    assert!(
+        all.contains("WIZARD_ONLY"),
+        "examine must name the flag: {all}"
+    );
+
+    let out = g.run(GOD, "@set/flag Ann/diary=!wizard_only");
+    assert_error_contains(&out, GOD, "diary - WIZARD_ONLY cleared.");
+    assert!(attr_flags(&g, ann, "diary").is_empty());
+    let all = actor_texts(&g.run(ann, "examine me"), ann).join("\n");
+    assert!(
+        all.contains("dear diary"),
+        "clearing must give it back: {all}"
+    );
+}
+
+#[test]
+fn a_player_cannot_set_or_clear_the_read_guards_on_their_own_attribute() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    g.run(ann, "@set me/diary=dear diary");
+    // She controls the attribute and may rewrite its value, but the two bits
+    // a lock key refuses to read through are not hers to move — otherwise
+    // every attribute lock aimed at her is one `@set/flag` from useless.
+    for spelling in ["wizard_only", "WIZARD_ONLY", "self_only", "Self_Only"] {
+        let out = g.run(ann, &format!("@set/flag me/diary={spelling}"));
+        assert_error_contains(&out, ann, "Permission denied.");
+    }
+    assert!(attr_flags(&g, ann, "diary").is_empty());
+
+    // And not in the clearing direction either, once staff have set one.
+    g.run(GOD, "@set/flag Ann/diary=self_only");
+    let out = g.run(ann, "@set/flag me/diary=!self_only");
+    assert_error_contains(&out, ann, "Permission denied.");
+    assert_eq!(attr_flags(&g, ann, "diary"), AttrFlags::SELF_ONLY);
+}
+
+#[test]
+fn self_only_set_by_staff_hides_from_other_examiners_but_not_the_object() {
+    let mut g = Game::new();
+    let (ann, bob) = (g.ann, g.bob);
+    g.run(ann, "@set me/diary=dear diary");
+    g.w.get_mut(bob).unwrap().powers = Powers::EXAMINE_ALL;
+    let all = actor_texts(&g.run(bob, "examine/all Ann"), bob).join("\n");
+    assert!(all.contains("dear diary"), "baseline: {all}");
+
+    let out = g.run(GOD, "@set/flag Ann/diary=self_only");
+    assert_error_contains(&out, GOD, "diary - SELF_ONLY set.");
+    let all = actor_texts(&g.run(bob, "examine/all Ann"), bob).join("\n");
+    assert!(!all.contains("dear diary"), "SELF_ONLY leaked: {all}");
+    let all = actor_texts(&g.run(ann, "examine me"), ann).join("\n");
+    assert!(
+        all.contains("dear diary"),
+        "the object still reads it: {all}"
+    );
+}
+
+#[test]
+fn a_player_may_flag_their_own_attribute_hidden_without_moving_a_lock_over_it() {
+    // HIDDEN stays a controller tool, which is only safe because the lock
+    // layer ignores it: flagging it must not change whether a third party's
+    // key opens, in the plain form or the negated one.
+    let mut outcomes = Vec::new();
+    for key in ["secret:V*", "!secret:V*"] {
+        let mut g = Game::new();
+        let ann = g.ann;
+        g.run(ann, "@set me/secret=Ventrue");
+        let set = g.run(GOD, &format!("@lock/speech here={key}"));
+        assert_error_contains(&set, GOD, "Locked.");
+        let before = room_texts(&g.run(ann, "say hi"), LIMBO);
+
+        let out = g.run(ann, "@set/flag me/secret=hidden");
+        assert_error_contains(&out, ann, "secret - HIDDEN set.");
+        assert_eq!(attr_flags(&g, ann, "secret"), AttrFlags::HIDDEN);
+
+        let after = room_texts(&g.run(ann, "say hi"), LIMBO);
+        assert_eq!(before, after, "HIDDEN moved the {key} lock: {before:?}");
+        outcomes.push(after);
+    }
+    // Not vacuous: the two keys really do decide differently.
+    assert!(outcomes[0].iter().any(|t| t == "hi"), "{outcomes:?}");
+    assert!(outcomes[1].is_empty(), "{outcomes:?}");
+}
+
+#[test]
+fn an_attribute_flag_survives_a_value_write_and_reaches_the_write_batch() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    g.run(ann, "@set me/diary=dear diary");
+    let _ = g.w.take_dirty();
+    let out = g.run(ann, "@set/flag me/diary=hidden");
+    assert_error_contains(&out, ann, "diary - HIDDEN set.");
+    assert!(
+        g.w.take_dirty().contains(&ann),
+        "a flag write must dirty the object, or the batch never carries it"
+    );
+
+    // The ordinary value path keeps the flag (the `existing_flags` carry).
+    let out = g.run(ann, "@set me/diary=second entry");
+    assert_error_contains(&out, ann, "diary - Set.");
+    assert_eq!(attr_flags(&g, ann, "diary"), AttrFlags::HIDDEN);
+
+    // And the persisted object doc re-hydrates with it.
+    let json = serde_json::to_string(g.w.get(ann).unwrap()).unwrap();
+    let back: mush_core::Obj = serde_json::from_str(&json).unwrap();
+    let attr = back.attrs.get("diary").unwrap();
+    assert!(attr.flags.contains(AttrFlags::HIDDEN), "{json}");
+    assert_eq!(
+        attr.value,
+        mush_core::AttrValue::Text("second entry".to_string())
+    );
+}
+
+#[test]
+fn set_flag_refuses_a_missing_attribute_an_unknown_name_and_the_object_form() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let out = g.run(ann, "@set/flag me/diary=hidden");
+    assert_error_contains(&out, ann, "diary - No such attribute.");
+    g.run(ann, "@set me/diary=dear diary");
+    let out = g.run(ann, "@set/flag me/diary=sneaky");
+    assert_error_contains(&out, ann, "I don't understand the attribute flag");
+    let out = g.run(ann, "@set/flag me/diary=");
+    assert_error_contains(&out, ann, "Set which attribute flag?");
+    // `/flag` over the object-flag form is a typo, not a DARK write.
+    let out = g.run(ann, "@set/flag me=DARK");
+    assert_error_contains(&out, ann, "object flag, not an attribute flag");
+    assert!(!g.w.get(ann).unwrap().flags.contains(Flags::DARK));
+    assert!(attr_flags(&g, ann, "diary").is_empty());
 }

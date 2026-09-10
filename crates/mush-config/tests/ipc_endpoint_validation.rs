@@ -10,9 +10,26 @@
 //! collide is accepted but warns loudly, because the boundary is
 //! unauthenticated and TCP lets any local process impersonate the gateway.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use mush_config::config::{Config, ConfigError};
+
+/// Every test here runs `ipc_endpoint()`, and one of them captures its log
+/// under a thread-scoped subscriber. `tracing` registers a callsite lazily on
+/// its first hit and, while exactly one dispatcher is registered, evaluates the
+/// callsite's interest against the *registering thread's* default subscriber.
+/// A sibling test hitting the warn first on a thread with no subscriber
+/// therefore caches the callsite as never-enabled, and the capturing test sees
+/// nothing (seen once under a loaded `cargo test --workspace -j 6`). Serialising
+/// the tests removes the interleaving: each scoped subscriber's registration
+/// rebuilds every callsite's interest before its own test runs.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serialized() -> MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// A `MakeWriter` that collects formatted log lines into a shared buffer.
 #[derive(Clone, Default)]
@@ -56,6 +73,7 @@ fn with_captured_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
 
 #[test]
 fn an_ipc_port_that_collides_with_the_store_is_refused() {
+    let _serial = serialized();
     let mut cfg = Config::default();
     // dev2's own Redis port — and, verbatim, `IpcCfg::default().listen`.
     cfg.store.redis_url = "redis://127.0.0.1:6791".to_string();
@@ -86,6 +104,7 @@ fn an_ipc_port_that_collides_with_the_store_is_refused() {
 
 #[test]
 fn a_remote_store_on_the_same_port_number_is_not_a_collision() {
+    let _serial = serialized();
     let mut cfg = Config::default();
     // Same port, another box: binding 127.0.0.1:6791 here is fine, and
     // refusing it would be a false refusal on a legitimate config.
@@ -96,6 +115,7 @@ fn a_remote_store_on_the_same_port_number_is_not_a_collision() {
 
 #[test]
 fn a_memory_store_never_collides() {
+    let _serial = serialized();
     let mut cfg = Config::default();
     cfg.store.store = "memory".to_string();
     cfg.store.redis_url = "redis://127.0.0.1:6791".to_string();
@@ -105,6 +125,7 @@ fn a_memory_store_never_collides() {
 
 #[test]
 fn a_distinct_tcp_endpoint_is_accepted_with_a_warn() {
+    let _serial = serialized();
     let mut cfg = Config::default();
     cfg.store.redis_url = "redis://127.0.0.1:6788".to_string();
     cfg.ipc.listen = "127.0.0.1:6794".to_string();
@@ -128,6 +149,7 @@ fn a_distinct_tcp_endpoint_is_accepted_with_a_warn() {
 #[cfg(unix)]
 #[test]
 fn a_unix_socket_endpoint_is_accepted_silently() {
+    let _serial = serialized();
     let mut cfg = Config::default();
     cfg.store.redis_url = "redis://127.0.0.1:6791".to_string();
     cfg.ipc.listen = "/run/rustmush/dev2.sock".to_string();
@@ -191,6 +213,7 @@ fn explain_refusal(instance: &str, cfg: &Config, e: &ConfigError) {
 
 #[test]
 fn the_shipped_dev1_and_dev2_configs_validate() {
+    let _serial = serialized();
     validate_shipped("dev1");
     validate_shipped("dev2");
 }

@@ -9,12 +9,9 @@
 
 use futures::future::BoxFuture;
 use mush_core::Inbound;
-use mush_ipc::{
-    ActionSend, GatewayAction, GatewayLink, LegalActionsError, ServiceReq, ServiceResp, ToServer,
-};
+use mush_ipc::{ActionSend, GatewayAction, GatewayLink, ServiceReq, ServiceResp, ToServer};
 
-use crate::world_task::{LegalActionReadError, WorldHandle, WorldReadError};
-use crate::{barrier_response, create_player_response};
+use crate::world_task::WorldHandle;
 
 impl GatewayLink for WorldHandle {
     fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool> {
@@ -66,65 +63,14 @@ impl GatewayLink for WorldHandle {
         })
     }
 
+    /// The dispositions this link answers with are NOT restated here. Both
+    /// deployments call the one table in [`crate::handle_request`], so the
+    /// forked server and the all-in-one binary cannot drift on what a dead or
+    /// commit-pending world says about a name, a readiness probe or a barrier
+    /// — and a new [`ServiceReq`] variant fails to compile in exactly one
+    /// place instead of being silently answered on one side only.
     fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
-        Box::pin(async move {
-            Some(match req {
-                ServiceReq::CreatePlayer { name } => {
-                    create_player_response(self.create_player(&name).await)
-                }
-                ServiceReq::NameFree { name } => match self.name_free(&name).await {
-                    Ok(free) => ServiceResp::NameFree(free),
-                    Err(WorldReadError::Busy) => ServiceResp::Busy,
-                    Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
-                },
-                ServiceReq::InInputContext { actor } => match self.in_input_context(actor).await {
-                    Ok(active) => ServiceResp::InInputContext(active),
-                    Err(WorldReadError::Busy) => ServiceResp::Busy,
-                    Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
-                },
-                ServiceReq::ConnectionReady { conn, actor } => {
-                    match self.connection_ready(conn, actor).await {
-                        Ok(ready) => ServiceResp::ConnectionReady(ready),
-                        Err(WorldReadError::Busy) => ServiceResp::Busy,
-                        Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
-                    }
-                }
-                ServiceReq::LegalActions {
-                    conn,
-                    actor,
-                    subject,
-                } => match self.legal_actions(conn, actor, subject).await {
-                    Ok(offers) => ServiceResp::LegalActions(Ok(offers)),
-                    Err(LegalActionReadError::Busy) => ServiceResp::Busy,
-                    Err(LegalActionReadError::Unavailable) => ServiceResp::Unavailable,
-                    Err(LegalActionReadError::InvalidSubject) => {
-                        ServiceResp::LegalActions(Err(LegalActionsError::InvalidSubject))
-                    }
-                },
-                ServiceReq::ActionStatus {
-                    conn,
-                    actor,
-                    status,
-                } => match self.action_status(conn, actor, &status).await {
-                    Ok(status) => ServiceResp::ActionStatus(status),
-                    Err(WorldReadError::Busy) => ServiceResp::Busy,
-                    Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
-                },
-                ServiceReq::Barrier => barrier_response(self.barrier_result().await),
-                ServiceReq::DiscordInteraction(interaction) => {
-                    match self.discord_interaction(interaction).await {
-                        Ok(result) => ServiceResp::DiscordInteraction(result),
-                        Err(WorldReadError::Busy) => ServiceResp::Busy,
-                        Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
-                    }
-                }
-                ServiceReq::RelaySpeak(req) => match self.relay_speak(req).await {
-                    Ok(result) => ServiceResp::RelaySpeak(result),
-                    Err(WorldReadError::Busy) => ServiceResp::Busy,
-                    Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
-                },
-            })
-        })
+        Box::pin(async move { Some(crate::handle_request(self, req).await) })
     }
 
     fn submit_action(&self, action: GatewayAction) -> BoxFuture<'_, ActionSend> {

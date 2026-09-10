@@ -4,6 +4,10 @@
 -- ARGV: exact intent doc, exact receipt doc, exact binding doc, token,
 -- replay-write count, outbox count, max pending outbox, exact parent manifest, then
 -- (kind, exact post-image) replay pairs and (item id, exact record) pairs.
+--
+-- Returns 'FINALIZED', or 'FINALIZED_RENORMALISED:<replay index>' when the
+-- write landed and the backend spelled one JSON post-image back differently
+-- (see the readback loop), or one of the refusal codes above.
 
 local function key_type(key)
   local result = redis.call('TYPE', key)
@@ -116,21 +120,44 @@ for index = 1, write_count do
   end
 end
 
+-- The write loop above and this readback are one script. Redis runs an EVAL to
+-- completion with nothing interleaved, and AuthoritativeBundle::build refuses a
+-- bundle that writes the same replay target twice, so no key read here can hold
+-- anything except what the loop above put in it. That leaves exactly one
+-- meaning per kind for a disagreement, and only two of them are faults:
+--
+--   json_set   -- RedisJSON re-serializing the document it was just handed:
+--                key order, number spelling, escapes. The write landed, so
+--                refusing would strand a durably applied post-image with no
+--                witness and no way for a retry to get past it. This arm only
+--                *observes*: it records the first index that disagreed, the
+--                script finishes normally, and the caller is told through
+--                'FINALIZED_RENORMALISED:<index>'. Catching a genuine clobber
+--                is checkpoint's job (checkpoint_authoritative.lua re-reads
+--                targets other writers have had time to touch) and boot
+--                reconcile's; there is no clobber for *this* readback to catch.
+--   string_set -- GET returns the exact bytes SET stored.
+--   delete     -- EXISTS after DEL is exact.
+--
+-- Neither of the last two can renormalize anything, so both still refuse. A
+-- refusal names the replay index it caught, so the caller can resolve it
+-- against the plan it sent and refuse by key rather than by whole bundle.
+local renormalised = nil
 for index = 1, write_count do
   local kind = ARGV[7 + index * 2]
   local post_image = ARGV[8 + index * 2]
   local key = KEYS[6 + index]
   if kind == 'json_set' then
-    if redis.call('JSON.GET', key) ~= post_image then
-      return 'READBACK_MISMATCH'
+    if renormalised == nil and redis.call('JSON.GET', key) ~= post_image then
+      renormalised = index
     end
   elseif kind == 'string_set' then
     if redis.call('GET', key) ~= post_image then
-      return 'READBACK_MISMATCH'
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   elseif kind == 'delete' then
     if redis.call('EXISTS', key) ~= 0 then
-      return 'READBACK_MISMATCH'
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   end
 end
@@ -148,4 +175,7 @@ end
 redis.call('SET', KEYS[6], ARGV[8])
 redis.call('SET', KEYS[2], ARGV[2])
 redis.call('SREM', KEYS[4], ARGV[4])
+if renormalised ~= nil then
+  return 'FINALIZED_RENORMALISED:' .. tostring(renormalised)
+end
 return 'FINALIZED'

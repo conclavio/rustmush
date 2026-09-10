@@ -1,0 +1,375 @@
+# WS03-S8/S14: the module-state slot ownership baseline.
+#
+# A typed state slot has exactly one owning MODULE — the one whose
+# `Registrar::state` declared it — and since WS03-S14 the module-facing surface
+# REFUSES a foreign write: `Ctx::try_state_mut` returns
+# `Err(StateSlotDenied { requester, owner, .. })`, `Ctx::state_mut` returns
+# `None`, and nothing lands. Refusing is silent at the call site
+# (`if let Some(s) = ctx.state_mut::<T>()` becomes a no-op), which is why
+# WS03-S8 wrote every site that would start no-opping down here first.
+#
+# `tests/state_slot_owners.rs` fails on:
+#
+#   * a `World::module_state_insert` site with no row — that accessor seeds a
+#     slot with no owner at all, so every one of its sites is declared;
+#   * a `ctx.state_mut::<T>` / `World::module_state_mut::<T>` site whose slot is
+#     owned by a module of a DIFFERENT crate and has no row;
+#   * a row whose `owner` is not the module the composition says owns the slot;
+#   * a row naming a site the scan no longer finds (a stale excuse);
+#   * a row whose `accessor` is `Ctx::state_mut` — that spelling is checked now,
+#     so such a row would excuse a write that no longer happens. Only the
+#     unchecked engine accessors can be baselined.
+#
+# Add a row in the same commit as the reach, with a reason that says why one
+# crate writes another module's state. Do not add rows to quiet the scan.
+#
+# WHAT THE CENSUS FOUND. Every cross-owner MUTATION in the tree goes through
+# `World::module_state_mut` — the unchecked accessor that carries no module
+# identity — and not one goes through `Ctx::state_mut`, which is the surface
+# WS03-S14 refuses at. That is why the flip broke nothing. `Ctx::w` is `pub`, so
+# `ctx.w.module_state_mut::<T>()` is one character longer than
+# `ctx.state_mut::<T>()` and skips the refusal; four of the production rows below
+# take exactly that route. The refusal at `Ctx` is therefore worth having and is
+# NOT a bound on its own: this file is the other half.
+#
+# The shape almost every production row shares is ID ALLOCATION: a caller needs a
+# monotonic id out of the owning module's store (`alloc_account`, `alloc_org`,
+# `alloc_scope`) before it submits that module's own operation. The obvious fix
+# is an owned seam on the owning module rather than a write into its slot; that
+# is a design change and it is still open — WS03-S14 enforced the surface it
+# could without paying for it.
+#
+# `[[site]]` is the static, crate-level half. `[[observed]]` is the runtime,
+# module-level half: pairs the WS03-S8 census RUN actually emitted.
+
+# ---------------------------------------------------------------------------
+# Production reaches
+# ---------------------------------------------------------------------------
+
+[[site]]
+path = "crates/mush-sim/src/journey.rs"
+accessor = "World::module_state_mut"
+slot = "ScenesState"
+owner = "scenes"
+reason = """
+The only cross-module reach that is not an allocator bump. On a journey arrival
+`sim` raises the IC floor of every active scene in the rooms it arrives into, by
+reaching `mush_scenes::ScenesState` through the unchecked world accessor. The
+reach is deliberate (an arrival must not land behind a scene's clock) and it is
+guarded: the site returns early when no scenes module composed. Giving `scenes`
+an owned seam for the floor raise is the real fix.
+"""
+
+[[site]]
+path = "crates/mush-faction/src/econ.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = """
+`@faction/org` allocates an org id and its root scope from `org`'s monotonic
+allocators so both can be created in ONE `CreateOrg` op — the write is the
+allocator bump, and the record itself is still created through `org`'s own
+operation. The site checks the slot exists first and refuses the command when it
+does not.
+"""
+
+[[site]]
+path = "crates/mush-faction/src/econ.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+The same shape one layer over: a faction's org account takes its id from
+`economy`'s account allocator before `mush_economy::open_account` opens it
+through the economy module's own path.
+"""
+
+[[site]]
+path = "crates/ruleset-wod/src/economy/boot.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+The WoD faucet opens a starting account per principal and takes its id from
+`economy`'s allocator; an exhausted allocator is logged and the faucet opens
+nothing. A ruleset reaching the engine economy's store is the widest of these
+reaches and the one WS03-S14 should look at first.
+"""
+
+[[site]]
+path = "crates/ruleset-shadowrun/src/economy/boot.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+The Shadowrun lifestyle boot, same allocator, same shape as the WoD row above.
+"""
+
+[[site]]
+path = "crates/mush-server/src/boot.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+Host wiring, post-composition: the sim registers its account oracle UNWIRED at
+`register` (it has no store yet) and the boot root replaces it with the
+hydrated one, so `+focus` can consult it synchronously inside a world command.
+If the sim did not compose, the slot is absent and every consumer fails closed.
+A module cannot do this itself — only the host holds the boot-hydrated identity
+map — so this is the host acting as the composer, not a module reaching sideways.
+"""
+
+[[site]]
+path = "crates/mush-server/src/boot.rs"
+accessor = "World::module_state_mut"
+slot = "PulseConfig"
+owner = "sim"
+reason = """
+The same post-composition device for `[tacsim].ground_pulse_ms` /
+`space_pulse_ms`: the operator's cadence is host configuration, read where the
+config is read and pushed into the sim's slot. Out-of-band values are clamped,
+not refused — a cadence knob must not be able to stop a world booting.
+"""
+
+[[site]]
+path = "crates/mush-server/src/world_task.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = "World-task `#[cfg(test)]` rig: seeds the sim's account oracle on a test world."
+
+[[site]]
+path = "crates/mush-server/src/world_task.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = "World-task `#[cfg(test)]` rig: seeds economy state a durability case then drives."
+
+[[site]]
+path = "crates/mush-server/src/world_task.rs"
+accessor = "World::module_state_mut"
+slot = "NpcHostState"
+owner = "npc"
+reason = "World-task `#[cfg(test)]` rig: seeds NPC host state for an async-completion case."
+
+[[site]]
+path = "crates/mush-server/src/world_task.rs"
+accessor = "World::module_state_mut"
+slot = "SpatialState"
+owner = "sim"
+reason = "World-task `#[cfg(test)]` rig: places objects in the sim's spatial index."
+
+# ---------------------------------------------------------------------------
+# Test rigs that build another module's state by hand
+# ---------------------------------------------------------------------------
+#
+# Each of these composes some modules and then seeds ANOTHER module's slot
+# directly instead of composing it, which is how a harness keeps a case small.
+# They are listed because a test is where a production reach gets prototyped —
+# and because a refusal would turn each of them into a silent no-op, which is
+# the failure this census exists to make impossible to ship.
+
+[[site]]
+path = "crates/mush-campaign/tests/common/mod.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = "Shared campaign harness: wires the sim's account oracle so `+focus` resolves."
+
+[[site]]
+path = "crates/mush-campaign/tests/e7c10.rs"
+accessor = "World::module_state_mut"
+slot = "ControlLeaseView"
+owner = "sim"
+reason = "E7 cut 10: drives the sim's control-lease view to set up a seat case."
+
+[[site]]
+path = "crates/mush-campaign/tests/e7c10.rs"
+accessor = "World::module_state_mut"
+slot = "FocusState"
+owner = "sim"
+reason = "E7 cut 10: sets the sim's focus state a campaign command then reads."
+
+[[site]]
+path = "crates/mush-campaign/tests/e7r2.rs"
+accessor = "World::module_state_mut"
+slot = "JourneyBook"
+owner = "sim"
+reason = "E7 residue 2: seeds the sim's journey book to stage a recovery case."
+
+[[site]]
+path = "crates/mush-campaign/tests/e7r2.rs"
+accessor = "World::module_state_mut"
+slot = "SpatialState"
+owner = "sim"
+reason = "E7 residue 2: places units in the sim's spatial index for the same case."
+
+[[site]]
+path = "crates/mush-economy/tests/e3b2.rs"
+accessor = "World::module_state_mut"
+slot = "OrgStore"
+owner = "org"
+reason = "E3b2: seeds org records the economy case needs without composing `org`."
+
+[[site]]
+path = "crates/mush-propagation/tests/e7c11.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = "E7 cut 11: wires the sim's account oracle for a propagation case."
+
+[[site]]
+path = "crates/mush-propagation/tests/e7c11.rs"
+accessor = "World::module_state_mut"
+slot = "FocusState"
+owner = "sim"
+reason = "E7 cut 11: sets the sim's focus state for the same case."
+
+[[site]]
+path = "crates/mush-propagation/tests/e7c11.rs"
+accessor = "World::module_state_mut"
+slot = "ContactLedgerState"
+owner = "tactics"
+reason = """
+E7 cut 11: seeds the tactics contact ledger. `mush-propagation` deliberately
+READS that ledger in production (`Ctx::state` stays a shared read — the
+projection is the point); only its harness writes it.
+"""
+
+[[site]]
+path = "crates/mush-propagation/tests/e7c7.rs"
+accessor = "World::module_state_mut"
+slot = "ContactLedgerState"
+owner = "tactics"
+reason = "E7 cut 7: the same seeded contact ledger, one cut earlier."
+
+[[site]]
+path = "crates/mush-propagation/tests/e7c7.rs"
+accessor = "World::module_state_mut"
+slot = "SpatialState"
+owner = "sim"
+reason = "E7 cut 7: places emitters and observers in the sim's spatial index."
+
+[[site]]
+path = "crates/mush-server/tests/e4c_bridge.rs"
+accessor = "World::module_state_mut"
+slot = "CanonState"
+owner = "canon"
+reason = "E4c: seeds canon records the bridge case asserts on."
+
+[[site]]
+path = "crates/mush-sim/tests/pulse_contracts/mod.rs"
+accessor = "World::module_state_mut"
+slot = "ContactLedgerState"
+owner = "tactics"
+reason = "The pulse-contract harness seeds the tactics contact ledger a sim pulse then updates."
+
+[[site]]
+path = "crates/mush-sim/tests/e7c6.rs"
+accessor = "World::module_state_mut"
+slot = "ScenesState"
+owner = "scenes"
+reason = """
+The E7 cut 6 harness drives the arrival-floor behaviour of the `journey.rs` row
+above, so it seeds and inspects `scenes`' state from `mush-sim`'s own tests. It
+follows whatever that production reach does; retire it with that reach.
+"""
+
+[[site]]
+path = "crates/mushd/tests/m10c_e2e.rs"
+accessor = "World::module_state_mut"
+slot = "WeatherState"
+owner = "weather"
+reason = "M10c end-to-end: forces a weather cell so the rendered line is deterministic."
+
+[[site]]
+path = "crates/ruleset-wod/tests/e5c.rs"
+accessor = "World::module_state_mut"
+slot = "SimState"
+owner = "faction"
+reason = "E5c: seeds the faction simulation state a WoD economy case reacts to."
+
+# ---------------------------------------------------------------------------
+# Slots seeded with no owner at all
+# ---------------------------------------------------------------------------
+#
+# `World::module_state_insert` records no owner, so every site of it is listed
+# whether or not the type resolves to a declared slot. All of them are test
+# code: no production slot in the tree is seeded without a `Registrar::state`
+# declaration, which is what makes the unowned case a policy hole rather than a
+# live one.
+
+[[site]]
+path = "crates/mush-core/tests/module_api.rs"
+accessor = "World::module_state_insert"
+slot = "SeededSlot"
+owner = ""
+reason = """
+WS03-S8's own case: `a_slot_with_no_stateinit_owner_is_reported_as_unowned`
+seeds a slot nobody declared, exactly the way `on_world_loaded` is sanctioned
+to, and proves the boot NAMES it instead of refusing it.
+"""
+
+[[site]]
+path = "crates/mush-npc/src/query.rs"
+accessor = "World::module_state_insert"
+slot = "host"
+owner = ""
+reason = """
+`#[cfg(test)]` rig inside the intel query module: `world_with_intel` seeds the
+npc module's own intel host onto a bare world instead of composing the module.
+Test-only, and the slot is the npc module's own.
+"""
+
+[[site]]
+path = "crates/mush-npc/src/query.rs"
+accessor = "World::module_state_insert"
+slot = "faction_state"
+owner = ""
+reason = """
+The same `#[cfg(test)]` rig seeds a `mush_faction::FactionState` so a clearance
+gate can be exercised without composing the faction module. That world holds a
+faction slot with NO owner — open to all, and named at boot by
+`Engine::warn_unowned_state_slots` in any composition that does this outside a
+test.
+"""
+
+[[site]]
+path = "crates/mush-npc/tests/agents.rs"
+accessor = "World::module_state_insert"
+slot = "fs"
+owner = ""
+reason = """
+The agent suite builds faction state by hand and installs it on the rig's world
+(two sites, one row) so faction-gated NPC behaviour can be driven without the
+faction module.
+"""
+
+[[site]]
+path = "crates/mush-npc/tests/agents.rs"
+accessor = "World::module_state_insert"
+slot = "mush_faction"
+owner = ""
+reason = """
+The same suite's "faction state present, faction destroyed" case installs a
+default `mush_faction::FactionState`. Unowned for the same reason as the row
+above.
+"""
+
+# ---------------------------------------------------------------------------
+# Observed foreign writes (the census run)
+# ---------------------------------------------------------------------------
+#
+# EMPTY, and measured rather than assumed. The census RUN was
+# `cargo test --workspace --no-fail-fast` plus
+# `cargo test -p mush-sim --features testkit`, with the report teed to a file:
+# 291 test targets, and the ONLY two lines it emitted were `mush-core`'s own
+# `module_api` cases — the synthetic two-module engine where `b` writes `a`'s
+# slot, and the deliberately seeded unowned slot. Nothing else in the workspace
+# wrote a foreign slot through `Ctx::state_mut`, and no composed world carried an
+# unowned slot at boot.
+#
+# So WS03-S14's refusal, now live, broke nothing that runs today. This list must
+# stay EMPTY: a pair here is a write that is REFUSED rather than excused, and the
+# test says so. What the refusal does not reach is the 25 `[[site]]` rows above,
+# every one of which goes around `Ctx` through `World::module_state_mut`.

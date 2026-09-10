@@ -8,14 +8,14 @@ use mush_proto::{OutputEvent, RichText};
 use crate::attr::{AttrFlags, AttrValue};
 use crate::cmd::{CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Role};
-use crate::matchit::{MatchErr, match_object};
-use crate::module::{HookPoint, perceives_via_action_state};
+use crate::matchit::{MatchErr, is_nearby, match_object};
+use crate::module::{HookPoint, perceives_via};
 use crate::obj::{ObjId, ObjKind};
 use crate::output::{Outbox, name_span};
 use crate::perm;
 use crate::world::World;
 
-use super::{attr_text, show_room_with_action_state};
+use super::{attr_text, show_room};
 
 fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let q = ctx.args.raw().to_string();
@@ -28,25 +28,45 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.show_room(ctx.actor, loc);
         return Ok(());
     }
+    // `#123` and `*name` resolve globally in `match_object`; the name pools it
+    // searches are already local. Only those two spellings need the locality
+    // test, and they get it here rather than in the resolver, which must stay
+    // global for `@tel`/`@link`.
+    let global_spelling = {
+        let t = q.trim();
+        t.starts_with('#') || t.starts_with('*')
+    };
     match match_object(ctx.w, ctx.actor, &q) {
         // M11 per-observer projection: a target the looker cannot perceive
         // (a cloaked vampire) resolves to nothing — true silence, so `look
         // <name>` and `look #dbref` cannot probe a concealed subject. The
         // looker always perceives themselves. Free pass with no Perceive hook,
         // so this is identical to today for a game without concealment.
-        Ok(target) if target == ctx.actor || ctx.can_perceive(ctx.actor, target) => {
+        //
+        // Locality on top of that: a dbref or `*name` naming something out of
+        // reach reads nothing unless the looker could examine it anyway (its
+        // controller, or staff holding `EXAMINE_ALL`), so walking `#0..#N`
+        // cannot pull descs and room views out of the database.
+        Ok(target)
+            if (target == ctx.actor || ctx.can_perceive(ctx.actor, target))
+                && (!global_spelling
+                    || is_nearby(ctx.w, ctx.actor, target)
+                    || perm::can_examine(ctx.w, ctx.actor, target)) =>
+        {
             look_at(
                 ctx.reg,
                 ctx.w,
                 ctx.actor,
                 target,
                 ctx.out,
-                ctx.typed_state.store(),
+                ctx.typed_state.lens(),
             );
             Ok(())
         }
-        // A matched-but-imperceptible target falls through exactly like a name
-        // that matched nothing: the `detail:` keyword fallback, then NoMatch.
+        // A matched-but-imperceptible or matched-but-distant target falls
+        // through exactly like a name that matched nothing: the `detail:`
+        // keyword fallback, then the byte-identical NoMatch refusal. No
+        // existence oracle either way.
         Ok(_) | Err(MatchErr::NoMatch) => {
             // `look <keyword>`: room details stored as `detail:<keyword>`
             // attributes on the room (inheritable), then on the looker.
@@ -78,11 +98,11 @@ fn look_at(
     looker: ObjId,
     target: ObjId,
     out: &mut Outbox,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let Some(o) = w.get(target) else { return };
     if o.kind == ObjKind::Room {
-        show_room_with_action_state(reg, w, looker, target, out, action_state);
+        show_room(reg, w, looker, target, out, lens);
         return;
     }
     let desc =
@@ -107,12 +127,12 @@ fn look_at(
                 .is_some_and(|co| !co.flags.intersects(Flags::GOING | Flags::DARK))
                 // M11 per-observer projection: never list an occupant the
                 // looker cannot perceive (free pass with no Perceive hook).
-                && perceives_via_action_state(
+                && perceives_via(
                     reg.hooks(HookPoint::Perceive),
                     w,
                     looker,
                     c,
-                    action_state,
+                    lens,
                 )
             {
                 text = text.text(" ").span(name_span(w, c));
@@ -215,8 +235,18 @@ fn examine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             AttrValue::Text(s) => s.clone(),
             AttrValue::Json(v) => v.to_string(),
         };
-        ctx.out
-            .info(ctx.actor, format!("{name} [{}]: {value}", attr.owner));
+        // The setter, then whatever flags the attribute carries — the
+        // examiner has to be able to see that `@set/flag` landed.
+        let flags = attr.flags.names();
+        let flags = if flags.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", flags.join(" "))
+        };
+        ctx.out.info(
+            ctx.actor,
+            format!("{name} [{}{flags}]: {value}", attr.owner),
+        );
     }
     // M11 per-observer projection: `examine` dumps raw contents (offline
     // players included), so it must also drop occupants the examiner cannot
@@ -270,10 +300,12 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
             switches: vec!["all".into()],
             help: "examine[/all] [<target>]  --  Full technical view of an object \
                    you control (or may examine): id, type, flags, owner, zone, \
-                   parent, locks, and attributes. Defaults to yourself. HIDDEN \
-                   attributes only show with /all; SELF_ONLY attributes show only \
-                   to the object itself and staff. On objects you may not examine, \
-                   only the owner is shown."
+                   parent, locks, and attributes. Defaults to yourself. Each \
+                   attribute shows its setter and its flags in brackets \
+                   (`@set/flag` writes those). HIDDEN attributes only show with \
+                   /all; SELF_ONLY attributes show only to the object itself and \
+                   staff; WIZARD_ONLY ones only to staff. On objects you may not \
+                   examine, only the owner is shown."
                 .into(),
             ..CommandSpec::default()
         },

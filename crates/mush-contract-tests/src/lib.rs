@@ -1371,6 +1371,8 @@ impl ActionWindowProvider {
             ActionWindowError::CapacityReached { .. }
             | ActionWindowError::InputOperationLimit
             | ActionWindowError::ReceiptLimit
+            // WS03-S3: the byte budget is a bound like the other three.
+            | ActionWindowError::RecordBytes { .. }
             | ActionWindowError::OrderKeyTooLong { .. }
             | ActionWindowError::RevisionExhausted => ActionErrorCode::BoundsExceeded,
             _ => ActionErrorCode::ProviderRejected,
@@ -2230,9 +2232,55 @@ pub fn toy_rules_value(definition: DefinitionRef, data: Value) -> RulesValue {
 mod tests {
     use super::*;
     use mush_core::{
-        ActionProviderPrepareError, OfferExecutionContext, OfferKeyRing, OfferSubmission,
-        ProjectedLegalAction, ProjectionScopeId, RevisionSet,
+        ActionProviderPrepareError, AuthoritativeBundle, AuthoritativeBundleDraft,
+        DurableOutboxIntent, OfferExecutionContext, OfferKeyRing, OfferSubmission,
+        PreparedAuthoritativeAction, PreparedTxn, ProjectedLegalAction, ProjectionScopeId,
+        ReplayWrite, RevisionSet,
     };
+
+    /// Wrap one already-prepared toy action and its provider output in the
+    /// complete exact-token bundle the staging lane requires. The prepared
+    /// transaction is deliberately left intact: the caller stages it.
+    fn toy_bundle_for(
+        prepared: &PreparedTxn,
+        output: PreparedAuthoritativeAction,
+        invocation: &ActionInvocation,
+        action: DefinitionRef,
+        token: CommitToken,
+    ) -> AuthoritativeBundle {
+        let provider = prepared.owner().clone();
+        let (outcome, resolution, mut definitions, mut witnesses, mut outbox, events) =
+            output.into_parts();
+        definitions.push(action.clone());
+        definitions.push(outcome.schema().clone());
+        definitions.sort();
+        definitions.dedup();
+        if witnesses.is_empty() {
+            witnesses.push(invocation.principal().clone());
+        }
+        witnesses.sort();
+        witnesses.dedup();
+        outbox.sort_by_key(DurableOutboxIntent::ordinal);
+        AuthoritativeBundle::new(AuthoritativeBundleDraft {
+            token,
+            request: invocation.request(),
+            idempotency: invocation.idempotency().clone(),
+            ingress_hash: CanonicalHash::from_bytes([0x61; 32]),
+            request_hash: invocation.request_hash(),
+            plan_hash: CanonicalHash::from_bytes([0x62; 32]),
+            action,
+            provider,
+            cause: PreparedCausalRef::new(invocation.request(), None, 0).expect("root cause"),
+            definitions,
+            writes: prepared.authoritative_replay_writes(),
+            outcome,
+            resolution: resolution.map(|resolution| resolution.bind(token)),
+            semantic_events: events,
+            eligible_witnesses: witnesses,
+            durable_outbox: outbox,
+        })
+        .expect("the toy provider output forms an authoritative bundle")
+    }
 
     fn bootstrap_focus(
         world: &mut TestWorld,
@@ -2640,9 +2688,10 @@ mod tests {
         let invocation = toy_brace_invocation(mush_core::GOD, 11, RequestUid::from_bytes([1; 16]));
         let brace = toy_definitions().brace;
 
-        let prepared = world
+        let token = toy_prepare_token();
+        let (prepared, output) = world
             .engine_mut()
-            .prepare_registered_action(&brace, &invocation)
+            .prepare_registered_authoritative_action(&brace, &invocation, token)
             .expect("brace prepares");
         assert_eq!(prepared.operation_count(), 2);
         assert_eq!(prepared.records().len(), 2);
@@ -2681,9 +2730,10 @@ mod tests {
             .unwrap()
             .finish()
             .unwrap();
+        let bundle = toy_bundle_for(&prepared, output, &invocation, brace.clone(), token);
         world
             .engine_mut()
-            .stage_prepared_action(prepared, guards)
+            .stage_authoritative_action(prepared, guards, bundle.clone())
             .expect("clean action step stages");
         assert!(
             world.take_module_ops().is_empty(),
@@ -2694,14 +2744,27 @@ mod tests {
             .take_staged_action()
             .expect("final guard validation succeeds")
             .expect("driver receives prepared action");
-        let (persistence, installation) = staged.into_parts();
-        let mush_core::StagedActionPersistence::Legacy(ops) = persistence else {
-            panic!("K2 compatibility staging must use the legacy persistence lane");
-        };
-        assert_eq!(ops.len(), 2);
+        let (staged_bundle, installation) = staged.into_parts();
+        assert_eq!(
+            *staged_bundle, bundle,
+            "the driver receives the exact bundle that was staged"
+        );
+        let written: Vec<String> = bundle
+            .writes()
+            .iter()
+            .map(|write| match write {
+                ReplayWrite::ModuleJsonSet { key, .. } => key.as_str().to_owned(),
+                other => panic!("the brace writes typed action-state records only: {other:?}"),
+            })
+            .collect();
+        assert_eq!(written.len(), 2, "one typed write per prepared record");
         assert!(
-            ops.iter()
-                .all(|op| matches!(op.op, mush_core::ModuleWrite::JsonSet { .. }))
+            written[0].contains("/focus/"),
+            "the root's own record comes first: {written:?}"
+        );
+        assert!(
+            written[1].contains("/guarded/"),
+            "the same-commit trigger's record comes second: {written:?}"
         );
 
         world

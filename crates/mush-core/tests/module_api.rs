@@ -18,12 +18,13 @@ use mush_core::module::{
 };
 use mush_core::{
     ActionError, ActionInvocation, ActionProvider, AliasOutcome, AliasStage, ArgShape,
-    AuthorityGuard, AuthorityGuardKind, AuthorityGuardValidator, BridgeDescriptor, CanonicalId,
-    CmdError, CommandSpec, Ctx, DefinitionDescriptor, DefinitionDigest, DefinitionId,
-    DefinitionKey, DefinitionKind, DefinitionRef, DefinitionValidationContext, GOD, IncidentId,
-    IncidentState, LIMBO, MAX_BOOT_REPORT_DETAILS, MigrationPlanSummary, ModuleBootReport, ObjId,
-    ObjKind, Outbox, OwnerId, RecoveryIncidentSummary, RecoveryReason, RecoveryScope,
-    RecoverySeverity, Registry, RevisionKey, RevisionKind, RevisionValidator, SubjectKey, World,
+    AuthorityGuard, AuthorityGuardKind, AuthorityGuardValidator, BehaviorCommand, BehaviorId,
+    BehaviorSpec, BehaviorTarget, BridgeDescriptor, CanonicalId, CmdError, CommandSpec, Ctx,
+    DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKey, DefinitionKind,
+    DefinitionRef, DefinitionValidationContext, GOD, IncidentId, IncidentState, LIMBO,
+    MAX_BOOT_REPORT_DETAILS, MigrationPlanSummary, ModuleBootReport, ObjId, ObjKind, Outbox,
+    OwnerId, RecoveryIncidentSummary, RecoveryReason, RecoveryScope, RecoverySeverity, Registry,
+    RevisionKey, RevisionKind, RevisionValidator, StateSlotDenied, SubjectKey, World,
     register_core_commands, register_engine_commands,
 };
 use mush_proto::{InputMode, NarrativeKind, OutputEvent, PanelFrameKind, PromptSpec, RichText};
@@ -874,6 +875,469 @@ fn duplicate_state_slot_across_modules_fails_boot() {
     let engine =
         Engine::with_modules(World::new_minimal(), Registry::new(), vec![Box::new(C)]).unwrap();
     assert_eq!(engine.world.module_state::<ToyState>().unwrap().bumps, 7);
+}
+
+// ----------------------------------------------------------------------
+// WS03-S8 / WS03-S14: state-slot ownership, enforced
+// ----------------------------------------------------------------------
+
+/// Both ownership tests that read the log run under a thread-scoped
+/// subscriber, and `tracing` registers a callsite lazily on its first hit:
+/// while exactly one dispatcher is registered it evaluates that callsite's
+/// interest against the *registering thread's* default subscriber, so a
+/// sibling hitting the refusal first on a thread with no subscriber would
+/// cache it as never-enabled and the capturing test would see nothing.
+/// Serialising them removes the interleaving (the shape `mush-config`'s
+/// `ipc_endpoint_validation.rs` documents).
+static CENSUS_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn census_serialized() -> std::sync::MutexGuard<'static, ()> {
+    CENSUS_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A `MakeWriter` collecting formatted log lines into a shared buffer.
+#[derive(Clone, Default)]
+struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl LogCapture {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().expect("log buffer")).into_owned()
+    }
+}
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log buffer").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+    type Writer = LogCapture;
+    fn make_writer(&'a self) -> LogCapture {
+        self.clone()
+    }
+}
+
+/// Run `f` with a scoped subscriber; return its result and what it logged.
+fn with_captured_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
+    let capture = LogCapture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(capture.clone())
+        .finish();
+    let out = tracing::subscriber::with_default(subscriber, f);
+    (out, capture.text())
+}
+
+/// The slot module `a` declares.
+#[derive(Clone, Debug, Default)]
+struct OwnedSlot(u32);
+
+/// The slot module `b` declares, in this very same crate.
+#[derive(Clone, Debug, Default)]
+struct PeerSlot(u32);
+
+/// A slot nobody declares — seeded straight onto the world.
+#[derive(Clone, Debug, Default)]
+struct SeededSlot(u32);
+
+/// Module `a`: declares [`OwnedSlot`] and bumps its own slot at boot.
+struct SlotOwner;
+
+impl GameModule for SlotOwner {
+    fn name(&self) -> &'static str {
+        "a"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.state(OwnedSlot::default());
+        Ok(())
+    }
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        _data: ModuleBootData,
+    ) -> Result<(), ModError> {
+        ctx.try_state_mut::<OwnedSlot>()
+            .expect("its own slot is never refused")
+            .expect("its own slot is installed")
+            .0 += 1;
+        Ok(())
+    }
+}
+
+/// What a module saw when it reached for a slot it does not own.
+#[derive(Default)]
+struct PoachReport {
+    /// The refusal `try_state_mut` returned (`None` if it was allowed).
+    denied: Option<StateSlotDenied>,
+    /// Whether `state_mut` handed out a live `&mut` — it must not.
+    state_mut_was_live: bool,
+    /// What the poacher could still READ: reading stays shared.
+    read: Option<u32>,
+    /// The value it wrote into a slot it DOES own, if it owns one.
+    own_slot: Option<u32>,
+}
+
+/// Module `b`: mutates `a`'s slot at boot. `declare_own` makes it a module
+/// with state of its own — the same crate, a different owner.
+struct SlotPoacher {
+    declare_own: bool,
+    report: Arc<std::sync::Mutex<PoachReport>>,
+}
+
+impl SlotPoacher {
+    fn new(declare_own: bool) -> (Self, Arc<std::sync::Mutex<PoachReport>>) {
+        let report = Arc::new(std::sync::Mutex::new(PoachReport::default()));
+        (
+            Self {
+                declare_own,
+                report: Arc::clone(&report),
+            },
+            report,
+        )
+    }
+}
+
+impl GameModule for SlotPoacher {
+    fn name(&self) -> &'static str {
+        "b"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        if self.declare_own {
+            reg.state(PeerSlot::default());
+        }
+        Ok(())
+    }
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        _data: ModuleBootData,
+    ) -> Result<(), ModError> {
+        let read = ctx.state::<OwnedSlot>().map(|s| s.0);
+        // Twice, because the refusal is reported once per (module, slot) and
+        // refused every time.
+        let mut denied = None;
+        for _ in 0..2 {
+            match ctx.try_state_mut::<OwnedSlot>() {
+                Ok(slot) => {
+                    if let Some(slot) = slot {
+                        slot.0 += 10;
+                    }
+                }
+                Err(err) => denied = Some(err),
+            }
+        }
+        let mut state_mut_was_live = false;
+        if let Some(slot) = ctx.state_mut::<OwnedSlot>() {
+            slot.0 += 100;
+            state_mut_was_live = true;
+        }
+        let own_slot = if self.declare_own {
+            ctx.try_state_mut::<PeerSlot>()
+                .expect("its own slot is never refused")
+                .map(|slot| {
+                    slot.0 += 5;
+                    slot.0
+                })
+        } else {
+            None
+        };
+        *self.report.lock().expect("the report") = PoachReport {
+            denied,
+            state_mut_was_live,
+            read,
+            own_slot,
+        };
+        Ok(())
+    }
+}
+
+/// **The refusal.** A module mutating another module's slot is refused —
+/// `try_state_mut` returns `Err(StateSlotDenied { requester, owner, .. })`,
+/// `state_mut` returns `None`, and the mutation does NOT land. Before
+/// WS03-S14 it got a live `&mut` and the write stuck.
+///
+/// The refusal is loud in three places at once, because a denial is invisible
+/// at the call site (`if let Some(s) = ctx.state_mut::<T>()` becomes a
+/// no-op): the typed error, one log line per (module, slot), and the record
+/// on the world.
+#[test]
+fn a_foreign_module_cannot_mutate_another_modules_slot() {
+    let _serial = census_serialized();
+    let (poacher, report) = SlotPoacher::new(false);
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SlotOwner), Box::new(poacher)],
+    )
+    .expect("two modules, one slot declaration");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    let (loaded, logs) = with_captured_logs(|| {
+        engine.modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+    });
+    loaded.expect("a refused write must not fail the boot");
+
+    // `a`'s own bump, and nothing of `b`'s three attempts.
+    assert_eq!(
+        engine.world.module_state::<OwnedSlot>().expect("slot").0,
+        1,
+        "a foreign write must not land"
+    );
+    let report = report.lock().expect("the report");
+    let denied = report.denied.clone().expect("b must be refused");
+    assert_eq!(denied.requester.as_str(), "b");
+    assert_eq!(denied.owner.as_str(), "a");
+    assert!(denied.slot.ends_with("OwnedSlot"), "{:?}", denied.slot);
+    assert!(
+        denied.to_string().contains("OwnedSlot"),
+        "the refusal names the slot: {denied}"
+    );
+    assert!(
+        !report.state_mut_was_live,
+        "state_mut must not hand out a foreign slot"
+    );
+    // A's write is visible to BOTH modules' reads: reading stays shared.
+    assert_eq!(report.read, Some(1), "reading a foreign slot is allowed");
+    assert_eq!(
+        engine.world.module_state::<OwnedSlot>().map(|s| s.0),
+        Some(1)
+    );
+
+    // Recorded once, naming b — and a writing its OWN slot is not recorded.
+    let refused = engine.world.refused_state_writes();
+    assert_eq!(refused.len(), 1, "one pair, thrice attempted: {refused:?}");
+    assert_eq!(refused[0].0.as_str(), "b");
+    assert!(
+        refused[0].1.ends_with("OwnedSlot"),
+        "the record names the slot: {:?}",
+        refused[0].1
+    );
+    let refusals = logs.matches("foreign state-slot write REFUSED").count();
+    assert_eq!(
+        refusals, 1,
+        "one line per (module, slot), not one per attempt: {logs}"
+    );
+    assert!(logs.contains("module=b"), "{logs}");
+    assert!(logs.contains("owner=a"), "{logs}");
+    assert!(logs.contains("OwnedSlot"), "{logs}");
+}
+
+/// Ownership is by MODULE, not by crate: `b` lives in this very file
+/// alongside `a` and declares a slot of its own, and is still refused `a`'s.
+/// The crate-level half of the enforcement — `mush-contract-tests`'
+/// `state-slot-owners.toml` scan — cannot see this boundary at all, which is
+/// why the runtime check exists beside it.
+#[test]
+fn two_modules_in_one_crate_are_checked_separately() {
+    // Hits the same refusal `error!` callsite the capturing test above reads;
+    // see `census_serialized` for why the two may not interleave.
+    let _serial = census_serialized();
+    let (poacher, report) = SlotPoacher::new(true);
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SlotOwner), Box::new(poacher)],
+    )
+    .expect("two modules in one crate, one slot each");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect("boot");
+
+    let report = report.lock().expect("the report");
+    assert_eq!(
+        report.own_slot,
+        Some(5),
+        "a module's own slot is always writable"
+    );
+    let denied = report.denied.clone().expect("b must still be refused a's");
+    assert_eq!(
+        (denied.requester.as_str(), denied.owner.as_str()),
+        ("b", "a")
+    );
+    assert_eq!(
+        engine.world.module_state::<OwnedSlot>().map(|s| s.0),
+        Some(1),
+        "same crate, different module: still refused"
+    );
+    assert_eq!(
+        engine.world.module_state::<PeerSlot>().map(|s| s.0),
+        Some(5)
+    );
+    assert_eq!(
+        engine
+            .world
+            .module_state_owner(std::any::TypeId::of::<PeerSlot>())
+            .map(SmolStr::as_str),
+        Some("b"),
+        "one crate, two owners"
+    );
+}
+
+/// A core command — `module: None` — is a wildcard: the engine's own
+/// commands are not a module and are refused nothing.
+#[test]
+fn core_commands_keep_slot_access() {
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SlotOwner)],
+    )
+    .expect("one module composes");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect("boot");
+
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).expect("core commands register");
+    let mut out = Outbox::new();
+    let mut ctx = Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &reg,
+        module: None,
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    ctx.try_state_mut::<OwnedSlot>()
+        .expect("a core command is a wildcard")
+        .expect("the slot is installed")
+        .0 += 9;
+
+    assert_eq!(
+        engine.world.module_state::<OwnedSlot>().map(|s| s.0),
+        Some(10),
+        "a core command's write lands"
+    );
+    assert!(
+        engine.world.refused_state_writes().is_empty(),
+        "a wildcard is not a refusal: {:?}",
+        engine.world.refused_state_writes()
+    );
+}
+
+/// A slot seeded only through `World::module_state_insert` has no owner —
+/// there is nobody to refuse for — so it stays mutable by every module.
+/// That is today's behaviour and the hole ownership cannot see through,
+/// which is why boot NAMES those slots (the test below) instead of
+/// pretending they are owned.
+#[test]
+fn an_unowned_slot_stays_open() {
+    /// Bumps a slot nobody declared, and records what it got.
+    struct SeedWriter(Arc<std::sync::Mutex<Option<Result<u32, StateSlotDenied>>>>);
+    impl GameModule for SeedWriter {
+        fn name(&self) -> &'static str {
+            "b"
+        }
+        fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            Ok(())
+        }
+        fn on_world_loaded(
+            &mut self,
+            ctx: &mut ModuleCtx<'_>,
+            _data: ModuleBootData,
+        ) -> Result<(), ModError> {
+            let got = ctx.try_state_mut::<SeededSlot>().map(|slot| {
+                slot.map_or(0, |slot| {
+                    slot.0 += 4;
+                    slot.0
+                })
+            });
+            *self.0.lock().expect("the report") = Some(got);
+            Ok(())
+        }
+    }
+
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SlotOwner), Box::new(SeedWriter(Arc::clone(&seen)))],
+    )
+    .expect("two modules compose");
+    // Seeded before boot, exactly as `on_world_loaded` is sanctioned to do.
+    engine.world.module_state_insert(SeededSlot(3));
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect("boot");
+
+    assert_eq!(
+        seen.lock().expect("the report").clone(),
+        Some(Ok(7)),
+        "an unowned slot is open to a module that did not declare it"
+    );
+    assert_eq!(
+        engine.world.module_state::<SeededSlot>().map(|s| s.0),
+        Some(7),
+        "and the write lands"
+    );
+    assert!(
+        engine.world.refused_state_writes().is_empty(),
+        "no owner, no refusal"
+    );
+}
+
+/// A slot seeded only through `World::module_state_insert` (which
+/// `on_world_loaded` is explicitly sanctioned to use) has no owner. Boot
+/// NAMES it rather than refusing it, because an unowned slot is the hole
+/// ownership cannot see through.
+#[test]
+fn a_slot_with_no_stateinit_owner_is_reported_as_unowned() {
+    let _serial = census_serialized();
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SlotOwner)],
+    )
+    .expect("one module composes");
+    engine.world.module_state_insert(SeededSlot(3));
+
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    let (loaded, logs) = with_captured_logs(|| {
+        engine.modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+    });
+    loaded.expect("an unowned slot must never refuse the boot");
+
+    assert!(
+        engine
+            .world
+            .module_state_owner(std::any::TypeId::of::<SeededSlot>())
+            .is_none(),
+        "a slot nobody declared resolves to no owner"
+    );
+    let unowned = engine.world.unowned_state_slots();
+    assert!(
+        unowned.iter().any(|n| n.ends_with("SeededSlot")),
+        "{unowned:?}"
+    );
+    assert!(
+        !unowned.iter().any(|n| n.ends_with("OwnedSlot")),
+        "a declared slot is owned: {unowned:?}"
+    );
+    assert!(logs.contains("no declaring module"), "{logs}");
+    assert!(logs.contains("SeededSlot"), "{logs}");
+    // Still readable, and the slot is unchanged.
+    assert_eq!(
+        engine.world.module_state::<SeededSlot>().expect("slot").0,
+        3
+    );
+    // Every declared slot resolves to exactly one owner.
+    for slot in engine.world.module_state_slots() {
+        if slot.type_name.ends_with("OwnedSlot") {
+            assert_eq!(slot.owner.as_deref(), Some("a"), "{slot:?}");
+        }
+    }
 }
 
 /// Duplicate module names would merge persistence namespaces and clobber
@@ -2348,6 +2812,375 @@ fn deferred_persist_rides_the_outbox_side_channel() {
 }
 
 // ----------------------------------------------------------------------
+// WS03-A1: cross-namespace module writes
+// ----------------------------------------------------------------------
+
+/// A module writing its OWN namespace is the fast path: the op lands and
+/// nothing is refused.
+#[test]
+fn a_module_persisting_into_its_own_namespace_is_untouched() {
+    let mut world = World::new_minimal();
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).unwrap();
+    let mut out = Outbox::new();
+    let mut ctx = Ctx {
+        w: &mut world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &reg,
+        module: Some("toy".into()),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    ctx.persist(ModuleOp {
+        ns: "toy".into(),
+        op: ModuleWrite::Del { key: "gone".into() },
+    });
+    assert_eq!(out.deferred().len(), 1);
+    assert!(
+        world.refused_namespace_writes().is_empty(),
+        "a module's own namespace is not a cross-namespace write"
+    );
+}
+
+/// An undeclared foreign namespace is REFUSED: the op is dropped, nothing is
+/// queued, and the pair is recorded once however many writes it took.
+#[test]
+fn an_undeclared_foreign_namespace_persist_is_refused_and_nothing_is_queued() {
+    let mut world = World::new_minimal();
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).unwrap();
+    let mut out = Outbox::new();
+    let mut ctx = Ctx {
+        w: &mut world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &reg,
+        module: Some("housing".into()),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    for key in ["job:1", "job:2"] {
+        ctx.persist(ModuleOp {
+            ns: "jobs".into(),
+            op: ModuleWrite::Del { key: key.into() },
+        });
+    }
+    assert!(
+        out.deferred().is_empty(),
+        "a refused write queues nothing at all"
+    );
+    assert_eq!(
+        world.refused_namespace_writes(),
+        vec![("housing".into(), "jobs".into(), None)],
+        "one row per (module, namespace), however many writes it took"
+    );
+}
+
+/// A core command carries no module identity, and is a wildcard here exactly
+/// as it is for state slots.
+#[test]
+fn a_core_command_is_a_namespace_wildcard() {
+    let mut world = World::new_minimal();
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).unwrap();
+    let mut out = Outbox::new();
+    let mut ctx = Ctx {
+        w: &mut world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &reg,
+        module: None,
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    ctx.persist(ModuleOp {
+        ns: "jobs".into(),
+        op: ModuleWrite::Del {
+            key: "job:1".into(),
+        },
+    });
+    assert_eq!(out.deferred().len(), 1);
+    assert!(world.refused_namespace_writes().is_empty());
+}
+
+/// Composition records `namespace -> owning module`: a module's name IS its
+/// namespace, and a namespace only a migration set names belongs to the
+/// module that registered it. A namespace nobody claims stays absent.
+#[test]
+fn composition_records_the_namespace_owner_of_every_module() {
+    let (engine, _nick) = setup();
+    assert_eq!(
+        engine.registry.namespace_owner("toy").map(SmolStr::as_str),
+        Some("toy")
+    );
+    // ToyModule registers migrations for a namespace of its own name only;
+    // nothing claims a namespace no module is called after.
+    assert_eq!(engine.registry.namespace_owner("jobs"), None);
+    let owners = engine.registry.namespace_owners();
+    assert!(
+        owners
+            .iter()
+            .any(|(ns, module)| ns == "toy" && module == "toy"),
+        "{owners:?} should claim the toy namespace for the toy module"
+    );
+}
+
+// -- the delegation, end to end ---------------------------------------------
+
+/// A module that owns a namespace nobody else may write undeclared.
+struct VaultModule;
+
+impl GameModule for VaultModule {
+    fn name(&self) -> &'static str {
+        "vault"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        Ok(())
+    }
+}
+
+/// A producing module that writes the vault's namespace — declared, the way
+/// housing declares its reach into `jobs`.
+struct ClerkModule;
+
+impl GameModule for ClerkModule {
+    fn name(&self) -> &'static str {
+        "clerk"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        reg.persist_delegation(
+            "clerk",
+            "vault",
+            "the vault's deposit API takes the caller's Ctx",
+        )?;
+        reg.command(
+            CommandSpec {
+                name: "+deposit".into(),
+                shape: ArgShape::None,
+                help: "test: write a vault document".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                ctx.persist(ModuleOp {
+                    ns: "vault".into(),
+                    op: ModuleWrite::Del {
+                        key: "deposit".into(),
+                    },
+                });
+                Ok(())
+            }),
+        )
+    }
+}
+
+/// The same reach, undeclared.
+struct ThiefModule;
+
+impl GameModule for ThiefModule {
+    fn name(&self) -> &'static str {
+        "thief"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        reg.command(
+            CommandSpec {
+                name: "+withdraw".into(),
+                shape: ArgShape::None,
+                help: "test: write a vault document without a delegation".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                ctx.persist(ModuleOp {
+                    ns: "vault".into(),
+                    op: ModuleWrite::Del {
+                        key: "withdrawal".into(),
+                    },
+                });
+                Ok(())
+            }),
+        )
+    }
+}
+
+fn vault_engine() -> (Engine, ObjId) {
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let nick = world
+        .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+        .unwrap();
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    let engine = Engine::with_modules(
+        world,
+        registry,
+        vec![
+            Box::new(VaultModule),
+            Box::new(ClerkModule),
+            Box::new(ThiefModule),
+        ],
+    )
+    .expect("three modules compose");
+    (engine, nick)
+}
+
+/// **A declared delegation still persists.** This is the case the refusal
+/// exists to keep working: the producing module's write into the owning
+/// module's namespace lands exactly as it did before.
+#[test]
+fn a_declared_delegation_still_persists() {
+    let (mut engine, nick) = vault_engine();
+    run(&mut engine, nick, "+deposit");
+    let ops = engine.take_module_ops();
+    assert_eq!(ops.len(), 1, "the declared write lands");
+    assert_eq!(ops[0].ns, "vault");
+    assert!(
+        engine.world.refused_namespace_writes().is_empty(),
+        "a declared delegation is not a refusal"
+    );
+}
+
+/// **An undeclared one is dropped**, and says so once.
+#[test]
+fn an_undeclared_reach_into_another_modules_namespace_is_dropped() {
+    let (mut engine, nick) = vault_engine();
+    run(&mut engine, nick, "+withdraw");
+    assert!(
+        engine.take_module_ops().is_empty(),
+        "the undeclared write must not reach the write batch"
+    );
+    assert_eq!(
+        engine.world.refused_namespace_writes(),
+        vec![("thief".into(), "vault".into(), Some("vault".into()))],
+        "the refusal names the writer, the namespace and its owner"
+    );
+}
+
+/// The delegation is a PAIR, declared by one of the two modules it names: a
+/// module cannot declare somebody else's pair, cannot "delegate" to its own
+/// namespace, and cannot declare the same pair twice.
+#[test]
+fn a_delegation_is_declared_by_a_party_to_it_exactly_once() {
+    struct Meddler(&'static str, &'static str, &'static str);
+
+    impl GameModule for Meddler {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+            reg.persist_delegation(self.1, self.2, "test")?;
+            reg.persist_delegation(self.1, self.2, "test again")
+        }
+    }
+
+    // A pair naming neither the declaring module as writer nor as owner.
+    let third_party = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Meddler("nosy", "clerk", "vault"))],
+    );
+    assert!(
+        third_party
+            .err()
+            .expect("a third party may not declare a pair")
+            .to_string()
+            .contains("neither")
+    );
+
+    // A module "delegating" to its own namespace is not a cross-namespace
+    // write at all.
+    let self_pair = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Meddler("clerk", "clerk", "clerk"))],
+    );
+    assert!(
+        self_pair
+            .err()
+            .expect("a module's own namespace needs no delegation")
+            .to_string()
+            .contains("needs no delegation")
+    );
+
+    // The same pair twice: the first declaration wins, the second is a
+    // conflict.
+    let twice = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(Meddler("clerk", "clerk", "vault"))],
+    );
+    assert!(
+        twice
+            .err()
+            .expect("a pair is declared once")
+            .to_string()
+            .contains("persist delegation")
+    );
+}
+
+/// A BOOT-phase write gets no exemption: `on_world_loaded` runs with the same
+/// module identity a command does, so a module reaching into another module's
+/// namespace at boot is the same cross-namespace write and is refused the
+/// same way.
+#[test]
+fn a_boot_phase_write_is_checked_like_any_other() {
+    struct BootRaider;
+
+    impl GameModule for BootRaider {
+        fn name(&self) -> &'static str {
+            "raider"
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+            Ok(())
+        }
+        fn on_world_loaded(
+            &mut self,
+            ctx: &mut ModuleCtx<'_>,
+            _data: ModuleBootData,
+        ) -> Result<(), ModError> {
+            // Its own namespace: fine.
+            ctx.persist(ModuleOp {
+                ns: "raider".into(),
+                op: ModuleWrite::Del { key: "mine".into() },
+            });
+            // The vault's: refused, boot or not.
+            ctx.persist(ModuleOp {
+                ns: "vault".into(),
+                op: ModuleWrite::Del {
+                    key: "not-mine".into(),
+                },
+            });
+            Ok(())
+        }
+    }
+
+    let mut engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(VaultModule), Box::new(BootRaider)],
+    )
+    .expect("two modules compose");
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect("a refused write must not fail the boot");
+    let ops = engine.take_module_ops();
+    assert_eq!(ops.len(), 1, "only the module's own boot write lands");
+    assert_eq!(ops[0].ns, "raider");
+    assert_eq!(
+        engine.world.refused_namespace_writes(),
+        vec![("raider".into(), "vault".into(), Some("vault".into()))]
+    );
+}
+
+// ----------------------------------------------------------------------
 // Scenes
 // ----------------------------------------------------------------------
 
@@ -2778,4 +3611,564 @@ fn j1_boot_data_normalizes_ledger_keys_to_text() {
     data.normalize();
     assert_eq!(data.ledger.len(), 2, "idempotent");
     assert_eq!(data.fetch_ms, 0, "a rig measures no fetch");
+}
+
+// ----------------------------------------------------------------------
+// fu3-4: a global verb may not capture a behavior verb
+// ----------------------------------------------------------------------
+//
+// A behavior's contextual commands are consulted only after the global
+// command table misses (`cmd.rs`: the behavior stage runs on
+// `LookupErr::NotFound`). So a global verb that resolves the same word wins
+// forever and the behavior verb is dead with nothing logged. `register_behavior`
+// refuses the forward order at registration; `Engine::compose_modules` refuses
+// BOTH orders at the composition freeze point, which is the order-independent
+// half.
+
+fn shadow_noop(_ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    Ok(())
+}
+
+fn shadow_noop_behavior(_ctx: &mut Ctx<'_>, _target: &BehaviorTarget) -> Result<(), CmdError> {
+    Ok(())
+}
+
+/// A module owning one behavior that declares `verbs` as contextual commands.
+struct ShadowBehaviorMod {
+    name: &'static str,
+    id: &'static str,
+    verbs: Vec<&'static str>,
+}
+
+impl GameModule for ShadowBehaviorMod {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        let mut spec = BehaviorSpec::new(BehaviorId::new(self.id).expect("valid behavior id"));
+        for verb in &self.verbs {
+            spec = spec.with_command(BehaviorCommand::new(
+                CommandSpec {
+                    name: (*verb).into(),
+                    shape: ArgShape::None,
+                    ..CommandSpec::default()
+                },
+                Arc::new(shadow_noop_behavior),
+            ));
+        }
+        reg.behavior(spec)
+    }
+}
+
+/// A module owning `verbs` in the GLOBAL command table.
+struct ShadowGlobalMod {
+    name: &'static str,
+    verbs: Vec<&'static str>,
+}
+
+impl GameModule for ShadowGlobalMod {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+        for verb in &self.verbs {
+            reg.command(
+                CommandSpec {
+                    name: (*verb).into(),
+                    shape: ArgShape::None,
+                    ..CommandSpec::default()
+                },
+                Arc::new(shadow_noop),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn turret(verbs: Vec<&'static str>) -> Box<dyn GameModule> {
+    Box::new(ShadowBehaviorMod {
+        name: "gunnery",
+        id: "test.turret",
+        verbs,
+    })
+}
+
+fn sprinklers(verbs: Vec<&'static str>) -> Box<dyn GameModule> {
+    Box::new(ShadowGlobalMod {
+        name: "sprinklers",
+        verbs,
+    })
+}
+
+/// The reverse order `register_behavior` cannot see: the behavior composes
+/// first (nothing to collide with yet), then a later module registers the same
+/// bare global. Before the freeze-point pass this composed cleanly and the
+/// behavior's `fire` was permanently unreachable with no log line.
+#[test]
+fn a_global_verb_composed_after_a_behavior_verb_is_refused() {
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![turret(vec!["fire"]), sprinklers(vec!["fire"])],
+    )
+    .err()
+    .expect("a global capturing a behavior verb must fail composition");
+    let text = error.to_string();
+    assert!(text.contains("shadowed"), "{text}");
+    assert!(text.contains("\"fire\""), "{text}");
+    assert!(text.contains("gunnery"), "the behavior's owner: {text}");
+    assert!(
+        text.contains("sprinklers"),
+        "the capturing global's owner: {text}"
+    );
+}
+
+/// The property the `register_tagged` placement could not have had: the same
+/// roster composed the other way round is refused too, naming the same verb and
+/// the same two modules. (This direction trips `register_behavior`'s earlier,
+/// better-localised diagnostic first — the refusal, not its wording, is what is
+/// order-independent.)
+#[test]
+fn the_reverse_module_order_is_refused_identically() {
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![sprinklers(vec!["fire"]), turret(vec!["fire"])],
+    )
+    .err()
+    .expect("the reverse order must fail composition too");
+    let text = error.to_string();
+    assert!(text.contains("fire"), "{text}");
+    assert!(text.contains("gunnery"), "the behavior's owner: {text}");
+    assert!(
+        text.contains("sprinklers"),
+        "the capturing global's owner: {text}"
+    );
+}
+
+/// Dispatch resolves a bare verb by unique prefix, so a longer global name eats
+/// a shorter behavior verb just as an exact hit would. The pass asks
+/// `lookup_idx`, the same resolver, so this falls out rather than being
+/// re-derived.
+#[test]
+fn a_global_name_that_prefix_captures_a_behavior_verb_is_refused() {
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![turret(vec!["fire"]), sprinklers(vec!["firewall"])],
+    )
+    .err()
+    .expect("a prefix-capturing global must fail composition");
+    let text = error.to_string();
+    assert!(text.contains("shadowed"), "{text}");
+    assert!(text.contains("firewall"), "{text}");
+}
+
+/// `@`-prefixed globals are exempt from prefix matching (`lookup_idx` refuses to
+/// prefix-match a name starting with `@` or `+`), so `@fire` never reaches a
+/// bare `fire` and the roster composes — in either order.
+#[test]
+fn an_at_prefixed_global_does_not_shadow_a_bare_behavior_verb() {
+    Engine::compose_modules(
+        Registry::new(),
+        vec![turret(vec!["fire"]), sprinklers(vec!["@fire"])],
+    )
+    .expect("an @-prefixed global cannot capture a bare behavior verb");
+    Engine::compose_modules(
+        Registry::new(),
+        vec![sprinklers(vec!["@fire"]), turret(vec!["fire"])],
+    )
+    .expect("nor in the other composition order");
+}
+
+/// Two bare globals sharing the behavior verb as a prefix make the verb
+/// AMBIGUOUS at dispatch — the global stage refuses it and never falls through
+/// to the behavior stage, so the behavior command is just as dead. The
+/// diagnostic lists the candidates.
+#[test]
+fn an_ambiguous_prefix_is_refused_with_the_candidate_list() {
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![
+            turret(vec!["fire"]),
+            sprinklers(vec!["firewall", "firearm"]),
+        ],
+    )
+    .err()
+    .expect("an ambiguous global prefix must fail composition");
+    let text = error.to_string();
+    assert!(text.contains("ambiguous"), "{text}");
+    assert!(
+        text.contains("firewall") && text.contains("firearm"),
+        "{text}"
+    );
+}
+
+// ----------------------------------------------------------------------
+// The typed-state lens (WS03-S7)
+// ----------------------------------------------------------------------
+
+/// A `Perceive` hook that answers PURELY from whether its read context can
+/// reach live typed state: it conceals when it cannot.
+///
+/// That is the inverse of a real ruleset hook, and deliberately so. A hook
+/// that reads a typed family (WoD's Obfuscate cache is the live example)
+/// abstains — the wrong answer, silently — when the context has no store. The
+/// old API let a production caller reach that state by typing the *shorter*
+/// name: `can_perceive` passed `None`, its longer twin passed the store, and
+/// nothing made a caller choose. This probe turns that silent wrong answer
+/// into a loud one: a store-less call on any of the three production paths
+/// below hides Bob outright.
+struct TypedStateProbeHook;
+
+impl EventHook for TypedStateProbeHook {
+    fn perceives(
+        &self,
+        ctx: &HookReadContext<'_>,
+        _observer: ObjId,
+        _subject: ObjId,
+    ) -> mush_core::module::Perceive {
+        if ctx.typed_state_available() {
+            mush_core::module::Perceive::Abstain
+        } else {
+            mush_core::module::Perceive::Conceal
+        }
+    }
+
+    fn is_concealed(&self, ctx: &HookReadContext<'_>, _subject: ObjId) -> bool {
+        !ctx.typed_state_available()
+    }
+}
+
+/// Composes the probe hook plus one command that reports what the *`Ctx`*
+/// surface sees, so the module-facing predicates are covered as well as the
+/// engine-facing ones.
+struct ProbeModule {
+    observer: ObjId,
+    subject: ObjId,
+}
+
+impl GameModule for ProbeModule {
+    fn name(&self) -> &'static str {
+        "probe"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+        reg.hook(HookPoint::Perceive, Arc::new(TypedStateProbeHook));
+        let (observer, subject) = (self.observer, self.subject);
+        reg.command(
+            CommandSpec {
+                name: "+probe".into(),
+                shape: ArgShape::None,
+                help: "+probe -- report the Ctx perception surface.".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let perceives = ctx.can_perceive(observer, subject);
+                let concealed = ctx.is_concealed(subject);
+                let actor = ctx.actor;
+                ctx.out.info(
+                    actor,
+                    format!("perceives={perceives} concealed={concealed}"),
+                );
+                Ok(())
+            }),
+        )
+    }
+}
+
+/// Every room name a `look`-shaped outbox rendered, with its contents.
+fn room_contents(out: &Outbox) -> Vec<(String, Vec<String>)> {
+    out.events()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            OutputEvent::Room(rv) => Some((
+                rv.name.clone(),
+                rv.contents.iter().map(|r| r.name.clone()).collect(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// WS03-S7. The perception gate must see the LIVE typed-state snapshot on
+/// every path production can reach it by — the `look` render, the arrival
+/// render a move produces, and the `Ctx` predicates a module calls — and a
+/// deliberately detached lens must still give the store-less answer.
+///
+/// Before the collapse each of those paths had two spellings, and the
+/// store-less one was the shorter, more reachable name. This test would have
+/// caught any of them regressing to it: the probe conceals Bob the moment a
+/// context loses its store, and concealment is the *wrong perception answer*,
+/// not a degraded one.
+#[test]
+fn a_perceive_hook_sees_live_typed_state_on_every_production_path() {
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let hall = world.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+    let vault = world.create(ObjKind::Room, "Vault", GOD, None).unwrap();
+    let alice = world
+        .create(ObjKind::Player, "Alice", GOD, Some(hall))
+        .unwrap();
+    let bob = world
+        .create(ObjKind::Player, "Bob", GOD, Some(hall))
+        .unwrap();
+    let carol = world
+        .create(ObjKind::Player, "Carol", GOD, Some(vault))
+        .unwrap();
+    for who in [alice, bob, carol] {
+        world.set_connected(who, true);
+    }
+    let door = world
+        .create(ObjKind::Exit, "north;n", GOD, Some(hall))
+        .unwrap();
+    world.link_exit(door, Some(vault)).unwrap();
+
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    let mut engine = Engine::with_modules(
+        world,
+        registry,
+        vec![Box::new(ProbeModule {
+            observer: alice,
+            subject: bob,
+        })],
+    )
+    .unwrap();
+
+    // Path 1 — the `look` room render (output::room_view under Ctx::show_room).
+    let out = run(&mut engine, alice, "look");
+    let rendered = room_contents(&out);
+    assert!(
+        rendered
+            .iter()
+            .any(|(room, contents)| room == "Hall" && contents.iter().any(|name| name == "Bob")),
+        "the look render must carry the live store, so the probe abstains: {rendered:?}"
+    );
+
+    // Path 2 — the per-target examine gate (commands::look's can_perceive).
+    let out = run(&mut engine, alice, "look Bob");
+    assert!(
+        !sys_texts(&out)
+            .iter()
+            .any(|line| line.contains("don't see")),
+        "looking at a visible player must not be refused: {:?}",
+        sys_texts(&out)
+    );
+
+    // Path 3 — the module-facing `Ctx` predicates.
+    let out = run(&mut engine, alice, "+probe");
+    assert_eq!(
+        sys_texts(&out),
+        vec!["perceives=true concealed=false".to_string()],
+        "Ctx::can_perceive / Ctx::is_concealed must read the command's live lens"
+    );
+
+    // Path 4 — the arrival render a move produces (movement::traverse_exit).
+    let out = run(&mut engine, alice, "north");
+    let rendered = room_contents(&out);
+    assert!(
+        rendered
+            .iter()
+            .any(|(room, contents)| room == "Vault" && contents.iter().any(|name| name == "Carol")),
+        "the arrival render must carry the live store too: {rendered:?}"
+    );
+
+    // And the other side of the lens: an explicitly detached call still gets
+    // the store-less verdict, which is what makes the paths above meaningful.
+    assert!(
+        mush_core::can_perceive(
+            &engine.registry,
+            &engine.world,
+            alice,
+            bob,
+            mush_core::TypedStateLens::Live(engine.action_state()),
+        ),
+        "a live lens abstains"
+    );
+    assert!(
+        !mush_core::can_perceive(
+            &engine.registry,
+            &engine.world,
+            alice,
+            bob,
+            mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
+        ),
+        "a detached lens conceals — the answer the store-less twin used to hand out"
+    );
+    assert!(
+        mush_core::is_concealed(
+            &engine.registry,
+            &engine.world,
+            bob,
+            mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
+        ),
+        "and the notability query answers the same way"
+    );
+}
+
+// ----------------------------------------------------------------------
+// The async-completion path (WS03-S13)
+// ----------------------------------------------------------------------
+
+/// The typed value the async probe below reads back.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WardState {
+    charges: u8,
+}
+
+type WardHandle = mush_core::StateFamilyHandle<u64, WardState>;
+
+/// A module whose [`AsyncCompletion`] handler READS a typed family and reports
+/// what it saw.
+///
+/// `apply_async_completion` was one of the fourteen twins WS03-S13 collapsed:
+/// the store-less spelling was the shorter, more reachable name, so a caller
+/// that dropped the store handed the handler a `Ctx` whose family read failed
+/// outright — not a stale value, no value at all. This module makes that
+/// failure observable: the handler prints the charge count it read, or the
+/// error it got instead.
+struct WardModule {
+    handle: Arc<std::sync::Mutex<Option<WardHandle>>>,
+    completion: Arc<WardCompletion>,
+}
+
+struct WardCompletion {
+    handle: Arc<std::sync::Mutex<Option<WardHandle>>>,
+}
+
+impl mush_core::module::AsyncCompletion for WardCompletion {
+    fn on_complete(&self, ctx: &mut Ctx<'_>, correlation: u64, _payload: &str) {
+        let guard = self.handle.lock().expect("ward handle mutex");
+        let handle = guard.as_ref().expect("the family registered at compose");
+        let line = match ctx.action_state(handle, &correlation) {
+            Ok(Some(state)) => format!("charges={}", state.charges),
+            Ok(None) => "no-record".to_string(),
+            Err(error) => format!("unreadable: {error}"),
+        };
+        let actor = ctx.actor;
+        ctx.out.info(actor, line);
+    }
+}
+
+impl GameModule for WardModule {
+    fn name(&self) -> &'static str {
+        "ward"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+        let descriptor = mush_core::StateFamilyDescriptor::new(
+            mush_core::StateFamilyId::new("wards").expect("static family id"),
+            CanonicalId::new("u64.decimal.v1").expect("static codec id"),
+            CanonicalId::new("ward_state.v1").expect("static schema id"),
+            1,
+            CanonicalId::new("ward_state.decode_json.v1").expect("static decoder id"),
+            CanonicalId::new("ward_state.range.v1").expect("static validator id"),
+            CanonicalId::new("ward_state.json.v1").expect("static serializer id"),
+        )
+        .expect("static state-family descriptor");
+        let handle = reg.state_family(
+            descriptor,
+            |key: &u64| Ok(key.to_string()),
+            |value: &serde_json::Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
+            |_value: &WardState| Ok(()),
+            |value: &WardState| Ok(json!({ "charges": value.charges })),
+        )?;
+        *self.handle.lock().expect("ward handle mutex") = Some(handle);
+        reg.async_completion(
+            Arc::clone(&self.completion) as Arc<dyn mush_core::module::AsyncCompletion>
+        )
+    }
+}
+
+/// WS03-S13. The async-completion route is a production dispatch path: the
+/// engine routes [`WorldCommand::ModuleAsyncDone`] to the module's handler with
+/// a `Ctx`, and that `Ctx` must carry the LIVE typed-state snapshot. It used to
+/// have two spellings — `apply_async_completion` passing `None` beside a longer
+/// twin passing the store — and the short one was the easy one to reach.
+///
+/// The probe reads a seeded typed family, so the difference is not cosmetic: on
+/// the engine's own path it reads `charges=3`; called with an explicitly
+/// detached lens it cannot read the family at all.
+#[test]
+fn an_async_completion_hook_sees_live_typed_state() {
+    let handle_cell: Arc<std::sync::Mutex<Option<WardHandle>>> = Arc::default();
+    let composition = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(WardModule {
+            handle: Arc::clone(&handle_cell),
+            completion: Arc::new(WardCompletion {
+                handle: Arc::clone(&handle_cell),
+            }),
+        })],
+    )
+    .expect("the ward module composes");
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let mut engine = Engine::from_composition(world, composition);
+    let handle = handle_cell
+        .lock()
+        .expect("ward handle mutex")
+        .clone()
+        .expect("composition registered the family");
+
+    // Seed one live record under correlation 7 through the public transaction
+    // surface, so the read below has something real to find.
+    let installation = {
+        let mut txn = engine
+            .action_transaction(&handle)
+            .expect("the ward family opens a transaction");
+        txn.insert(&handle, &7, WardState { charges: 3 })
+            .expect("the seed insert is accepted");
+        let (_, installation) = txn
+            .prepare()
+            .expect("the seed transaction prepares")
+            .into_parts();
+        installation
+    };
+    engine
+        .install_prepared_action(installation)
+        .expect("the seed installs");
+
+    // The production path: the engine's own `ModuleAsyncDone` routing.
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.step(
+        Inbound::Apply(mush_core::WorldCommand::ModuleAsyncDone {
+            module: SmolStr::new("ward"),
+            actor: GOD,
+            correlation: 7,
+            payload: "{}".into(),
+        }),
+        &mut out,
+        &mut fx,
+    );
+    assert_eq!(
+        sys_texts(&out),
+        vec!["charges=3".to_string()],
+        "the engine's async-completion routing must hand the handler the live store"
+    );
+
+    // And the other side of the lens: named detachment, and only named
+    // detachment, takes the family away.
+    let mut out = Outbox::new();
+    mush_core::module::apply_async_completion(
+        &engine.registry,
+        &mut engine.world,
+        &mut out,
+        SmolStr::new("ward"),
+        GOD,
+        7,
+        "{}",
+        mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
+    );
+    let detached = sys_texts(&out);
+    assert!(
+        detached.len() == 1 && detached[0].starts_with("unreadable:"),
+        "a detached lens must leave the family unreadable, not silently empty: {detached:?}"
+    );
 }

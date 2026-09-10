@@ -145,6 +145,21 @@ async fn authoritative_contract_retention_generation() {
 }
 
 #[tokio::test]
+async fn authoritative_contract_number_shaped_post_images() {
+    suite::authoritative_number_shaped_post_image_round_trips(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn authoritative_contract_finalize_survives_renormalisation() {
+    suite::authoritative_finalize_survives_a_renormalised_post_image(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn authoritative_contract_checkpoint_accepts_renormalisation() {
+    suite::authoritative_checkpoint_accepts_a_renormalised_post_image(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn module_kv_round_trip() {
     suite::module_kv_round_trip(&InMemoryStore::new()).await;
 }

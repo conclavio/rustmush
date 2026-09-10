@@ -494,6 +494,39 @@ fn cmd_claim(
                  <priority>/<term seconds>/<transferable|bound>",
             ));
         }
+        // ---- The issuer gate, layer 1: BEFORE the world mutation ----
+        //
+        // `ctx.w.create` and `issue_title` below both write, and they run before
+        // `submit` ever reaches the provider. A gate that lived only on the
+        // prepared path would therefore mint an orphan `Thing` and an E4 title on
+        // every refusal — an object-creation DoS any player could drive in a
+        // loop. So the authority is tested here first, on the same predicate the
+        // projection's `Choice` is built from
+        // ([`crate::provider::issuable_authorities`]), and the refusal is the
+        // byte-identical `NO_SUCH_CLAIM` an unreadable claim renders: naming an
+        // authority you may not speak for is refused exactly as naming one that
+        // does not exist is.
+        let issuer = crate::provider::parse_principal(parts[0].trim())
+            .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
+        // Nobody issues their own tenure, staff included: an issuer is an
+        // authority *over* the ground, and "because I say so" is not one.
+        //
+        // For a non-staff filer the predicate is the **whole** of
+        // `issuable_authorities`, organization kind included, not just its
+        // `acts_for` half. `acts_for` is true of any `Object` the actor MUSH-
+        // controls ([`mush_core::perm::controls`] — anything it owns, or its
+        // owner owns), and layer 2 offers organizations only; a layer 1 that
+        // tested `acts_for` alone would therefore wave a controlled `Thing`
+        // through, mint the claim object, and only then be refused downstream —
+        // the object-creation loop this layer exists to close, made
+        // self-sustaining by the fact that each minted claim is itself owned by
+        // the filer.
+        let issuable = staff
+            || (matches!(issuer, PrincipalId::Organization(_))
+                && mush_economy::acts_for(ctx.w, ctx.actor, &issuer));
+        if issuer == PrincipalId::Object(ctx.actor) || !issuable {
+            return Err(CmdError::msg(NO_SUCH_CLAIM));
+        }
         let holder = crate::provider::parse_principal(parts[1].trim())
             .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
         // The claim's **titled world object**: created and titled here, on E4's
@@ -527,15 +560,21 @@ fn cmd_claim(
             }
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         }
-        let term = ctx.w.world_ic_now();
+        // WS02-A2: the offer declares `term` as an INTEGER, so what goes on the
+        // wire is the absolute IC second the tenure expires at, not a
+        // `ClockStamp` object — that shape was refused `InvalidParameters` by
+        // `ProjectedParameterSchema::validate` before the provider ever ran, so
+        // no filing could land. `term_field` rebuilds the stamp against the
+        // offer's own fixed `now`, whose generation is this same tick's.
         let term_secs: i64 = parts[4].trim().parse().unwrap_or(0);
-        let term = mush_core::ClockStamp {
-            clock: term.clock,
-            at: term.at.saturating_add(term_secs),
-        };
+        let term = ctx.w.world_ic_now().at.saturating_add(term_secs);
         let parameters = json!({
             "subject": lhs,
-            "issuer": parts[0].trim(),
+            // The **canonical** token, not the raw text: the projection's
+            // `Choice` is spelled by `principal_token`, so `org:007` typed at the
+            // keyboard has to reach `resolve_legal_action` as `org:7` or the
+            // player's own offer refuses their own submission.
+            "issuer": mush_economy::principal_token(&issuer).as_str(),
             "holder": parts[1].trim(),
             "object": object.0,
             "exclusivity": parts[2].trim(),
@@ -1126,7 +1165,7 @@ fn cmd_wo(
             .next()
             .map(str::to_owned)
             .unwrap_or_else(|| format!("obj:{}", ctx.actor.0));
-        let Some((recipe_ref, pinned)) = recipes.resolve(ctx.w, &pack, version, &recipe_id) else {
+        let Some((_recipe_ref, pinned)) = recipes.resolve(ctx.w, &pack, version, &recipe_id) else {
             // Fog + fail-closed: an unknown or retired recipe is indistinguishable.
             return Err(CmdError::msg("No such recipe."));
         };
@@ -1187,15 +1226,17 @@ fn cmd_wo(
         }
         let pinned_json = serde_json::to_string(&pinned)
             .map_err(|_| CmdError::msg("that recipe could not be pinned"))?;
+        // WS02-S5: `facility_slots`, `capacity_revision`, `policy_revision` and
+        // `digest` are gone. `IndustryVerb::WoDraft`'s projection no longer
+        // declares them, so `ProjectedParameterSchema::validate` would refuse this
+        // submission for naming a key the offer does not carry — and the provider
+        // reads all four out of the offer's own books, which is the point: this
+        // command's copy of them was only ever a suggestion.
         let params = json!({
             "facility": facility.0,
-            "facility_slots": facility_rec.maximum_slots(),
-            "capacity_revision": facility_rec.capacity_revision(),
-            "policy_revision": facility_rec.policy_revision(),
             "pack": pack.as_str(),
             "version": version,
             "recipe": recipe_id.as_str(),
-            "digest": recipe_ref.digest().to_hex(),
             "quantity": quantity,
             "account": account,
             "source": source,
@@ -1250,6 +1291,27 @@ fn cmd_wo(
                 return Err(CmdError::msg(
                     "that work order's recipe has drifted; redraft it.",
                 ));
+            }
+            // ---- WS02-S5b: the drift the digest check cannot see ----
+            //
+            // Both re-checks above compare the DIGEST, and `wo_deliver` mints
+            // `order.pinned().outputs()`. A draft whose pack was republished with
+            // lines its digest does not cover — and a draft written before
+            // WS02-S5 bound the pin to the offer's books — carries an honest
+            // digest beside lines the authority never published, so it passes
+            // every check on this path and mints off the pin. The comparison
+            // needs the authority AND the record together, which is `reconcile`'s
+            // walk: it marks such drafts (loudly, one line each) and this is where
+            // the mark bites. The refusal is the byte-identical `WO_REFUSED` a
+            // forged pin gets at the prepare, so a forgery and an uncovered
+            // republication read the same to the player; the operator's log line
+            // is where they are told apart, and `@wo/cancel` is the exit.
+            if ctx
+                .w
+                .module_state::<IndustryStore>()
+                .is_some_and(|store| store.drift_cancelled(order.id()).is_some())
+            {
+                return Err(CmdError::msg(crate::provider::WO_REFUSED));
             }
             // ---- E7r1: R1 — the budget hold, placed BEFORE the submit ----
             //

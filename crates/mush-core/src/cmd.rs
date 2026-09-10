@@ -39,7 +39,7 @@ use mush_proto::OutputEvent;
 
 use crate::behavior::{
     BehaviorId, BehaviorRegError, BehaviorResolution, BehaviorSpec, DestroyGate, DestroyPolicy,
-    DetachGate, resolve_behavior_command_with_action_state,
+    DetachGate, resolve_behavior_command,
 };
 use crate::commands::movement;
 use crate::flags::{Powers, Privileges, Role};
@@ -750,6 +750,77 @@ impl Registry {
             .collect()
     }
 
+    /// Refuse a global command that would capture a verb some behavior
+    /// declares (fu3-4). Run **once, after every module has registered** and
+    /// before the composition freezes; the diagnostic names the verb, the
+    /// behavior that declared it and the global that eats it.
+    ///
+    /// [`register_behavior`](Registry::register_behavior) already refuses the
+    /// forward order — a behavior verb declared against a global that exists
+    /// *already* — and stays as the better-localised diagnostic. It cannot see
+    /// the reverse: a global registered by a LATER-composed module against a
+    /// behavior declared by an earlier one registers cleanly, and the behavior
+    /// verb is then permanently dead at dispatch with nothing logged, because
+    /// the command table is consulted first and the behavior stage is reached
+    /// only on [`LookupErr::NotFound`]. This pass is the complete one.
+    ///
+    /// It deliberately does **not** live in
+    /// [`register_tagged`](Registry::register_tagged): checking there would
+    /// make intra-module registration ORDER load-bearing — one module calling
+    /// `reg.behavior(spec)` before its own `reg.command(..)` would be refused
+    /// while the same module with the two calls swapped composed and the verb
+    /// still died. Here the answer is the same whichever order the roster
+    /// composes in.
+    ///
+    /// Resolution is [`lookup_idx`](Registry::lookup_idx) — the same resolver
+    /// dispatch uses — so the exact-hit, unique-prefix and
+    /// [`Ambiguous`](LookupErr::Ambiguous) cases all fall out of it rather than
+    /// being re-derived (and no `behavior_verbs` side map would answer a prefix
+    /// query anyway). A refusal is a hard boot error, not a warning: a verb a
+    /// player can never reach is worse than a boot that says why, and no
+    /// shipped `BehaviorSpec` declares commands today, so the blast radius is
+    /// empty until the control-channel commands land.
+    pub(crate) fn check_behavior_verb_shadowing(&self) -> Result<(), String> {
+        // `behaviors` is a HashMap; sort so a roster with two shadowed verbs
+        // reports the same one every boot.
+        let mut specs: Vec<&BehaviorSpec> = self.behaviors.values().collect();
+        specs.sort_by_key(|spec| spec.id.to_string());
+        for spec in specs {
+            for cmd in &spec.commands {
+                let mut verbs: Vec<String> = vec![cmd.spec.name.to_lowercase()];
+                verbs.extend(cmd.spec.aliases.iter().map(|a| a.to_lowercase()));
+                for verb in verbs {
+                    match self.lookup_idx(&verb) {
+                        Err(LookupErr::NotFound) => {}
+                        Ok(idx) => {
+                            let global = &self.entries[idx];
+                            let owner = global
+                                .module
+                                .clone()
+                                .unwrap_or_else(|| SmolStr::new_static("core"));
+                            return Err(format!(
+                                "behavior command {verb:?} (behavior `{}`, module {}) is shadowed by the global command {:?} owned by {owner}: the global table resolves the verb first, so the behavior command would be dead at dispatch",
+                                spec.id,
+                                spec.owner,
+                                global.spec.name.as_str(),
+                            ));
+                        }
+                        Err(LookupErr::Ambiguous(names)) => {
+                            let names: Vec<&str> = names.iter().map(SmolStr::as_str).collect();
+                            return Err(format!(
+                                "behavior command {verb:?} (behavior `{}`, module {}) is shadowed by an ambiguous global prefix ({}): the global stage refuses the verb before the behavior stage, so the behavior command would be dead at dispatch",
+                                spec.id,
+                                spec.owner,
+                                names.join(", "),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Append a pre-destroy [`DestroyGate`] (design D8), consulted by
     /// [`check_destroy`](Registry::check_destroy) in registration order.
     pub fn add_destroy_gate(&mut self, gate: Arc<dyn DestroyGate>) {
@@ -1052,17 +1123,13 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// Run one input line through the full dispatch pipeline (module docs for
 /// the exact order). All output — including errors and `Huh?` — is queued
 /// on `out`.
-pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &mut Outbox) {
-    dispatch_with_action_state(reg, w, actor, line, out, None);
-}
-
-pub(crate) fn dispatch_with_action_state(
+pub fn dispatch(
     reg: &Registry,
     w: &mut World,
     actor: ObjId,
     line: &str,
     out: &mut Outbox,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     if w.get(actor).is_none() {
         return;
@@ -1100,7 +1167,7 @@ pub(crate) fn dispatch_with_action_state(
                     // context may write its ruleset's attr namespace).
                     module: stacked.module.clone(),
                     typed_state: crate::action_state::ModuleActionState::for_module(
-                        action_state,
+                        lens,
                         stacked.module.as_deref(),
                     ),
                 };
@@ -1117,7 +1184,7 @@ pub(crate) fn dispatch_with_action_state(
                 ContextOutcome::PopAndRun(cmd) => {
                     let spec = restored_prompt(w, actor);
                     out.to_actor(actor, OutputEvent::Prompt(spec));
-                    dispatch_with_action_state(reg, w, actor, &cmd, out, action_state);
+                    dispatch(reg, w, actor, &cmd, out, lens);
                 }
             }
             return;
@@ -1146,16 +1213,8 @@ pub(crate) fn dispatch_with_action_state(
     //    say/pose/… by the prefix expansion, so a gate sees it as a normal
     //    verb it can wave through. Skipped entirely when no gate is
     //    registered (the default) — dispatch is then byte-identical.
-    if !reg.command_gates.is_empty() {
-        let line = cur.trim();
-        let (head, _) = split_head(line);
-        let verb = head.split('/').next().unwrap_or("");
-        for gate in &reg.command_gates {
-            if let Err(reason) = gate.check(w, reg, actor, verb, line) {
-                out.error(actor, reason);
-                return;
-            }
-        }
+    if command_gates_refuse(reg, w, actor, &cur, out) {
+        return;
     }
 
     // 3. Alias stage (comsys seam). Prefix-expanded lines skip it: the
@@ -1165,27 +1224,38 @@ pub(crate) fn dispatch_with_action_state(
     //    player never named. A *typed* "say hello" still offers the alias
     //    stage first, per treaty ruling 5.
     if !prefix_expanded {
+        let mut rewritten = false;
         for entry in &reg.alias_stages {
             match entry.stage.try_alias(w, actor, &cur, out) {
                 AliasOutcome::NotMine => {}
                 AliasOutcome::Handled => return,
                 AliasOutcome::Rewrite(s) => {
                     cur = s;
+                    rewritten = true;
                     break;
                 }
             }
+        }
+        // A rewrite substitutes a DIFFERENT verb for the one step 2 gated,
+        // and everything downstream (home, exits, the command table) acts on
+        // the substitute — so the gates see it too, or the whole gate is one
+        // alias stage away from being defeated. Only on the rewrite path:
+        // with no rewrite (and always with no gate registered) dispatch does
+        // exactly the work it did before.
+        if rewritten && command_gates_refuse(reg, w, actor, &cur, out) {
+            return;
         }
     }
 
     // 4. HOME keyword.
     if cur.trim().eq_ignore_ascii_case("home") {
-        movement::go_home_with_action_state(reg, w, actor, out, action_state);
+        movement::go_home(reg, w, actor, out, lens);
         return;
     }
 
     // 5. Exit match (room → zone → global) against the whole line.
     if let Some(exit) = movement::find_exit(w, actor, cur.trim()) {
-        movement::traverse_exit_with_action_state(reg, w, actor, exit, out, action_state);
+        movement::traverse_exit(reg, w, actor, exit, out, lens);
         return;
     }
 
@@ -1201,7 +1271,7 @@ pub(crate) fn dispatch_with_action_state(
             // missed, so a behavior verb can never shadow a core verb, a staff
             // command, or an exit. The first tier with a match wins; an
             // ambiguous tier refuses and never falls through.
-            match resolve_behavior_command_with_action_state(reg, w, actor, verb, action_state) {
+            match resolve_behavior_command(reg, w, actor, verb, lens) {
                 BehaviorResolution::One { target, index } => {
                     let Some(bspec) = reg.behavior_spec(&target.behavior) else {
                         huh(reg, actor, verb, out);
@@ -1216,17 +1286,9 @@ pub(crate) fn dispatch_with_action_state(
                     {
                         let handler = Arc::clone(&cmd.handler);
                         let module = Some(bspec.owner.clone());
-                        run_handler(
-                            reg,
-                            w,
-                            actor,
-                            switches,
-                            args,
-                            module,
-                            out,
-                            action_state,
-                            |ctx| handler.call(ctx, &target),
-                        );
+                        run_handler(reg, w, actor, switches, args, module, out, lens, |ctx| {
+                            handler.call(ctx, &target)
+                        });
                     }
                     return;
                 }
@@ -1273,17 +1335,9 @@ pub(crate) fn dispatch_with_action_state(
         }
         Ok((spec, handler, module)) => {
             if let Some((args, switches)) = gate_spec(w, actor, spec, &switch_names, rest, out) {
-                run_handler(
-                    reg,
-                    w,
-                    actor,
-                    switches,
-                    args,
-                    module,
-                    out,
-                    action_state,
-                    |ctx| handler.call(ctx),
-                );
+                run_handler(reg, w, actor, switches, args, module, out, lens, |ctx| {
+                    handler.call(ctx)
+                });
             }
         }
     }
@@ -1357,14 +1411,14 @@ fn run_handler(
     args: ParsedArgs,
     module: Option<SmolStr>,
     out: &mut Outbox,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
     body: impl FnOnce(&mut Ctx<'_>) -> Result<(), CmdError>,
 ) {
     let events_before = out.len();
     let deferred_before = out.deferred().len();
     let result = {
         let typed_state =
-            crate::action_state::ModuleActionState::for_module(action_state, module.as_deref());
+            crate::action_state::ModuleActionState::for_module(lens, module.as_deref());
         let mut ctx = Ctx {
             w,
             actor,
@@ -1388,6 +1442,36 @@ fn run_handler(
     }
 }
 
+/// Consult every registered [`CommandGate`] on `line`'s leading verb and the
+/// whole line. `true` means refused — the gate's reason is already queued on
+/// `out` and the caller must stop dispatching.
+///
+/// Skipped entirely when no gate is registered (the default), so dispatch is
+/// byte-identical to the un-gated pipeline. Called twice on the alias path:
+/// once on the prefix-expanded line, once more on the verb an
+/// [`AliasOutcome::Rewrite`] put in its place.
+fn command_gates_refuse(
+    reg: &Registry,
+    w: &World,
+    actor: ObjId,
+    line: &str,
+    out: &mut Outbox,
+) -> bool {
+    if reg.command_gates.is_empty() {
+        return false;
+    }
+    let line = line.trim();
+    let (head, _) = split_head(line);
+    let verb = head.split('/').next().unwrap_or("");
+    for gate in &reg.command_gates {
+        if let Err(reason) = gate.check(w, reg, actor, verb, line) {
+            out.error(actor, reason);
+            return true;
+        }
+    }
+    false
+}
+
 /// Queue the classic `Huh?`, with a fuzzy suggestion when one is close.
 fn huh(reg: &Registry, actor: ObjId, verb: &str, out: &mut Outbox) {
     let mut msg = String::from("Huh?  (Type \"help\" for help.)");
@@ -1399,6 +1483,14 @@ fn huh(reg: &Registry, actor: ObjId, verb: &str, out: &mut Outbox) {
 
 #[cfg(test)]
 mod tests {
+    /// A store-less lens for the dispatch calls below: these tests pin the
+    /// answer a caller gets with no typed state at all, which is exactly what
+    /// the old store-less twin handed out by default.
+    const DETACHED: crate::action_state::TypedStateLens<'static> =
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::Test,
+        );
+
     use super::*;
 
     fn spec(name: &str, shape: ArgShape) -> CommandSpec {
@@ -1550,7 +1642,7 @@ mod tests {
         .unwrap();
         // Ann fails the lock gate before the handler runs.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, ann, "sanctify", &mut out);
+        dispatch(&reg, &mut w, ann, "sanctify", &mut out, DETACHED);
         let texts: Vec<_> = out
             .events()
             .iter()
@@ -1562,7 +1654,7 @@ mod tests {
         assert_eq!(texts, vec!["Permission denied.".to_string()]);
         // God passes.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, GOD, "sanctify", &mut out);
+        dispatch(&reg, &mut w, GOD, "sanctify", &mut out, DETACHED);
         assert!(out.events().iter().any(
             |(_, e)| matches!(e, mush_proto::OutputEvent::Sys(t) if t.to_plain_text() == "Sanctified.")
         ));
@@ -1622,13 +1714,13 @@ mod tests {
 
         // Allowed verb runs.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, ann, "look", &mut out);
+        dispatch(&reg, &mut w, ann, "look", &mut out, DETACHED);
         assert_eq!(plain(&out), vec!["ok-look".to_string()]);
 
         // A non-allowlisted command is refused with the gate's reason; its
         // handler never runs.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, ann, "pose", &mut out);
+        dispatch(&reg, &mut w, ann, "pose", &mut out, DETACHED);
         assert_eq!(plain(&out), vec!["blocked".to_string()]);
     }
 
@@ -1691,12 +1783,101 @@ mod tests {
         // The gate refuses "pub spam" before the alias stage ever sees it: the
         // channel broadcast never happens.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut w, ann, "pub spam", &mut out);
+        dispatch(&reg, &mut w, ann, "pub spam", &mut out, DETACHED);
         assert_eq!(plain(&out), vec!["gated".to_string()]);
         assert!(
             !plain(&out).iter().any(|l| l == "broadcast"),
             "the alias stage must not have run"
         );
+    }
+
+    #[test]
+    fn command_gate_re_runs_after_an_alias_rewrite() {
+        use crate::obj::{GOD, LIMBO, ObjKind};
+        // A gate holding an unapproved character to "+stat", and an alias
+        // stage that rewrites anything else into "@dig x" — the bypass: the
+        // gate saw the ORIGINAL verb, and without a second pass the rewritten
+        // one dispatches ungated.
+        struct OnlyStat;
+        impl CommandGate for OnlyStat {
+            fn check(
+                &self,
+                _w: &World,
+                _reg: &Registry,
+                _actor: ObjId,
+                verb: &str,
+                _line: &str,
+            ) -> Result<(), String> {
+                if verb.eq_ignore_ascii_case("+stat") {
+                    Ok(())
+                } else {
+                    Err("gated".to_string())
+                }
+            }
+        }
+        struct RewriteToDig;
+        impl AliasStage for RewriteToDig {
+            fn try_alias(
+                &self,
+                _w: &mut World,
+                _actor: ObjId,
+                line: &str,
+                _out: &mut Outbox,
+            ) -> AliasOutcome {
+                if line.split_whitespace().next() == Some("+stat") {
+                    AliasOutcome::Rewrite("@dig x".to_string())
+                } else {
+                    AliasOutcome::NotMine
+                }
+            }
+        }
+        let mut w = World::new_minimal();
+        let ann = w.create(ObjKind::Player, "Ann", GOD, Some(LIMBO)).unwrap();
+        let mut reg = Registry::new();
+        reg.register(
+            spec("@dig", ArgShape::Raw),
+            Arc::new(|ctx: &mut Ctx<'_>| {
+                ctx.out.info(ctx.actor, "dug");
+                Ok(())
+            }),
+        )
+        .unwrap();
+        reg.register(
+            spec("+stat", ArgShape::Raw),
+            Arc::new(|ctx: &mut Ctx<'_>| {
+                ctx.out.info(ctx.actor, "stat");
+                Ok(())
+            }),
+        )
+        .unwrap();
+        reg.add_alias_stage(Arc::new(RewriteToDig));
+        reg.add_command_gate(Arc::new(OnlyStat));
+
+        let plain = |out: &Outbox| -> Vec<String> {
+            out.events()
+                .iter()
+                .filter_map(|(_, e)| match e {
+                    mush_proto::OutputEvent::Sys(t) => Some(t.to_plain_text()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // "+stat" passes the first gate pass, the alias stage turns it into
+        // "@dig x", and the second pass refuses THAT verb: the handler never
+        // runs.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, ann, "+stat", &mut out, DETACHED);
+        assert_eq!(plain(&out), vec!["gated".to_string()]);
+        assert!(
+            !plain(&out).iter().any(|l| l == "dug"),
+            "the rewritten verb must not have dispatched"
+        );
+
+        // A line no stage rewrites is gated exactly once, on its own verb.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, ann, "@dig y", &mut out, DETACHED);
+        assert_eq!(plain(&out), vec!["gated".to_string()]);
     }
 
     #[test]

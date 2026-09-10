@@ -11,7 +11,7 @@ use mush_core::{
     OfferSecret, OfferSubmission, OwnerId, PerceivedRef, PrincipalId, ProjectionScopeId,
     RequestUid, ResolutionKeyRing, ResolutionSecret, RevisionSet, ScheduleCatchUpOrder,
     ScheduleDriveCause, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
-    ScopedIdempotencyKey, StagedActionPersistence,
+    ScopedIdempotencyKey,
 };
 use mush_proto::ProjectedActionStatus;
 use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight, SemanticActionStatus};
@@ -219,16 +219,13 @@ async fn commit_toy_window_operation(
         action_guards,
     )
     .unwrap();
-    let (persistence, installation) = world
+    let (bundle, installation) = world
         .engine_mut()
         .take_staged_action()
         .unwrap()
         .expect("window operation staged")
         .into_parts();
-    let bundle = match persistence {
-        StagedActionPersistence::Authoritative(bundle) => *bundle,
-        StagedActionPersistence::Legacy(_) => panic!("window operation used legacy persistence"),
-    };
+    let bundle = *bundle;
     store
         .reserve_authoritative_intent(bundle.clone())
         .await
@@ -509,15 +506,12 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
         action_guards,
     )
     .unwrap();
-    let (persistence, installation) = engine
+    let (bundle, installation) = engine
         .take_staged_action()
         .unwrap()
         .expect("staged action")
         .into_parts();
-    let bundle = match persistence {
-        StagedActionPersistence::Authoritative(bundle) => *bundle,
-        StagedActionPersistence::Legacy(_) => panic!("brace used the legacy persistence lane"),
-    };
+    let bundle = *bundle;
     assert_eq!(bundle.token(), staged.token);
     assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
     assert_eq!(bundle.outcome().data()["revision"], 1);
@@ -661,15 +655,11 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
         action_guards,
     )
     .unwrap();
-    let (persistence, _installation) = restarted
+    let (bundle, _installation) = restarted
         .take_staged_action()
         .unwrap()
         .expect("second staged action")
         .into_parts();
-    let bundle = match persistence {
-        StagedActionPersistence::Authoritative(bundle) => bundle,
-        StagedActionPersistence::Legacy(_) => panic!("brace used the legacy persistence lane"),
-    };
     assert_eq!(bundle.outcome().data()["revision"], 2);
 }
 
@@ -744,16 +734,13 @@ async fn gate_one_offer_is_preflighted_regenerated_and_routed_without_hidden_cli
         )
         .unwrap();
     ActionCoordinator::prepare_and_stage_resolved(permit, world.engine_mut(), resolved).unwrap();
-    let (persistence, installation) = world
+    let (bundle, installation) = world
         .engine_mut()
         .take_staged_action()
         .unwrap()
         .unwrap()
         .into_parts();
-    let bundle = match persistence {
-        StagedActionPersistence::Authoritative(bundle) => *bundle,
-        StagedActionPersistence::Legacy(_) => panic!("resolved offer used legacy persistence"),
-    };
+    let bundle = *bundle;
     assert_eq!(bundle.writes().len(), 2);
     assert_eq!(bundle.outcome().data()["focus"], 2);
     let resolution = bundle.resolution().expect("toy brace records its RNG");
@@ -800,16 +787,13 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         action_guards,
     )
     .unwrap();
-    let (persistence, installation) = world
+    let (bundle, installation) = world
         .engine_mut()
         .take_staged_action()
         .unwrap()
         .expect("toy cascade staged")
         .into_parts();
-    let bundle = match persistence {
-        StagedActionPersistence::Authoritative(bundle) => *bundle,
-        StagedActionPersistence::Legacy(_) => panic!("toy cascade used legacy persistence"),
-    };
+    let bundle = *bundle;
     assert_eq!(bundle.writes().len(), 3);
     assert_eq!(bundle.semantic_events().len(), 2);
     assert_eq!(bundle.semantic_events()[0].kind().as_str(), "brace");
@@ -973,16 +957,13 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         &candidate,
     )
     .unwrap();
-    let (persistence, installation) = restarted
+    let (expiry_bundle, installation) = restarted
         .engine_mut()
         .take_staged_action()
         .unwrap()
         .expect("expiry staged")
         .into_parts();
-    let expiry_bundle = match persistence {
-        StagedActionPersistence::Authoritative(bundle) => *bundle,
-        StagedActionPersistence::Legacy(_) => panic!("expiry used legacy persistence"),
-    };
+    let expiry_bundle = *expiry_bundle;
     assert_eq!(expiry_bundle.writes().len(), 2);
     assert_eq!(
         expiry_bundle.semantic_events()[0].kind().as_str(),

@@ -86,6 +86,19 @@ impl GameModule for Probe {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.state(ProbeQueue::default());
+        // WS03-A1: `+probe` runs the hydration API under THIS module's identity,
+        // which is the point of the rig — it stands in for worldgen, whose
+        // `+build` calls the same API the same way. A write's identity is
+        // whoever's `Ctx` carries it, so the three namespaces that API reaches
+        // are declared here, by the writer, exactly as a real caller declares
+        // its own.
+        for ns in ["atlas", "content", "jobs"] {
+            reg.persist_delegation(
+                "probe",
+                ns,
+                "the test rig calls the atlas's hydration API under its own identity,                  standing in for worldgen's +build",
+            )?;
+        }
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.command(
             CommandSpec {
@@ -427,6 +440,22 @@ fn activation_marks_the_site_hydrated_files_a_build_ticket_and_review_settles_it
         request_of(&tw, &a.id).status,
         RequestStatus::Approved { .. }
     ));
+    // WS03-A1: the approval runs OUR handler under the JOBS module's identity,
+    // so those two record writes cross a namespace. A refused write still
+    // mutates RAM — the two assertions above would pass either way — and only a
+    // reboot would show the site had never left PendingReview in the store.
+    let refused: Vec<String> = tw
+        .world()
+        .refused_namespace_writes()
+        .into_iter()
+        .map(|(module, ns, _)| format!("{module} -> {ns}"))
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "the BUILD route made cross-namespace write(s) that did not land: {refused:?}. \
+         Declare the pair with Registrar::persist_delegation and pin its row in \
+         module-ns-owners.toml."
+    );
     assert_eq!(
         canon_kinds(&tw, &a.id),
         vec![

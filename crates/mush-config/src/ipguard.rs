@@ -7,6 +7,14 @@
 //! method takes an explicit `Instant` (the `*_now` wrappers stamp
 //! `Instant::now()`), so the window math is deterministic under test.
 //!
+//! Failure and connection accounting is keyed on the **network**, not the
+//! address: a client with a routed /64 would otherwise buy a fresh failure
+//! budget and a fresh connection cap for every one of 2^64 addresses. The
+//! guard folds each address to [`IpGuardConfig::v4_prefix`] (default /32 — no
+//! change from per-address for IPv4) and [`IpGuardConfig::v6_prefix`]
+//! (default /64, the smallest unit anyone is routed), and an IPv4-mapped v6
+//! address folds as the IPv4 address it is.
+//!
 //! Sitebans are different: they are staff-set, persisted in the store
 //! (`ban:{ip}`, native TTL on Redis), and expressed in **unix seconds** so
 //! they survive restarts. The guard only mirrors them: the world task loads
@@ -22,7 +30,7 @@
 //! quote it: the gateway to schedule the refresh, the server to tell staff
 //! how long their `@siteban` takes to bite).
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -46,6 +54,13 @@ pub struct IpGuardConfig {
     pub ban: Duration,
     /// Maximum concurrent connections per IP.
     pub max_conns: u32,
+    /// Prefix length an IPv4 address is folded to before it is counted.
+    /// Default 32: one address, one budget, exactly as before.
+    pub v4_prefix: u8,
+    /// Prefix length an IPv6 address is folded to before it is counted.
+    /// Default 64: the smallest block anyone is routed, so a client cannot
+    /// buy a fresh budget by moving one address to the left.
+    pub v6_prefix: u8,
 }
 
 impl Default for IpGuardConfig {
@@ -55,8 +70,24 @@ impl Default for IpGuardConfig {
             window: Duration::from_secs(600),
             ban: Duration::from_secs(900),
             max_conns: 8,
+            v4_prefix: 32,
+            v6_prefix: 64,
         }
     }
+}
+
+/// `addr` with everything below `prefix` bits zeroed (prefix clamped to 32).
+fn mask_v4(addr: Ipv4Addr, prefix: u8) -> Ipv4Addr {
+    let p = u32::from(prefix.min(32));
+    let mask = if p == 0 { 0 } else { u32::MAX << (32 - p) };
+    Ipv4Addr::from(u32::from(addr) & mask)
+}
+
+/// `addr` with everything below `prefix` bits zeroed (prefix clamped to 128).
+fn mask_v6(addr: Ipv6Addr, prefix: u8) -> Ipv6Addr {
+    let p = u32::from(prefix.min(128));
+    let mask = if p == 0 { 0 } else { u128::MAX << (128 - p) };
+    Ipv6Addr::from(u128::from(addr) & mask)
 }
 
 #[derive(Debug, Default)]
@@ -80,6 +111,8 @@ impl IpEntry {
 #[derive(Debug, Default)]
 pub struct IpGuard {
     cfg: IpGuardConfig,
+    /// Failure/connection accounting, keyed on the **folded network** ([`IpGuard::key`]),
+    /// not the exact address.
     map: DashMap<IpAddr, IpEntry>,
     /// Persisted-siteban mirror: ip → expiry (unix seconds; `None` =
     /// permanent). Loaded from the store at boot, updated on `@siteban`.
@@ -109,6 +142,20 @@ impl IpGuard {
         self.cfg
     }
 
+    /// The accounting key for `ip`: the address folded to its configured
+    /// network prefix. An IPv4-mapped v6 address (`::ffff:a.b.c.d`, which is
+    /// what a dual-stack listener reports for an IPv4 peer) is canonicalised
+    /// to its IPv4 form first, so it folds on `v4_prefix` — folding it on
+    /// `v6_prefix` would drop every IPv4 client on earth into one bucket.
+    ///
+    /// Sitebans are NOT keyed on this: a `ban:{ip}` row means that address.
+    fn key(&self, ip: IpAddr) -> IpAddr {
+        match ip.to_canonical() {
+            IpAddr::V4(v4) => IpAddr::V4(mask_v4(v4, self.cfg.v4_prefix)),
+            IpAddr::V6(v6) => IpAddr::V6(mask_v6(v6, self.cfg.v6_prefix)),
+        }
+    }
+
     /// Whether `ip` is currently tempbanned. Expired bans are cleared as a
     /// side effect.
     ///
@@ -121,7 +168,7 @@ impl IpGuard {
         if self.siteban_active_at(ip, crate::unix_now_s()) {
             return true;
         }
-        let Some(mut e) = self.map.get_mut(&ip) else {
+        let Some(mut e) = self.map.get_mut(&self.key(ip)) else {
             return false;
         };
         if let Some(until) = e.banned_until {
@@ -139,10 +186,12 @@ impl IpGuard {
         self.is_blocked_at(ip, Instant::now())
     }
 
-    /// Record one auth failure. Returns `true` when this failure crossed the
-    /// threshold and started a tempban.
+    /// Record one auth failure against `ip`'s network. Returns `true` when
+    /// this failure crossed the threshold and started a tempban — which
+    /// blocks every address in that network, not just this one.
     pub fn record_failure_at(&self, ip: IpAddr, now: Instant) -> bool {
-        let mut e = self.map.entry(ip).or_default();
+        let net = self.key(ip);
+        let mut e = self.map.entry(net).or_default();
         let window = self.cfg.window;
         e.failures
             .retain(|&t| now.saturating_duration_since(t) < window);
@@ -150,7 +199,7 @@ impl IpGuard {
         if e.failures.len() >= self.cfg.max_failures as usize {
             e.failures.clear();
             e.banned_until = Some(now + self.cfg.ban);
-            tracing::warn!(%ip, ban_s = self.cfg.ban.as_secs(), "auth failures exceeded; tempban");
+            tracing::warn!(%ip, %net, ban_s = self.cfg.ban.as_secs(), "auth failures exceeded; tempban");
             true
         } else {
             false
@@ -163,9 +212,10 @@ impl IpGuard {
     }
 
     /// Count a new connection from `ip`. Returns `false` (and does not
-    /// count it) when the IP is already at its cap.
+    /// count it) when `ip`'s network is already at its cap — the cap is
+    /// shared by every address behind one prefix.
     pub fn conn_opened(&self, ip: IpAddr) -> bool {
-        let mut e = self.map.entry(ip).or_default();
+        let mut e = self.map.entry(self.key(ip)).or_default();
         if e.conns >= self.cfg.max_conns {
             return false;
         }
@@ -177,7 +227,8 @@ impl IpGuard {
     /// a connection that was never counted — e.g. rejected at the cap — is
     /// harmless). Idle entries are dropped.
     pub fn conn_closed(&self, ip: IpAddr) {
-        let remove = match self.map.get_mut(&ip) {
+        let net = self.key(ip);
+        let remove = match self.map.get_mut(&net) {
             Some(mut e) => {
                 e.conns = e.conns.saturating_sub(1);
                 e.is_idle()
@@ -185,11 +236,12 @@ impl IpGuard {
             None => false,
         };
         if remove {
-            self.map.remove_if(&ip, |_, e| e.is_idle());
+            self.map.remove_if(&net, |_, e| e.is_idle());
         }
     }
 
-    /// Number of IPs currently tracked (diagnostics/tests).
+    /// Number of **networks** currently tracked (diagnostics/tests): one
+    /// entry per folded key, not per address.
     #[must_use]
     pub fn tracked(&self) -> usize {
         self.map.len()
@@ -258,6 +310,12 @@ mod tests {
 
     fn ip(last: u8) -> IpAddr {
         IpAddr::from([10, 0, 0, last])
+    }
+
+    /// `2001:db8:0:<net>::<host>` — `net` picks the /64, `host` the address
+    /// inside it.
+    fn ip6(net: u16, host: u16) -> IpAddr {
+        IpAddr::from([0x2001, 0x0db8, 0, net, 0, 0, 0, host])
     }
 
     #[test]
@@ -346,5 +404,103 @@ mod tests {
         g.conn_closed(ip(4));
         g.conn_closed(ip(4)); // extra close saturates, no panic
         assert_eq!(g.tracked(), 0);
+    }
+    #[test]
+    fn v6_failures_fold_onto_the_64() {
+        let g = IpGuard::new();
+        let t0 = Instant::now();
+        // Five failures from five DIFFERENT addresses inside one /64. Keyed
+        // on the exact address each would buy a fresh 5-failure budget and
+        // none of them would ever ban.
+        for i in 0..4 {
+            assert!(!g.record_failure_at(ip6(1, 100 + i), t0 + Duration::from_secs(u64::from(i))));
+        }
+        assert!(g.record_failure_at(ip6(1, 104), t0 + Duration::from_secs(4)));
+        // A sixth address in that /64, never seen before, is already blocked.
+        assert!(g.is_blocked_at(ip6(1, 9999), t0 + Duration::from_secs(5)));
+        // The whole /64 is one entry.
+        assert_eq!(g.tracked(), 1);
+        // A different /64 is untouched, and its own budget is intact.
+        assert!(!g.is_blocked_at(ip6(2, 100), t0 + Duration::from_secs(5)));
+        assert!(!g.record_failure_at(ip6(2, 100), t0 + Duration::from_secs(5)));
+        assert_eq!(g.tracked(), 2);
+    }
+
+    #[test]
+    fn v6_connection_cap_is_shared_across_the_64() {
+        let g = IpGuard::new(); // max_conns 8
+        // Nine distinct addresses in one /64: the ninth is refused.
+        for i in 0..8 {
+            assert!(g.conn_opened(ip6(1, 100 + i)));
+        }
+        assert!(!g.conn_opened(ip6(1, 108)));
+        // Closing a DIFFERENT address in the same /64 decrements the shared
+        // count, freeing the slot.
+        g.conn_closed(ip6(1, 100));
+        assert!(g.conn_opened(ip6(1, 108)));
+        // A different /64 has its own cap.
+        assert!(g.conn_opened(ip6(2, 100)));
+        assert_eq!(g.tracked(), 2);
+        // Draining the folded entry drops it.
+        for i in 0..8 {
+            g.conn_closed(ip6(1, 200 + i));
+        }
+        g.conn_closed(ip6(2, 7));
+        assert_eq!(g.tracked(), 0);
+    }
+
+    #[test]
+    fn v4_stays_per_address_and_mapped_v6_folds_as_v4() {
+        let g = IpGuard::new(); // v4_prefix 32
+        let t0 = Instant::now();
+        // Four failures each from two addresses in the same /24: neither bans.
+        for i in 0..4u64 {
+            assert!(!g.record_failure_at(ip(1), t0 + Duration::from_secs(i)));
+            assert!(!g.record_failure_at(ip(2), t0 + Duration::from_secs(i)));
+        }
+        assert!(g.record_failure_at(ip(1), t0 + Duration::from_secs(4)));
+        assert!(!g.is_blocked_at(ip(2), t0 + Duration::from_secs(4)));
+        // `::ffff:10.0.0.1` is 10.0.0.1, not a /64 that would swallow every
+        // IPv4 client a dual-stack listener reports.
+        let mapped = IpAddr::from([0, 0, 0, 0, 0, 0xffff, 0x0a00, 0x0001]);
+        assert!(g.is_blocked_at(mapped, t0 + Duration::from_secs(4)));
+        let mapped2 = IpAddr::from([0, 0, 0, 0, 0, 0xffff, 0x0a00, 0x0002]);
+        assert!(!g.is_blocked_at(mapped2, t0 + Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn siteban_stays_keyed_on_the_exact_address() {
+        let g = IpGuard::new();
+        g.set_siteban(ip6(1, 5), None);
+        assert!(g.is_blocked(ip6(1, 5)));
+        // A neighbour in the same /64 is not banned: `ban:{ip}` means that
+        // address, and a /64 ban would blanket a household.
+        assert!(!g.is_blocked(ip6(1, 6)));
+        assert!(g.clear_siteban(ip6(1, 5)));
+        assert!(!g.is_blocked(ip6(1, 5)));
+    }
+
+    #[test]
+    fn prefix_zero_and_full_width_do_not_overflow_the_shift() {
+        assert_eq!(
+            mask_v4(Ipv4Addr::new(10, 1, 2, 3), 0),
+            Ipv4Addr::UNSPECIFIED
+        );
+        assert_eq!(
+            mask_v4(Ipv4Addr::new(10, 1, 2, 3), 32),
+            Ipv4Addr::new(10, 1, 2, 3)
+        );
+        assert_eq!(
+            mask_v4(Ipv4Addr::new(10, 1, 2, 3), 200),
+            Ipv4Addr::new(10, 1, 2, 3)
+        );
+        let a: Ipv6Addr = "2001:db8::1".parse().unwrap_or(Ipv6Addr::UNSPECIFIED);
+        assert_eq!(mask_v6(a, 0), Ipv6Addr::UNSPECIFIED);
+        assert_eq!(mask_v6(a, 128), a);
+        assert_eq!(mask_v6(a, 200), a);
+        assert_eq!(
+            mask_v6(a, 64),
+            "2001:db8::".parse().unwrap_or(Ipv6Addr::UNSPECIFIED)
+        );
     }
 }

@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use mush_config::config::{Config, StoreBackend};
+use mush_config::exit::{ExitClass, ExitFailure};
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::{ControlMsg, Inbound, OfferRouteTable, OfferSubmission};
@@ -55,7 +56,6 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
-pub mod accounts;
 pub mod accounts_identity;
 pub mod action_coordinator;
 pub mod archive;
@@ -72,6 +72,7 @@ pub mod durable_outbox;
 pub mod econ_alerts;
 pub mod econ_canon;
 pub mod econ_inbox;
+pub mod gateway_link;
 pub mod gateway_sink;
 pub mod help;
 pub mod industry_recipes;
@@ -88,7 +89,9 @@ pub mod tactics_outbox;
 pub mod timeline;
 pub mod world_task;
 
-use crate::action_coordinator::{ActionCoordinator, ActionPreflight};
+use crate::action_coordinator::{
+    ActionCoordinator, ActionPreflight, MAX_PREFLIGHT_ATTEMPTS, PREFLIGHT_RETRY_WINDOW,
+};
 use crate::gateway_sink::SocketSink;
 use crate::persist::AuthoritativeCommitFailure;
 use crate::persist::WorldExitStatus;
@@ -234,8 +237,32 @@ pub async fn serve_with_quarantine_spool(
     config: Config,
     bound: Option<oneshot::Sender<IpcEndpoint>>,
     store: Option<Arc<dyn ObjectStore>>,
-    mut quarantine_spool: QuarantineSpool,
+    quarantine_spool: QuarantineSpool,
 ) -> Result<(), String> {
+    serve_classified(config, bound, store, quarantine_spool)
+        .await
+        .map_err(|failure| failure.detail)
+}
+
+/// [`serve_with_quarantine_spool`], keeping the exit CLASS of the failure.
+///
+/// The binary's `main` uses this one: a `String` says the process failed and
+/// nothing else, and the two endings an operator most needs to tell apart — a
+/// world that died and a world that would not stop — both used to arrive as
+/// [`ExitCode::FAILURE`](std::process::ExitCode). The class travels with the
+/// text so the site that KNOWS which one it was is the site that says so. Every
+/// library caller keeps the `String` form above.
+///
+/// # Errors
+///
+/// The same failures as [`serve_with_quarantine_spool`], each carrying the
+/// [`ExitClass`](mush_config::exit::ExitClass) it should exit with.
+pub async fn serve_classified(
+    config: Config,
+    bound: Option<oneshot::Sender<IpcEndpoint>>,
+    store: Option<Arc<dyn ObjectStore>>,
+    mut quarantine_spool: QuarantineSpool,
+) -> Result<(), ExitFailure> {
     let endpoint = config.ipc_endpoint().map_err(|e| e.to_string())?;
     prepare_quarantine_for_writable_boot(&config, &mut quarantine_spool, store.as_deref()).await?;
     let (store, ledger_archive) = match store {
@@ -458,7 +485,20 @@ pub async fn serve_with_quarantine_spool(
             // flush its Bye and exit (it stops when the world drops its
             // `to_gw_tx` clones).
             world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
-            world_join.await
+            // BOUNDED (WS22-S3): a world that will not stop must not hold this
+            // process open in silence. The bound is strictly longer than the
+            // world's own shutdown grace, so the designed slow path — waiting
+            // out a pending exact commit — is never read as a hung world.
+            match tokio::time::timeout(world_task::WORLD_JOIN_TIMEOUT, &mut world_join).await {
+                Ok(joined) => Some(joined),
+                Err(_) => {
+                    tracing::error!(
+                        bound_s = world_task::WORLD_JOIN_TIMEOUT.as_secs(),
+                        "world task did not join within its bound; shutting down without it"
+                    );
+                    None
+                }
+            }
         }
         BoundaryEnd::World(joined) => {
             // The world stopped under a live gateway. It is already gone, so
@@ -466,7 +506,7 @@ pub async fn serve_with_quarantine_spool(
             // sequence above is the only one that ever issues it, and a second
             // teardown here would race it.
             tracing::info!("world task ended while the gateway was still connected");
-            joined
+            Some(joined)
         }
     };
     // Release the reader's captures before waiting on the channels they hold.
@@ -491,6 +531,20 @@ pub async fn serve_with_quarantine_spool(
     // worth bypassing a
     // drain, and it is never raised by `process::exit`/`abort` from inside a
     // catch handler or a driver.
+    let Some(world_result) = world_result else {
+        // The tail above still ran, and each of its joins is the gateway
+        // supervisor's problem to bound (WS22-S6); what this process owes an
+        // operator is the distinction, and it is a code of its own so a
+        // supervisor can tell a slow stop from a dead world without parsing
+        // logs.
+        return Err(ExitFailure::new(
+            ExitClass::WorldJoinTimeout,
+            format!(
+                "world task did not join within {}s",
+                world_task::WORLD_JOIN_TIMEOUT.as_secs()
+            ),
+        ));
+    };
     world_exit_result(world_result).inspect_err(|detail| {
         tracing::error!(%detail, "mush-server exiting on a world fault");
     })?;
@@ -686,10 +740,80 @@ struct ServerConnectionClaims {
     bytes: usize,
 }
 
+/// How many times an exact gateway replay may re-arm one retained claim
+/// before the server gives up on it.
+///
+/// A retained claim is the honest answer to a store or world state that could
+/// neither prove nor deny the request's durable fate; the gateway's own replay
+/// (its custody copy survives, because retention publishes no disposition) is
+/// what re-runs the read-only preflight. This bound is what keeps that from
+/// being an unbounded loop: after it, the server surrenders custody and hands
+/// the request back with `Rejected { retryable: true }`.
+const MAX_CLAIM_REARMS: u8 = 3;
+
+/// How long one claim may sit in [`ClaimState::Retained`] before the reaper
+/// frees its custody outright.
+///
+/// Retention costs the gateway nothing — it publishes no disposition, so the
+/// gateway keeps its own replay copy — but it does cost the *server* a custody
+/// slot, and only [`ServerInputClaims::dispose`] returns one. Fill a
+/// connection's `MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION` slots with
+/// retentions and that connection answers `Full` for the life of the boundary;
+/// this TTL is the floor under that.
+///
+/// The number is derived from the gateway's replay cadence, because a replay
+/// that re-arms a claim has to win the race against the reaper: a reaped claim
+/// the gateway replays returns as a *fresh* `New` admission with a fresh
+/// re-arm budget, so a reaper that fired early would be a loop rather than a
+/// bound. The gateway re-sends a held request only when it replays its whole
+/// input custody onto a fresh boundary, and the slowest heal it can take is
+/// roughly `EXIT_WAIT` (5 s) + `BACKOFF_CAP` (5 s) + `RECONNECT_TIMEOUT`
+/// (10 s) + `RESYNC_TIMEOUT` (10 s) ≈ 30 s — the same order as the gateway's
+/// own `CRASH_WINDOW`. This is **10×** that, so the reaper is the slow path.
+const RETAINED_CLAIM_TTL: Duration = Duration::from_secs(300);
+
+/// How often the retained-claim reaper wakes to scan for expired retentions.
+///
+/// A tenth of [`RETAINED_CLAIM_TTL`], so a reaped claim's real age is within
+/// 10% of the TTL. Each pass is one bounded scan of a table the admission cap
+/// already holds at `MAX_IN_FLIGHT_GATEWAY_INPUTS`.
+const RETAINED_CLAIM_REAP_INTERVAL: Duration = Duration::from_secs(30);
+
+/// The two custody states one server claim can be in.
+///
+/// `Active` means some handler owns this uid's single disposition. `Retained`
+/// means no handler does: the request's durable fate is unproven, both sides
+/// still hold it, and the next exact replay re-arms it. The instant is
+/// [`tokio::time::Instant`] — `std::time::Instant` does not move under
+/// `tokio::time::pause`, so a test could not reach the age this records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClaimState {
+    Active {
+        rearms: u8,
+    },
+    Retained {
+        since: tokio::time::Instant,
+        reason: &'static str,
+        rearms: u8,
+    },
+}
+
+impl ClaimState {
+    /// How many times this claim has already been re-armed — carried across
+    /// the flip back to `Active`, because it is the *claim's* budget and not
+    /// one retention's.
+    const fn rearms(self) -> u8 {
+        match self {
+            ClaimState::Active { rearms } | ClaimState::Retained { rearms, .. } => rearms,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ServerLegacyClaim {
     request: GatewayRequest,
     bytes: usize,
+    state: ClaimState,
 }
 
 /// Server-side bounded pre-ownership custody.
@@ -710,7 +834,18 @@ struct ServerInputClaims {
 enum ServerClaimAdmission {
     New,
     Duplicate,
-    Full { warn: bool },
+    /// An exact replay of a *retained* claim: custody was already held, the
+    /// claim is now `Active` again under the same lock that read it, and the
+    /// caller owes it one fresh handler. Flipping the state here — rather than
+    /// letting the caller do it after the guard drops — is what stops two
+    /// concurrent replays from spawning two handlers for one uid.
+    Rearm,
+    /// A retained claim that has spent its re-arm budget. `admit` has already
+    /// disposed of it; the caller owes the gateway a terminal answer.
+    Exhausted,
+    Full {
+        warn: bool,
+    },
     Invalid,
     Conflict,
 }
@@ -742,12 +877,40 @@ impl ServerInputClaims {
         let Ok(bytes) = request.input.logical_bytes() else {
             return ServerClaimAdmission::Invalid;
         };
-        if let Some(existing) = self.entries.get(&request.uid) {
-            return if existing.request == request {
-                ServerClaimAdmission::Duplicate
-            } else {
-                ServerClaimAdmission::Conflict
-            };
+        if let Some(existing) = self.entries.get_mut(&request.uid) {
+            if existing.request != request {
+                return ServerClaimAdmission::Conflict;
+            }
+            match existing.state {
+                // A handler owns this uid's disposition already.
+                ClaimState::Active { .. } => return ServerClaimAdmission::Duplicate,
+                ClaimState::Retained {
+                    since,
+                    reason,
+                    rearms,
+                } if rearms < MAX_CLAIM_REARMS => {
+                    existing.state = ClaimState::Active { rearms: rearms + 1 };
+                    tracing::warn!(
+                        request = %request.uid,
+                        reason,
+                        retained_for_ms = since.elapsed().as_millis(),
+                        rearms = rearms + 1,
+                        "re-arming a retained coordinator claim on an exact replay"
+                    );
+                    return ServerClaimAdmission::Rearm;
+                }
+                // Out of re-arms: stop holding a request nobody can resolve.
+                ClaimState::Retained { reason, .. } => {
+                    tracing::error!(
+                        request = %request.uid,
+                        reason,
+                        max = MAX_CLAIM_REARMS,
+                        "retained claim exhausted its re-arm budget; surrendering custody"
+                    );
+                }
+            }
+            self.dispose(request.uid);
+            return ServerClaimAdmission::Exhausted;
         }
 
         let conn = request.input.conn();
@@ -763,14 +926,99 @@ impl ServerInputClaims {
             return ServerClaimAdmission::Full { warn };
         }
 
-        self.entries
-            .insert(request.uid, ServerLegacyClaim { request, bytes });
+        self.entries.insert(
+            request.uid,
+            ServerLegacyClaim {
+                request,
+                bytes,
+                state: ClaimState::Active { rearms: 0 },
+            },
+        );
         self.bytes += bytes;
         let account = self.per_connection.entry(conn).or_default();
         account.count += 1;
         account.bytes += bytes;
         self.capacity_warned = false;
         ServerClaimAdmission::New
+    }
+
+    /// Park one claim in [`ClaimState::Retained`]: this handler is finished
+    /// but the request's durable fate is *unproven*, so custody is kept rather
+    /// than answered with a disposition that would be a lie in one direction
+    /// or the other.
+    ///
+    /// Nothing is published, which is precisely what leaves the gateway's own
+    /// replay copy in place: its next replay of this uid re-arms the claim
+    /// (see [`ServerInputClaims::admit`]) and re-runs the read-only preflight.
+    /// Returns `false` if the claim is already gone — a drifted caller, not a
+    /// state to invent.
+    fn retain(&mut self, uid: RequestUid, reason: &'static str) -> bool {
+        let Some(claim) = self.entries.get_mut(&uid) else {
+            return false;
+        };
+        claim.state = ClaimState::Retained {
+            since: tokio::time::Instant::now(),
+            reason,
+            rearms: claim.state.rearms(),
+        };
+        true
+    }
+
+    /// Free every claim that has been [`ClaimState::Retained`] for longer than
+    /// `ttl`, reporting the uids so one pass can be logged as one line.
+    ///
+    /// A reaped claim is answered with the same silence retention itself keeps:
+    /// no disposition at all. That is what makes the reap safe — the gateway
+    /// still holds its replay copy, so nothing is lost, and its next replay is
+    /// admitted as an ordinary `New` claim. What the reap buys back is the
+    /// custody slot, through [`ServerInputClaims::dispose`]'s saturating
+    /// accounting, so a connection that filled its budget with retentions is
+    /// not `Full` forever.
+    ///
+    /// `Active` claims are never touched: a handler still owns each one's
+    /// single disposition, and an entry taken out from under it would let a
+    /// replay of that uid spawn a second handler.
+    fn reap_retained(&mut self, ttl: Duration) -> Vec<RequestUid> {
+        let expired: Vec<RequestUid> = self
+            .entries
+            .iter()
+            .filter_map(|(uid, claim)| match claim.state {
+                ClaimState::Retained { since, .. } if since.elapsed() >= ttl => Some(*uid),
+                _ => None,
+            })
+            .collect();
+        for uid in &expired {
+            let _ = self.dispose(*uid);
+        }
+        expired
+    }
+
+    /// Free one connection's retained claims because that connection detached.
+    ///
+    /// A detached connection has no session left to answer, and its retentions
+    /// are waiting on a replay that will now never come from it — but the
+    /// custody they hold is charged to a `per_connection` account that a
+    /// reconnect reuses. `Active` claims survive for the same reason the reap
+    /// leaves them alone.
+    ///
+    /// This is a full scan of `entries`, bounded by the admission cap
+    /// `MAX_IN_FLIGHT_GATEWAY_INPUTS`, because `per_connection` keys **counts
+    /// only**: there is no uid index on this table and WS03-S15 deliberately
+    /// adds none, so anything restructuring the table later should know it is
+    /// building that index from scratch.
+    fn release_connection_retained(&mut self, conn: u64) -> Vec<RequestUid> {
+        let detached: Vec<RequestUid> = self
+            .entries
+            .iter()
+            .filter_map(|(uid, claim)| {
+                let retained = matches!(claim.state, ClaimState::Retained { .. });
+                (retained && claim.request.input.conn() == conn).then_some(*uid)
+            })
+            .collect();
+        for uid in &detached {
+            let _ = self.dispose(*uid);
+        }
+        detached
     }
 
     /// Surrender custody of one claim unconditionally and reconcile the
@@ -866,6 +1114,114 @@ fn release_input_claim(
     claims_guard(claims).dispose(request)
 }
 
+/// Keep custody of one coordinator claim without publishing a disposition,
+/// because the request's durable fate could be neither proved nor denied.
+///
+/// This is the *only* honest answer for an ambiguous outcome: `Busy` and
+/// `Rejected` both assert "no intent exists", which a store that never
+/// answered cannot support, and `Owned` asserts one does. Retention asserts
+/// nothing and costs the gateway nothing — it still holds its replay copy —
+/// so its next replay re-arms the claim and re-runs the read-only lookup.
+fn retain_input_claim(
+    claims: &Arc<Mutex<ServerInputClaims>>,
+    request: RequestUid,
+    reason: &'static str,
+) {
+    if claims_guard(claims).retain(request, reason) {
+        tracing::warn!(
+            %request,
+            reason,
+            "coordinator custody retained; awaiting an exact gateway replay"
+        );
+    } else {
+        // Only a drifted caller reaches this: the claim was disposed of by
+        // some other path while its handler still believed it owned it.
+        tracing::error!(
+            %request,
+            reason,
+            "retention named a claim the custody table no longer holds"
+        );
+    }
+}
+
+/// The retained-claim reaper's handle, which aborts the task when it drops.
+///
+/// The reaper is spawned inside [`reader_loop`] and must not outlive it. That
+/// loop has several early `return Err(..)` exits — the raw-input guard, the
+/// invalid/conflicting-identity arms, every `world_is_gone` — and `serve` can
+/// also drop the reader future outright, so a task cancelled only at the tail
+/// of the function would survive most of the ways the boundary actually ends,
+/// holding an `Arc` to a claim table nobody else can reach.
+///
+/// Two independent mechanisms end it, because an abort is scheduling and the
+/// stop signal is not: dropping `_stop` closes the reaper's oneshot, which the
+/// sleep is selected against, so a reaper parked for the whole interval wakes
+/// and returns at once instead of sleeping through the teardown; and the abort
+/// covers a reaper caught mid-pass. The claim table is held only by a `Weak`,
+/// so even a reaper that somehow outlived both finds nothing to reap.
+struct RetainedClaimReaper {
+    handle: tokio::task::JoinHandle<()>,
+    _stop: tokio::sync::oneshot::Sender<()>,
+}
+
+impl Drop for RetainedClaimReaper {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+/// Spawn the boundary's retained-claim reaper.
+///
+/// Retention (WS03-S4) is the honest answer to an unprovable durable fate, but
+/// it is only bounded while replays keep arriving. Within one long-lived
+/// boundary no replay ever comes — the gateway re-sends its custody pool on
+/// re-attach, and a re-attach means a *new* boundary with an empty table — so
+/// without this pass a retained claim holds its slot until the boundary ends.
+///
+/// The reap publishes nothing: see [`ServerInputClaims::reap_retained`].
+fn spawn_retained_claim_reaper(
+    claims: &Arc<Mutex<ServerInputClaims>>,
+    metrics: &Arc<Metrics>,
+) -> RetainedClaimReaper {
+    // WEAK on purpose: the reader loop owns the table's lifetime, and a reaper
+    // that kept it alive would keep a dead boundary's custody alive with it.
+    let claims = Arc::downgrade(claims);
+    let metrics = Arc::clone(metrics);
+    let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+    let handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep(RETAINED_CLAIM_REAP_INTERVAL) => {}
+                // The reader loop dropped the guard: stop now rather than
+                // finish a sleep the boundary has no use for.
+                _ = &mut stopped => return,
+            }
+            let Some(claims) = claims.upgrade() else {
+                return;
+            };
+            // The guard is a statement temporary: the claim table's mutex is
+            // never held across the awaits above or below it.
+            let reaped = claims_guard(&claims).reap_retained(RETAINED_CLAIM_TTL);
+            drop(claims);
+            if !reaped.is_empty() {
+                metrics.ipc_retained_claims_reaped(reaped.len() as u64);
+                tracing::warn!(
+                    reaped = reaped.len(),
+                    ttl_s = RETAINED_CLAIM_TTL.as_secs(),
+                    "freed retained coordinator claims that aged out; the gateway keeps its replay copies"
+                );
+                for request in reaped {
+                    tracing::debug!(%request, "retained claim reaped");
+                }
+            }
+        }
+    });
+    RetainedClaimReaper {
+        handle,
+        _stop: stop,
+    }
+}
+
 async fn handle_authoritative_input(
     request: GatewayRequest,
     routes: Arc<OfferRouteTable>,
@@ -873,6 +1229,7 @@ async fn handle_authoritative_input(
     store: Arc<dyn ObjectStore>,
     sink: SocketSink,
     claims: Arc<Mutex<ServerInputClaims>>,
+    metrics: Arc<Metrics>,
 ) {
     let uid = request.uid;
     let (conn, actor) = match &request.input {
@@ -906,18 +1263,51 @@ async fn handle_authoritative_input(
         }
     };
     let Some(authoritative_store) = store.authoritative_store() else {
-        tracing::error!(%uid, "configured store lacks authoritative request capability; preserving custody");
+        // A configuration fault, not an ambiguity: this store will never grow
+        // the capability, so retention would hold the claim while every replay
+        // failed identically. Answer terminally instead.
+        release_input_claim(&claims, uid);
+        request_disposition(
+            &sink,
+            uid,
+            GatewayRequestDisposition::Rejected { retryable: false },
+        );
+        tracing::error!(%uid, "configured store lacks authoritative request capability");
         return;
     };
+    let preflight_started = tokio::time::Instant::now();
     let mut preflight_delay = Duration::from_millis(100);
+    let mut preflight_attempts = 0u32;
     let preflight = loop {
+        preflight_attempts += 1;
         match ActionCoordinator::preflight(authoritative_store, envelope.clone()).await {
             Ok(preflight) => break preflight,
             Err(error) if error.is_transient() => {
                 // Busy means "proved no intent" and would be a lie here: this
-                // may be a replay whose exact intent already exists. Retain
-                // bounded custody and retry the read-only lookup in place.
-                tracing::warn!(%uid, error = %error, "coordinator preflight transient; retaining custody");
+                // may be a replay whose exact intent already exists. Retry the
+                // read-only lookup in place, but only for a bounded window —
+                // this loop is the fast path for a store hiccup, not the
+                // durable one. The durable one is retention plus the gateway's
+                // own replay, which survives even a server restart.
+                let spent = preflight_started.elapsed();
+                if preflight_attempts >= MAX_PREFLIGHT_ATTEMPTS
+                    || spent.saturating_add(preflight_delay) > PREFLIGHT_RETRY_WINDOW
+                {
+                    tracing::error!(
+                        %uid,
+                        error = %error,
+                        attempts = preflight_attempts,
+                        spent_ms = spent.as_millis(),
+                        "coordinator preflight stayed transient to the bound"
+                    );
+                    // Retention is silent to the gateway on purpose, so this
+                    // counter is the operator's only view of a store that is
+                    // answering neither yes nor no.
+                    metrics.coordinator_preflight_deferred();
+                    retain_input_claim(&claims, uid, "preflight transient to the bound");
+                    return;
+                }
+                tracing::warn!(%uid, error = %error, attempt = preflight_attempts, "coordinator preflight transient; retrying in place");
                 tokio::time::sleep(preflight_delay).await;
                 preflight_delay = (preflight_delay * 2).min(Duration::from_secs(5));
             }
@@ -926,6 +1316,7 @@ async fn handle_authoritative_input(
                 // intent exists. Preserve both gateway and server custody and
                 // publish no lying rejection.
                 tracing::error!(%uid, error = %error, "coordinator preflight could not prove request state");
+                retain_input_claim(&claims, uid, "preflight could not prove request state");
                 return;
             }
         }
@@ -980,13 +1371,27 @@ async fn handle_authoritative_input(
             return;
         }
         ActionPreflight::Quarantined(receipt) => {
-            // Quarantine is terminal evidence, but not successful completion
-            // and not proof of "no intent". Hold custody for the incident.
+            // Quarantine is terminal evidence: the request consumed its
+            // idempotency binding and must never be planned again. It is not
+            // completion, so `Finished` would be a lie — but the intent IS
+            // durably owned, and `Owned` says exactly that and no more. The
+            // status lookup is the honest follow-up, and it is terminal for
+            // the gateway (which drops its replay copy on any disposition),
+            // so no new wire variant is needed to say it.
             tracing::error!(
                 %uid,
                 token = %receipt.token(),
                 evidence = %receipt.evidence_hash(),
-                "coordinator request is quarantined; preserving gateway custody"
+                "coordinator request is quarantined; answering from the durable record"
+            );
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Owned {
+                    token: receipt.token(),
+                    status: status.clone(),
+                },
             );
             return;
         }
@@ -1072,11 +1477,13 @@ async fn handle_authoritative_input(
             return;
         }
         Ok(Err(AuthoritativeCommitFailure::Integrity(detail))) => {
-            tracing::error!(%uid, %detail, "coordinator ownership became ambiguous; preserving custody");
+            tracing::error!(%uid, %detail, "coordinator ownership became ambiguous; retaining custody");
+            retain_input_claim(&claims, uid, "ownership became ambiguous");
             return;
         }
         Err(_) => {
-            tracing::error!(%uid, "world dropped coordinator ownership result; preserving custody");
+            tracing::error!(%uid, "world dropped coordinator ownership result; retaining custody");
+            retain_input_claim(&claims, uid, "world dropped the ownership result");
             return;
         }
     };
@@ -1176,12 +1583,16 @@ pub async fn reader_loop(
     store: Arc<dyn ObjectStore>,
     offer_routes: Arc<OfferRouteTable>,
     reply_sink: SocketSink,
-    metrics: &Metrics,
+    metrics: &Arc<Metrics>,
     world_exit: WorldExitStatus,
 ) -> std::io::Result<()> {
     let mut reader = FrameReader::new(r);
     let service_requests = ServiceRequestLimiter::new();
     let input_claims = Arc::new(Mutex::new(ServerInputClaims::default()));
+    // Held in this function's own state, so EVERY way out of it — the early
+    // `return Err(..)` guards below, a clean EOF, or `serve` dropping the
+    // reader future — drops the guard and ends the reaper with the boundary.
+    let _retained_claim_reaper = spawn_retained_claim_reaper(&input_claims, metrics);
     // Set the moment this reader forwards a `ControlMsg::Shutdown`, so the
     // closed channel that follows reads as the exit it asked for.
     let mut shutdown_seen = false;
@@ -1258,6 +1669,22 @@ pub async fn reader_loop(
                                     GatewayRequestDisposition::LegacyClaimed,
                                 );
                             }
+                            ServerClaimAdmission::Rearm | ServerClaimAdmission::Exhausted => {
+                                // Unreachable by construction: only the
+                                // coordinator retains a claim, and it retains
+                                // only its own actions. Fail closed rather
+                                // than re-authorize an execution this arm
+                                // never classified.
+                                tracing::error!(
+                                    request = %uid,
+                                    "legacy claim reported a coordinator-only custody state"
+                                );
+                                request_disposition(
+                                    &reply_sink,
+                                    uid,
+                                    GatewayRequestDisposition::Rejected { retryable: false },
+                                );
+                            }
                             ServerClaimAdmission::Full { warn } => {
                                 if warn {
                                     tracing::warn!(
@@ -1288,15 +1715,19 @@ pub async fn reader_loop(
                     GatewayInput::Action(_) => {
                         let admission = claims_guard(&input_claims).admit(request.clone());
                         match admission {
-                            ServerClaimAdmission::New => {
+                            // `Rearm` is a claim the table just flipped back to
+                            // `Active` under its own lock, so exactly one
+                            // handler exists for it here too.
+                            ServerClaimAdmission::New | ServerClaimAdmission::Rearm => {
                                 let world = world.clone();
                                 let store = Arc::clone(&store);
                                 let routes = Arc::clone(&offer_routes);
                                 let sink = reply_sink.clone();
                                 let claims = Arc::clone(&input_claims);
+                                let metrics = Arc::clone(metrics);
                                 tokio::spawn(async move {
                                     handle_authoritative_input(
-                                        request, routes, world, store, sink, claims,
+                                        request, routes, world, store, sink, claims, metrics,
                                     )
                                     .await;
                                 });
@@ -1305,6 +1736,22 @@ pub async fn reader_loop(
                                 tracing::debug!(
                                     request = %uid,
                                     "duplicate coordinator input joined server pre-ownership custody"
+                                );
+                            }
+                            ServerClaimAdmission::Exhausted => {
+                                // The re-arm budget is spent and `admit` has
+                                // already surrendered custody. Hand the
+                                // request back through the vocabulary the
+                                // gateway already releases its replay copy on,
+                                // so no uid can be retained forever.
+                                tracing::error!(
+                                    request = %uid,
+                                    "retained coordinator claim exhausted its re-arms; returning it to the gateway"
+                                );
+                                request_disposition(
+                                    &reply_sink,
+                                    uid,
+                                    GatewayRequestDisposition::Rejected { retryable: true },
                                 );
                             }
                             ServerClaimAdmission::Full { warn } => {
@@ -1462,8 +1909,25 @@ pub async fn reader_loop(
                 }
             }
             // Per-connection session bookkeeping — the forked server keeps no
-            // session mirror (the gateway owns it), so accept and ignore.
-            ToServer::Attach { .. } | ToServer::Detach { .. } => {}
+            // session mirror (the gateway owns it), so an attach is accepted
+            // and ignored.
+            ToServer::Attach { .. } => {}
+            // A detach is not: this connection's RETAINED claims are waiting on
+            // a replay it can no longer send, and their custody is charged to a
+            // `per_connection` account a reconnect reuses. Free them here
+            // rather than leave them to the TTL. Active claims stay — a handler
+            // still owns each one's single disposition — and nothing is
+            // published, exactly as at the reaper.
+            ToServer::Detach { conn, .. } => {
+                let released = claims_guard(&input_claims).release_connection_retained(conn);
+                if !released.is_empty() {
+                    tracing::warn!(
+                        conn,
+                        released = released.len(),
+                        "freed retained coordinator claims for a detached connection"
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -1472,7 +1936,20 @@ pub async fn reader_loop(
 /// Answer one [`ServiceReq`] by calling the world handle. Each maps to an
 /// existing ack-gated / oneshot world-task round trip; the await happens here
 /// (off the world loop), never inside `run`.
-async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
+///
+/// This is the ONE dispatch table both deployments answer from: the forked
+/// server's boundary reader calls it directly, and the all-in-one binary
+/// reaches it through the in-process [`GatewayLink`](mush_ipc::GatewayLink)
+/// impl in [`crate::gateway_link`]. The exhaustive match therefore lives in a
+/// single place, so a new variant is a compile error once rather than a
+/// silently unanswered request on one of the two links.
+///
+/// **Exposed only so `tests/gateway_link_parity.rs` can drive it beside the
+/// in-process link and prove the two agree** — the same reason
+/// [`reader_loop`] is reachable from `tests/dead_world_reader.rs`. Nothing
+/// outside this crate answers a `ServiceReq`; the boundary reader does.
+#[doc(hidden)]
+pub async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
     match req {
         ServiceReq::CreatePlayer { name } => {
             create_player_response(world.create_player(&name).await)
@@ -1613,11 +2090,12 @@ mod world_exit_tests {
 #[cfg(test)]
 mod service_request_tests {
     use super::{
-        Arc, CreatePlayerErr, GatewayInput, GatewayRequest,
-        MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_SERVICE_REQUESTS, Mutex,
-        ServerClaimAdmission, ServerClaimRelease, ServerInputClaims, ServiceRequestLimiter,
-        ServiceResp, WorldReadError, admit_with_custody_snapshot, barrier_response, claims_guard,
-        create_player_response, release_input_claim,
+        Arc, CreatePlayerErr, GatewayInput, GatewayRequest, MAX_CLAIM_REARMS,
+        MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_SERVICE_REQUESTS, Metrics,
+        Mutex, Notify, RETAINED_CLAIM_REAP_INTERVAL, RETAINED_CLAIM_TTL, ServerClaimAdmission,
+        ServerClaimRelease, ServerInputClaims, ServiceRequestLimiter, ServiceResp, SocketSink,
+        ToGateway, WorldReadError, admit_with_custody_snapshot, barrier_response, claims_guard,
+        create_player_response, release_input_claim, spawn_retained_claim_reaper,
     };
     use mush_core::{ActionOfferId, CanonicalHash, Inbound, ObjId, PerceivedRef};
     use mush_ipc::GatewayAction;
@@ -1757,6 +2235,19 @@ mod service_request_tests {
     /// loop down for *every* connection. The claim table is short-lived,
     /// non-reentrant state reconciled by `release`'s saturating arithmetic, so
     /// the policy is recovery — the retained claims stay usable.
+    ///
+    /// The panic HOOK is deliberately left alone (W1-B8-FIX, W1-B7-FIX).
+    /// Silencing it around the `catch_unwind` reads as tidier, but the hook is
+    /// process-global while `cargo test` runs a binary's tests on parallel
+    /// threads: two poisonings that overlap interleave their take/set/set-back
+    /// (A takes the real hook and installs the silencer, B takes the SILENCER
+    /// and installs its own, A restores the real one, B restores the silencer)
+    /// and the binary finishes the run with a hook that prints nothing — so
+    /// every later panic, in tests that have nothing to do with poisoning,
+    /// fails with no message. The cost of not swapping is one deliberate panic
+    /// line, which libtest captures and only prints for a test that actually
+    /// failed; the benefit is that this test leaves no process-global state
+    /// behind at all.
     #[test]
     fn a_poisoned_claim_table_keeps_serving_every_connection() {
         let claims = Arc::new(Mutex::new(ServerInputClaims::default()));
@@ -1767,13 +2258,10 @@ mod service_request_tests {
         );
 
         let poisoner = Arc::clone(&claims);
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
         let panicked = std::panic::catch_unwind(move || {
             let _held = poisoner.lock().expect("the table starts unpoisoned");
-            panic!("a claim path panicked mid-update");
+            panic!("a claim path panicked mid-update (expected: this test poisons the table)");
         });
-        std::panic::set_hook(hook);
         assert!(panicked.is_err());
         assert!(
             claims.lock().is_err(),
@@ -1901,6 +2389,276 @@ mod service_request_tests {
 
         // And the payload has no world-input form to be enqueued as, either.
         assert!(Inbound::try_from(action.input).is_err());
+    }
+
+    /// Five returns out of `handle_authoritative_input` used to leak the claim:
+    /// no release, no disposition, and — because `admit` answered `Duplicate`
+    /// for the uid forever after — no way for a gateway replay to restart it
+    /// either. That silently wedged one connection's coordinator custody until
+    /// it reconnected.
+    ///
+    /// Retention is the state those returns now take, and an exact replay is
+    /// what re-arms it. The flip to `Active` happens under the same guard that
+    /// read `Retained`, so a gateway replaying twice cannot spawn two handlers
+    /// for one uid: the second replay is an ordinary `Duplicate`.
+    #[test]
+    fn an_identical_replay_of_a_retained_claim_rearms_once_and_then_is_active() {
+        let mut claims = ServerInputClaims::default();
+        let action = action_request(1, 9);
+        assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::New);
+        assert_eq!(
+            claims.admit(action.clone()),
+            ServerClaimAdmission::Duplicate,
+            "a replay while a handler owns the uid must not spawn a second one"
+        );
+        let custody = claims.capacity_snapshot();
+
+        assert!(claims.retain(action.uid, "test retention"));
+        assert_eq!(
+            claims.admit(action.clone()),
+            ServerClaimAdmission::Rearm,
+            "a retained claim must be re-armable, not silently swallowed as a duplicate"
+        );
+        assert_eq!(
+            claims.admit(action.clone()),
+            ServerClaimAdmission::Duplicate,
+            "the re-arm already flipped the claim Active; a second replay owes no handler"
+        );
+        assert_eq!(
+            claims.capacity_snapshot(),
+            custody,
+            "re-arming takes no extra custody: it is the same claim"
+        );
+    }
+
+    /// The other half of the bound: retention may not become a way for one uid
+    /// to occupy custody forever. After `MAX_CLAIM_REARMS`, `admit` surrenders
+    /// the claim itself and tells the caller to answer terminally — the caller
+    /// publishes `Rejected { retryable: true }`, which is the vocabulary the
+    /// gateway already drops its own replay copy on.
+    #[test]
+    fn a_retained_claim_stops_rearming_at_the_bound() {
+        let mut claims = ServerInputClaims::default();
+        let action = action_request(2, 9);
+        assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::New);
+
+        for expected in 1..=MAX_CLAIM_REARMS {
+            assert!(claims.retain(action.uid, "test retention"));
+            assert_eq!(
+                claims.admit(action.clone()),
+                ServerClaimAdmission::Rearm,
+                "re-arm {expected} is inside the budget"
+            );
+        }
+
+        assert!(claims.retain(action.uid, "test retention"));
+        assert_eq!(
+            claims.admit(action.clone()),
+            ServerClaimAdmission::Exhausted,
+            "the budget is spent: the claim must be surrendered, not retained again"
+        );
+        assert_eq!(
+            claims.capacity_snapshot(),
+            (0, 0),
+            "an exhausted claim releases its custody and its per-connection budget"
+        );
+        assert_eq!(
+            claims.release(action.uid),
+            ServerClaimRelease::Unknown,
+            "nothing is left in the table to release"
+        );
+    }
+
+    /// The re-arm budget is the *claim's*, not one retention's: flipping back
+    /// to `Active` may not reset it, or an alternating retain/replay pair would
+    /// loop forever.
+    #[test]
+    fn the_rearm_budget_survives_the_flip_back_to_active() {
+        let mut claims = ServerInputClaims::default();
+        let action = action_request(3, 9);
+        assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::New);
+        for _ in 0..MAX_CLAIM_REARMS {
+            assert!(claims.retain(action.uid, "test retention"));
+            assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::Rearm);
+            // Between re-arms the claim is Active, exactly as a live handler
+            // leaves it. That must not refund the budget.
+            assert_eq!(
+                claims.admit(action.clone()),
+                ServerClaimAdmission::Duplicate
+            );
+        }
+        assert!(claims.retain(action.uid, "test retention"));
+        assert_eq!(claims.admit(action), ServerClaimAdmission::Exhausted);
+    }
+
+    /// The wedge WS03-S4's retention bought and WS03-S15 pays for. A retained
+    /// claim keeps its custody slot and only `dispose` gives one back, so a
+    /// connection whose per-connection budget filled with retentions answered
+    /// `Full` for the life of the boundary: within one boundary no gateway
+    /// replay ever arrives to re-arm them (the gateway replays its custody pool
+    /// onto a *fresh* boundary, whose table is empty).
+    ///
+    /// The reaper is the floor under that. Time is paused, so the retentions
+    /// really do reach `RETAINED_CLAIM_TTL` instead of the test waiting five
+    /// minutes — `ClaimState::Retained` records a `tokio::time::Instant` for
+    /// exactly this reason.
+    #[tokio::test(start_paused = true)]
+    async fn retained_claims_do_not_wedge_a_connection_forever() {
+        let claims = Arc::new(Mutex::new(ServerInputClaims::default()));
+        let metrics = Arc::new(Metrics::new());
+        {
+            let mut table = claims_guard(&claims);
+            for sequence in 0..MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION as u64 {
+                let request = action_request(sequence, 9);
+                assert_eq!(table.admit(request.clone()), ServerClaimAdmission::New);
+                assert!(table.retain(request.uid, "test retention"));
+            }
+            assert_eq!(
+                table.admit(action_request(10_000, 9)),
+                ServerClaimAdmission::Full { warn: true },
+                "the connection is wedged Full by its own retentions"
+            );
+        }
+
+        let reaper = spawn_retained_claim_reaper(&claims, &metrics);
+
+        // A pass that runs before the TTL frees nothing: the reaper must be the
+        // SLOW path, because a claim it reaps early is one the gateway replays
+        // as a fresh admission with a fresh re-arm budget.
+        tokio::time::advance(RETAINED_CLAIM_REAP_INTERVAL).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            claims_guard(&claims).entries.len(),
+            MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
+            "a retention younger than the TTL is not reaped"
+        );
+
+        // Past the TTL, one pass frees every one of them.
+        for _ in 0..(2 + RETAINED_CLAIM_TTL.as_secs() / RETAINED_CLAIM_REAP_INTERVAL.as_secs()) {
+            let empty = claims_guard(&claims).entries.is_empty();
+            if empty {
+                break;
+            }
+            tokio::time::advance(RETAINED_CLAIM_REAP_INTERVAL).await;
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            claims_guard(&claims).entries.is_empty(),
+            "every retention older than the TTL must be freed"
+        );
+        assert_eq!(
+            metrics.snapshot().ipc_retained_claims_reaped_total,
+            MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION as u64,
+            "a silent reap still has to be countable"
+        );
+        assert_eq!(
+            claims_guard(&claims).admit(action_request(10_000, 9)),
+            ServerClaimAdmission::New,
+            "the freed slots are real capacity: the wedged request now admits"
+        );
+        drop(reaper);
+    }
+
+    /// A reaped claim is answered with silence, which is the whole reason the
+    /// reap is safe: the gateway still holds its replay copy, so the request
+    /// can come back as a fresh `New` admission. Publishing `Busy` or
+    /// `Rejected` here would make the gateway drop that copy on a request whose
+    /// durable fate was never proven either way.
+    ///
+    /// The reaper is handed no sink by construction; this pins the observable
+    /// consequence — the boundary's whole reply path stays empty across a reap.
+    #[tokio::test(start_paused = true)]
+    async fn the_reaper_publishes_no_disposition() {
+        let (tx, mut replies) = super::mpsc::channel::<ToGateway>(8);
+        let metrics = Arc::new(Metrics::new());
+        // The real reply path every disposition travels, kept alive for the
+        // whole test so an empty receiver means "nothing was sent", never "the
+        // sink was gone".
+        let _sink = SocketSink::new(tx, Arc::clone(&metrics), Arc::new(Notify::new()), 8, 90);
+
+        let claims = Arc::new(Mutex::new(ServerInputClaims::default()));
+        let request = action_request(1, 9);
+        {
+            let mut table = claims_guard(&claims);
+            assert_eq!(table.admit(request.clone()), ServerClaimAdmission::New);
+            assert!(table.retain(request.uid, "test retention"));
+        }
+
+        let reaper = spawn_retained_claim_reaper(&claims, &metrics);
+        for _ in 0..(2 + RETAINED_CLAIM_TTL.as_secs() / RETAINED_CLAIM_REAP_INTERVAL.as_secs()) {
+            let empty = claims_guard(&claims).entries.is_empty();
+            if empty {
+                break;
+            }
+            tokio::time::advance(RETAINED_CLAIM_REAP_INTERVAL).await;
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            claims_guard(&claims).entries.is_empty(),
+            "the claim is gone"
+        );
+        assert!(
+            replies.try_recv().is_err(),
+            "a reap that published anything would take the gateway's replay copy with it, and \
+             that copy is the only thing left that can retry the request"
+        );
+        drop(reaper);
+    }
+
+    /// `ToServer::Detach` used to be an empty arm. A detached connection can
+    /// never send the replay its retentions are waiting for, so they go with
+    /// it — but only *its* retentions: an `Active` claim on the same connection
+    /// still has a live handler owning its single disposition, and another
+    /// connection's retention is none of this frame's business.
+    #[test]
+    fn detach_releases_that_connections_retained_claims_only() {
+        let mut claims = ServerInputClaims::default();
+        let active = action_request(1, 9);
+        let retained = action_request(2, 9);
+        let elsewhere = action_request(3, 11);
+        for request in [&active, &retained, &elsewhere] {
+            assert_eq!(claims.admit(request.clone()), ServerClaimAdmission::New);
+        }
+        assert!(claims.retain(retained.uid, "test retention"));
+        assert!(claims.retain(elsewhere.uid, "test retention"));
+
+        assert_eq!(
+            claims.release_connection_retained(9),
+            vec![retained.uid],
+            "exactly the detached connection's retained claim"
+        );
+        assert_eq!(
+            claims.admit(active.clone()),
+            ServerClaimAdmission::Duplicate,
+            "the in-flight handler on that connection keeps its claim"
+        );
+        assert_eq!(
+            claims.admit(elsewhere.clone()),
+            ServerClaimAdmission::Rearm,
+            "another connection's retention is untouched and still re-armable"
+        );
+        assert_eq!(
+            claims.admit(retained.clone()),
+            ServerClaimAdmission::New,
+            "the released uid is free again, custody accounting and all"
+        );
+
+        // A connection holding nothing retained loses nothing to a detach.
+        assert!(claims.release_connection_retained(9).is_empty());
+        assert_eq!(claims.entries.len(), 3);
+    }
+
+    /// Retention names a claim the table holds. A caller that retains a uid
+    /// already disposed of gets a `false` it can log, and invents no entry —
+    /// custody accounting stays exact.
+    #[test]
+    fn retaining_a_disposed_claim_creates_nothing() {
+        let mut claims = ServerInputClaims::default();
+        let action = action_request(4, 9);
+        assert_eq!(claims.admit(action.clone()), ServerClaimAdmission::New);
+        assert_eq!(claims.dispose(action.uid), Some(action.clone()));
+        assert!(!claims.retain(action.uid, "test retention"));
+        assert_eq!(claims.capacity_snapshot(), (0, 0));
     }
 }
 

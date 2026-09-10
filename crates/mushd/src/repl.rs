@@ -11,8 +11,8 @@
 use std::io::Write as _;
 
 use mush_core::{
-    Audience, Effect, Effects, GOD, Inbound, Outbox, StepOutcome, StoreReadResult, WorldCommand,
-    can_perceive_with_action_state, event_subject,
+    Audience, Effect, Effects, GOD, Inbound, Outbox, StepOutcome, StoreReadResult, TypedStateLens,
+    WorldCommand, can_perceive, event_subject,
 };
 use mush_testkit::text_of;
 
@@ -112,12 +112,12 @@ fn print_gods_view(engine: &mush_core::Engine, out: &mut Outbox) {
                     && subject
                         .or_else(|| event_subject(&event))
                         .is_none_or(|subj| {
-                            can_perceive_with_action_state(
+                            can_perceive(
                                 reg,
                                 world,
                                 GOD,
                                 subj,
-                                engine.action_state(),
+                                TypedStateLens::Live(engine.action_state()),
                             )
                         })
             }

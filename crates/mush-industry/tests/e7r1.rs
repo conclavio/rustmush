@@ -49,6 +49,12 @@ impl mush_industry::RecipeAuthority for TestRecipes {
         (pack.as_str() == "tacsim.core" && version == 1 && id.as_str() == "alloy_smelt")
             .then(alloy_recipe)
     }
+    fn catalog_revision(&self, _world: &World) -> u64 {
+        1
+    }
+    fn catalog(&self, _world: &World) -> Vec<(RecipeRef, PinnedRecipe)> {
+        vec![alloy_recipe()]
+    }
 }
 
 fn commodity(id: &str) -> CanonicalId {
@@ -197,6 +203,45 @@ fn god_accounts(tw: &TestWorld) -> Vec<u64> {
         .collect()
 }
 
+/// The material source [`scene`] seeds.
+///
+/// ---- WS02-S5 ----
+///
+/// A work order's `source`, `destination` and `account` are no longer free text:
+/// `wo_draft` refuses any that is not a member of the drafter's own
+/// server-authored endpoint/account book, because `wo_submit` reserves material
+/// out of `source` and `wo_deliver` mints into `destination` with no ownership
+/// test of their own. So this corridor's endpoints are REAL vaults now instead of
+/// two numbers typed into the command. Vault ids are handed out from 0 and id 0 is
+/// the crate's own "absent" spelling, so `scene` opens a pad first and then these
+/// two — and asserts it got them.
+const SCENE_SOURCE: u64 = 1;
+/// The delivery destination [`scene`] seeds. See [`SCENE_SOURCE`].
+const SCENE_DEST: u64 = 2;
+
+/// A real container-backed E3 vault owned by `who`, and the endpoint it is.
+fn make_endpoint(tw: &mut TestWorld, name: &str, who: ObjId) -> EndpointRef {
+    let object = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, name, who, Some(mush_core::LIMBO))
+        .expect("a backing object");
+    let before: Vec<u64> = snap(tw).vaults().map(|vault| vault.id.0).collect();
+    ok(
+        tw,
+        GOD,
+        &format!(
+            "@vault/create {name}=container:#{} owner=#{}",
+            object.0, who.0
+        ),
+    );
+    let fresh = snap(tw)
+        .vaults()
+        .map(|vault| vault.id.0)
+        .find(|id| !before.contains(id))
+        .expect("a fresh vault");
+    EndpointRef(VaultId(fresh))
+}
+
 /// The whole fixture: an instrument, GOD's budget and operating accounts, `funds`
 /// minted into the budget, and a two-slot `smelt` facility on object #7.
 fn scene(funds: i64) -> (TestWorld, IndustryFamilies, AccountId, AccountId) {
@@ -226,6 +271,16 @@ fn scene(funds: i64) -> (TestWorld, IndustryFamilies, AccountId, AccountId) {
     }
     ok(&mut tw, GOD, "@facility/open 7=2 smelt");
     let _ = tw.engine_mut().take_authoritative_submit();
+    // WS02-S5: the corridor's two endpoints, as real vaults GOD owns, so
+    // `live_endpoints` answers them and the draft's endpoint book carries them.
+    let _pad = make_endpoint(&mut tw, "pad", GOD);
+    let source = make_endpoint(&mut tw, "feed", GOD);
+    let destination = make_endpoint(&mut tw, "yard", GOD);
+    assert_eq!(
+        (source.vault().0, destination.vault().0),
+        (SCENE_SOURCE, SCENE_DEST),
+        "the fixture's endpoint ids are the ones the corridor names"
+    );
     (tw, families, budget, payee)
 }
 
@@ -250,9 +305,9 @@ fn seed_order(
         pinned,
         quantity,
         budget,
-        Some(endpoint(500)),
+        Some(endpoint(SCENE_SOURCE)),
         DeliveryTarget::Endpoint {
-            endpoint: endpoint(600),
+            endpoint: endpoint(SCENE_DEST),
         },
         EconomicVisibility::Parties,
     )
@@ -717,7 +772,7 @@ fn e7r1_r1_the_accounts_are_resolved_at_the_draft_not_at_the_settlement() {
     let refusal = err(
         &mut tw,
         GOD,
-        "@wo/draft tacsim.core/alloy_smelt/1=7 1 999999 500 600",
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 999999 {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(
         refusal.contains("budget account that does not exist"),
@@ -731,7 +786,7 @@ fn e7r1_r1_the_accounts_are_resolved_at_the_draft_not_at_the_settlement() {
     ok(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(tw.engine_mut().take_authoritative_submit().is_some());
 }
@@ -763,7 +818,7 @@ fn e7r1_r1_a_closed_budget_and_a_missing_payee_both_refuse_at_the_draft() {
     let refusal = err(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {third} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {third} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(
         refusal.contains("not active"),
@@ -775,7 +830,7 @@ fn e7r1_r1_a_closed_budget_and_a_missing_payee_both_refuse_at_the_draft() {
     ok(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(tw.engine_mut().take_authoritative_submit().is_some());
     // And with the budget closed as well the owner holds nothing payable at all, so
@@ -787,7 +842,7 @@ fn e7r1_r1_a_closed_budget_and_a_missing_payee_both_refuse_at_the_draft() {
     let refusal = err(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert!(
         refusal.contains("not active"),
@@ -1140,9 +1195,9 @@ fn seed_order_at(
         pinned,
         1,
         budget,
-        Some(endpoint(500)),
+        Some(endpoint(SCENE_SOURCE)),
         DeliveryTarget::Endpoint {
-            endpoint: endpoint(600),
+            endpoint: endpoint(SCENE_DEST),
         },
         EconomicVisibility::Parties,
     )
@@ -1159,7 +1214,7 @@ fn seed_metals(tw: &mut TestWorld, families: &IndustryFamilies, units: u64) {
     apply(engine, families, |txn| {
         families
             .inventory
-            .credit(txn, endpoint(500), &metals, units)
+            .credit(txn, endpoint(SCENE_SOURCE), &metals, units)
             .map(|_| ())
             .map_err(IndustryError::Inventory)
     })
@@ -1292,7 +1347,7 @@ fn vf_c1b_a_one_account_owner_drafts_and_settles() {
     ok(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     let _ = tw.engine_mut().take_authoritative_submit();
 
@@ -1364,12 +1419,12 @@ fn vf_c1d_the_draft_is_not_an_account_census_of_a_stranger() {
     let real = err(
         &mut tw,
         stranger,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=8 1 {mine} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=8 1 {mine} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     let phantom = err(
         &mut tw,
         stranger,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=4242 1 {mine} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=4242 1 {mine} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert_eq!(
         real, phantom,
@@ -1739,7 +1794,7 @@ fn vf_c13a_staff_may_not_name_a_players_account_as_a_work_orders_budget() {
     let refusal = err(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {theirs} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {theirs} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     assert_eq!(
         refusal,
@@ -2003,7 +2058,7 @@ fn vf_z2a_every_wo_command_submission_resolves_through_the_real_offer_route() {
     ok(
         &mut tw,
         GOD,
-        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} 500 600"),
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 {budget} {SCENE_SOURCE} {SCENE_DEST}"),
     );
     land(&mut tw, 0x51).expect("@wo/draft resolves");
     let id = seed_order(&mut tw, &families, 0xB15, budget, 1);
@@ -2036,6 +2091,213 @@ fn vf_b15a_a_forged_hold_id_buys_no_production_because_the_authority_is_the_purp
     );
     assert!(
         err(&mut tw, GOD, &format!("@wo/deliver {id}")).contains("budget reservation is missing")
+    );
+}
+
+// ---- Z4 — the draft corridor, one id from draft to delivered lot ----
+
+/// One endpoint pool's **scalar** — `Pool::quantity` is the scalar's own `current`,
+/// read through the very handle `wo_deliver` mints into, so the assertion below is
+/// about the pool the provider wrote and not a projection of it.
+fn pool_units(
+    tw: &mut TestWorld,
+    families: &IndustryFamilies,
+    at: EndpointRef,
+    commodity_id: &str,
+) -> u64 {
+    let what = commodity(commodity_id);
+    let engine = tw.engine_mut();
+    let mut txn = engine
+        .action_transaction(&families.deposits)
+        .expect("industry transaction");
+    families
+        .inventory
+        .pool(&mut txn, at, &what)
+        .expect("read the pool")
+        .map_or(0, |pool| pool.quantity)
+}
+
+/// One minted lot, read straight out of `inventory.lot`.
+fn lot_record(
+    tw: &mut TestWorld,
+    families: &IndustryFamilies,
+    lot: mush_inventory::LotId,
+) -> Option<mush_inventory::Lot> {
+    let engine = tw.engine_mut();
+    let mut txn = engine
+        .action_transaction(&families.deposits)
+        .expect("industry transaction");
+    txn.get(&families.inventory.lots, &lot)
+        .expect("read the lot family")
+        .cloned()
+}
+
+/// **One drafted order chains draft → submit → advance → deliver, and the output
+/// lands at the named endpoint in the recipe's own units** (Z4's missing rung).
+///
+/// Every other corridor in this file *seeds* its order with `seed_order`, which
+/// hand-builds a `WorkOrder` and installs it: the provider's `wo_draft` never runs,
+/// so nothing pins that the id, the quantity, the source and the destination a real
+/// `@wo/draft` computes are the ones the rest of the lifecycle then reads. `vf_z2a`
+/// drafts through the real offer route but then seeds a *different* id for the
+/// submit, so the drafted order dies unread. This is the fixture the rest of the
+/// workstream leans on: ONE id, produced by the provider from its own request,
+/// carried the whole way, with the destination pool read before and after and
+/// compared against `alloy_recipe`'s own output line rather than a number typed here.
+#[test]
+fn vf_z4a_one_drafted_order_runs_the_whole_corridor_and_mints_the_recipes_own_units() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    let (_, pinned) = alloy_recipe();
+    let quantity: u32 = 2;
+    let metals_before = pool_units(&mut tw, &families, endpoint(SCENE_SOURCE), "metals");
+    let alloys_before = pool_units(
+        &mut tw,
+        &families,
+        endpoint(SCENE_DEST),
+        "structural_alloys",
+    );
+
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@wo/draft tacsim.core/alloy_smelt/1=7 {quantity} {budget} {SCENE_SOURCE} {SCENE_DEST}"
+        ),
+    );
+    land(&mut tw, 0x61).expect("@wo/draft resolves through the real offer route");
+    // `wo_draft` derives the id from the request it was invoked with, so the test
+    // names the drafted order exactly the way the provider did — nothing was seeded.
+    let id = mush_industry::derive_work_order_id(mush_core::RequestUid::from_bytes([0x61; 16]), 0)
+        .expect("the drafted id");
+    assert_eq!(
+        order_state(&mut tw, &families, id),
+        WorkOrderState::Draft,
+        "the draft command really wrote a Draft order"
+    );
+    let drafted = order_record(&mut tw, &families, id);
+    assert_eq!(drafted.quantity(), quantity, "the quantity it was told");
+    assert_eq!(
+        drafted.material_source(),
+        Some(endpoint(SCENE_SOURCE)),
+        "the source the command sent survives the round trip"
+    );
+    assert_eq!(
+        drafted.destination().endpoint(),
+        endpoint(SCENE_DEST),
+        "and so does the destination — the Z4 type fix, observed"
+    );
+
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    land(&mut tw, 0x62).expect("@wo/submit resolves");
+    assert_eq!(
+        order_state(&mut tw, &families, id),
+        WorkOrderState::Running,
+        "the DRAFTED id is the one that submits"
+    );
+    run_production(&mut tw, &families, id);
+    ok(&mut tw, GOD, &format!("@wo/deliver {id}"));
+    land(&mut tw, 0x63).expect("@wo/deliver resolves");
+    assert!(
+        matches!(
+            order_state(&mut tw, &families, id),
+            WorkOrderState::Completed { .. }
+        ),
+        "and the one that completes"
+    );
+
+    let per_output = pinned
+        .outputs()
+        .first()
+        .expect("the recipe has one output line")
+        .units();
+    let per_input = pinned
+        .inputs()
+        .first()
+        .expect("the recipe has one input line")
+        .units();
+    // The output is a **lot**, not a pool credit: `wo_deliver` calls `mint_origin`,
+    // which writes `inventory.lot` and moves the endpoint's lot census, so the
+    // destination's pool scalar stays 0 and the parcel is where the units are. The
+    // lot id is derived from the delivering request, exactly as the provider derived
+    // it, so this reads the record the provider wrote and not a search for one.
+    let lot = mush_inventory::derive_lot_id(mush_core::RequestUid::from_bytes([0x63; 16]), 0)
+        .expect("the delivered lot id");
+    let delivered = lot_record(&mut tw, &families, lot).expect("the delivery minted its lot");
+    assert_eq!(
+        delivered.endpoint(),
+        endpoint(SCENE_DEST),
+        "the output landed at the NAMED endpoint"
+    );
+    assert_eq!(delivered.commodity().as_str(), "structural_alloys");
+    assert_eq!(
+        delivered.quantity(),
+        per_output * u64::from(quantity),
+        "in the recipe's honest units, times the quantity"
+    );
+    assert_eq!(
+        pool_units(
+            &mut tw,
+            &families,
+            endpoint(SCENE_DEST),
+            "structural_alloys"
+        ),
+        alloys_before,
+        "and it is a parcel, so the destination's pool scalar did not move"
+    );
+    assert_eq!(
+        pool_units(&mut tw, &families, endpoint(SCENE_SOURCE), "metals"),
+        metals_before - per_input * u64::from(quantity),
+        "while the source pool scalar fell by the recipe's inputs, times the quantity"
+    );
+}
+
+/// **A draft that names no budget account refuses in the command and queues
+/// nothing.**
+///
+/// `account` is positional, so "no account" reaches the command as `0`; `account 0`
+/// is not an account, `money::check_wo_accounts` reads `NoBudget`, and the refusal
+/// happens at the edit — before `submit` is ever called, so no authoritative
+/// submission is staged and no `Draft` order exists to hold a facility slot. The
+/// pair with `vf_z4a`: the corridor above only starts when the money end resolves.
+#[test]
+fn vf_z4b_a_draft_with_no_budget_account_refuses_and_stages_nothing() {
+    let (mut tw, families, _budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    // An id no account answers to: `NoBudget`.
+    let absent = err(
+        &mut tw,
+        GOD,
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 999999 {SCENE_SOURCE} {SCENE_DEST}"),
+    );
+    assert!(
+        absent.contains("budget account that does not exist"),
+        "the refusal names the budget, not the recipe: {absent}"
+    );
+    assert!(
+        tw.engine_mut().take_authoritative_submit().is_none(),
+        "and it staged NOTHING — no draft, no slot, no order id burnt"
+    );
+    // The positional default, `0`: in this fixture that is the system faucet, so the
+    // requester does not own it and the refusal is `NotYours`. Either way the draft
+    // dies at the edit.
+    let zero = err(
+        &mut tw,
+        GOD,
+        &format!("@wo/draft tacsim.core/alloy_smelt/1=7 1 0 {SCENE_SOURCE} {SCENE_DEST}"),
+    );
+    assert!(
+        zero.contains("budget is a reservation on the requester's own account"),
+        "account 0 is nobody's budget: {zero}"
+    );
+    assert!(
+        tw.engine_mut().take_authoritative_submit().is_none(),
+        "and that staged nothing either"
+    );
+    assert_eq!(
+        pool_units(&mut tw, &families, endpoint(SCENE_SOURCE), "metals"),
+        40,
+        "nothing was reserved, so the source pool is untouched"
     );
 }
 
@@ -2086,5 +2348,142 @@ fn vf_z1a_no_shipped_player_string_carries_a_double_space() {
         offenders.is_empty(),
         "player-visible literals with a run of spaces mid-sentence:\n{}",
         offenders.join("\n")
+    );
+}
+
+// ---- WS02-S5b: the drifted draft, on the corridor that mints ----------------
+
+/// The same [`seed_order`], with the pin written by the caller. Every other field
+/// — pack, version, recipe id and **digest** — is the authority's own, which is
+/// exactly what makes this the live shape: the two re-checks on the submit path
+/// compare those four and nothing else.
+fn seed_order_pinned(
+    tw: &mut TestWorld,
+    families: &IndustryFamilies,
+    id: u64,
+    budget: AccountId,
+    pinned: PinnedRecipe,
+) -> WorkOrderId {
+    let (recipe, _) = alloy_recipe();
+    let order = WorkOrder::draft(
+        WorkOrderId(id),
+        PrincipalId::Object(GOD),
+        PrincipalId::Object(GOD),
+        ObjId(7),
+        2,
+        1,
+        1,
+        recipe,
+        pinned,
+        1,
+        budget,
+        Some(endpoint(SCENE_SOURCE)),
+        DeliveryTarget::Endpoint {
+            endpoint: endpoint(SCENE_DEST),
+        },
+        EconomicVisibility::Parties,
+    )
+    .expect("draft a work order");
+    let engine = tw.engine_mut();
+    apply(engine, families, |txn| families.open_work_order(txn, order)).expect("seed the order");
+    WorkOrderId(id)
+}
+
+/// A pin whose output line is multiplied by a thousand.
+fn inflated_pin() -> PinnedRecipe {
+    PinnedRecipe::new(
+        vec![RecipeLine::new(commodity("metals"), 4).expect("input line")],
+        vec![RecipeLine::new(commodity("structural_alloys"), 1_000).expect("output line")],
+        capabilities(&["smelt"]),
+        3,
+    )
+    .expect("an inflated pin is perfectly well-formed — that is the whole problem")
+}
+
+fn drift_of(tw: &TestWorld, order: WorkOrderId) -> Option<mush_industry::DraftDrift> {
+    tw.world()
+        .module_state::<mush_industry::IndustryStore>()
+        .expect("industry store")
+        .drift_cancelled(order)
+}
+
+/// **The sweep is the only thing on this corridor that looks at the pinned
+/// LINES** (WS02-S5b).
+///
+/// The failure mode, run forwards: a `Draft` carrying the authority's own pack,
+/// version, recipe id and digest beside lines the authority never published is
+/// waved through by both digest re-checks — `@wo/submit` takes it, places the
+/// budget hold and stages the submission — and `wo_deliver` would then mint
+/// `order.pinned().outputs()`. One sweep later the same command refuses it.
+#[test]
+fn ws02_s5b_the_sweep_is_what_stops_a_forged_pin_the_digest_checks_wave_through() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    let forged = seed_order_pinned(&mut tw, &families, 0x5B1, budget, inflated_pin());
+
+    // Before the sweep: every check this path makes passes.
+    ok(&mut tw, GOD, &format!("@wo/submit {forged}"));
+    assert!(
+        budget_hold(&tw, forged).is_some_and(|hold| hold.status.is_held()),
+        "the money leg ran, so nothing upstream refused the pin"
+    );
+    assert!(
+        tw.engine_mut().take_authoritative_submit().is_some(),
+        "and the submission was staged: the digest re-checks cannot see the lines"
+    );
+
+    fire(&mut tw);
+    assert_eq!(
+        drift_of(&tw, forged),
+        Some(mush_industry::DraftDrift::LinesDiffer),
+        "the sweep's walk is what compares the lines"
+    );
+
+    let refusal = err(&mut tw, GOD, &format!("@wo/submit {forged}"));
+    assert!(
+        refusal.contains("You cannot do that with that work order."),
+        "the byte-identical non-oracle a forged pin gets at the prepare: {refusal}"
+    );
+    assert!(
+        !refusal.contains("has drifted"),
+        "and NOT the digest check's redraft line, which never fired: {refusal}"
+    );
+    assert!(
+        tw.engine_mut().take_authoritative_submit().is_none(),
+        "nothing is staged, so no material and no slot are reserved a second time"
+    );
+    assert_eq!(
+        order_state(&mut tw, &families, forged),
+        WorkOrderState::Draft,
+        "the record itself is untouched — the sweep marks, it does not write"
+    );
+    // The exit the refusal leaves open, and the only thing that really writes
+    // `Cancelled`: the requester's own command.
+    ok(&mut tw, GOD, &format!("@wo/cancel {forged}"));
+}
+
+/// **An honest draft survives the same sweep and still delivers** — the sweep
+/// refuses drift, not drafts.
+#[test]
+fn ws02_s5b_an_honest_draft_survives_the_sweep_and_still_delivers() {
+    let (mut tw, families, budget, _payee) = scene(1_000);
+    seed_metals(&mut tw, &families, 40);
+    let id = seed_order(&mut tw, &families, 0x5B0, budget, 1);
+
+    fire(&mut tw);
+    assert_eq!(drift_of(&tw, id), None, "an honest pin is not marked");
+
+    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
+    land(&mut tw, 0x31).expect("the submission resolves and installs");
+    assert_eq!(order_state(&mut tw, &families, id), WorkOrderState::Running);
+    run_production(&mut tw, &families, id);
+    ok(&mut tw, GOD, &format!("@wo/deliver {id}"));
+    land(&mut tw, 0x32).expect("the delivery resolves");
+    assert!(
+        matches!(
+            order_state(&mut tw, &families, id),
+            WorkOrderState::Completed { .. }
+        ),
+        "the whole corridor still runs"
     );
 }

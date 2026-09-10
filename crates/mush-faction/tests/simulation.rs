@@ -18,6 +18,11 @@ use mush_proto::OutputEvent;
 use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
 use smol_str::SmolStr;
 
+/// A store-less lens for this harness: it drives the engine's public
+/// event fan-out with no live typed-state snapshot and says so.
+const DETACHED: mush_core::TypedStateLens<'static> =
+    mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+
 fn boot() -> (Engine, ObjId, ObjId) {
     let mut world = World::new_minimal();
     world.set_now(1_000);
@@ -89,6 +94,7 @@ fn emit_canon(engine: &mut Engine, kind: &str, entities: &[ObjId]) {
             entities: entities.to_vec(),
             source: String::new(),
         },
+        DETACHED,
     );
 }
 

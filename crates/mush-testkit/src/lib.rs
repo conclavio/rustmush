@@ -25,6 +25,10 @@
 //! flattened, narrative kinds get their classic MUSH shapes ("Alice says,
 //! \"hi\"", "Alice grins."). It is deliberately simple; the real ANSI
 //! renderer lands in `mush-ansi` later and owns niceties like You-vs-Name.
+//!
+//! [`proc`] is the other half of the same idea one level out: a shared
+//! child-process harness for the tests that must drive a real binary
+//! (`mushd`, `mush-server`, `mush-gateway`) rather than a world.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
 // held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
@@ -37,12 +41,15 @@
     clippy::panic_in_result_fn
 )]
 
+pub mod proc;
+
 use std::collections::HashMap;
 
 use mush_core::{
-    Audience, Effect, Effects, Engine, GOD, GameModule, Inbound, LIMBO, ModuleBootData, ModuleOp,
-    ObjId, ObjKind, Outbox, PreparedInstallation, Registry, World, WorldCommand, WorldEvent,
-    can_perceive, event_subject, register_core_commands,
+    Audience, DetachedTypedState, Effect, Effects, Engine, GOD, GameModule, Inbound, LIMBO,
+    ModuleBootData, ModuleOp, ObjId, ObjKind, Outbox, PreparedInstallation, Registry,
+    TypedStateLens, World, WorldCommand, WorldEvent, can_perceive, event_subject,
+    register_core_commands,
 };
 use mush_proto::{NarrativeKind, ObjRef, OutputEvent, RichText, RoomView, WhoEntry};
 use smol_str::SmolStr;
@@ -372,7 +379,15 @@ impl TestWorld {
                     location == Some(*room)
                         && !exclude.contains(&viewer)
                         && subject.or_else(|| event_subject(ev)).is_none_or(|subj| {
-                            can_perceive(&self.engine.registry, self.world(), viewer, subj)
+                            can_perceive(
+                                &self.engine.registry,
+                                self.world(),
+                                viewer,
+                                subj,
+                                // The harness mirrors the fan-out without a
+                                // live store, exactly as it always has.
+                                TypedStateLens::Detached(DetachedTypedState::Test),
+                            )
                         })
                 }
                 Audience::Conn(_) => false,

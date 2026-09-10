@@ -122,7 +122,7 @@ pub use action::{
 };
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
-    ActionTxn, ActionTxnLimits, CanonicalStateBytes, MAX_ACTION_BUNDLE_BYTES,
+    ActionTxn, ActionTxnLimits, CanonicalStateBytes, DetachedTypedState, MAX_ACTION_BUNDLE_BYTES,
     MAX_ACTION_MUTATION_OPERATIONS, MAX_ACTION_STATE_BOOT_BYTES, MAX_ACTION_STATE_BOOT_RECORDS,
     MAX_ACTION_STATE_RECORD_BYTES, MAX_STATE_FAMILIES, MAX_STATE_FAMILIES_PER_OWNER,
     MAX_STATE_FAMILY_DELEGATES, MAX_STATE_FAMILY_SCAN_RECORDS, MAX_STATE_KEY_BYTES,
@@ -130,16 +130,17 @@ pub use action_state::{
     PreparedTxn, StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyHandle,
     StateFamilyId, StateFamilyPage, StateFamilyRegistry, StateFamilyRegistryBuilder,
     StateFamilyRegistryError, StateFamilyScanEntry, StateKey, StateKeyCodec, StateValueDecoder,
-    StateValueSerializer, StateValueValidator, is_action_state_persistence_key,
+    StateValueSerializer, StateValueValidator, TypedStateLens, is_action_state_persistence_key,
 };
 pub use action_window::{
     ActionWindow, ActionWindowDraft, ActionWindowError, ActionWindowGuardValidator, ActionWindowId,
     ActionWindowPhase, ActionWindowRecord, ActionWindowStateCodec, MAX_WINDOW_CAPACITY,
-    MAX_WINDOW_CATCH_UP, MAX_WINDOW_INPUT_OPERATIONS, MAX_WINDOW_OPERATION_RECEIPTS,
-    MAX_WINDOW_ORDER_KEY_PARTS, WindowDriveCause, WindowDriveDecision, WindowIntent,
-    WindowIntentSlot, WindowMode, WindowMutationReceipt, WindowMutationResult, WindowOrderKey,
-    WindowRestartPolicy, WindowTimeoutPolicy, WindowTransition,
-    action_window_state_family_descriptor,
+    MAX_WINDOW_CATCH_UP, MAX_WINDOW_INPUT_OPERATIONS, MAX_WINDOW_INPUT_RECORD_BYTES,
+    MAX_WINDOW_OPERATION_RECEIPTS, MAX_WINDOW_ORDER_KEY_PARTS, MAX_WINDOW_RECORD_BYTES,
+    WINDOW_RECORD_ENVELOPE_BYTES, WINDOW_TERMINAL_RESERVE_BYTES, WindowDriveCause,
+    WindowDriveDecision, WindowIntent, WindowIntentSlot, WindowMode, WindowMutationReceipt,
+    WindowMutationResult, WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy,
+    WindowTransition, action_window_state_family_descriptor,
 };
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use authoritative::{
@@ -236,8 +237,8 @@ pub use durable_schedule::{
 pub use engine::{
     AUTHORITATIVE_SUBMIT_QUEUE_MAX, AuthoritativeSubmit, ControlMsg, Deferred, DisconnectKind,
     Effect, Effects, Engine, Inbound, ModuleComposition, QueuedDecisionCapture,
-    StagePreparedActionError, StagedAction, StagedActionAdmissionError, StagedActionPersistence,
-    StepOutcome, WorldCommand, register_engine_commands,
+    StagePreparedActionError, StagedAction, StagedActionAdmissionError, StepOutcome, WorldCommand,
+    register_engine_commands,
 };
 pub use flags::{Flags, Powers, Privileges, Role};
 pub use ledger::{
@@ -253,7 +254,7 @@ pub use lock::{
     LockExpr, LockParseError, LockType, MAX_LOCK_EXPR_DEPTH, MAX_LOCK_PARSE_FRAMES, eval_lock,
     glob_match, parse_lock,
 };
-pub use matchit::{MatchErr, match_object};
+pub use matchit::{MatchErr, is_nearby, match_object};
 pub use mechanics::{
     BridgeDescriptor, BridgeEntry, BridgeKey, BridgeLookupError, BridgeRegistry,
     BridgeRegistryBuilder, BridgeRegistryError, CanonicalEncodingError, CanonicalId,
@@ -278,12 +279,12 @@ pub use module::{
     InterfaceAbilityProvider, InterfaceError, InterfaceReply, JobQueueSpec, MAX_AMBIENT_BYTES,
     MAX_AMBIENT_KEYS, MAX_INTERFACE_REPLY_BYTES, MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES,
     MAX_STORE_READ_BYTES, MAX_STORE_READ_KEYS, Migration, ModError, ModuleBootData, ModuleCtx,
-    ModuleOp, ModuleWrite, PanelFeedHandle, Perceive, QueryHandler, RecoveryReporter, Registrar,
-    RelayRefusal, RelaySpeaker, STORE_READ_STALE_SECS, STORE_READ_TIMEOUT_MS, Scene, SceneId,
-    StackedContext, StoreReadCompletion, StoreReadError, StoreReadResult, TickCadence, TickHandler,
-    WeatherQuery, WorldEvent, WorldEventKind, WorldObserver, WxSnapshot,
-    apply_store_read_completion, can_perceive, can_perceive_with_action_state, is_concealed,
-    is_concealed_with_action_state, perceives_via, room_ambient,
+    ModuleOp, ModuleWrite, PanelFeedHandle, Perceive, PersistDelegation, QueryHandler,
+    RecoveryReporter, Registrar, RelayRefusal, RelaySpeaker, STORE_READ_STALE_SECS,
+    STORE_READ_TIMEOUT_MS, Scene, SceneId, StackedContext, StateSlotDenied, StoreReadCompletion,
+    StoreReadError, StoreReadResult, TickCadence, TickHandler, WeatherQuery, WorldEvent,
+    WorldEventKind, WorldObserver, WxSnapshot, apply_store_read_completion, can_perceive,
+    is_concealed, perceives_via, room_ambient,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use offer::{

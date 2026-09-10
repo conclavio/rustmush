@@ -21,6 +21,11 @@ use mush_scenes::{
 use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
 use smol_str::SmolStr;
 
+/// A store-less lens for this harness: it drives the engine's public
+/// event fan-out with no live typed-state snapshot and says so.
+const DETACHED: mush_core::TypedStateLens<'static> =
+    mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+
 // ----------------------------------------------------------------------
 // Harness
 // ----------------------------------------------------------------------
@@ -163,6 +168,7 @@ fn destroy(engine: &mut Engine, obj: ObjId) {
         &mut engine.world,
         &mut out,
         &WorldEvent::ObjDestroyed { obj },
+        DETACHED,
     );
 }
 
@@ -557,6 +563,7 @@ fn emit_said(engine: &mut Engine, who: ObjId, room: ObjId, kind: NarrativeKind, 
             kind,
             text: text.into(),
         },
+        DETACHED,
     );
 }
 
@@ -568,6 +575,7 @@ fn emit_moved(engine: &mut Engine, who: ObjId, from: Option<ObjId>, to: ObjId) {
         &mut engine.world,
         &mut out,
         &WorldEvent::Moved { who, from, to },
+        DETACHED,
     );
 }
 
@@ -805,6 +813,7 @@ fn emit_rolled(engine: &mut Engine, who: ObjId, room: ObjId, summary: &str) {
             room,
             summary: summary.into(),
         },
+        DETACHED,
     );
 }
 

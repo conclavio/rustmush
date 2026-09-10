@@ -3,8 +3,7 @@ use mush_core::{
     IdempotencyKey, IdempotencyScope, Inbound, IngressEnvelope, IngressPayload,
     IngressSurfaceVersion, LegalActionQuery, OfferExecutionContext, OfferKeyRing, OfferSecret,
     OfferSubmission, Outbox, OwnerId, PerceivedRef, PrincipalId, ReplayWrite, RequestUid,
-    ResolutionKeyRing, ResolutionSecret, ScopedIdempotencyKey, StagedActionPersistence,
-    is_action_state_persistence_key,
+    ResolutionKeyRing, ResolutionSecret, ScopedIdempotencyKey, is_action_state_persistence_key,
 };
 use mush_jobs::JobsModule;
 use mush_proto::{OutputEvent, PanelFrameKind, ProjectedActionStatus, VitalValue, VitalsFrame};
@@ -174,16 +173,13 @@ async fn execute_offer_announcing(
         )
         .unwrap();
     ActionCoordinator::prepare_and_stage_resolved(permit, world.engine_mut(), resolved).unwrap();
-    let (persistence, installation) = world
+    let (bundle, installation) = world
         .engine_mut()
         .take_staged_action()
         .unwrap()
         .expect("production action staged")
         .into_parts();
-    let bundle = match persistence {
-        StagedActionPersistence::Authoritative(bundle) => *bundle,
-        StagedActionPersistence::Legacy(_) => panic!("production action used the legacy lane"),
-    };
+    let bundle = *bundle;
     store
         .reserve_authoritative_intent(bundle.clone())
         .await

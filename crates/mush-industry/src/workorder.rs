@@ -418,6 +418,28 @@ pub trait RecipeAuthority: Send + Sync {
         version: u32,
         id: &CanonicalId,
     ) -> Option<(RecipeRef, PinnedRecipe)>;
+
+    /// **What generation of the catalog [`RecipeAuthority::catalog`] would answer
+    /// from** — a value that moves when, and only when, a pack publish changes the
+    /// answer.
+    ///
+    /// It exists so the work-order draft offer can cache the hashed catalog:
+    /// `project_legal_actions` runs every provider on **every** projection pass,
+    /// including every authoritative command submission and every decision
+    /// capture, so walking and hashing every published recipe once per projection
+    /// is not affordable. The offer keys its cache on this, so the walk happens
+    /// once per publish instead.
+    fn catalog_revision(&self, world: &World) -> u64;
+
+    /// **Every published recipe this world can run**, in a deterministic order
+    /// (`(pack, version, id)`), each with the pinned lines a draft would carry.
+    ///
+    /// A retired pack version contributes nothing — the same fail-closed rule
+    /// [`RecipeAuthority::resolve`] uses. Two calls against one unchanged world
+    /// answer the identical sequence, because the composition root's impl reads
+    /// `BTreeMap`s all the way down; the offer's cache and its byte-identical
+    /// projections both rest on that.
+    fn catalog(&self, world: &World) -> Vec<(RecipeRef, PinnedRecipe)>;
 }
 
 /// Where a completed unit is delivered.

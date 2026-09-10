@@ -93,8 +93,11 @@
 // held at zero. `crates/mush-contract-tests/tests/restriction_lints.rs` carries
 // the measurement this set was cut from — including the counts of the lints
 // NOT named here — and fails if this attribute loses one of them.
+// WS01-S10B: with the six lock-poison `.expect`s below converted to the
+// recovery policy, this crate's production `expect` surface is zero too.
 #![deny(
     clippy::unwrap_used,
+    clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
     clippy::unreachable,
@@ -104,7 +107,10 @@
 mod conn;
 mod flood;
 mod manager;
+mod poison;
 mod sanitize;
+
+pub(crate) use poison::{locked, read_locked, write_locked};
 
 pub use conn::{ConnId, ConnectionHandle, Sink};
 pub use flood::{FloodBucket, FloodVerdict};

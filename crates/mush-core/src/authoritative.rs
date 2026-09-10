@@ -5,9 +5,11 @@
 //! store IDs. Persistence backends can therefore replay an accepted intent
 //! until every target matches without rerunning game logic.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
-use serde::de::Error as _;
+use serde::de::value::MapAccessDeserializer;
+use serde::de::{DeserializeSeed, Error as _, IntoDeserializer, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 use smol_str::SmolStr;
@@ -496,6 +498,22 @@ impl DurableOutboxIntent {
         })
     }
 
+    /// Re-stamp this intent's position in the finished bundle order.
+    ///
+    /// A provider chooses ordinals only inside its own emission group; the
+    /// coordinator concatenates the groups and renumbers the whole vector
+    /// `0..n` so a trigger reusing the root's numbering cannot trip the
+    /// contiguity check far from its cause. The ordinal is inside
+    /// `payload_hash`, so the hash is rebuilt with it — and a group that was
+    /// already contiguous renumbers to itself, byte for byte, leaving both
+    /// `payload_hash` and the enclosing `bundle_hash` where they were.
+    pub fn renumbered(self, ordinal: u16) -> Result<Self, AuthoritativeBundleError> {
+        if self.ordinal == ordinal {
+            return Ok(self);
+        }
+        Self::new(ordinal, self.owner, self.adapter, self.payload)
+    }
+
     #[must_use]
     pub const fn ordinal(&self) -> u16 {
         self.ordinal
@@ -598,6 +616,10 @@ pub struct AuthoritativeBundle {
     encoded_len: usize,
 }
 
+/// Retired wire arm. A greenfield store holds v4 bundles only, so nothing
+/// replays into this one any more (WS03-S6) — it stays in the tree so that
+/// restoring an arm is a small edit rather than a re-derivation.
+#[allow(dead_code)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthoritativeBundleWireV2 {
@@ -620,6 +642,10 @@ struct AuthoritativeBundleWireV2 {
     bundle_hash: CanonicalHash,
 }
 
+/// Retired wire arm. A greenfield store holds v4 bundles only, so nothing
+/// replays into this one any more (WS03-S6) — it stays in the tree so that
+/// restoring an arm is a small edit rather than a re-derivation.
+#[allow(dead_code)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthoritativeBundleWireV3 {
@@ -667,6 +693,10 @@ struct AuthoritativeBundleWireV4 {
     bundle_hash: CanonicalHash,
 }
 
+/// Retired wire arm. A greenfield store holds v4 bundles only, so nothing
+/// replays into this one any more (WS03-S6) — it stays in the tree so that
+/// restoring an arm is a small edit rather than a re-derivation.
+#[allow(dead_code)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthoritativeBundleWireV1 {
@@ -686,15 +716,6 @@ struct AuthoritativeBundleWireV1 {
     eligible_witnesses: Vec<PrincipalId>,
     durable_outbox: Vec<DurableOutboxIntent>,
     bundle_hash: CanonicalHash,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum AuthoritativeBundleWire {
-    V4(Box<AuthoritativeBundleWireV4>),
-    V3(Box<AuthoritativeBundleWireV3>),
-    V2(Box<AuthoritativeBundleWireV2>),
-    V1(Box<AuthoritativeBundleWireV1>),
 }
 
 impl AuthoritativeBundle {
@@ -994,142 +1015,148 @@ impl<'de> Deserialize<'de> for AuthoritativeBundle {
     where
         D: Deserializer<'de>,
     {
-        let wire = AuthoritativeBundleWire::deserialize(deserializer)?;
-        match wire {
-            AuthoritativeBundleWire::V4(wire) => {
-                let wire = *wire;
-                if wire.schema_version != Self::SCHEMA_VERSION {
-                    return Err(D::Error::custom(format!(
-                        "unsupported authoritative bundle schema version {}",
-                        wire.schema_version
-                    )));
-                }
-                Self::build(
-                    AuthoritativeBundleDraft {
-                        token: wire.token,
-                        request: wire.request,
-                        idempotency: wire.idempotency,
-                        ingress_hash: wire.ingress_hash,
-                        request_hash: wire.request_hash,
-                        plan_hash: wire.plan_hash,
-                        action: wire.action,
-                        provider: wire.provider,
-                        cause: wire.cause,
-                        definitions: wire.definitions,
-                        writes: wire.writes,
-                        outcome: wire.outcome,
-                        resolution: wire.resolution,
-                        semantic_events: wire.semantic_events,
-                        eligible_witnesses: wire.eligible_witnesses,
-                        durable_outbox: wire.durable_outbox,
-                    },
-                    wire.schema_version,
-                    true,
-                    Some(wire.bundle_hash),
-                    Some(wire.ledger_seals),
-                )
+        deserializer.deserialize_map(AuthoritativeBundleVisitor)
+    }
+}
+
+/// Buffers one wire document, dispatches on its `schema_version`, and replays
+/// the buffer into exactly one wire struct (WS03-S6).
+///
+/// `#[serde(untagged)]` used to try every arm in turn and, on the last
+/// failure, report `data did not match any variant` — a v4 document with one
+/// bad field lost the derived diagnostic entirely. It also buffered through
+/// serde's private `Content`, so buffering here costs the same. The buffer is
+/// `Vec<(String, Value)>` rather than a `serde_json::Map` on purpose: a map
+/// keeps the last of two identical keys silently, and the repeated-key
+/// refusal below is the whole point of holding the entries as a list.
+struct AuthoritativeBundleVisitor;
+
+impl<'de> Visitor<'de> for AuthoritativeBundleVisitor {
+    type Value = AuthoritativeBundle;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an authoritative bundle document")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut seen = BTreeSet::new();
+        let mut entries: Vec<(String, Value)> = Vec::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let value = map.next_value::<Value>()?;
+            if !seen.insert(key.clone()) {
+                return Err(A::Error::custom(format!("duplicate field `{key}`")));
             }
-            AuthoritativeBundleWire::V3(wire) => {
-                let wire = *wire;
-                if wire.schema_version != Self::RESOLUTION_SCHEMA_VERSION {
-                    return Err(D::Error::custom(format!(
-                        "unsupported authoritative bundle schema version {}",
-                        wire.schema_version
-                    )));
-                }
-                Self::build(
-                    AuthoritativeBundleDraft {
-                        token: wire.token,
-                        request: wire.request,
-                        idempotency: wire.idempotency,
-                        ingress_hash: wire.ingress_hash,
-                        request_hash: wire.request_hash,
-                        plan_hash: wire.plan_hash,
-                        action: wire.action,
-                        provider: wire.provider,
-                        cause: wire.cause,
-                        definitions: wire.definitions,
-                        writes: wire.writes,
-                        outcome: wire.outcome,
-                        resolution: Some(wire.resolution),
-                        semantic_events: wire.semantic_events,
-                        eligible_witnesses: wire.eligible_witnesses,
-                        durable_outbox: wire.durable_outbox,
-                    },
-                    wire.schema_version,
-                    true,
-                    Some(wire.bundle_hash),
-                    None,
-                )
-            }
-            AuthoritativeBundleWire::V1(wire) => {
-                let wire = *wire;
-                if wire.schema_version != Self::LEGACY_SCHEMA_VERSION {
-                    return Err(D::Error::custom(format!(
-                        "unsupported authoritative bundle schema version {}",
-                        wire.schema_version
-                    )));
-                }
-                Self::build(
-                    AuthoritativeBundleDraft {
-                        token: wire.token,
-                        request: wire.request,
-                        idempotency: wire.idempotency,
-                        ingress_hash: wire.ingress_hash,
-                        request_hash: wire.request_hash,
-                        plan_hash: wire.plan_hash,
-                        action: wire.action,
-                        provider: wire.provider,
-                        cause: wire.cause,
-                        definitions: wire.definitions,
-                        writes: wire.writes,
-                        outcome: wire.outcome,
-                        resolution: None,
-                        semantic_events: Vec::new(),
-                        eligible_witnesses: wire.eligible_witnesses,
-                        durable_outbox: wire.durable_outbox,
-                    },
-                    wire.schema_version,
-                    true,
-                    Some(wire.bundle_hash),
-                    None,
-                )
-            }
-            AuthoritativeBundleWire::V2(wire) => {
-                let wire = *wire;
-                if wire.schema_version != Self::SEMANTIC_EVENT_SCHEMA_VERSION {
-                    return Err(D::Error::custom(format!(
-                        "unsupported authoritative bundle schema version {}",
-                        wire.schema_version
-                    )));
-                }
-                Self::build(
-                    AuthoritativeBundleDraft {
-                        token: wire.token,
-                        request: wire.request,
-                        idempotency: wire.idempotency,
-                        ingress_hash: wire.ingress_hash,
-                        request_hash: wire.request_hash,
-                        plan_hash: wire.plan_hash,
-                        action: wire.action,
-                        provider: wire.provider,
-                        cause: wire.cause,
-                        definitions: wire.definitions,
-                        writes: wire.writes,
-                        outcome: wire.outcome,
-                        resolution: None,
-                        semantic_events: wire.semantic_events,
-                        eligible_witnesses: wire.eligible_witnesses,
-                        durable_outbox: wire.durable_outbox,
-                    },
-                    wire.schema_version,
-                    true,
-                    Some(wire.bundle_hash),
-                    None,
-                )
-            }
+            entries.push((key, value));
         }
-        .map_err(D::Error::custom)
+
+        let Some((_, claimed)) = entries.iter().find(|(key, _)| key == "schema_version") else {
+            return Err(A::Error::missing_field("schema_version"));
+        };
+        let version = claimed
+            .as_u64()
+            .and_then(|version| u16::try_from(version).ok())
+            .ok_or_else(|| {
+                A::Error::custom(format!(
+                    "authoritative bundle schema_version must be a u16; found {claimed}"
+                ))
+            })?;
+        if version != AuthoritativeBundle::SCHEMA_VERSION {
+            return Err(A::Error::custom(format!(
+                "unsupported authoritative bundle schema version {version}"
+            )));
+        }
+
+        let wire = AuthoritativeBundleWireV4::deserialize(MapAccessDeserializer::new(
+            BufferedFields::new(entries),
+        ))
+        .map_err(|err| {
+            A::Error::custom(format!(
+                "authoritative bundle schema version {version}: {err}"
+            ))
+        })?;
+        AuthoritativeBundle::build(
+            AuthoritativeBundleDraft {
+                token: wire.token,
+                request: wire.request,
+                idempotency: wire.idempotency,
+                ingress_hash: wire.ingress_hash,
+                request_hash: wire.request_hash,
+                plan_hash: wire.plan_hash,
+                action: wire.action,
+                provider: wire.provider,
+                cause: wire.cause,
+                definitions: wire.definitions,
+                writes: wire.writes,
+                outcome: wire.outcome,
+                resolution: wire.resolution,
+                semantic_events: wire.semantic_events,
+                eligible_witnesses: wire.eligible_witnesses,
+                durable_outbox: wire.durable_outbox,
+            },
+            wire.schema_version,
+            true,
+            Some(wire.bundle_hash),
+            Some(wire.ledger_seals),
+        )
+        .map_err(A::Error::custom)
+    }
+}
+
+/// The buffered entries, replayed as a map for one derived wire struct.
+///
+/// This is `MapDeserializer` plus the one thing it cannot do: name the field
+/// whose value failed. serde's derive reports a type mismatch as bare
+/// `invalid type: integer ..., expected a string`, and a buffered replay has
+/// no line or column to fall back on, so the key is attached here — the
+/// derive's own `unknown field` / `missing field` / `duplicate field` errors
+/// already carry theirs and pass through untouched.
+struct BufferedFields {
+    entries: std::vec::IntoIter<(String, Value)>,
+    pending: Option<(String, Value)>,
+}
+
+impl BufferedFields {
+    fn new(entries: Vec<(String, Value)>) -> Self {
+        Self {
+            entries: entries.into_iter(),
+            pending: None,
+        }
+    }
+}
+
+impl<'de> MapAccess<'de> for BufferedFields {
+    type Error = serde_json::Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
+    where
+        K: DeserializeSeed<'de>,
+    {
+        let Some((key, value)) = self.entries.next() else {
+            return Ok(None);
+        };
+        let deserializer = key.clone().into_deserializer();
+        self.pending = Some((key, value));
+        seed.deserialize(deserializer).map(Some)
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        let Some((key, value)) = self.pending.take() else {
+            return Err(serde_json::Error::custom(
+                "authoritative bundle field value requested before its key",
+            ));
+        };
+        seed.deserialize(value)
+            .map_err(|err| serde_json::Error::custom(format!("field `{key}`: {err}")))
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.entries.len())
     }
 }
 
@@ -1561,7 +1588,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v1_bundle_round_trips_without_inventing_events() {
+    fn legacy_v1_bundle_encodes_but_is_no_longer_read_back() {
         let mut legacy = draft();
         legacy.semantic_events.clear();
         let bundle = AuthoritativeBundle::build(
@@ -1575,13 +1602,20 @@ mod tests {
         let encoded = serde_json::to_value(&bundle).unwrap();
         assert_eq!(encoded["schema_version"], 1);
         assert!(encoded.get("semantic_events").is_none());
-        let decoded: AuthoritativeBundle = serde_json::from_value(encoded).unwrap();
-        assert_eq!(decoded, bundle);
-        assert!(decoded.semantic_events().is_empty());
+        // WS03-S6: a greenfield store holds v4 bundles only, so the v1 replay
+        // arm is gone. The wire struct and the legacy hash domain stay in the
+        // tree, and the refusal names the version rather than reporting that
+        // the data matched no variant.
+        let err = serde_json::from_value::<AuthoritativeBundle>(encoded).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported authoritative bundle schema version 1"),
+            "{err}"
+        );
     }
 
     #[test]
-    fn legacy_v2_and_v3_bundles_remain_strictly_readable() {
+    fn legacy_v2_and_v3_bundles_are_refused_by_version() {
         let v2 = AuthoritativeBundle::build(
             draft(),
             AuthoritativeBundle::SEMANTIC_EVENT_SCHEMA_VERSION,
@@ -1594,9 +1628,11 @@ mod tests {
         assert_eq!(encoded_v2["schema_version"], 2);
         assert!(encoded_v2.get("resolution").is_none());
         assert!(encoded_v2.get("ledger_seals").is_none());
-        assert_eq!(
-            serde_json::from_value::<AuthoritativeBundle>(encoded_v2).unwrap(),
-            v2
+        let err = serde_json::from_value::<AuthoritativeBundle>(encoded_v2).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported authoritative bundle schema version 2"),
+            "{err}"
         );
 
         let v3 = AuthoritativeBundle::build(
@@ -1611,9 +1647,61 @@ mod tests {
         assert_eq!(encoded_v3["schema_version"], 3);
         assert!(encoded_v3.get("resolution").is_some());
         assert!(encoded_v3.get("ledger_seals").is_none());
-        assert_eq!(
-            serde_json::from_value::<AuthoritativeBundle>(encoded_v3).unwrap(),
-            v3
+        let err = serde_json::from_value::<AuthoritativeBundle>(encoded_v3).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported authoritative bundle schema version 3"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_v4_bundle_with_one_bad_field_names_that_field() {
+        let bundle = AuthoritativeBundle::new(draft()).unwrap();
+        let mut encoded = serde_json::to_value(&bundle).unwrap();
+        encoded["plan_hash"] = json!(7);
+        // Buffering cannot preserve a line or a column, so the diagnostic is
+        // the offending field name plus the version the document claimed —
+        // not the untagged enum's "data did not match any variant".
+        let err = serde_json::from_value::<AuthoritativeBundle>(encoded.clone()).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("plan_hash"), "{text}");
+        assert!(text.contains("schema version 4"), "{text}");
+        assert!(!text.contains("did not match any variant"), "{text}");
+
+        let err = serde_json::from_str::<AuthoritativeBundle>(&encoded.to_string()).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("plan_hash"), "{text}");
+        assert!(text.contains("schema version 4"), "{text}");
+    }
+
+    #[test]
+    fn an_unknown_schema_version_is_reported_as_such() {
+        let bundle = AuthoritativeBundle::new(draft()).unwrap();
+        let mut encoded = serde_json::to_value(&bundle).unwrap();
+        encoded["schema_version"] = json!(99);
+        let err = serde_json::from_value::<AuthoritativeBundle>(encoded.clone()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported authoritative bundle schema version 99"),
+            "{err}"
+        );
+
+        // A version that is not a u16 at all is refused before any arm is
+        // chosen, and is never coerced into one.
+        encoded["schema_version"] = json!("four");
+        let err = serde_json::from_value::<AuthoritativeBundle>(encoded.clone()).unwrap_err();
+        assert!(
+            err.to_string().contains("schema_version must be a u16"),
+            "{err}"
+        );
+
+        let object = encoded.as_object_mut().unwrap();
+        object.remove("schema_version");
+        let err = serde_json::from_value::<AuthoritativeBundle>(encoded).unwrap_err();
+        assert!(
+            err.to_string().contains("missing field `schema_version`"),
+            "{err}"
         );
     }
 

@@ -103,14 +103,14 @@ use crate::store::{AuthoritativeStore, ModuleDocs, ObjectStore};
 use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
-    AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReceipt,
-    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BoundIdempotencyStatus,
-    BundleStatus, CharacterRef, DiscordBanRec, DiscordCodeRecord, DiscordLinkRec,
-    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReadbackPhase,
+    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
+    BoundIdempotencyStatus, BundleStatus, CharacterRef, DiscordBanRec, DiscordCodeRecord,
+    DiscordLinkRec, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
     MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
-    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
-    validate_module_ns, validate_module_op, validate_token_hash,
+    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, json_documents_agree,
+    validate_module_key, validate_module_ns, validate_module_op, validate_token_hash,
 };
 
 /// Prefix of per-object JSON docs.
@@ -417,6 +417,75 @@ fn plan_authoritative_replay(
         .collect()
 }
 
+/// Resolve a script's `READBACK_MISMATCH:<index>` against the plan that was
+/// sent, so the refusal names the one key whose post-image disagreed.
+///
+/// Both scripts walk their replay pairs 1-based in the exact order `planned`
+/// was pushed into `ARGV`, so the index they report is a direct offset into
+/// the same slice the caller still holds. This resolution is local to the
+/// call sites that have a plan in scope; [`authoritative_script_error`] is
+/// shared by ten of them and stays a plain code translator. Anything that is
+/// not a readback mismatch — or an index the plan cannot explain — falls
+/// through to it unchanged.
+fn authoritative_readback_error(
+    code: &str,
+    planned: &[RedisReplayWrite],
+    phase: AuthoritativeReadbackPhase,
+) -> Option<StoreError> {
+    let write = planned.get(readback_mismatch_index(code)?.checked_sub(1)?)?;
+    Some(StoreError::AuthoritativeReadbackMismatch {
+        key: write.key.clone(),
+        phase,
+    })
+}
+
+/// The 1-based replay index a `READBACK_MISMATCH:<index>` reports, or `None`
+/// for any other code.
+///
+/// Unresolved against the plan on purpose: checkpoint has to decide what kind
+/// of write the index names before it can decide whether the refusal is
+/// re-verifiable, and [`authoritative_readback_error`] still owns turning an
+/// index into the refusal itself.
+fn readback_mismatch_index(code: &str) -> Option<usize> {
+    code.strip_prefix("READBACK_MISMATCH:")?
+        .parse::<usize>()
+        .ok()
+}
+
+/// The prefix finalize returns when its own `JSON.SET` read back as different
+/// bytes.
+const FINALIZED_RENORMALISED: &str = "FINALIZED_RENORMALISED:";
+
+/// Resolve finalize's renormalisation *observation*.
+///
+/// `finalize_authoritative.lua` applies its replay writes and re-reads them in
+/// one script, so a `json_set` target that reads back as different bytes says
+/// only that RedisJSON re-serialized the document the same script had just
+/// handed it — the write landed. That is not a refusal (refusing would strand a
+/// durably applied post-image), so the script finishes and reports the first
+/// index it saw; the caller logs it and counts it.
+///
+/// `Some` means "this code is that observation", with the planned key the index
+/// names, or `None` inside it when the index is not one this plan can explain.
+/// An unexplained index is still an observation and never a refusal: the script
+/// has already written the receipt by the time it returns this code, and a
+/// retry would take the idempotent arm and answer `FINALIZED` anyway, so
+/// refusing here would be a coin toss rather than a verdict.
+fn finalize_renormalisation<'a>(
+    code: &str,
+    planned: &'a [RedisReplayWrite],
+) -> Option<Option<&'a str>> {
+    let index = code.strip_prefix(FINALIZED_RENORMALISED)?;
+    Some(
+        index
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| planned.get(index))
+            .map(|write| write.key.as_str()),
+    )
+}
+
 fn authoritative_script_error(code: &str) -> StoreError {
     if code == "TOKEN_CONFLICT" {
         return StoreError::AuthoritativeTokenConflict;
@@ -667,6 +736,18 @@ pub struct RedisStore {
     client: Client,
     /// The ledger archive tier, when attached (J5).
     archive: Option<std::sync::Arc<crate::archive::LedgerArchive>>,
+    /// How many finalize readbacks have observed RedisJSON renormalizing a
+    /// post-image the same script had just written. Not an error count: the
+    /// write landed. It is the only witness that the relaxed `json_set` arm
+    /// ever fires, so an operator can tell "provably cannot happen" from
+    /// "happens on every write" without a live experiment.
+    renormalised_finalize_readbacks: std::sync::atomic::AtomicU64,
+    /// How many checkpoints have re-verified a refused readback as a document
+    /// and retried the script once. Also not an error count: the write is
+    /// there, spelled differently. It is the bound as much as the witness —
+    /// one per checkpoint, ever, because the retry carries the verified
+    /// indices and a second disagreement is a refusal.
+    reverified_checkpoint_readbacks: std::sync::atomic::AtomicU64,
 }
 
 impl RedisStore {
@@ -696,6 +777,8 @@ impl RedisStore {
         Ok(RedisStore {
             client,
             archive: None,
+            renormalised_finalize_readbacks: std::sync::atomic::AtomicU64::new(0),
+            reverified_checkpoint_readbacks: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -735,6 +818,8 @@ impl RedisStore {
         RedisStore {
             client,
             archive: None,
+            renormalised_finalize_readbacks: std::sync::atomic::AtomicU64::new(0),
+            reverified_checkpoint_readbacks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -743,6 +828,74 @@ impl RedisStore {
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// How many finalize readbacks have observed a renormalized JSON
+    /// post-image on this connection (see the field, and the readback loop in
+    /// `lua/finalize_authoritative.lua`).
+    ///
+    /// Zero is the expected reading; a non-zero one says RedisJSON does not
+    /// echo `serde_json`'s bytes, which is exactly the fact the byte compare
+    /// used to hide behind a refusal.
+    #[must_use]
+    pub fn renormalised_finalize_readbacks(&self) -> u64 {
+        self.renormalised_finalize_readbacks
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many checkpoints on this connection have re-verified a refused
+    /// readback as a document and re-issued the script once (see the field,
+    /// and the readback loop in `lua/checkpoint_authoritative.lua`).
+    ///
+    /// It never exceeds one per checkpoint: the retry carries the indices this
+    /// store proved, and any disagreement the retry still reports is the
+    /// refusal it always was.
+    #[must_use]
+    pub fn reverified_checkpoint_readbacks(&self) -> u64 {
+        self.reverified_checkpoint_readbacks
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Re-read every `json_set` target in `planned` and answer the 1-based
+    /// replay indices whose stored document is the one the plan says it is —
+    /// whatever the backend spelled it as.
+    ///
+    /// Called only after `checkpoint_authoritative.lua` has already refused on
+    /// bytes, so the cost is paid only when the bytes already differ, and only
+    /// on the json targets: `string_set` (`GET` after `SET`) and `delete`
+    /// (`EXISTS` after `DEL`) are exact on both sides of the round trip and a
+    /// disagreement there is a real clobber.
+    ///
+    /// Every json target is checked, not just the one the script named. The
+    /// script reports the *first* index that disagreed and stops, so a backend
+    /// that respells one post-image respells the others too; verifying only the
+    /// named index would spend the single retry to reach the next one and then
+    /// refuse — a bundle with two JSON writes could never checkpoint at all.
+    /// One sweep of at most one `JSON.GET` per json write buys a retry that can
+    /// actually succeed.
+    ///
+    /// The re-read is not atomic with the refused script. A key changed in that
+    /// window can be verified as equal and let the checkpoint proceed against a
+    /// state a concurrent writer produced — which the `OUTBOX`/CAS guards in the
+    /// script still gate, and which boot reconcile re-verifies behind it.
+    async fn reverified_json_post_images(
+        &self,
+        planned: &[RedisReplayWrite],
+    ) -> Result<Vec<usize>, StoreError> {
+        let mut verified = Vec::new();
+        for (slot, write) in planned.iter().enumerate() {
+            if write.kind != "json_set" {
+                continue;
+            }
+            let Some(observed) = json_doc_text(&self.client, &write.key).await? else {
+                continue;
+            };
+            if json_documents_agree(&observed, &write.post_image) {
+                // The script counts its replay pairs from one.
+                verified.push(slot.saturating_add(1));
+            }
+        }
+        Ok(verified)
     }
 
     /// Refuse the stronger host-power-loss receipt promise unless the live
@@ -1603,8 +1756,27 @@ impl AuthoritativeStore for RedisStore {
                 .client
                 .eval(FINALIZE_AUTHORITATIVE_LUA, keys, args)
                 .await?;
-            if code != "FINALIZED" {
-                return Err(authoritative_script_error(&code));
+            if let Some(key) = finalize_renormalisation(&code, &planned) {
+                // Not a fault: the script applied the write and then read its
+                // own JSON.SET back as different bytes. Loud, counted, and
+                // finalized — the alternative is stranding a post-image that
+                // is durably on disk.
+                let observed = self
+                    .renormalised_finalize_readbacks
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    .saturating_add(1);
+                tracing::warn!(
+                    key = key.unwrap_or("<unresolved index>"),
+                    observed,
+                    "RedisJSON renormalized a finalize post-image; the write landed"
+                );
+            } else if code != "FINALIZED" {
+                return Err(authoritative_readback_error(
+                    &code,
+                    &planned,
+                    AuthoritativeReadbackPhase::Finalize,
+                )
+                .unwrap_or_else(|| authoritative_script_error(&code)));
             }
             let Some(stored) = self.load_validated_authoritative(token).await? else {
                 return Err(StoreError::AuthoritativeCorrupt(
@@ -1699,46 +1871,106 @@ impl AuthoritativeStore for RedisStore {
                     .map(|(item_id, _)| *item_id)
                     .collect::<Vec<_>>(),
             )?;
-            let mut keys = vec![
-                authoritative_intent_key(token),
-                authoritative_receipt_key(token),
-                authoritative_idempotency_key(bundle.idempotency())?,
-                AUTHORITATIVE_PENDING_INDEX.to_owned(),
-                AUTHORITATIVE_RETAINED_COUNT.to_owned(),
-                AUTHORITATIVE_RETAINED_BYTES.to_owned(),
-                AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
-                authoritative_outbox_parent_key(token),
-            ];
-            keys.extend(planned.iter().map(|write| write.key.clone()));
-            keys.extend(
-                outbox_docs
-                    .iter()
-                    .map(|(item_id, _)| authoritative_outbox_key(*item_id)),
-            );
-            let mut args = vec![
-                intent_doc.clone(),
-                prior_receipt_doc,
-                checkpoint_doc,
-                binding_doc,
-                token.to_string(),
-                intent_doc.len().to_string(),
-                planned.len().to_string(),
-                outbox_docs.len().to_string(),
-                outbox_parent_doc,
-            ];
-            for write in &planned {
-                args.push(write.kind.to_owned());
-                args.push(write.post_image.clone());
-            }
-            args.extend(outbox_docs.iter().map(|(_, doc)| doc.clone()));
-            let code: String = self
-                .client
-                .eval(CHECKPOINT_AUTHORITATIVE_LUA, keys, args)
-                .await?;
+            let idempotency_key = authoritative_idempotency_key(bundle.idempotency())?;
+            // One EVAL's KEYS and ARGV, plus the `verified` tail: the replay
+            // indices whose json post-image this store has already re-verified
+            // as a document after the script refused it on bytes. Empty on the
+            // first attempt, and there is only ever a second.
+            let call = |verified: &[usize]| {
+                let mut keys = vec![
+                    authoritative_intent_key(token),
+                    authoritative_receipt_key(token),
+                    idempotency_key.clone(),
+                    AUTHORITATIVE_PENDING_INDEX.to_owned(),
+                    AUTHORITATIVE_RETAINED_COUNT.to_owned(),
+                    AUTHORITATIVE_RETAINED_BYTES.to_owned(),
+                    AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
+                    authoritative_outbox_parent_key(token),
+                ];
+                keys.extend(planned.iter().map(|write| write.key.clone()));
+                keys.extend(
+                    outbox_docs
+                        .iter()
+                        .map(|(item_id, _)| authoritative_outbox_key(*item_id)),
+                );
+                let mut args = vec![
+                    intent_doc.clone(),
+                    prior_receipt_doc.clone(),
+                    checkpoint_doc.clone(),
+                    binding_doc.clone(),
+                    token.to_string(),
+                    intent_doc.len().to_string(),
+                    planned.len().to_string(),
+                    outbox_docs.len().to_string(),
+                    outbox_parent_doc.clone(),
+                ];
+                for write in &planned {
+                    args.push(write.kind.to_owned());
+                    args.push(write.post_image.clone());
+                }
+                args.extend(outbox_docs.iter().map(|(_, doc)| doc.clone()));
+                args.push(verified.len().to_string());
+                args.extend(verified.iter().map(usize::to_string));
+                (keys, args)
+            };
+            // At most two evaluations, ever. The first compares bytes; if it
+            // refuses a json target this store can prove is the right document,
+            // the second runs with that proof and nothing else changed. A
+            // disagreement the second one still reports is the deterministic
+            // refusal it always was — never another round.
+            let mut verified: Vec<usize> = Vec::new();
+            let code = loop {
+                let (keys, args) = call(&verified);
+                let code: String = self
+                    .client
+                    .eval(CHECKPOINT_AUTHORITATIVE_LUA, keys, args)
+                    .await?;
+                let Some(index) = readback_mismatch_index(&code) else {
+                    break code;
+                };
+                if !verified.is_empty() {
+                    break code;
+                }
+                let mismatched = index
+                    .checked_sub(1)
+                    .and_then(|slot| planned.get(slot))
+                    .map(|write| write.kind);
+                if mismatched != Some("json_set") {
+                    // An exact arm, or an index this plan cannot explain:
+                    // nothing here is re-verifiable.
+                    break code;
+                }
+                let reverified = self.reverified_json_post_images(&planned).await?;
+                if !reverified.contains(&index) {
+                    // The target the script named really is a different
+                    // document. Refuse by key, with no second round trip.
+                    break code;
+                }
+                let observed = self
+                    .reverified_checkpoint_readbacks
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    .saturating_add(1);
+                tracing::warn!(
+                    key = planned
+                        .get(index.saturating_sub(1))
+                        .map(|write| write.key.as_str()),
+                    verified = reverified.len(),
+                    observed,
+                    "checkpoint readback disagreed on bytes but not on documents"
+                );
+                verified = reverified;
+            };
             let resumed = match code.as_str() {
                 "CHECKPOINTED" => false,
                 "RESUMED" => true,
-                _ => return Err(authoritative_script_error(&code)),
+                _ => {
+                    return Err(authoritative_readback_error(
+                        &code,
+                        &planned,
+                        AuthoritativeReadbackPhase::Checkpoint,
+                    )
+                    .unwrap_or_else(|| authoritative_script_error(&code)));
+                }
             };
             let Some(LoadedAuthoritative::Checkpointed(stored)) =
                 self.load_validated_authoritative(token).await?
@@ -3423,5 +3655,261 @@ mod tests {
         assert_eq!(escape_search_term("@name:(x)"), "\\@name\\:\\(x\\)");
         assert_eq!(escape_search_term("two words"), "two\\ words");
         assert_eq!(escape_search_term("-neg"), "\\-neg");
+    }
+    /// The `READBACK_MISMATCH:<index>` resolution is the only new logic the
+    /// named-key refusal adds, and its whole job is to name the *right* key.
+    /// Both scripts count their replay pairs from 1, so the slice offset is
+    /// one less; an off-by-one here would quietly blame the neighbouring
+    /// write, which is precisely the fog this refusal exists to lift. The
+    /// arithmetic needs no live server to prove.
+    #[test]
+    fn readback_mismatch_index_names_the_write_the_script_counted() {
+        fn planned_write(key: &str) -> RedisReplayWrite {
+            RedisReplayWrite {
+                key: key.to_owned(),
+                kind: "json_set",
+                post_image: "{}".to_owned(),
+            }
+        }
+        let planned = vec![
+            planned_write("obj:1"),
+            planned_write("mod:mail:inbox"),
+            planned_write(META_NEXT_ID),
+        ];
+
+        for (code, expected) in [
+            ("READBACK_MISMATCH:1", "obj:1"),
+            ("READBACK_MISMATCH:2", "mod:mail:inbox"),
+            ("READBACK_MISMATCH:3", META_NEXT_ID),
+        ] {
+            let err =
+                authoritative_readback_error(code, &planned, AuthoritativeReadbackPhase::Finalize)
+                    .expect("an index the plan explains resolves to a key");
+            assert!(
+                matches!(
+                    &err,
+                    StoreError::AuthoritativeReadbackMismatch { key, phase }
+                        if key == expected && *phase == AuthoritativeReadbackPhase::Finalize
+                ),
+                "{code} named the wrong write: {err:?}"
+            );
+            assert!(
+                !err.is_transient(),
+                "a readback mismatch is deterministic, never a retry"
+            );
+        }
+
+        // The phase belongs to the caller, not to the script: the same code
+        // from the pre-release re-verification must say so.
+        let err = authoritative_readback_error(
+            "READBACK_MISMATCH:2",
+            &planned,
+            AuthoritativeReadbackPhase::Checkpoint,
+        )
+        .expect("the same index resolves in either phase");
+        assert!(
+            matches!(
+                &err,
+                StoreError::AuthoritativeReadbackMismatch {
+                    phase: AuthoritativeReadbackPhase::Checkpoint,
+                    ..
+                }
+            ),
+            "the phase is not threaded through: {err:?}"
+        );
+
+        // Anything the plan cannot explain falls through to the shared code
+        // translator rather than inventing a key: index 0 (which the scripts
+        // never emit), an index past the plan, a bare or unparsable index, and
+        // a refusal that is not a readback mismatch at all.
+        for code in [
+            "READBACK_MISMATCH:0",
+            "READBACK_MISMATCH:4",
+            "READBACK_MISMATCH:",
+            "READBACK_MISMATCH",
+            "READBACK_MISMATCH:two",
+            "READBACK_MISMATCH:-1",
+            "TOKEN_CONFLICT",
+        ] {
+            assert!(
+                authoritative_readback_error(code, &planned, AuthoritativeReadbackPhase::Finalize)
+                    .is_none(),
+                "{code} must fall through to authoritative_script_error"
+            );
+        }
+        assert!(matches!(
+            authoritative_script_error("TOKEN_CONFLICT"),
+            StoreError::AuthoritativeTokenConflict
+        ));
+    }
+
+    /// Finalize's `json_set` readback is an observation, and an observation is
+    /// never a refusal.
+    ///
+    /// The script applies its writes and re-reads them in one EVAL, so by the
+    /// time this code comes back the post-image is durably stored and the
+    /// receipt is written: the only question left is whether the caller says so
+    /// out loud. Every shape of the code answers "finalized", including an
+    /// index the plan cannot explain — a retry would take the script's
+    /// idempotent arm and answer `FINALIZED` anyway, so refusing on one would
+    /// be a coin toss rather than a verdict.
+    #[test]
+    fn a_renormalised_finalize_readback_is_observed_not_refused() {
+        fn planned_write(key: &str) -> RedisReplayWrite {
+            RedisReplayWrite {
+                key: key.to_owned(),
+                kind: "json_set",
+                post_image: "{}".to_owned(),
+            }
+        }
+        let planned = vec![planned_write("obj:1"), planned_write("mod:mail:inbox")];
+
+        for (code, expected) in [
+            ("FINALIZED_RENORMALISED:1", Some("obj:1")),
+            ("FINALIZED_RENORMALISED:2", Some("mod:mail:inbox")),
+            // Still an observation, just an unnameable one.
+            ("FINALIZED_RENORMALISED:0", None),
+            ("FINALIZED_RENORMALISED:3", None),
+            ("FINALIZED_RENORMALISED:", None),
+            ("FINALIZED_RENORMALISED:two", None),
+        ] {
+            assert_eq!(
+                finalize_renormalisation(code, &planned),
+                Some(expected),
+                "{code} must be finalize's observation"
+            );
+        }
+
+        // Everything else is somebody else's code: the plain success, the
+        // refusals the string_set and delete arms still return, and the shared
+        // translator's vocabulary.
+        for code in [
+            "FINALIZED",
+            "FINALIZED_RENORMALISED",
+            "READBACK_MISMATCH:1",
+            "TOKEN_CONFLICT",
+        ] {
+            assert_eq!(
+                finalize_renormalisation(code, &planned),
+                None,
+                "{code} is not an observation"
+            );
+        }
+        assert!(
+            authoritative_readback_error(
+                "READBACK_MISMATCH:1",
+                &planned,
+                AuthoritativeReadbackPhase::Finalize
+            )
+            .is_some(),
+            "relaxing the json arm must not disarm the refusal the other two arms still return"
+        );
+    }
+
+    /// Checkpoint's `json_set` readback is skippable, one index at a time, and
+    /// only by a proof made outside the script.
+    ///
+    /// The script cannot make that proof itself: Redis's `cjson` turns every
+    /// number into a double and cannot tell `{}` from `[]`, so a deep compare
+    /// there would accept a clobbered ledger amount and a collapsed object. The
+    /// caller re-reads the key, compares with `serde_json`, and hands back the
+    /// replay indices it proved — so the script text must consult that list in
+    /// exactly one place, and never decode anything.
+    #[test]
+    fn checkpoints_json_readback_is_skipped_only_by_a_verified_index() {
+        assert!(
+            CHECKPOINT_AUTHORITATIVE_LUA
+                .contains("if not verified[index] and redis.call('JSON.GET', key) ~= post_image"),
+            "the json arm must consult the verified list before comparing bytes"
+        );
+        assert_eq!(
+            CHECKPOINT_AUTHORITATIVE_LUA
+                .matches("verified[index]")
+                .count(),
+            1,
+            "only the json arm may be skipped: string_set and delete are exact"
+        );
+        assert_eq!(
+            CHECKPOINT_AUTHORITATIVE_LUA
+                .matches("verified[slot] = true")
+                .count(),
+            1,
+            "the list is indices, one at a time, never a blanket flag"
+        );
+        for script in [CHECKPOINT_AUTHORITATIVE_LUA, FINALIZE_AUTHORITATIVE_LUA] {
+            for call in ["cjson.decode", "cjson.encode"] {
+                assert!(
+                    !script.contains(call),
+                    "no authoritative script may {call} a document to compare it"
+                );
+            }
+        }
+        assert!(
+            !FINALIZE_AUTHORITATIVE_LUA.contains("verified"),
+            "finalize re-reads its own write inside one EVAL and has nothing to verify"
+        );
+    }
+
+    /// The index resolution both call sites start from.
+    ///
+    /// Checkpoint needs the raw index before the plan can be consulted, because
+    /// what it does next depends on the *kind* of write the index names — a
+    /// `json_set` may be re-verifiable, the exact arms never are.
+    #[test]
+    fn a_readback_mismatch_index_is_read_before_it_is_resolved() {
+        assert_eq!(readback_mismatch_index("READBACK_MISMATCH:1"), Some(1));
+        assert_eq!(readback_mismatch_index("READBACK_MISMATCH:42"), Some(42));
+        // Zero is not a replay index; the resolution below rejects it. Reading
+        // it is still unambiguous.
+        assert_eq!(readback_mismatch_index("READBACK_MISMATCH:0"), Some(0));
+        for code in [
+            "READBACK_MISMATCH",
+            "READBACK_MISMATCH:",
+            "READBACK_MISMATCH:-1",
+            "READBACK_MISMATCH:two",
+            "FINALIZED_RENORMALISED:1",
+            "CHECKPOINTED",
+        ] {
+            assert_eq!(
+                readback_mismatch_index(code),
+                None,
+                "{code} names no replay index"
+            );
+        }
+    }
+
+    /// The relaxation is one arm wide.
+    ///
+    /// Only finalize's `json_set` readback observes; its `string_set` and
+    /// `delete` arms are byte-exact (`GET` after `SET`, `EXISTS` after `DEL`)
+    /// and still refuse, and checkpoint — the readback with a real clobber to
+    /// catch, because other writers have had time to touch its targets — still
+    /// refuses on all three. No live server can prove this: finalize writes and
+    /// re-reads inside one script, so there is no seam to interpose a defeated
+    /// `SET` through. The script text is the witness.
+    #[test]
+    fn only_the_finalize_json_readback_arm_was_relaxed() {
+        assert_eq!(
+            FINALIZE_AUTHORITATIVE_LUA
+                .matches("return 'READBACK_MISMATCH:'")
+                .count(),
+            2,
+            "finalize keeps exactly the string_set and delete refusals"
+        );
+        assert!(
+            FINALIZE_AUTHORITATIVE_LUA.contains("return 'FINALIZED_RENORMALISED:'"),
+            "finalize must report the observation it recorded"
+        );
+        assert_eq!(
+            CHECKPOINT_AUTHORITATIVE_LUA
+                .matches("return 'READBACK_MISMATCH:'")
+                .count(),
+            3,
+            "checkpoint's three arms all still refuse"
+        );
+        assert!(
+            !CHECKPOINT_AUTHORITATIVE_LUA.contains("FINALIZED_RENORMALISED"),
+            "the observation belongs to finalize alone"
+        );
     }
 }

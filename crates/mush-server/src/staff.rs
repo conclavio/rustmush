@@ -19,8 +19,8 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, ObjId, ObjKind, Powers, Privileges, Registry,
-    RegistryError, Role, perm,
+    ArgShape, CmdError, CommandSpec, Ctx, ModuleActionState, ObjId, ObjKind, Outbox, ParsedArgs,
+    Powers, Privileges, Registry, RegistryError, Role, SwitchSet, World, perm,
 };
 use mush_privileges::{
     AuditAction, MAX_REASON_BYTES, PrivilegeAction, audit as privilege_audit, contains_identity,
@@ -664,6 +664,61 @@ fn discord_audit(
             "The audit could not be recorded ({e}); nothing was done."
         ))
     })
+}
+
+/// Re-check a privilege **at execution time**, on the world loop, for an op
+/// the world task already queued to an off-loop executor.
+///
+/// The command handler's check happens at authorization; the disclosure
+/// happens one queue hop later on the staff executor, which holds no world
+/// borrow at all (it captures a store, an [`IpGuard`](mush_config::ipguard::IpGuard),
+/// a weak world sender and the gateway). Between the two, `@privilege/revoke`
+/// can land. So the executor round-trips one `WorldMsg` back here and this is
+/// what answers it: `true` only if the actor still holds the bit.
+///
+/// A revocation is recorded as a **second** `Denied` row against the same
+/// command, so the audit shows the attempt that the revocation caught rather
+/// than a `Use` with no outcome. The append rides the world step's ordinary
+/// deferred queue like any other audit write; if the privileges module is not
+/// loaded the refusal still stands — the answer is the authorization, the
+/// audit is the record of it.
+pub(crate) fn recheck_privilege(
+    w: &mut World,
+    reg: &Registry,
+    out: &mut Outbox,
+    actor: ObjId,
+    privilege: Privileges,
+    subject: Option<ObjId>,
+    command: &str,
+) -> bool {
+    if perm::has_privilege(w, actor, privilege) {
+        return true;
+    }
+    let mut ctx = Ctx {
+        w,
+        actor,
+        switches: SwitchSet::default(),
+        args: ParsedArgs::default(),
+        out,
+        reg,
+        // Core identity: this is the world task answering for a queued op,
+        // not a module handler writing its own namespace.
+        module: None,
+        typed_state: ModuleActionState::unavailable(),
+    };
+    if let Err(e) = privilege_audit(
+        &mut ctx,
+        PrivilegeAction {
+            action: AuditAction::Denied,
+            privilege: Some(privilege),
+            subject,
+            reason: None,
+            detail: serde_json::json!({ "command": command, "recheck": true }),
+        },
+    ) {
+        tracing::error!(%actor, command, error = %e, "revoked-privilege re-check could not be audited");
+    }
+    false
 }
 
 /// `@discord` — the Discord identity family (D1). Self-service forms act on
@@ -1470,6 +1525,69 @@ mod tests {
         let out = run(&mut engine, nick, "@discord/show Nick");
         assert!(sys_texts(&out).is_empty(), "{:?}", sys_texts(&out));
         assert_eq!(queue.drain().len(), 1);
+    }
+
+    /// The window WS02-A1 closes: `@discord/show` is authorized on the world
+    /// loop and disclosed one queue hop later by the staff executor. Revoke
+    /// the privilege inside that window and the execution-time re-check
+    /// refuses — and says so in the audit, a second time.
+    #[test]
+    fn a_revoked_privilege_fails_the_execution_time_recheck_and_audits_again() {
+        use mush_privileges::AuditAction;
+        let (mut engine, queue) = engine_with_staff_and_privileges();
+        let nick = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+        engine.world.get_mut(GOD).unwrap().privileges = Privileges::DISCORD_IDENTITY;
+        // Authorized, audited as a `use`, queued for the off-loop executor.
+        let out = run(&mut engine, GOD, "@discord/show Nick");
+        assert!(sys_texts(&out).is_empty(), "{:?}", sys_texts(&out));
+        let ops = queue.drain();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(audit_actions(&engine), vec![AuditAction::Use]);
+
+        // Still held when the executor asks: `true`, and no new audit row —
+        // the `use` above is the record of this look.
+        let mut out = Outbox::new();
+        assert!(recheck_privilege(
+            &mut engine.world,
+            &engine.registry,
+            &mut out,
+            GOD,
+            Privileges::DISCORD_IDENTITY,
+            Some(nick),
+            "@discord/show",
+        ));
+        assert_eq!(audit_actions(&engine), vec![AuditAction::Use]);
+
+        // `@privilege/revoke` lands in the window. The re-check refuses, so
+        // the executor never calls the disclosure, and the refusal is a
+        // SECOND `Denied` row against the same command.
+        engine.world.get_mut(GOD).unwrap().privileges = Privileges::empty();
+        let mut out = Outbox::new();
+        assert!(!recheck_privilege(
+            &mut engine.world,
+            &engine.registry,
+            &mut out,
+            GOD,
+            Privileges::DISCORD_IDENTITY,
+            Some(nick),
+            "@discord/show",
+        ));
+        assert_eq!(
+            audit_actions(&engine),
+            vec![AuditAction::Use, AuditAction::Denied]
+        );
+        // The denial is durable, not just RAM: the append is queued on the
+        // caller's batch like every other audit write.
+        assert!(
+            out.deferred().iter().any(|d| matches!(
+                d,
+                mush_core::Deferred::Persist(op) if op.ns == mush_privileges::NS
+            )),
+            "the second Denied row must ride a persist op"
+        );
     }
 
     #[test]

@@ -488,11 +488,18 @@ pub async fn build_engine(
         .map_err(|e| format!("server command registration: {e}"))?;
     match crate::help::load_help_topics(&mut registry, &config.server.help_dir) {
         Ok(n) => tracing::info!(topics = n, "help topics loaded"),
-        Err(e) => tracing::warn!(error = %e, "help topics failed to load; continuing"),
+        Err(e) => tracing::warn!(error = %e, dir = %config.server.help_dir.display(),
+            "help topics failed to load; continuing without them"),
     }
     let llm_config = config_ext::llm_config(&config.llm)?;
     let llm =
         Arc::new(LlmService::from_config(&llm_config).map_err(|e| format!("llm config: {e}"))?);
+    tracing::info!(
+        enabled = llm_config.enabled,
+        providers = llm_config.providers.len(),
+        routes = llm_config.routes.len(),
+        "llm service built"
+    );
     // The roster, and every stanza it reads, in the one place that states
     // the composition order.
     let mods = game_modules(config, &llm)?;
@@ -504,6 +511,15 @@ pub async fn build_engine(
     let mut world = load_or_seed_world(&**store).await?;
     let clock = config.game.game_clock().map_err(|e| e.to_string())?;
     timeline::hydrate_world_timeline(&mut world, &**store, clock).await?;
+    // WS04-S3: the all-in-one's own transcription of this root logged the
+    // hydrated epoch and this one did not, so the split half installed a
+    // persisted IC generation in silence. The deletion of that transcription
+    // keeps the line rather than losing it.
+    tracing::info!(
+        generation = world.world_timeline().current().generation,
+        ic_rate = world.world_timeline().current().rate,
+        "world timeline installed",
+    );
     let mut engine = Engine::from_composition(world, composition);
     engine.set_offer_keys(offer_keys);
     engine.set_resolution_keys(resolution_keys);
@@ -551,6 +567,54 @@ pub async fn build_engine(
         decision_workers: llm_config.decision_workers,
         archive_namespaces,
     })
+}
+
+/// The world half's `--check-config` preflight: the config refusals
+/// [`build_engine`] and [`spawn_ledger_archive`] raise from the parsed config
+/// alone, before either touches the store, a socket or the quarantine lifetime
+/// lock (WS04-S3).
+///
+/// Named rather than implied, because the earlier wording ("every config
+/// refusal") was a promise this function did not keep — `[game].ic_epoch` was
+/// boot-fatal here and unchecked there (W1-B8-FIX):
+/// [`mush_config::preflight::check`] covers `[store].store`,
+/// `[store].receipt_policy` and `[game].ic_epoch`, which all three binaries
+/// read; the two added here need crates the gateway half does not depend on:
+///
+/// - `[tacsim]`, whose pack block is read and digest-verified host-side, so an
+///   unreadable or mismatched pack is found by an operator rather than by a
+///   supervisor watching a boot loop;
+/// - `[store.archive].window`, which refuses the boot inside
+///   [`spawn_ledger_archive`] rather than leaving the nightly pass silently
+///   unscheduled for the life of the deployment.
+///
+/// `[ipc].listen` is deliberately absent: it is boot-fatal in the two split
+/// halves and meaningless in the all-in-one, which reaches this function too,
+/// so it hangs off [`mush_config::preflight::check_ipc`] and is added by the
+/// split `main`s (W1-B7-FIX).
+///
+/// Refusals are collected, not short-circuited: a config with three mistakes
+/// reports three.
+#[must_use]
+pub fn check_config(config: &Config) -> Vec<String> {
+    let mut refusals = mush_config::preflight::check(config);
+    if let Err(error) = config_ext::tacsim_config(&config.tacsim) {
+        refusals.push(error);
+    }
+    // S1: `[atlas].pack_paths` are read host-side and are boot-fatal for the same
+    // reason `[tacsim].pack_paths` are — an unreadable or mis-digested pack refuses
+    // the boot naming the file — so the preflight finds them at no cost too. The
+    // call also validates `[worldgen].hydration_strikes_to_zero`, which reaches the
+    // atlas through the same conversion.
+    if let Err(error) = config_ext::atlas_config(&config.atlas, &config.worldgen) {
+        refusals.push(error);
+    }
+    if config.store.archive.enabled
+        && let Err(error) = ArchiveConfig::parse_window(&config.store.archive.window)
+    {
+        refusals.push(error);
+    }
+    refusals
 }
 
 /// Build the web `hello` manifest from the booted engine: every

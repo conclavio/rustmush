@@ -297,6 +297,25 @@ impl GameModule for WodRuleset {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        // WS03-A1, both directions of the jobs delegation. Out: chargen, XP
+        // and rolls file and annotate jobs through the jobs API, which writes
+        // under the caller's identity. In: `+job/approve` dispatches the
+        // payload handlers registered below under the JOBS module's identity,
+        // and they write this ruleset's own namespace.
+        reg.persist_delegation(
+            NS,
+            "jobs",
+            "chargen_cmds and xp file approval jobs, and roll appends comments, through \
+             mush_jobs::open_job / add_comment, whose writes carry the caller's \
+             identity",
+        )?;
+        reg.persist_delegation(
+            "jobs",
+            NS,
+            "`+job/approve` dispatches this ruleset's chargen and XP payload handlers \
+             under the jobs module's identity, and they write wod-namespace \
+             documents",
+        )?;
         // State slot (RNG + transients).
         let state = match self.seed {
             Some(s) => WodState::seeded(s),

@@ -6,11 +6,16 @@ use std::collections::HashMap;
 use mush_core::engine::{Effects, Engine, Inbound};
 use mush_core::output::room_view;
 use mush_core::{
-    Audience, GOD, LIMBO, ObjId, ObjKind, Outbox, Registry, World, register_core_commands,
-    register_engine_commands,
+    Audience, DetachedTypedState, GOD, LIMBO, ObjId, ObjKind, Outbox, Registry, TypedStateLens,
+    World, register_core_commands, register_engine_commands,
 };
 use mush_proto::{OutputEvent, PanelFrameKind};
 use mush_scenes::ScenesModule;
+
+/// The store-less lens these renders have always been taken with: this test
+/// holds no live authoritative store, and says so rather than reaching for a
+/// name that would have passed `None` silently.
+const DETACHED: TypedStateLens<'static> = TypedStateLens::Detached(DetachedTypedState::Test);
 
 struct Rig {
     engine: Engine,
@@ -160,7 +165,14 @@ fn query_and_room_ambient_reflect_the_active_scene() {
         matches!(&none, OutputEvent::Panel { data, .. } if data.is_null()),
         "no scene, null: {none:?}"
     );
-    let rv = room_view(&rig.engine.registry, &rig.engine.world, rig.nick, rig.bar).unwrap();
+    let rv = room_view(
+        &rig.engine.registry,
+        &rig.engine.world,
+        rig.nick,
+        rig.bar,
+        DETACHED,
+    )
+    .unwrap();
     assert!(!rv.ambient.contains_key("scene"));
 
     run(&mut rig.engine, rig.nick, "+timestop");
@@ -177,7 +189,14 @@ fn query_and_room_ambient_reflect_the_active_scene() {
         .unwrap();
     assert!(matches!(&outsider, OutputEvent::Panel { data, .. } if data.is_null()));
 
-    let rv = room_view(&rig.engine.registry, &rig.engine.world, rig.nick, rig.bar).unwrap();
+    let rv = room_view(
+        &rig.engine.registry,
+        &rig.engine.world,
+        rig.nick,
+        rig.bar,
+        DETACHED,
+    )
+    .unwrap();
     let glance = rv
         .ambient
         .get("scene")
@@ -187,7 +206,14 @@ fn query_and_room_ambient_reflect_the_active_scene() {
     assert!(rv.ambient.contains_key("ic_time"));
 
     run(&mut rig.engine, rig.nick, "+timestop/end");
-    let rv = room_view(&rig.engine.registry, &rig.engine.world, rig.nick, rig.bar).unwrap();
+    let rv = room_view(
+        &rig.engine.registry,
+        &rig.engine.world,
+        rig.nick,
+        rig.bar,
+        DETACHED,
+    )
+    .unwrap();
     assert!(
         !rv.ambient.contains_key("scene"),
         "closed scenes are not glanced"

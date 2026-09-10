@@ -13,6 +13,7 @@ use mush_proto::{ClientCaps, Envelope, OutputEvent, ProjectedCommitToken};
 
 use crate::conn::{ConnId, ConnectionHandle};
 use crate::flood::{FloodBucket, FloodVerdict};
+use crate::locked;
 
 /// The wall-clock source for [`Envelope::ts`] stamps: unix **milliseconds**.
 /// Injected at construction so tests drive a manual clock; production uses
@@ -344,7 +345,7 @@ impl SessionManager {
     /// connection just dropped uncleanly and the grace before it is reaped.
     /// It must return promptly — a driver that wants to do I/O spawns.
     pub fn set_linkdead_hook(&self, hook: LinkdeadHook) {
-        *self.linkdead_hook.lock().expect("linkdead hook poisoned") = Some(hook);
+        *locked(&self.linkdead_hook, "linkdead hook") = Some(hook);
     }
 
     // ---- attach / detach ------------------------------------------------
@@ -530,11 +531,7 @@ impl SessionManager {
         // call back into this manager (a driver attaching a replacement
         // connection) without deadlocking on a shard.
         if let (DetachOutcome::Linkdead { grace }, Some(character)) = (outcome, linkdead_char) {
-            let hook = self
-                .linkdead_hook
-                .lock()
-                .expect("linkdead hook poisoned")
-                .clone();
+            let hook = locked(&self.linkdead_hook, "linkdead hook").clone();
             if let Some(hook) = hook {
                 hook(character, grace);
             }
@@ -1079,7 +1076,7 @@ impl SessionManager {
             }
         }
         match self.conns.get(&conn) {
-            Some(e) => e.bucket.lock().expect("flood bucket poisoned").check(now),
+            Some(e) => locked(&e.bucket, "flood bucket").check(now),
             None => FloodVerdict::Ok,
         }
     }
@@ -1089,7 +1086,7 @@ impl SessionManager {
     /// [`check_input_at`](Self::check_input_at).
     pub fn check_query_flood_at(&self, conn: ConnId, now: Instant) -> FloodVerdict {
         match self.conns.get(&conn) {
-            Some(e) => e.bucket.lock().expect("flood bucket poisoned").check(now),
+            Some(e) => locked(&e.bucket, "flood bucket").check(now),
             None => FloodVerdict::Ok,
         }
     }
@@ -1240,5 +1237,73 @@ impl SessionManager {
     /// Number of sessions (linkdead included).
     pub fn session_count(&self) -> usize {
         self.sessions.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::poison::tests::poison_mutex;
+    use mush_proto::{ClientKind, ColorDepth};
+
+    fn ansi_caps() -> ClientCaps {
+        ClientCaps {
+            kind: ClientKind::Ssh,
+            color: ColorDepth::Ansi256,
+            width: 80,
+            height: 24,
+            utf8: true,
+            structured: false,
+        }
+    }
+
+    /// The failure this converts away: one connection's flood bucket is
+    /// poisoned by a panic, and every *other* connection's next input line
+    /// used to panic on its own bucket only if it shared the lock — but this
+    /// one's did so immediately, on the gateway task that owns its transport.
+    /// Recovery keeps the charge the panicking task left, so the throttle it
+    /// had already earned is still enforced.
+    #[test]
+    fn a_poisoned_flood_bucket_keeps_its_charge_and_its_connection() {
+        let sessions = SessionManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let conn = ConnId(1);
+        sessions.attach(
+            ConnectionHandle::new(
+                conn,
+                std::net::IpAddr::from([127, 0, 0, 1]),
+                ansi_caps(),
+                tx,
+            ),
+            CharKey(7),
+            "acct".to_string(),
+        );
+
+        // Spend the burst at a frozen instant so the bucket cannot refill.
+        let now = Instant::now();
+        let mut charged = 0;
+        while sessions.check_input_at(conn, now) == FloodVerdict::Ok {
+            charged += 1;
+            assert!(charged < 10_000, "the bucket must be exhaustible");
+        }
+
+        {
+            let entry = sessions.conns.get(&conn);
+            let Some(entry) = entry else {
+                panic!("the attached connection has a bucket");
+            };
+            poison_mutex(&entry.bucket);
+        }
+
+        assert_eq!(
+            sessions.check_input_at(conn, now),
+            FloodVerdict::Throttled,
+            "the charge the panicking task left is still enforced, not reset"
+        );
+        assert_eq!(
+            sessions.check_input_at(conn, now + Duration::from_secs(3_600)),
+            FloodVerdict::Ok,
+            "and the bucket keeps refilling, so the connection is not stuck"
+        );
     }
 }

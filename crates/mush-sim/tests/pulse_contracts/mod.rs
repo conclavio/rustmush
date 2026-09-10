@@ -233,7 +233,7 @@ fn platform_contact_is_guarded_at_resolution_and_rechecked_when_tick_fires() {
     let e = tw.engine();
     assert!(
         !guards
-            .revalidate_with_action_state(
+            .revalidate(
                 &e.world,
                 e.action_state(),
                 e.registry.revision_validators().unwrap(),

@@ -4,5 +4,5 @@
 #   PANIC_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test panic_budget
 # A raise is a reviewed diff, not a rounding error.
 # tier: ratchet
-# low-water: 6
-6
+# low-water: 0
+0

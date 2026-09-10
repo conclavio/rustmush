@@ -3118,3 +3118,115 @@ fn lb_e5cc96_a_lapsed_strain_relief_prompt_waits_one_period_before_re_asking() {
         Some(lapsed_at + 1)
     );
 }
+
+// ---------------------------------------------------------------------------
+// The chargen gates read the schema's field id, not the spelling the player typed
+// ---------------------------------------------------------------------------
+
+/// The in-progress sheet, decoded.
+fn sheet_doc(tw: &TestWorld, who: ObjId) -> mush_ruleset::SheetDoc {
+    tw.world()
+        .attr(who, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .expect("a sheet")
+}
+
+/// A player in an open chargen session on `template`.
+fn in_chargen(tw: &mut TestWorld, name: &str, template: &str) -> ObjId {
+    let who = tw.spawn_player(name);
+    ok(tw, who, "+chargen");
+    ok(tw, who, &format!("+chargen/template {template}"));
+    who
+}
+
+#[test]
+fn a_capitalised_generation_does_not_walk_past_the_chargen_lock() {
+    let mut tw = boot(cfg(PersonalMode::Off));
+    let who = in_chargen(&mut tw, "Nick", "vampire");
+    let before = sheet_doc(&tw, who).number("generation");
+    assert_eq!(before, Some(13), "a fresh vampire is 13th generation");
+    for probe in [
+        "+stat generation=4",
+        "+stat Generation=4",
+        "+stat GENERATION=4",
+        "+stat gEnErAtIoN=4",
+    ] {
+        let out = err(&mut tw, who, probe);
+        assert!(
+            out.contains("not a chargen-allocatable trait"),
+            "`{probe}` was not refused as a locked field: {out}"
+        );
+        assert_eq!(
+            sheet_doc(&tw, who).number("generation"),
+            before,
+            "`{probe}` moved generation"
+        );
+    }
+}
+
+#[test]
+fn every_splats_locked_field_refuses_a_mixed_case_spelling() {
+    let mut tw = boot(cfg(PersonalMode::Off));
+    for (i, (template, probe)) in [
+        ("changeling", "+stat GlAmOuR=5"),
+        ("changeling", "+stat WILLPOWER=8"),
+        ("mage", "+stat SPHERES:Forces=3"),
+        ("werewolf", "+stat RaGe=9"),
+        ("werewolf", "+stat GNOSIS=8"),
+        ("ghoul", "+stat Bond_Level=3"),
+        ("kinfolk", "+stat GIFTS:Persuasion=1"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let who = in_chargen(&mut tw, &format!("Probe{i}"), template);
+        let out = err(&mut tw, who, probe);
+        assert!(
+            out.contains("not a chargen-allocatable trait"),
+            "{template}: `{probe}` was not refused as a locked field: {out}"
+        );
+    }
+}
+
+#[test]
+fn the_wizards_free_form_step_canonicalises_before_the_lock_too() {
+    // wizard.rs feeds player-typed field names to `apply_stat` raw — the Freebies
+    // step most freely of all — so the fix has to live where both surfaces meet.
+    let mut tw = boot(cfg(PersonalMode::Off));
+    let who = tw.spawn_player("Nick");
+    ok(&mut tw, who, "+chargen/wizard");
+    ok(&mut tw, who, "vampire");
+    // Template → Concept → attribute priorities → Attributes → ability
+    // priorities → Abilities → Backgrounds → Template Traits → Virtues → Freebies.
+    let mut out = String::new();
+    for _ in 0..9 {
+        out = ok(&mut tw, who, "next");
+    }
+    assert!(out.contains("Freebies"), "not at the Freebies step: {out}");
+    let before = sheet_doc(&tw, who).number("generation");
+    let out = err(&mut tw, who, "GENERATION=4");
+    assert!(
+        out.contains("not a chargen-allocatable trait"),
+        "the wizard let a capitalised locked field through: {out}"
+    );
+    assert_eq!(
+        sheet_doc(&tw, who).number("generation"),
+        before,
+        "the wizard moved generation"
+    );
+}
+
+#[test]
+fn a_capitalised_settable_trait_still_sets_the_canonical_field() {
+    let mut tw = boot(cfg(PersonalMode::Off));
+    let who = in_chargen(&mut tw, "Nick", "mortal");
+    ok(&mut tw, who, "+stat strength=4");
+    assert_eq!(sheet_doc(&tw, who).number("strength"), Some(4));
+    ok(&mut tw, who, "+stat Strength=2");
+    assert_eq!(
+        sheet_doc(&tw, who).number("strength"),
+        Some(2),
+        "a capitalised spelling must still write the one canonical field"
+    );
+}

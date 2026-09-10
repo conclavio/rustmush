@@ -280,6 +280,21 @@ impl GameModule for ShadowrunRuleset {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        // WS03-A1, both directions of the jobs delegation, exactly as the WoD
+        // ruleset declares them.
+        reg.persist_delegation(
+            NS,
+            "jobs",
+            "chargen_cmds and karma file approval jobs through mush_jobs::open_job, \
+             whose writes carry the caller's identity",
+        )?;
+        reg.persist_delegation(
+            "jobs",
+            NS,
+            "`+job/approve` dispatches this ruleset's chargen and karma payload handlers \
+             under the jobs module's identity, and they write \
+             shadowrun-namespace documents",
+        )?;
         // Seedable dice RNG + transient roll-log / chargen state.
         let state = match self.seed {
             Some(s) => Sr5State::seeded(s),

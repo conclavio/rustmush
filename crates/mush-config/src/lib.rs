@@ -5,11 +5,19 @@
 //! need, kept in one dependency-light crate so neither half drags the other's
 //! deps in through them:
 //!
+//! - [`cli`] — the shared command line
+//!   (`--config`/`--ipc`/`--repl`/`--check-config`) all three binaries parse, and the one place an explicit config path is stat'ed.
 //! - [`config`] — `mushd.toml` parsing/validation (the `[llm]`/`[web]` sections
 //!   are captured raw as [`toml::Value`] and deserialized into their typed
 //!   forms by the crate that owns them, so `mush-config` needs neither
 //!   `mush-llm` nor `mush-net-web`).
+//! - [`exit`] — the one process-exit vocabulary both halves speak, so a
+//!   supervisor can tell a dead world from a slow one.
+//! - [`preflight`] — `--check-config`: the boot refusals every binary can find
+//!   without opening a socket, the store, or the quarantine lock.
 //! - [`logging`] — the tracing subscriber + rotating file appender setup.
+//! - [`signals`] — the one terminate/interrupt future all three binaries wait
+//!   on, including the rule that a supervised child ignores Ctrl-C.
 //! - [`ipguard`] — the per-IP auth-failure guard + siteban mirror.
 //! - [`accounts`] — transport-agnostic account helpers (validation, argon2id
 //!   hashing/verification, the one-time `accounts.json` import).
@@ -31,15 +39,19 @@
 )]
 
 pub mod accounts;
+pub mod cli;
 pub mod config;
 pub mod decision_keys;
 pub mod discord;
 mod durable_keys;
+pub mod exit;
 pub mod ipguard;
 pub mod logging;
 pub mod metrics;
 pub mod offer_keys;
+pub mod preflight;
 pub mod resolution_keys;
+pub mod signals;
 
 /// The current wall clock as unix seconds (0 if the system clock is broken).
 #[must_use]

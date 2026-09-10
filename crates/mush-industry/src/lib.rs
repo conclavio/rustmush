@@ -104,7 +104,7 @@ pub use record::{
     MAX_REASON_BYTES, MAX_SURVEY_BANDS, NS, OreDeposit, OreDepositId, PlaceCensus, RunState,
     SurveyBands, SurveyDoc, SurveyRow, Transferability, YieldCurve, owner,
 };
-pub use store::{FacilityQuarantine, IndustryStore, Quarantine};
+pub use store::{DraftDrift, FacilityQuarantine, IndustryStore, Quarantine};
 pub use workorder::{
     DeliveryTarget, InterruptionCause, MAX_RESERVATIONS_PER_ORDER, MAX_WORK_ORDER_INPUTS,
     MAX_WORK_ORDER_QUANTITY, MAX_WORK_ORDERS_PER_REQUESTER, PRODUCTION_CADENCE_SECS,

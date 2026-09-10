@@ -478,25 +478,29 @@ pub struct HookReadContext<'a> {
 impl<'a> HookReadContext<'a> {
     /// Construct a compatibility context for an off-loop hook call.
     ///
-    /// Typed state is deliberately unavailable in this context. Engine-owned
-    /// dispatch paths use the private constructor below to attach the live
-    /// authoritative snapshot.
+    /// Typed state is deliberately unavailable in this context — the lens is
+    /// [`DetachedTypedState::CompatibilityCtx`](crate::DetachedTypedState::CompatibilityCtx).
+    /// Engine-owned dispatch paths use the private constructor below to attach
+    /// the live authoritative snapshot.
     #[must_use]
     pub fn without_typed_state(world: &'a World, module: &str) -> Self {
-        Self::for_module(world, None, module)
+        Self::for_module(
+            world,
+            crate::action_state::TypedStateLens::Detached(
+                crate::action_state::DetachedTypedState::CompatibilityCtx,
+            ),
+            module,
+        )
     }
 
     pub(crate) fn for_module(
         world: &'a World,
-        action_state: Option<&'a crate::action_state::ActionStateStore>,
+        lens: crate::action_state::TypedStateLens<'a>,
         module: &str,
     ) -> Self {
         Self {
             world,
-            typed_state: crate::action_state::ModuleActionState::for_module(
-                action_state,
-                Some(module),
-            ),
+            typed_state: crate::action_state::ModuleActionState::for_module(lens, Some(module)),
             registry: None,
         }
     }
@@ -1485,6 +1489,11 @@ fn clone_state<T: Any + Send + Clone>(v: &(dyn Any + Send)) -> Box<dyn Any + Sen
 /// [`Engine::with_modules`](crate::engine::Engine::with_modules)).
 pub struct StateInit {
     type_id: TypeId,
+    /// The slot type's [`std::any::type_name`], carried because a `TypeId`
+    /// is an opaque hash: every report about a slot — the ownership census
+    /// (WS03-S8), the boot warn for an unowned slot — has to be able to
+    /// NAME the type it is talking about.
+    type_name: &'static str,
     /// The module that declared the slot (conflict detection: two modules
     /// declaring the same `TypeId` is a boot error, not a silent replace).
     module: SmolStr,
@@ -1497,6 +1506,12 @@ impl StateInit {
     #[must_use]
     pub fn type_id(&self) -> TypeId {
         self.type_id
+    }
+
+    /// The declared slot's type name (diagnostics only).
+    #[must_use]
+    pub fn type_name(&self) -> &'static str {
+        self.type_name
     }
 
     /// The module that declared it.
@@ -1515,7 +1530,63 @@ impl fmt::Debug for StateInit {
 struct StateSlot {
     value: Box<dyn Any + Send>,
     clone_fn: StateCloneFn,
+    /// The slot type's name, kept so a report can name it (see
+    /// [`StateInit::type_name`]).
+    type_name: &'static str,
 }
+
+/// One installed state slot, as the ownership census sees it: what type the
+/// slot holds and which module — if any — declared it.
+///
+/// A slot with `owner: None` was seeded through
+/// [`World::module_state_insert`](crate::world::World::module_state_insert)
+/// rather than declared through [`Registrar::state`]; it stays open to every
+/// module — there is no owner to refuse for — and the engine names it in a
+/// boot `warn!` rather than refusing it.
+#[derive(Clone, Debug)]
+pub struct StateSlotInfo {
+    /// The slot's type.
+    pub type_id: TypeId,
+    /// That type's [`std::any::type_name`].
+    pub type_name: &'static str,
+    /// The module that declared the slot, if one did.
+    pub owner: Option<SmolStr>,
+}
+
+/// A module-facing state-slot mutation that was **refused**: `requester`
+/// asked to mutate a slot `owner` declared.
+///
+/// Returned by [`Ctx::try_state_mut`]. Nothing panics on one — the world task
+/// must never panic — and nothing is written: the refusal is total, and the
+/// engine logs it once per (requester, slot) and records it on the world
+/// ([`World::refused_state_writes`](crate::world::World::refused_state_writes)).
+///
+/// Only the module-facing surface refuses. The engine accessor
+/// [`World::module_state_mut`](crate::world::World::module_state_mut) carries
+/// no module identity and cannot, which is why the cross-owner reaches that go
+/// through it are pinned by `mush-contract-tests`' `state-slot-owners.toml`
+/// instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateSlotDenied {
+    /// The module whose handler asked for the slot.
+    pub requester: SmolStr,
+    /// The module that declared it through [`Registrar::state`].
+    pub owner: SmolStr,
+    /// The slot type's [`std::any::type_name`].
+    pub slot: &'static str,
+}
+
+impl fmt::Display for StateSlotDenied {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "module {:?} may not mutate the state slot {} — it belongs to module {:?}",
+            self.requester, self.slot, self.owner
+        )
+    }
+}
+
+impl std::error::Error for StateSlotDenied {}
 
 /// Typed module state living on the [`World`](crate::world::World): an
 /// anymap over `TypeId`. Slots are declared via [`Registrar::state`] (or
@@ -1541,6 +1612,7 @@ impl Clone for ModuleStateMap {
                         StateSlot {
                             value: (v.clone_fn)(v.value.as_ref()),
                             clone_fn: v.clone_fn,
+                            type_name: v.type_name,
                         },
                     )
                 })
@@ -1563,6 +1635,7 @@ impl ModuleStateMap {
             StateSlot {
                 value: Box::new(value),
                 clone_fn: clone_state::<T>,
+                type_name: std::any::type_name::<T>(),
             },
         );
     }
@@ -1574,8 +1647,15 @@ impl ModuleStateMap {
             StateSlot {
                 value: init.value,
                 clone_fn: init.clone_fn,
+                type_name: init.type_name,
             },
         );
+    }
+
+    /// Every installed slot, as `(TypeId, type name)`, in no particular
+    /// order.
+    pub fn slots(&self) -> impl Iterator<Item = (TypeId, &'static str)> + '_ {
+        self.slots.iter().map(|(&id, slot)| (id, slot.type_name))
     }
 
     /// Read the slot for `T`.
@@ -1627,6 +1707,26 @@ struct ObserverReg {
     observer: Arc<dyn WorldObserver>,
 }
 
+/// One declared cross-namespace write delegation (WS03-A1): module `writer`
+/// may persist into namespace `ns`, which belongs to another module.
+///
+/// Declared through [`Registrar::persist_delegation`] by one of the two
+/// modules the pair names — the writer, or the namespace's owner — because
+/// only they can say why the write is legitimate. `mush-contract-tests`'
+/// `module-ns-owners.toml` pins the composed set, so a new delegation cannot
+/// arrive without a reviewed row.
+#[derive(Clone, Debug)]
+pub struct PersistDelegation {
+    /// The module whose identity is on the write (`ctx.module`).
+    pub writer: SmolStr,
+    /// The namespace the write lands in (`op.ns`).
+    pub ns: SmolStr,
+    /// Which of the two declared it.
+    pub declared_by: SmolStr,
+    /// How a write gets from that module into that namespace.
+    pub reason: &'static str,
+}
+
 /// The module-facing registration tables carried by the
 /// [`Registry`](crate::cmd::Registry) — one registry, extended (treaty
 /// ruling 4), never a second one.
@@ -1650,6 +1750,14 @@ pub struct ModuleTables {
     migrations: HashMap<SmolStr, Vec<Migration>>,
     /// migration namespace → the one module that owns its migration set.
     migration_owners: HashMap<SmolStr, SmolStr>,
+    /// WS03-A1: persistence namespace → the module that owns it. Filled in
+    /// once, at composition, from the roster's module names and the
+    /// migration owners; a namespace nobody claims is absent, not empty.
+    namespace_owners: HashMap<SmolStr, SmolStr>,
+    /// WS03-A1: the declared cross-namespace write delegations, one row per
+    /// `(writer, namespace)` pair. Half a dozen entries at most, so a scan
+    /// beats a hash — and the scan only ever runs on a mismatch.
+    persist_delegations: Vec<PersistDelegation>,
     /// The single registered weather provider (the reserved tactics seam).
     weather: Option<(SmolStr, Arc<dyn WeatherQuery>)>,
     /// S6: interface-ability providers by id → (owning module, provider).
@@ -2113,6 +2221,69 @@ impl Registry {
     #[must_use]
     pub fn migrations(&self) -> &HashMap<SmolStr, Vec<Migration>> {
         &self.mods.migrations
+    }
+
+    /// The module that owns the persistence namespace `ns` (WS03-A1), if the
+    /// composition claims it.
+    ///
+    /// A module's [`GameModule::name`] **is** its namespace, so the roster's
+    /// names are the bulk of this map; a namespace no module is named after
+    /// belongs to whichever module first registered its migrations
+    /// ([`Registrar::migrations`]' first-registrar rule). A namespace nobody
+    /// claims — an engine-owned one such as the world timeline, or a test
+    /// rig's — is simply absent.
+    #[must_use]
+    pub fn namespace_owner(&self, ns: &str) -> Option<&SmolStr> {
+        self.mods.namespace_owners.get(ns)
+    }
+
+    /// The declared delegation letting `writer` persist into `ns`, if there
+    /// is one (WS03-A1). Consulted only on a namespace mismatch.
+    #[must_use]
+    pub fn persist_delegation(&self, writer: &str, ns: &str) -> Option<&PersistDelegation> {
+        self.mods
+            .persist_delegations
+            .iter()
+            .find(|d| d.writer == writer && d.ns == ns)
+    }
+
+    /// Every declared cross-namespace write delegation, in declaration order.
+    #[must_use]
+    pub fn persist_delegations(&self) -> &[PersistDelegation] {
+        &self.mods.persist_delegations
+    }
+
+    /// Every claimed persistence namespace with its owning module, sorted.
+    #[must_use]
+    pub fn namespace_owners(&self) -> Vec<(SmolStr, SmolStr)> {
+        let mut owners: Vec<(SmolStr, SmolStr)> = self
+            .mods
+            .namespace_owners
+            .iter()
+            .map(|(ns, module)| (ns.clone(), module.clone()))
+            .collect();
+        owners.sort();
+        owners
+    }
+
+    /// Record `namespace -> owning module` for the composed roster (WS03-A1).
+    ///
+    /// Called once by [`Engine::compose_modules`](crate::Engine::compose_modules)
+    /// with every module's name, after registration and before the world sees
+    /// a single write. A module name always wins over a migration
+    /// registration for the same string: the name is the namespace by
+    /// definition, and the migration table only names namespaces no module is
+    /// called after.
+    pub(crate) fn record_namespace_owners<'a>(
+        &mut self,
+        module_names: impl IntoIterator<Item = &'a str>,
+    ) {
+        let mut owners: HashMap<SmolStr, SmolStr> = self.mods.migration_owners.clone();
+        for name in module_names {
+            let name = SmolStr::new(name);
+            owners.insert(name.clone(), name);
+        }
+        self.mods.namespace_owners = owners;
     }
 
     /// The registered weather provider (the reserved `WeatherQuery` seam),
@@ -3180,13 +3351,29 @@ impl<'a> Registrar<'a> {
     }
 
     /// Declare a typed state slot, installed on the world at engine
-    /// construction and reachable via [`Ctx::state`] / [`Ctx::state_mut`].
+    /// construction and reachable via [`Ctx::state`] / [`Ctx::try_state_mut`].
     /// Two **different** modules declaring the same slot type is a boot
     /// error (checked by `Engine::with_modules`); a module re-declaring its
     /// own slot keeps the last value.
+    ///
+    /// Declaring the slot also records this module as its **owner**
+    /// (`World::module_state_owner`), by module name and not by crate, so a
+    /// crate registering two modules is two owners — and the enforced rule
+    /// is: **only the owner may mutate the slot through `Ctx`.** A foreign
+    /// module's [`Ctx::try_state_mut`] gets `Err(`[`StateSlotDenied`]`)`,
+    /// its [`Ctx::state_mut`] gets `None`, and nothing is written; the
+    /// refusal is logged once per (module, slot). Reading
+    /// ([`Ctx::state`]) stays shared, a slot nobody declared stays open to
+    /// all, and a core command (`module: None`) is a wildcard.
+    ///
+    /// The engine accessor `World::module_state_mut` carries no module
+    /// identity and is not checked; `mush-contract-tests`'
+    /// `state-slot-owners.toml` is what pins the cross-owner reaches that
+    /// take it.
     pub fn state<T: Any + Send + Clone>(&mut self, init: T) {
         self.reg.tables_mut().state_inits.push(StateInit {
             type_id: TypeId::of::<T>(),
+            type_name: std::any::type_name::<T>(),
             module: self.module.clone(),
             value: Box::new(init),
             clone_fn: clone_state::<T>,
@@ -3339,6 +3526,79 @@ impl<'a> Registrar<'a> {
             .migration_owners
             .insert(key.clone(), self.module.clone());
         tables.migrations.entry(key).or_default().extend(ms);
+        Ok(())
+    }
+
+    /// Declare that module `writer` may persist into namespace `ns`
+    /// (WS03-A1) — the one way a cross-namespace module write is allowed to
+    /// land.
+    ///
+    /// A module's [`GameModule::name`] is its persistence namespace, so
+    /// [`Ctx::persist`](crate::cmd::Ctx::persist) refuses an op whose `ns` is
+    /// not the writing module's own unless a row here says otherwise. The
+    /// pair is what is declared, not a module or a namespace on its own: the
+    /// jobs module's public API writes `jobs` documents under the CALLER's
+    /// identity, which is a fact about that caller, not a licence for every
+    /// module.
+    ///
+    /// **Who may declare a pair**: either module it names — the writer, or
+    /// the namespace's owner. Both know why the write is legitimate; nobody
+    /// else does. A ruleset therefore declares the pair its job payload
+    /// handler produces (`jobs -> wod`: the handler runs under the jobs
+    /// module's identity and writes the ruleset's namespace), and a producing
+    /// module declares the pair its own call into the jobs API produces
+    /// (`housing -> jobs`).
+    ///
+    /// # Errors
+    /// A namespace equal to the writer (never a cross-namespace write); a
+    /// pair naming neither this module as writer nor as namespace owner; or a
+    /// pair already declared — first declaration wins, and a second is a
+    /// conflict, exactly as it is for a migration namespace.
+    pub fn persist_delegation(
+        &mut self,
+        writer: &str,
+        ns: &str,
+        reason: &'static str,
+    ) -> Result<(), ModError> {
+        if writer == ns {
+            return Err(ModError::msg(format!(
+                "module {}: {writer:?} -> {ns:?} is a module writing its own namespace, \
+                 which needs no delegation",
+                self.module
+            )));
+        }
+        if writer != self.module && ns != self.module {
+            return Err(ModError::msg(format!(
+                "module {}: may not declare the delegation {writer:?} -> {ns:?} — a pair is \
+                 declared by the writing module or by the namespace's owner, and this \
+                 is neither",
+                self.module
+            )));
+        }
+        let (writer, ns) = (SmolStr::new(writer), SmolStr::new(ns));
+        if let Some(existing) = self
+            .reg
+            .persist_delegations()
+            .iter()
+            .find(|d| d.writer == writer && d.ns == ns)
+        {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "persist delegation",
+                name: SmolStr::new(format!("{writer} -> {ns}")),
+                owner: existing.declared_by.clone(),
+            });
+        }
+        let declared_by = self.module.clone();
+        self.reg
+            .tables_mut()
+            .persist_delegations
+            .push(PersistDelegation {
+                writer,
+                ns,
+                declared_by,
+                reason,
+            });
         Ok(())
     }
 
@@ -3556,53 +3816,39 @@ impl<'a> Registrar<'a> {
 
 /// Consult every `MoveAttempt` hook; the first veto wins. `exit` is `None`
 /// for `@teleport`.
+///
+/// `lens` is the caller's typed-state reach: a dispatched command hands over
+/// its live store ([`Ctx::check_move_attempt`] does exactly that), and a
+/// caller with no store names the reason. There is deliberately no store-less
+/// spelling of this name.
 pub fn check_move_attempt(
     reg: &Registry,
     w: &World,
     actor: ObjId,
     exit: Option<ObjId>,
     dest: ObjId,
-) -> Result<(), RichText> {
-    check_move_attempt_with_action_state(reg, w, actor, exit, dest, None)
-}
-
-pub(crate) fn check_move_attempt_with_action_state(
-    reg: &Registry,
-    w: &World,
-    actor: ObjId,
-    exit: Option<ObjId>,
-    dest: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Result<(), RichText> {
     for h in reg.hooks(HookPoint::MoveAttempt) {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         h.hook.move_attempt(&ctx, actor, exit, dest)?;
     }
     Ok(())
 }
 
 /// Consult every `CarryAttempt` hook for `mover` moving `obj` into `dest`
-/// (`get`/`drop`/`give`); the first veto wins.
+/// (`get`/`drop`/`give`); the first veto wins. `lens` is the caller's
+/// typed-state reach — see [`check_move_attempt`].
 pub fn check_carry_attempt(
     reg: &Registry,
     w: &World,
     mover: ObjId,
     obj: ObjId,
     dest: ObjId,
-) -> Result<(), RichText> {
-    check_carry_attempt_with_action_state(reg, w, mover, obj, dest, None)
-}
-
-pub(crate) fn check_carry_attempt_with_action_state(
-    reg: &Registry,
-    w: &World,
-    mover: ObjId,
-    obj: ObjId,
-    dest: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Result<(), RichText> {
     for h in reg.hooks(HookPoint::CarryAttempt) {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         h.hook.carry_attempt(&ctx, mover, obj, dest)?;
     }
     Ok(())
@@ -3618,20 +3864,23 @@ pub(crate) fn check_carry_attempt_with_action_state(
 /// for callers holding a live [`Registry`]; the off-loop script runtime
 /// snapshots the same slice and calls this directly, so the two consumers can
 /// never drift.
+///
+/// `lens` is how far this call can see into engine-owned typed state. There is
+/// exactly one name — a caller with the live store passes
+/// [`TypedStateLens::Live`](crate::TypedStateLens::Live), a caller without one
+/// names the reason. The store-less spelling used to be the *shorter* name,
+/// which made "no typed state" the accidental default and let a hook that
+/// reads a typed family answer the wrong perception verdict.
 #[must_use]
-pub fn perceives_via(hooks: &[HookReg], w: &World, observer: ObjId, subject: ObjId) -> bool {
-    perceives_via_action_state(hooks, w, observer, subject, None)
-}
-
-pub(crate) fn perceives_via_action_state(
+pub fn perceives_via(
     hooks: &[HookReg],
     w: &World,
     observer: ObjId,
     subject: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> bool {
     for h in hooks {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         if h.hook.perceives(&ctx, observer, subject) == Perceive::Conceal {
             return false;
         }
@@ -3644,28 +3893,17 @@ pub(crate) fn perceives_via_action_state(
 /// `&World` so both the `look`/`examine` render path and the live
 /// `Audience::Room` fan-out can call it. With no `Perceive` hook registered
 /// this is a free pass, preserving today's behavior exactly.
+///
+/// `lens` is the caller's typed-state reach — see [`perceives_via`].
 #[must_use]
-pub fn can_perceive(reg: &Registry, w: &World, observer: ObjId, subject: ObjId) -> bool {
-    perceives_via(reg.hooks(HookPoint::Perceive), w, observer, subject)
-}
-
-/// Production form of [`can_perceive`] with the live authoritative typed-state
-/// snapshot attached to every owner-stamped hook context.
-#[must_use]
-pub fn can_perceive_with_action_state(
+pub fn can_perceive(
     reg: &Registry,
     w: &World,
     observer: ObjId,
     subject: ObjId,
-    action_state: &crate::action_state::ActionStateStore,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> bool {
-    perceives_via_action_state(
-        reg.hooks(HookPoint::Perceive),
-        w,
-        observer,
-        subject,
-        Some(action_state),
-    )
+    perceives_via(reg.hooks(HookPoint::Perceive), w, observer, subject, lens)
 }
 
 /// Whether `subject` is under an active concealment effect according to ANY
@@ -3676,49 +3914,30 @@ pub fn can_perceive_with_action_state(
 /// concealment) it is `false`, so it is additive and free — behavior identical
 /// to a game with no concealment ruleset.
 #[must_use]
-pub fn is_concealed(reg: &Registry, w: &World, subject: ObjId) -> bool {
-    is_concealed_via_action_state(reg, w, subject, None)
-}
-
-/// Production form of [`is_concealed`] with live typed-state reads.
-#[must_use]
-pub fn is_concealed_with_action_state(
+pub fn is_concealed(
     reg: &Registry,
     w: &World,
     subject: ObjId,
-    action_state: &crate::action_state::ActionStateStore,
-) -> bool {
-    is_concealed_via_action_state(reg, w, subject, Some(action_state))
-}
-
-pub(crate) fn is_concealed_via_action_state(
-    reg: &Registry,
-    w: &World,
-    subject: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> bool {
     reg.hooks(HookPoint::Perceive).iter().any(|h| {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         h.hook.is_concealed(&ctx, subject)
     })
 }
 
 /// Collect every `LookRendered` hook's extra lines for a room render.
 #[must_use]
-pub fn look_rendered_lines(reg: &Registry, w: &World, looker: ObjId, room: ObjId) -> Vec<RichText> {
-    look_rendered_lines_with_action_state(reg, w, looker, room, None)
-}
-
-pub(crate) fn look_rendered_lines_with_action_state(
+pub fn look_rendered_lines(
     reg: &Registry,
     w: &World,
     looker: ObjId,
     room: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Vec<RichText> {
     let mut lines = Vec::new();
     for h in reg.hooks(HookPoint::LookRendered) {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         lines.extend(h.hook.look_rendered(&ctx, looker, room));
     }
     lines
@@ -3743,16 +3962,7 @@ pub fn room_ambient(
     w: &World,
     looker: ObjId,
     room: ObjId,
-) -> std::collections::BTreeMap<SmolStr, serde_json::Value> {
-    room_ambient_with_action_state(reg, w, looker, room, None)
-}
-
-pub(crate) fn room_ambient_with_action_state(
-    reg: &Registry,
-    w: &World,
-    looker: ObjId,
-    room: ObjId,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> std::collections::BTreeMap<SmolStr, serde_json::Value> {
     let mut map = std::collections::BTreeMap::new();
     let mut bytes = 0usize;
@@ -3776,7 +3986,7 @@ pub(crate) fn room_ambient_with_action_state(
         map.insert(key, value);
     };
     for h in reg.hooks(HookPoint::RoomAmbient) {
-        let ctx = HookReadContext::for_module(w, action_state, &h.module);
+        let ctx = HookReadContext::for_module(w, lens, &h.module);
         for (key, value) in h.hook.room_ambient(&ctx, looker, room) {
             offer(key, value, &h.module);
         }
@@ -3799,22 +4009,18 @@ pub(crate) fn room_ambient_with_action_state(
 
 /// Invoke every observer subscribed to `ev`'s kind, post-mutation, each
 /// with a [`Ctx`] carrying its module identity.
-pub fn emit_world_event(reg: &Registry, w: &mut World, out: &mut Outbox, ev: &WorldEvent) {
-    emit_world_event_with_action_state(reg, w, out, ev, None);
-}
-
-pub(crate) fn emit_world_event_with_action_state(
+pub fn emit_world_event(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
     ev: &WorldEvent,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let observers = reg.observers_matching(ev);
     let actor = ev.subject();
     for (module, obs) in observers {
         let typed_state =
-            crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+            crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
         let mut ctx = Ctx {
             w: &mut *w,
             actor,
@@ -3834,6 +4040,7 @@ pub(crate) fn emit_world_event_with_action_state(
 /// with a full [`Ctx`] carrying the module identity. A missing handler is
 /// logged and dropped (the completion arrived for a module that registered
 /// none — a programming error, never a crash).
+#[allow(clippy::too_many_arguments)]
 pub fn apply_async_completion(
     reg: &Registry,
     w: &mut World,
@@ -3842,36 +4049,14 @@ pub fn apply_async_completion(
     actor: ObjId,
     correlation: u64,
     payload: &str,
-) {
-    apply_async_completion_with_action_state(
-        reg,
-        w,
-        out,
-        module,
-        actor,
-        correlation,
-        payload,
-        None,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_async_completion_with_action_state(
-    reg: &Registry,
-    w: &mut World,
-    out: &mut Outbox,
-    module: SmolStr,
-    actor: ObjId,
-    correlation: u64,
-    payload: &str,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let Some(handler) = reg.async_completion(&module) else {
         tracing::warn!(%module, correlation, "async completion for unregistered module dropped");
         return;
     };
     let typed_state =
-        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+        crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor,
@@ -3971,7 +4156,7 @@ pub trait RelaySpeaker: Send + Sync {
 
 /// Run the registered relay speaker as `actor` (programme D4).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_relay_speak_with_action_state(
+pub(crate) fn apply_relay_speak(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
@@ -3979,13 +4164,13 @@ pub(crate) fn apply_relay_speak_with_action_state(
     channel: &str,
     kind: mush_proto::NarrativeKind,
     text: &str,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Result<(), RelayRefusal> {
     let Some((module, handler)) = reg.relay_speaker() else {
         return Err(RelayRefusal::NoSpeaker);
     };
     let typed_state =
-        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+        crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor,
@@ -4001,17 +4186,17 @@ pub(crate) fn apply_relay_speak_with_action_state(
 
 /// Dispatch a forwarded Discord interaction to the module handler with the
 /// longest matching prefix. `None` when no prefix matches.
-pub(crate) fn apply_discord_interaction_with_action_state(
+pub(crate) fn apply_discord_interaction(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
     interaction: &DiscordInteraction,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) -> Option<Result<String, String>> {
     let (module, handler) = reg.discord_interaction_handler(&interaction.custom_id)?;
     let actor = interaction.actor.unwrap_or(crate::GOD);
     let typed_state =
-        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+        crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor,
@@ -4031,7 +4216,7 @@ pub(crate) fn apply_discord_interaction_with_action_state(
 /// missing handler is logged and dropped. The handler re-validates against
 /// current world state (treaty ruling 3).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_request_completion_with_action_state(
+pub(crate) fn apply_request_completion(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
@@ -4039,14 +4224,14 @@ pub(crate) fn apply_request_completion_with_action_state(
     subject: ObjId,
     payload: &str,
     outcome: crate::request::RequestOutcome,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let Some(handler) = reg.request_completion(&module) else {
         tracing::warn!(%module, "request completion for unregistered module dropped");
         return;
     };
     let typed_state =
-        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+        crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor: subject,
@@ -4065,6 +4250,7 @@ pub(crate) fn apply_request_completion_with_action_state(
 /// task, with a full [`Ctx`] carrying the module identity (H1). A missing
 /// handler is logged and dropped — the same contract as
 /// [`apply_async_completion`].
+#[allow(clippy::too_many_arguments)]
 pub fn apply_store_read_completion(
     reg: &Registry,
     w: &mut World,
@@ -4073,29 +4259,7 @@ pub fn apply_store_read_completion(
     actor: ObjId,
     correlation: u64,
     payload: &str,
-) {
-    apply_store_read_completion_with_action_state(
-        reg,
-        w,
-        out,
-        module,
-        actor,
-        correlation,
-        payload,
-        None,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_store_read_completion_with_action_state(
-    reg: &Registry,
-    w: &mut World,
-    out: &mut Outbox,
-    module: SmolStr,
-    actor: ObjId,
-    correlation: u64,
-    payload: &str,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let Some(handler) = reg.store_read_completion(&module) else {
         tracing::warn!(
@@ -4107,7 +4271,7 @@ pub(crate) fn apply_store_read_completion_with_action_state(
     };
     let result = StoreReadResult::from_payload(payload);
     let typed_state =
-        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
+        crate::action_state::ModuleActionState::for_module(lens, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor,
@@ -4128,17 +4292,7 @@ pub fn fire_conn_hook(
     out: &mut Outbox,
     actor: ObjId,
     connected: bool,
-) {
-    fire_conn_hook_with_action_state(reg, w, out, actor, connected, None);
-}
-
-pub(crate) fn fire_conn_hook_with_action_state(
-    reg: &Registry,
-    w: &mut World,
-    out: &mut Outbox,
-    actor: ObjId,
-    connected: bool,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let point = if connected {
         HookPoint::Connected
@@ -4147,10 +4301,8 @@ pub(crate) fn fire_conn_hook_with_action_state(
     };
     let hooks: Vec<HookReg> = reg.hooks(point).to_vec();
     for h in hooks {
-        let typed_state = crate::action_state::ModuleActionState::for_module(
-            action_state,
-            Some(h.module.as_str()),
-        );
+        let typed_state =
+            crate::action_state::ModuleActionState::for_module(lens, Some(h.module.as_str()));
         let mut ctx = Ctx {
             w: &mut *w,
             actor,
@@ -4177,17 +4329,7 @@ pub fn fire_scene_hook(
     out: &mut Outbox,
     scene: SceneId,
     started: bool,
-) {
-    fire_scene_hook_with_action_state(reg, w, out, scene, started, None);
-}
-
-pub(crate) fn fire_scene_hook_with_action_state(
-    reg: &Registry,
-    w: &mut World,
-    out: &mut Outbox,
-    scene: SceneId,
-    started: bool,
-    action_state: Option<&crate::action_state::ActionStateStore>,
+    lens: crate::action_state::TypedStateLens<'_>,
 ) {
     let point = if started {
         HookPoint::SceneStarted
@@ -4196,10 +4338,8 @@ pub(crate) fn fire_scene_hook_with_action_state(
     };
     let hooks: Vec<HookReg> = reg.hooks(point).to_vec();
     for h in hooks {
-        let typed_state = crate::action_state::ModuleActionState::for_module(
-            action_state,
-            Some(h.module.as_str()),
-        );
+        let typed_state =
+            crate::action_state::ModuleActionState::for_module(lens, Some(h.module.as_str()));
         let mut ctx = Ctx {
             w: &mut *w,
             actor: GOD,
@@ -4229,7 +4369,7 @@ impl Ctx<'_> {
     /// receives the same live typed-state snapshot as ordinary dispatch.
     #[must_use]
     pub fn hook_read_context<'a>(&'a self, module: &str) -> HookReadContext<'a> {
-        HookReadContext::for_module(self.w, self.typed_state.store(), module)
+        HookReadContext::for_module(self.w, self.typed_state.lens(), module)
     }
 
     /// Consult the registered movement veto chain with this command's live
@@ -4240,14 +4380,7 @@ impl Ctx<'_> {
         exit: Option<ObjId>,
         dest: ObjId,
     ) -> Result<(), RichText> {
-        check_move_attempt_with_action_state(
-            self.reg,
-            self.w,
-            actor,
-            exit,
-            dest,
-            self.typed_state.store(),
-        )
+        check_move_attempt(self.reg, self.w, actor, exit, dest, self.typed_state.lens())
     }
 
     /// Consult the registered custody veto chain with this command's live
@@ -4258,44 +4391,37 @@ impl Ctx<'_> {
         obj: ObjId,
         dest: ObjId,
     ) -> Result<(), RichText> {
-        check_carry_attempt_with_action_state(
-            self.reg,
-            self.w,
-            mover,
-            obj,
-            dest,
-            self.typed_state.store(),
-        )
+        check_carry_attempt(self.reg, self.w, mover, obj, dest, self.typed_state.lens())
     }
 
     /// Resolve per-observer visibility with this command's live typed state.
     #[must_use]
     pub fn can_perceive(&self, observer: ObjId, subject: ObjId) -> bool {
-        perceives_via_action_state(
+        perceives_via(
             self.reg.hooks(HookPoint::Perceive),
             self.w,
             observer,
             subject,
-            self.typed_state.store(),
+            self.typed_state.lens(),
         )
     }
 
     /// Resolve ruleset-agnostic concealment with this command's live typed state.
     #[must_use]
     pub fn is_concealed(&self, subject: ObjId) -> bool {
-        is_concealed_via_action_state(self.reg, self.w, subject, self.typed_state.store())
+        is_concealed(self.reg, self.w, subject, self.typed_state.lens())
     }
 
     /// Render a room through perception and look hooks using this command's
     /// live typed-state snapshot.
     pub fn show_room(&mut self, looker: ObjId, room: ObjId) {
-        crate::commands::show_room_with_action_state(
+        crate::commands::show_room(
             self.reg,
             self.w,
             looker,
             room,
             self.out,
-            self.typed_state.store(),
+            self.typed_state.lens(),
         );
     }
 
@@ -4310,15 +4436,86 @@ impl Ctx<'_> {
     /// `persist` calls never half-commits. World mutations made before the
     /// error remain best-effort — validate-then-apply is still the rule.
     ///
-    /// **Trust model**: `op.ns` is not verified against `ctx.module`.
-    /// Compiled-in modules are trusted code; writing into another module's
-    /// namespace is *sanctioned delegation* (e.g. producing modules write
-    /// `jobs`-namespace docs through the jobs module's exported helpers)
-    /// and must only ever be done through the owning module's public API.
-    /// Any future enforcement will formalize that delegation rather than
-    /// check `ns == module`.
+    /// **Trust model** (WS03-A1): `op.ns` is verified against `ctx.module`,
+    /// and an undeclared cross-namespace write is REFUSED — the op is
+    /// dropped, nothing is queued, and nothing lands.
+    ///
+    /// A module's [`GameModule::name`] is its persistence namespace, so
+    /// `op.ns != ctx.module` is one module writing documents another module
+    /// owns. That is still *sanctioned delegation* where it is sanctioned —
+    /// the jobs module's public API takes `ctx` and writes `jobs` documents
+    /// under the CALLER's identity — but the delegation must now be
+    /// **declared**, per `(writer, namespace)` pair and with its reason, by
+    /// one of the two modules the pair names
+    /// ([`Registrar::persist_delegation`]). Compiled-in modules are trusted
+    /// code; what is not trusted is a delegation set nobody wrote down, which
+    /// is what this replaces.
+    ///
+    /// A refusal never panics — this runs on the single world task — and is
+    /// loud in two places at once: one `error!` per `(module, namespace)`
+    /// rather than one per command, and a row on the world for
+    /// [`World::refused_namespace_writes`](crate::world::World::refused_namespace_writes).
+    /// It has to be: dropping a write is silent at the call site, since
+    /// `persist` returns nothing to ignore.
+    ///
+    /// **What the check cannot see.** `persist` is not the only spelling of a
+    /// module write. [`Deferred::Persist`](crate::engine::Deferred) is a public
+    /// variant and [`Outbox::defer`](crate::Outbox::defer) is public, so the
+    /// crate-local `push_op` helper most modules actually write through queues
+    /// the op without ever passing here: it is not compared, was not in the
+    /// census, and cannot be refused. Nothing crosses a namespace that way
+    /// today — every one of those helpers stamps its own crate's namespace
+    /// constant by construction, which is what makes that path safe rather
+    /// than checked — but a write that MEANS to cross a namespace must be
+    /// spelled `ctx.persist` to be governed at all. Fencing the sibling path
+    /// is a follow-up step, not something this one invented: a pinned scan
+    /// over non-`mush-core` source for a `Deferred::Persist` whose namespace
+    /// is not the crate's own constant.
+    ///
+    /// A core command (`module: None`) is a wildcard, exactly as it is for
+    /// state slots. The engine's own namespace-crossing helpers — the scene
+    /// API, which writes the scene's OWNING namespace whoever calls it, and
+    /// the world timeline, which writes an engine-owned namespace no module
+    /// may be named after — take [`Ctx::persist_engine_owned`] instead: the
+    /// engine mediates those, so they are not a module reaching across.
     pub fn persist(&mut self, op: ModuleOp) {
+        // This is on every module write path, so the fast path is one
+        // SmolStr equality and nothing else; the delegation table is only
+        // ever consulted on a mismatch.
+        if self.module.as_ref().is_some_and(|module| *module != op.ns)
+            && !self.may_persist_into(&op.ns)
+        {
+            return;
+        }
         self.out.defer(Deferred::Persist(op));
+    }
+
+    /// Queue a persistence op whose namespace the ENGINE, not this module,
+    /// decides: the scene API's writes into a scene's owning namespace and
+    /// the world timeline's writes into its reserved one.
+    ///
+    /// Not a way around [`Ctx::persist`]'s namespace check — it is the
+    /// spelling for the writes that check would misread, and it lives in
+    /// `mush-core` alone (`pub(crate)`), so a module cannot reach it.
+    pub(crate) fn persist_engine_owned(&mut self, op: ModuleOp) {
+        self.out.defer(Deferred::Persist(op));
+    }
+
+    /// Whether this module may write a namespace that is not its own, and
+    /// record the refusal when it may not (WS03-A1). Cold: only ever reached
+    /// on a mismatch.
+    #[cold]
+    fn may_persist_into(&mut self, ns: &SmolStr) -> bool {
+        // A core command carries no module identity and is a wildcard.
+        let Some(module) = self.module.clone() else {
+            return true;
+        };
+        if self.reg.persist_delegation(&module, ns).is_some() {
+            return true;
+        }
+        let owner = self.reg.namespace_owner(ns).cloned();
+        self.w.record_refused_namespace_write(&module, ns, owner);
+        false
     }
 
     /// Open a server-initiated request to `subject` (interface plan I10,
@@ -4585,14 +4782,67 @@ impl Ctx<'_> {
 
     /// Read this world's state slot for `T` (declared via
     /// [`Registrar::state`]).
+    ///
+    /// Reading is **shared on purpose** and is not owner-checked: a module
+    /// reading another module's slot is a projection, not a write, and the
+    /// tree does it deliberately (`mush-propagation` reads `mush-tactics`'
+    /// contact ledger to decide what propagates). Mutation is the half that
+    /// belongs to one module — see [`Ctx::try_state_mut`].
     #[must_use]
     pub fn state<T: Any + Send>(&self) -> Option<&T> {
         self.w.module_state::<T>()
     }
 
-    /// Mutably access this world's state slot for `T`.
+    /// Mutably access this world's state slot for `T`, **refusing** a slot
+    /// another module declared.
+    ///
+    /// `Err(`[`StateSlotDenied`]`)` names the requesting module and the
+    /// owner, and nothing is written. `Ok(None)` is the slot simply not being
+    /// installed — an optional module did not compose — which is a normal
+    /// answer and not a refusal. Nothing here ever panics: this runs on the
+    /// single world task.
+    ///
+    /// A slot with no recorded owner (seeded through
+    /// [`World::module_state_insert`](crate::world::World::module_state_insert)
+    /// rather than declared) stays open to all, and a core command —
+    /// `module: None` — is a wildcard.
+    ///
+    /// This is the checked spelling, and it is the one to reach for: the
+    /// refusal is only as strong as the surface it sits on, and `Ctx::w` is a
+    /// `pub` field, so `ctx.w.module_state_mut::<T>()` skips the check
+    /// entirely. `mush-contract-tests`' `state-slot-owners.toml` is what
+    /// holds that route.
+    pub fn try_state_mut<T: Any + Send>(&mut self) -> Result<Option<&mut T>, StateSlotDenied> {
+        let slot = std::any::type_name::<T>();
+        match self
+            .w
+            .check_module_state_write(self.module.as_ref(), TypeId::of::<T>(), slot)
+        {
+            Ok(()) => Ok(self.w.module_state_mut::<T>()),
+            Err(owner) => Err(StateSlotDenied {
+                requester: self.module.clone().unwrap_or_default(),
+                owner,
+                slot,
+            }),
+        }
+    }
+
+    /// [`Ctx::try_state_mut`] for handlers that treat a missing slot and a
+    /// refused one alike.
+    ///
+    /// `None` means the write did not happen — because the slot is absent, or
+    /// because it belongs to another module. A module reaching its OWN slot
+    /// only ever sees the first, so the familiar
+    /// `if let Some(s) = ctx.state_mut::<T>()` keeps its meaning; a handler
+    /// that wants to tell the two apart (or to surface the refusal) calls
+    /// `try_state_mut` and reads the [`StateSlotDenied`]. Either way the
+    /// refusal is logged once per (module, slot) and recorded on the world
+    /// for
+    /// [`World::refused_state_writes`](crate::world::World::refused_state_writes),
+    /// so a regression is visible rather than a write that quietly stops
+    /// landing.
     pub fn state_mut<T: Any + Send>(&mut self) -> Option<&mut T> {
-        self.w.module_state_mut::<T>()
+        self.try_state_mut::<T>().ok().flatten()
     }
 
     /// Read one record from an engine-owned typed family registered by this
@@ -4632,13 +4882,7 @@ impl Ctx<'_> {
     /// handlers that mutate the world through paths not covered by the
     /// core helpers call this themselves.
     pub fn emit_world_event(&mut self, ev: &WorldEvent) {
-        emit_world_event_with_action_state(
-            self.reg,
-            self.w,
-            self.out,
-            ev,
-            self.typed_state.store(),
-        );
+        emit_world_event(self.reg, self.w, self.out, ev, self.typed_state.lens());
     }
 
     // ------------------------------------------------------------------
@@ -4727,39 +4971,42 @@ impl Ctx<'_> {
     pub fn start_scene(&mut self, kind: &str, members: BTreeSet<ObjId>) -> SceneId {
         let ns = self.module.clone().unwrap_or_else(|| SmolStr::new(kind));
         let id = self.w.scene_create(kind, &ns, members);
-        fire_scene_hook_with_action_state(
+        fire_scene_hook(
             self.reg,
             self.w,
             self.out,
             id,
             true,
-            self.typed_state.store(),
+            self.typed_state.lens(),
         );
         id
     }
 
     /// End a scene: fires `SceneEnded` hooks (scene still queryable), then
-    /// removes it, its per-object ruleset state, and its map blob, queuing
-    /// `Del` persistence ops for both (in the scene's **owning** namespace,
+    /// removes it and its per-object ruleset state, queuing a `Del`
+    /// persistence op for the latter (in the scene's **owning** namespace,
     /// regardless of who calls this). Scene ticks stop on their next due
     /// time. Returns whether the scene existed.
     pub fn end_scene(&mut self, id: SceneId) -> bool {
         if self.w.scene(id).is_none() {
             return false;
         }
-        fire_scene_hook_with_action_state(
+        fire_scene_hook(
             self.reg,
             self.w,
             self.out,
             id,
             false,
-            self.typed_state.store(),
+            self.typed_state.lens(),
         );
         let Some(scene) = self.w.scene_remove(id) else {
             return false;
         };
         let ns = scene.ns.clone();
-        self.persist(ModuleOp {
+        // The scene's OWNING namespace, whoever ends it: engine-mediated, so
+        // it takes the spelling WS03-A1's check does not read as a module
+        // reaching across.
+        self.persist_engine_owned(ModuleOp {
             ns,
             op: ModuleWrite::Del {
                 key: scene.ruleset_state_key.clone(),
@@ -4831,7 +5078,7 @@ impl Ctx<'_> {
         let (ns, key) = self.scene_persist_target(scene)?;
         self.w.scene_state_set(scene, obj, value);
         let snapshot = self.w.scene_state_snapshot(scene);
-        self.persist(ModuleOp {
+        self.persist_engine_owned(ModuleOp {
             ns,
             op: ModuleWrite::JsonSet {
                 key,
@@ -4904,15 +5151,23 @@ mod concealment_tests {
     use crate::obj::ObjId;
     use crate::world::World;
 
+    /// A store-less lens for the assertions below: these tests pin the answer
+    /// a caller gets when it has no typed state at all, which is exactly the
+    /// answer the old store-less twins handed out by default.
+    const DETACHED: crate::action_state::TypedStateLens<'static> =
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::Test,
+        );
+
     /// With no `Perceive` hook registered, the notability query defaults to
     /// `false` — additive and free (a game with no concealment ruleset).
     #[test]
     fn is_concealed_defaults_false_with_no_hook() {
         let reg = Registry::new();
         let w = World::new_minimal();
-        assert!(!is_concealed(&reg, &w, ObjId(1)));
+        assert!(!is_concealed(&reg, &w, ObjId(1), DETACHED));
         // And `can_perceive` remains a free pass on the same empty registry.
-        assert!(can_perceive(&reg, &w, ObjId(1), ObjId(2)));
+        assert!(can_perceive(&reg, &w, ObjId(1), ObjId(2), DETACHED));
     }
 
     /// A registered hook whose `is_concealed` returns true makes the firing
@@ -4928,6 +5183,6 @@ mod concealment_tests {
         let mut reg = Registry::new();
         Registrar::new(&mut reg, "test").hook(HookPoint::Perceive, Arc::new(AlwaysConcealed));
         let w = World::new_minimal();
-        assert!(is_concealed(&reg, &w, ObjId(1)));
+        assert!(is_concealed(&reg, &w, ObjId(1), DETACHED));
     }
 }

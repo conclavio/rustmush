@@ -819,7 +819,8 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
                     }
                     let Some(issuer) = crate::module::title_issuer(ctx) else {
                         return Err(MarketError::bad(
-                            "This server registers no market title issuer, so it cannot stock                              titled goods.",
+                            "This server registers no market title issuer, so it cannot stock \
+                             titled goods.",
                         ));
                     };
                     mush_economy::issue_title(

@@ -14,6 +14,7 @@ use mush_core::{
     LIMBO, MAX_AMBIENT_BYTES, MAX_AMBIENT_KEYS, ObjId, ObjKind, Powers, Registrar, Registry, Role,
     World, register_core_commands,
 };
+use mush_core::{DetachedTypedState, TypedStateLens};
 use mush_proto::SmolStr;
 
 fn setup() -> (World, Registry, ObjId, ObjId) {
@@ -149,7 +150,14 @@ fn commands_keyframe_stops_at_the_byte_cap_and_says_so() {
 #[test]
 fn room_view_carries_core_ic_time_and_nothing_else_by_default() {
     let (w, reg, nick, hall) = setup();
-    let rv = room_view(&reg, &w, nick, hall).expect("room renders");
+    let rv = room_view(
+        &reg,
+        &w,
+        nick,
+        hall,
+        TypedStateLens::Detached(DetachedTypedState::Test),
+    )
+    .expect("room renders");
     let ic = rv
         .ambient
         .get(AMBIENT_IC_TIME_KEY)
@@ -207,7 +215,14 @@ fn ambient_hooks_win_first_per_key_and_are_bounded() {
         }),
     );
 
-    let rv = room_view(&reg, &w, nick, hall).expect("room renders");
+    let rv = room_view(
+        &reg,
+        &w,
+        nick,
+        hall,
+        TypedStateLens::Detached(DetachedTypedState::Test),
+    )
+    .expect("room renders");
     assert_eq!(rv.ambient[AMBIENT_IC_TIME_KEY]["label"], "12 Brumaire");
     assert_eq!(rv.ambient["weather"]["state"], "rain", "first writer wins");
     assert!(

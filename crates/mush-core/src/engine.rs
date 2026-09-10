@@ -34,8 +34,7 @@ use crate::action_state::{
 };
 use crate::authoritative::AuthoritativeBundle;
 use crate::cmd::{
-    ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet,
-    dispatch_with_action_state,
+    ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
 };
 use crate::commands::narrative_emit;
 use crate::flags::Role;
@@ -563,34 +562,19 @@ pub struct ModuleComposition {
 }
 
 /// One prepared action submission crossing the synchronous engine/driver
-/// boundary. It is deliberately separate from legacy [`ModuleOp`] custody.
+/// boundary. It is deliberately separate from legacy [`ModuleOp`] custody:
+/// every staged action carries one complete K3 [`AuthoritativeBundle`], and
+/// there is no second persistence identity it could carry instead.
 pub struct StagedAction {
-    persistence: StagedActionPersistence,
+    bundle: Box<AuthoritativeBundle>,
     installation: PreparedInstallation,
     guards: GuardSet,
-}
-
-/// Persistence identity paired with one non-cloneable prepared RAM image.
-pub enum StagedActionPersistence {
-    /// K2 compatibility lane using the process-local writer serial.
-    Legacy(Vec<ModuleOp>),
-    /// K3 lane carrying the complete immutable exact-token intent.
-    Authoritative(Box<AuthoritativeBundle>),
-}
-
-impl fmt::Debug for StagedActionPersistence {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Legacy(module_ops) => f.debug_tuple("Legacy").field(module_ops).finish(),
-            Self::Authoritative(bundle) => f.debug_tuple("Authoritative").field(bundle).finish(),
-        }
-    }
 }
 
 impl fmt::Debug for StagedAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StagedAction")
-            .field("persistence", &self.persistence)
+            .field("bundle", &self.bundle)
             .field("installation", &self.installation)
             .field("guards", &self.guards)
             .finish()
@@ -598,9 +582,9 @@ impl fmt::Debug for StagedAction {
 }
 
 impl StagedAction {
-    /// Split the already-built persistence writes from the post-ack images.
-    pub fn into_parts(self) -> (StagedActionPersistence, PreparedInstallation) {
-        (self.persistence, self.installation)
+    /// Split the already-built exact-token bundle from the post-ack images.
+    pub fn into_parts(self) -> (Box<AuthoritativeBundle>, PreparedInstallation) {
+        (self.bundle, self.installation)
     }
 }
 
@@ -817,7 +801,7 @@ impl Engine {
         text: &str,
         out: &mut Outbox,
     ) -> Result<(), crate::RelayRefusal> {
-        crate::module::apply_relay_speak_with_action_state(
+        crate::module::apply_relay_speak(
             &self.registry,
             &mut self.world,
             out,
@@ -825,7 +809,7 @@ impl Engine {
             channel,
             kind,
             text,
-            Some(&self.action_state),
+            crate::action_state::TypedStateLens::Live(&self.action_state),
         )
     }
 
@@ -1671,12 +1655,12 @@ impl Engine {
             ),
             crate::action::PerceivedRef::KnownObject { id, revision } => {
                 if self.world.get(*id).is_none()
-                    || !module::can_perceive_with_action_state(
+                    || !module::can_perceive(
                         &self.registry,
                         &self.world,
                         actor,
                         *id,
-                        &self.action_state,
+                        crate::action_state::TypedStateLens::Live(&self.action_state),
                     )
                 {
                     return Err(crate::offer::LegalActionSubjectError::Invalid);
@@ -1822,12 +1806,12 @@ impl Engine {
                     // well; unlike an operated subject, a target needs no
                     // station grant merely to be targetable.
                     if self.world.get(*id).is_none()
-                        || !module::can_perceive_with_action_state(
+                        || !module::can_perceive(
                             &self.registry,
                             &self.world,
                             actor,
                             *id,
-                            &self.action_state,
+                            crate::action_state::TypedStateLens::Live(&self.action_state),
                         )
                     {
                         return Err(crate::offer::LegalActionResolutionError::Resolve(
@@ -2039,6 +2023,21 @@ impl Engine {
             let mut registrar = module::Registrar::for_composition(&mut registry, name);
             m.register(&mut registrar)?;
         }
+        // WS03-A1: a module's name IS its persistence namespace, so the roster
+        // is the namespace ownership map — recorded once, here, where the whole
+        // roster is known and before any write can happen. `Ctx::persist`
+        // reads it to name the owner of a namespace a module writes but does
+        // not own.
+        registry.record_namespace_owners(modules.iter().map(|m| m.name()));
+        // fu3-4: with every module's registrations in, no global command may
+        // capture a verb a behavior declares. A global always wins at
+        // dispatch, so a captured behavior verb is permanently dead with
+        // nothing logged; the check runs HERE, once, rather than inside
+        // registration, so the answer does not depend on the order the roster
+        // (or a single module's own calls) composes in.
+        registry
+            .check_behavior_verb_shadowing()
+            .map_err(ModError::msg)?;
         // Definition/action/bridge composition is complete before any world
         // state exists or persisted record can be interpreted.
         registry.freeze_mechanics(&module_owners)?;
@@ -2147,7 +2146,34 @@ impl Engine {
             let data = boot.remove(self.modules[index].name()).unwrap_or_default();
             self.load_module_at(index, data, out, fx)?;
         }
+        self.warn_unowned_state_slots();
         Ok(())
+    }
+
+    /// Name every state slot nobody declared, once, at the end of boot
+    /// (WS03-S8).
+    ///
+    /// A slot seeded through
+    /// [`World::module_state_insert`](crate::world::World::module_state_insert)
+    /// alone has no owner, so no module can be told it is reaching into
+    /// someone else's state. That is legal — a module may seed its loaded
+    /// state that way from `on_world_loaded`, which is exactly why the case
+    /// is **warned and never refused** — but it is also the hole ownership
+    /// cannot see through, so boot says which slots are in it.
+    ///
+    /// Drivers that deliver modules one at a time (the J4 path, which calls
+    /// [`Engine::module_loaded`] per module rather than
+    /// [`Engine::modules_loaded`]) call this themselves once the last module
+    /// is loaded. Returns the names it warned about.
+    pub fn warn_unowned_state_slots(&self) -> Vec<&'static str> {
+        let unowned = self.world.unowned_state_slots();
+        for slot in &unowned {
+            tracing::warn!(
+                slot = *slot,
+                "state slot has no declaring module: open to every module (WS03-S8)"
+            );
+        }
+        unowned
     }
 
     /// [`Engine::modules_loaded`] for **one** module (J4, doc 12 §5.6): the
@@ -2184,7 +2210,7 @@ impl Engine {
         data.normalize();
         let module_name = SmolStr::new(modules[index].name());
         let typed_state = crate::action_state::ModuleActionState::for_module(
-            Some(&self.action_state),
+            crate::action_state::TypedStateLens::Live(&self.action_state),
             Some(module_name.as_str()),
         );
         let mut ctx = Ctx {
@@ -2670,39 +2696,6 @@ impl Engine {
         }
     }
 
-    /// Move a logical action's persistence and install images into the one
-    /// driver-facing prepared lane.
-    ///
-    /// A prepared action is never mixed with the legacy dirty-object/module
-    /// snapshot path. On refusal its store reservation is explicitly aborted,
-    /// leaving byte-identical live action state.
-    pub fn stage_prepared_action(
-        &mut self,
-        prepared: PreparedTxn,
-        guards: GuardSet,
-    ) -> Result<(), StagePreparedActionError> {
-        if self.staged_action.is_some() {
-            let (_, installation) = prepared.into_parts();
-            self.release_installation(installation, "stage_prepared_action/already-staged");
-            return Err(StagePreparedActionError::AlreadyStaged);
-        }
-        let (module_ops, installation) = prepared.into_parts();
-        if self.world.has_dirty() {
-            self.release_installation(installation, "stage_prepared_action/dirty-world");
-            return Err(StagePreparedActionError::DirtyWorld);
-        }
-        if !self.module_ops.is_empty() {
-            self.release_installation(installation, "stage_prepared_action/legacy-module-ops");
-            return Err(StagePreparedActionError::LegacyModuleOps);
-        }
-        self.staged_action = Some(StagedAction {
-            persistence: StagedActionPersistence::Legacy(module_ops),
-            installation,
-            guards,
-        });
-        Ok(())
-    }
-
     /// Stage one K3 action only when its immutable replay writes exactly match
     /// the typed post-images retained for post-ack RAM installation.
     ///
@@ -2737,7 +2730,7 @@ impl Engine {
         }
         let (_, installation) = prepared.into_parts();
         self.staged_action = Some(StagedAction {
-            persistence: StagedActionPersistence::Authoritative(Box::new(bundle)),
+            bundle: Box::new(bundle),
             installation,
             guards,
         });
@@ -2806,7 +2799,7 @@ impl Engine {
                     component: "definition",
                 })?;
         guards
-            .revalidate_with_action_state(
+            .revalidate(
                 &self.world,
                 &self.action_state,
                 revisions,
@@ -2933,12 +2926,12 @@ impl Engine {
     /// queue and ride the caller's next `WriteBatch`, exactly as if the
     /// event had been emitted during a step.
     pub fn emit_world_event(&mut self, ev: &WorldEvent, out: &mut Outbox, fx: &mut Effects) {
-        module::emit_world_event_with_action_state(
+        module::emit_world_event(
             &self.registry,
             &mut self.world,
             out,
             ev,
-            Some(&self.action_state),
+            crate::action_state::TypedStateLens::Live(&self.action_state),
         );
         self.drain_deferred(out, fx);
     }
@@ -2990,13 +2983,13 @@ impl Engine {
                         );
                     } else {
                         self.world.session_input(actor);
-                        dispatch_with_action_state(
+                        dispatch(
                             &self.registry,
                             &mut self.world,
                             actor,
                             &line,
                             out,
-                            Some(&self.action_state),
+                            crate::action_state::TypedStateLens::Live(&self.action_state),
                         );
                     }
                 } else {
@@ -3093,13 +3086,13 @@ impl Engine {
                     // Re-validate: the actor may be gone by the time the
                     // timer fires.
                     if self.world.get(actor).is_some() {
-                        dispatch_with_action_state(
+                        dispatch(
                             &self.registry,
                             &mut self.world,
                             actor,
                             &line,
                             out,
-                            Some(&self.action_state),
+                            crate::action_state::TypedStateLens::Live(&self.action_state),
                         );
                     } else {
                         tracing::debug!(%actor, "WaitCmd for missing actor dropped");
@@ -3120,7 +3113,7 @@ impl Engine {
                     if let Some(pending) = self.pending_requests.remove(&id) {
                         self.dec_open_requests(pending.subject);
                         if self.world.get(pending.subject).is_some() {
-                            crate::module::apply_request_completion_with_action_state(
+                            crate::module::apply_request_completion(
                                 &self.registry,
                                 &mut self.world,
                                 out,
@@ -3128,7 +3121,7 @@ impl Engine {
                                 pending.subject,
                                 &pending.payload,
                                 crate::request::RequestOutcome::Expired,
-                                Some(&self.action_state),
+                                crate::action_state::TypedStateLens::Live(&self.action_state),
                             );
                         }
                     }
@@ -3155,7 +3148,7 @@ impl Engine {
         };
         {
             let typed_state = crate::action_state::ModuleActionState::for_module(
-                Some(&self.action_state),
+                crate::action_state::TypedStateLens::Live(&self.action_state),
                 Some(module.as_str()),
             );
             let mut ctx = Ctx {
@@ -3206,7 +3199,7 @@ impl Engine {
         };
         {
             let typed_state = crate::action_state::ModuleActionState::for_module(
-                Some(&self.action_state),
+                crate::action_state::TypedStateLens::Live(&self.action_state),
                 Some(module.as_str()),
             );
             let mut ctx = Ctx {
@@ -3323,20 +3316,20 @@ impl Engine {
                 // Hooks/observers fire on the world-side transition only — a
                 // link-dead revival never "connected" twice.
                 if !was_connected {
-                    module::fire_conn_hook_with_action_state(
+                    module::fire_conn_hook(
                         &self.registry,
                         &mut self.world,
                         out,
                         actor,
                         true,
-                        Some(&self.action_state),
+                        crate::action_state::TypedStateLens::Live(&self.action_state),
                     );
-                    module::emit_world_event_with_action_state(
+                    module::emit_world_event(
                         &self.registry,
                         &mut self.world,
                         out,
                         &WorldEvent::Connected { who: actor },
-                        Some(&self.action_state),
+                        crate::action_state::TypedStateLens::Live(&self.action_state),
                     );
                 }
             }
@@ -3379,13 +3372,13 @@ impl Engine {
             && self.world.input_depth(actor) == 0
             && let Some(room) = self.world.get(actor).and_then(|record| record.location)
         {
-            crate::commands::show_room_with_action_state(
+            crate::commands::show_room(
                 &self.registry,
                 &self.world,
                 actor,
                 room,
                 out,
-                Some(&self.action_state),
+                crate::action_state::TypedStateLens::Live(&self.action_state),
             );
         }
     }
@@ -3406,20 +3399,20 @@ impl Engine {
                 announce_room(&self.world, actor, " has disconnected.", out);
                 self.world.set_connected(actor, false);
                 self.world.session_end(actor);
-                module::fire_conn_hook_with_action_state(
+                module::fire_conn_hook(
                     &self.registry,
                     &mut self.world,
                     out,
                     actor,
                     false,
-                    Some(&self.action_state),
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
                 );
-                module::emit_world_event_with_action_state(
+                module::emit_world_event(
                     &self.registry,
                     &mut self.world,
                     out,
                     &WorldEvent::Disconnected { who: actor },
-                    Some(&self.action_state),
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
                 );
             } else {
                 // The character stays in the room (and connected, for WHO)
@@ -3446,20 +3439,20 @@ impl Engine {
         if self.world.is_connected(actor) {
             announce_room(&self.world, actor, " has disconnected.", out);
             self.world.set_connected(actor, false);
-            module::fire_conn_hook_with_action_state(
+            module::fire_conn_hook(
                 &self.registry,
                 &mut self.world,
                 out,
                 actor,
                 false,
-                Some(&self.action_state),
+                crate::action_state::TypedStateLens::Live(&self.action_state),
             );
-            module::emit_world_event_with_action_state(
+            module::emit_world_event(
                 &self.registry,
                 &mut self.world,
                 out,
                 &WorldEvent::Disconnected { who: actor },
-                Some(&self.action_state),
+                crate::action_state::TypedStateLens::Live(&self.action_state),
             );
         }
         self.world.session_end(actor);
@@ -3522,12 +3515,12 @@ impl Engine {
         interaction: &crate::module::DiscordInteraction,
         out: &mut Outbox,
     ) -> Option<Result<String, String>> {
-        crate::module::apply_discord_interaction_with_action_state(
+        crate::module::apply_discord_interaction(
             &self.registry,
             &mut self.world,
             out,
             interaction,
-            Some(&self.action_state),
+            crate::action_state::TypedStateLens::Live(&self.action_state),
         )
     }
 
@@ -3571,7 +3564,7 @@ impl Engine {
         if self.world.get(pending.subject).is_none() {
             return;
         }
-        crate::module::apply_request_completion_with_action_state(
+        crate::module::apply_request_completion(
             &self.registry,
             &mut self.world,
             out,
@@ -3579,7 +3572,7 @@ impl Engine {
             pending.subject,
             &pending.payload,
             crate::request::RequestOutcome::Answered(choice),
-            Some(&self.action_state),
+            crate::action_state::TypedStateLens::Live(&self.action_state),
         );
     }
 
@@ -3674,7 +3667,7 @@ impl Engine {
             Some((module, handler)) => {
                 let context = crate::module::HookReadContext::for_module(
                     &self.world,
-                    Some(&self.action_state),
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
                     module,
                 )
                 .with_registry(&self.registry);
@@ -3734,7 +3727,7 @@ impl Engine {
                 // Disjoint field borrows (world mut, registry shared), the
                 // same shape emit_world_event uses. The handler re-validates
                 // against current state (treaty ruling 3).
-                module::apply_async_completion_with_action_state(
+                module::apply_async_completion(
                     &self.registry,
                     &mut self.world,
                     out,
@@ -3742,7 +3735,7 @@ impl Engine {
                     actor,
                     correlation,
                     &payload,
-                    Some(&self.action_state),
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
                 );
             }
             WorldCommand::StoreReadDone {
@@ -3754,7 +3747,7 @@ impl Engine {
                 // The read seam's re-entry (H1): the same routing shape as
                 // `ModuleAsyncDone`. The handler re-validates (the actor may
                 // be gone) and renders; it never needs to persist.
-                module::apply_store_read_completion_with_action_state(
+                module::apply_store_read_completion(
                     &self.registry,
                     &mut self.world,
                     out,
@@ -3762,7 +3755,7 @@ impl Engine {
                     actor,
                     correlation,
                     &payload,
-                    Some(&self.action_state),
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
                 );
             }
         }
@@ -4207,6 +4200,14 @@ mod tests {
     use crate::obj::{GOD, LIMBO, ObjKind};
     use crate::output::{Audience, DeliveryOutcome};
     use mush_proto::NarrativeKind;
+
+    /// A store-less lens for the assertions below: these tests pin the answer
+    /// a caller gets when it has no typed state at all, which is exactly the
+    /// answer the old store-less twins handed out by default.
+    const DETACHED: crate::action_state::TypedStateLens<'static> =
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::Test,
+        );
 
     /// Engine with core + engine commands, God connected via conn 1, and a
     /// player Nick (not yet connected) in Limbo.
@@ -4679,8 +4680,10 @@ mod tests {
                 if matches!(event.as_ref(), OutputEvent::Sys(text) if text.to_plain_text() == "query-typed=41")
         )));
 
-        let foreign =
-            ModuleActionState::for_module(Some(engine.action_state()), Some("different_owner"));
+        let foreign = ModuleActionState::for_module(
+            crate::action_state::TypedStateLens::Live(engine.action_state()),
+            Some("different_owner"),
+        );
         assert!(matches!(
             foreign.get(&handle, &7),
             Err(ModuleActionStateReadError::ForeignOwner { .. })
@@ -4690,7 +4693,10 @@ mod tests {
             Err(ModuleActionStateReadError::Unavailable)
         ));
 
-        let own = ModuleActionState::for_module(Some(engine.action_state()), Some("typed_reader"));
+        let own = ModuleActionState::for_module(
+            crate::action_state::TypedStateLens::Live(engine.action_state()),
+            Some("typed_reader"),
+        );
         engine
             .registry
             .freeze_mechanics_owner(
@@ -4828,6 +4834,7 @@ mod tests {
             GOD,
             Some(exit),
             destination,
+            DETACHED,
         )
         .unwrap_err();
         assert_eq!(compatibility.to_plain_text(), "typed unavailable");

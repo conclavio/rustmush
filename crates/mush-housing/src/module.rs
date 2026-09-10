@@ -980,6 +980,16 @@ impl GameModule for HousingModule {
             Arc::new(crate::hooks::on_obj_destroyed),
         );
         reg.destroy_gate(Arc::new(crate::hooks::HousingDestroyGate));
+        // WS03-A1: `flow`/`tick` raise and close the tenancy story window
+        // through mush_jobs::open_job / resolve_plain_job, and the jobs API
+        // writes jobs documents under the CALLER's Ctx.
+        reg.persist_delegation(
+            NS,
+            "jobs",
+            "mush_housing::flow raises and closes the tenancy story window through \
+             mush_jobs::open_job / resolve_plain_job, whose writes carry the \
+             caller's identity",
+        )?;
         reg.job_queue(JobQueueSpec {
             name: STORY_QUEUE.into(),
             title: "Housing story windows".into(),

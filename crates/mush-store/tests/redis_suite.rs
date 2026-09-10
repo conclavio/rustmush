@@ -24,9 +24,9 @@ use mush_core::{
     ScopedIdempotencyKey, World,
 };
 use mush_store::{
-    AuthoritativeOutboxAttemptResult, AuthoritativeRetentionUsage, AuthoritativeScanCursor,
-    AuthoritativeStore, BundleStatus, IdempotencyStatus, ObjectStore, RedisStore, StoreError,
-    WriteBatch, suite,
+    AuthoritativeOutboxAttemptResult, AuthoritativeReadbackPhase, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, AuthoritativeStore, BundleStatus, IdempotencyStatus, ObjectStore,
+    RedisStore, StoreError, WriteBatch, suite,
 };
 use tokio::sync::Mutex;
 
@@ -339,6 +339,40 @@ redis_gated!(authoritative_contract_conflicts, store, {
 redis_gated!(authoritative_contract_retention_generation, store, {
     suite::authoritative_retention_generation_contract(&store).await;
 });
+// The live half of the RedisJSON re-serialization probe. Both authoritative
+// scripts compare readback *bytes*, so this is the only place that can answer
+// whether a real RedisJSON echoes serde_json's output verbatim.
+redis_gated!(authoritative_contract_number_shaped_post_images, store, {
+    suite::authoritative_number_shaped_post_image_round_trips(&store).await;
+});
+// The live half of the finalize relaxation: a bundle whose post-images a real
+// RedisJSON may respell must finalize, keep its receipt and keep its retained
+// intent. Against the old byte compare this is the test that would strand.
+redis_gated!(
+    authoritative_contract_finalize_survives_renormalisation,
+    store,
+    {
+        suite::authoritative_finalize_survives_a_renormalised_post_image(&store).await;
+        // Zero says RedisJSON echoed serde_json's bytes; anything else says the
+        // relaxed arm is load-bearing on this server. Both are legal, and the
+        // counter is the only place either fact is visible.
+        assert!(store.renormalised_finalize_readbacks() <= 2);
+    }
+);
+// The live half of the checkpoint re-verification: a bundle whose post-images
+// a real RedisJSON may respell must checkpoint and release its retained
+// intent. Against the byte compare alone this is the test that would strand
+// the repair witness forever.
+redis_gated!(
+    authoritative_contract_checkpoint_accepts_renormalisation,
+    store,
+    {
+        suite::authoritative_checkpoint_accepts_a_renormalised_post_image(&store).await;
+        // One re-verification per checkpoint at most, and none at all on a
+        // server whose JSON.GET echoes serde_json's bytes.
+        assert!(store.reverified_checkpoint_readbacks() <= 1);
+    }
+);
 redis_gated!(module_kv_round_trip, store, {
     suite::module_kv_round_trip(&store).await;
 });
@@ -663,8 +697,9 @@ redis_gated!(
 
         assert!(matches!(
             store.checkpoint_authoritative(token, hash).await,
-            Err(StoreError::AuthoritativeCorrupt(message))
-                if message.contains("READBACK_MISMATCH")
+            Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                if key == "meta:next_id"
+                    && phase == AuthoritativeReadbackPhase::Checkpoint
         ));
         assert_eq!(
             store.client().exists::<i64, _>(intent_key).await.unwrap(),
@@ -673,6 +708,307 @@ redis_gated!(
         );
     }
 );
+
+// The negative proof for the diagnostic itself: a *JSON* replay target
+// clobbered with a genuinely different document must be refused by name, not
+// as one undifferentiated string for the whole bundle. It lives here rather
+// than in the shared suite because naming the offending key needs a raw
+// `JSON.SET` behind the store's back, and the suite has no backend-neutral
+// escape for that.
+redis_gated!(
+    authoritative_checkpoint_readback_mismatch_names_the_clobbered_key,
+    store,
+    {
+        use fred::interfaces::KeysInterface;
+
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(37, 47);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        let intent_key = format!("auth:intent:{token}");
+        // The contract bundle's typed document, addressed the way the store
+        // addresses it.
+        let clobbered = "mod:redis_toy:action-state/v1/guarded/2";
+        store
+            .reserve_authoritative_intent(bundle)
+            .await
+            .expect("reserve checkpoint candidate");
+        store
+            .reconcile_authoritative(token, hash)
+            .await
+            .expect("finalize checkpoint candidate");
+        store
+            .debug_plant_raw_doc(clobbered, r#"{"amount":99}"#)
+            .await
+            .expect("clobber one materialized JSON post-image");
+
+        assert!(
+            matches!(
+                store.checkpoint_authoritative(token, hash).await,
+                Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                    if key == clobbered && phase == AuthoritativeReadbackPhase::Checkpoint
+            ),
+            "the refusal must name the one clobbered key, not the whole bundle"
+        );
+        assert_eq!(
+            store.client().exists::<i64, _>(intent_key).await.unwrap(),
+            1,
+            "failed checkpoint must retain the exact repair witness"
+        );
+    }
+);
+
+// ---------------------------------------------------------------------------
+// The live half of the checkpoint re-verification (WS03-S10).
+//
+// `checkpoint_authoritative.lua` proves a write by comparing the bytes it reads
+// back against the exact post-image, and on a checkpoint those bytes were
+// written by an earlier script — so a disagreement is either a real clobber or
+// a backend that respelled a document it stored perfectly. Telling those apart
+// is a decode, and a decode inside the script would have to use `cjson`, which
+// turns every number into a double and cannot tell `{}` from `[]`. These two
+// tests are those exact false accepts, planted: a `cjson` deep compare would
+// let both through, and the Rust re-verification must not.
+// ---------------------------------------------------------------------------
+
+/// The module post-image the plants doctor: every JSON shape a `json_set`
+/// post-image can carry, written through the same `JSON.SET` path as any other
+/// module document. (`suite::` carries the object route, in the same bundle
+/// shape.)
+fn number_shaped_document(
+    beyond_double: u64,
+    empty_object: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "one_point_zero": 1.0,
+        "negative_zero": -0.0,
+        "big_exponent": 1e21,
+        "float_residue": 0.30000000000000004,
+        "beyond_double": beyond_double,
+        "escaped": "\u{7}quote\"backslash\\ astral\u{1f600}",
+        "empty_object": empty_object,
+        "empty_array": [],
+    })
+}
+
+fn number_shaped_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle {
+    authoritative_bundle_for_epoch_outbox_and_writes(
+        token_byte,
+        request_byte,
+        0,
+        vec![],
+        vec![ReplayWrite::ModuleJsonSet {
+            namespace: OwnerId::new("redis_toy").unwrap(),
+            key: AuthoritativeKey::parse_canonical("action-state/v1/shapes/1").unwrap(),
+            value: number_shaped_document(9_007_199_254_740_993, serde_json::json!({})),
+        }],
+    )
+}
+
+/// The shapes document's key, and the typed document's, as the store addresses
+/// them. The typed document comes first in the plan.
+const GUARDED_KEY: &str = "mod:redis_toy:action-state/v1/guarded/2";
+const SHAPES_KEY: &str = "mod:redis_toy:action-state/v1/shapes/1";
+
+/// Reserve and finalize a number-shaped bundle, then hand back its identity so
+/// the caller can clobber a materialized post-image under it.
+async fn finalized_number_shaped(
+    store: &RedisStore,
+    token_byte: u8,
+    request_byte: u8,
+) -> (CommitToken, CanonicalHash) {
+    seed_minimal_world(store).await;
+    let bundle = number_shaped_bundle(token_byte, request_byte);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    store
+        .reserve_authoritative_intent(bundle)
+        .await
+        .expect("reserve number-shaped intent");
+    store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("finalize number-shaped intent");
+    (token, hash)
+}
+
+redis_gated!(
+    checkpoint_refuses_a_large_integer_that_differs_in_the_low_bits,
+    store,
+    {
+        use fred::interfaces::KeysInterface;
+
+        let (token, hash) = finalized_number_shaped(&store, 51, 61).await;
+        let intent_key = format!("auth:intent:{token}");
+        // Identical in every field but the low bit of an integer above 2^53 —
+        // the ledger's and the idempotency epoch's own range, and one value to
+        // cjson.
+        store
+            .debug_plant_raw_doc(
+                SHAPES_KEY,
+                &serde_json::to_string(&number_shaped_document(
+                    9_007_199_254_740_992,
+                    serde_json::json!({}),
+                ))
+                .unwrap(),
+            )
+            .await
+            .expect("clobber the low bits of a large integer");
+
+        assert!(
+            matches!(
+                store.checkpoint_authoritative(token, hash).await,
+                Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                    if key == SHAPES_KEY && phase == AuthoritativeReadbackPhase::Checkpoint
+            ),
+            "a low-bit difference above 2^53 is a different document"
+        );
+        assert_eq!(
+            store.client().exists::<i64, _>(intent_key).await.unwrap(),
+            1,
+            "failed checkpoint must retain the exact repair witness"
+        );
+        assert!(
+            store.reverified_checkpoint_readbacks() <= 1,
+            "the re-verification retry is one per checkpoint, ever"
+        );
+    }
+);
+
+redis_gated!(
+    checkpoint_refuses_an_object_replaced_by_an_empty_array,
+    store,
+    {
+        use fred::interfaces::KeysInterface;
+
+        let (token, hash) = finalized_number_shaped(&store, 52, 62).await;
+        let intent_key = format!("auth:intent:{token}");
+        // The other value cjson cannot tell apart: it decodes `{}` and `[]`
+        // into the same empty table.
+        store
+            .debug_plant_raw_doc(
+                SHAPES_KEY,
+                &serde_json::to_string(&number_shaped_document(
+                    9_007_199_254_740_993,
+                    serde_json::json!([]),
+                ))
+                .unwrap(),
+            )
+            .await
+            .expect("clobber an empty object into an empty array");
+
+        assert!(
+            matches!(
+                store.checkpoint_authoritative(token, hash).await,
+                Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                    if key == SHAPES_KEY && phase == AuthoritativeReadbackPhase::Checkpoint
+            ),
+            "an empty object is not an empty array"
+        );
+        assert_eq!(
+            store.client().exists::<i64, _>(intent_key).await.unwrap(),
+            1,
+            "failed checkpoint must retain the exact repair witness"
+        );
+    }
+);
+
+// A verified index excuses one replay write, and the retry that carries it
+// happens once.
+//
+// Two JSON targets clobbered: the refusal must name the one the script reaches
+// first, and repairing that one must leave the second refusing on its own
+// account. Whether any index gets verified at all here depends on something no
+// experiment before this one could answer — whether this RedisJSON respells
+// what serde_json handed it — so the assertion that holds either way is the
+// bound: at most one re-verified retry per checkpoint call, and a refusal that
+// is judged per target rather than latched. The in-memory mirror
+// (authoritative_checkpoint_reverification_is_per_target) plants the
+// respelling directly and carries the positive half.
+redis_gated!(checkpoint_verified_skip_applies_to_one_index_only, store, {
+    use fred::interfaces::KeysInterface;
+
+    let (token, hash) = finalized_number_shaped(&store, 53, 63).await;
+    let intent_key = format!("auth:intent:{token}");
+    store
+        .debug_plant_raw_doc(GUARDED_KEY, r#"{"amount":99}"#)
+        .await
+        .expect("clobber the typed document");
+    store
+        .debug_plant_raw_doc(
+            SHAPES_KEY,
+            &serde_json::to_string(&number_shaped_document(
+                9_007_199_254_740_992,
+                serde_json::json!({}),
+            ))
+            .unwrap(),
+        )
+        .await
+        .expect("clobber the shapes document");
+
+    assert!(
+        matches!(
+            store.checkpoint_authoritative(token, hash).await,
+            Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                if key == GUARDED_KEY && phase == AuthoritativeReadbackPhase::Checkpoint
+        ),
+        "the refusal names the clobbered target the script reaches first"
+    );
+    assert!(
+        store.reverified_checkpoint_readbacks() <= 1,
+        "one checkpoint call spends at most one re-verified retry"
+    );
+
+    // Repair the first, and the second still answers for itself.
+    store
+        .debug_plant_raw_doc(GUARDED_KEY, r#"{"amount":1}"#)
+        .await
+        .expect("restore the typed document");
+    assert!(
+        matches!(
+            store.checkpoint_authoritative(token, hash).await,
+            Err(StoreError::AuthoritativeReadbackMismatch { ref key, phase })
+                if key == SHAPES_KEY && phase == AuthoritativeReadbackPhase::Checkpoint
+        ),
+        "each replay index is judged on its own document"
+    );
+    assert!(
+        store.reverified_checkpoint_readbacks() <= 2,
+        "two checkpoint calls spend at most two re-verified retries"
+    );
+    assert_eq!(
+        store
+            .client()
+            .exists::<i64, _>(intent_key.clone())
+            .await
+            .unwrap(),
+        1,
+        "neither refusal may release the repair witness"
+    );
+
+    // And with both documents as the bundle wrote them, the checkpoint runs.
+    store
+        .debug_plant_raw_doc(
+            SHAPES_KEY,
+            &serde_json::to_string(&number_shaped_document(
+                9_007_199_254_740_993,
+                serde_json::json!({}),
+            ))
+            .unwrap(),
+        )
+        .await
+        .expect("restore the shapes document");
+    let checkpoint = store
+        .checkpoint_authoritative(token, hash)
+        .await
+        .expect("a repaired keyspace checkpoints");
+    assert!(!checkpoint.resumed);
+    assert_eq!(
+        store.client().exists::<i64, _>(intent_key).await.unwrap(),
+        0,
+        "a checkpoint that ran releases the intent"
+    );
+});
 
 redis_gated!(
     authoritative_store_refuses_second_unresolved_intent,

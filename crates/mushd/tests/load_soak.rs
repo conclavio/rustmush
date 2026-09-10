@@ -356,21 +356,8 @@ async fn boot_load(tag: &str, send_queue: usize, send_timeout_ms: u64) -> Rig {
         .await
         .expect("module boot");
 
-    let mut panels: Vec<String> = engine
-        .registry
-        .panel_feeds()
-        .iter()
-        .map(|(f, _)| f.to_string())
-        .collect();
-    panels.push("who".to_string());
-    let features: Vec<String> = engine
-        .modules()
-        .iter()
-        .map(|m| match m.name() {
-            "comsys" => "channels".to_string(),
-            other => other.to_string(),
-        })
-        .collect();
+    // WS04-S4: one manifest producer, shared with both binaries.
+    let (features, panels) = mush_server::boot::build_hello_manifest(&engine);
 
     // Generous flood limits: the throughput test fires bursts on purpose.
     let sessions = Arc::new(SessionManager::with_config(SessionConfig {

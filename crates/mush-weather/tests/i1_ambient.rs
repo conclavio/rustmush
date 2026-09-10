@@ -6,6 +6,12 @@ mod common;
 
 use common::{downtown_with_climate, room, world};
 use mush_core::output::room_view;
+use mush_core::{DetachedTypedState, TypedStateLens};
+
+/// The store-less lens these renders have always been taken with: this test
+/// holds no live authoritative store, and says so rather than reaching for a
+/// name that would have passed `None` silently.
+const DETACHED: TypedStateLens<'static> = TypedStateLens::Detached(DetachedTypedState::Test);
 
 #[test]
 fn room_ambient_carries_the_weather_glance_for_outdoor_rooms_only() {
@@ -14,7 +20,7 @@ fn room_ambient_carries_the_weather_glance_for_outdoor_rooms_only() {
     let indoor = room(&tw, "Cellar");
     let player = tw.spawn_player("Rae");
 
-    let rv = room_view(tw.registry(), tw.world(), player, outdoor).expect("room renders");
+    let rv = room_view(tw.registry(), tw.world(), player, outdoor, DETACHED).expect("room renders");
     let wx = rv
         .ambient
         .get("weather")
@@ -31,7 +37,7 @@ fn room_ambient_carries_the_weather_glance_for_outdoor_rooms_only() {
         "core's clock is still there"
     );
 
-    let rv = room_view(tw.registry(), tw.world(), player, indoor).expect("room renders");
+    let rv = room_view(tw.registry(), tw.world(), player, indoor, DETACHED).expect("room renders");
     assert!(
         !rv.ambient.contains_key("weather"),
         "an INDOORS room bears no weather: {:?}",

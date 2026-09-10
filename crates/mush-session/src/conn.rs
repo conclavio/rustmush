@@ -12,6 +12,8 @@ use mush_proto::{ClientCaps, Envelope, OutputEvent};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
+use crate::{read_locked, write_locked};
+
 /// Identifies one physical transport (an SSH channel or a WebSocket).
 ///
 /// Newtype over `u64`. `mush-core` uses a bare `type ConnId = u64` alias for
@@ -144,12 +146,12 @@ impl ConnectionHandle {
 
     /// Current capabilities (copy).
     pub fn caps(&self) -> ClientCaps {
-        *self.caps.read().expect("caps lock poisoned")
+        *read_locked(&self.caps, "caps")
     }
 
     /// Replace capabilities (terminal resize, renegotiation).
     pub fn set_caps(&self, caps: ClientCaps) {
-        *self.caps.write().expect("caps lock poisoned") = caps;
+        *write_locked(&self.caps, "caps") = caps;
     }
 
     /// Record an input line arriving at `now` (idle bookkeeping).
@@ -250,5 +252,49 @@ impl ConnectionHandle {
     fn millis_since_connect(&self, now: Instant) -> i64 {
         let ms = now.saturating_duration_since(self.connected_at).as_millis();
         i64::try_from(ms).unwrap_or(i64::MAX)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::poison::tests::poison_rwlock;
+    use mush_proto::{ClientKind, ColorDepth};
+
+    fn caps(width: u16) -> ClientCaps {
+        ClientCaps {
+            kind: ClientKind::Ssh,
+            color: ColorDepth::Ansi256,
+            width,
+            height: 24,
+            utf8: true,
+            structured: false,
+        }
+    }
+
+    fn handle() -> ConnectionHandle {
+        let (tx, _rx) = mpsc::channel(4);
+        ConnectionHandle::new(ConnId(1), IpAddr::from([127, 0, 0, 1]), caps(80), tx)
+    }
+
+    /// The failure this converts away: a panic while a resize held the caps
+    /// lock used to make `caps()` — read on every render for *this*
+    /// connection — panic in turn, on a task that owns live SSH channels.
+    /// Recovery keeps the last capabilities the panicking writer left, and the
+    /// next renegotiation still replaces them.
+    #[test]
+    fn a_poisoned_caps_lock_still_reads_and_writes() {
+        let conn = handle();
+        conn.set_caps(caps(132));
+
+        poison_rwlock(&conn.caps);
+
+        assert_eq!(
+            conn.caps().width,
+            132,
+            "the capabilities the panicking task left are still readable"
+        );
+        conn.set_caps(caps(80));
+        assert_eq!(conn.caps().width, 80, "and still replaceable");
     }
 }

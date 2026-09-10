@@ -2487,3 +2487,296 @@ pub async fn authoritative_retention_generation_contract(store: &dyn Authoritati
             .expect("exact counters are an idempotent no-op")
     );
 }
+
+/// The number-and-escape material both readback probes are built from: one
+/// bundle carrying every JSON shape a `json_set` post-image can hold, by both
+/// JSON routes at once — a module document and an object document (through
+/// an `AttrValue::Json`) — because both are written with `JSON.SET` and read
+/// back with `JSON.GET`.
+pub(crate) struct NumberShapedPostImages {
+    pub(crate) owner: OwnerId,
+    pub(crate) shapes: serde_json::Value,
+    pub(crate) carrier: Obj,
+    pub(crate) module_key: AuthoritativeKey,
+    pub(crate) bundle: AuthoritativeBundle,
+}
+
+pub(crate) fn number_shaped_post_images(
+    token_byte: u8,
+    request_byte: u8,
+) -> NumberShapedPostImages {
+    let owner = OwnerId::new("store_contract").expect("contract owner");
+    let shapes = serde_json::json!({
+        "one_point_zero": 1.0,
+        "negative_zero": -0.0,
+        "big_exponent": 1e21,
+        "float_residue": 0.30000000000000004,
+        "beyond_double": 9_007_199_254_740_993_u64,
+        "escaped": "\u{7}quote\"backslash\\ astral\u{1f600}",
+        "empty_object": {},
+        "empty_array": [],
+    });
+    // #1 already exists in the seeded world, so rewriting it needs no
+    // allocator post-image beyond the one the contract bundle already carries.
+    let mut carrier = Obj::new(ObjId(1), ObjKind::Player, "God", GOD, 0);
+    carrier.location = Some(LIMBO);
+    carrier.home = Some(LIMBO);
+    carrier.attrs.set("shapes", Attr::json(shapes.clone(), GOD));
+    let module_key =
+        AuthoritativeKey::parse_canonical("action-state/v1/shapes/1").expect("shape key");
+    let bundle = authoritative_bundle_with(
+        token_byte,
+        request_byte,
+        0,
+        vec![],
+        false,
+        vec![
+            ReplayWrite::ObjectSet {
+                object: carrier.clone(),
+            },
+            ReplayWrite::ModuleJsonSet {
+                namespace: owner.clone(),
+                key: module_key.clone(),
+                value: shapes.clone(),
+            },
+        ],
+    );
+    NumberShapedPostImages {
+        owner,
+        shapes,
+        carrier,
+        module_key,
+        bundle,
+    }
+}
+
+/// Every JSON number and string shape a replay post-image can carry must
+/// survive materialization byte-for-byte, on every backend.
+///
+/// `checkpoint_authoritative.lua` still verifies a write by comparing the
+/// **bytes** it reads back against the exact post-image it was handed, so a
+/// backend that renormalizes JSON on its way out — an integer above 2^53
+/// rounded through a double, `1.0` printed as `1`, `-0.0` collapsed to `0`,
+/// `1e21` expanded, a `\u`-escape rewritten — would refuse a write that in
+/// fact landed perfectly. That is not a hypothetical the fake can answer: it
+/// stores the exact `String` it was given, so here this is a parity assertion
+/// only. The live proof is the `redis_suite` mirror against a real RedisJSON.
+pub async fn authoritative_number_shaped_post_image_round_trips(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let NumberShapedPostImages {
+        owner,
+        shapes,
+        carrier,
+        module_key,
+        bundle,
+    } = number_shaped_post_images(21, 31);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve number-shaped intent");
+    let receipt = store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("materialize number-shaped post-images: the backend renormalized JSON");
+    assert!(receipt.matches_bundle(&bundle));
+    assert_eq!(
+        store
+            .module_json_get(owner.as_str(), module_key.as_str())
+            .await
+            .expect("materialized shape document"),
+        Some(shapes.clone()),
+        "a materialized module post-image must decode back to what was written"
+    );
+    let snapshot = store
+        .load_world()
+        .await
+        .expect("load materialized world")
+        .expect("non-empty world");
+    assert_eq!(
+        snapshot.objects.iter().find(|o| o.id == ObjId(1)),
+        Some(&carrier),
+        "a materialized object post-image must decode back to what was written"
+    );
+
+    let checkpoint = store
+        .checkpoint_authoritative(token, hash)
+        .await
+        .expect("checkpoint number-shaped post-images: the backend renormalized JSON");
+    assert!(!checkpoint.resumed);
+    assert_eq!(checkpoint.receipt, receipt);
+    assert_eq!(
+        store
+            .module_json_get(owner.as_str(), module_key.as_str())
+            .await
+            .expect("post-checkpoint shape document"),
+        Some(shapes)
+    );
+}
+
+/// Checkpointing must not refuse a post-image the backend merely respelled.
+///
+/// This is the readback with a real clobber to catch: checkpoint releases the
+/// full intent, the last repair witness, and other writers have had time to
+/// touch its targets since finalize wrote them. So the script still compares
+/// bytes — and a refusal it cannot explain would be permanent, because the
+/// bytes never change on a retry and the intent is never released. The way out
+/// is a re-read compared as a *document* and one bounded retry, in Rust, where
+/// `9007199254740993` is not `...992` and `{}` is not `[]`.
+///
+/// Here that path is only reached if the backend actually respells something,
+/// which the fake cannot do — so on the fake this is the parity assertion that
+/// a number-shaped bundle checkpoints and releases like any other, and on a
+/// live RedisJSON it is the question. The bundle carries three JSON writes on
+/// purpose: a relaxation that forgave only the one index the script names would
+/// spend its retry reaching the second and refuse there.
+pub async fn authoritative_checkpoint_accepts_a_renormalised_post_image(
+    store: &dyn AuthoritativeStore,
+) {
+    seed_authoritative_world(store).await;
+    let NumberShapedPostImages {
+        owner,
+        shapes,
+        carrier,
+        module_key,
+        bundle,
+    } = number_shaped_post_images(23, 33);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve number-shaped intent");
+    let receipt = store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("finalize number-shaped intent");
+    let checkpoint = match store.checkpoint_authoritative(token, hash).await {
+        Ok(checkpoint) => checkpoint,
+        Err(StoreError::AuthoritativeReadbackMismatch { key, phase }) => {
+            panic!("checkpoint refused the right document at {key:?} ({phase} readback)")
+        }
+        Err(other) => panic!("checkpoint refused a number-shaped bundle: {other}"),
+    };
+    assert!(!checkpoint.resumed);
+    assert_eq!(checkpoint.receipt, receipt);
+    assert!(
+        checkpoint.released_intent_bytes > 0,
+        "a checkpoint that ran must release the intent it retained"
+    );
+    assert_eq!(
+        store
+            .authoritative_status(token, hash)
+            .await
+            .expect("status after checkpoint"),
+        BundleStatus::FinalizedExact(Box::new(receipt)),
+        "a respelled post-image must leave an ordinarily checkpointed action"
+    );
+    assert!(
+        store
+            .scan_authoritative_intents(None, 16)
+            .await
+            .expect("scan retained intents")
+            .intents
+            .is_empty(),
+        "the repair witness must be released, not stranded behind a refusal"
+    );
+    assert_eq!(
+        store
+            .module_json_get(owner.as_str(), module_key.as_str())
+            .await
+            .expect("materialized shape document"),
+        Some(shapes),
+        "the checkpointed write is the one that landed"
+    );
+    let snapshot = store
+        .load_world()
+        .await
+        .expect("load materialized world")
+        .expect("non-empty world");
+    assert_eq!(
+        snapshot.objects.iter().find(|o| o.id == ObjId(1)),
+        Some(&carrier)
+    );
+}
+
+/// Finalizing must not refuse a post-image its own script has already applied.
+///
+/// `finalize_authoritative.lua` writes every replay target and re-reads it
+/// inside one EVAL, so the only disagreement its `json_set` arm can ever see is
+/// the backend respelling a document it has already stored. Refusing there is
+/// unrecoverable in the worst way available: the post-image is durably on disk,
+/// the receipt is not, and every retry re-runs the same comparison and refuses
+/// again — the very first bundle a fresh store writes would strand. So the arm
+/// observes instead, and this test insists on the whole finalized shape behind
+/// it: a receipt, a `FinalizedExact` status, and the exact intent still
+/// retained as the repair witness.
+///
+/// The fake cannot renormalize anything, so this is a parity assertion there;
+/// on a live RedisJSON it is the real one, and against the old byte compare it
+/// would fail with `AuthoritativeReadbackMismatch` the moment renormalisation
+/// happened at all.
+pub async fn authoritative_finalize_survives_a_renormalised_post_image(
+    store: &dyn AuthoritativeStore,
+) {
+    seed_authoritative_world(store).await;
+    let NumberShapedPostImages {
+        owner,
+        shapes,
+        carrier,
+        module_key,
+        bundle,
+    } = number_shaped_post_images(22, 32);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve number-shaped intent");
+    let receipt = match store.reconcile_authoritative(token, hash).await {
+        Ok(receipt) => receipt,
+        Err(StoreError::AuthoritativeReadbackMismatch { key, phase }) => panic!(
+            "finalize refused a write its own script had already applied \
+             ({phase} readback at key {key:?}): the json arm must observe"
+        ),
+        Err(other) => panic!("finalize refused a number-shaped bundle: {other}"),
+    };
+    assert!(receipt.matches_bundle(&bundle));
+    assert_eq!(
+        store
+            .authoritative_bundle_status(&bundle)
+            .await
+            .expect("status of the finalized bundle"),
+        BundleStatus::FinalizedExact(Box::new(receipt.clone())),
+        "a renormalized post-image must leave an ordinary finalized action"
+    );
+    let page = store
+        .scan_authoritative_intents(None, 16)
+        .await
+        .expect("scan retained intents");
+    assert!(
+        page.intents.contains(&bundle),
+        "the exact intent must still be retained as the repair witness"
+    );
+    assert_eq!(
+        store
+            .module_json_get(owner.as_str(), module_key.as_str())
+            .await
+            .expect("materialized shape document"),
+        Some(shapes),
+        "the observed write is the one that landed, not a rejected one"
+    );
+    let snapshot = store
+        .load_world()
+        .await
+        .expect("load materialized world")
+        .expect("non-empty world");
+    assert_eq!(
+        snapshot.objects.iter().find(|o| o.id == ObjId(1)),
+        Some(&carrier)
+    );
+}

@@ -805,7 +805,18 @@ impl CommandGate for TurnGate {
             // behavior stage, so it is Free here too.
             Err(mush_core::LookupErr::Ambiguous(_)) => SceneClass::Free,
             Err(mush_core::LookupErr::NotFound) => {
-                match mush_core::resolve_behavior_command(reg, w, actor, verb) {
+                // The `CommandGate` seam is read-only over the world and
+                // carries no typed-state lens, so this classification names
+                // its detachment rather than getting it by default.
+                match mush_core::resolve_behavior_command(
+                    reg,
+                    w,
+                    actor,
+                    verb,
+                    mush_core::TypedStateLens::Detached(
+                        mush_core::DetachedTypedState::CompatibilityCtx,
+                    ),
+                ) {
                     mush_core::BehaviorResolution::One { target, index } => reg
                         .behavior_spec(&target.behavior)
                         .and_then(|b| b.commands.get(index))

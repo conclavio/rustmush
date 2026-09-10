@@ -21,10 +21,13 @@ use std::time::Duration;
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::{
-    ActionError, ArgShape, CanonicalId, CmdError, CommandSpec, Ctx, Engine, GOD, GameModule,
-    Inbound, LIMBO, ModError, ObjKind, OwnerId, Registrar, RevisionKey, RevisionKind, RevisionSet,
-    RevisionStamp, RevisionValidator, SceneId, StateFamilyDescriptor, StateFamilyHandle,
-    StateFamilyId, SubjectKey, TickCadence, World,
+    ActionError, ArgShape, AuthoritativeBundle, AuthoritativeBundleDraft,
+    AuthoritativeSemanticEvent, CanonicalHash, CanonicalId, CmdError, CommandSpec, CommitToken,
+    Ctx, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, Engine,
+    GOD, GameModule, IdempotencyKey, IdempotencyScope, Inbound, LIMBO, ModError, ObjKind, OwnerId,
+    PreparedCausalRef, PreparedTxn, PrincipalId, Registrar, RequestUid, RevisionKey, RevisionKind,
+    RevisionSet, RevisionStamp, RevisionValidator, RulesValue, SceneId, ScopedIdempotencyKey,
+    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, TickCadence, World,
 };
 use mush_ipc::{DetachCause, SendTarget};
 use mush_proto::OutputEvent;
@@ -384,6 +387,75 @@ impl GameModule for ResidueModule {
     }
 }
 
+/// One complete K3 bundle around the residue transaction: the staging lane
+/// takes nothing else, and this test only needs a staged action to discard.
+fn residue_bundle(prepared: &PreparedTxn) -> AuthoritativeBundle {
+    let owner = OwnerId::new("panic_residue_test").expect("static owner id");
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let action = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("action").expect("static definition kind"),
+                DefinitionId::new("stash_residue").expect("static definition id"),
+                1,
+                serde_json::json!({}),
+            )
+            .expect("static action descriptor"),
+        )
+        .expect("the action definition registers");
+    let outcome_definition = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("outcome").expect("static definition kind"),
+                DefinitionId::new("residue_stashed").expect("static definition id"),
+                1,
+                serde_json::json!({}),
+            )
+            .expect("static outcome descriptor"),
+        )
+        .expect("the outcome definition registers");
+    let request = RequestUid::from_bytes([0x71; 16]);
+    let principal = PrincipalId::Object { id: GOD };
+    let cause = PreparedCausalRef::new(request, None, 0).expect("root cause");
+    let outcome = RulesValue::new(
+        outcome_definition.clone(),
+        serde_json::json!({ "accepted": true }),
+    )
+    .expect("the outcome matches its schema");
+    AuthoritativeBundle::new(AuthoritativeBundleDraft {
+        token: CommitToken::from_bytes([0x72; 16]),
+        request,
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: owner.clone(),
+                namespace: CanonicalId::new("stash_residue").expect("static namespace"),
+            },
+            0,
+            IdempotencyKey::Request(request),
+        ),
+        ingress_hash: CanonicalHash::from_bytes([0x73; 32]),
+        request_hash: CanonicalHash::from_bytes([0x74; 32]),
+        plan_hash: CanonicalHash::from_bytes([0x75; 32]),
+        action: action.clone(),
+        provider: owner,
+        cause,
+        definitions: vec![action.clone(), outcome_definition],
+        writes: prepared.authoritative_replay_writes(),
+        outcome: outcome.clone(),
+        resolution: None,
+        semantic_events: vec![
+            AuthoritativeSemanticEvent::root(cause, &action, outcome, vec![principal.clone()])
+                .expect("one root semantic event"),
+        ],
+        eligible_witnesses: vec![principal],
+        durable_outbox: vec![],
+    })
+    .expect("the residue transaction forms an authoritative bundle")
+}
+
 /// The case the earlier plan would have failed: the loop faults with an action
 /// already staged, and the cleanup must not become the second panic — one
 /// inside a `catch_unwind` handler aborts the process outright.
@@ -440,8 +512,9 @@ fn discarding_a_staged_action_does_not_re_enter_module_code() {
         .expect("composed registry builds guards")
         .finish()
         .expect("single revision guard is valid");
+    let bundle = residue_bundle(&prepared);
     engine
-        .stage_prepared_action(prepared, guards)
+        .stage_authoritative_action(prepared, guards, bundle)
         .expect("a clean engine accepts the prepared action");
     assert!(engine.action_state().has_prepared());
 

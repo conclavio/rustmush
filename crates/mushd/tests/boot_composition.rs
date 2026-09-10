@@ -10,15 +10,24 @@
 //! closed against, the default pulse cadence whatever `[tacsim]` said, and a
 //! misspelt receipt policy silently downgraded to `applied`.
 //!
-//! Every case here boots [`mushd::boot::boot_all_in_one`] — the same root
+//! Cases (1)-(4) boot [`mushd::boot::boot_all_in_one`] — the same root
 //! `main.rs` calls — over the memory backend and a scratch data dir, and each
 //! one fails on the pre-WS04-S0 root.
+//!
+//! WS04-S3 then deleted the transcription those four cases were written
+//! against: `boot_all_in_one` is now three calls into `mush_server::boot`, the
+//! shared root the split half runs. The four cases are unchanged apart from
+//! where they read the booted world from, which is the point — they are the
+//! proof that the deletion preserved the deployed path, and they prove it by
+//! executing it rather than by reading its source. Case (6) carries the one
+//! claim they cannot: that the delegation is a delegation.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use mush_core::{AccountId, ObjId};
-use mushd::boot::{Booted, boot_all_in_one};
+use mush_server::boot::{BootedEngine, OpenedStore};
+use mushd::boot::boot_all_in_one;
 use mushd::config::Config;
 use mushd::quarantine::QuarantineSpool;
 
@@ -44,7 +53,7 @@ fn memory_config(dir: &Path) -> Config {
 }
 
 /// Boot exactly what `main.rs` boots.
-async fn boot(config: &Config) -> Result<Booted, String> {
+async fn boot(config: &Config) -> Result<(OpenedStore, BootedEngine), String> {
     let mut spool = QuarantineSpool::open(config.server.data_dir.join("quarantine"))
         .map_err(|error| format!("quarantine spool: {error}"))?;
     boot_all_in_one(config, &mut spool).await
@@ -58,7 +67,7 @@ async fn boot(config: &Config) -> Result<Booted, String> {
 async fn mushd_provisions_the_decision_key_ring() {
     let dir = scratch_dir("decision-keys");
     let config = memory_config(&dir);
-    let booted = boot(&config).await.expect("the memory-backend boot");
+    let (_opened, booted) = boot(&config).await.expect("the memory-backend boot");
 
     assert!(
         booted.engine.has_decision_keys(),
@@ -93,9 +102,9 @@ async fn mushd_installs_the_account_oracle() {
     )
     .unwrap();
     let config = memory_config(&dir);
-    let booted = boot(&config).await.expect("the memory-backend boot");
+    let (opened, booted) = boot(&config).await.expect("the memory-backend boot");
 
-    let accounts = booted.store.list_accounts().await.expect("stored accounts");
+    let accounts = opened.store.list_accounts().await.expect("stored accounts");
     let record = accounts
         .iter()
         .find(|a| a.name == "warden")
@@ -152,7 +161,7 @@ async fn mushd_installs_the_pulse_config() {
     let mut config = memory_config(&dir);
     config.tacsim.ground_pulse_ms = 5_000;
     config.tacsim.space_pulse_ms = 11_000;
-    let booted = boot(&config).await.expect("the memory-backend boot");
+    let (_opened, booted) = boot(&config).await.expect("the memory-backend boot");
 
     let pulse = booted
         .engine
@@ -165,4 +174,98 @@ async fn mushd_installs_the_pulse_config() {
         "the all-in-one root must upgrade the pulse cadence from [tacsim]"
     );
     assert_eq!(pulse.space_ms, 11_000);
+}
+
+/// (5) `--check-config` refuses a typo'd boot-fatal value, in the real binary,
+/// on its real exit code — the preflight WS04-S3 exists to give an operator.
+///
+/// `receipt_policy` is the value it is written against because it is the one
+/// that used to be accepted in silence: before WS04-S0 the all-in-one never
+/// read the key at all, so a misspelling ran the box on the weaker `applied`
+/// receipts. Now it refuses the boot, which is right — and this is how an
+/// operator finds that out without the game going down to tell them.
+#[test]
+fn check_config_rejects_a_typod_receipt_policy() {
+    let dir = scratch_dir("check-config");
+    let bad = dir.join("bad.toml");
+    std::fs::write(
+        &bad,
+        "[store]\nstore = \"memory\"\nreceipt_policy = \"hostpowerloss\"\n",
+    )
+    .unwrap();
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mushd"))
+        .args(["--check-config", "--config"])
+        .arg(&bad)
+        .output()
+        .expect("running mushd --check-config");
+    assert!(
+        !out.status.success(),
+        "a misspelt receipt policy must exit non-zero; got {:?}",
+        out.status
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("hostpowerloss"),
+        "the refusal must name the offending value; got {stderr:?}"
+    );
+
+    // ...and the config the box actually deploys passes, so the flag is usable
+    // as a gate rather than a thing that always says no.
+    let deployed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/dev1/mushd.toml");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mushd"))
+        .args(["--check-config", "--config"])
+        .arg(&deployed)
+        .output()
+        .expect("running mushd --check-config");
+    assert!(
+        out.status.success(),
+        "{} must preflight clean; stderr: {:?}",
+        deployed.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// (6) The structural claim the four boot cases cannot carry: `mushd` DELEGATES
+/// its composition root rather than transcribing it.
+///
+/// Two transcriptions of one world boot do not disagree loudly — they disagree
+/// by omission, which is how the all-in-one came to run a world with no
+/// decision key ring, an unwired account oracle and an ignored pulse cadence
+/// while the split half ran one with all three. This tripwire is aimed at
+/// `boot.rs` because that is where the second transcription lived: every needle
+/// below is a step of the world boot that must be reached through
+/// `mush_server::boot` and never re-stated here.
+///
+/// It carries ONLY the structural claim. Every behavioural claim is (1)-(5),
+/// which execute the root.
+#[test]
+fn mushd_delegates_the_composition_root() {
+    const ROOT: &str = include_str!("../src/boot.rs");
+    for needle in [
+        "compose_modules(",
+        "server_modules_with(",
+        "tacsim_module(",
+        "LedgerArchive::open(",
+        "set_offer_keys(",
+        "RedisStore::connect_read_only(",
+        "spawn_archive_job(",
+        "panel_feeds()",
+        "run_migrations(",
+        "load_or_seed_world(",
+        "hydrate_world_timeline(",
+        "boot_modules(",
+    ] {
+        assert!(
+            !ROOT.contains(needle),
+            "crates/mushd/src/boot.rs re-states `{needle}`: the all-in-one is \
+             transcribing the world boot again instead of calling the shared root, \
+             and the two will drift by omission exactly as they did before WS04-S0"
+        );
+    }
+    assert!(
+        ROOT.contains("mush_server::boot::build_engine")
+            && ROOT.contains("mush_server::boot::open_store"),
+        "the all-in-one root must reach the world through mush_server::boot"
+    );
 }

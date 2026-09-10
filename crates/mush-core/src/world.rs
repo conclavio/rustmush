@@ -14,7 +14,7 @@
 //! Time: the world never calls `SystemTime`. The driving loop feeds wall
 //! time in via [`World::set_now`]; `created`/`modified` stamps use it.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use mush_proto::PromptSpec;
@@ -27,7 +27,9 @@ use crate::clock::{
     WorldTimelineEpoch, WorldTimelineError,
 };
 use crate::flags::Flags;
-use crate::module::{InputContext, InputStacks, ModuleStateMap, Scene, SceneId, StateInit};
+use crate::module::{
+    InputContext, InputStacks, ModuleStateMap, Scene, SceneId, StateInit, StateSlotInfo,
+};
 use crate::obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 
 /// Maximum `@parent` hops for attribute inheritance lookups.
@@ -189,6 +191,26 @@ pub struct World {
     scene_state: BTreeMap<(SceneId, ObjId), serde_json::Value>,
     /// Typed module state slots (anymap; in-RAM working state).
     module_state: ModuleStateMap,
+    /// Who declared each state slot, by MODULE name (not crate): filled by
+    /// [`World::module_state_apply`] from the [`StateInit`] the module's
+    /// `Registrar::state` call collected. A slot seeded through
+    /// [`World::module_state_insert`] instead has no row here and stays open
+    /// to every module.
+    module_state_owners: HashMap<TypeId, SmolStr>,
+    /// Every (writing module, slot) pair already REFUSED at
+    /// [`Ctx::try_state_mut`](crate::cmd::Ctx::try_state_mut), with the
+    /// slot's type name for the report. Modules touch their state every
+    /// command, so the report is deduplicated here — one log line per pair
+    /// per boot, not one per command in the world loop.
+    module_state_foreign_writes: BTreeMap<(SmolStr, TypeId), &'static str>,
+    /// WS03-A1: every `(writing module, persistence namespace)` pair already
+    /// REFUSED at [`Ctx::persist`](crate::cmd::Ctx::persist) — an undeclared
+    /// write into a namespace that is not the writing module's own — with the
+    /// namespace's owning module when the composition claims one.
+    /// Deduplicated for the same reason the slot table is: `Ctx::persist` is
+    /// on every module write path, and the world loop must not log per
+    /// command.
+    module_ns_refused_writes: BTreeMap<(SmolStr, SmolStr), Option<SmolStr>>,
     /// Per-actor input-context stacks (transient parser state — empty on
     /// clone).
     input_stacks: InputStacks,
@@ -1440,19 +1462,184 @@ impl World {
     }
 
     /// Mutably access the module state slot for `T`.
+    ///
+    /// The **unchecked engine accessor**: it carries no module identity, so
+    /// unlike [`Ctx::try_state_mut`](crate::cmd::Ctx::try_state_mut) — which
+    /// REFUSES a foreign module's write — it reports nothing and checks
+    /// nothing. `Ctx::w` is a `pub` field, so `ctx.w.module_state_mut::<T>()`
+    /// is one character longer than the checked spelling and skips the check
+    /// entirely. What holds that back is a scan, not the types:
+    /// `mush-contract-tests`' `state-slot-owners.toml` baselines every
+    /// cross-owner call site, and a new one fails that test. It is a
+    /// convention pinned by a scan, and this sentence is the only place the
+    /// compiler will ever say so.
     pub fn module_state_mut<T: Any + Send>(&mut self) -> Option<&mut T> {
         self.module_state.get_mut::<T>()
     }
 
     /// Install (or replace) the state slot for `T` directly (modules may
     /// do this from `on_world_loaded` to seed loaded state).
+    ///
+    /// This is one of the two **unchecked engine accessors** (the other is
+    /// [`World::module_state_mut`]): it carries no module identity, so it
+    /// records no owner and is subject to no ownership check. A slot that
+    /// only ever arrives this way has no owner at all and stays open to
+    /// every module — [`Ctx::try_state_mut`](crate::cmd::Ctx::try_state_mut)
+    /// refuses nothing it has no owner for — and the engine names it in a
+    /// boot `warn!` ([`World::unowned_state_slots`]) rather than refusing it.
+    /// What keeps the accessor from becoming a way around slot ownership is a
+    /// **convention pinned by a scan** — `mush-contract-tests`'
+    /// `state-slot-owners.toml` baselines every cross-owner call site — and
+    /// not an invariant enforced by the types.
     pub fn module_state_insert<T: Any + Send + Clone>(&mut self, value: T) {
         self.module_state.insert(value);
     }
 
-    /// Install a collected [`StateInit`] (engine construction).
+    /// Install a collected [`StateInit`] (engine construction), recording
+    /// the declaring module as the slot's owner.
     pub fn module_state_apply(&mut self, init: StateInit) {
+        self.module_state_owners
+            .insert(init.type_id(), init.module().clone());
         self.module_state.apply(init);
+    }
+
+    /// The module that declared the slot for `ty`, if one did.
+    ///
+    /// Ownership is by MODULE name, not by crate: a crate registering two
+    /// modules owns its slots under two different names, and each is checked
+    /// against the writer's own name.
+    #[must_use]
+    pub fn module_state_owner(&self, ty: TypeId) -> Option<&SmolStr> {
+        self.module_state_owners.get(&ty)
+    }
+
+    /// Every installed state slot with its owner, sorted by type name.
+    #[must_use]
+    pub fn module_state_slots(&self) -> Vec<StateSlotInfo> {
+        let mut slots: Vec<StateSlotInfo> = self
+            .module_state
+            .slots()
+            .map(|(type_id, type_name)| StateSlotInfo {
+                type_id,
+                type_name,
+                owner: self.module_state_owners.get(&type_id).cloned(),
+            })
+            .collect();
+        slots.sort_by_key(|s| s.type_name);
+        slots
+    }
+
+    /// The type names of every installed slot nobody declared — the slots
+    /// seeded through [`World::module_state_insert`] alone. Open to every
+    /// module by design; the engine warns them by name at boot.
+    #[must_use]
+    pub fn unowned_state_slots(&self) -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = self
+            .module_state
+            .slots()
+            .filter(|(type_id, _)| !self.module_state_owners.contains_key(type_id))
+            .map(|(_, type_name)| type_name)
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// Every foreign state write REFUSED so far, as `(writing module, slot
+    /// type name)`, deduplicated per pair.
+    ///
+    /// WS03-S8 collected this list while still applying the write; WS03-S14
+    /// refuses it. A non-empty list is therefore a defect report, not a
+    /// census: some module asked for a slot it does not own and did not get
+    /// it.
+    #[must_use]
+    pub fn refused_state_writes(&self) -> Vec<(SmolStr, &'static str)> {
+        self.module_state_foreign_writes
+            .iter()
+            .map(|((module, _), type_name)| (module.clone(), *type_name))
+            .collect()
+    }
+
+    /// Every cross-namespace module write REFUSED so far, as
+    /// `(writing module, namespace, owning module)`.
+    ///
+    /// A module's [`GameModule::name`](crate::module::GameModule::name) is its
+    /// persistence namespace, so a row here is a module that tried to write
+    /// documents another module owns without a declared delegation
+    /// ([`Registrar::persist_delegation`](crate::module::Registrar::persist_delegation)).
+    /// WS03-A1's census collected this list while still applying the write;
+    /// the refusal drops it. A non-empty list is therefore a defect report,
+    /// not a census: some module's write did not land, and either the
+    /// delegation is missing a row or the write should never have been made.
+    ///
+    /// The owner is `None` for a namespace no composed module claims.
+    #[must_use]
+    pub fn refused_namespace_writes(&self) -> Vec<(SmolStr, SmolStr, Option<SmolStr>)> {
+        self.module_ns_refused_writes
+            .iter()
+            .map(|((module, ns), owner)| (module.clone(), ns.clone(), owner.clone()))
+            .collect()
+    }
+
+    /// Record one REFUSED module write into a namespace that is not the
+    /// writing module's own (WS03-A1), logging once per `(module,
+    /// namespace)`.
+    pub(crate) fn record_refused_namespace_write(
+        &mut self,
+        module: &SmolStr,
+        ns: &SmolStr,
+        owner: Option<SmolStr>,
+    ) {
+        if self
+            .module_ns_refused_writes
+            .insert((module.clone(), ns.clone()), owner.clone())
+            .is_none()
+        {
+            tracing::error!(
+                module = %module,
+                ns = %ns,
+                owner = owner.as_deref().unwrap_or("(unclaimed)"),
+                "cross-namespace module write REFUSED: the namespace belongs to another \
+                 module and no delegation declares the pair (WS03-A1)"
+            );
+        }
+    }
+
+    /// Decide whether `module` may mutate the slot for `ty` through
+    /// [`Ctx::try_state_mut`](crate::cmd::Ctx::try_state_mut), returning the
+    /// owning module in `Err` when it may not.
+    ///
+    /// A refusal is recorded and logged ONCE per (module, slot) — a module
+    /// touches its state every command, and the world loop must not log per
+    /// command. A core command (`module == None`) is a wildcard, and a slot
+    /// with no recorded owner (seeded through [`World::module_state_insert`]
+    /// rather than declared) is open to all.
+    pub(crate) fn check_module_state_write(
+        &mut self,
+        module: Option<&SmolStr>,
+        ty: TypeId,
+        type_name: &'static str,
+    ) -> Result<(), SmolStr> {
+        let Some(module) = module else { return Ok(()) };
+        let Some(owner) = self.module_state_owners.get(&ty) else {
+            return Ok(());
+        };
+        if owner == module {
+            return Ok(());
+        }
+        let owner = owner.clone();
+        if self
+            .module_state_foreign_writes
+            .insert((module.clone(), ty), type_name)
+            .is_none()
+        {
+            tracing::error!(
+                module = %module,
+                owner = %owner,
+                slot = type_name,
+                "foreign state-slot write REFUSED: the slot belongs to another module (WS03-S14)"
+            );
+        }
+        Err(owner)
     }
 
     // ------------------------------------------------------------------

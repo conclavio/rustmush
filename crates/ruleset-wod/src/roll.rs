@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use mush_core::{CmdError, Ctx, ObjId, Role, WorldEvent, match_object, perm};
+use mush_core::{CmdError, Ctx, ObjId, Role, WorldEvent, is_nearby, match_object, perm};
 use mush_dice::RollCtx;
 use mush_dice::owod20::{Owod20Opts, Owod20Outcome, Owod20Pool, contest};
 use mush_dice::pool::PoolMechanic;
@@ -604,6 +604,16 @@ pub(crate) fn roll_expr(
     Ok(outcome)
 }
 
+/// The single refusal every contested roll gives for a target it will not
+/// read. One sentence for all of it: a target out of reach, a dbref that
+/// names nothing, a target whose sheet has no rating in the named term, and a
+/// term that is not a trait at all. Distinct wording on any of those turns
+/// `+roll ... contested` into an oracle — walk the dbrefs to learn who exists
+/// and where they are, then walk the terms to read their sheet one rating at
+/// a time, all without ever touching them. Byte-identical to the Shadowrun
+/// twin's, which closes the same hole in the same place.
+const CONTESTED_REFUSED: &str = "You can't contest a roll against that target.";
+
 /// A contested roll: the actor and a target each roll, then compare.
 fn contested_roll(
     cmd: &WodCmd,
@@ -613,14 +623,27 @@ fn contested_roll(
     their_expr: &str,
 ) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    let target = match_object(ctx.w, actor, target_spec)?;
+    let target =
+        match_object(ctx.w, actor, target_spec).map_err(|_| CmdError::msg(CONTESTED_REFUSED))?;
+    // Rolling against a character reads their sheet, so it is an examine, and
+    // the rest of the crate already demands one. `match_object` stays global —
+    // `#123` and `*name` resolve anywhere — so the test lands here: reach
+    // (`is_nearby`), or the examine right itself (its controller, or staff
+    // holding `EXAMINE_ALL`, which is how an ST rolls against an off-stage
+    // NPC). It runs before the pools resolve, so no Willpower rides on it.
+    if target != actor
+        && !perm::can_examine(ctx.w, actor, target)
+        && !is_nearby(ctx.w, actor, target)
+    {
+        return Err(CmdError::msg(CONTESTED_REFUSED));
+    }
     let priv_roll = ctx.switches.has("priv");
 
     // Validate the opponent's pool expression *before* the actor side runs —
     // `prepare(mine)` deducts (and persists) a Willpower point as a side
     // effect, and a bad opponent pool must not burn the actor's point on a
-    // roll that never resolves.
-    resolve_for(cmd, ctx, target, their_expr).map_err(CmdError::msg)?;
+    // roll that never resolves. The reason it never says *why* is above.
+    resolve_for(cmd, ctx, target, their_expr).map_err(|_| CmdError::msg(CONTESTED_REFUSED))?;
 
     // Actor side (may spend willpower / specialty via switches).
     let mine = prepare(
@@ -638,7 +661,8 @@ fn contested_roll(
         difficulty: args.difficulty,
         ..RollArgs::default()
     };
-    let theirs = prepare(cmd, ctx, target, &their_args, false, false, false)?;
+    let theirs = prepare(cmd, ctx, target, &their_args, false, false, false)
+        .map_err(|_| CmdError::msg(CONTESTED_REFUSED))?;
 
     let now = ctx.w.now();
     let (out_a, out_b) = {

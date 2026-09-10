@@ -117,6 +117,36 @@ impl GameModule for NpcModule {
         state.config.scene_turn_deadline_secs = self.scene_turn_deadline_secs;
         let tick_period = state.config.tick;
         reg.state(state);
+        // WS03-A1: `crate::content`'s entry appliers run under the CONTENT
+        // module's identity — the content module's pack pass drives every
+        // kind's applier itself — so the lore pools and people a pack places
+        // carry `content` on the write and `npc` on the namespace. We own the
+        // namespace and mush-content cannot name us, so the pair is declared
+        // here.
+        reg.persist_delegation(
+            "content",
+            crate::profile::NS,
+            "the content module's pack pass drives this crate's entry appliers under              the content module's identity, and they write the lore pools and people              the pack describes",
+        )?;
+        // ...and the two other modules that drive the same appliers: whoever
+        // calls `mush_content::apply_pack` runs EVERY kind's applier under
+        // their own Ctx, so a pack with people in it reaches this crate under
+        // the atlas's identity (`@atlas/pack apply`) or worldgen's (`+build/go`
+        // and a request's activation). Neither crate can name us, so both pairs
+        // are declared here beside the content one.
+        reg.persist_delegation(
+            "atlas",
+            crate::profile::NS,
+            "`@atlas/pack apply` commits through mush_content::apply_pack, which \
+             drives this crate's appliers under the atlas module's identity",
+        )?;
+        reg.persist_delegation(
+            "worldgen",
+            crate::profile::NS,
+            "the same route for a built pack: `+build/go` and a request's activation \
+             apply the pack under the worldgen module's identity, and a site pack \
+             carries the personas the planner wrote",
+        )?;
 
         // Speech + movement + presence observers build stimuli.
         for kind in [
@@ -1358,7 +1388,8 @@ fn apply_action(
             // Re-validated exactly like a player's move: a locked / vanished
             // exit simply fails.
             if let Some(e) = find_exit(ctx.w, npc, exit) {
-                traverse_exit(ctx.reg, ctx.w, npc, e, ctx.out);
+                let lens = ctx.typed_state.lens();
+                traverse_exit(ctx.reg, ctx.w, npc, e, ctx.out, lens);
             }
             record_self(ctx, npc, &format!("(tries to leave via {exit})"));
         }

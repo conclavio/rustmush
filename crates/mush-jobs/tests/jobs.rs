@@ -42,6 +42,16 @@ impl GameModule for TestWod {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        // WS03-A1: this stand-in writes jobs documents through the jobs API,
+        // and its payload handlers write its own namespace under the jobs
+        // module's identity — both directions, as the real ruleset declares
+        // them.
+        reg.persist_delegation("wod", "jobs", "files and closes jobs through the jobs API")?;
+        reg.persist_delegation(
+            "jobs",
+            "wod",
+            "its payload handlers run under the jobs module's identity",
+        )?;
         reg.job_queue(JobQueueSpec {
             name: "xp".into(),
             title: "XP spends".into(),
@@ -834,6 +844,81 @@ fn notes_crud_and_staff_only_hiding() {
     // A character with no notes.
     let out = run(env.bob, &mut env, "+notes");
     assert!(has_text(&out, "You have no notes."));
+}
+
+#[test]
+fn staff_only_mark_is_sticky_across_a_plain_staff_edit() {
+    let mut env = setup();
+    run(
+        env.rita,
+        &mut env,
+        "+note/staff Nick/watch=Keep an eye on him.",
+    );
+
+    // A staffer re-writing the note without /staff must not silently strip the
+    // mark and hand the note to its subject.
+    let out = run(env.rita, &mut env, "+note Nick/watch=Still watching.");
+    assert!(has_text(&out, "Note 'watch' set on Nick."));
+    let note = get_note(&env.engine.world, env.nick, "watch").unwrap();
+    assert!(
+        note.staff_only,
+        "a plain staff edit keeps the staff-only mark"
+    );
+    assert_eq!(note.text, "Still watching.");
+    let out = run(env.nick, &mut env, "+note me/watch");
+    assert!(has_text(&out, "No such note."));
+    let out = run(env.nick, &mut env, "+notes");
+    assert!(!has_text(&out, "watch"), "{:?}", sys_texts(&out));
+
+    // Only staff may clear the mark.
+    let out = run(env.bob, &mut env, "+note/public Nick/watch=mine now");
+    assert!(has_text(&out, "Permission denied."));
+    let out = run(env.nick, &mut env, "+note/public me/watch=mine now");
+    assert!(has_text(&out, "Permission denied."));
+    assert!(
+        get_note(&env.engine.world, env.nick, "watch")
+            .unwrap()
+            .staff_only
+    );
+
+    // /public clears it, and the character sees the note from then on.
+    let out = run(
+        env.rita,
+        &mut env,
+        "+note/public Nick/watch=Now on the record.",
+    );
+    assert!(has_text(&out, "Note 'watch' set on Nick."));
+    assert!(
+        !get_note(&env.engine.world, env.nick, "watch")
+            .unwrap()
+            .staff_only
+    );
+    let out = run(env.nick, &mut env, "+note me/watch");
+    assert!(has_text(&out, "Now on the record."));
+    // ...and a later staff edit keeps it public, since there is no mark to carry.
+    run(env.rita, &mut env, "+note Nick/watch=Still on the record.");
+    assert!(
+        !get_note(&env.engine.world, env.nick, "watch")
+            .unwrap()
+            .staff_only
+    );
+
+    // The player's own note path is untouched: a plain self-write stays public.
+    run(env.nick, &mut env, "+note me/goals=Become somebody.");
+    assert!(
+        !get_note(&env.engine.world, env.nick, "goals")
+            .unwrap()
+            .staff_only
+    );
+
+    // /public is one of the mutually exclusive switches, and wants text.
+    let out = run(env.rita, &mut env, "+note/staff/public Nick/watch=which?");
+    assert!(has_text(&out, "Pick one +note switch."));
+    let out = run(env.rita, &mut env, "+note/public Nick/watch");
+    assert!(has_text(
+        &out,
+        "Usage: +note/public <char>/<category>=<text>"
+    ));
 }
 
 #[test]

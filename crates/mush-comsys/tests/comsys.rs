@@ -19,6 +19,11 @@ use mush_proto::{NarrativeKind, OutputEvent};
 use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
 use smol_str::SmolStr;
 
+/// A store-less lens for this harness: it drives the engine's public
+/// event fan-out with no live typed-state snapshot and says so.
+const DETACHED: mush_core::TypedStateLens<'static> =
+    mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+
 // ----------------------------------------------------------------------
 // Harness
 // ----------------------------------------------------------------------
@@ -204,6 +209,7 @@ fn obj_created_observer_autojoins_new_players_only() {
             kind: ObjKind::Player,
             creator: GOD,
         },
+        DETACHED,
     );
     emit_world_event(
         &engine.registry,
@@ -214,6 +220,7 @@ fn obj_created_observer_autojoins_new_players_only() {
             kind: ObjKind::Thing,
             creator: GOD,
         },
+        DETACHED,
     );
     let st = state(&engine);
     let public = st.channel_by_name(DEFAULT_CHANNEL).unwrap().id;
@@ -237,6 +244,7 @@ fn obj_destroyed_observer_drops_memberships() {
         &mut engine.world,
         &mut out,
         &WorldEvent::ObjDestroyed { obj: ann },
+        DETACHED,
     );
     assert!(!state(&engine).members.contains_key(&(ann, public)));
     assert!(out.deferred().iter().any(|d| matches!(

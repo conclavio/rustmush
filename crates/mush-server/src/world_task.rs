@@ -77,15 +77,15 @@
 //! this module; it cannot be a crate-level deny while `lib.rs`, `persist.rs`
 //! and `quarantine.rs` still carry production `unreachable!` of their own.
 //!
-//! Six production `expect` deliberately remain, all of them boot-time or
+//! Five production `expect` deliberately remain, all of them boot-time or
 //! arithmetic-precondition rather than world-state assertions, and none of
 //! them reachable from a player line:
 //!
 //! * [`base_registry`] x2 — command-table collisions at construction, before
 //!   the loop exists; a collision is a build-time wiring error.
 //! * the delayed-decision recovery arm — `CanonicalId::new` over a literal.
-//! * `flush_prepared_action` and `flush_dirty` — the serial `checked_add`,
-//!   whose `u64::MAX` case is refused a few lines above each site.
+//! * `flush_dirty` — the serial `checked_add`, whose `u64::MAX` case is
+//!   refused a few lines above the site.
 //! * `@discord/link` — `normalize_link_code` over a code this function just
 //!   minted.
 //!
@@ -137,10 +137,10 @@ use mush_core::{
     Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
     Flags, Inbound, IncidentId, LegalActionQuery, ObjId, ObjKind, OfferExecutionContext,
     OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
-    ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind, StagedAction,
-    StagedActionPersistence, StepOutcome, TickCadence, World, WorldCommand, WorldEvent,
-    can_perceive, can_perceive_with_action_state, event_subject, is_ignoring, narrative_actor,
-    register_core_commands, register_engine_commands,
+    Privileges, ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind,
+    StagedAction, StepOutcome, TickCadence, TypedStateLens, World, WorldCommand, WorldEvent,
+    can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
+    register_engine_commands,
 };
 use mush_ipc::{
     ActionSend, DiscordControlOp, GatewayAction, GatewayInput, GatewayRequest,
@@ -151,7 +151,6 @@ use mush_proto::{ActionStatusId, OutputEvent, ProjectedActionStatus, RichText};
 use mush_store::{
     AccountRec, AuthoritativeReceipt, AuthoritativeStore, BoundIdempotencyStatus, BundleStatus,
     DiscordBanRec, DiscordCodeRecord, InMemoryStore, IntentReceipt, ObjectStore, SshKeyRec,
-    WriteBatch,
 };
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
@@ -160,8 +159,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::action_coordinator::{
-    ActionCoordinator, ActionPermit, ActionPreflight, StagedAuthoritativeAction,
-    StagedDecisionAttempt, StagedDecisionLease, StagedDecisionResponse,
+    ActionCoordinator, ActionPermit, ActionPreflight, MAX_PREFLIGHT_ATTEMPTS,
+    PREFLIGHT_RETRY_WINDOW, StagedAuthoritativeAction, StagedDecisionAttempt, StagedDecisionLease,
+    StagedDecisionResponse,
 };
 use crate::decision_dispatch::{
     DecisionDispatchReservation, DecisionDispatcher, DecisionProviderRegistry,
@@ -189,6 +189,30 @@ pub type Gateway = std::sync::Arc<dyn GatewaySink>;
 /// bridge bounds its lines the same way; this is the server's own guard.
 pub const MAX_RELAY_LINE_CHARS: usize = 1_000;
 use mush_config::{unix_now_ms, unix_now_s};
+
+/// How long the world loop gives an already-dequeued exact commit to reach its
+/// receipt after a shutdown was requested, before it preserves the retained
+/// seals and stops anyway (`Wake::ShutdownDeadline`).
+///
+/// Public because it is half of a *caller's* bound: whoever joins the world
+/// task has to wait at least this long or it will report a healthy world as a
+/// hung one. It was written inline twice below and nowhere else, so the two
+/// bounds could drift apart in silence — see [`WORLD_JOIN_TIMEOUT`].
+pub const WORLD_SHUTDOWN_GRACE: Duration = Duration::from_secs(15);
+
+/// What a joiner allows the world task ON TOP of its own grace: the post-loop
+/// work between the last `break` and the task returning (seal preservation, the
+/// final metrics publish, dropping the engine).
+pub const WORLD_JOIN_SLACK: Duration = Duration::from_secs(15);
+
+/// The bound every join of the world task uses.
+///
+/// Strictly longer than the world's own grace, because a joiner that expired
+/// first would classify the *designed* slow path — a shutdown that waited out
+/// its commit grace — as a hung world, and an operator would page on a box that
+/// was doing exactly the right thing. The slack above it is the post-loop tail.
+pub const WORLD_JOIN_TIMEOUT: Duration =
+    Duration::from_secs(WORLD_SHUTDOWN_GRACE.as_secs() + WORLD_JOIN_SLACK.as_secs());
 
 /// Capacity of the world task's inbound channel.
 const INBOUND_CAPACITY: usize = 1024;
@@ -378,6 +402,24 @@ pub enum WorldMsg {
     /// single-writer. The opaque permit proves the store lookup happened
     /// before provider resolution or truth reads.
     AuthoritativeAction(Box<AuthoritativeActionRequest>),
+    /// Re-check one privilege on the world loop for an off-loop executor
+    /// holding an authorization taken a queue hop ago (WS02-A1). The staff
+    /// executor captures no world borrow, so this is the only way it can ask;
+    /// a revocation in the window is recorded as a second `Denied` audit row
+    /// against `command` before the `false` goes back. Busy/unavailable is
+    /// typed so the caller fails closed instead of disclosing on a guess.
+    RecheckPrivilege {
+        /// Whose privilege to re-check (the requester, not the subject).
+        actor: ObjId,
+        /// The bit the command was authorized on.
+        privilege: Privileges,
+        /// What the op is about, for the audit row.
+        subject: Option<ObjId>,
+        /// The command name recorded in the audit detail.
+        command: &'static str,
+        /// `true` = still held.
+        reply: oneshot::Sender<Result<bool, WorldReadError>>,
+    },
     /// Ordering barrier: replied to once every message queued before it has
     /// been processed *and its output delivered*. The QUIT flow uses this to
     /// flush a quitting player's in-flight output before detaching them.
@@ -942,6 +984,10 @@ fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
         WorldMsg::CreatePlayer { .. }
         | WorldMsg::AuthoritativeAction(_)
         | WorldMsg::DiscordInteraction { .. }
+        // A revoked re-check writes an audit row, so it is classed with the
+        // writes: refused (fail-closed) in a restricted mode rather than
+        // answering `true` off a world it may not read.
+        | WorldMsg::RecheckPrivilege { .. }
         | WorldMsg::RelaySpeak { .. } => IngressClass::WorldMutation,
         WorldMsg::NameFree { .. }
         | WorldMsg::InInputContext { .. }
@@ -1088,6 +1134,10 @@ struct DirectActionIngress {
     projections: ReceiptProjectionTable,
     epoch: u64,
     next_sequence: AtomicU64,
+    /// The same registry the world loop and store writer publish into. This
+    /// path has no gateway boundary to report through, so a submission
+    /// deferred at the preflight bound would otherwise be invisible.
+    metrics: Arc<Metrics>,
 }
 
 impl WorldHandle {
@@ -1239,6 +1289,36 @@ impl WorldHandle {
         rx.await.unwrap_or(Err(WorldReadError::Unavailable))
     }
 
+    /// Re-check a privilege the world task authorized before it queued an op
+    /// to an off-loop executor (WS02-A1). `Ok(false)` means the grant was
+    /// revoked in the window and a second `Denied` row is in the audit;
+    /// `Err` means the world could not answer, which callers must treat as a
+    /// refusal — an authorization is never inferred from a failed read.
+    pub async fn recheck_privilege(
+        &self,
+        actor: ObjId,
+        privilege: Privileges,
+        subject: Option<ObjId>,
+        command: &'static str,
+    ) -> Result<bool, WorldReadError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::RecheckPrivilege {
+                actor,
+                privilege,
+                subject,
+                command,
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return Err(WorldReadError::Unavailable);
+        }
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
+    }
+
     /// Enumerate the current viewer-safe action offers for an authenticated
     /// connection. The world task owns both connection truth and provider
     /// projection, so no interface can manufacture either side of the query.
@@ -1369,11 +1449,36 @@ impl WorldHandle {
             tracing::error!("in-process store lacks authoritative request capability");
             return ActionSend::Gone;
         };
+        // Bounded exactly like the split boundary's handler, under the shared
+        // pair in `action_coordinator`: the loop rides out a store hiccup, it
+        // is never the durable answer. What differs is the answer at the
+        // bound. The split arm retains custody because its gateway still holds
+        // a replay copy; this arm has no second custodian, so it answers
+        // `Busy` — "bounded custody full before durable ownership". That is
+        // honest here and only here, because `next_sequence` above minted a
+        // fresh sequence for this call: no intent under this request's
+        // identity can exist yet, so a caller's retry cannot double-apply one.
+        let started = tokio::time::Instant::now();
         let mut delay = Duration::from_millis(100);
+        let mut attempts = 0u32;
         let preflight = loop {
+            attempts += 1;
             match ActionCoordinator::preflight(store, envelope.clone()).await {
                 Ok(preflight) => break preflight,
                 Err(error) if error.is_transient() => {
+                    let spent = started.elapsed();
+                    if attempts >= MAX_PREFLIGHT_ATTEMPTS
+                        || spent.saturating_add(delay) > PREFLIGHT_RETRY_WINDOW
+                    {
+                        tracing::error!(
+                            error = %error,
+                            attempts,
+                            spent_ms = spent.as_millis(),
+                            "in-process coordinator preflight stayed transient to the bound"
+                        );
+                        direct.metrics.coordinator_preflight_deferred();
+                        return ActionSend::Busy;
+                    }
                     tokio::time::sleep(delay).await;
                     delay = (delay * 2).min(Duration::from_secs(5));
                 }
@@ -2013,6 +2118,7 @@ fn spawn_persist_with_gateway_mode(
         projections,
         epoch: action_epoch,
         next_sequence: AtomicU64::new(1),
+        metrics: Arc::clone(&deps.metrics),
     });
     let handle = WorldHandle {
         tx: tx.clone(),
@@ -3621,6 +3727,10 @@ async fn run(
     // refused with a typed Busy response: RAM already contains the tentative
     // post-image, so it is not an authoritative query snapshot yet.
     let mut pending_commit: Option<PendingCommit> = None;
+    // Loss witnesses already accounted for by the supervision check at the head
+    // of the loop. Boot may hydrate a store that has none, so this starts where
+    // the store starts rather than at zero.
+    let mut lost_installations_seen = engine.action_state().lost_installations();
     // If a must-retain async completion or connection-lifecycle message is
     // already dequeued while another exact receipt is outstanding, retain that
     // ONE message locally and stop polling `rx`. This preserves FIFO without
@@ -3690,6 +3800,20 @@ async fn run(
         };
     }
     loop {
+        // Supervision, before anything is admitted: a `PreparedInstallation`
+        // that died without an install or an abort took the RAM half of an
+        // ack-gated commit with it, and its durable half may already be in the
+        // store. There is no answer to give the player and no state to answer
+        // from, so the freeze is latched here and `admission_mode` below reads
+        // it — every later line is refused rather than served from RAM that may
+        // no longer match Redis.
+        freeze_on_lost_installation(
+            &engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &mut lost_installations_seen,
+        );
         let admission_mode = match (&pending_commit, health.mode) {
             // IntegrityFrozen is stricter than every in-flight state and may
             // never be hidden. A transient StoreReadOnly transition is not:
@@ -4024,6 +4148,27 @@ async fn run(
                         }
                         WorldMsg::ConnectionReady { conn, actor, reply } => {
                             let _ = reply.send(Ok(engine.actor_of(conn) == Some(actor)));
+                            StepOutcome::Continue
+                        }
+                        WorldMsg::RecheckPrivilege {
+                            actor,
+                            privilege,
+                            subject,
+                            command,
+                            reply,
+                        } => {
+                            // The world fields are borrowed disjointly so the
+                            // audit append rides this step's deferred queue.
+                            let held = crate::staff::recheck_privilege(
+                                &mut engine.world,
+                                &engine.registry,
+                                &mut out,
+                                actor,
+                                privilege,
+                                subject,
+                                command,
+                            );
+                            let _ = reply.send(Ok(held));
                             StepOutcome::Continue
                         }
                         WorldMsg::LegalActions {
@@ -4938,7 +5083,7 @@ async fn run(
                     }
                     deferred_world_msg =
                         Some(WorldMsg::Inbound(Inbound::Control(ControlMsg::Shutdown)));
-                    shutdown_deadline = Some(Instant::now() + Duration::from_secs(15));
+                    shutdown_deadline = Some(Instant::now() + WORLD_SHUTDOWN_GRACE);
                     StepOutcome::Continue
                 } else {
                     guarded!(
@@ -4992,7 +5137,7 @@ async fn run(
                 shutdown_requested = true;
                 if let Some(pending) = pending_commit.as_mut() {
                     pending.exit_after_ack = true;
-                    shutdown_deadline = Some(Instant::now() + Duration::from_secs(15));
+                    shutdown_deadline = Some(Instant::now() + WORLD_SHUTDOWN_GRACE);
                     tracing::warn!(
                         "world inbound channel closed with a commit pending; waiting a bounded grace period for exact custody"
                     );
@@ -5024,7 +5169,7 @@ async fn run(
             &engine.registry,
             &engine.world,
             &mut out,
-            Some(engine.action_state()),
+            TypedStateLens::Live(engine.action_state()),
         );
         let mut classified_effects = fx.drain_classified();
         if let Some(pending) = pending_commit.as_mut() {
@@ -5266,7 +5411,7 @@ async fn run(
                 &engine.registry,
                 &engine.world,
                 &mut out,
-                Some(engine.action_state()),
+                TypedStateLens::Live(engine.action_state()),
             );
             let mut effects = fx.drain_classified();
             match flush_dirty(
@@ -5463,7 +5608,7 @@ async fn run(
                 &engine.registry,
                 &engine.world,
                 &mut out,
-                Some(engine.action_state()),
+                TypedStateLens::Live(engine.action_state()),
             );
             let mut effects = fx.drain_classified();
             match flush_dirty(
@@ -5726,6 +5871,14 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
             };
             let _ = reply.send(Err(error));
         }
+        WorldMsg::RecheckPrivilege { reply, .. } => {
+            let error = if reason == RefusalReason::CommitPending {
+                WorldReadError::Busy
+            } else {
+                WorldReadError::Unavailable
+            };
+            let _ = reply.send(Err(error));
+        }
         WorldMsg::LegalActions { reply, .. } => {
             let error = if reason == RefusalReason::CommitPending {
                 LegalActionReadError::Busy
@@ -5901,6 +6054,48 @@ fn release_prepared_installation(
             "prepared action-state installation could not be released"
         );
     }
+}
+
+/// Fail stop on a prepared installation that died without an install or an
+/// abort.
+///
+/// [`release_prepared_installation`] covers every path this file knows how to
+/// end. What it cannot cover is a `PreparedInstallation` that is simply
+/// dropped — a `PendingCommit` that goes out of scope, a panic caught between
+/// taking the installation out and answering for it. By then
+/// `PreparedTxn::into_parts` has already handed the module ops to the writer,
+/// so the durable half of the commit may be acknowledged while the typed RAM
+/// post-images are gone: RAM and Redis have diverged, and the write-through
+/// rule that says they may not (docs/PLAN.md) has no local repair.
+///
+/// The store witnesses that itself — it poisons its reservation rather than
+/// freeing it, and counts the loss — and this is the world loop reading that
+/// count once per iteration, before admission. A loss is deliberately louder
+/// than the wedge it replaces: divergence with no witness has no recovery, a
+/// freeze has both. Returns whether this call was the one that saw a new loss.
+fn freeze_on_lost_installation(
+    engine: &Engine,
+    gateway: &Gateway,
+    health: &mut StoreHealth,
+    persistence_integrity: &PersistenceIntegrityLatch,
+    seen: &mut u64,
+) -> bool {
+    let lost = engine.action_state().lost_installations();
+    if lost == *seen {
+        return false;
+    }
+    *seen = lost;
+    apply_integrity_freeze(
+        &engine.world,
+        gateway,
+        health,
+        persistence_integrity,
+        &format!(
+            "{lost} prepared action-state installation(s) were dropped without an install or an \
+             abort; acknowledged writes may not be live in RAM"
+        ),
+    );
+    true
 }
 
 /// Latch the non-auto-lifting freeze on any deterministic persistence breach:
@@ -6082,10 +6277,7 @@ async fn flush_engine_step(
     persistence_integrity: &PersistenceIntegrityLatch,
 ) -> FlushOutcome {
     if engine.has_staged_action() {
-        flush_prepared_action(
-            engine, writer, serial, health, metrics, retained, high_water,
-        )
-        .await
+        flush_prepared_action(engine, writer, health, metrics, retained, high_water).await
     } else {
         flush_dirty(
             engine,
@@ -6104,13 +6296,14 @@ async fn flush_engine_step(
 }
 
 /// Submit one already-built action-state write set and retain its typed RAM
-/// images for the matching acknowledgement. K2 callers use the legacy serial
-/// lane; K3 callers transfer one complete exact-token bundle to the same FIFO
-/// writer and install only after its matching durable receipt.
+/// images for the matching acknowledgement. There is one lane: the caller
+/// transfers a complete exact-token bundle to the FIFO writer and installs
+/// only after its matching durable receipt. This path deliberately takes no
+/// writer serial — a K3 commit is named by its own token, and the legacy
+/// serial belongs to `flush_dirty` alone.
 async fn flush_prepared_action(
     engine: &mut Engine,
     writer: &StoreWriter,
-    serial: &mut u64,
     health: &mut StoreHealth,
     _metrics: &Metrics,
     retained: &mut RetainedSeals,
@@ -6130,7 +6323,7 @@ async fn flush_prepared_action(
         }
         Err(error) => return FlushOutcome::Refused(error.to_string()),
     };
-    let (persistence, installation) = staged.into_parts();
+    let (bundle, installation) = staged.into_parts();
 
     // Staging checks this invariant once, but later code in the same engine
     // step must not be able to add legacy dirtiness and silently move it to a
@@ -6160,85 +6353,35 @@ async fn flush_prepared_action(
                 .to_owned(),
         );
     }
-    let receipt = match persistence {
-        StagedActionPersistence::Legacy(module_ops) => {
-            if *serial == u64::MAX {
-                release_prepared_installation(
-                    engine,
-                    installation,
-                    "flush_prepared_action/serial-exhausted",
-                );
-                return FlushOutcome::Rejected(
-                    "authoritative writer serial exhausted; restart/recovery required".to_owned(),
-                );
-            }
-            *serial = serial
-                .checked_add(1)
-                .expect("u64::MAX was rejected before prepared batch construction");
-            let batch = WriteBatch {
-                serial: *serial,
-                module_ops,
-                durable: true,
-                ..WriteBatch::default()
-            };
-            debug_assert!(!batch.is_empty());
-            let (notify, receiver) = oneshot::channel();
-            if writer
-                .send(StoreJob::Write {
-                    batch,
-                    notify: Some(notify),
-                })
-                .await
-                .is_err()
-            {
-                release_prepared_installation(
-                    engine,
-                    installation,
-                    "flush_prepared_action/writer-gone-legacy",
-                );
-                tracing::error!(
-                    serial = *serial,
-                    "store writer gone before accepting prepared action"
-                );
-                return FlushOutcome::WriterGone;
-            }
-            PendingReceipt::Legacy {
-                expected_serial: *serial,
-                receiver,
-            }
-        }
-        StagedActionPersistence::Authoritative(bundle) => {
-            let expected_token = bundle.token();
-            let expected_hash = bundle.bundle_hash();
-            let (ownership_notify, ownership) = oneshot::channel();
-            let (notify, receiver) = oneshot::channel();
-            if writer
-                .send(StoreJob::Authoritative {
-                    bundle,
-                    ownership: ownership_notify,
-                    notify,
-                })
-                .await
-                .is_err()
-            {
-                release_prepared_installation(
-                    engine,
-                    installation,
-                    "flush_prepared_action/writer-gone-authoritative",
-                );
-                tracing::error!(
-                    %expected_token,
-                    "store writer gone before accepting authoritative action"
-                );
-                return FlushOutcome::WriterGone;
-            }
-            PendingReceipt::Authoritative {
-                expected_token,
-                expected_hash,
-                ownership: Some(ownership),
-                receiver,
-            }
-        }
+    let expected_token = bundle.token();
+    let expected_hash = bundle.bundle_hash();
+    let (ownership_notify, ownership) = oneshot::channel();
+    let (notify, receiver) = oneshot::channel();
+    if writer
+        .send(StoreJob::Authoritative {
+            bundle,
+            ownership: ownership_notify,
+            notify,
+        })
+        .await
+        .is_err()
+    {
+        release_prepared_installation(
+            engine,
+            installation,
+            "flush_prepared_action/writer-gone-authoritative",
+        );
+        tracing::error!(
+            %expected_token,
+            "store writer gone before accepting authoritative action"
+        );
+        return FlushOutcome::WriterGone;
+    }
+    let receipt = PendingReceipt::Authoritative {
+        expected_token,
+        expected_hash,
+        ownership: Some(ownership),
+        receiver,
     };
     health.last_write_unix = Some(unix_now_s());
     FlushOutcome::Queued {
@@ -7842,7 +7985,12 @@ async fn staff_ops_loop(
                 }
                 text
             }
-            StaffOpKind::DiscordShow { target, .. } => run_discord_show(&*store, target).await,
+            StaffOpKind::DiscordShow { actor: by, target } => {
+                match discord_show_recheck(&world, by, target).await {
+                    Ok(()) => run_discord_show(&*store, target).await,
+                    Err(text) => text,
+                }
+            }
             StaffOpKind::DiscordUnlink { target, .. } => {
                 run_discord_unlink(&gateway, &*store, target, true).await
             }
@@ -8053,6 +8201,54 @@ async fn run_discord_set(
     }
 }
 
+/// The execution-time authorization for `@discord/show`: the privilege was
+/// tested on the world loop and the `use` audited **before** the op was
+/// queued, and this executor is a queue hop later with no world borrow of its
+/// own — so `@privilege/revoke` can land in between and the disclosure would
+/// still go out. Round-trip one `WorldMsg` (the `@newpassword` precedent) and
+/// let the world loop answer.
+///
+/// Fail closed: a revocation, a busy world (a commit is pending) and a gone
+/// world all refuse. The world loop writes the second `Denied` audit row on
+/// the revocation; `Err` here is a refusal to disclose, never a panic — this
+/// module denies `clippy::unreachable` and the loop must not be lost over a
+/// staff op.
+async fn discord_show_recheck(
+    world: &mpsc::WeakSender<WorldMsg>,
+    actor: ObjId,
+    target: ObjId,
+) -> Result<(), String> {
+    let Some(world) = world.upgrade().map(|tx| WorldHandle {
+        tx,
+        shutdown: None,
+        direct_actions: None,
+    }) else {
+        return Err("@discord/show: the world is shutting down; nothing was shown.".to_string());
+    };
+    match world
+        .recheck_privilege(
+            actor,
+            Privileges::DISCORD_IDENTITY,
+            Some(target),
+            "@discord/show",
+        )
+        .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            tracing::warn!(
+                %actor, %target,
+                "@discord/show refused at execution: the privilege was revoked after the command"
+            );
+            Err("@discord/show: your DISCORD_IDENTITY privilege was revoked before the                  look could be answered. Permission denied."
+                .to_string())
+        }
+        Err(e) => Err(format!(
+            "@discord/show: the privilege could not be re-checked ({e}); nothing was shown."
+        )),
+    }
+}
+
 /// `@discord/show <player>` — the one surface that renders the identity. The
 /// caller held `DISCORD_IDENTITY` and the `use` is already in the audit.
 async fn run_discord_show(store: &dyn ObjectStore, target: ObjId) -> String {
@@ -8235,10 +8431,15 @@ fn resolve_sends(
     world: &World,
     out: &mut Outbox,
 ) -> Vec<(SendTarget, Arc<OutputEvent>)> {
-    resolve_classified_sends(reg, world, out, None)
-        .into_iter()
-        .map(|(_class, target, event)| (target, event))
-        .collect()
+    resolve_classified_sends(
+        reg,
+        world,
+        out,
+        TypedStateLens::Detached(mush_core::DetachedTypedState::Test),
+    )
+    .into_iter()
+    .map(|(_class, target, event)| (target, event))
+    .collect()
 }
 
 /// Resolve audiences while retaining each item's durability relationship.
@@ -8248,7 +8449,7 @@ fn resolve_classified_sends(
     reg: &Registry,
     world: &World,
     out: &mut Outbox,
-    action_state: Option<&mush_core::ActionStateStore>,
+    lens: TypedStateLens<'_>,
 ) -> Vec<ClassifiedSend> {
     let mut sends = Vec::new();
     for (class, audience, event) in out.take_classified() {
@@ -8291,16 +8492,15 @@ fn resolve_classified_sends(
                     {
                         continue;
                     }
-                    if let Some(subject) = subject {
-                        let visible = action_state.map_or_else(
-                            || can_perceive(reg, world, occupant, subject),
-                            |store| {
-                                can_perceive_with_action_state(reg, world, occupant, subject, store)
-                            },
-                        );
-                        if !visible {
-                            continue;
-                        }
+                    if let Some(subject) = subject
+                        // The live/absent choice is the caller's and it stays
+                        // explicit: every production step hands this its own
+                        // `Live` store, and a caller without one has to name
+                        // the reason rather than silently taking the
+                        // store-less verdict.
+                        && !can_perceive(reg, world, occupant, subject, lens)
+                    {
+                        continue;
                     }
                     sends.push((
                         class,
@@ -8588,7 +8788,7 @@ fn complete_pending_commit(
                         &engine.registry,
                         &engine.world,
                         &mut announce_out,
-                        Some(engine.action_state()),
+                        TypedStateLens::Live(engine.action_state()),
                     ));
                     effects.extend(announce_fx.drain_classified());
                 }
@@ -8735,7 +8935,7 @@ fn finish_pending_operational(engine: &mut Engine, gateway: &Gateway, completed:
             &engine.registry,
             &engine.world,
             &mut reattach_out,
-            Some(engine.action_state()),
+            TypedStateLens::Live(engine.action_state()),
         );
         release_classified_sends(gateway, sends, completed.outcome);
         tracing::info!(
@@ -9133,6 +9333,11 @@ fn spawn_effect_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The store-less lens these projection assertions have always been taken
+    /// with: no live authoritative store, said out loud.
+    const DETACHED: TypedStateLens<'static> =
+        TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
 
     /// H1: the store handle the effect-release helpers now carry (tests that
     /// never launch a store read hand them an empty in-memory store).
@@ -10271,10 +10476,7 @@ mod tests {
             .take_staged_action()
             .expect("capture admission")
             .expect("capture staged action");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("decision capture used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         store
             .reserve_authoritative_intent((*bundle).clone())
             .await
@@ -10761,7 +10963,7 @@ mod tests {
             .take_staged_action()
             .expect("lease admission")
             .expect("staged lease action");
-        let (_persistence, installation) = prepared.into_parts();
+        let (_bundle, installation) = prepared.into_parts();
         let (_receipt_tx, receipt_rx) = oneshot::channel();
         let pending_commit = PendingCommit {
             token: CommitToken::Legacy(1),
@@ -11046,10 +11248,7 @@ mod tests {
             .take_staged_action()
             .expect("fallback custody admission")
             .expect("staged fallback custody action");
-        let (persistence, installation) = prepared.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("fallback custody used legacy persistence")
-        };
+        let (bundle, installation) = prepared.into_parts();
         assert_eq!(bundle.token(), staged.token);
         assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
         let authoritative = store
@@ -11217,10 +11416,7 @@ mod tests {
             .take_staged_action()
             .expect("lease admission")
             .expect("staged lease action");
-        let (persistence, installation) = prepared.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("decision lease used legacy persistence")
-        };
+        let (bundle, installation) = prepared.into_parts();
         assert_eq!(bundle.token(), staged.token);
         store
             .reserve_authoritative_intent((*bundle).clone())
@@ -11282,10 +11478,7 @@ mod tests {
             .take_staged_action()
             .expect("cancellation admission")
             .expect("staged cancellation action");
-        let (persistence, installation) = prepared.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("decision cancellation used legacy persistence")
-        };
+        let (bundle, installation) = prepared.into_parts();
         assert_eq!(bundle.token(), staged.token);
         assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
         store
@@ -11329,10 +11522,7 @@ mod tests {
             .take_staged_action()
             .expect("compaction admission")
             .expect("staged compaction action");
-        let (persistence, installation) = prepared.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("decision compaction used legacy persistence")
-        };
+        let (bundle, installation) = prepared.into_parts();
         assert_eq!(bundle.token(), compacted.token);
         assert_eq!(bundle.bundle_hash(), compacted.bundle_hash);
         store
@@ -11475,10 +11665,7 @@ mod tests {
             .take_staged_action()
             .expect("lease admission")
             .expect("staged lease action");
-        let (persistence, installation) = prepared.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("decision lease used legacy persistence")
-        };
+        let (bundle, installation) = prepared.into_parts();
         assert_eq!(bundle.token(), staged.token);
         assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
         store
@@ -11552,7 +11739,7 @@ mod tests {
             .take_staged_action()
             .expect("selected action admission")
             .expect("selected staged action");
-        let (_persistence, installation) = staged.into_parts();
+        let (_bundle, installation) = staged.into_parts();
         engine
             .abort_prepared_action(installation)
             .expect("the fixture aborts");
@@ -11627,10 +11814,7 @@ mod tests {
             .take_staged_action()
             .expect("selected action admission")
             .expect("selected action stage");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("selected action used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         store
             .reserve_authoritative_intent((*bundle).clone())
             .await
@@ -11676,10 +11860,7 @@ mod tests {
             .take_staged_action()
             .expect("resolving action admission")
             .expect("resolving action stage");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("resolving action used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         assert_eq!(bundle.token(), resolving.token);
         assert_eq!(bundle.bundle_hash(), resolving.bundle_hash);
         store
@@ -11724,10 +11905,7 @@ mod tests {
             .take_staged_action()
             .expect("terminal action admission")
             .expect("terminal action stage");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("terminal action used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         assert_eq!(bundle.token(), terminal.token);
         assert_eq!(bundle.bundle_hash(), terminal.bundle_hash);
         store
@@ -11856,10 +12034,7 @@ mod tests {
                 .take_staged_action()
                 .expect("provider-policy admission")
                 .expect("provider-policy staged action");
-            let (persistence, installation) = staged.into_parts();
-            let StagedActionPersistence::Authoritative(bundle) = persistence else {
-                panic!("{kind:?} used legacy persistence")
-            };
+            let (bundle, installation) = staged.into_parts();
             bundles.push(serde_json::to_value(&*bundle).expect("canonical bundle JSON"));
             engine
                 .abort_prepared_action(installation)
@@ -11959,10 +12134,7 @@ mod tests {
             .take_staged_action()
             .expect("fallback action admission")
             .expect("fallback action staged");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("fallback action used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         store
             .reserve_authoritative_intent((*bundle).clone())
             .await
@@ -12495,10 +12667,7 @@ mod tests {
                     .take_staged_action()
                     .expect("selected action admission")
                     .expect("selected action staged");
-                let (persistence, installation) = staged.into_parts();
-                let StagedActionPersistence::Authoritative(bundle) = persistence else {
-                    panic!("delayed tactical action used legacy persistence")
-                };
+                let (bundle, installation) = staged.into_parts();
                 assert!(bundle.resolution().is_some(), "RNG evidence is durable");
                 assert_eq!(bundle.semantic_events().len(), 1);
                 assert!(bundle.durable_outbox().is_empty());
@@ -12710,10 +12879,7 @@ mod tests {
             .take_staged_action()
             .unwrap()
             .expect("rebased schedule action staged");
-        let (persistence, installation) = staged.into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("schedule driver used legacy persistence")
-        };
+        let (bundle, installation) = staged.into_parts();
         assert_eq!(bundle.idempotency().epoch(), 9);
         assert_eq!(driver.idempotency_epoch, 9);
         engine
@@ -13227,6 +13393,38 @@ mod tests {
         .unwrap()
     }
 
+    /// Play the writer's side of one queued K3 job against an in-memory store:
+    /// reserve the exact intent, release ownership, then reconcile and send the
+    /// exact receipt. Returns the bundle the world actually queued.
+    async fn settle_queued_authoritative_job(job: StoreJob) -> AuthoritativeBundle {
+        let StoreJob::Authoritative {
+            bundle,
+            ownership,
+            notify,
+        } = job
+        else {
+            panic!("the prepared lane must queue one exact authoritative bundle");
+        };
+        let store = InMemoryStore::new();
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        let intent = store
+            .reserve_authoritative_intent((*bundle).clone())
+            .await
+            .expect("the exact intent reserves");
+        ownership
+            .send(Ok(intent))
+            .expect("the world still owns the ownership channel");
+        let exact = store
+            .reconcile_authoritative(token, hash)
+            .await
+            .expect("the exact receipt reconciles");
+        notify
+            .send(Ok(exact))
+            .expect("the world still owns the exact receipt");
+        *bundle
+    }
+
     fn pending_with_prepared_installation(
         serial: u64,
         installation: PreparedInstallation,
@@ -13624,9 +13822,87 @@ mod tests {
         );
         let (reply, _rx) = oneshot::channel();
         assert_eq!(
+            classify_world_msg(&WorldMsg::RecheckPrivilege {
+                actor: GOD,
+                privilege: Privileges::DISCORD_IDENTITY,
+                subject: None,
+                command: "@discord/show",
+                reply,
+            }),
+            IngressClass::WorldMutation
+        );
+        let (reply, _rx) = oneshot::channel();
+        assert_eq!(
             classify_world_msg(&WorldMsg::Barrier { reply }),
             IngressClass::OrderingBarrier
         );
+    }
+
+    /// The disclosure is refused whenever the world cannot say the privilege
+    /// is still held: revoked, busy, or gone. Nothing about a failed read may
+    /// be read as an authorization.
+    #[tokio::test]
+    async fn discord_show_refuses_unless_the_world_re_confirms_the_privilege() {
+        let (tx, mut rx) = mpsc::channel::<WorldMsg>(4);
+        let weak = tx.downgrade();
+        let target = ObjId(7);
+
+        // The world answers the re-check; the first says the grant is gone.
+        let answers = tokio::spawn(async move {
+            let mut sent = Vec::new();
+            while let Some(msg) = rx.recv().await {
+                let WorldMsg::RecheckPrivilege {
+                    actor,
+                    privilege,
+                    subject,
+                    command,
+                    reply,
+                } = msg
+                else {
+                    continue;
+                };
+                sent.push((actor, privilege, subject, command));
+                let held = sent.len() > 2;
+                let _ = reply.send(if sent.len() == 2 {
+                    Err(WorldReadError::Busy)
+                } else {
+                    Ok(held)
+                });
+            }
+            sent
+        });
+
+        // (1) Revoked in the window.
+        let refusal = discord_show_recheck(&weak, GOD, target)
+            .await
+            .expect_err("a revoked privilege must refuse");
+        assert!(refusal.contains("revoked"), "{refusal}");
+        assert!(refusal.contains("Permission denied"), "{refusal}");
+        // (2) The world is committing and cannot answer: refuse too.
+        let refusal = discord_show_recheck(&weak, GOD, target)
+            .await
+            .expect_err("an unanswerable re-check must refuse");
+        assert!(refusal.contains("could not be re-checked"), "{refusal}");
+        // (3) Still held: the executor proceeds to the disclosure.
+        discord_show_recheck(&weak, GOD, target)
+            .await
+            .expect("a held privilege discloses");
+
+        drop(tx);
+        let sent = answers.await.expect("answering task");
+        assert_eq!(sent.len(), 3);
+        for (actor, privilege, subject, command) in sent {
+            assert_eq!(actor, GOD);
+            assert_eq!(privilege, Privileges::DISCORD_IDENTITY);
+            assert_eq!(subject, Some(target));
+            assert_eq!(command, "@discord/show");
+        }
+
+        // (4) The world task is gone: no disclosure on a dead channel.
+        let refusal = discord_show_recheck(&weak, GOD, target)
+            .await
+            .expect_err("a gone world must refuse");
+        assert!(refusal.contains("shutting down"), "{refusal}");
     }
 
     #[test]
@@ -14175,13 +14451,14 @@ mod tests {
             .insert(&handle, &41, PreparedLaneState { amount: 7 })
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
+        let bundle = prepared_lane_bundle(&prepared, 7);
+        let expected_token = bundle.token();
         let guards = empty_guards(&engine);
         engine
-            .stage_prepared_action(prepared, guards)
+            .stage_authoritative_action(prepared, guards, bundle)
             .expect("clean engine accepts prepared action");
 
         let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
-        let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
@@ -14189,7 +14466,6 @@ mod tests {
         let outcome = flush_prepared_action(
             &mut engine,
             &writer,
-            &mut serial,
             &mut health,
             &metrics,
             &mut retained,
@@ -14203,15 +14479,12 @@ mod tests {
         else {
             panic!("prepared action must queue with its receipt and install image");
         };
-        let StoreJob::Write {
-            batch,
-            notify: Some(notify),
-        } = writer_rx.recv().await.expect("prepared write was queued")
-        else {
-            panic!("prepared lane must request an exact writer receipt");
-        };
-        assert_eq!(batch.serial, serial);
-        assert_eq!(batch.module_ops.len(), 1);
+        let queued = settle_queued_authoritative_job(
+            writer_rx.recv().await.expect("prepared write was queued"),
+        )
+        .await;
+        assert_eq!(queued.token(), expected_token);
+        assert_eq!(queued.writes().len(), 1);
 
         assert_eq!(engine.action_state().revision(), 0);
         assert!(engine.action_state().has_prepared());
@@ -14224,12 +14497,10 @@ mod tests {
             "queue acceptance must not expose the typed post-image"
         );
 
-        notify
-            .send(Ok(batch.serial))
-            .expect("world still owns the exact receipt");
         let mut receipt = receipt;
         let ack = receipt.receive().await;
-        let pending = pending_with_prepared_installation(batch.serial, installation);
+        let mut pending = pending_with_prepared_installation(0, installation);
+        pending.token = CommitToken::from_authoritative(expected_token);
         let gateway: Gateway = Arc::new(BlackholeGateway);
         let persistence_integrity = PersistenceIntegrityLatch::new();
         let (tx, _rx) = mpsc::channel(1);
@@ -14375,6 +14646,85 @@ mod tests {
         assert!(persistence_integrity.is_latched());
         assert!(wizard_heard(&recorder, "persistence integrity breach"));
         assert_eq!(engine.action_state().revision(), 0);
+    }
+
+    /// core-action-8, the third ending: nobody answered for the installation
+    /// at all. `into_parts` had already handed the module ops to the writer,
+    /// so the store may hold a durable write whose typed RAM post-images went
+    /// out with the dropped value. RAM and Redis have diverged and this task
+    /// cannot reconcile them, so the loop's supervision check quarantines the
+    /// world instead of admitting the next line and answering it out of RAM.
+    #[test]
+    fn an_installation_loss_quarantines_rather_than_answering_the_player() {
+        let (mut engine, handle) = prepared_lane_fixture();
+        engine.world.set_connected(GOD, true);
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+        let mut health = StoreHealth::new();
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let mut seen = engine.action_state().lost_installations();
+
+        // A healthy store passes the check untouched — it is on the head of
+        // every loop iteration, so it may not freeze anything by itself.
+        assert!(!freeze_on_lost_installation(
+            &engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &mut seen,
+        ));
+        assert!(!health.mode.integrity_frozen());
+        assert!(!persistence_integrity.is_latched());
+
+        // Stage the durable half, then lose the installation the way a dropped
+        // `PendingCommit` does.
+        let mut transaction = engine
+            .action_transaction(&handle)
+            .expect("test transaction begins");
+        transaction
+            .insert(&handle, &41, PreparedLaneState { amount: 7 })
+            .expect("test state is valid");
+        let (module_ops, installation) = transaction
+            .prepare()
+            .expect("test transaction prepares")
+            .into_parts();
+        assert_eq!(module_ops.len(), 1);
+        drop(installation);
+
+        assert!(freeze_on_lost_installation(
+            &engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &mut seen,
+        ));
+        assert!(health.mode.integrity_frozen());
+        assert!(persistence_integrity.is_latched());
+        assert!(wizard_heard(&recorder, "persistence integrity breach"));
+        // No success disposition: the post-image never went live, and the next
+        // line cannot even open a transaction to make one.
+        assert_eq!(engine.action_state().revision(), 0);
+        assert!(
+            engine
+                .action_state()
+                .get(&handle, &41)
+                .expect("state lookup succeeds")
+                .is_none()
+        );
+        assert!(matches!(
+            engine.action_transaction(&handle).err(),
+            Some(mush_core::ActionStateError::InstallationLost { reservation: 1 })
+        ));
+        // Frozen means frozen: the check does not re-alert on a loss it has
+        // already answered for, and the freeze does not auto-lift.
+        assert!(!freeze_on_lost_installation(
+            &engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &mut seen,
+        ));
+        assert!(health.mode.integrity_frozen());
     }
 
     // ---- WS01-S5: the world loop's impossible states fail closed ----
@@ -14531,15 +14881,15 @@ mod tests {
         );
 
         let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
-        let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
         let high_water = AtomicU64::new(0);
+        // The lane takes no serial to consume: a K3 commit is named by its own
+        // token, and `flush_engine_step` keeps the legacy counter to itself.
         let outcome = flush_prepared_action(
             &mut engine,
             &writer,
-            &mut serial,
             &mut health,
             &metrics,
             &mut retained,
@@ -14554,7 +14904,6 @@ mod tests {
             ),
             _ => panic!("an empty prepared flush must refuse"),
         }
-        assert_eq!(serial, 0, "a refused flush consumes no serial");
         assert!(
             matches!(writer_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
             "and hands the writer nothing"
@@ -14621,13 +14970,14 @@ mod tests {
             .insert(&handle, &41, PreparedLaneState { amount: 7 })
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
+        let bundle = prepared_lane_bundle(&prepared, 13);
+        let expected_token = bundle.token();
         let guards = empty_guards(&engine);
         engine
-            .stage_prepared_action(prepared, guards)
+            .stage_authoritative_action(prepared, guards, bundle)
             .expect("clean engine accepts prepared action");
 
         let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
-        let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
@@ -14635,7 +14985,6 @@ mod tests {
         let outcome = flush_prepared_action(
             &mut engine,
             &writer,
-            &mut serial,
             &mut health,
             &metrics,
             &mut retained,
@@ -14649,19 +14998,12 @@ mod tests {
         else {
             panic!("prepared action must queue with its receipt and install image");
         };
-        let StoreJob::Write {
-            batch,
-            notify: Some(notify),
-        } = writer_rx.recv().await.expect("prepared write was queued")
-        else {
-            panic!("prepared lane must request an exact writer receipt");
-        };
-        notify
-            .send(Ok(batch.serial))
-            .expect("world still owns the exact receipt");
+        settle_queued_authoritative_job(writer_rx.recv().await.expect("prepared write was queued"))
+            .await;
         let mut receipt = receipt;
         let ack = receipt.receive().await;
-        let pending = pending_with_prepared_installation(batch.serial, installation);
+        let mut pending = pending_with_prepared_installation(0, installation);
+        pending.token = CommitToken::from_authoritative(expected_token);
         let recorder = Arc::new(RecordingGateway {
             discord: Mutex::default(),
             sends: Mutex::new(Vec::new()),
@@ -14787,7 +15129,8 @@ mod tests {
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
         let high_water = AtomicU64::new(0);
-        let outcome = flush_prepared_action(
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let outcome = flush_engine_step(
             &mut engine,
             &writer,
             &mut serial,
@@ -14795,6 +15138,8 @@ mod tests {
             &metrics,
             &mut retained,
             &high_water,
+            &crate::quarantine::QuarantineSpool::in_memory(),
+            &persistence_integrity,
         )
         .await;
         let FlushOutcome::Queued {
@@ -14838,7 +15183,6 @@ mod tests {
         let mut pending = pending_with_prepared_installation(0, installation);
         pending.token = CommitToken::from_authoritative(expected_token);
         let gateway: Gateway = Arc::new(BlackholeGateway);
-        let persistence_integrity = PersistenceIntegrityLatch::new();
         let (tx, _rx) = mpsc::channel(1);
         let completed = complete_pending_commit(
             pending,
@@ -14929,9 +15273,10 @@ mod tests {
             .insert(&handle, &43, PreparedLaneState { amount: 8 })
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
+        let bundle = prepared_lane_bundle(&prepared, 23);
         let guards = prepared_lane_guards(&engine, 1);
         engine
-            .stage_prepared_action(prepared, guards)
+            .stage_authoritative_action(prepared, guards, bundle)
             .expect("clean engine accepts prepared action");
 
         engine
@@ -14950,7 +15295,8 @@ mod tests {
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
         let high_water = AtomicU64::new(0);
-        let outcome = flush_prepared_action(
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let outcome = flush_engine_step(
             &mut engine,
             &writer,
             &mut serial,
@@ -14958,6 +15304,8 @@ mod tests {
             &metrics,
             &mut retained,
             &high_water,
+            &crate::quarantine::QuarantineSpool::in_memory(),
+            &persistence_integrity,
         )
         .await;
 
@@ -15057,14 +15405,14 @@ mod tests {
             .insert(&handle, &23, PreparedLaneState { amount: 5 })
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
+        let bundle = prepared_lane_bundle(&prepared, 37);
         let guards = empty_guards(&engine);
         engine
-            .stage_prepared_action(prepared, guards)
+            .stage_authoritative_action(prepared, guards, bundle)
             .expect("clean engine accepts prepared action");
 
         let (writer, writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
         drop(writer_rx);
-        let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
         let mut retained = RetainedSeals::new();
@@ -15072,7 +15420,6 @@ mod tests {
         let outcome = flush_prepared_action(
             &mut engine,
             &writer,
-            &mut serial,
             &mut health,
             &metrics,
             &mut retained,
@@ -15093,6 +15440,12 @@ mod tests {
         assert!(engine.action_transaction(&handle).is_ok());
     }
 
+    /// With the K2 shim gone, the recheck at the head of `flush_prepared_action`
+    /// is the only remaining mixed-lane refusal, and it is permanent: staging
+    /// proves the step was clean, this proves it *stayed* clean. Both ways a
+    /// step can pick up legacy work after staging — a dirtied world and a
+    /// queued module op — must reject at submission, consume no commit serial,
+    /// and hand the writer nothing.
     #[tokio::test]
     async fn prepared_action_refuses_legacy_work_added_after_staging() {
         enum LateLegacyWork {
@@ -15109,9 +15462,10 @@ mod tests {
                 .insert(&handle, &29, PreparedLaneState { amount: 9 })
                 .expect("test state is valid");
             let prepared = transaction.prepare().expect("test transaction prepares");
+            let bundle = prepared_lane_bundle(&prepared, 41);
             let guards = empty_guards(&engine);
             engine
-                .stage_prepared_action(prepared, guards)
+                .stage_authoritative_action(prepared, guards, bundle)
                 .expect("clean engine accepts prepared action");
 
             match late_work {
@@ -15138,7 +15492,8 @@ mod tests {
             let metrics = Metrics::new();
             let mut retained = RetainedSeals::new();
             let high_water = AtomicU64::new(0);
-            let outcome = flush_prepared_action(
+            let persistence_integrity = PersistenceIntegrityLatch::new();
+            let outcome = flush_engine_step(
                 &mut engine,
                 &writer,
                 &mut serial,
@@ -15146,6 +15501,8 @@ mod tests {
                 &metrics,
                 &mut retained,
                 &high_water,
+                &crate::quarantine::QuarantineSpool::in_memory(),
+                &persistence_integrity,
             )
             .await;
 
@@ -15727,14 +16084,14 @@ mod tests {
         );
 
         // D1: the gate itself. Only the one concealed pair fails.
-        assert!(!can_perceive(&reg, &world, alice, wraith));
-        assert!(can_perceive(&reg, &world, bob, wraith));
-        assert!(can_perceive(&reg, &world, alice, bob));
-        assert!(can_perceive(&reg, &world, wraith, wraith));
+        assert!(!can_perceive(&reg, &world, alice, wraith, DETACHED));
+        assert!(can_perceive(&reg, &world, bob, wraith, DETACHED));
+        assert!(can_perceive(&reg, &world, alice, bob, DETACHED));
+        assert!(can_perceive(&reg, &world, wraith, wraith, DETACHED));
 
         // D2(a): room_view drops the concealed occupant for Alice only.
         let names = |looker| -> Vec<String> {
-            room_view(&reg, &world, looker, hall)
+            room_view(&reg, &world, looker, hall, DETACHED)
                 .unwrap()
                 .contents
                 .into_iter()
@@ -15761,6 +16118,7 @@ mod tests {
             alice,
             &format!("examine {hall}"),
             &mut out,
+            DETACHED,
         );
         let alice_ex = examine_contents(&out, alice);
         assert!(
@@ -15772,7 +16130,14 @@ mod tests {
             "examine still lists Bob: {alice_ex:?}"
         );
         let mut out = Outbox::new();
-        dispatch(&reg, &mut world, bob, &format!("examine {hall}"), &mut out);
+        dispatch(
+            &reg,
+            &mut world,
+            bob,
+            &format!("examine {hall}"),
+            &mut out,
+            DETACHED,
+        );
         assert!(
             examine_contents(&out, bob).contains("Wraith"),
             "Bob's examine must still show Wraith"
@@ -15782,7 +16147,7 @@ mod tests {
         // is Wraith, so Alice (who cannot perceive him) is dropped from the
         // resolved recipients while Bob and Wraith himself receive it.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut world, wraith, "say boo", &mut out);
+        dispatch(&reg, &mut world, wraith, "say boo", &mut out, DETACHED);
         let sends = resolve_sends(&reg, &world, &mut out);
         let recipients: std::collections::HashSet<ObjId> = sends
             .iter()
@@ -15844,9 +16209,9 @@ mod tests {
         register_core_commands(&mut reg).unwrap();
 
         // Everyone is perceivable; look lists the other occupant.
-        assert!(can_perceive(&reg, &world, a, b));
+        assert!(can_perceive(&reg, &world, a, b, DETACHED));
         assert!(
-            room_view(&reg, &world, a, hall)
+            room_view(&reg, &world, a, hall, DETACHED)
                 .unwrap()
                 .contents
                 .iter()
@@ -15855,7 +16220,7 @@ mod tests {
 
         // A say reaches every connected occupant (speaker included).
         let mut out = Outbox::new();
-        dispatch(&reg, &mut world, a, "say hi", &mut out);
+        dispatch(&reg, &mut world, a, "say hi", &mut out, DETACHED);
         let recipients: std::collections::HashSet<ObjId> = resolve_sends(&reg, &world, &mut out)
             .iter()
             .filter_map(|(t, _)| match t {
@@ -15937,17 +16302,12 @@ mod tests {
             }
             _ => panic!("the command submission must stage an authoritative action"),
         };
-        let (persistence, _installation) = engine
+        let (bundle, _installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("staged action")
             .into_parts();
-        let bundle = match persistence {
-            StagedActionPersistence::Authoritative(bundle) => *bundle,
-            StagedActionPersistence::Legacy(_) => {
-                panic!("the seam must never use the legacy lane")
-            }
-        };
+        let bundle = *bundle;
         assert_eq!(bundle.token(), staged.token);
         assert_eq!(
             bundle.action().key().id.as_str(),
@@ -16029,14 +16389,11 @@ mod tests {
             driver.drive_one(&mut engine, &store).await.unwrap(),
             CommandSubmitDrive::Staged { .. }
         ));
-        let (persistence, installation) = engine
+        let (bundle, installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("staged action")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane")
-        };
         store
             .reserve_authoritative_intent(*bundle.clone())
             .await
@@ -16287,14 +16644,11 @@ mod tests {
         };
         let submission = command_offer_submission(&engine, &submit).expect("offer");
         let (staged, _) = resolve_and_stage_offer(&mut engine, permit, submission).expect("staged");
-        let (persistence, installation) = engine
+        let (bundle, installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("staged action")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane")
-        };
         assert_eq!(bundle.token(), staged.token);
         store
             .reserve_authoritative_intent(*bundle.clone())
@@ -16561,14 +16915,11 @@ mod tests {
         let submission = command_offer_submission(engine, submit)?;
         let (staged, _) = resolve_and_stage_offer(engine, permit, submission)?;
         let summary = staged.summary.as_deref().unwrap_or_default().to_owned();
-        let (persistence, installation) = engine
+        let (bundle, installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("a staged action")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane");
-        };
         store
             .reserve_authoritative_intent(*bundle.clone())
             .await
@@ -16639,15 +16990,12 @@ mod tests {
         };
         ActionCoordinator::prepare_and_stage_scheduled(permit, world.engine_mut(), &candidate)
             .expect("the apply stages");
-        let (persistence, installation) = world
+        let (bundle, installation) = world
             .engine_mut()
             .take_staged_action()
             .unwrap()
             .expect("a staged apply")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane");
-        };
         store
             .reserve_authoritative_intent(*bundle.clone())
             .await
@@ -17167,14 +17515,11 @@ mod tests {
             driver.drive_one(&mut engine, &store).await.unwrap(),
             CommandSubmitDrive::Staged { .. }
         ));
-        let (persistence, _installation) = engine
+        let (bundle, _installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("staged action")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane")
-        };
         store
             .reserve_authoritative_intent(*bundle.clone())
             .await
@@ -17253,14 +17598,11 @@ mod tests {
             !fresh.contains(&staged.token.to_string()),
             "no raw commit token in player output: {fresh}"
         );
-        let (persistence, installation) = engine
+        let (bundle, installation) = engine
             .take_staged_action()
             .unwrap()
             .expect("staged action")
             .into_parts();
-        let StagedActionPersistence::Authoritative(bundle) = persistence else {
-            panic!("authoritative lane")
-        };
         store
             .reserve_authoritative_intent(*bundle.clone())
             .await
@@ -17924,10 +18266,7 @@ mod tests {
                         .take_staged_action()
                         .expect("the staged tick is admitted")
                         .expect("a staged tick action");
-                    let (persistence, installation) = staged.into_parts();
-                    let StagedActionPersistence::Authoritative(bundle) = persistence else {
-                        panic!("the tick used legacy persistence")
-                    };
+                    let (bundle, installation) = staged.into_parts();
                     store
                         .reserve_authoritative_intent((*bundle).clone())
                         .await
@@ -18125,10 +18464,7 @@ mod tests {
                 .take_staged_action()
                 .expect("admitted")
                 .expect("a staged tick");
-            let (persistence, installation) = staged.into_parts();
-            let StagedActionPersistence::Authoritative(first) = persistence else {
-                panic!("legacy persistence")
-            };
+            let (first, installation) = staged.into_parts();
             let first_hash = first.bundle_hash();
             engine
                 .abort_prepared_action(installation)
@@ -18143,10 +18479,7 @@ mod tests {
                 .take_staged_action()
                 .expect("admitted")
                 .expect("a staged tick");
-            let (persistence, installation) = staged.into_parts();
-            let StagedActionPersistence::Authoritative(second) = persistence else {
-                panic!("legacy persistence")
-            };
+            let (second, installation) = staged.into_parts();
             assert_eq!(
                 first_hash,
                 second.bundle_hash(),

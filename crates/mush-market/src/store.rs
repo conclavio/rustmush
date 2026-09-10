@@ -145,6 +145,24 @@ pub struct MarketStore {
 }
 
 impl MarketStore {
+    // ---- the frozen wiring ------------------------------------------------
+
+    /// **The system principal a stocked asset's title is minted under, when the
+    /// composition named one** (WS04-S7).
+    ///
+    /// `None` is the fail-closed default and the honest answer for a server that
+    /// composed no ruleset economy: nothing may be stocked, and
+    /// `@market/vendor stock` says so in the market's own words rather than letting
+    /// `mush_economy::issue_title` answer `Unauthorized` for a name the operator
+    /// never chose. It is exposed because the composition root's two halves — this
+    /// name and `EconomyModule::with_title_issuers` — must agree, and a
+    /// `mush-server` test has no other seam to say so through:
+    /// [`crate::module::MarketTables`] and its `issuer` field are `pub(crate)`.
+    #[must_use]
+    pub fn issuer(&self) -> Option<&mush_org::SystemPrincipalId> {
+        self.tables.issuer.as_ref()
+    }
+
     // ---- catalog ----------------------------------------------------------
 
     /// One entry by its `{pack}:{code}` slug.

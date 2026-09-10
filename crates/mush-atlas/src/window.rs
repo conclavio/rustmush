@@ -840,8 +840,14 @@ fn state<'a>(ctx: &'a Ctx<'_>) -> Result<&'a AtlasState, String> {
         .ok_or_else(|| "the atlas module is not composed".to_string())
 }
 
+/// WS03-S14, as in [`crate::hydrate`]: a window is opened and closed by the
+/// SCENE that wants one — `mush-scenes`' start/end hook and `mush-tactics`'
+/// battle scenes call this API with their own `Ctx` — so the checked spelling
+/// would refuse the write of our own slot. Same crate, same module, only the
+/// context's name differs.
 fn state_mut<'a>(ctx: &'a mut Ctx<'_>) -> Result<&'a mut AtlasState, String> {
-    ctx.state_mut::<AtlasState>()
+    ctx.w
+        .module_state_mut::<AtlasState>()
         .ok_or_else(|| "the atlas module is not composed".to_string())
 }
 

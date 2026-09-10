@@ -43,7 +43,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::attr::{AttrValue, UncasedName};
+use crate::attr::{Attr, AttrFlags, AttrValue, UncasedName};
 use crate::flags::Flags;
 use crate::obj::ObjId;
 use crate::world::World;
@@ -194,7 +194,9 @@ const MAX_LOCK_STRUCTURAL_DEPTH: u32 = 1024;
 ///   then against the object's marker set, case-insensitively.
 /// - `AttrMatch`: attribute looked up with parent-chain inheritance
 ///   ([`World::attr`]); `Text` values match their text, `Json` values match
-///   their compact serialization; a missing attribute fails.
+///   their compact serialization; a missing attribute fails, and an attribute
+///   the lock may not *read* ([`AttrFlags::WIZARD_ONLY`], [`AttrFlags::SELF_ONLY`])
+///   poisons the whole key — see [`unreadable`].
 /// - `Indirect`: a missing target object fails; a target without that lock
 ///   type passes (an unset lock is unlocked, as in TinyMUX).
 ///
@@ -203,10 +205,34 @@ const MAX_LOCK_STRUCTURAL_DEPTH: u32 = 1024;
 /// bound instead of overflowing the world task's stack.
 #[must_use]
 pub fn eval_lock(w: &World, expr: &LockExpr, who: ObjId, depth: u8) -> bool {
-    eval_with(w, expr, who, depth, MAX_LOCK_STRUCTURAL_DEPTH)
+    // `None` — the key read an attribute it is not allowed to read — is not a
+    // third answer anyone outside can see: it lands as "does not pass", which
+    // is the same thing an empty key would say.
+    eval_with(w, expr, who, depth, MAX_LOCK_STRUCTURAL_DEPTH).unwrap_or(false)
 }
 
-/// [`eval_lock`] with both budgets explicit.
+/// Is this attribute one a lock key may not read?
+///
+/// `@lock/speech here=wod:secret:V*` is a **read path**: setting a key and
+/// watching whether it passes is a one-bit probe of any attribute the key can
+/// name. [`World::attr`] filters only [`AttrFlags::NO_INHERIT`], and the read
+/// permissions are enforced nowhere else but the `examine` printer, so without
+/// this test any player who can set a lock could spell out an attribute
+/// `examine` refuses them, one glob at a time.
+///
+/// [`AttrFlags::HIDDEN`] is deliberately **not** in the set, on two grounds.
+/// It is a display flag, not a confidentiality boundary — `examine/all` shows
+/// a hidden attribute to *any* examiner, with no role test — so a lock reading
+/// it breaches nothing. And it is a flag a player may set on their own
+/// attributes, so honouring it would hand every subject of an attribute lock
+/// the means to defeat it (and to flip every negated one) by flagging the
+/// attribute the key names.
+fn unreadable(a: &Attr) -> bool {
+    a.flags
+        .intersects(AttrFlags::WIZARD_ONLY | AttrFlags::SELF_ONLY)
+}
+
+/// [`eval_lock`] with both budgets explicit, and with the third answer.
 ///
 /// `indirect` is the public `depth`: it counts [`LockExpr::Indirect`] hops and
 /// is what [`MAX_LOCK_DEPTH`] sizes. `structural` counts `Not`/`And`/`Or`
@@ -214,35 +240,56 @@ pub fn eval_lock(w: &World, expr: &LockExpr, who: ObjId, depth: u8) -> bool {
 /// because each hop starts a fresh (and separately bounded) tree — the two
 /// budgets multiply into the true stack ceiling, which is why the indirect
 /// budget stays small.
-fn eval_with(w: &World, expr: &LockExpr, who: ObjId, indirect: u8, structural: u32) -> bool {
+///
+/// `Some(b)` is the key's answer; `None` means it tried to read an attribute
+/// it may not ([`unreadable`]). `None` is not `Some(false)`: it **absorbs**
+/// through every operator, including `!`, so a term over a restricted
+/// attribute cannot be negated into a pass, and it does not depend on the
+/// attribute's value, so the refusal is byte-identical whether the value would
+/// have matched the glob or not. That is the whole point — a lock that failed
+/// for the ordinary reason and a lock that was not allowed to look must be
+/// indistinguishable, or the refusal is itself the leaked bit. The one thing
+/// that does not poison is a branch never taken: `&`/`|` keep their
+/// short-circuit, so a term that is never evaluated is never read either.
+fn eval_with(
+    w: &World,
+    expr: &LockExpr,
+    who: ObjId,
+    indirect: u8,
+    structural: u32,
+) -> Option<bool> {
     match expr {
-        LockExpr::Const(b) => *b,
-        LockExpr::Is(id) => who == *id,
-        LockExpr::Carry(id) => w.contents_of(who).contains(id),
-        LockExpr::OwnedBy(id) => w.get(who).is_some_and(|o| o.owner == *id),
+        LockExpr::Const(b) => Some(*b),
+        LockExpr::Is(id) => Some(who == *id),
+        LockExpr::Carry(id) => Some(w.contents_of(who).contains(id)),
+        LockExpr::OwnedBy(id) => Some(w.get(who).is_some_and(|o| o.owner == *id)),
         LockExpr::HasFlag(name) => {
-            let Some(o) = w.get(who) else { return false };
-            if let Some(fl) = Flags::from_name(&name.to_uppercase()) {
+            let Some(o) = w.get(who) else {
+                return Some(false);
+            };
+            Some(if let Some(fl) = Flags::from_name(&name.to_uppercase()) {
                 o.flags.contains(fl)
             } else {
                 o.markers.iter().any(|m| m.eq_ignore_ascii_case(name))
-            }
+            })
         }
         LockExpr::AttrMatch { name, glob } => match w.attr(who, name.as_str()) {
-            Some(a) => match &a.value {
+            // Checked before the value is so much as looked at.
+            Some(a) if unreadable(a) => None,
+            Some(a) => Some(match &a.value {
                 AttrValue::Text(s) => glob_match(glob, s),
                 AttrValue::Json(v) => glob_match(glob, &v.to_string()),
-            },
-            None => false,
+            }),
+            None => Some(false),
         },
         LockExpr::Indirect(obj, lt) => {
             if indirect == 0 {
-                return false;
+                return Some(false);
             }
             match w.get(*obj) {
-                None => false,
+                None => Some(false),
                 Some(o) => match o.locks.get(lt) {
-                    None => true,
+                    None => Some(true),
                     // A fresh tree: the structural budget starts over, the
                     // indirect one does not.
                     Some(inner) => {
@@ -253,23 +300,27 @@ fn eval_with(w: &World, expr: &LockExpr, who: ObjId, indirect: u8, structural: u
         }
         LockExpr::Not(e) => {
             if structural == 0 {
-                return false;
+                return Some(false);
             }
-            !eval_with(w, e, who, indirect, structural - 1)
+            eval_with(w, e, who, indirect, structural - 1).map(|v| !v)
         }
         LockExpr::And(a, b) => {
             if structural == 0 {
-                return false;
+                return Some(false);
             }
-            eval_with(w, a, who, indirect, structural - 1)
-                && eval_with(w, b, who, indirect, structural - 1)
+            match eval_with(w, a, who, indirect, structural - 1) {
+                Some(true) => eval_with(w, b, who, indirect, structural - 1),
+                short => short,
+            }
         }
         LockExpr::Or(a, b) => {
             if structural == 0 {
-                return false;
+                return Some(false);
             }
-            eval_with(w, a, who, indirect, structural - 1)
-                || eval_with(w, b, who, indirect, structural - 1)
+            match eval_with(w, a, who, indirect, structural - 1) {
+                Some(false) => eval_with(w, b, who, indirect, structural - 1),
+                short => short,
+            }
         }
     }
 }

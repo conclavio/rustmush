@@ -13,6 +13,11 @@ use mush_core::{
 };
 use mush_proto::OutputEvent;
 
+/// A store-less lens for this harness: it holds no engine and never has, so
+/// it names `Test` rather than reaching for a store-less twin.
+const DETACHED: mush_core::TypedStateLens<'static> =
+    mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+
 /// Refuses destroying anything named "Fortress" (a dynamic structural veto).
 struct RefuseFortress;
 impl DestroyGate for RefuseFortress {
@@ -55,7 +60,7 @@ impl Game {
 
     fn run(&mut self, actor: ObjId, line: &str) -> Outbox {
         let mut out = Outbox::new();
-        dispatch(&self.reg, &mut self.w, actor, line, &mut out);
+        dispatch(&self.reg, &mut self.w, actor, line, &mut out, DETACHED);
         out
     }
 

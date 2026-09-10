@@ -70,7 +70,7 @@
 //!
 //! `MEASURED` below is the whole record: every crate, every candidate, and the
 //! count that kept the lint off where it is off. The big two are off nearly
-//! everywhere and stay advisory — `expect_used` is clean in 7 crates of 43 and
+//! everywhere and stay advisory — `expect_used` is clean in 8 crates of 43 and
 //! `indexing_slicing` in 14 — and `mush-store` is the one crate that pays for
 //! all six, so it denies none of them. Nothing goes into
 //! `[workspace.lints.clippy]`: with `-D warnings` in CI there is no such thing
@@ -112,7 +112,7 @@ const MEASURED: [(&str, [u32; 6]); 45] = [
     ("mush-dice", [0, 0, 6, 0, 0, 0]),
     ("mush-economy", [0, 48, 22, 1, 1, 0]),
     ("mush-faction", [0, 36, 0, 0, 0, 0]),
-    ("mush-gateway", [0, 52, 0, 0, 2, 0]),
+    ("mush-gateway", [0, 3, 0, 0, 2, 0]),
     ("mush-housing", [0, 4, 2, 0, 0, 0]),
     ("mush-industry", [0, 4, 16, 0, 0, 0]),
     ("mush-inventory", [0, 5, 1, 0, 0, 0]),
@@ -134,7 +134,7 @@ const MEASURED: [(&str, [u32; 6]); 45] = [
     ("mush-scenes", [0, 12, 7, 0, 0, 0]),
     ("mush-script", [0, 1, 0, 0, 0, 0]),
     ("mush-server", [0, 33, 6, 1, 11, 0]),
-    ("mush-session", [0, 6, 0, 0, 0, 0]),
+    ("mush-session", [0, 0, 0, 0, 0, 0]),
     ("mush-sim", [6, 42, 7, 0, 0, 0]),
     ("mush-store", [18, 283, 15, 1, 1, 2]),
     ("mush-tactics", [3, 49, 1, 0, 2, 0]),
@@ -448,9 +448,10 @@ fn the_enabled_set_is_the_one_the_measurement_produced() {
         enabled,
         BTreeMap::from([
             // S1: mush-atlas and mush-content arrive at zero on every lint, so each
-            // count is the measurement's plus two.
+            // count is the measurement's plus two; WS01-S10B denies `expect_used` in
+            // mush-session too, so that one is plus three.
             ("clippy::unwrap_used", 42),
-            ("clippy::expect_used", 9),
+            ("clippy::expect_used", 10),
             ("clippy::indexing_slicing", 16),
             ("clippy::panic", 39),
             ("clippy::unreachable", 34),

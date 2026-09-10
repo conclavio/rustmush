@@ -80,6 +80,10 @@ pub mod discord_bridge;
 pub mod ssh_bridge;
 pub mod web_bridge;
 
+mod poison;
+
+pub(crate) use crate::poison::locked;
+
 /// Where the server half comes from.
 pub enum ServerSource {
     /// Production: spawn + SUPERVISE a `mush-server` child process (D1). The
@@ -87,8 +91,12 @@ pub enum ServerSource {
     /// binds, and on the child's exit (crash or deliberate restart) respawns it
     /// — holding the player connections and re-attaching them (M16c).
     Spawn {
-        /// The config path to pass the child (`--config`).
-        config_path: PathBuf,
+        /// The config path to pass the child as `--config`, when the gateway
+        /// itself was given one. `None` means the gateway resolved the
+        /// implicit `mushd.toml` and the child must be allowed to resolve it
+        /// the same way (WS22-S1): forging an explicit path here turns the
+        /// parent's tolerated absence into the child's hard failure.
+        config_path: Option<PathBuf>,
     },
     /// Test / attach: connect to an already-running server at this endpoint
     /// ONCE, spawning nothing and NOT supervising it (the M16b two-process
@@ -482,7 +490,7 @@ impl ToServerTx {
     fn try_reserve_connection(&self, conn: u64, actor: mush_core::ObjId) -> ConnectionAdmission {
         let queue_cap = self.cap.max(1);
         let queue_depth = self.depth();
-        let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+        let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
 
         if lifecycle.connections.contains_key(&conn) {
             tracing::error!(conn, %actor, "duplicate lifecycle reservation refused");
@@ -525,10 +533,7 @@ impl ToServerTx {
 
     /// Cancel a reservation that never reached `ConnUp`.
     fn cancel_connection_reservation(&self, conn: u64) {
-        self.lifecycle
-            .lock()
-            .expect("lifecycle custody poisoned")
-            .cancel_reserved(conn);
+        locked(&self.lifecycle, "lifecycle custody").cancel_reserved(conn);
     }
 
     /// Enqueue one frame after applying lifecycle bookkeeping. New `ConnUp`
@@ -540,7 +545,7 @@ impl ToServerTx {
         if let ToServer::Inbound(WireInbound::ConnUp { conn, actor, .. }) = &msg {
             let conn = *conn;
             let actor = *actor;
-            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
             let valid_reservation = matches!(
                 lifecycle.connections.get(&conn),
                 Some(ConnectionCustody {
@@ -579,7 +584,7 @@ impl ToServerTx {
             let reason = *reason;
             // Hold the lifecycle lock through enqueue so a concurrent `ConnUp`
             // for this conn/actor cannot overtake its teardown in the FIFO.
-            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
             lifecycle.observe_conn_down(conn, actor, reason);
             return self.enqueue_raw(msg);
         }
@@ -590,7 +595,7 @@ impl ToServerTx {
             // reconnect was merely reserved, invalidate that reservation: its
             // later ConnUp fails and rolls the local attach back, preserving
             // SessionGone-before-any-fresh-ConnUp ordering.
-            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
             let cancelled = lifecycle.observe_session_gone(actor);
             for conn in cancelled {
                 tracing::warn!(conn, %actor, "link-dead expiry cancelled an in-progress reconnect reservation");
@@ -661,7 +666,7 @@ impl BoundaryConn {
         // of registration. Admission and boundary teardown share this lock, so
         // a waiter cannot slip into an already-drained table.
         let admission = {
-            let mut p = self.pending.lock().expect("pending table poisoned");
+            let mut p = locked(&self.pending, "pending table");
             if p.down {
                 PendingAdmission::Down
             } else if p.waiters.len() >= MAX_IN_FLIGHT_SERVICE_REQUESTS
@@ -696,7 +701,7 @@ impl BoundaryConn {
         let pending = Arc::clone(&self.pending);
         Box::pin(async move {
             if !sent {
-                let mut p = pending.lock().expect("pending table poisoned");
+                let mut p = locked(&pending, "pending table");
                 p.waiters.remove(&id);
                 p.capacity_warned = false;
                 return None;
@@ -729,19 +734,19 @@ struct BoundaryHandle {
 impl BoundaryHandle {
     /// The current live boundary, or `None` during a restart gap.
     fn current(&self) -> Option<Arc<BoundaryConn>> {
-        self.inner.lock().expect("boundary handle poisoned").clone()
+        locked(&self.inner, "boundary handle").clone()
     }
 
     /// Install a freshly (re)connected boundary and clear the restart gap.
     fn connect(&self, conn: Arc<BoundaryConn>) {
-        *self.inner.lock().expect("boundary handle poisoned") = Some(conn);
+        *locked(&self.inner, "boundary handle") = Some(conn);
         self.restarting.store(false, Ordering::SeqCst);
     }
 
     /// Enter the restart gap: drop the live boundary and refuse input until the
     /// next [`connect`](BoundaryHandle::connect).
     fn enter_gap(&self) {
-        *self.inner.lock().expect("boundary handle poisoned") = None;
+        *locked(&self.inner, "boundary handle") = None;
         self.restarting.store(true, Ordering::SeqCst);
     }
 
@@ -955,7 +960,7 @@ impl SocketGatewayLink {
             // receive these frames, but the next ReAnnounce snapshot is built
             // from the already-updated SessionManager, so update the stable
             // custody ledger locally or gap-time disconnects would leak slots.
-            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            let mut lifecycle = locked(&self.lifecycle, "lifecycle custody");
             match &msg {
                 ToServer::Inbound(WireInbound::ConnUp { conn, .. }) => {
                     lifecycle.cancel_reserved(*conn);
@@ -1043,11 +1048,7 @@ impl SocketGatewayLink {
             return InputSend::Shed;
         };
         let uid = request.uid;
-        let admission = self
-            .input_custody
-            .lock()
-            .expect("input custody poisoned")
-            .admit(request.clone());
+        let admission = locked(&self.input_custody, "input custody").admit(request.clone());
         if admission != InputCustodyAdmission::Admitted {
             self.metrics.ipc_frame_shed();
             if !matches!(admission, InputCustodyAdmission::Full { warn: false }) {
@@ -1065,10 +1066,7 @@ impl SocketGatewayLink {
         if conn.tx.send(ToServer::Input(request)) {
             InputSend::Sent
         } else {
-            self.input_custody
-                .lock()
-                .expect("input custody poisoned")
-                .remove(uid);
+            locked(&self.input_custody, "input custody").remove(uid);
             InputSend::Gone
         }
     }
@@ -1086,10 +1084,7 @@ impl GatewayLink for SocketGatewayLink {
         if let Some(boundary) = self.boundary.current() {
             boundary.tx.cancel_connection_reservation(conn);
         } else {
-            self.lifecycle
-                .lock()
-                .expect("lifecycle custody poisoned")
-                .cancel_reserved(conn);
+            locked(&self.lifecycle, "lifecycle custody").cancel_reserved(conn);
         }
     }
 
@@ -1229,7 +1224,7 @@ async fn gateway_reader(
             }
             ToGateway::Reply { id, resp } => {
                 let waiter = {
-                    let mut p = pending.lock().expect("pending table poisoned");
+                    let mut p = locked(&pending, "pending table");
                     let waiter = p.waiters.remove(&id);
                     if p.waiters.len() < MAX_IN_FLIGHT_SERVICE_REQUESTS {
                         p.capacity_warned = false;
@@ -1246,10 +1241,7 @@ async fn gateway_reader(
                 request,
                 disposition,
             } => {
-                let held = input_custody
-                    .lock()
-                    .expect("input custody poisoned")
-                    .remove(request);
+                let held = locked(&input_custody, "input custody").remove(request);
                 match (held, disposition) {
                     (Some(_held), GatewayRequestDisposition::LegacyClaimed) => {
                         // Release our exact replay copy BEFORE authorizing
@@ -1346,8 +1338,7 @@ async fn gateway_reader(
                     server,
                     "late Hello (already handshaked); refreshing manifest"
                 );
-                *manifest.lock().expect("manifest cache poisoned") =
-                    HelloManifest { features, panels };
+                *locked(&manifest, "manifest cache") = HelloManifest { features, panels };
             }
             ToGateway::Bye => {
                 tracing::info!("server said Bye; closing boundary");
@@ -1364,7 +1355,7 @@ async fn gateway_reader(
     // flag then makes any request that races in after this drain fail fast too
     // (it never parks), so no request can hang across a mid-request teardown.
     let dropped = {
-        let mut p = pending.lock().expect("pending table poisoned");
+        let mut p = locked(&pending, "pending table");
         p.down = true;
         p.capacity_warned = false;
         p.waiters.drain().count()
@@ -1520,7 +1511,7 @@ async fn connect_with_retry(
 /// Spawn the `mush-server` child process (the supervisor). Locates the binary
 /// as a sibling of the current executable in the same target dir.
 fn spawn_server_child(
-    config_path: &std::path::Path,
+    config_path: Option<&std::path::Path>,
     endpoint: &IpcEndpoint,
 ) -> Result<tokio::process::Child, String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
@@ -1530,13 +1521,30 @@ fn spawn_server_child(
     let server_bin = dir.join(format!("mush-server{}", std::env::consts::EXE_SUFFIX));
     tracing::info!(bin = %server_bin.display(), "spawning mush-server child");
     tokio::process::Command::new(&server_bin)
-        .arg("--config")
-        .arg(config_path)
-        .arg("--ipc")
-        .arg(endpoint.describe())
+        .args(server_child_args(config_path, endpoint))
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("spawning {}: {e}", server_bin.display()))
+}
+
+/// The argument vector [`spawn_server_child`] hands the child, split out so the
+/// one rule that is easy to get wrong is testable without a process: `--config`
+/// is passed ONLY when the gateway was given one (WS22-S1). A gateway that
+/// booted the implicit `mushd.toml` — or its absence — must let the child
+/// resolve the same way; forging `--config mushd.toml` here would make the
+/// child refuse to start under `mush-config`'s explicit-path stat.
+fn server_child_args(
+    config_path: Option<&std::path::Path>,
+    endpoint: &IpcEndpoint,
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = Vec::with_capacity(4);
+    if let Some(path) = config_path {
+        args.push("--config".into());
+        args.push(path.as_os_str().to_os_string());
+    }
+    args.push("--ipc".into());
+    args.push(endpoint.describe().into());
+    args
 }
 
 /// The production [`ServerLauncher`]: spawn (and, on each restart, respawn) a
@@ -1544,7 +1552,8 @@ fn spawn_server_child(
 /// endpoint (D1). `kill_on_drop` is armed as a final runtime-teardown backstop;
 /// the supervisor still requires positive exit confirmation before respawn.
 struct SpawnLauncher {
-    config_path: PathBuf,
+    /// `None` when the gateway itself resolved the implicit config path.
+    config_path: Option<PathBuf>,
     endpoint: IpcEndpoint,
 }
 
@@ -1553,7 +1562,7 @@ impl ServerLauncher for SpawnLauncher {
         let config_path = self.config_path.clone();
         let endpoint = self.endpoint.clone();
         Box::pin(async move {
-            let mut child = spawn_server_child(&config_path, &endpoint)?;
+            let mut child = spawn_server_child(config_path.as_deref(), &endpoint)?;
             // Own the child in a task that resolves the `exited` future when it
             // dies. The exit-only API cannot force that task to drop, so the
             // supervisor fails closed if this confirmation misses its deadline.
@@ -1622,6 +1631,12 @@ struct BoundaryEnv {
 /// built at different [`IPC_VERSION`]s. Stable text, quoted by the proof in
 /// `tests/server_panic_relaunch.rs`; do not reword it.
 pub const IPC_VERSION_SKEW_MARKER: &str = "IPC-VERSION-SKEW";
+
+/// The fixed marker an operator (or an alert rule) greps the gateway log
+/// for when the supervisor has GIVEN UP on the server half (WS22-S17).
+/// Stable text, quoted by the proof in `tests/supervision_abandoned.rs`; do
+/// not reword it.
+pub const SUPERVISION_ABANDONED_MARKER: &str = "SUPERVISION-ABANDONED";
 
 /// Why an attempt to wire a server boundary failed.
 ///
@@ -1702,7 +1717,7 @@ async fn connect_and_wire(
                     server_proto: proto,
                 });
             }
-            *manifest.lock().expect("manifest cache poisoned") = HelloManifest { features, panels };
+            *locked(manifest, "manifest cache") = HelloManifest { features, panels };
             tracing::info!(proto, server, "handshake ok");
         }
         Some(other) => return Err(format!("expected Hello, got {other:?}").into()),
@@ -1893,6 +1908,11 @@ const RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// expiry closes this attempt so boundary teardown drains the parked waiter and
 /// the crash guard can retry.
 const RESYNC_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long an ABANDONED gateway keeps serving before it exits (WS22-S17), so
+/// the give-up notice reaches the players who are about to be disconnected.
+/// Short on purpose: every one of those sessions is already refusing input, so
+/// the window buys a line of text and nothing else.
+const ABANDONED_EXIT_GRACE: Duration = Duration::from_secs(3);
 /// Correlation id reserved for the supervisor's private resync barrier. The
 /// ordinary monotonic allocator can advance TO `u64::MAX`, but then refuses its
 /// next allocation, so it never returns this value as a live request id.
@@ -1919,12 +1939,96 @@ where
     }
 }
 
-/// Enter the fail-stop posture for an instance whose exit could not be
-/// established. The caller has already put [`BoundaryHandle`] into its gap, so
-/// input remains refused. Returning from the supervisor is deliberate: without
-/// an owned kill-and-reap handle, retrying could create two live worlds.
-fn announce_uncertain_exit(sessions: &SessionManager) {
+/// Why the supervisor gave up (WS22-S17).
+///
+/// Each variant is a state in which NOTHING is bringing the server half back:
+/// the boundary stays in its gap, every held session stays connected, and every
+/// line those players type is refused for as long as the process lives. The
+/// reason is carried out of [`supervise`] rather than only logged inside it
+/// because [`serve`] has to decide what to do about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AbandonReason {
+    /// A shutdown component (the old reader, the old instance, a failed
+    /// attempt's reader or instance) did not finish inside [`EXIT_WAIT`], so
+    /// the old world's ownership of the store is UNKNOWN. Named by the
+    /// component, which is the field an operator reads first.
+    UncertainExit(&'static str),
+    /// The crash-loop guard tripped: the server kept dying (or kept refusing
+    /// to come back) faster than [`CrashGuard`] tolerates.
+    CrashLoop,
+    /// The supervisor task itself died. It must never panic; if it does, the
+    /// gateway is in exactly the same abandoned state and must say so with the
+    /// same marker rather than silently outliving its supervisor.
+    SupervisorDied,
+}
+
+impl AbandonReason {
+    /// The stable log field an alert rule matches on.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::UncertainExit(_) => "uncertain-exit",
+            Self::CrashLoop => "crash-loop",
+            Self::SupervisorDied => "supervisor-died",
+        }
+    }
+
+    /// The shutdown component whose exit could not be established, when that
+    /// is what happened.
+    const fn component(self) -> &'static str {
+        match self {
+            Self::UncertainExit(what) => what,
+            Self::CrashLoop | Self::SupervisorDied => "",
+        }
+    }
+}
+
+impl std::fmt::Display for AbandonReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UncertainExit(what) => write!(f, "uncertain-exit ({what})"),
+            other => f.write_str(other.label()),
+        }
+    }
+}
+
+/// How [`supervise`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SupervisionOutcome {
+    /// The restart trigger was dropped: the gateway is shutting down and the
+    /// supervisor let go of a LIVE server on purpose. Nothing is wrong.
+    Stopped,
+    /// Supervision ended with the boundary still in its gap. This is a fault,
+    /// not a stop — see [`AbandonReason`].
+    Abandoned(AbandonReason),
+}
+
+/// Enter the fail-stop posture: the supervisor is giving up.
+///
+/// The caller has already put [`BoundaryHandle`] into its gap, so input remains
+/// refused. Returning from the supervisor is deliberate — without an owned
+/// kill-and-reap handle, retrying could create two live worlds — but before
+/// this step "returning" was ALL that happened: one chat line to the players
+/// and a gateway that went on looking healthy to systemd, to `/healthz` and to
+/// every scraper. So this is the one site that gives up, and it does three
+/// things every time: latch the gauge, log the marker, tell the players. It is
+/// called exactly once per abandonment (every caller returns its value
+/// immediately), which is what keeps the notice out of the retry loop.
+fn abandon(
+    sessions: &SessionManager,
+    metrics: &Metrics,
+    reason: AbandonReason,
+) -> SupervisionOutcome {
+    metrics.abandon_supervision();
+    tracing::error!(
+        marker = SUPERVISION_ABANDONED_MARKER,
+        reason = reason.label(),
+        component = reason.component(),
+        "the gateway supervisor has GIVEN UP on the server half: the boundary stays in its \
+         restart gap, every held session stays connected, and every line those players type \
+         is refused. Nothing will bring the world back on its own — restart the gateway"
+    );
     broadcast(sessions, server_down_notice());
+    SupervisionOutcome::Abandoned(reason)
 }
 
 /// Replay the gateway-owned attachment roster onto a fresh server and wait for
@@ -1963,10 +2067,7 @@ async fn resync_boundary(
             // The public boundary remains in Gap while this snapshot is
             // enqueued. Existing requests therefore replay after the complete
             // attachment roster, and newly accepted input cannot overtake it.
-            let replay = input_custody
-                .lock()
-                .expect("input custody poisoned")
-                .snapshot();
+            let replay = locked(input_custody, "input custody").snapshot();
             for request in &replay {
                 if !conn.tx.send(ToServer::Input(request.clone())) {
                     return Err(format!(
@@ -2088,9 +2189,14 @@ impl CrashGuard {
 /// The gateway supervisor loop (D1/D2/D3): serve over the current boundary until
 /// it drops (a server crash, D1a) or a deliberate restart is requested (D1b);
 /// then enter the gap (refuse input, tell players), respawn the server, then
-/// reconnect and re-attach the held sessions, and resume. Gives up (telling
-/// players) if the crash-loop guard trips (R3). Returns when the supervisor can
-/// no longer keep a server up.
+/// reconnect and re-attach the held sessions, and resume. Gives up if the
+/// crash-loop guard trips (R3) or an old instance's exit cannot be established.
+///
+/// The return value says WHICH of those two endings this was
+/// ([`SupervisionOutcome`]), because they need opposite responses from
+/// [`serve`]: a [`SupervisionOutcome::Stopped`] is the gateway shutting itself
+/// down, while a [`SupervisionOutcome::Abandoned`] is a gateway that must not
+/// keep pretending to be a game.
 // Eight collaborators, each already its own type: bundling them into a
 // "supervisor env" struct would only move the list, and the siteban mirror in
 // particular is built after the boundary env is (it needs the store).
@@ -2104,7 +2210,8 @@ async fn supervise(
     first_wired: WiredBoundary,
     env: BoundaryEnv,
     siteban_mirror: SitebanMirror,
-) {
+) -> SupervisionOutcome {
+    let metrics = Arc::clone(&env.tuning.metrics);
     let mut instance = first_instance;
     let mut wired = first_wired;
     let mut guard = CrashGuard::new();
@@ -2123,9 +2230,11 @@ async fn supervise(
             }
             reason = restart_rx.recv() => {
                 if reason.is_none() {
-                    // The trigger is gone (gateway shutting down): drop the
-                    // supervisor without touching the live server.
-                    return;
+                    // Every restart sender is gone. `serve` holds one for its
+                    // whole lifetime (`_restart_keepalive`), so this can only
+                    // mean `serve` itself has let go — i.e. the gateway is on
+                    // its way down. Drop the supervisor without respawning.
+                    return SupervisionOutcome::Stopped;
                 }
                 crashed = false;
                 tracing::info!("deliberate server restart requested");
@@ -2143,23 +2252,29 @@ async fn supervise(
         // what resolved `wired.down` in the select above), so re-awaiting the
         // same completed handle would panic.
         if !crashed && !wait_for_exit("old boundary reader", &mut wired.down).await {
-            announce_uncertain_exit(&sessions);
-            return;
+            return abandon(
+                &sessions,
+                &metrics,
+                AbandonReason::UncertainExit("old boundary reader"),
+            );
         }
         // Let the old instance fully exit (release its listen socket) before we
         // reconnect. This exit-only launcher API cannot yet force-kill a stuck
         // child, so an unconfirmed exit is fail-stop: never risk overlapping
         // authoritative worlds/store writers.
         if !wait_for_exit("old server instance", instance.exited).await {
-            announce_uncertain_exit(&sessions);
-            return;
+            return abandon(
+                &sessions,
+                &metrics,
+                AbandonReason::UncertainExit("old server instance"),
+            );
         }
 
         // --- RECONNECT: respawn + reconnect, retrying under the crash guard. ---
         let reconnected = loop {
             if guard.tripped() {
-                tracing::error!("server restart loop tripped the crash-loop guard; giving up");
-                broadcast(&sessions, server_down_notice());
+                // The one give-up line lives in `abandon`, at the `else` below:
+                // logging (and broadcasting) here as well would say it twice.
                 break None;
             }
             guard.record_attempt();
@@ -2192,14 +2307,20 @@ async fn supervise(
                             tracing::error!(error = %e, "post-reconnect resync failed; retrying");
                             let _ = w.close.send(());
                             if !wait_for_exit("failed-resync boundary reader", &mut w.down).await {
-                                announce_uncertain_exit(&sessions);
-                                return;
+                                return abandon(
+                                    &sessions,
+                                    &metrics,
+                                    AbandonReason::UncertainExit("failed-resync boundary reader"),
+                                );
                             }
                             if !wait_for_exit("failed-resync server instance", new_instance.exited)
                                 .await
                             {
-                                announce_uncertain_exit(&sessions);
-                                return;
+                                return abandon(
+                                    &sessions,
+                                    &metrics,
+                                    AbandonReason::UncertainExit("failed-resync server instance"),
+                                );
                             }
                         }
                     }
@@ -2224,8 +2345,11 @@ async fn supervise(
                         broadcast(&sessions, version_skew_notice());
                     }
                     if !wait_for_exit("version-skewed server instance", new_instance.exited).await {
-                        announce_uncertain_exit(&sessions);
-                        return;
+                        return abandon(
+                            &sessions,
+                            &metrics,
+                            AbandonReason::UncertainExit("version-skewed server instance"),
+                        );
                     }
                     tokio::time::sleep(guard.skew_backoff()).await;
                 }
@@ -2233,8 +2357,11 @@ async fn supervise(
                     guard.record_failure();
                     tracing::error!(error = %e, "reconnect after restart failed; retrying");
                     if !wait_for_exit("failed-connect server instance", new_instance.exited).await {
-                        announce_uncertain_exit(&sessions);
-                        return;
+                        return abandon(
+                            &sessions,
+                            &metrics,
+                            AbandonReason::UncertainExit("failed-connect server instance"),
+                        );
                     }
                 }
             }
@@ -2242,7 +2369,7 @@ async fn supervise(
         let Some((new_instance, new_wired)) = reconnected else {
             // The guard tripped: leave the boundary in the gap so input stays
             // refused with a clear message, and stop supervising.
-            return;
+            return abandon(&sessions, &metrics, AbandonReason::CrashLoop);
         };
 
         // --- RESUME (D2): resync + its exact barrier completed above. Only now
@@ -2438,7 +2565,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // running while the operator fixes the [web] config.
     let (web_stop, web_join) = {
         let (features, panels) = {
-            let m = manifest.lock().expect("manifest cache poisoned");
+            let m = locked(&manifest, "manifest cache");
             (m.features.clone(), m.panels.clone())
         };
         match WebConfig::deserialize(config.web.clone()) {
@@ -2508,12 +2635,23 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     if let Some(tx) = opts.restart_ready {
         let _ = tx.send(trigger.clone());
     }
-    install_sighup_handler(trigger);
+    install_sighup_handler(trigger.clone());
+    // Keep ONE sender alive for the whole of `serve`. The supervisor reads "every
+    // restart sender has been dropped" as "the gateway is shutting down" and
+    // returns `Stopped` — but nothing outside `serve` is obliged to hold the
+    // trigger: `mush-gateway`'s own `main` passes `restart_ready: None`, and
+    // `install_sighup_handler` is a no-op that drops it on non-Unix (and drops it
+    // on Unix too if `signal()` fails). Without this keepalive the supervisor of a
+    // perfectly healthy server stops milliseconds after boot, which since WS22-S17
+    // (where `serve` watches the supervisor) would take the whole gateway down
+    // with it. The trigger's real owners are the SIGHUP task and `restart_ready`;
+    // this binding only outlives them.
+    let _restart_keepalive = trigger;
 
     match launcher {
         Some(launcher) => {
             // Supervised: hold the connections across server restarts (M16c).
-            let sup = tokio::spawn(supervise(
+            let mut sup = tokio::spawn(supervise(
                 launcher,
                 boundary,
                 Arc::clone(&sessions),
@@ -2523,13 +2661,68 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                 env,
                 siteban_mirror,
             ));
-            let _ = tokio::signal::ctrl_c().await;
+            // WS22-S17: WATCH the supervisor instead of only aborting it at
+            // Ctrl-C. A supervisor that returns on its own has either let go of
+            // a live server (a shutdown already under way) or given up on the
+            // server half entirely — and the second one used to be invisible
+            // here, so the gateway went on serving refused input for ever.
+            let outcome = tokio::select! {
+                _ = tokio::signal::ctrl_c() => None,
+                joined = &mut sup => Some(match joined {
+                    Ok(outcome) => outcome,
+                    // The supervisor must never panic. If it did, nothing is
+                    // supervising and that is the same fault by another route.
+                    Err(e) => {
+                        tracing::error!(error = %e, "the gateway supervisor task died");
+                        abandon(&sessions, &metrics, AbandonReason::SupervisorDied)
+                    }
+                }),
+            };
+            // An abandoned supervisor with the exit key OFF (a dev box keeping
+            // the corpse) parks here: the gauge and the marker are already
+            // published, and Ctrl-C still stops the process.
+            let abandoned = match outcome {
+                Some(SupervisionOutcome::Abandoned(reason))
+                    if config.ipc_exit_on_abandoned_supervision() =>
+                {
+                    // Shut the front door FIRST. The grace window exists so the
+                    // give-up notice reaches the sessions we are ALREADY
+                    // holding — it is not an invitation for new players to log
+                    // into a boundary that is in its gap and seconds from
+                    // closing. (The web listener stays up through the grace on
+                    // purpose: `/healthz` is where the abandonment gauge is
+                    // scraped, and it should answer until the process goes.)
+                    listener.stop_accepting();
+                    // Let the give-up notice land before the sockets close.
+                    tokio::time::sleep(ABANDONED_EXIT_GRACE).await;
+                    Some(reason)
+                }
+                Some(SupervisionOutcome::Abandoned(reason)) => {
+                    tracing::warn!(
+                        reason = reason.label(),
+                        "[ipc].exit_on_abandoned_supervision is off: staying resident with \
+                         supervision abandoned. Every held session is input-refused until \
+                         this process is restarted by hand"
+                    );
+                    let _ = tokio::signal::ctrl_c().await;
+                    None
+                }
+                Some(SupervisionOutcome::Stopped) | None => None,
+            };
             tracing::info!("gateway shutting down");
+            // Idempotent: the abandoned-exit arm above already shut the door
+            // before its grace window.
             listener.stop_accepting();
             stop_web(web_stop, web_join).await;
             discord.stop().await;
             sup.abort();
             siteban_task.abort();
+            if let Some(reason) = abandoned {
+                return Err(format!(
+                    "{SUPERVISION_ABANDONED_MARKER}: supervision abandoned ({reason}); \
+                     exiting so a supervisor restarts the whole gateway"
+                ));
+            }
         }
         None => {
             // Non-supervised Connect (M16b): keep the first boundary alive (its
@@ -2625,6 +2818,33 @@ mod tests {
     use mush_ipc::WireInbound;
     use mush_proto::{ClientCaps, ClientKind, ColorDepth, Envelope};
     use mush_session::{ConnId, ConnectionHandle};
+
+    /// WS22-S1: the explicitness of `--config` has to cross the spawn.
+    ///
+    /// The failure this pins is the quiet one: a gateway started with no
+    /// `--config` (defaults, or an implicit `mushd.toml` in the working
+    /// directory) that hands its child a forged `--config mushd.toml`. Under
+    /// the shared parser an explicit path that does not exist is fatal, so the
+    /// gateway would come up and its child would refuse to start, for a file
+    /// nobody asked for.
+    #[test]
+    fn child_config_argument_is_passed_only_when_explicit() {
+        let endpoint = IpcEndpoint::Tcp("127.0.0.1:6791".parse().expect("literal addr"));
+
+        let implicit = server_child_args(None, &endpoint);
+        assert_eq!(implicit, ["--ipc", "127.0.0.1:6791"], "{implicit:?}");
+        assert!(
+            !implicit.iter().any(|a| a == "--config"),
+            "a gateway that was given no --config must forge none: {implicit:?}"
+        );
+
+        let explicit = server_child_args(Some(std::path::Path::new("/etc/mushd.toml")), &endpoint);
+        assert_eq!(
+            explicit,
+            ["--config", "/etc/mushd.toml", "--ipc", "127.0.0.1:6791"],
+            "{explicit:?}"
+        );
+    }
 
     /// A test [`ToServerTx`] over `tx` with a throwaway registry, the given
     /// input-shed `cap`, and `depth` frames pre-charged onto the gauge (to force
@@ -3164,6 +3384,11 @@ mod tests {
     /// future remains pending past `EXIT_WAIT`, the supervisor must stay in the
     /// gap and stop WITHOUT calling the launcher: otherwise a stuck old world
     /// and its replacement could write the authoritative store concurrently.
+    ///
+    /// WS22-S17 adds the other half: stopping like that is an ABANDONMENT, so
+    /// the supervisor has to say which one it was and latch the gauge on its
+    /// way out — a fail-stop nobody can see is the state this whole step
+    /// exists to end.
     #[tokio::test(start_paused = true)]
     async fn uncertain_old_instance_exit_fail_stops_without_respawn() {
         let sessions = Arc::new(SessionManager::new());
@@ -3218,6 +3443,11 @@ mod tests {
             boundary: boundary.clone(),
             interval: SITEBAN_REFRESH,
         };
+        let gauge = Arc::clone(&env.tuning.metrics);
+        assert!(
+            !gauge.supervision_abandoned(),
+            "the gauge starts clear on a healthy supervisor"
+        );
         let supervisor = tokio::spawn(supervise(
             launcher,
             boundary.clone(),
@@ -3230,9 +3460,19 @@ mod tests {
         ));
         tokio::task::yield_now().await;
         tokio::time::advance(EXIT_WAIT + Duration::from_millis(1)).await;
-        supervisor
+        let outcome = supervisor
             .await
             .expect("fail-stop supervisor must return after the exit deadline");
+
+        assert_eq!(
+            outcome,
+            SupervisionOutcome::Abandoned(AbandonReason::UncertainExit("old server instance")),
+            "a fail-stop must name itself an abandonment, and name the component"
+        );
+        assert!(
+            gauge.supervision_abandoned(),
+            "the abandoned gauge is what an alert keys on; a silent fail-stop is the bug"
+        );
 
         assert_eq!(
             launches.load(Ordering::SeqCst),
@@ -3625,6 +3865,75 @@ mod tests {
             link.try_reserve_connection(5, ObjId(5)),
             ConnectionAdmission::Reserved,
             "cancelling unused custody must make exactly one slot available"
+        );
+    }
+
+    /// The failure this converts away. Lifecycle custody is shared by every
+    /// connection-owning task in the gateway, so `.expect("... poisoned")` on
+    /// it meant one task's panic became a panic on *every* other connection's
+    /// next reserve/attach/teardown — under D1, the SSH sessions the fork
+    /// exists to hold across a server restart. Recovery keeps the custody the
+    /// panicking task left and lets everyone else through.
+    #[test]
+    fn a_poisoned_lifecycle_table_keeps_every_other_connection_alive() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (to_server, _metrics, lifecycle) = test_tx(tx, 8, 0);
+        assert_eq!(
+            to_server.try_reserve_connection(1, ObjId(1)),
+            ConnectionAdmission::Reserved
+        );
+
+        crate::poison::tests::poison(&lifecycle);
+
+        assert_eq!(
+            to_server.try_reserve_connection(1, ObjId(1)),
+            ConnectionAdmission::Busy,
+            "the reservation the panicking task left is still held, not forgotten"
+        );
+        assert_eq!(
+            to_server.try_reserve_connection(2, ObjId(2)),
+            ConnectionAdmission::Reserved,
+            "an unrelated connection still gets in over a poisoned table"
+        );
+        to_server.cancel_connection_reservation(1);
+        assert_eq!(
+            to_server.try_reserve_connection(1, ObjId(1)),
+            ConnectionAdmission::Reserved,
+            "and teardown still releases custody"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "reservations must not create lifecycle frames"
+        );
+    }
+
+    /// The same proof for the boundary handle, which the supervisor swaps on
+    /// every server restart while the reader loop reads it. A poisoning here
+    /// used to make the restart gap unrecoverable: `connect` could not install
+    /// the new boundary and `current` could not read it.
+    #[test]
+    fn a_poisoned_boundary_handle_still_swaps_the_boundary() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (to_server, _metrics, _lifecycle) = test_tx(tx, 8, 0);
+        let handle = BoundaryHandle::default();
+        let conn = Arc::new(BoundaryConn {
+            tx: to_server,
+            pending: SocketGatewayLink::pending_table(),
+        });
+        handle.connect(Arc::clone(&conn));
+
+        crate::poison::tests::poison(&handle.inner);
+
+        assert!(
+            handle.current().is_some(),
+            "the boundary the panicking task left is still readable"
+        );
+        handle.enter_gap();
+        assert!(handle.current().is_none(), "the restart gap still opens");
+        handle.connect(conn);
+        assert!(
+            handle.current().is_some(),
+            "and the reconnect still installs the fresh boundary"
         );
     }
 

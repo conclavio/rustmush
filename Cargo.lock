@@ -2154,6 +2154,7 @@ name = "mush-contract-tests"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "mush-atlas",
  "mush-config",
  "mush-core",
  "mush-economy",
@@ -2192,6 +2193,7 @@ dependencies = [
  "smol_str",
  "thiserror 2.0.20",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

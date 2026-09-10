@@ -7,8 +7,9 @@
 -- every normalized replay target, then every exact terminal outbox item.
 -- ARGV: exact intent doc, exact prior receipt doc, compact checkpoint receipt,
 -- exact binding doc, token, exact intent bytes, replay-write count, outbox
--- count, exact parent manifest, then (kind, exact post-image) replay pairs and
--- each exact terminal outbox document.
+-- count, exact parent manifest, then (kind, exact post-image) replay pairs,
+-- each exact terminal outbox document, and finally the re-verified count and
+-- that many replay indices (see the readback loop).
 
 local function key_type(key)
   local result = redis.call('TYPE', key)
@@ -77,28 +78,58 @@ if not write_count or write_count < 0 or not outbox_count or
    (write_count + outbox_count) ~= (#KEYS - 8) then
   return 'CORRUPT_ARGUMENTS'
 end
+
+-- Replay indices whose json_set post-image the caller has already re-verified,
+-- in Rust, as the same *document* after this script refused it on bytes.
+--
+-- The byte compare below is the strongest check available inside one EVAL, and
+-- it is also the only one: cjson turns every number into a double, so
+-- 9007199254740993 and ...992 would compare equal, and it cannot tell {} from
+-- [] — decoding here would trade a false refusal for two false accepts. So the
+-- caller re-reads the key, compares with serde_json, and names the indices it
+-- proved. Each one skips the compare for exactly one json_set write and
+-- nothing else: an index is not a blanket permission, and the exact arms
+-- (string_set, delete) never consult this list at all.
+local verified_base = 9 + write_count * 2 + outbox_count
+local verified_count = tonumber(ARGV[verified_base + 1])
+if not verified_count or verified_count < 0 or verified_count > write_count or
+   #ARGV ~= (verified_base + 1 + verified_count) then
+  return 'CORRUPT_ARGUMENTS'
+end
+local verified = {}
+for index = 1, verified_count do
+  local slot = tonumber(ARGV[verified_base + 1 + index])
+  if not slot or slot % 1 ~= 0 or slot < 1 or slot > write_count then
+    return 'CORRUPT_ARGUMENTS'
+  end
+  verified[slot] = true
+end
+
 local parent_manifest = redis.call('GET', KEYS[8])
 if parent_manifest and parent_manifest ~= ARGV[9] then
   return 'OUTBOX_CONFLICT'
 end
 
 -- The full intent is the last repair witness. Never release it unless every
--- authoritative target still has its exact committed post-image.
+-- authoritative target still has its exact committed post-image. A mismatch
+-- names the replay index it caught so the caller can refuse by key — or, for
+-- a json_set target, re-verify it as a document and hand the index back in
+-- `verified`.
 for index = 1, write_count do
   local kind = ARGV[8 + index * 2]
   local post_image = ARGV[9 + index * 2]
   local key = KEYS[8 + index]
   if kind == 'json_set' then
-    if redis.call('JSON.GET', key) ~= post_image then
-      return 'READBACK_MISMATCH'
+    if not verified[index] and redis.call('JSON.GET', key) ~= post_image then
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   elseif kind == 'string_set' then
     if redis.call('GET', key) ~= post_image then
-      return 'READBACK_MISMATCH'
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   elseif kind == 'delete' then
     if redis.call('EXISTS', key) ~= 0 then
-      return 'READBACK_MISMATCH'
+      return 'READBACK_MISMATCH:' .. tostring(index)
     end
   else
     return 'CORRUPT_ARGUMENTS'

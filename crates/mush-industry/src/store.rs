@@ -47,9 +47,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mush_core::{ObjId, Outbox, World};
+use mush_core::{Ctx, ObjId, Outbox, StateFamilyHandle, World, WorldEvent, WorldObserver};
 use mush_economy::{EconomyStore, InstrumentId, VaultId};
 use mush_inventory::{EndpointRef, InventoryStore};
+use mush_org::PrincipalId;
 use smol_str::SmolStr;
 
 use crate::facility::{FacilityRecord, facility_of_key};
@@ -110,6 +111,55 @@ impl FacilityQuarantine {
                 "a live work order holds a slot here but this facility's capacity book is gone; \
                  availability reads 0 and every submit refuses. Restore the capacity records or \
                  cancel the stranded orders, then re-run the sweep"
+            }
+        }
+    }
+}
+
+/// **WS02-S5b** — why one *drafted* work order no longer matches the recipe
+/// authority, and what a staffer reading the sweep's log line is looking at.
+///
+/// A `Draft` pins the recipe's lines at draft time (`PinnedRecipe`), and every
+/// arithmetic step downstream — the reservation, the production plan,
+/// `wo_deliver`'s mint — runs off that pin rather than off the pack. So a pin
+/// that disagrees with what the pack publishes *now* is either a pack that was
+/// republished under the draft, or a pin that was never the pack's; the sweep
+/// cannot tell the two apart and refuses both, which is the fail-closed
+/// direction.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DraftDrift {
+    /// The pack version publishes no such recipe any more — a retirement, or a
+    /// republish that dropped it. `RecipeAuthority::resolve` answers `None`.
+    Unpublished,
+    /// The recipe still resolves, but under a **different pack digest**: an
+    /// ordinary republication. `@wo/submit`'s own digest re-check catches this
+    /// one too, and tells the requester to redraft.
+    DigestMoved,
+    /// The pack digest still agrees and the **pinned lines do not**. Either the
+    /// pack republished lines its digest does not cover, or the draft's lines
+    /// were never the authority's — the shape WS02-S5 closed at draft. Nothing
+    /// on the submit path compares lines, so this is the arm that matters.
+    LinesDiffer,
+}
+
+impl DraftDrift {
+    /// The one line the sweep logs beside the order, for an operator who has to
+    /// tell a republication from a forgery.
+    #[must_use]
+    pub const fn runbook(self) -> &'static str {
+        match self {
+            Self::Unpublished => {
+                "its pack version no longer publishes this recipe (retired, or republished \
+                 without it); the draft can never be priced again"
+            }
+            Self::DigestMoved => {
+                "its pack republished this recipe under a new digest; this is the ordinary \
+                 drift, and the requester is told to redraft"
+            }
+            Self::LinesDiffer => {
+                "its pack digest still agrees but its PINNED LINES do not — either a \
+                 republication the digest does not cover, or lines that were never the \
+                 authority's. Both mint off the pin, so both are refused"
             }
         }
     }
@@ -208,6 +258,40 @@ pub struct IndustryStore {
     /// How many notes were dropped at [`crate::money::MAX_SETTLE_PENDING`] since
     /// boot — counted rather than silent (D9).
     settle_pending_dropped: u64,
+    /// **WS02-S4** — the per-requester index of **non-terminal** work orders, so
+    /// the draft offer can read `MAX_WORK_ORDERS_PER_REQUESTER` without walking
+    /// `industry.workorder`. `project_legal_actions` runs every provider on every
+    /// projection pass, including every authoritative submission, and a family
+    /// scan there is a walk per projection rather than a walk per commit.
+    ///
+    /// Maintained on open/terminate by the `ActionStateChanged` observer
+    /// [`WorkOrderIndex`] and rebuilt from the family by [`reconcile`] at boot and
+    /// on every sweep, so a missed announcement heals inside one sweep period.
+    /// The **command** keeps its own bounded scan: the durable-DoS bound must not
+    /// rest on a mirror that can lag, and the command has a world to walk with.
+    ///
+    /// Bounded by the family it mirrors: an entry exists only for a requester
+    /// with a live order and is dropped when their last one goes terminal. Keyed
+    /// by `mush_economy::principal_token`, the canonical spelling the claim gate
+    /// already compares principals by — `PrincipalId` itself is not `Ord`.
+    open_orders: BTreeMap<SmolStr, BTreeSet<crate::workorder::WorkOrderId>>,
+    /// **WS02-S5b** — `Draft` orders the last complete sweep found no longer
+    /// matching the recipe authority, and why.
+    ///
+    /// A pack republication is a legitimate operator act, and it silently leaves
+    /// every draft pinned against the old lines behind: the draft still submits,
+    /// still produces and still mints `order.pinned().outputs()`, because nothing
+    /// on the submit path compares the LINES (both upstream re-checks compare the
+    /// digest). [`reconcile`] rebuilds this map from the family on every sweep, so
+    /// a draft that goes non-`Draft` drops out of it and a repaired pack clears it.
+    ///
+    /// It is a refusal, never a durable transition: a module tick holds a `Ctx`,
+    /// whose typed-family capability is read-only by construction, and one
+    /// `submit_authoritative` per drifted order is what cut 2's fold C4 forbids
+    /// this arm outright (`money::sweep` records the same wall). So the state stays
+    /// `Draft` on the record, `@wo/submit` refuses it, and `@wo/cancel` — which the
+    /// requester can always type — is the exit that actually writes `Cancelled`.
+    drifted_drafts: BTreeMap<crate::workorder::WorkOrderId, DraftDrift>,
 }
 
 impl IndustryStore {
@@ -269,6 +353,54 @@ impl IndustryStore {
     /// Forget one order's pending note (its state moved on, or the release landed).
     pub fn clear_settle_pending(&mut self, order: crate::workorder::WorkOrderId) {
         self.settle_pending.remove(&order);
+    }
+
+    /// **WS02-S4** — how many non-terminal work orders this requester holds, from
+    /// the RAM index rather than a walk of `industry.workorder`.
+    #[must_use]
+    pub fn open_work_orders(&self, requester: &PrincipalId) -> usize {
+        self.open_orders
+            .get(&mush_economy::principal_token(requester))
+            .map_or(0, BTreeSet::len)
+    }
+
+    /// Note one work order as live or terminal. Idempotent by construction — the
+    /// index is a set of ids, not a delta count, so replaying one announcement
+    /// changes nothing and a missed one is repaired by the next [`reconcile`].
+    pub fn note_work_order(
+        &mut self,
+        requester: &PrincipalId,
+        order: crate::workorder::WorkOrderId,
+        open: bool,
+    ) {
+        let token = mush_economy::principal_token(requester);
+        if open {
+            self.open_orders.entry(token).or_default().insert(order);
+        } else if let Some(live) = self.open_orders.get_mut(&token) {
+            live.remove(&order);
+            if live.is_empty() {
+                self.open_orders.remove(&token);
+            }
+        }
+    }
+
+    /// How many requesters currently hold a live order (the index's observable).
+    #[must_use]
+    pub fn open_requesters(&self) -> usize {
+        self.open_orders.len()
+    }
+
+    /// **WS02-S5b** — why the last complete sweep found this `Draft` no longer
+    /// matching the recipe authority, if it did.
+    #[must_use]
+    pub fn drift_cancelled(&self, order: crate::workorder::WorkOrderId) -> Option<DraftDrift> {
+        self.drifted_drafts.get(&order).copied()
+    }
+
+    /// How many drafts the last complete sweep cancelled (the arm's observable).
+    #[must_use]
+    pub fn drift_cancelled_len(&self) -> usize {
+        self.drifted_drafts.len()
     }
 
     /// Whether one body is quarantined.
@@ -493,7 +625,17 @@ pub fn persist_survey(out: &mut Outbox, doc: &SurveyDoc) {
 /// Bounded on records **visited**, never on records matched (D-LBK-5), and
 /// deliberately **off the command path** — boot and the coarse sweep keep the
 /// mirror, which is exactly what 08i answer 15 grants.
-pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryFamilies) {
+///
+/// **WS02-S5b**: `recipes` is the recipe authority the module was composed with,
+/// and it is what lets the work-order walk this function already makes ask the
+/// one question no ingress asks — whether a `Draft`'s pinned lines are still the
+/// ones the pack publishes. `None` (a server that composed no authority, which
+/// can draft nothing anyway) marks nothing rather than guessing.
+pub fn reconcile(
+    ctx: &mut mush_core::ModuleCtx<'_>,
+    families: &crate::IndustryFamilies,
+    recipes: Option<&dyn crate::workorder::RecipeAuthority>,
+) {
     let mut quarantined: BTreeMap<OreDepositId, Quarantine> = BTreeMap::new();
     let mut applied: BTreeMap<SmolStr, AppliedMarker> = BTreeMap::new();
     let mut complete = true;
@@ -663,11 +805,22 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
     // slot the vanished book held is not released). A corrupt (not absent)
     // authoritative work order still refuses the whole boot by design.
     let mut facility_quarantined: BTreeMap<ObjId, FacilityQuarantine> = BTreeMap::new();
+    // WS02-S4: the per-requester open-order index, rebuilt on the walk this loop
+    // was already making. Installed only if the walk saw the whole family — a
+    // truncated walk would under-count, and an under-counting index is a cap that
+    // silently stops being read.
+    let mut open_orders: BTreeMap<SmolStr, BTreeSet<crate::workorder::WorkOrderId>> =
+        BTreeMap::new();
+    // WS02-S5b: the drafts whose pinned lines the authority no longer publishes,
+    // gathered on the same walk and under the same page budget.
+    let mut drifted: BTreeMap<crate::workorder::WorkOrderId, DraftDrift> = BTreeMap::new();
+    let mut orders_complete = true;
     let mut cursor: Option<String> = None;
     let mut pages = 0;
     loop {
         if pages >= crate::record::MAX_LIST_PAGES {
             complete = false;
+            orders_complete = false;
             break;
         }
         pages += 1;
@@ -679,6 +832,7 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
             Ok(page) => page,
             Err(_) => {
                 complete = false;
+                orders_complete = false;
                 break;
             }
         };
@@ -688,6 +842,23 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
         }
         let next = page.next_after().map(ToString::to_string);
         for order in rows {
+            if !order.state().is_terminal() {
+                open_orders
+                    .entry(mush_economy::principal_token(order.requester()))
+                    .or_default()
+                    .insert(order.id());
+            }
+            // WS02-S5b: only a `Draft` is asked. Past the submit the pin is what
+            // the reservation, the production plan and the delivery mint all ran
+            // off, and re-pricing a live order against a republished pack would be
+            // a second, worse fail-open; a drifted *running* order is the
+            // schedule's own `Stale` problem, which the kernel already skips.
+            if let Some(authority) = recipes
+                && *order.state() == crate::workorder::WorkOrderState::Draft
+                && let Some(why) = draft_drift(authority, ctx.w, &order)
+            {
+                drifted.insert(order.id(), why);
+            }
             if !order.state().holds_resources() {
                 continue;
             }
@@ -725,6 +896,27 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
             "industry: a facility is quarantined — a live work order's capacity book is gone"
         );
     }
+    // WS02-S5b: one loud line per cancelled draft and a summary count, because a
+    // republication and a forgery are indistinguishable here and only an operator
+    // can tell them apart — from the pack history, not from this record.
+    for (order, why) in &drifted {
+        tracing::error!(
+            target: "industry",
+            order = %order,
+            runbook = why.runbook(),
+            "industry: a drafted work order is cancelled — its pinned recipe is no longer \
+             the one its pack publishes; `@wo/submit` refuses it and the requester must \
+             `@wo/cancel` it and redraft"
+        );
+    }
+    if !drifted.is_empty() {
+        tracing::error!(
+            target: "industry",
+            orders = drifted.len(),
+            "industry: the sweep cancelled drafted work orders whose pinned recipes have \
+             drifted from their packs"
+        );
+    }
 
     let Some(store) = ctx.w.module_state_mut::<IndustryStore>() else {
         return;
@@ -748,10 +940,112 @@ pub fn reconcile(ctx: &mut mush_core::ModuleCtx<'_>, families: &crate::IndustryF
     }
     store.quarantined = quarantined;
     store.facility_quarantined = facility_quarantined;
+    if orders_complete {
+        store.open_orders = open_orders;
+        // Same rule, same reason: a truncated walk under-marks, and an
+        // under-marking set is a refusal that silently stops being made. Keep the
+        // last complete answer rather than installing a partial one.
+        store.drifted_drafts = drifted;
+    }
     store.applied = applied;
     store.wo_applied = wo_applied;
     store.complete = complete;
     store.reconciliations = store.reconciliations.saturating_add(1);
+}
+
+/// Largest number of touched keys one announcement is decoded from — well past
+/// what a single work-order commit touches, and never an unbounded walk.
+const MAX_INDEX_NOTES: usize = 64;
+
+/// **WS02-S4** — the `industry.workorder` open-order index, maintained on
+/// open/terminate.
+///
+/// Interface plan I13's `ActionStateChanged` is the only seam that says "this
+/// typed record went live" with a world in hand: a `prepare_authoritative`
+/// provider has no world and cannot touch module state, and the coarse sweep is
+/// a minute away. So the index is announced into here, and [`reconcile`] rebuilds
+/// it from the family at boot and on every sweep — a missed announcement costs at
+/// most one sweep period of drift, and the **command**'s own bounded scan, which
+/// this does not replace, keeps enforcing the durable cap exactly meanwhile.
+///
+/// It writes RAM only. An observer of this event must not persist: it runs after
+/// the commit's own flush, and a queued legacy op would make the next prepared
+/// action's flush refuse itself as mixed work.
+pub(crate) struct WorkOrderIndex {
+    pub(crate) work_orders:
+        StateFamilyHandle<crate::workorder::WorkOrderId, crate::workorder::WorkOrder>,
+}
+
+impl WorldObserver for WorkOrderIndex {
+    fn on_event(&self, ctx: &mut Ctx<'_>, ev: &WorldEvent) {
+        let WorldEvent::ActionStateChanged {
+            owner,
+            family,
+            keys,
+        } = ev
+        else {
+            return;
+        };
+        // A foreign owner's family that happens to share a name is not ours to
+        // decode (the vitals republish's own rule).
+        if owner != self.work_orders.owner() || family != self.work_orders.descriptor().id() {
+            return;
+        }
+        let mut notes: Vec<(PrincipalId, crate::workorder::WorkOrderId, bool)> = Vec::new();
+        for key in keys.iter().take(MAX_INDEX_NOTES) {
+            let Some(id) = crate::workorder::WorkOrderId::parse(key) else {
+                continue;
+            };
+            // A record that is gone leaves its note where it was: orders are never
+            // pruned, so this cannot happen, and if it ever does the next
+            // `reconcile` is the repair rather than a guessed-at requester.
+            let Ok(Some(order)) = ctx.action_state(&self.work_orders, &id) else {
+                continue;
+            };
+            notes.push((
+                order.requester().clone(),
+                order.id(),
+                !order.state().is_terminal(),
+            ));
+        }
+        if keys.len() > MAX_INDEX_NOTES {
+            tracing::warn!(
+                target: "industry",
+                keys = keys.len(),
+                cap = MAX_INDEX_NOTES,
+                "industry: a work-order commit touched more records than the index cap"
+            );
+        }
+        if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
+            for (requester, order, open) in notes {
+                store.note_work_order(&requester, order, open);
+            }
+        }
+    }
+}
+
+/// **WS02-S5b** — whether one `Draft`'s pinned recipe still is the one its pack
+/// publishes, and if not, which way it moved.
+///
+/// The comparison is on the decoded [`PinnedRecipe`] values, not on their JSON:
+/// both sides are structs the authority and the record each hold, so a
+/// re-ordered or re-spaced blob is not even a representable difference here, and
+/// a moved unit count always is.
+fn draft_drift(
+    recipes: &dyn crate::workorder::RecipeAuthority,
+    world: &World,
+    order: &crate::workorder::WorkOrder,
+) -> Option<DraftDrift> {
+    let reference = order.recipe();
+    let Some((published, pinned)) =
+        recipes.resolve(world, reference.pack(), reference.version(), reference.id())
+    else {
+        return Some(DraftDrift::Unpublished);
+    };
+    if published.digest() != reference.digest() {
+        return Some(DraftDrift::DigestMoved);
+    }
+    (pinned != *order.pinned()).then_some(DraftDrift::LinesDiffer)
 }
 
 /// The three cross-cutting shapes, asked of one deposit.

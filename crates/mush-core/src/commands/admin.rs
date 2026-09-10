@@ -265,6 +265,14 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
 
 #[cfg(test)]
 mod tests {
+    /// A store-less lens for the dispatch calls below: these tests pin the
+    /// answer a caller gets with no typed state at all, which is exactly what
+    /// the old store-less twin handed out by default.
+    const DETACHED: crate::action_state::TypedStateLens<'static> =
+        crate::action_state::TypedStateLens::Detached(
+            crate::action_state::DetachedTypedState::Test,
+        );
+
     use super::*;
     use crate::cmd::dispatch;
     use crate::flags::Flags;
@@ -282,7 +290,7 @@ mod tests {
 
     fn run(reg: &Registry, w: &mut World, actor: ObjId, line: &str) -> Outbox {
         let mut out = Outbox::new();
-        dispatch(reg, w, actor, line, &mut out);
+        dispatch(reg, w, actor, line, &mut out, DETACHED);
         out
     }
 

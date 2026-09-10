@@ -1902,6 +1902,17 @@ impl TacticalIntentProvider {
                     ActionErrorCode::BoundsExceeded,
                     "this tick's intent window is full; the next tick opens a fresh one",
                 ),
+                // **WS03-S3:** the same "full" answer for the byte budget and
+                // the durable operation history. The window keeps enough room
+                // to close and consume, so the tick still resolves; what the
+                // player has to do is wait for the next one.
+                mush_core::ActionWindowError::RecordBytes { .. }
+                | mush_core::ActionWindowError::InputOperationLimit
+                | mush_core::ActionWindowError::ReceiptLimit => err(
+                    ActionErrorCode::BoundsExceeded,
+                    "this tick's intent window reached its durable bound; the next tick opens a \
+                     fresh one",
+                ),
                 // **T8:** the tick now RETAINS the consumed window for one tick,
                 // so an intent that raced the driver against the pulse lands
                 // here — a refusal the player can act on — instead of being

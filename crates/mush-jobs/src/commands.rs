@@ -86,14 +86,17 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "+note".into(),
             shape: ArgShape::EqPair,
-            switches: vec!["approve".into(), "staff".into()],
+            switches: vec!["approve".into(), "staff".into(), "public".into()],
             help: "+note <char> -- list a character's notes you may see.\n\
                    +note <char>/<category> -- read one note.\n\
                    +note <char>/<category>=<text> -- write a note (staff on anyone; \
-                   players on their own character). Editing clears any approval stamp.\n\
+                   players on their own character). Editing clears any approval stamp \
+                   and keeps any staff-only mark.\n\
                    +note <char>/<category>= -- delete the note.\n\
                    +note/staff <char>/<category>=<text> -- staff: write a staff-only \
                    note, hidden from the character.\n\
+                   +note/public <char>/<category>=<text> -- staff: rewrite a note \
+                   without the staff-only mark, so the character can see it.\n\
                    +note/approve <char>/<category> -- staff: stamp a note approved."
                 .into(),
             ..CommandSpec::default()
@@ -667,9 +670,15 @@ fn job_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn cmd_note(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let approve = ctx.switches.has("approve");
     let staff_mark = ctx.switches.has("staff");
-    if approve && staff_mark {
+    let public = ctx.switches.has("public");
+    if usize::from(approve) + usize::from(staff_mark) + usize::from(public) > 1 {
         return Err(CmdError::msg("Pick one +note switch."));
     }
+    let flag = match (staff_mark, public) {
+        (true, _) => StaffFlag::Set,
+        (_, true) => StaffFlag::Clear,
+        _ => StaffFlag::Keep,
+    };
     let lhs = ctx.args.lhs().to_string();
     let rhs = ctx.args.rhs().map(str::to_string);
     let (char_name, category) = match lhs.split_once('/') {
@@ -693,10 +702,15 @@ fn cmd_note(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let Some(cat) = category else {
             return Err(CmdError::msg("Usage: +note <char>/<category>=<text>"));
         };
-        return note_write(ctx, who, cat, text.trim().to_string(), staff_mark);
+        return note_write(ctx, who, cat, text.trim().to_string(), flag);
     }
     if staff_mark {
         return Err(CmdError::msg("Usage: +note/staff <char>/<category>=<text>"));
+    }
+    if public {
+        return Err(CmdError::msg(
+            "Usage: +note/public <char>/<category>=<text>",
+        ));
     }
     match category {
         Some(cat) => note_read(ctx, who, &cat),
@@ -747,23 +761,33 @@ fn note_approve(
     Ok(())
 }
 
+/// What a `+note` write does to the stored staff-only mark.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StaffFlag {
+    /// Plain `+note`: carry any existing mark forward, so a staff edit without
+    /// `/staff` cannot silently expose a staff-only note to its subject.
+    Keep,
+    /// `+note/staff`: mark the note staff-only.
+    Set,
+    /// `+note/public`: clear the mark (staff only).
+    Clear,
+}
+
 fn note_write(
     ctx: &mut Ctx<'_>,
     who: ObjId,
     cat: SmolStr,
     text: String,
-    staff_mark: bool,
+    flag: StaffFlag,
 ) -> Result<(), CmdError> {
     let staff = is_notes_staff(ctx.w, ctx.actor);
-    if !staff {
-        let existing_staff_only = ctx
-            .w
-            .module_state::<JobsState>()
-            .and_then(|st| st.notes.get(&(who, cat.clone())))
-            .is_some_and(|n| n.staff_only);
-        if staff_mark || who != ctx.actor || existing_staff_only {
-            return Err(CmdError::msg("Permission denied."));
-        }
+    let existing_staff_only = ctx
+        .w
+        .module_state::<JobsState>()
+        .and_then(|st| st.notes.get(&(who, cat.clone())))
+        .is_some_and(|n| n.staff_only);
+    if !staff && (flag != StaffFlag::Keep || who != ctx.actor || existing_staff_only) {
+        return Err(CmdError::msg("Permission denied."));
     }
     let author = ctx.actor;
     let st = ctx
@@ -792,7 +816,11 @@ fn note_write(
         category: cat.clone(),
         text,
         author,
-        staff_only: staff_mark,
+        staff_only: match flag {
+            StaffFlag::Keep => existing_staff_only,
+            StaffFlag::Set => true,
+            StaffFlag::Clear => false,
+        },
         approved: None,
     };
     let doc = note_doc(&note);

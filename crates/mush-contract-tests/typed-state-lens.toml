@@ -1,0 +1,122 @@
+# The typed-state lens pin (WS03-S7, completed by WS03-S13). Read by
+# crates/mush-contract-tests/tests/typed_state_lens.rs.
+#
+# `mush_core::TypedStateLens` is how a call says how far it can see into
+# engine-owned typed state: `Live(store)`, or `Detached(reason)` naming why
+# there is none. Before WS03-S7 that choice was an `Option<&ActionStateStore>`
+# threaded behind PAIRS of names -- `can_perceive` passing `None` beside
+# `can_perceive_with_action_state` passing the store, and the same shape around
+# `is_concealed`, `perceives_via`, `check_move_attempt`, `check_carry_attempt`,
+# `look_rendered_lines`, `room_view`, `traverse_exit`, `go_home`, `room_ambient`,
+# `emit_world_event`, `apply_async_completion`, `apply_store_read_completion`,
+# `fire_conn_hook`, `fire_scene_hook`, `dispatch`, `resolve_behavior_command`
+# and `show_room`. The store-less spelling was the shorter name, so "no typed
+# state" was the accidental default, and a hook that reads a typed family
+# answered the WRONG perception verdict rather than a degraded one.
+#
+# Every one of those pairs is one name now, and no `_with_action_state` twin is
+# left anywhere in the workspace. This file pins what remains: every place under
+# `crates/*/src` that still asserts detachment, with a count and a reason.
+# `crates/*/tests` is out of scope -- separate crates, same convention as the
+# panic budget and the restriction lints.
+#
+# To add a row you must be able to write the reason. To raise a count you must
+# be able to write why that file needs another one.
+
+[[detached]]
+file = "crates/mush-core/src/action_state.rs"
+count = 1
+reason = """
+`ModuleActionState::unavailable()`, the public constructor a hand-built
+compatibility `Ctx` uses when it has no engine behind it. It is the declared
+store-less reader and it says CompatibilityCtx.
+"""
+
+[[detached]]
+file = "crates/mush-core/src/module.rs"
+count = 2
+reason = """
+One for `HookReadContext::without_typed_state`, the public compatibility
+constructor an off-loop hook call uses. One for the `concealment_tests`
+module's `DETACHED` constant.
+"""
+
+[[detached]]
+file = "crates/mush-core/src/cmd.rs"
+count = 1
+reason = """
+The `#[cfg(test)]` module's `DETACHED` constant: the dispatch unit tests pin
+the store-less answer deliberately.
+"""
+
+[[detached]]
+file = "crates/mush-core/src/commands/admin.rs"
+count = 1
+reason = """
+The `#[cfg(test)]` module's `DETACHED` constant.
+"""
+
+[[detached]]
+file = "crates/mush-core/src/commands/info.rs"
+count = 1
+reason = """
+The `#[cfg(test)]` module's `DETACHED` constant.
+"""
+
+[[detached]]
+file = "crates/mush-core/src/output.rs"
+count = 1
+reason = """
+The `#[cfg(test)]` module's `DETACHED` constant: the room-render unit tests
+pin the store-less answer deliberately.
+"""
+
+[[detached]]
+file = "crates/mush-core/src/engine.rs"
+count = 1
+reason = """
+The `#[cfg(test)]` module's `DETACHED` constant.
+"""
+
+[[detached]]
+file = "crates/mush-scenes/src/lib.rs"
+count = 1
+reason = """
+`TurnGate`, the scene turn-gate, classifying a behavior verb's `SceneClass`
+before dispatch. `CommandGate::check` is read-only over the world and carries
+no lens, so this classification has no live store to reach for; it was getting
+the store-less answer silently through the old `resolve_behavior_command`
+wrapper and now names it. Widening the `CommandGate` seam to carry a lens is
+its own change -- this row is the record that it is owed.
+"""
+
+[[detached]]
+file = "crates/mush-script/src/runtime.rs"
+count = 1
+reason = """
+`owner_can_see` consults the boot-snapshotted `Perceive` hook slice off the
+world-task loop, where there is no live authoritative store by construction:
+`DetachedTypedState::ScriptSnapshot`. This one is permanent.
+"""
+
+[[detached]]
+file = "crates/mush-server/src/world_task.rs"
+count = 2
+reason = """
+The `Audience::Room` fan-out's per-observer projection is the ONE behavioural
+site of WS03-S7. `resolve_classified_sends` now takes a lens rather than an
+`Option<&ActionStateStore>` (WS03-S13, which widened the parameter scan to
+private fns), so every production step hands it `Live(engine.action_state())`
+and the only detachment left is the `#[cfg(test)]` `resolve_sends` mirror,
+which says `Test`. The second is the `#[cfg(test)]` module's `DETACHED`
+constant.
+"""
+
+[[detached]]
+file = "crates/mush-testkit/src/lib.rs"
+count = 1
+reason = """
+`TestWorld`'s mirror of the world-task fan-out. The harness holds no live
+store and has never had one; it now says `DetachedTypedState::Test` instead of
+reaching for a store-less public name.
+"""

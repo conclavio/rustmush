@@ -601,12 +601,16 @@ impl GameModule for IndustryModule {
         reg.state(IndustryHandles(families.clone()));
 
         let sweep_families = families.clone();
+        // WS02-S5b: the sweep asks the recipe authority whether a `Draft`'s pinned
+        // lines are still the pack's. Cloned into the closure because the tick
+        // outlives `register`, and `None` on a server that composed no authority.
+        let sweep_recipes = self.recipes.clone();
         reg.tick(
             SWEEP_TAG,
             TickCadence::Coarse(Duration::from_secs(SWEEP_PERIOD_SECS)),
             Arc::new(
                 move |ctx: &mut ModuleCtx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>| {
-                    crate::store::reconcile(ctx, &sweep_families);
+                    crate::store::reconcile(ctx, &sweep_families, sweep_recipes.as_deref());
                     // ---- E7r1: R1 — the budget settlement arm ----
                     //
                     // A SECOND ARM on this EXISTING Coarse tick, never a second
@@ -621,6 +625,20 @@ impl GameModule for IndustryModule {
                 },
             ),
         )?;
+
+        // ---- WS02-S4: the open-order index, maintained on open/terminate ----
+        //
+        // Interface plan I13's `ActionStateChanged` is the only seam that says a
+        // typed record went live *with a world in hand*, which is what the draft
+        // offer needs: it must read the per-requester cap without walking
+        // `industry.workorder` on every projection pass. The sweep's `reconcile`
+        // rebuilds the same index from the family, so a missed announcement heals.
+        reg.subscribe(
+            mush_core::WorldEventKind::ActionStateChanged,
+            Arc::new(crate::store::WorkOrderIndex {
+                work_orders: families.work_orders.clone(),
+            }),
+        );
 
         // ---- E7c3/E7c4: B7/B8 — commands ----
         crate::commands::register(reg, &families, self.claim_catalog(), self.recipes.clone())?;
@@ -641,7 +659,7 @@ impl GameModule for IndustryModule {
         if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
             crate::store::hydrate(store, &data.kv);
         }
-        crate::store::reconcile(ctx, &families);
+        crate::store::reconcile(ctx, &families, self.recipes.as_deref());
         Ok(())
     }
 }
