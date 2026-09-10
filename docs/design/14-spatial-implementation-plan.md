@@ -1,6 +1,6 @@
 # 14 — The integrated spatial/room system: implementation plan
 
-**Draft 0.9 — 2026-09-10 (S1 through S7 landed).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
+**Draft 0.10 — 2026-09-10 (S1 through S7 landed; S8 and S9 planned from the S1–S7 code review, 14a).** The build plan for [doc 14](14-spatial-room-system.md) (Draft 0.1,
 decisions D-14-1..32 binding), in the shape of [10b](10b-e7-implementation-plan.md) and
 [11-h](11-h-implementation-plan.md): seven cuts, each independently CI-green and adversarially
 verified before the next builds on it, every record and verb named, every gate listed. Grounded
@@ -27,13 +27,15 @@ the rule that boot spends nothing (P9).
 | **S5** | Engine physics: the locomotion table, line of sight, fire and beam traces, hearing; `mush-propagation` on the metric | §5 |
 | **S6** | Interface NPCs: the interface-ability provider, asker-scoped authority, the starter cast's abilities | §4.6 |
 | **S7** | The TacSim ground driver (10 m cells, indirect fire), heightfield import, the hex vocabulary removed | §5.4, §3.5, §8 |
+| **S8** | The S1–S7 code review's five (14a-spatial-s1-s7-code-review): a tactical step through the movement gate, interface replies to their audience, `+map`'s text from the frame's view, staff authority at apply time, NPCs on the ground window; the review's `review_*` tests pass unchanged | 14a §Findings |
+| **S9** | The deferred four (14a §Remaining scope): the seed latch and the corridor's records onto the atlas (D-14-33 ★), the carrier journey fold (D-P-4's promise), the fire gate on the pulse tick, the S7 leftovers | 14a, §3.8 |
 
 ### 1.1 Explicitly out
 
 Presence and discovery (doc 11 §6 → 14c), faction places (doc 11 §9 → 14d), the in-game survey
 UX beyond what §4's proposal record needs, the epistemic layer (`known_places` is a plain set),
 NPC routines, orbital and system node-graph *content* (the records exist from S1; the corridor's
-packs stay `ruleset-tacsim`'s until S7 folds them), and any rewrite of `@gen`'s single-room
+packs load through `mush-content` since S7 and their records stay `ruleset-tacsim`'s until S9 folds them), and any rewrite of `@gen`'s single-room
 description path (it keeps working; S3 adds the planner beside it).
 
 ## 2. What the plan consumes as landed, by symbol
@@ -320,7 +322,7 @@ Deviations from the text above, each with its reason:
 
 - **The carrier journey is layered, not replaced** (D-P-4, amended by the owner at S2).
   `journey.rs`, `@journey` and `TacsimRouteCatalog` stay for placement-graph carriers until
-  S7's TacSim fold; `mush-sim`'s movement gate keeps only its carrier arm. What is deleted is
+  the TacSim fold (promised for S7; S7 folded the loader only — the carrier fold is S9.2); `mush-sim`'s movement gate keeps only its carrier arm. What is deleted is
   `route.rs`'s runtime — `Journey`, `Leg`, `RouteState`, the sweep, `@route`, `+intercept` and
   the boot hydration — plus `tests/route.rs` and cut 6's "legacy `@route` is untouched" test;
   `RouteDef`, `LegDef`, `DriveProfile`, `route_duration` and the catalog seam are what remain.
@@ -929,7 +931,7 @@ reason:
   other changes the version rule, which is the owner's call, not a mechanical one; and an
   atlas site lies in a neighborhood, which an orbital or system region has none of, so the
   corridor's `location`s cannot be `SiteRec`s until that rule is relaxed for non-surface
-  regions. Both are the open question D-14-33 below, for the next cut.
+  regions. Both are the open question D-14-33 below, S9.1's.
 - **The ground domain is the window.** A window is a simulation domain of its own on the
   host room, so the driver does not open a second one: `mush_sim::DomainDriver` — doc 06
   §6.1's driver word made real, registered at a module's boot — is asked by `@domain/create
@@ -943,7 +945,7 @@ reason:
   are not refused on it. A contact's subject is the sensor layer's secret (the leak-safe
   ledger carries no `truth_subject`), so neither the verb nor the tick can ask the atlas about
   a target it cannot name; the gate belongs with E7k's unit family or the K6 contact guard,
-  which hold the subject. Recorded, not silently dropped.
+  which hold the subject. Recorded, not silently dropped: S9.3.
 - **Heightfields are inline**, `text` (whitespace integers, the southern row first) or `le16`
   (base64 over little-endian signed samples), one tile per entry (≤ 256 a side), samples
   within ±327 m of the region datum (a tile cell is `i16` centimetres) with `scale_cm` and
@@ -964,8 +966,160 @@ reason:
   reworded; doc 10 had none; the tactics stub's `HexLock` is `ContestedGround` on a
   `tacseam:contested` marker, the same seam.
 - **Not built:** the multi-storey line through a doorway (S5's note stands); cells of ruleset
-  classes (the table takes them, a cell is still one byte of the engine's classes).
+  classes (the table takes them, a cell is still one byte of the engine's classes). S9.4.
+- **Reviewed (14a, 2026-09-10, at `d713d17`):** five defects, three of them leaks or bypasses,
+  reproduced as failing `review_*` tests; S8 below is their fix cut. Calling S7 landed means the
+  seven cuts, not the integration 14a's remaining scope lists — that is S9.
 
+
+### 3.9 Cut S8 — the review's five (14a, 2026-09-10)
+
+**Scope.** The five defects `14a-spatial-s1-s7-code-review.md` reproduces at `d713d17` — three
+leaks or bypasses (P1), two authority or roster gaps (P2) — fixed at the seam each names, and
+nothing else: no new verb, no widening. **The review's tests are the cut's tests.** The five
+`review_*` cases in `crates/mush-atlas/tests/review_window.rs`,
+`crates/mush-worldgen/tests/review_plan.rs` and `crates/mush-tactics/tests/review_ground.rs`
+express the expected behaviour and fail by design at `adfdfaa`; the cut is done when they pass
+**unchanged** (a fix that needs the reproduction edited is the wrong fix), plus one or two
+cases per item for what the reproduction does not reach. Until S8 lands, a test run that
+includes those three targets is red on purpose — the gate script runs them last and reports
+them by name rather than skipping them. Order: S8.1–S8.3 first (the P1s), S8.4–S8.5 with them.
+
+**S8.1 — A tactical step crosses a room boundary through the movement gate (14a #1, P1).**
+`mush-core` gains `authorize_traversal(reg, w, actor, exit: Option<ObjId>, dest, lens) ->
+Result<(), RichText>`, extracted from `traverse_exit` (`commands/movement.rs`): the exit's
+`Basic` lock through `eval_lock`, refused with the exit's `fail` text (`You can't go that way.`
+by default), then `check_move_attempt` — `traverse_exit` and `go_home` call it, so narrative
+movement is byte-for-byte what it was. In `window.rs`'s walk, the arm that today reads only
+`roomgeo.access == Restricted` becomes: a step whose `room_at` differs from `current_room`
+resolves the crossed portal with `portal_between(records, current_room, there)` and takes the
+exit in `PortalRec.exits` whose `location` is the room being left; `ctx.check_move_attempt`
+and the lock run as `authorize_traversal` does, with the walk stopped at the last cell before
+the boundary and `StepReport.stopped` carrying the reason, so `+move` reports it as it reports
+a wall. Two rooms that touch with no portal between them consult the hooks with `exit: None`
+(the teleport arm — a scene freeze or a housing ward still vetoes) and nothing else; the
+atlas's own restricted-access check stays beside the gate, not instead of it. The crossing's
+narration is unchanged (the map is the narration); only its authorization is. `mush_sim::place`
+stays a placement, not a gate: the gate is the atlas's, at the step, where the portal is known.
+*Tests:* the review's `review_tactical_move_must_respect_the_locked_breakroom_exit`; a test
+hook module's `MoveAttempt` veto stops the step at the boundary with the veto's reason and the
+walker's room unchanged; an unlocked crossing walks as S4's tests already say; `+move <x>,<y>`
+across a locked boundary stops short like the directional form.
+
+**S8.2 — An interface reply reaches its audience and no one else (14a #2, P1).**
+`InterfaceReply` gains `audience: ReplyAudience` — `Asker` (the default: `InterfaceReply::text`
+builds it) or `Room` (`InterfaceReply::public`, a provider's explicit call) — and the S6
+providers declare theirs: `weather.report`, `weather.forecast`, `atlas.describe`,
+`chargen.explain`, `rules.lookup`, `help.topic`, `market.quote`, `market.list` are `Room`;
+`request.file`, `request.status`, `build.propose`, `build.status`, `build.answer`,
+`travel.next`, `travel.status` and `who.nearby` (its eligibility set is the asker's) are
+`Asker`. In `mush-npc`'s `invoke_interface`, an `Asker` reply goes to the asker alone —
+`ctx.out.to_actor(asker, Narrative { Say, actor: npc, text })`, so the asker still reads
+`FrontDesk says, "…"` — with **no** `WorldEvent::Said` (no stimulus for another NPC, no room
+history), the room seeing one aside per turn (`FrontDesk speaks quietly with Alice.`), and the
+NPC's own memory recording `(answered Alice with request.status, privately)` and not the text,
+so a later public turn cannot repeat it. A `Room` reply is what every reply is today:
+`say_as_npc`, the event, the memory. The `Refused` line stays public (it names no result). The
+audit row is unchanged: `(npc, asker, ability, ok)`. D-14-34 records the default.
+*Tests:* the review's `review_interface_reply_must_keep_request_titles_private`; a `Room`
+reply (`weather.report`) still reaches Bob and still emits `Said`; the private reply emits no
+`Said`, leaves no title in the NPC's memory ring, and the audit row still carries the ability;
+Bob sees the aside once for a two-line reply.
+
+**S8.3 — `+map`'s text is the frame's view (14a #3, P1).** Bare `+map` builds its lines from
+the same `AtlasMapFrame` the keyframe sends — `frame_for(w, st, actor, domain)` once, the
+keyframe from it — so "On the map:" lists `frame.units` (what `units_for` let the viewer see:
+their surface, the rooms `visible_rooms` allows) and never `mush_sim::participants`; a viewer
+whose frame holds one unit prints no list at all. `summary(w, entry)` (window.rs) takes the
+visible set and names only the anchors in it — an anchor the viewer may not see is neither
+named nor counted (a count would say a hidden room exists; the frame shows void there and so
+does the header). `visible_rooms` becomes `pub(crate)`. The TUI and the web already render the
+frame; nothing changes there. *Tests:* the review's `review_map_text_must_hide_private_participants`;
+the header names Lobby alone for the player and both rooms for God; the player's text unit list
+equals their frame's unit list, name for name.
+
+**S8.4 — Staff authority is checked when a proposal is applied (14a #4, P2).** `proposal.rs`
+`go`'s live arm is `rec.staff && is_staff(ctx.w, actor)`; a proposal prepared under staff
+authority whose author no longer holds it is refused — `Proposal {id} was prepared with staff
+authority you no longer hold; a builder who has it can take it, or it can go through a request.`
+— with the record left `Ready` (not `Applied`, not `NeedsWork`), so a re-promoted author goes
+again. `rec.staff` stays as provenance (`hydrate::record_staff_apply` still names who prepared
+it); it is never again the grant. The player arm is untouched (`request_id` routes through
+`hydrate::activate`, which holds its own cap and strike rules). *Tests:* the review's
+`review_a_demoted_author_must_not_apply_a_staff_proposal`; an author who keeps staff applies as
+S3's tests say; the refused proposal's status is still `Ready` and a second `+build/go` after
+the flag returns applies it.
+
+**S8.5 — NPCs fight on the ground window (14a #5, P2).** `ground.rs` `create`'s participant
+filter is `kind.is_actor() || kind == Thing` — `Player`, `Npc`, `Thing` — so an NPC standing in
+the host room is placed with the rest and `participants`, `line_of_fire` and the pulse tick see
+it. The passive driver places no one and is unchanged; the street window's `+map/open` already
+places whoever the facilitator names. *Tests:* the review's
+`review_ground_window_must_include_npc_occupants`; `mush_sim::participants` lists the NPC and
+`line_of_fire(player, npc)` answers over the composite.
+
+**Tests (5 + ~10).** The five reproductions unchanged, and the cases above.
+
+**Verify lenses.** **V** (visibility — is there another text path that names what the frame
+hides: `+map/floor`, the aside, `@atlas/window` for a non-staff opener, the NPC's memory ring?),
+**A** (authority — every write path that once read a *snapshot* of authority: `rec.staff` was
+one; is `WindowEntry.opened_by` another, or a journey's `Held { by }`?), **L** (locks — every
+relocation of a character that does not go through `traverse_exit`: the tactical step is now
+gated; a journey's arrival crosses a connection, not an exit, and is gated at departure by S2's
+holds; `@teleport` and `home` consult the hooks; is there a fifth?).
+
+### 3.10 Cut S9 — the deferred four
+
+**Scope.** What the S7 ledger deferred and 14a's remaining scope lists, in dependency order.
+S9.2 needs no one's call and can go with S8's gate; S9.1 waits on D-14-33; S9.3 waits on the
+subject; S9.4 is small.
+
+**S9.1 — The seed latch and the corridor's records onto the atlas (D-14-33 ★).** The plan's
+recommended defaults, so the owner answers yes or no rather than designing: **(a) the version
+rule** — the seed latch becomes the content latch's `Applied` row for the corridor pack, one
+per pack id, a new version re-applied in place through an `Applier` `ruleset-tacsim` registers
+on the content module (its `location` and `route` entries become the atlas's `SiteRec` and
+`ConnectionRec`; a re-apply updates by `RecordKey` and never duplicates a room); a consumer
+pinned to the old version — a journey under way along a corridor — ends at its last node under
+`applied_revision`, the S2 rule for a re-applied way, so "v1 and v2 coexisting" (Q18A) becomes
+"the journey under v1 finishes where it stands" and T1's "never re-run" becomes "a re-run is
+an idempotent update". **(b) the site rule** — `SiteRec.neighborhoods` may be empty when the
+region's kind is `Orbital` or `System`; such a site is anchored by the region alone, the
+validator and the rasterizer skip it (no tiles for an orbit), and the `+atlas` text views list
+it under the region. In a `System` region a body's site takes its *position* from the
+ephemeris at the epoch (metres in the region frame, `f64`), so a corridor's length is the sky's
+pinned distance by construction and one number lives in one place; a nonzero `rate` would move
+the sites and is the owner's question again, not this cut's. The latch's `tacsim:seed:{pack}@{version}`
+key is then the last thing `ruleset-tacsim` keeps of its own loader. *Tests:* the corridor
+applied through the content latch and re-applied at a higher version with the same room ids;
+a journey under way when its corridor is re-applied ends at its last node; an orbital site
+with no neighborhood validates and rasterizes nothing; a corridor's `ConnectionRec` length
+equals the route's pin. **P** and **E** again.
+
+**S9.2 — The carrier journey fold (D-P-4's promise).** `CarrierJourney` (`mush-sim`'s
+`journey.rs`, `@journey`, `TacsimRouteCatalog`) absorbed by `JourneyRec { traveler: Carrier }`.
+The seam is the one S5 and S7 already use: `mush-sim` keeps a slot the atlas fills at boot —
+`CarrierMotion`, beside `WindowGeometry` and the arc — that the placement gate's carrier arm,
+quarantine, the pulse authority's `Promoted` state and the interception raise read through;
+the atlas's journey sweep moves a carrier's subtree as `journey.rs` does today (S2's **S** lens
+holds); boot hydration moves to the atlas's journey records; `@journey` retires into
+`@atlas/journey`; the hundred-odd test references migrate with the record. What `mush-sim`
+keeps is the slot and the carrier arm of its gate. *Tests:* S2's carrier suite (the bus, the
+subtree, the interception raise, quarantine, `Promoted`) green against `JourneyRec` with
+`journey.rs` deleted; the boot-parity and roster pins unchanged. **S**, **T**.
+
+**S9.3 — The fire gate.** The pulse tick's `Fire` and `Launch` intents refused when
+`line_of_fire` (direct and the arc) is blocked. It needs the target's subject, which the
+leak-safe contact ledger does not carry; the gate lives with whichever of E7k's unit family or
+the K6 contact guard lands first, and refuses with `no line` and nothing about what blocks it
+(the O lens: a refusal is not an oracle). *Tests:* a blocked direct shot with a clear arc is
+allowed as `Launch` and refused as `Fire`; a refusal names nothing.
+
+**S9.4 — The S7 leftovers.** The multi-storey line through a doorway (S5's note); cells of
+ruleset classes. Both small, both after S9.1.
+
+**Verify lenses.** **P**, **E**, **S**, **T**, **O** as above; and **D** once more when
+`journey.rs` goes.
 
 ## 4. Build discipline
 
@@ -998,6 +1152,10 @@ reason:
 - **H1** (the store-read seam) is how S4 pages tile documents off-loop for compositing.
 - **14c presence** will read `who.nearby`'s eligibility set from S6; nothing in S1–S7 emits
   a presence feed.
+- **14a's five** (the S1–S7 code review) land as S8 before anything in S9; its `review_*`
+  tests fail by design until then, and the gate script runs them last, by name.
+- **E7k's unit family or the K6 contact guard** is S9.3's dependency for the fire gate; the
+  atlas's arc is already answered (S7).
 
 ## 6. Decisions taken by this plan (acknowledged by the owner 2026-09-09; ★ marked the owner calls, now decided)
 
@@ -1006,14 +1164,15 @@ reason:
 | D-P-1 ★ | `ruleset-tacsim` keeps its own seed latch through S1–S6 and folds onto `mush-content`'s in S7 — **decided** |
 | D-P-2 | `mush-content` before `mush-sim`, `mush-atlas` after it, in `server_modules_with` |
 | D-P-3 | Starter packs are `include_str!` fixtures in `mush-atlas` with digest-pinning tests |
-| D-P-4 | The journey document moves under the `atlas` family; `route.rs`'s runtime (`Journey`, `Leg`, the sweep, `@route`, `+intercept`) is deleted in S2, not deprecated. **Amended at S2 (owner, 2026-09-09):** the *carrier* journey (`journey.rs`, `@journey`) is **layered, not replaced** — it stays for placement-graph carriers until S7's TacSim fold, where one record absorbs both; S2's `JourneyRec` carries characters, objects and room-model vehicles. Reason: `CarrierJourney` is wired into `mush-sim`'s placement gate, quarantine, the pulse authority's `Promoted` state, the interception raise, boot hydration and about a hundred test references, and moving it under the atlas needs a core-level seam `mush-sim` would read the atlas's slot through; the plan's S7 fold is where that seam belongs |
+| D-P-4 | The journey document moves under the `atlas` family; `route.rs`'s runtime (`Journey`, `Leg`, the sweep, `@route`, `+intercept`) is deleted in S2, not deprecated. **Amended at S2 (owner, 2026-09-09):** the *carrier* journey (`journey.rs`, `@journey`) is **layered, not replaced** — it stays for placement-graph carriers until S7's TacSim fold, where one record absorbs both; S2's `JourneyRec` carries characters, objects and room-model vehicles. Reason: `CarrierJourney` is wired into `mush-sim`'s placement gate, quarantine, the pulse authority's `Promoted` state, the interception raise, boot hydration and about a hundred test references, and moving it under the atlas needs a core-level seam `mush-sim` would read the atlas's slot through; the plan's S7 fold is where that seam belongs. **At S7 (2026-09-10):** the fold did not happen — S7 folded the loader onto `mush-content` and left the carrier journey layered; the seam and the fold are S9.2 |
 | D-P-5 | Theme and weather move in S2b, not S1, so S1 has no behavioural change outside new verbs |
 | D-P-6 | The tool loop lives in `mush-llm` and `mush-npc` becomes its first caller (one loop, two users) |
 | D-P-7 | `+move` is a generic atlas verb gated by the scene turn, not a ruleset verb |
 | D-P-8 | The composite stays at `mod:tactics:map:<domain-id>` (doc 06 §9.1's key) with owner `atlas` |
 | D-P-9 | Feature-state write-back rides the domain tick's commit, never a second timer |
 | D-P-10 ★ | Aaron Samuels drives the bus from S2; Norbury (docent) and Duvall (front office) ship in S6 — **decided**: the packs carry ten cast members |
-| D-14-33 ★ | S7: the seed latch's version rule under the content latch (one per pack id, superseding, against one per version, never re-run) and the site record's neighborhood rule for orbital and system regions — the owner's call before the corridor's places and latch fold onto `mush-content` | **open** |
+| D-14-33 ★ | S7: the seed latch's version rule under the content latch (one per pack id, superseding, against one per version, never re-run) and the site record's neighborhood rule for orbital and system regions — the owner's call before the corridor's places and latch fold onto `mush-content`. **S9.1's recommended defaults** (2026-09-10): (a) the content model — one row per pack id, a re-apply an idempotent update, a journey under the old version ending at its last node; (b) `SiteRec.neighborhoods` empty for `Orbital` and `System` regions, a body's site positioned from the ephemeris at the epoch | **open** |
+| D-14-34 | S8 (from 14a #2): an interface reply is **private by default** — `ReplyAudience::Asker` unless the provider says `Room` — delivered to the asker alone with no `Said` event and no text in the NPC's memory; the room sees one aside. Reason: the provider's read is already the asker's own, and the output step must keep what the read kept | plan's call, 2026-09-10 |
 
 ## 7. Constants
 
@@ -1055,6 +1214,8 @@ reason:
   and on `SiteRec.property` respectively.
 - **The hired car** (doc 07 §9 `MobilityJob`) layers on S2's journeys and S6's interface
   abilities: a dispatcher NPC fronting `travel.request`.
+- **14a's remaining scope closes with S9.** Until then, "S7 landed" names the seven cuts,
+  not the room-and-space integration; the review's `review_*` tests are the record of S8.
 
 ## 10. Changelog
 
@@ -1067,3 +1228,4 @@ reason:
 - 0.7 (2026-09-10): S5 landed — `mush_atlas::physics` (the vocabularies, the locomotion table as digest-pinned data with climbs, `move_cost`, the bounded path) and `mush_atlas::trace` (sight, the direct, indirect and beam traces, hearing), `mush-sim`'s `WindowGeometry` slot and propagation on the metric, `+move` priced, `@atlas/los`; its ledger under §3.6; `[atlas].path_max_cells`.
 - 0.8 (2026-09-10): S6 landed — `mush_core::InterfaceAbilityProvider` and its registry, `AgentProfile.interfaces`, the turn's merged manifest, the asker-threaded invoke with the answer spoken, the audit ring and `@agent/audit`, the fallback naming the command; the providers `atlas`, `travel`, `weather`, `market`, `build`, `request`, `rules`, `help`; the packs at version 3; its ledger under §3.7.
 - 0.9 (2026-09-10): S7 landed — the campaign ephemeris and the drive's distance law (`alignment_band` gone), the loader fold onto `mush-content` (the latch and the corridor's records deferred under D-14-33), heightfield import, the TacSim ground driver as `mush_sim::DomainDriver` with the domain as its window and the arc answered, the hex vocabulary removed under a contract test; its ledger under §3.8.
+- 0.10 (2026-09-10): S8 and S9 planned from the S1–S7 code review (14a, at `d713d17`): S8 fixes the review's five at the seams it names with the review's `review_*` tests as the cut's tests, unchanged; S9 is the deferred four (the seed latch and the corridor's records with S9.1's recommended defaults under D-14-33, the carrier journey fold as D-P-4 promised, the fire gate, the S7 leftovers). D-14-34 (a private reply by default). Cross-references from the S2 and S7 ledgers and D-P-4.
