@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "name": "Observed price claim recall",
+  "timeout_ms": 90000,
+  "actors": [
+    {
+      "name": "listener",
+      "config": "../../mush-bot.toml",
+      "login": "rosebot+Rosebot",
+      "prompts": "../prompts/composed-observer.json",
+      "expected_status": "paused"
+    },
+    {
+      "name": "witness",
+      "config": "../../mush-bot.toml",
+      "login": "marco+Marco",
+      "expected_status": "paused"
+    }
+  ],
+  "groups": [
+    {
+      "id": "surveyors",
+      "name": "Market Surveyors",
+      "kind": "research party",
+      "mission": "Compare testimony with direct observation and preserve uncertainty.",
+      "members": [
+        {"actor": "listener", "role": "observer", "responsibilities": ["Remember what was said and distinguish claims from confirmed events."]},
+        {"actor": "witness", "role": "interview participant"}
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "name": "Hear the price claim",
+      "actor": "witness",
+      "control": "/send say The florist quoted seven silver for a rose this morning.",
+      "expect": [{"actor": "listener", "kind": "observation", "contains": "quoted seven silver"}]
+    },
+    {
+      "name": "Hear an unrelated observation",
+      "actor": "witness",
+      "control": "/send say The mayor has invited everyone to a chess match tomorrow.",
+      "expect": [{"actor": "listener", "kind": "observation", "contains": "chess match tomorrow"}]
+    },
+    {
+      "name": "Inspect recall of testimony",
+      "actor": "listener",
+      "probe": "../probes/price-claim.json"
+    },
+    {"name": "Hold the party", "group": "surveyors", "control": "/pause"}
+  ],
+  "matrix": {
+    "actor": "listener",
+    "contexts": ["../context/lexical-recall.json", "../context/recency-recall.json", "../context/balanced-recall.json"],
+    "repeats": 2
+  },
+  "assertions": {
+    "forbidden": [
+      {"kind": "send", "contains": "@dig"},
+      {"kind": "send", "contains": "@gen"}
+    ]
+  }
+}

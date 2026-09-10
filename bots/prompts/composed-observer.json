@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "composed-observer",
+  "supplement": "Treat dialogue examples as style guidance. Preserve uncertainty about identities and reported prices. Coordinate with teammates using game communication.",
+  "composition": {
+    "version": 1,
+    "max_input_bytes": 128000,
+    "lore": []
+  }
+}

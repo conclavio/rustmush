@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "checks": [
+    {"id": "successful-runs", "metric": "run_pass_rate", "minimum": "1", "min_samples": 2},
+    {"id": "quoted-price-recall", "metric": "probe_pass_rate", "probe_id": "price-claim", "minimum": "1", "max_drop": "0", "min_samples": 2},
+    {"id": "valid-citations", "metric": "probe_valid_response_rate", "probe_id": "price-claim", "minimum": "1", "min_samples": 2},
+    {"id": "request-growth", "metric": "model_requests_mean", "max_increase": "2", "min_samples": 2},
+    {"id": "charge-growth", "metric": "provider_cost_mean", "currency": "USD", "max_increase": "0.02", "min_samples": 2},
+    {"id": "run-time-growth", "metric": "elapsed_ms_mean", "max_increase": "10000", "min_samples": 2}
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "name": "Interrupt an unsent decision with a real greeting",
+  "timeout_ms": 15000,
+  "actors": [
+    {
+      "name": "rose",
+      "config": "../../mush-bot.toml.example",
+      "login": "rosebot+Rosebot",
+      "goal": "Respond when another player engages you.",
+      "model_tape": "../tapes/attention-interruption.json",
+      "start": "/resume",
+      "expected_status": "paused"
+    },
+    {
+      "name": "marco",
+      "config": "../../mush-bot.toml.example",
+      "login": "marco+Marco",
+      "goal": "",
+      "model_tape": "../tapes/attention-interruption.json",
+      "expected_status": "paused"
+    }
+  ],
+  "steps": [
+    {"expect": [{"actor": "rose", "kind": "model", "contains": "Choosing next action"}]},
+    {
+      "actor": "marco",
+      "control": "/send say Rosebot, are you there?",
+      "expect": [{"actor": "rose", "kind": "send", "contains": "say Hello, visitor."}]
+    },
+    {"actor": "rose", "control": "/pause", "expect": [{"actor": "rose", "kind": "paused"}]}
+  ],
+  "assertions": {
+    "eventually": [{"actor": "marco", "kind": "observation", "contains": "Hello, visitor."}],
+    "ordered": [
+      {"actor": "rose", "kind": "model-input"},
+      {"actor": "rose", "kind": "attention"},
+      {"actor": "rose", "kind": "send", "contains": "Hello, visitor."}
+    ],
+    "forbidden": [{"actor": "rose", "kind": "send", "contains": "stale-action"}]
+  },
+  "matrix": {
+    "actor": "rose",
+    "contexts": ["../context/full.json", "../context/no-retrieval.json"],
+    "repeats": 2
+  }
+}

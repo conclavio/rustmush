@@ -16,12 +16,14 @@ web/dist/
 .env
 .env.*
 mushd.local.toml
+mush-bot.local.toml
 
 # Runtime data
 /data/
 *.rdb
 *.aof
 logs/
+.mush-bot/
 
 # OS noise
 Thumbs.db

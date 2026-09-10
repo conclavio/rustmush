@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "max_requests": 20,
+  "max_cost_by_currency": {
+    "USD": "0.50"
+  },
+  "unknown_cost": "block"
+}

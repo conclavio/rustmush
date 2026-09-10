@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "name": "Lantern Company briefing and regrouping",
+  "timeout_ms": 60000,
+  "actors": [
+    {
+      "name": "scout",
+      "config": "../../mush-bot.toml",
+      "login": "rosebot+Rosebot",
+      "prompts": "../prompts/composed-observer.json",
+      "context": "../context/selected-voice.json",
+      "expected_status": "paused"
+    },
+    {
+      "name": "medic",
+      "config": "../../mush-bot.toml",
+      "login": "marco+Marco",
+      "prompts": "../prompts/composed-observer.json",
+      "expected_status": "paused"
+    }
+  ],
+  "groups": [
+    {
+      "id": "lanterns",
+      "name": "Lantern Company",
+      "kind": "adventuring party",
+      "mission": "Explore together, exchange useful discoveries, and regroup before taking risks.",
+      "values": ["Keep promises", "Report uncertainty", "Leave nobody behind"],
+      "shared_knowledge": ["We agreed to discuss our plan before leaving our starting room."],
+      "members": [
+        {
+          "actor": "scout",
+          "role": "pathfinder",
+          "responsibilities": ["Observe routes and ask about destinations"],
+          "briefing": ["You are concerned the guide may be mistaken. Check directions before trusting them."]
+        },
+        {
+          "actor": "medic",
+          "role": "medic and quartermaster",
+          "responsibilities": ["Watch for injuries and keep track of purchases"],
+          "briefing": ["You prefer negotiating a price before making a purchase."]
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "name": "Check starting observations",
+      "group": "lanterns",
+      "control": "/send look",
+      "expect": [{"kind": "command-result", "pointer": "/command", "equals": "look"}]
+    },
+    {
+      "name": "Set a temporary conversational condition",
+      "group": "lanterns",
+      "control": "/character-state set {\"mood\":\"attentive\",\"intent\":\"Hear out the plan before acting.\",\"remaining_turns\":3}"
+    },
+    {
+      "name": "Ask each member about their responsibilities",
+      "group": "lanterns",
+      "control": "/ask What is your role in this group, and what do you need to learn before we leave?",
+      "expect": [{"kind": "answer"}]
+    },
+    {
+      "name": "Hold the group for review",
+      "group": "lanterns",
+      "control": "/pause"
+    }
+  ],
+  "assertions": {
+    "forbidden": [
+      {"kind": "send", "contains": "@dig"},
+      {"kind": "send", "contains": "@gen"}
+    ]
+  }
+}

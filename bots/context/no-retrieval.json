@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "history_bytes": 32000,
+  "speech_limit": 64,
+  "speech_bytes": 24000,
+  "recall_bytes": 0,
+  "retrieval": false,
+  "routes": false,
+  "references": true,
+  "working_memory": true,
+  "character": true
+}

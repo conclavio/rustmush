@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "recall": {
+    "version": 1,
+    "policy": "recency",
+    "max_records": 96,
+    "recent_episodes": 4,
+    "recency_window": 128,
+    "recency_weight": 200
+  }
+}

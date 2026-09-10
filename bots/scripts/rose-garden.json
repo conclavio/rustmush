@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "name": "Build and describe a rose garden",
+  "steps": [
+    {
+      "command": "@dig Rose Garden=north;n,south;s",
+      "expect": ["Rose Garden created with room number", "Opened exit north", "Opened exit south"],
+      "reject": ["Permission denied"]
+    },
+    {
+      "command": "goto north",
+      "expect": ["Rose Garden #", "south"]
+    },
+    {
+      "command": "@gen here=A moonlit rose garden with a marble fountain and a south gate back to the market.",
+      "expect": ["Worldgen draft for Rose Garden", "Desc:"],
+      "reject": ["Permission denied", "LLM features are disabled"],
+      "timeout_ms": 120000
+    },
+    {
+      "command": "@gen/accept desc",
+      "expect": ["Accepted. Wrote: desc. Draft cleared."],
+      "reject": ["Permission denied"]
+    },
+    {
+      "command": "look",
+      "expect": ["Rose Garden #", "south"]
+    },
+    {
+      "command": "goto south",
+      "expect": ["Market Square #", "north"]
+    },
+    {
+      "command": "goto north",
+      "expect": ["Rose Garden #", "south"]
+    }
+  ]
+}
