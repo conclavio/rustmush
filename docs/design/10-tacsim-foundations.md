@@ -48,14 +48,18 @@ become new strategic-route edges into new regional graphs; nothing fundamental i
 
 ## 3. Setting and technology tone
 
-Anchor **c. 2350**, "hard-ish, playable SF": no FTL before gates; no reactionless drives; no
-artificial gravity beyond thrust and rotation; no general-purpose energy shields; mature fusion
-power and propulsion; military torch drives fast but expensive and conspicuous; civilian shipping
-slower and efficient; armor, thermal management, electronic warfare, point defense, missiles,
-kinetics and lasers all matter; automation is excellent but people remain politically,
-economically and tactically decisive. Travel takes IC days to months by vehicle, route and urgency.
-Mercury has sunward, night, polar and moving-terminator operating regions (its long solar day makes
-thermal conditions campaign geography), not a fixed dark side.
+Anchor **c. 2350**, "hard-ish, playable SF": no FTL *travel* before gates, and FTL *information*
+only over paired quantum relays — rare, orbital, owned and cuttable (doc 15); no reactionless
+drives; no artificial gravity beyond thrust and rotation; no general-purpose energy shields; mature
+fusion power and propulsion; military torch drives fast but expensive and conspicuous; civilian
+shipping slower and efficient; armor, thermal management, electronic warfare, point defense,
+missiles, kinetics and lasers all matter; compute scarce against twenty-first-century expectations,
+frontier-class minds few, licensed and located (the Compact); automation excellent but never in
+authority — every automated act runs under a liable principal's warrant (the Warrant; the history
+in doc 11 §2) — so people remain politically, economically and tactically decisive. Travel takes
+IC days to months by vehicle, route and urgency. Mercury has sunward, night, polar and
+moving-terminator operating regions (its long solar day makes thermal conditions campaign
+geography), not a fixed dark side.
 
 ## 4. Geography and comparative advantage
 
