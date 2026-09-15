@@ -50,6 +50,11 @@ model requests when cost limits are configured. With `allow`, only known charges
 are compared to thresholds, and unknown charges remain visible in the report.
 This setting never bypasses the next model's currency requirement or a reached
 request/cost limit. Provider-reported zero is known, rather than unknown.
+A request cancelled before its receipt arrived is reported separately as
+`cancelled_unpriced_requests`: it is unpriced and may have cost money, but it
+does not count as an unknown cost. The runner cancels a pending decision by
+itself whenever new addressed speech arrives, so treating each cancellation as
+unknown would let one conversation freeze a cost-limited session.
 
 An empty `max_cost_by_currency` disables spending checks, including the
 unknown-cost check. For a provider-independent request-only limit, use

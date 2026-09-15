@@ -42,7 +42,7 @@ use std::cell::{Cell, RefCell};
 use mush_core::module::{HookPoint, HookReg, perceives_via};
 use mush_core::{
     Attr, AttrFlags, AttrValue, Deferred, Flags, ObjId, ObjKind, Outbox, Powers, Registry, Role,
-    ScheduledKind, World, match_object, perm,
+    ScheduledKind, World, match_object, obj_ref, perm,
 };
 use mush_core::{DetachedTypedState, TypedStateLens};
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
@@ -677,22 +677,30 @@ mod mush_api {
         super::contents_impl(obj)
     }
 
-    /// Emit an unattributed narrative line to `target`'s room, and let the
-    /// room's listeners (`script:hear:*`) react (bounded by the cascade cap).
+    /// Emit a narrative line with no name prefix to `target`'s room, and let
+    /// the room's listeners (`script:hear:*`) react (bounded by the cascade
+    /// cap). The line travels as a spoof attributed to the script's owner,
+    /// so a NOSPOOF observer or staff still sees who is behind it.
     #[rhai_fn(name = "emit")]
     pub fn emit(target: ObjId, text: &str) {
         let _ = super::emit_impl(target, text);
     }
 
-    /// Send a private line to one player/NPC.
+    /// Send a private line to one player/NPC, attributed to the script's
+    /// owner the same way `emit` is.
     #[rhai_fn(name = "pemit")]
     pub fn pemit(player: ObjId, text: &str) {
         super::with_session_mut(|sess| {
+            let owner = sess
+                .current
+                .map(|f| f.owner)
+                .ok_or_else(|| err("no frame"))?;
+            let actor = Some(obj_ref(&sess.world, owner));
             sess.out.to_actor(
                 player,
                 OutputEvent::Narrative {
-                    kind: NarrativeKind::Emit,
-                    actor: None,
+                    kind: NarrativeKind::Spoof,
+                    actor,
                     text: RichText::plain(text),
                 },
             );
@@ -958,19 +966,22 @@ fn set_attr_impl(obj: ObjId, attr: &str, val: &str) -> Result<(), Box<EvalAltRes
 
 fn emit_impl(target: ObjId, text: &str) -> Result<(), Box<EvalAltResult>> {
     with_session_mut(|sess| {
-        let (self_obj, depth) = sess
+        let (self_obj, owner, depth) = sess
             .current
-            .map(|f| (f.self_obj, f.depth))
+            .map(|f| (f.self_obj, f.owner, f.depth))
             .ok_or_else(|| err("no frame"))?;
         let Some(room) = room_of(&sess.world, target) else {
             return Ok(());
         };
+        // Attributed to the owner, as a spoof: the room fan-out shows the
+        // source to NOSPOOF listeners and staff, and bare text to others.
+        let actor = Some(obj_ref(&sess.world, owner));
         sess.out.to_room(
             room,
             Vec::new(),
             OutputEvent::Narrative {
-                kind: NarrativeKind::Emit,
-                actor: None,
+                kind: NarrativeKind::Spoof,
+                actor,
                 text: RichText::plain(text),
             },
         );

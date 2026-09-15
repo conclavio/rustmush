@@ -75,6 +75,31 @@ fn say(text: &str) -> OutputEvent {
     }
 }
 
+/// An emit renders bare. A spoof only reaches a listener entitled to its
+/// source (the world task downgrades it to an emit for everyone else), so
+/// it names the true sender; a long one wraps flush like any narration.
+#[test]
+fn spoofed_emit_names_its_sender_and_plain_emit_does_not() {
+    let emit = OutputEvent::Narrative {
+        kind: NarrativeKind::Emit,
+        actor: Some(nick()),
+        text: RichText::plain("A door slams somewhere below."),
+    };
+    let spoof = OutputEvent::Narrative {
+        kind: NarrativeKind::Spoof,
+        actor: Some(nick()),
+        text: RichText::plain("A door slams somewhere below."),
+    };
+    assert_eq!(
+        rendered_ascii(&emit, 80),
+        "A door slams somewhere below.\r\n"
+    );
+    assert_eq!(
+        rendered_ascii(&spoof, 80),
+        "[Nick] A door slams somewhere below.\r\n"
+    );
+}
+
 /// A notice with the loudest severity and a one-tap action (interface plan
 /// I11) — the shape line mode has to flatten into one row.
 fn notice_event() -> OutputEvent {
@@ -182,9 +207,10 @@ fn narrative_kind_goldens() {
         rendered_str(&mk(NarrativeKind::Emit, "A cold wind blows."), d, 0),
         "A cold wind blows.\r\n"
     );
+    // A spoof only reaches a listener entitled to its source, so it is named.
     assert_eq!(
         rendered_str(&mk(NarrativeKind::Spoof, "The walls whisper."), d, 0),
-        "The walls whisper.\r\n"
+        "[Nick] The walls whisper.\r\n"
     );
     assert_eq!(
         rendered_str(&mk(NarrativeKind::Page, "hi there"), d, 0),

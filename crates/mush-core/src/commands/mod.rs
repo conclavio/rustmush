@@ -18,6 +18,7 @@ pub mod movement;
 pub mod speech;
 
 pub use admin::{event_subject, ignore_list, is_ignoring, narrative_actor};
+pub use speech::{can_emit, sees_spoof_source, spoof_for_listener};
 
 /// Register every core command into `reg`. Called once at boot (and by
 /// tests); collisions among core commands are a programming error surfaced

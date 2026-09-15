@@ -176,7 +176,8 @@ pub use cmd::{
 };
 pub use commands::movement::{TraversalRefusal, authorize_traversal};
 pub use commands::{
-    event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,
+    can_emit, event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,
+    sees_spoof_source, spoof_for_listener,
 };
 pub use contact::{
     ContactGuardValidator, ContactLifecycle, ContactState, ContactStateCodec, ContactStateDraft,

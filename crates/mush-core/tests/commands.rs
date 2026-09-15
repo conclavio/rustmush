@@ -118,6 +118,13 @@ fn say_prefix_emits_room_narrative() {
 fn pose_semipose_emit_prefixes() {
     let mut g = Game::new();
     let ann = g.ann;
+    // `@emit` is a granted licence: without SPOOF a player is refused and
+    // the room hears nothing. Say and pose need no licence because they
+    // always carry the speaker's name.
+    let out = g.run(ann, "\\The wind howls.");
+    assert_error_contains(&out, ann, "Permission denied");
+    assert!(room_texts(&out, LIMBO).is_empty(), "{:?}", out.events());
+    g.w.set_flag(ann, Flags::SPOOF, true).unwrap();
     for (line, kind, text) in [
         (":grins.", NarrativeKind::Pose, "grins."),
         (
@@ -125,7 +132,9 @@ fn pose_semipose_emit_prefixes() {
             NarrativeKind::SemiPose,
             "'s eyes narrow.",
         ),
-        ("\\The wind howls.", NarrativeKind::Emit, "The wind howls."),
+        // Below Wizard the emit travels as a spoof so the fan-out can show
+        // its source to entitled listeners.
+        ("\\The wind howls.", NarrativeKind::Spoof, "The wind howls."),
     ] {
         let out = g.run(ann, line);
         let hit = out.events().iter().any(|(_, e)| {
@@ -1444,6 +1453,8 @@ fn custom_move_messages() {
 fn speech_lock_gates_room_speech() {
     let mut g = Game::new();
     let (ann, bob) = (g.ann, g.bob);
+    // Licensed to emit, so the lock is what refuses her below.
+    g.w.set_flag(ann, Flags::SPOOF, true).unwrap();
     let out = g.run(GOD, "@lock/speech here=#1");
     assert_error_contains(&out, GOD, "Locked.");
     for line in [

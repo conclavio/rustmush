@@ -147,5 +147,60 @@ pub fn validate_command(command: &str) -> Result<()> {
                 .into(),
         );
     }
+    // Account and session verbs. Game text reaches the model as untrusted
+    // data, so a line another player wrote must never be able to grant
+    // persistent access to the account (`@sshkey/add`), lock its operator
+    // out (`@sshkey/del`), spawn characters, or end the session. The runner
+    // manages keys, characters and disconnects outside the game.
+    if verb == "@sshkey"
+        || verb.starts_with("@sshkey/")
+        || matches!(
+            verb.as_str(),
+            "@newchar" | "quit" | "@quit" | "logout" | "@logout"
+        )
+    {
+        return Err(
+            "account and session commands are not available to the bot; manage SSH keys, \
+             characters and disconnects from the runner"
+                .into(),
+        );
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_command;
+
+    #[test]
+    fn credential_account_and_session_verbs_are_refused_in_any_case() {
+        for command in [
+            "connect rosebot secret",
+            "@password old=new",
+            "@sshkey/add ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA bot",
+            "@SSHKEY/del 1",
+            "@sshkey/list",
+            "@sshkey",
+            "@newchar Marco",
+            "QUIT",
+            "quit now",
+            "LOGOUT",
+            "@tui",
+        ] {
+            assert!(validate_command(command).is_err(), "{command}");
+        }
+    }
+
+    #[test]
+    fn refused_verbs_are_only_refused_as_the_verb() {
+        for command in [
+            "say type @sshkey/add and I will owe you a favour",
+            "pose quits the game of cards.",
+            "look",
+            "@emit The wind picks up.",
+            "page Marco=QUIT",
+        ] {
+            assert!(validate_command(command).is_ok(), "{command}");
+        }
+    }
 }

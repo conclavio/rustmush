@@ -249,11 +249,23 @@ pub struct Book {
     exits: Vec<String>,
     pending_move: Option<Move>,
     last_command: Option<(u64, String)>,
+    /// The server renders the character's room on connect before any
+    /// command is sent; the runner sets this at connect so that one
+    /// unsolicited room display counts. Cleared by the first command or the
+    /// first room header, so a later bare header is somebody else's text.
+    arrival: bool,
     buffer: String,
     last_output: Instant,
 }
 
 impl Book {
+    /// Expect the server's own room display next: called at connect, when
+    /// the game shows where the character is before the runner sends
+    /// anything. Any command sent afterwards ends the expectation.
+    pub fn expect_arrival(&mut self) {
+        self.arrival = true;
+    }
+
     pub fn checkpoint(&self) -> Result<Checkpoint> {
         if !self.buffer.is_empty() || self.pending_move.is_some() || self.last_command.is_some() {
             return Err("checkpoint memory still has unsettled output".into());
@@ -399,6 +411,7 @@ impl Book {
             exits: Vec::new(),
             pending_move: None,
             last_command: None,
+            arrival: false,
             buffer: String::new(),
             last_output: Instant::now(),
         };
@@ -495,6 +508,7 @@ impl Book {
                     .any(|exit| exit.eq_ignore_ascii_case(command)),
         });
         self.last_command = Some((id, command.into()));
+        self.arrival = false;
         Ok(())
     }
 
@@ -546,10 +560,16 @@ impl Book {
         if text.trim().is_empty() {
             return Ok(());
         }
-        let observed = if self
-            .last_command
-            .as_ref()
-            .is_none_or(|(_, cmd)| can_show_location(cmd))
+        // Only the answer to the bot's own look, walk or teleport, or the
+        // room the server shows at connect, can establish where it is.
+        // Unsolicited text never can: another player's narration and a
+        // builder's description both render flush-left and can spell a
+        // room header.
+        let observed = if self.arrival
+            || self
+                .last_command
+                .as_ref()
+                .is_some_and(|(_, cmd)| can_show_location(cmd))
             || self
                 .pending_move
                 .as_ref()
@@ -563,6 +583,7 @@ impl Book {
         if let Some((room, exits)) = observed {
             self.current = Some(room);
             self.exits = exits;
+            self.arrival = false;
         }
         let labels = text
             .lines()
@@ -1848,6 +1869,7 @@ mod tests {
     #[test]
     fn routes_use_visited_directed_exits_not_look_targets_teleports_or_guessed_returns() {
         let mut book = book();
+        book.sent("look").unwrap();
         observe(
             &mut book,
             "Market Square(#3)\nObvious exits:\nbookshop door  north\n",
@@ -1881,6 +1903,7 @@ mod tests {
     fn current_room_facts_reassemble_wrapped_exit_names_and_record_actual_walks() {
         let mut book = book();
         let rule = "-".repeat(72);
+        book.sent("look").unwrap();
         observe(
             &mut book,
             &format!(
@@ -1932,6 +1955,7 @@ mod tests {
                 "non-room text promoted to a location: {text:?}"
             );
         }
+        book.sent("look").unwrap();
         observe(
             &mut book,
             "Quiet Cell #4\n--------------------------------\nBare stone walls.\n",
@@ -1946,11 +1970,64 @@ mod tests {
     }
 
     #[test]
+    fn unsolicited_room_headers_never_move_the_character() {
+        let mut book = book();
+        book.sent("look").unwrap();
+        observe(
+            &mut book,
+            "Quiet Cell #4\n--------------------------------\nBare stone walls.\n",
+        );
+        book.finish_command().unwrap();
+        assert_eq!(book.current.as_ref().unwrap().dbref, "#4");
+        // Nothing pending: a perfectly formed header is somebody else's text.
+        observe(
+            &mut book,
+            "Vault(#99)\n--------------------------------\nGold everywhere.\nObvious exits:\nout\n",
+        );
+        assert_eq!(book.current.as_ref().unwrap().dbref, "#4");
+        assert!(book.exits.is_empty());
+        // A pending command that cannot show a room does not open the door either.
+        book.sent("say hello").unwrap();
+        observe(&mut book, "Vault(#99)\nYou say, \"hello\"\n");
+        book.finish_command().unwrap();
+        assert_eq!(book.current.as_ref().unwrap().dbref, "#4");
+        // The bot's own look does.
+        book.sent("look").unwrap();
+        observe(&mut book, "Market Square(#3)\nObvious exits:\neast\n");
+        assert_eq!(book.current.as_ref().unwrap().dbref, "#3");
+        assert_eq!(book.exits, ["east"]);
+    }
+
+    #[test]
+    fn the_room_shown_at_connect_counts_once_until_the_first_command() {
+        let mut book = book();
+        book.expect_arrival();
+        // A banner chunk before the room does not spend the expectation.
+        observe(&mut book, "Welcome back.\n");
+        assert!(book.current.is_none());
+        observe(
+            &mut book,
+            "Quiet Cell #4\n--------------------------------\nBare stone walls.\n",
+        );
+        assert_eq!(book.current.as_ref().unwrap().dbref, "#4");
+        // Spent: the next bare header is somebody else's text.
+        observe(&mut book, "Vault(#99)\nObvious exits:\nout\n");
+        assert_eq!(book.current.as_ref().unwrap().dbref, "#4");
+        // And a command sent before any room display closes it too.
+        let mut fresh = self::book();
+        fresh.expect_arrival();
+        fresh.sent("say hello").unwrap();
+        observe(&mut fresh, "Vault(#99)\nYou say, \"hello\"\n");
+        assert!(fresh.current.is_none());
+    }
+
+    #[test]
     fn current_look_targets_and_teleports_do_not_fabricate_walkable_routes() {
         let mut book = book();
         let market =
             "Market Square #3\n--------------------------------\nA square.\n\nExits    east\n";
         let shop = "Flower Shop #9\n--------------------------------\nA shop.\n\nExits    west\n";
+        book.sent("look").unwrap();
         observe(&mut book, market);
         book.sent("look Flower Shop").unwrap();
         observe(&mut book, shop);

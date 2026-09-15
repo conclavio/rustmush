@@ -278,7 +278,14 @@ pub struct Totals {
     pending: usize,
     interrupted: usize,
     known_cost_requests: usize,
+    /// Completed or in-flight requests with no priced receipt: the bill is
+    /// incomplete and a spending policy set to block on unknown cost stops.
     unknown_cost_requests: usize,
+    /// Cancelled before a receipt arrived. Still unpriced, and the provider
+    /// may have charged for the work, but counted apart: the runner cancels
+    /// on its own whenever new speech arrives, so a cancellation must not
+    /// trip the unknown-cost gate and freeze the session.
+    cancelled_unpriced_requests: usize,
     /// Provider-reported account charges. Upstream cost is a separate metric.
     provider_cost_by_currency: BTreeMap<String, Amount>,
     upstream_inference_cost_by_currency: BTreeMap<String, Amount>,
@@ -302,6 +309,7 @@ impl Totals {
             interrupted,
             known_cost_requests,
             unknown_cost_requests,
+            cancelled_unpriced_requests,
             prompt_tokens,
             completion_tokens,
             total_tokens,
@@ -347,6 +355,8 @@ impl Totals {
                 .entry(currency.clone())
                 .or_default()
                 .add(cost)?;
+        } else if entry.cancelled {
+            self.cancelled_unpriced_requests += 1;
         } else {
             self.unknown_cost_requests += 1;
         }
@@ -874,7 +884,18 @@ mod tests {
         assert_eq!(ledger.session_usage().unwrap().requests, 1);
         assert_eq!(ledger.session_usage().unwrap().unknown_cost_requests, 1);
         ledger.cancel(request.id).unwrap();
-        assert_eq!(ledger.session_usage().unwrap().unknown_cost_requests, 1);
+        // Cancelled without a receipt: unpriced, but not an unknown cost
+        // that a spending policy blocks on.
+        assert_eq!(ledger.session_usage().unwrap().unknown_cost_requests, 0);
+        assert_eq!(
+            ledger
+                .report()
+                .unwrap()
+                .session
+                .totals
+                .cancelled_unpriced_requests,
+            1
+        );
         ledger.finish(
             request.id, Outcome::Error,
             Some(Receipt::from_body(&json!({"usage":{"cost":"0.1","cost_details":{"upstream_inference_cost":"99"}}}), &model().settings)),
@@ -956,7 +977,18 @@ mod tests {
             .unwrap(); // Crash before receipt.
         let usage = ledger.session_usage().unwrap();
         assert_eq!(usage.requests, 3);
-        assert_eq!(usage.unknown_cost_requests, 2);
+        // The crashed request is unknown; the cancelled one is unpriced but
+        // counted apart so it cannot block a spending policy.
+        assert_eq!(usage.unknown_cost_requests, 1);
+        assert_eq!(
+            ledger
+                .report()
+                .unwrap()
+                .session
+                .totals
+                .cancelled_unpriced_requests,
+            1
+        );
         assert_eq!(usage.provider_cost_by_currency["USD"].to_string(), "0.1");
         drop(ledger);
         let mut ledger = Ledger::open(&settings, &ssh, "fixture").unwrap();
@@ -999,7 +1031,14 @@ mod tests {
             report["all_sessions"]["totals"]["upstream_inference_cost_by_currency"]["USD"],
             "0.08"
         );
-        assert_eq!(report["all_sessions"]["totals"]["unknown_cost_requests"], 2);
+        // Across sessions: the interrupted request is unknown, the receiptless
+        // cancellation is unpriced, and the cancellation that already had a
+        // receipt is priced.
+        assert_eq!(report["all_sessions"]["totals"]["unknown_cost_requests"], 1);
+        assert_eq!(
+            report["all_sessions"]["totals"]["cancelled_unpriced_requests"],
+            1
+        );
         assert_eq!(report["all_sessions"]["totals"]["cancelled"], 2);
         assert_eq!(report["all_sessions"]["totals"]["interrupted"], 1);
         assert_eq!(

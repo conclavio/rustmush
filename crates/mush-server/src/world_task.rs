@@ -140,7 +140,7 @@ use mush_core::{
     Privileges, ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind,
     StagedAction, StepOutcome, TickCadence, TypedStateLens, World, WorldCommand, WorldEvent,
     can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
-    register_engine_commands,
+    register_engine_commands, spoof_for_listener,
 };
 use mush_ipc::{
     ActionSend, DiscordControlOp, GatewayAction, GatewayInput, GatewayRequest,
@@ -8454,8 +8454,19 @@ fn resolve_classified_sends(
     let mut sends = Vec::new();
     for (class, audience, event) in out.take_classified() {
         let ev = Arc::new(event);
+        // A spoofed emit keeps its `Spoof` kind only for a listener entitled
+        // to see its source (NOSPOOF, or Royalty+); everyone else receives
+        // the bare `Emit`. Resolved here, per listener, because this is the
+        // one place an audience becomes recipients.
+        let for_listener = |listener: ObjId, ev: &Arc<OutputEvent>| -> Arc<OutputEvent> {
+            match spoof_for_listener(world, listener, ev) {
+                Some(downgraded) => Arc::new(downgraded),
+                None => Arc::clone(ev),
+            }
+        };
         match audience {
             Audience::Actor(actor) => {
+                let ev = for_listener(actor, &ev);
                 sends.push((class, SendTarget::Char(u64::from(actor.0)), ev));
             }
             Audience::Conn(conn) => {
@@ -8505,7 +8516,7 @@ fn resolve_classified_sends(
                     sends.push((
                         class,
                         SendTarget::Char(u64::from(occupant.0)),
-                        Arc::clone(&ev),
+                        for_listener(occupant, &ev),
                     ));
                 }
             }
@@ -16229,6 +16240,100 @@ mod tests {
             })
             .collect();
         assert!(recipients.contains(&a) && recipients.contains(&b));
+    }
+
+    /// `@emit` is the one verb that can put an unattributed line in front of
+    /// another player, so it is a granted flag (`SPOOF`, Royalty+ implicit),
+    /// and below Wizard the line still travels with its source: a `NOSPOOF`
+    /// listener and staff receive it as `Spoof` (rendered `[Name] text`),
+    /// everyone else as the bare `Emit`. Wizard narration is plain for all.
+    #[test]
+    fn spoofed_emits_carry_their_source_only_to_entitled_listeners() {
+        use mush_core::{Flags, dispatch, register_core_commands};
+        use mush_proto::NarrativeKind;
+
+        let mut world = World::new_minimal();
+        let hall = world.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+        let ann = world
+            .create(ObjKind::Player, "Ann", GOD, Some(hall))
+            .unwrap();
+        let bee = world
+            .create(ObjKind::Player, "Bee", GOD, Some(hall))
+            .unwrap();
+        let cal = world
+            .create(ObjKind::Player, "Cal", GOD, Some(hall))
+            .unwrap();
+        let dee = world
+            .create(ObjKind::Player, "Dee", GOD, Some(hall))
+            .unwrap();
+        for p in [ann, bee, cal, dee] {
+            world.set_connected(p, true);
+        }
+        world.set_flag(bee, Flags::NOSPOOF, true).unwrap();
+        world.set_flag(cal, Flags::ROYALTY, true).unwrap();
+        world.set_flag(dee, Flags::WIZARD, true).unwrap();
+        let mut reg = Registry::new();
+        register_core_commands(&mut reg).unwrap();
+
+        // The narrative kind each listener received from one dispatch.
+        let narratives = |world: &World, out: &mut Outbox| -> Vec<(ObjId, NarrativeKind)> {
+            resolve_sends(&reg, world, out)
+                .iter()
+                .filter_map(|(t, ev)| match (t, ev.as_ref()) {
+                    (SendTarget::Char(ck), OutputEvent::Narrative { kind, .. }) => {
+                        Some((ObjId(u32::try_from(*ck).unwrap_or(u32::MAX)), *kind))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // An ordinary player is refused and the room hears nothing.
+        let mut out = Outbox::new();
+        dispatch(
+            &reg,
+            &mut world,
+            ann,
+            "@emit A door slams.",
+            &mut out,
+            DETACHED,
+        );
+        assert!(narratives(&world, &mut out).is_empty());
+        // They cannot grant themselves the licence; the observer preference
+        // is theirs to set.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut world, ann, "@set me=SPOOF", &mut out, DETACHED);
+        assert!(!world.get(ann).unwrap().flags.contains(Flags::SPOOF));
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut world, ann, "@set me=NOSPOOF", &mut out, DETACHED);
+        assert!(world.get(ann).unwrap().flags.contains(Flags::NOSPOOF));
+        world.set_flag(ann, Flags::NOSPOOF, false).unwrap();
+
+        // Granted the flag: bare for Ann herself, sourced for the NOSPOOF
+        // listener and for staff.
+        world.set_flag(ann, Flags::SPOOF, true).unwrap();
+        let mut out = Outbox::new();
+        dispatch(
+            &reg,
+            &mut world,
+            ann,
+            "@emit A door slams.",
+            &mut out,
+            DETACHED,
+        );
+        let got = narratives(&world, &mut out);
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert!(got.contains(&(ann, NarrativeKind::Emit)));
+        assert!(got.contains(&(bee, NarrativeKind::Spoof)));
+        assert!(got.contains(&(cal, NarrativeKind::Spoof)));
+        assert!(got.contains(&(dee, NarrativeKind::Spoof)));
+
+        // Wizard narration is plain for everyone, NOSPOOF or not.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut world, dee, "@emit Thunder.", &mut out, DETACHED);
+        let got = narratives(&world, &mut out);
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert!(got.iter().all(|(_, k)| *k == NarrativeKind::Emit));
     }
 
     // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----

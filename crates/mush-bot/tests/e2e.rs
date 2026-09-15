@@ -121,6 +121,9 @@ impl Fixture {
             .unwrap();
         if builder {
             engine.world.set_flag(player, Flags::BUILDER, true).unwrap();
+            // Fixture dialogue is delivered with `@emit`, which is a granted
+            // flag: the builder fixture holds it so scripts can stage speech.
+            engine.world.set_flag(player, Flags::SPOOF, true).unwrap();
             engine
                 .world
                 .get_mut(player)
@@ -1201,7 +1204,8 @@ async fn model_switching_preserves_state_and_accounts_for_costs_across_sessions(
     assert_eq!(first["model"]["profile"], "fast");
     assert_eq!(totals["requests"], 4);
     assert_eq!(totals["known_cost_requests"], 3);
-    assert_eq!(totals["unknown_cost_requests"], 1);
+    assert_eq!(totals["unknown_cost_requests"], 0);
+    assert_eq!(totals["cancelled_unpriced_requests"], 1);
     assert_eq!(totals["cancelled"], 1);
     assert_eq!(totals["provider_cost_by_currency"]["USD"], "0.3");
     assert_eq!(
@@ -1260,6 +1264,10 @@ async fn model_switching_preserves_state_and_accounts_for_costs_across_sessions(
     );
     assert_eq!(
         second["costs"]["all_sessions"]["totals"]["unknown_cost_requests"],
+        0
+    );
+    assert_eq!(
+        second["costs"]["all_sessions"]["totals"]["cancelled_unpriced_requests"],
         1
     );
     assert_eq!(calls.load(Ordering::SeqCst), 5);

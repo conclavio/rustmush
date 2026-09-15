@@ -154,6 +154,7 @@ impl GameModule for NpcModule {
             NarrativeKind::Pose,
             NarrativeKind::SemiPose,
             NarrativeKind::Emit,
+            NarrativeKind::Spoof,
         ] {
             reg.subscribe(WorldEventKind::Said { kind }, Arc::new(NpcObserver));
         }

@@ -728,7 +728,8 @@ impl TuiApp {
                 let line = match kind {
                     mush_proto::NarrativeKind::Pose => format!("{} {plain}", actor.name),
                     mush_proto::NarrativeKind::SemiPose => format!("{}{plain}", actor.name),
-                    mush_proto::NarrativeKind::Emit | mush_proto::NarrativeKind::Spoof => plain,
+                    mush_proto::NarrativeKind::Emit => plain,
+                    mush_proto::NarrativeKind::Spoof => format!("[{}] {plain}", actor.name),
                     _ => format!("{}: {plain}", actor.name),
                 };
                 self.panels.push_channel(

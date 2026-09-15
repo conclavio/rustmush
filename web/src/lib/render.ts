@@ -229,8 +229,11 @@ export function narrativeLine(
     case "semi_pose":
       return [mk(name, "player"), ...rich];
     case "emit":
-    case "spoof":
       return rich;
+    // A spoof reaches only listeners entitled to its source (the server
+    // downgrades it to "emit" for everyone else), so it shows the sender.
+    case "spoof":
+      return [mk("["), mk(name, "player"), mk("] "), ...rich];
     case "page":
       return [mk(name, "player"), mk(" pages: "), ...rich];
     case "whisper":

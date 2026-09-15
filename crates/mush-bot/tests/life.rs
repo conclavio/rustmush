@@ -47,6 +47,10 @@ fn observe(book: &mut Book, text: &str) -> u64 {
         .id
 }
 fn room(book: &mut Book, name: &str, id: u64) {
+    // The runner marks the server's own room display at connect; a bare
+    // header at any other time is somebody else's text and never moves the
+    // character, so the fixture's opening room is announced the same way.
+    book.expect_arrival();
     observe(
         book,
         &format!("{name}(#{id})\nObvious exits:\nnorth south east west"),

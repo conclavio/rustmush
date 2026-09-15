@@ -573,6 +573,8 @@ pub async fn run_controlled(
         ),
     )?;
     let session = Session::connect(&config.ssh).await?;
+    // The game shows the character's room on connect, before any command.
+    memories.expect_arrival();
     let now = Instant::now();
     let started = log.started;
     let active = !options.paused && (!config.agent.goal.is_empty() || scenario.is_some());

@@ -350,9 +350,16 @@ fn render_narrative(
             w.tagged("player", name);
             w.rich(text);
         }
-        // Emit and spoofed emits render bare; the actor rides along only
-        // for spoof-tracking.
-        NarrativeKind::Emit | NarrativeKind::Spoof => w.rich(text),
+        // An emit renders bare; the actor rides along only for tracking. A
+        // spoof only reaches a listener entitled to its source (the world
+        // task downgrades it to Emit for everyone else), so it is prefixed.
+        NarrativeKind::Emit => w.rich(text),
+        NarrativeKind::Spoof => {
+            w.plain("[");
+            w.tagged("player", name);
+            w.plain("] ");
+            w.rich(text);
+        }
         NarrativeKind::Page => {
             w.tagged("player", name);
             w.plain(" pages: ");

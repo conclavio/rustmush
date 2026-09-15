@@ -17,11 +17,12 @@ use std::sync::Arc;
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
-use crate::flags::Flags;
+use crate::flags::{Flags, Role};
 use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
 use crate::matchit::match_object;
 use crate::obj::ObjId;
 use crate::output::{display_name, obj_ref};
+use crate::perm;
 use crate::world::World;
 
 /// Emit an attributed narrative line to the actor's whole room, honoring
@@ -77,13 +78,69 @@ fn semipose_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     room_narrative(ctx, NarrativeKind::SemiPose, &text)
 }
 
+/// Whether `who` may `@emit`: Royalty+ implicitly, otherwise the `SPOOF`
+/// flag. Everything else a player produces (say/pose/whisper/page/OOC/
+/// channel lines) carries the true name, so this is the one verb that can
+/// put an unattributed line in front of another player.
+pub fn can_emit(w: &World, who: ObjId) -> bool {
+    perm::has_role(w, who, Role::Royalty)
+        || w.get(who).is_some_and(|o| o.flags.contains(Flags::SPOOF))
+}
+
+/// The narrative kind an `@emit` from `who` travels as. Wizard+ narration is
+/// plain [`NarrativeKind::Emit`] everywhere; below that it is
+/// [`NarrativeKind::Spoof`], which the room fan-out downgrades to `Emit` for
+/// every listener who is not entitled to see its source (see
+/// [`spoof_for_listener`]).
+pub fn emit_kind(w: &World, who: ObjId) -> NarrativeKind {
+    if perm::has_role(w, who, Role::Wizard) {
+        NarrativeKind::Emit
+    } else {
+        NarrativeKind::Spoof
+    }
+}
+
+/// Whether `listener` sees the true sender of a spoofed emit: the `NOSPOOF`
+/// preference, or Royalty+.
+pub fn sees_spoof_source(w: &World, listener: ObjId) -> bool {
+    perm::has_role(w, listener, Role::Royalty)
+        || w.get(listener)
+            .is_some_and(|o| o.flags.contains(Flags::NOSPOOF))
+}
+
+/// The event `listener` receives for `event`: a [`NarrativeKind::Spoof`]
+/// line keeps its kind (renderers prefix the true sender) only for a
+/// listener who [`sees_spoof_source`]; everyone else gets the bare
+/// [`NarrativeKind::Emit`]. Any other event passes through untouched.
+pub fn spoof_for_listener(w: &World, listener: ObjId, event: &OutputEvent) -> Option<OutputEvent> {
+    match event {
+        OutputEvent::Narrative {
+            kind: NarrativeKind::Spoof,
+            actor,
+            text,
+        } if !sees_spoof_source(w, listener) => Some(OutputEvent::Narrative {
+            kind: NarrativeKind::Emit,
+            actor: actor.clone(),
+            text: text.clone(),
+        }),
+        _ => None,
+    }
+}
+
 fn emit_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let text = ctx.args.raw().to_string();
     if text.is_empty() {
         return Err(CmdError::msg("Emit what?"));
     }
-    // The actor is attached for spoof-tracking; renderers do not prefix it.
-    room_narrative(ctx, NarrativeKind::Emit, &text)
+    if !can_emit(ctx.w, ctx.actor) {
+        return Err(CmdError::msg(
+            "Permission denied. @emit needs the SPOOF flag; say and pose always carry your name.",
+        ));
+    }
+    // The actor rides along for spoof-tracking; the kind decides whether a
+    // listener's renderer may show it.
+    let kind = emit_kind(ctx.w, ctx.actor);
+    room_narrative(ctx, kind, &text)
 }
 
 fn think_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -240,8 +297,9 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         CommandSpec {
             name: "@emit".into(),
             help: "@emit <text>  --  Emit free-form narration to your room with no \
-                   name prefix. The true sender is still tracked for staff. Prefix \
-                   shorthand: \"\\<text>\"."
+                   name prefix. Needs the SPOOF flag (Royalty and Wizards have it). \
+                   Below Wizard the true sender shows as a [Name] prefix to staff and \
+                   to anyone set NOSPOOF. Prefix shorthand: \"\\<text>\"."
                 .into(),
             ..CommandSpec::default()
         },

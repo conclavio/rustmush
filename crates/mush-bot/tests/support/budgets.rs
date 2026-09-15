@@ -419,7 +419,9 @@ async fn denied_and_cancelled_calls_preserve_controls_and_invalid_replies_still_
     bot.send("/resume").await;
     let cancelled = denied(&mut bot, "request_limit_reached").await;
     assert_eq!(cancelled["status"]["usage"]["requests"], 1);
-    assert_eq!(cancelled["status"]["usage"]["unknown_cost_requests"], 1);
+    // Cancelled before a receipt: unpriced, but not an unknown cost that a
+    // spending policy would block on (the runner cancels by itself on speech).
+    assert_eq!(cancelled["status"]["usage"]["unknown_cost_requests"], 0);
     set_budget(&mut bot, json!({"version":1,"max_requests":3})).await;
     bot.send("/step").await;
     let invalid = event(&mut bot, "blocked").await;
@@ -441,7 +443,8 @@ async fn denied_and_cancelled_calls_preserve_controls_and_invalid_replies_still_
     assert_eq!(totals["requests"], 3);
     assert_eq!(totals["cancelled"], 1);
     assert_eq!(totals["responses"], 2);
-    assert_eq!(totals["unknown_cost_requests"], 1);
+    assert_eq!(totals["unknown_cost_requests"], 0);
+    assert_eq!(totals["cancelled_unpriced_requests"], 1);
     assert_eq!(totals["provider_cost_by_currency"]["USD"], "0.15");
     assert_eq!(report["budget"]["status"]["usage"]["requests"], 3);
     assert_eq!(report["state"]["model_calls"], 3);

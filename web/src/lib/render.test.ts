@@ -158,7 +158,8 @@ describe("narrativeLine", () => {
     expect(t("pose")).toBe("Wizard x");
     expect(t("semi_pose")).toBe("Wizardx");
     expect(t("emit")).toBe("x");
-    expect(t("spoof")).toBe("x");
+    // A spoof only reaches listeners entitled to its source, so it is named.
+    expect(t("spoof")).toBe("[Wizard] x");
     expect(t("page")).toBe("Wizard pages: x");
     expect(t("whisper")).toBe('Wizard whispers, "x"');
     expect(t("ooc")).toBe('<OOC> Wizard says, "x"');

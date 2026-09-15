@@ -49,6 +49,14 @@ bitflags::bitflags! {
         const SHELTERED   = 1 << 16;
         /// Object has LLM agent behavior attached.
         const AGENT       = 1 << 17;
+        /// May `@emit` unattributed narration. Set by Wizard+; Royalty+
+        /// hold it implicitly. Below Wizard the line still travels as a
+        /// [`NarrativeKind::Spoof`](mush_proto::NarrativeKind::Spoof) so a
+        /// `NOSPOOF` observer sees its true source.
+        const SPOOF       = 1 << 18;
+        /// Observer preference: spoofed `@emit` lines show their true
+        /// sender as a `[Name]` prefix. Royalty+ see the source regardless.
+        const NOSPOOF     = 1 << 19;
     }
 }
 

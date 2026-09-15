@@ -85,7 +85,11 @@ Alternatively register a public key in-game with `@sshkey/add` and set `identity
 The client reads an OpenSSH private key directly; it does not invoke a system shell,
 consult `ssh_config`, or use an SSH agent. Password auth occurs inside SSH, before
 terminal observations or model calls. In-band credential commands are rejected to
-keep credentials out of transcripts. `play`/`guest` without credentials reaches the
+keep credentials out of transcripts. Account and session verbs (`@sshkey`,
+`@newchar`, `QUIT`, `LOGOUT`) are rejected as well, whatever their origin: game
+text reaches the model as untrusted data, and a line another player wrote must
+not be able to register a key on the bot's account or end its session. Keys,
+characters and disconnects are managed from the runner. `play`/`guest` without credentials reaches the
 welcome screen, not an authenticated character; autonomous play should use an account.
 
 The model must support a chat-completions endpoint and text JSON responses. The bot
@@ -190,7 +194,9 @@ in a parsed response. Cancellation prevents the response from acting; a receipt
 already received remains counted. If cancellation, a timeout, invalid response
 JSON or a crash prevents the cost arriving, the request remains unpriced and may
 still have incurred a provider charge. The report exposes pending, interrupted
-and cancelled counts so a partial total is not mistaken for a complete bill.
+and cancelled counts so a partial total is not mistaken for a complete bill;
+a cancellation without a receipt is `cancelled_unpriced_requests`, kept apart
+from `unknown_cost_requests` so a session budget does not block on it.
 There is no automatic generation-ID reconciliation yet.
 
 Accounting is enabled independently of memory persistence, under `.mush-bot/costs`
@@ -377,6 +383,13 @@ requests consume the existing `max_steps` budget; waking up does not replenish i
 chain. Idle listening time does not run down a conversation timer. Provider errors
 or exhausted limits pause action as usual. Deciding whether and how to answer is
 still model work, so the cues and profile do not guarantee perfect social judgment.
+
+Where the bot believes it is comes only from the room the game shows at
+connect and from the answer to its own `look`, walk or teleport. A room header
+that arrives unsolicited, in another player's
+narration or a builder's description, never moves it; the game's own rules
+make every say, pose, whisper and page carry the speaker's name, so an
+unattributed line is staff narration or authored prose, not evidence of place.
 
 ## Experiences, beliefs and identity
 

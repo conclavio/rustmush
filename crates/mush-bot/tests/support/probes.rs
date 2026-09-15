@@ -286,7 +286,7 @@ async fn serial_group_probes_grade_private_evidence_and_stop_on_a_fabricated_quo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pausing_a_probe_cancels_its_grade_and_keeps_unreceived_cost_unknown() {
+async fn pausing_a_probe_cancels_its_grade_and_keeps_unreceived_cost_unpriced() {
     let fixture = Fixture::boot().await;
     let model = MockServer::start().await;
     let pending = Arc::new(Notify::new());
@@ -348,12 +348,15 @@ async fn pausing_a_probe_cancels_its_grade_and_keeps_unreceived_cost_unknown() {
     assert_eq!(costs["totals"]["requests"], 2);
     assert_eq!(costs["totals"]["cancelled"], 1);
     assert_eq!(costs["totals"]["responses"], 1);
-    assert_eq!(costs["totals"]["unknown_cost_requests"], 1);
+    // Cancelled before its receipt: unpriced, reported apart from unknown
+    // cost so a spending policy does not block on the runner's own cancel.
+    assert_eq!(costs["totals"]["unknown_cost_requests"], 0);
+    assert_eq!(costs["totals"]["cancelled_unpriced_requests"], 1);
     assert_eq!(costs["totals"]["known_cost_requests"], 1);
     assert_eq!(costs["totals"]["provider_cost_by_currency"]["USD"], "0.125");
     assert_eq!(costs["by_prompt_type"]["structured_probe"]["cancelled"], 1);
     assert_eq!(
-        costs["by_prompt_type"]["structured_probe"]["unknown_cost_requests"],
+        costs["by_prompt_type"]["structured_probe"]["cancelled_unpriced_requests"],
         1
     );
     assert_eq!(costs["by_prompt_type"]["runner_question"]["responses"], 1);

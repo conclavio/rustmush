@@ -480,7 +480,10 @@ fn set_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if flag == Flags::WIZARD && !perm::has_role(ctx.w, ctx.actor, Role::God) {
         return Err(perm_denied());
     }
-    if (flag == Flags::ROYALTY || flag == Flags::BUILDER)
+    // SPOOF is the licence to put unattributed text in front of other
+    // players, so it is granted the way BUILDER is. NOSPOOF is an observer
+    // preference and stays self-settable.
+    if (flag == Flags::ROYALTY || flag == Flags::BUILDER || flag == Flags::SPOOF)
         && !perm::has_role(ctx.w, ctx.actor, Role::Wizard)
     {
         return Err(perm_denied());
