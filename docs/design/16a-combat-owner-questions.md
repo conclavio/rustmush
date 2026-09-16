@@ -56,7 +56,7 @@ passes over the tree (§2).
 | Hybrid tactical AI: deterministic layer owns pathing, legality, reactions and link-loss; an optional LLM deliberator returns schema-validated plans inside a bounded application window with decision tokens and stale rejection | doc 07 §4, §5 | The two-layer AI is already designed; this survey scopes it |
 | Link-loss fallback policy and reclaim | doc 07 §1, D1 | Disconnect handling is not re-decided here |
 | Versioned definition registry, one action-plan-commit protocol, recorded randomness, generic resources and effects, authority and leases, truth versus observer projection, lifecycle and recovery; gates 2 (sectional damage), 3 (hidden-contact targeting), 4 (stale NPC action), 5 (restart matrix) | doc 09 C1, C2, C5, C7, C8, C9, C11 | The kernel contracts the rebuild rides on |
-| Engine-defined surface, cover, opacity, locomotion vocabularies; engine-answered `line_of_sight`, `direct_fire_path`, `beam_path`, `move_cost`, `path`; the TacSim ground driver at 1000 cm cells; no hexes; layered 2.5D elevation | doc 14 §5, §3.5, D-14-4, D-14-6 | The spatial substrate is decided |
+| Engine-defined surface, cover, opacity, locomotion vocabularies; engine-answered `line_of_sight`, `direct_fire_path`, `beam_path`, `move_cost`, `path`; the TacSim ground driver at 1000 cm cells; square cells only; layered 2.5D elevation | doc 14 §5, §3.5, D-14-4, D-14-6 | The spatial substrate is decided |
 | The engine defines the world; rulesets register definitions | README superseded item 5 | Becomes "game config registers definitions" (Q29) |
 
 ### 1.3 Rulings this survey proposes to amend
