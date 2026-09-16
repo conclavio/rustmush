@@ -4,7 +4,7 @@
 //! ids for multimodal units, **leaving terrain-cost and kinematics maths to the
 //! ruleset**." This module is exactly that boundary: the engine provides the
 //! vocabulary registry, the multimodal profile, the mode-transition state
-//! machine, and capability queries; the ruleset (`ruleset-tacsim`) provides the
+//! machine, and capability queries; the ruleset (`tacsim`) provides the
 //! concrete mode kinematics/terrain (carried here as an OPAQUE, schema-tagged
 //! [`ModeRules`], the mobility analogue of `mush-sim`'s `RulesValue` pose) and
 //! all the physics math.

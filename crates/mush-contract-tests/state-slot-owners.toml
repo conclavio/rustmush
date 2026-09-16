@@ -205,7 +205,7 @@ owner = "sim"
 reason = "E7 residue 2: seeds the sim's journey book to stage a recovery case."
 
 [[site]]
-path = "crates/ruleset-tacsim/tests/s9_corridor.rs"
+path = "crates/tacsim/tests/s9_corridor.rs"
 accessor = "World::module_state_mut"
 slot = "JourneyBook"
 owner = "sim"

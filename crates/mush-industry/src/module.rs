@@ -42,7 +42,7 @@ pub const SWEEP_PERIOD_SECS: u64 = 60;
 ///
 /// A `CatalogRef` is *opaque to the economy* and is two strings; naming the
 /// corridor's ruleset here is a **coordinate**, not a dependency — this crate
-/// has no `ruleset-tacsim` edge and never reads a pack. A deployment that wants
+/// has no `tacsim` edge and never reads a pack. A deployment that wants
 /// another coordinate passes one to [`IndustryModule::with_claim_catalog`].
 pub const CLAIM_CATALOG_RULESET: &str = "tacsim";
 /// The catalog code a claim's titled object carries.

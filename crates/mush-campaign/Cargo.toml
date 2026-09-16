@@ -16,7 +16,7 @@ description = "mush-campaign (E7 cut 9): declared operations with terms frozen a
 # `Clock::advance` and an `on_complete_control` flip. `cargo tree -p mush-faction`
 # is byte-identical to cut 8's.
 #
-# There is no `mush-sim`, `mush-tactics`, `mush-propagation` or `ruleset-tacsim`
+# There is no `mush-sim`, `mush-tactics`, `mush-propagation` or `tacsim`
 # edge either: a unit is an opaque `ObjId` here, and formation KINDS arrive
 # through the `FormationAuthority` composition seam at the server root
 # (`IndustryModule::with_recipes`' shape), never by depending on a ruleset.

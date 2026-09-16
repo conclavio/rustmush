@@ -59,7 +59,7 @@ pub const CORRIDOR_JSON: &str = include_str!("fixture/tacsim_corridor.json");
 /// every world seeded from `tacsim.corridor@1`, and every hauling contract's route
 /// assumptions with it, would be re-priced, re-timed and re-resolved by a file that
 /// changed underneath them. Publishing v2 beside v1 re-prices, re-times and resolves
-/// **nothing**, and `ruleset-tacsim/tests/e7r1.rs`'s digest pin stays green and
+/// **nothing**, and `tacsim/tests/e7r1.rs`'s digest pin stays green and
 /// unmodified as the proof.
 ///
 /// This pack's own digest is **re-derived, never hand-edited** — a hand-edited one

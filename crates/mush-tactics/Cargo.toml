@@ -8,7 +8,6 @@ description = "mush-tactics: the tactical-simulation layer, standing seam test f
 
 [dependencies]
 mush-ruleset.workspace = true
-mush-dice.workspace = true
 mush-core.workspace = true
 mush-proto.workspace = true
 # S4: `+btest` opens a real window over the actor's room (plan §3.5); the atlas

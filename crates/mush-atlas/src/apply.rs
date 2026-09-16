@@ -94,7 +94,7 @@ pub fn register_appliers(appliers: &mut Appliers) -> Result<(), PackError> {
     Ok(())
 }
 
-/// S9.1: put a site record another crate's applier built — a `ruleset-tacsim`
+/// S9.1: put a site record another crate's applier built — a `tacsim`
 /// `location` in an orbital or system region — under the atlas's own slot,
 /// validated, its document written, its revision carried from the previous
 /// record under the same key. The record's `region` must be applied.
@@ -120,7 +120,7 @@ pub fn put_site(ctx: &mut Ctx<'_>, mut rec: SiteRec) -> Result<(), String> {
 }
 
 /// S9.1: put a connection record another crate's applier built — a
-/// `ruleset-tacsim` `route` between two orbital sites — under the atlas's own
+/// `tacsim` `route` between two orbital sites — under the atlas's own
 /// slot, validated, its document written, its revision carried.
 ///
 /// # Errors

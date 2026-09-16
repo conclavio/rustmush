@@ -83,7 +83,7 @@ use mush_server::sim_routes::TacsimRouteCatalog;
 use mush_server::staff::StaffOpKind;
 use mush_sim::RouteCatalog;
 use mush_store::{InMemoryStore, ObjectStore};
-use ruleset_tacsim::TacsimStore;
+use tacsim::TacsimStore;
 
 // ---- rig -------------------------------------------------------------------
 
@@ -120,12 +120,12 @@ fn enable_tacsim(cfg: &mut Config) {
     std::fs::create_dir_all(&dir).unwrap();
     let core = dir.join("tacsim_core.json");
     let corridor = dir.join("tacsim_corridor.json");
-    std::fs::write(&core, ruleset_tacsim::fixture::CORE_JSON).unwrap();
-    std::fs::write(&corridor, ruleset_tacsim::fixture::CORRIDOR_JSON).unwrap();
+    std::fs::write(&core, tacsim::fixture::CORE_JSON).unwrap();
+    std::fs::write(&corridor, tacsim::fixture::CORRIDOR_JSON).unwrap();
     cfg.tacsim.enabled = true;
     cfg.tacsim.pack_paths = vec![core.display().to_string()];
     cfg.tacsim.seed_paths = vec![corridor.display().to_string()];
-    cfg.tacsim.corridor = ruleset_tacsim::fixture::CORRIDOR_PACK.to_string();
+    cfg.tacsim.corridor = tacsim::fixture::CORRIDOR_PACK.to_string();
 }
 
 fn llm_handle(cfg: &Config) -> Arc<LlmService> {
@@ -579,7 +579,7 @@ async fn split_build_engine_composes_the_tacsim_layer() {
 async fn a_seeded_pack_resolves_a_route() {
     let mut fx = boot_fixture("route", enable_tacsim).await;
 
-    let route = CanonicalId::new(ruleset_tacsim::fixture::ROUTE).expect("a well-formed id");
+    let route = CanonicalId::new(tacsim::fixture::ROUTE).expect("a well-formed id");
     let catalog = TacsimRouteCatalog;
     assert!(
         catalog.resolve(&fx.booted.engine.world, &route).is_none(),
@@ -590,7 +590,7 @@ async fn a_seeded_pack_resolves_a_route() {
         &mut fx.booted.engine,
         &format!(
             "@tacsim/seed {} commit",
-            ruleset_tacsim::fixture::CORRIDOR_PACK
+            tacsim::fixture::CORRIDOR_PACK
         ),
     );
 

@@ -17,7 +17,7 @@ use mush_testkit::{TestWorld, text_of};
 use smol_str::SmolStr;
 
 // ---- a toy unit behavior: one Operated-only command, the assignment link is
-// the only path to it (the ruleset-tacsim contract) ----------------------
+// the only path to it (the tacsim contract) ----------------------
 
 struct ToyUnitModule;
 

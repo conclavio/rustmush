@@ -56,7 +56,7 @@ pub const MAX_ALLOWED_CATEGORIES: usize = 32;
 pub const MAX_FORMATIONS_PER_OPERATION: usize = 32;
 
 /// A unit category a composition admits. Ruleset vocabulary, opaque here — the
-/// engine stores generic kinds and `ruleset-tacsim` supplies the names (T8).
+/// engine stores generic kinds and `tacsim` supplies the names (T8).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CategoryId(pub SmolStr);
@@ -175,7 +175,7 @@ impl Strictness {
 }
 
 /// A ruleset-authored formation kind (T8). The engine stores the generic shape;
-/// `ruleset-tacsim` supplies the names and doctrine through the
+/// `tacsim` supplies the names and doctrine through the
 /// [`FormationAuthority`] composition seam.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "FormationKindWire", deny_unknown_fields)]
@@ -412,7 +412,7 @@ impl TryFrom<FormationNodeWire> for FormationNode {
 /// The ruleset seam formation **kinds** arrive through (OPEN 4), copied from
 /// `mush_industry::RecipeAuthority` / `IndustryModule::with_recipes`: the impl
 /// lives at the composition root and reads the ruleset's own store, so
-/// `mush-campaign` gains no ruleset edge and `ruleset-tacsim` gains no campaign
+/// `mush-campaign` gains no ruleset edge and `tacsim` gains no campaign
 /// edge. Unwired, the campaign layer knows no kinds and `@force/create` refuses —
 /// the fail-closed default.
 pub trait FormationAuthority: Send + Sync + std::fmt::Debug {

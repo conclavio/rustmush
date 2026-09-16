@@ -453,7 +453,7 @@ pub fn server_modules_with(
                 .with_seat_audit(Arc::new(crate::seat_audit::SeatAuditLog::new()))
                 // E7 residue pass 1, R4/R3: `[tacsim.recovery]`, mapped from the
                 // ruleset's frozen block by [`recovery_policy`] on this same
-                // composition seam. The campaign crate takes no `ruleset-tacsim`
+                // composition seam. The campaign crate takes no `tacsim`
                 // edge; `cargo tree -p mush-campaign` is the test. Unwired (the
                 // `mush-server` bootstrap path, which composes no TacSim layer) is
                 // the disabled default — fail closed.
@@ -802,8 +802,8 @@ pub fn ruleset_modules(
 /// what keeps `@tacsim` visible to the rule-1 allowlist tripwire in a default
 /// composition.
 #[must_use]
-pub fn tacsim_module(cfg: ruleset_tacsim::TacsimConfig) -> Box<dyn GameModule> {
-    Box::new(ruleset_tacsim::TacsimRuleset::with_config(cfg))
+pub fn tacsim_module(cfg: tacsim::TacsimConfig) -> Box<dyn GameModule> {
+    Box::new(tacsim::TacsimRuleset::with_config(cfg))
 }
 
 /// The **atlas** (S1, 14-spatial-implementation-plan §3.1): the spatial records, the
@@ -850,7 +850,7 @@ pub fn content_module(starter_area: bool) -> Result<Box<dyn GameModule>, String>
         .map_err(|e| format!("npc appliers: {e}"))?;
     // S9.1: a TacSim campaign-seed pack's places and routes are the atlas's
     // sites and connections, applied through the content latch like any pack.
-    ruleset_tacsim::register_appliers(&mut appliers)
+    tacsim::register_appliers(&mut appliers)
         .map_err(|e| format!("tacsim appliers: {e}"))?;
     let mut module = mush_content::ContentModule::new().with_appliers(appliers);
     if starter_area {
@@ -874,11 +874,11 @@ pub fn no_recovery() -> mush_campaign::RecoveryConfig {
 /// layer.**
 ///
 /// The composition root does the mapping so neither crate takes an edge on the other:
-/// `ruleset-tacsim` owns the frozen block, `mush-campaign` owns the provider, and
+/// `tacsim` owns the frozen block, `mush-campaign` owns the provider, and
 /// this is the one line between them (`IndustryModule::with_recipes`' exact shape).
 #[must_use]
 pub fn recovery_policy(
-    cfg: &ruleset_tacsim::TacsimRecoveryConfig,
+    cfg: &tacsim::TacsimRecoveryConfig,
 ) -> mush_campaign::RecoveryConfig {
     mush_campaign::RecoveryConfig {
         enabled: cfg.enabled,
@@ -2425,7 +2425,7 @@ mod tests {
     // `k8_5_production_compositions_publish_command_compatibility` by name, and
     // that test used to hand-assemble the roster it certified:
     // `server_modules_with` + `ruleset_modules` + one
-    // `tacsim_module(ruleset_tacsim::fixture::config())`. So the one job whose
+    // `tacsim_module(tacsim::fixture::config())`. So the one job whose
     // name promises production fidelity asserted over a list nobody boots — no
     // worldgen, no NPC agent, `RecoveryConfig::default()` where a server passes
     // the operator's `[tacsim.recovery]`, and a compiled-in fixture where a
@@ -2453,8 +2453,8 @@ mod tests {
         std::fs::create_dir_all(&packs).expect("a scratch pack dir");
         let core = packs.join("tacsim_core.json");
         let corridor = packs.join("tacsim_corridor.json");
-        std::fs::write(&core, ruleset_tacsim::fixture::CORE_JSON).expect("the core pack file");
-        std::fs::write(&corridor, ruleset_tacsim::fixture::CORRIDOR_JSON)
+        std::fs::write(&core, tacsim::fixture::CORE_JSON).expect("the core pack file");
+        std::fs::write(&corridor, tacsim::fixture::CORRIDOR_JSON)
             .expect("the corridor seed file");
         let mut cfg = Config::default();
         cfg.store.store = "memory".to_string();
@@ -2463,7 +2463,7 @@ mod tests {
         cfg.tacsim.enabled = true;
         cfg.tacsim.pack_paths = vec![core.display().to_string()];
         cfg.tacsim.seed_paths = vec![corridor.display().to_string()];
-        cfg.tacsim.corridor = ruleset_tacsim::fixture::CORRIDOR_PACK.to_string();
+        cfg.tacsim.corridor = tacsim::fixture::CORRIDOR_PACK.to_string();
         cfg
     }
 
@@ -2526,7 +2526,7 @@ mod tests {
             ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
                 .expect("one production ruleset"),
         );
-        modules.push(tacsim_module(ruleset_tacsim::fixture::config()));
+        modules.push(tacsim_module(tacsim::fixture::config()));
         modules
     }
 

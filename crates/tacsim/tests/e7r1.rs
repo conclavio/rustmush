@@ -12,7 +12,7 @@
 use mush_core::{Audience, GOD, ObjId};
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
-use ruleset_tacsim::{
+use tacsim::{
     PackSource, RulesPack, TacsimConfig, TacsimRuleset, TacsimStore, fixture, load_pack,
 };
 
@@ -226,7 +226,7 @@ fn e7r1_r2_a_hand_edited_corridor_digest_fails_naming_both_and_a_re_derived_one_
         name: "<belt>".to_string(),
         bytes: hand_edited,
     });
-    let refused = ruleset_tacsim::verify_sources(&cfg).expect_err("the boot must refuse");
+    let refused = tacsim::verify_sources(&cfg).expect_err("the boot must refuse");
     assert!(refused.contains("<belt>"), "naming the file: {refused}");
 }
 
@@ -250,7 +250,7 @@ fn vf_b11a_a_pack_past_the_hazard_cap_fails_the_boot_naming_the_file_the_route_a
     // The two constants are stated in two crates for the no-edge reason, so they are
     // pinned together here rather than left to drift.
     assert_eq!(
-        ruleset_tacsim::MAX_HAZARD_BAND,
+        tacsim::MAX_HAZARD_BAND,
         mush_sim::MAX_HAZARD_BAND,
         "the pack's own band and the sim's are one number"
     );
@@ -258,7 +258,7 @@ fn vf_b11a_a_pack_past_the_hazard_cap_fails_the_boot_naming_the_file_the_route_a
     // point — so the declared digest is a well-formed placeholder and the refusal
     // still lands on the BAND rather than on the signature.
     let body = armed_corridor_source(9, 3).replace("DIGEST", &"0".repeat(64));
-    let error = ruleset_tacsim::load_pack(&body).expect_err("the pack must not load");
+    let error = tacsim::load_pack(&body).expect_err("the pack must not load");
     let rendered = error.to_string();
     assert!(
         rendered.contains("belt_run"),
@@ -273,7 +273,7 @@ fn vf_b11a_a_pack_past_the_hazard_cap_fails_the_boot_naming_the_file_the_route_a
         name: "<belt>".to_string(),
         bytes: body,
     });
-    let refused = ruleset_tacsim::verify_sources(&cfg).expect_err("the boot must refuse");
+    let refused = tacsim::verify_sources(&cfg).expect_err("the boot must refuse");
     assert!(refused.contains("<belt>"), "naming the file: {refused}");
     assert!(refused.contains("belt_run"), "and the route: {refused}");
 }
@@ -543,13 +543,13 @@ fn e7r1_r2_a_v2_corridor_pack_leaves_every_v1_pinned_route_unchanged() {
 
 fn timed(rate: u32) -> TacsimConfig {
     let mut cfg = fixture::config();
-    cfg.time = ruleset_tacsim::TacsimTimeConfig {
+    cfg.time = tacsim::TacsimTimeConfig {
         rate,
         catch_up_journeys: "restamp_preserving_remaining".to_string(),
         catch_up_production: "pause_timeline_changed".to_string(),
         catch_up_fronts: "no_restamp".to_string(),
         catch_up_domains: "refuse_and_page".to_string(),
-        ephemeris: ruleset_tacsim::EphemerisConfig::default(),
+        ephemeris: tacsim::EphemerisConfig::default(),
     };
     cfg
 }

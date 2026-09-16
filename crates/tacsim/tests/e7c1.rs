@@ -1,7 +1,7 @@
 //! **E7 cut 1 acceptance** (10b §3.1) — the three lenses, in order.
 //!
 //! - **P (pack identity)** — *can two byte streams produce one digest, or one stream
-//!   two?* Everything rests on [`ruleset_tacsim::pack_digest`], so it is tested first
+//!   two?* Everything rests on [`tacsim::pack_digest`], so it is tested first
 //!   and hardest: what is hashed, what is deliberately not, and what makes a pack
 //!   digest different from every other digest over the same bytes.
 //! - **S (seed idempotency)** — *can any interleaving or crash duplicate a seeded
@@ -15,7 +15,7 @@
 //!   because only the host can fail a boot.
 //!
 //! Everything runs through the real `Engine` via `TestWorld`, on the module alone —
-//! `ruleset-tacsim` depends on `{mush-core, mush-sim}` and nothing else, so there is
+//! `tacsim` depends on `{mush-core, mush-sim}` and nothing else, so there is
 //! nothing else to compose.
 
 use std::collections::{BTreeMap, HashMap};
@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, HashMap};
 use mush_core::{Audience, CanonicalId, GOD, ModuleBootData, ModuleWrite, ObjId};
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
-use ruleset_tacsim::{
+use tacsim::{
     MAX_CONFIGURED_PACKS, MAX_LEG_SECS, MAX_PACK_ENTRIES, MAX_PINS, MAX_RECIPE_LINES,
     MAX_RECIPE_UNITS, MAX_REQUIRES, MAX_ROUTE_PROPELLANT, MAX_SEED_OBJECTS, PACK_DIGEST_DOMAIN,
     PACK_PAGE, PackEntry, PackError, PackKind, PackManifest, PackSource, ResolveError, RulesPack,
@@ -133,7 +133,7 @@ fn reboot_result(tw: &mut TestWorld, kv: &Kv) -> Result<(), mush_core::module::M
 
 fn patch(kv: &mut Kv, key: &str, f: impl Fn(&mut serde_json::Value)) {
     let entry = kv
-        .get_mut(&SmolStr::new(ruleset_tacsim::NS))
+        .get_mut(&SmolStr::new(tacsim::NS))
         .expect("the namespace wrote");
     let mut seen = false;
     for (k, v) in entry.iter_mut() {
@@ -392,7 +392,7 @@ fn e7c1_load_every_wire_re_runs_its_constructor() {
         "applied_at": { "clock": { "kind": "world_ic", "generation": 1 }, "at": 0 },
         "objects": 9, "placed": { "yard": 5 }
     });
-    let refused = serde_json::from_value::<ruleset_tacsim::SeedApplication>(latch)
+    let refused = serde_json::from_value::<tacsim::SeedApplication>(latch)
         .expect_err("a count that disagrees with the map");
     assert!(refused.to_string().contains("declares 9"), "{refused}");
 }
@@ -441,8 +441,8 @@ fn e7c1_boot_a_corrupt_stored_document_is_skipped_loudly_and_the_world_boots() {
     // Corrupt the ledger row, the latch and a pin, all three.
     ok(&mut tw, GOD, "@tacsim/pin alloy_smelt=tacsim.core@1");
     let extra = fold_all(&mut tw);
-    for (k, v) in extra.get(&SmolStr::new(ruleset_tacsim::NS)).unwrap() {
-        let ns = kv.entry(SmolStr::new(ruleset_tacsim::NS)).or_default();
+    for (k, v) in extra.get(&SmolStr::new(tacsim::NS)).unwrap() {
+        let ns = kv.entry(SmolStr::new(tacsim::NS)).or_default();
         ns.retain(|(key, _)| key != k);
         ns.push((k.clone(), v.clone()));
     }
@@ -655,7 +655,7 @@ fn e7c1_seed_max_seed_objects_refuses_before_the_first_object() {
     );
     // It never even becomes a pack: `MAX_SEED_OBJECTS` is re-checked by the wire, so a
     // pack this size is refused at load, long before `@tacsim/seed` could plan it.
-    let wire: ruleset_tacsim::pack::RulesPackWire =
+    let wire: tacsim::pack::RulesPackWire =
         serde_json::from_str(&text).expect("the entry table is inside MAX_PACK_ENTRIES");
     match RulesPack::try_from(wire) {
         Err(PackError::TooManySeedObjects { actual, max }) => {
@@ -752,7 +752,7 @@ fn e7c1_pin_a_pinned_subject_ignores_a_newer_version_and_a_retired_one_fails_clo
     let mut retired = boot_with(only_v2);
     reboot(&mut retired, &kv);
     match snap(&retired).resolve(&cid("volatiles")) {
-        Err(ruleset_tacsim::ResolveError::Retired { version, how, .. }) => {
+        Err(tacsim::ResolveError::Retired { version, how, .. }) => {
             assert_eq!((version, how), (1, "pinned"));
         }
         other => panic!("a pin to a retired version must fail closed: {other:?}"),
@@ -779,7 +779,7 @@ fn e7c1_pin_a_pinned_subject_ignores_a_newer_version_and_a_retired_one_fails_clo
     });
     reboot(&mut moved, &seeded_kv);
     match snap(&moved).resolve(&cid("ceres_extraction")) {
-        Err(ruleset_tacsim::ResolveError::Retired { version, how, .. }) => {
+        Err(tacsim::ResolveError::Retired { version, how, .. }) => {
             assert_eq!((version, how), (1, "seeded"));
         }
         other => panic!("an unpinned consumer of a retired version must fail closed: {other:?}"),
@@ -974,7 +974,7 @@ fn e7c1_boot_publishes_a_ledger_row_once_per_version() {
     assert_eq!(snap(&tw).published().count(), 2);
     let kv = fold_all(&mut tw);
     let rows = kv
-        .get(&SmolStr::new(ruleset_tacsim::NS))
+        .get(&SmolStr::new(tacsim::NS))
         .expect("the namespace wrote")
         .iter()
         .filter(|(k, _)| k.starts_with("tacsim:pack:"))
@@ -1026,7 +1026,7 @@ fn refusal(body: &str) -> PackError {
         load_pack(&text).is_err(),
         "the load path must refuse it too"
     );
-    let wire: ruleset_tacsim::pack::RulesPackWire =
+    let wire: tacsim::pack::RulesPackWire =
         serde_json::from_str(&text).expect("the wire itself parses");
     RulesPack::try_from(wire).expect_err("the constructor must refuse it")
 }
@@ -1351,7 +1351,7 @@ fn vf_p5_the_entry_cap_and_the_seed_object_cap_are_separate_refusals() {
     for i in 0..=MAX_PACK_ENTRIES {
         too_many_entries.insert(
             cid(&format!("c{i:04}")),
-            PackEntry::Commodity(ruleset_tacsim::CommodityDef {
+            PackEntry::Commodity(tacsim::CommodityDef {
                 label: "C".to_string(),
                 in_use: false,
             }),
@@ -1367,7 +1367,7 @@ fn vf_p5_the_entry_cap_and_the_seed_object_cap_are_separate_refusals() {
     for i in 0..=MAX_SEED_OBJECTS {
         too_many_objects.insert(
             cid(&format!("p{i:04}")),
-            PackEntry::Location(ruleset_tacsim::LocationDef {
+            PackEntry::Location(tacsim::LocationDef {
                 label: "P".to_string(),
                 role: cid("yard"),
                 body: None,

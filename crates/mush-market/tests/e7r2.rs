@@ -205,8 +205,8 @@ fn production(relative: &str) -> String {
 /// *"two untouched tripwires plus one new `mush-market` tripwire"*).
 ///
 /// `mush-inventory/tests/e7c2.rs` forbids `mush-inventory -> {market, industry,
-/// ruleset-tacsim, sim, tactics, org}` and `mush-industry/tests/e7c3.rs` forbids
-/// `mush-industry -> {sim, market, faction, ruleset-tacsim, party, tactics, scenes,
+/// tacsim, sim, tactics, org}` and `mush-industry/tests/e7c3.rs` forbids
+/// `mush-industry -> {sim, market, faction, tacsim, party, tactics, scenes,
 /// jobs, housing}`. **Neither names `mush-market -> mush-inventory`**, neither is
 /// amended by this pass, and both stay green. What was missing is a scan of this
 /// crate's own manifest, so the pass's ONE new edge cannot be joined by a second.
@@ -259,7 +259,7 @@ fn e7r2_p1_the_market_edge_set_is_exactly_core_org_economy_inventory() {
         "mush-tactics",
         "mush-campaign",
         "mush-propagation",
-        "ruleset-tacsim",
+        "tacsim",
         "ruleset-shadowrun",
         "mush-canon",
         "mush-party",

@@ -4,7 +4,7 @@
 //! with their hazard and interdiction bands, [`DriveProfile`], the one pure evaluator
 //! [`route_duration`], and the [`RouteCatalog`] seam the composition root installs so
 //! `@journey/depart` resolves an authored route id. The type lives here rather than
-//! in `ruleset-tacsim` because every ruleset depends on `mush-sim` (the crate owns the
+//! in `tacsim` because every ruleset depends on `mush-sim` (the crate owns the
 //! state machine, the ruleset provides the data).
 //!
 //! The legacy room-to-room **runtime** this file once carried (`Journey`, `Leg`, the
@@ -25,15 +25,15 @@ pub const DEFAULT_TRAVEL_S: u32 = 30;
 // where it has got to. What the tree had no type for at all is the **definition** a
 // passage is planned from — 10b's G1, re-confirmed by symbol at `a1934a7`.
 //
-// **Why the type is here and not in `ruleset-tacsim`** (10b §3.1 correction (a),
+// **Why the type is here and not in `tacsim`** (10b §3.1 correction (a),
 // OPEN 2). 10b §3.1 and §4.1 put `RouteDef` in cut 1's ruleset crate and §3.6 makes
 // `mush-sim` (cut 6) its consumer. `mush-sim -> {core, economy, proto}` and every
-// ruleset depends on `mush-sim`, so `mush-sim -> ruleset-tacsim` is a cycle and the
+// ruleset depends on `mush-sim`, so `mush-sim -> tacsim` is a cycle and the
 // cut as drafted is unbuildable. The split is `mush-tactics/src/mobility.rs`'s
 // stated pattern instead — **the crate owns the state machine, the ruleset provides
 // the data**: the type, its caps and its one pure evaluator live here, adding **no
 // crate edge** (`CadenceId` already reaches this crate through `mush-economy`), and
-// the corridor's actual routes are authored in `ruleset-tacsim`'s rules pack.
+// the corridor's actual routes are authored in `tacsim`'s rules pack.
 //
 // Cut 1 changes nothing above this line: `Leg`, `Journey`, `RouteState` and
 // `route_create` are untouched, and cut 6 is what makes journeys consume a
@@ -100,7 +100,7 @@ pub struct LegDefWire {
 }
 
 /// An unauthored band, which serializes as absent (B14). The pack types' own
-/// `is_unbanded`, restated here because `route.rs` may take no `ruleset-tacsim` edge.
+/// `is_unbanded`, restated here because `route.rs` may take no `tacsim` edge.
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_unbanded(band: &u8) -> bool {
     *band == 0
@@ -484,7 +484,7 @@ pub const MAX_ROUTE_ID_BYTES: usize = 64;
 /// zero declared propellant and no alignment band, so `RouteDef::propellant()`,
 /// `route_duration` had no caller. The verify's proposed
 /// fix — "resolve the id against cut 1's pack" — **cannot be an edge**:
-/// `ruleset-tacsim` depends on `mush-sim`, so `mush-sim -> ruleset-tacsim` is a
+/// `tacsim` depends on `mush-sim`, so `mush-sim -> tacsim` is a
 /// cycle. It is therefore a composition seam in the
 /// [`SimulationModule::with_accounts`](crate::SimulationModule::with_accounts) /
 /// `IndustryModule::with_recipes` shape: the implementation lives at the

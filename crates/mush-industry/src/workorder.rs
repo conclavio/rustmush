@@ -19,7 +19,7 @@
 //! A [`WorkOrder`] carries `recipe: RecipeRef` **plus** the [`PinnedRecipe`] lines
 //! resolved at draft. One `Arc<dyn RecipeAuthority>` handed to `IndustryModule` at
 //! the composition root answers `digest_of` from the ruleset's published pack
-//! digest, so `mush-industry` gains **no** `ruleset-tacsim` edge, holds **no**
+//! digest, so `mush-industry` gains **no** `tacsim` edge, holds **no**
 //! recipe of its own, and a retired recipe version "fails closed" as one `Option`
 //! returning `None` (D-E7-24, Q18A).
 

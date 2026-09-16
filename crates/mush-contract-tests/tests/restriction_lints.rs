@@ -150,7 +150,7 @@ const MEASURED: [(&str, [u32; 6]); 45] = [
     ("mush-worldgen", [0, 0, 2, 0, 0, 0]),
     ("mushd", [0, 1, 0, 1, 0, 0]),
     ("ruleset-shadowrun", [0, 7, 22, 0, 1, 0]),
-    ("ruleset-tacsim", [0, 0, 2, 0, 0, 0]),
+    ("tacsim", [0, 0, 2, 0, 0, 0]),
     ("ruleset-wod", [0, 28, 20, 3, 1, 0]),
 ];
 

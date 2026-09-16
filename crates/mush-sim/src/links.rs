@@ -1,7 +1,7 @@
 //! Per-station channel grants, DERIVED from station assignments (cut 2). An
 //! assignment to a control station grants the actor the unit as a command
 //! subject at the `Operated` reach tier, so the unit's contextual behavior
-//! commands (ruleset-tacsim STARTUP/HEADING, later) reach only its crew.
+//! commands (tacsim STARTUP/HEADING, later) reach only its crew.
 //!
 //! The `command_subject_links` on `World` are treated as a pure projection of
 //! [`HostAssignments`]: any change recomputes and republishes an actor's links

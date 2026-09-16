@@ -8,12 +8,12 @@
 //! **re-derived, never hand-edited**, and a hand-edited one fails `DigestMismatch`
 //! naming both.
 //!
-//! The rig is `crates/ruleset-tacsim/tests/e7r1.rs`'s.
+//! The rig is `crates/tacsim/tests/e7r1.rs`'s.
 
 use mush_core::{Audience, GOD, ObjId};
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
-use ruleset_tacsim::{
+use tacsim::{
     MAX_PACK_ENTRIES, MAX_SEED_OBJECTS, PackError, TacsimConfig, TacsimRuleset, TacsimStore,
     fixture, load_pack,
 };

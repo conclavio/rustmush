@@ -11,19 +11,19 @@ use mush_content::{Appliers, ContentModule, ContentState};
 use mush_core::{CanonicalId, GOD, ObjId, ObjKind};
 use mush_sim::SimulationModule;
 use mush_testkit::TestWorld;
-use ruleset_tacsim::{TacsimRuleset, TacsimStore, fixture};
+use tacsim::{TacsimRuleset, TacsimStore, fixture};
 
 /// The TacSim ruleset with both corridor versions loaded, the simulation, the
 /// atlas and the content module with the atlas's and this crate's appliers.
 fn lot() -> TestWorld {
     let mut cfg = fixture::config();
-    cfg.seeds.push(ruleset_tacsim::PackSource {
+    cfg.seeds.push(tacsim::PackSource {
         name: "<built-in tacsim.corridor@2>".to_string(),
         bytes: fixture::CORRIDOR_V2_JSON.to_string(),
     });
     let mut appliers = Appliers::new();
     mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
-    ruleset_tacsim::register_appliers(&mut appliers).expect("tacsim appliers");
+    tacsim::register_appliers(&mut appliers).expect("tacsim appliers");
     TestWorld::with_modules(vec![
         Box::new(TacsimRuleset::with_config(cfg)),
         Box::new(SimulationModule::new()),
@@ -72,7 +72,7 @@ fn corridor_km(points: &[mush_atlas::Point3]) -> f64 {
         .windows(2)
         .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
         .sum::<f64>()
-        / ruleset_tacsim::GM_PER_KM
+        / tacsim::GM_PER_KM
 }
 
 #[test]

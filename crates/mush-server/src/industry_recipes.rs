@@ -1,5 +1,5 @@
 //! E7c4 B2 — the `RecipeAuthority` implementation, hosted at the composition
-//! root so **`mush-industry` gains no `ruleset-tacsim` edge** (DECIDED: the recipe
+//! root so **`mush-industry` gains no `tacsim` edge** (DECIDED: the recipe
 //! reaches industry by composition, not by an edge). It reads the ruleset's
 //! published packs through `TacsimStore` and answers a `RecipeRef` from the pack's
 //! own published digest — no second digest, no second registry, no callback into
@@ -8,14 +8,14 @@
 
 use mush_core::{CanonicalId, DefinitionDigest, World};
 use mush_industry::{PinnedRecipe, RecipeAuthority, RecipeLine, RecipeRef};
-use ruleset_tacsim::TacsimStore;
+use tacsim::TacsimStore;
 
 /// The one recipe authority, handed to `IndustryModule::with_recipes` at
 /// composition. Holds nothing: it reads the per-world `TacsimStore`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TacsimRecipeAuthority;
 
-fn pin_lines(lines: &[ruleset_tacsim::RecipeLine]) -> Option<Vec<RecipeLine>> {
+fn pin_lines(lines: &[tacsim::RecipeLine]) -> Option<Vec<RecipeLine>> {
     lines
         .iter()
         .map(|line| RecipeLine::new(line.commodity.clone(), line.units).ok())
@@ -86,7 +86,7 @@ impl RecipeAuthority for TacsimRecipeAuthority {
                 continue;
             };
             for (id, entry) in loaded.pack.entries() {
-                let ruleset_tacsim::PackEntry::Recipe(def) = entry else {
+                let tacsim::PackEntry::Recipe(def) = entry else {
                     continue;
                 };
                 let Ok(reference) =

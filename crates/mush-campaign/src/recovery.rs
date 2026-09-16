@@ -155,7 +155,7 @@ pub enum RecoveryRecordError {
 /// The recovery provider's policy, handed in at composition from
 /// `[tacsim.recovery]` (**E7r1 R4**).
 ///
-/// `mush-campaign` takes no `ruleset-tacsim` edge, so the block arrives as this
+/// `mush-campaign` takes no `tacsim` edge, so the block arrives as this
 /// crate's own type through `CampaignModule::with_recovery`, exactly as formation
 /// kinds arrive through `FormationAuthority` — the composition root does the mapping.
 #[derive(Clone, Debug, PartialEq, Eq)]

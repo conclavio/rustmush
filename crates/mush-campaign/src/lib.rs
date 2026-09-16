@@ -153,7 +153,7 @@ impl CampaignModule {
     /// **The composition seam formation kinds arrive through** (OPEN 4), on
     /// `IndustryModule::with_recipes`' shape: the implementation lives at the
     /// composition root and reads the ruleset's own store, so `mush-campaign`
-    /// gains no ruleset edge and `ruleset-tacsim` gains no campaign edge.
+    /// gains no ruleset edge and `tacsim` gains no campaign edge.
     /// **The composition seam the seat audit arrives through** (E7c10 B3), on
     /// `with_formation_kinds`' / `SimulationModule::with_accounts`' shape: the
     /// implementation lives at the composition root beside `AccountIdentity`'s,
@@ -166,7 +166,7 @@ impl CampaignModule {
 
     /// Hand in the composed `[tacsim.recovery]` policy (**E7r1 R4**).
     ///
-    /// The composition root maps `ruleset_tacsim::TacsimRecoveryConfig` into this
+    /// The composition root maps `tacsim::TacsimRecoveryConfig` into this
     /// crate's own type, exactly as `IndustryModule::with_recipes` and
     /// `with_formation_kinds` do — `mush-campaign` takes no ruleset edge, and
     /// `cargo tree -p mush-campaign` is the test.

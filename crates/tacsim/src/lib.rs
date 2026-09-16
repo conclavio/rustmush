@@ -1,4 +1,4 @@
-//! `ruleset-tacsim` — **TacSim's packs, its seed latch and the corridor fixture**
+//! `tacsim` — **TacSim's packs, its seed latch and the corridor fixture**
 //! (E7 cut 1; [`docs/design/10b-e7-implementation-plan.md`] §3.1).
 //!
 //! # It is a layer, not a `[rulesets]` id
@@ -37,12 +37,12 @@
 //!
 //! # The dependency claim
 //!
-//! `ruleset-tacsim -> {mush-core, mush-sim}` and the serde/tracing vocabulary, and
+//! `tacsim -> {mush-core, mush-sim}` and the serde/tracing vocabulary, and
 //! **nothing else** — no economy, org, party, faction, market or tactics edge.
 //! `mush-sim` is the one substantive edge and it is [`mush_sim::RouteDef`]'s: 10b §3.1
 //! put the type here and §3.6 made `mush-sim` its consumer, which is a cycle, so the
 //! **type** lives in `mush-sim` beside `Leg` and this crate provides its **data** —
-//! `mush-tactics/src/mobility.rs`'s stated pattern. `cargo tree -p ruleset-tacsim` is
+//! `mush-tactics/src/mobility.rs`'s stated pattern. `cargo tree -p tacsim` is
 //! the test.
 //!
 //! # Where the bytes come from

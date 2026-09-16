@@ -2709,13 +2709,13 @@ dependencies = [
  "mush-worldgen",
  "rand 0.9.5",
  "ruleset-shadowrun",
- "ruleset-tacsim",
  "ruleset-wod",
  "serde",
  "serde_json",
  "sha2",
  "smol_str",
  "ssh-key",
+ "tacsim",
  "thiserror 2.0.20",
  "tokio",
  "toml",
@@ -2777,7 +2777,6 @@ dependencies = [
  "mush-atlas",
  "mush-content",
  "mush-core",
- "mush-dice",
  "mush-npc",
  "mush-proto",
  "mush-ruleset",
@@ -3773,23 +3772,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ruleset-tacsim"
-version = "0.1.0"
-dependencies = [
- "mush-atlas",
- "mush-content",
- "mush-core",
- "mush-proto",
- "mush-sim",
- "mush-testkit",
- "serde",
- "serde_json",
- "smol_str",
- "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
 name = "ruleset-wod"
 version = "0.1.0"
 dependencies = [
@@ -4625,6 +4607,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tacsim"
+version = "0.1.0"
+dependencies = [
+ "mush-atlas",
+ "mush-content",
+ "mush-core",
+ "mush-proto",
+ "mush-sim",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]

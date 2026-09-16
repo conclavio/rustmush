@@ -3,7 +3,7 @@
 //!
 //! The latch is what makes apply idempotent and retire safe: [`crate::apply::plan`]
 //! diffs a pack against its latch to find what to create, update or retire, and an
-//! unchanged pack applied twice plans nothing. It generalizes `ruleset-tacsim`'s
+//! unchanged pack applied twice plans nothing. It generalizes `tacsim`'s
 //! `SeedApplication` — the same "objects and the latch or neither" invariant, kept by
 //! writing the latch in the same batch as the objects — from a create-only census to a
 //! per-entry ledger with revisions.

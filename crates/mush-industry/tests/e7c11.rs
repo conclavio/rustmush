@@ -27,7 +27,7 @@ fn production(rel: &str) -> String {
 /// substance holds — there is no producer — but the stated grep finds **zero**
 /// hits, because the variant is declared **bare** inside the enum
 /// (`workorder.rs:450`) and the only other occurrence of the word in the tree is
-/// a doc comment in `ruleset-tacsim/src/config.rs`. A later cut re-running the
+/// a doc comment in `tacsim/src/config.rs`. A later cut re-running the
 /// cited grep gets an empty result and cannot tell "declared and unset" from
 /// "deleted". This is the tripwire it was meant to be: **deletion** and **first
 /// production use** fail differently.

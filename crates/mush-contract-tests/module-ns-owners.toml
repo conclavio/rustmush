@@ -22,7 +22,7 @@
 # mush-industry, mush-jobs, mush-mail, mush-market, mush-npc, mush-org,
 # mush-party, mush-privileges, mush-propagation, mush-scenes, mush-script,
 # mush-server, mush-sim, mush-tactics, mush-testkit, mush-weather,
-# mush-worldgen, mushd, ruleset-shadowrun, ruleset-tacsim, ruleset-wod. Every
+# mush-worldgen, mushd, ruleset-shadowrun, tacsim, ruleset-wod. Every
 # distinct production (module, namespace) pair those runs produced is below,
 # plus `jobs -> shadowrun`, which the run never reached and which is declared
 # rather than discovered later by a dropped write.

@@ -16,7 +16,7 @@
 //! every entry that was made or changed is recorded at the revision that was applied,
 //! every entry not reached keeps its previous record, the latch carries an `anomaly`
 //! naming what stopped it, and the caller is told. The next apply plans from that
-//! latch and continues. This is `ruleset-tacsim`'s seed rule ("stop creating, latch
+//! latch and continues. This is `tacsim`'s seed rule ("stop creating, latch
 //! what exists, and page — never propagate") kept for update and retire too.
 //!
 //! Retire is the exception that is checked first: every retire's reference check runs

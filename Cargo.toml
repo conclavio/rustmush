@@ -197,7 +197,7 @@ ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 # LAYER, not a `[rulesets].enabled` id — doc 10 §20 keeps ruleset metaphysics and
 # physical/civil context apart, so it composes beside the one character ruleset,
 # after it, under `[tacsim].enabled`.
-ruleset-tacsim = { path = "crates/ruleset-tacsim" }
+tacsim = { path = "crates/tacsim" }
 # S1 (14-spatial-implementation-plan §3.1): content packs — the JSON pack format, its
 # digest, dependency pinning by version and digest, the entry-kind registry and the
 # once-per-pack apply latch with create/update/retire. `mush-content -> {core}` only: it

@@ -22,7 +22,7 @@
 //! self-referential hash is unverifiable), and the entries are hashed **as authored**,
 //! canonically encoded: reordering keys or entries changes nothing, whitespace inside
 //! a value changes everything, and no Rust type's serialization stands between the
-//! file and its identity. That is the deliberate difference from `ruleset-tacsim`'s
+//! file and its identity. That is the deliberate difference from `tacsim`'s
 //! typed pack, whose digest covers a re-serialization of typed entries; the two share
 //! the primitive and part ways at the value (plan §3.1, deviation (a)).
 //!
@@ -73,7 +73,7 @@ pub const MAX_REQUIRES: usize = 16;
 
 /// What a pack is for.
 ///
-/// `RulesDefinition` and `CampaignSeed` are `ruleset-tacsim`'s two kinds, named here so
+/// `RulesDefinition` and `CampaignSeed` are `tacsim`'s two kinds, named here so
 /// the encoding is one when its packs fold onto this crate (plan S7); the three atlas
 /// kinds are S1's.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

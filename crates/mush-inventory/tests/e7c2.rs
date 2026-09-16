@@ -1001,7 +1001,7 @@ fn e7c2_the_market_keeps_its_own_quantity() {
     for forbidden in [
         "mush-market",
         "mush-industry",
-        "ruleset-tacsim",
+        "tacsim",
         "mush-sim",
         "mush-tactics",
         "mush-org",

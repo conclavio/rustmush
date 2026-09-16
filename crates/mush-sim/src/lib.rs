@@ -182,7 +182,7 @@ impl SimulationModule {
 
     /// Install the route catalog (E7 cut 6 fold B6, discharged by cut 7).
     ///
-    /// `ruleset-tacsim` depends on `mush-sim`, so resolving a pack-authored
+    /// `tacsim` depends on `mush-sim`, so resolving a pack-authored
     /// route id by an edge would be a cycle; the implementation is handed in at
     /// `server_modules_with` instead, exactly as [`Self::with_accounts`] and
     /// `IndustryModule::with_recipes` are. Unwired leaves the manual

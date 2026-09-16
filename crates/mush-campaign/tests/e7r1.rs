@@ -862,7 +862,7 @@ fn insured(pool: AccountId) -> RecoveryConfig {
 ///
 /// `eligible` guarded its whole cooldown branch on `!insures_approved_operations()`
 /// and `cooldown_until` returned `None` under the same word — while
-/// `"approved_operations"` is the default in `mush_config`, `ruleset-tacsim` **and**
+/// `"approved_operations"` is the default in `mush_config`, `tacsim` **and**
 /// `mush_campaign::RecoveryConfig::default`. So on every shipped default
 /// `cooldown_days` was dead, `@recovery/status` rendered no cooldown, and the host
 /// nonetheless validated `cooldown_days >= 1` at boot for a value nothing read. The

@@ -2763,7 +2763,7 @@ fn vf_dh_an_arrived_journey_emits_no_further_sim_op() {
 /// command line at the `manual` drive class with zero declared propellant and no
 /// alignment band, so `RouteDef::propellant()`, `alignment_band()` and
 /// `route_duration` had no caller. The verify's own fix — "resolve the id
-/// against cut 1's authored pack" — could not be an edge (`ruleset-tacsim`
+/// against cut 1's authored pack" — could not be an edge (`tacsim`
 /// depends on `mush-sim`, so the lookup is a cycle), so it needed a
 /// composition-installed catalog in the `SimulationModule::with_accounts` shape.
 /// That catalog is `mush_sim::RouteCatalog` /

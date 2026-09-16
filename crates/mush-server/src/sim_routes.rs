@@ -1,14 +1,14 @@
 //! E7c7 (cut 6 fold, B6 — tracked to this cut): the `RouteCatalog`
 //! implementation, hosted at the composition root so **`mush-sim` gains no
-//! `ruleset-tacsim` edge**.
+//! `tacsim` edge**.
 //!
 //! Cut 6's verify found `@journey/plan|depart <route id>` to be a label only:
 //! `build_route` fabricated a fresh `RouteDef` at the `manual` drive class with
 //! zero declared propellant and no pinned distance, so `RouteDef::propellant()`,
 //! `alignment_band()` and `route_duration` had no caller at all. The verify's
 //! own fix ("resolve the id against cut 1's pack, which needs no edge") **cannot
-//! be built**: the authored pack store is `ruleset_tacsim::TacsimStore` and
-//! `ruleset-tacsim` depends on `mush-sim`, so the lookup would be a cycle. It is
+//! be built**: the authored pack store is `tacsim::TacsimStore` and
+//! `tacsim` depends on `mush-sim`, so the lookup would be a cycle. It is
 //! therefore a composition seam in the `with_accounts` / `with_recipes` shape —
 //! the exact same answer cut 4 gave for recipes.
 //!
@@ -18,7 +18,7 @@
 
 use mush_core::{CanonicalId, World};
 use mush_sim::{RouteCatalog, RouteDef};
-use ruleset_tacsim::TacsimStore;
+use tacsim::TacsimStore;
 
 /// The one route catalog, handed to `SimulationModule::with_route_catalog` at
 /// composition. Holds nothing: it reads the per-world `TacsimStore`.

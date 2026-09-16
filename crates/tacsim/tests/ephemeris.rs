@@ -7,7 +7,7 @@
 
 use mush_core::CanonicalId;
 use mush_sim::{DistanceLaw, DriveProfile, LegDef, RouteDef, route_duration, route_duration_at};
-use ruleset_tacsim::{AU_KM, Body, Ephemeris, EphemerisConfig, PackEntry, fixture, load_pack};
+use tacsim::{AU_KM, Body, Ephemeris, EphemerisConfig, PackEntry, fixture, load_pack};
 
 fn cid(s: &str) -> CanonicalId {
     CanonicalId::new(s).expect("a canonical id")
@@ -225,9 +225,9 @@ fn a_torch_routes_time_scales_with_the_square_root_of_its_distance() {
 
 #[test]
 fn the_nominal_drive_of_a_torch_class_carries_the_torch_law() {
-    let torch = ruleset_tacsim::store::nominal_drive(&cid("fusion_torch")).expect("a drive");
+    let torch = tacsim::store::nominal_drive(&cid("fusion_torch")).expect("a drive");
     assert_eq!(torch.law(), DistanceLaw::Torch);
-    let hauler = ruleset_tacsim::store::nominal_drive(&cid("ion_hauler")).expect("a drive");
+    let hauler = tacsim::store::nominal_drive(&cid("ion_hauler")).expect("a drive");
     assert_eq!(hauler.law(), DistanceLaw::Coast);
 }
 

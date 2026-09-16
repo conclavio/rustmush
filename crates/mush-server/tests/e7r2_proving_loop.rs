@@ -51,7 +51,7 @@ fn boot() -> TestWorld {
             .expect("one production ruleset"),
     );
     // E7r2 P5: the whole Mars–Phobos–Ceres corridor, as `tacsim.corridor@2`.
-    modules.push(tacsim_module(ruleset_tacsim::fixture::config_v2()));
+    modules.push(tacsim_module(tacsim::fixture::config_v2()));
     TestWorld::with_modules(modules)
 }
 

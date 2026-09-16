@@ -1,6 +1,6 @@
 //! E7c9 B4 (OPEN 4) — the `FormationAuthority` implementation, hosted at the
-//! composition root so **`mush-campaign` gains no `ruleset-tacsim` edge and
-//! `ruleset-tacsim` gains no `mush-campaign` edge**. It is
+//! composition root so **`mush-campaign` gains no `tacsim` edge and
+//! `tacsim` gains no `mush-campaign` edge**. It is
 //! `crate::industry_recipes::TacsimRecipeAuthority`'s shape exactly: the impl reads
 //! the ruleset's published packs through `TacsimStore` and hands the campaign layer
 //! the generic kinds it stores.
@@ -21,7 +21,7 @@ use mush_campaign::{
     RoleSpec,
 };
 use mush_core::World;
-use ruleset_tacsim::{FormationKindDef, FormationRoleDef, TacsimStore};
+use tacsim::{FormationKindDef, FormationRoleDef, TacsimStore};
 use smol_str::SmolStr;
 
 /// The one formation authority, handed to `CampaignModule::with_formation_kinds`

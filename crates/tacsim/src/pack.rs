@@ -207,7 +207,7 @@ pub enum PackEntry {
     /// constraint set, the command roles — and the *ruleset* supplies the names
     /// and the doctrine, so a four-unit lance and a five-unit star share an
     /// echelon and remain distinct kinds. `mush-campaign` never reads a pack and
-    /// `ruleset-tacsim` never gains a campaign edge: the definitions reach the
+    /// `tacsim` never gains a campaign edge: the definitions reach the
     /// campaign layer through `CampaignModule::with_formation_kinds` at the
     /// composition root, exactly as a recipe reaches `mush-industry`.
     Formation(FormationKindDef),
@@ -636,7 +636,7 @@ impl BodyDef {
 
 /// The largest authored ore reserve a pack may declare. Matches
 /// `mush_industry::MAX_ORE_RESERVE` by value and is stated here rather than
-/// imported, because `ruleset-tacsim` has no `mush-industry` edge: the pack is
+/// imported, because `tacsim` has no `mush-industry` edge: the pack is
 /// data, and the crate that consumes it re-checks every bound on its own
 /// constructor.
 pub const MAX_DEPOSIT_RESERVE: u64 = 1_000_000_000;

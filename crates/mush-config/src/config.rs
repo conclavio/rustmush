@@ -911,7 +911,7 @@ impl Default for TacsimCfg {
 /// verbs. That is allowed and supported: **the provider is campaign-shaped, not
 /// tacsim-shaped** — it grants against `mush-sim` placement and `mush-campaign`
 /// formations, needs no route, no pack and no domain, and reaches nothing in
-/// `ruleset-tacsim` at all. It lives under `[tacsim.recovery]` because that is where
+/// `tacsim` at all. It lives under `[tacsim.recovery]` because that is where
 /// the campaign layer's operator-facing knobs live, not because it depends on the
 /// layer. A deployment that wants no loaner provider sets **this** block's `enabled`
 /// to `false`, which is already the default.
@@ -919,7 +919,7 @@ impl Default for TacsimCfg {
 /// **The `insurance` word governs debt-versus-writeoff and nothing else**
 /// (independent verify fold, C6/B2; owner decision F4(i)(b)). It used to gate the
 /// whole cooldown, so on every default deployment — `"approved_operations"` is the
-/// default here, in `ruleset-tacsim` and in `mush-campaign` — `cooldown_days` was a
+/// default here, in `tacsim` and in `mush-campaign` — `cooldown_days` was a
 /// value this host **validated at boot** and nothing ever read. Q7A's *"waived when
 /// the loss was inside the restrictions"* is a per-loss fact, and nothing records
 /// whether any loss was; the per-loss waiver is 10b §15.3's pass-2 item.

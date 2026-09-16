@@ -1506,7 +1506,7 @@ fn e7c3_wiring_the_crates_edge_set_is_exactly_what_it_declares() {
         "mush-sim",
         "mush-market",
         "mush-faction",
-        "ruleset-tacsim",
+        "tacsim",
         "mush-party",
         "mush-tactics",
         "mush-scenes",

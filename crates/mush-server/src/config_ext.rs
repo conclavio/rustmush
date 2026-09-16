@@ -349,7 +349,7 @@ pub fn shadowrun_economy_config(
 
 /// The most bytes one TacSim pack file this host will read.
 ///
-/// Mirrors `ruleset_tacsim::MAX_PACK_BYTES`, checked **before** the file is read so an
+/// Mirrors `tacsim::MAX_PACK_BYTES`, checked **before** the file is read so an
 /// enormous file is refused by name rather than pulled into memory and then rejected.
 pub const MAX_TACSIM_PACK_BYTES: u64 = 512 * 1_024;
 
@@ -358,7 +358,7 @@ pub const MAX_TACSIM_PACK_BYTES: u64 = 512 * 1_024;
 /// **The host reads the bytes; the ruleset owns parse, digest and validation.** This
 /// function walks `pack_paths` and `seed_paths`, reads each entry — a file, or every
 /// `*.json` in a directory, in sorted order so a boot is deterministic — and hands
-/// `ruleset_tacsim::verify_sources` `(name, text)` pairs. An unreadable, oversized,
+/// `tacsim::verify_sources` `(name, text)` pairs. An unreadable, oversized,
 /// unparseable or digest-mismatched pack is a **hard boot error naming the file**,
 /// which is 10b §3.1 invariant (iv) and the only place it can be enforced: only the
 /// host can fail a boot.
@@ -376,8 +376,8 @@ pub const MAX_TACSIM_PACK_BYTES: u64 = 512 * 1_024;
 ///
 /// A message naming the file, for an I/O failure, a file past
 /// [`MAX_TACSIM_PACK_BYTES`], a directory that cannot be listed, or anything
-/// `ruleset_tacsim::verify_sources` refuses.
-pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, String> {
+/// `tacsim::verify_sources` refuses.
+pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
     let mut packs = Vec::new();
     let mut seeds = Vec::new();
     if cfg.enabled {
@@ -394,7 +394,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, St
             cfg.ground_cell_cm
         ));
     }
-    let typed = ruleset_tacsim::TacsimConfig {
+    let typed = tacsim::TacsimConfig {
         enabled: cfg.enabled,
         packs,
         seeds,
@@ -406,14 +406,14 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, St
         // that configures nothing must not be able to refuse a boot, and E6a set the
         // same precedent with `catalog_paths`/`quote_ttl_*`. The cut that reads a
         // field is the cut that validates it.
-        time: ruleset_tacsim::TacsimTimeConfig {
+        time: tacsim::TacsimTimeConfig {
             rate: cfg.time.rate,
             catch_up_journeys: cfg.time.catch_up_journeys.clone(),
             catch_up_production: cfg.time.catch_up_production.clone(),
             catch_up_fronts: cfg.time.catch_up_fronts.clone(),
             catch_up_domains: cfg.time.catch_up_domains.clone(),
             // S7 (T17): live — the store pins every corridor's distance from it.
-            ephemeris: ruleset_tacsim::EphemerisConfig {
+            ephemeris: tacsim::EphemerisConfig {
                 epoch: cfg.time.ephemeris.epoch,
                 rate: cfg.time.ephemeris.rate,
             },
@@ -429,7 +429,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<ruleset_tacsim::TacsimConfig, St
     // Verify here, at the host, so the boot fails with the file's name in the message.
     // The check is pure and the module repeats it at wiring; two evaluations of a pure
     // function over the same bytes cannot disagree.
-    ruleset_tacsim::verify_sources(&typed)?;
+    tacsim::verify_sources(&typed)?;
     Ok(typed)
 }
 
@@ -495,7 +495,7 @@ pub fn atlas_config(
 /// actionable without reading this function.
 fn recovery_config(
     cfg: &mush_config::config::TacsimRecoveryCfg,
-) -> Result<ruleset_tacsim::TacsimRecoveryConfig, String> {
+) -> Result<tacsim::TacsimRecoveryConfig, String> {
     let insurance = cfg.insurance.trim().to_string();
     let tiers: Vec<String> = cfg
         .tiers
@@ -540,21 +540,21 @@ fn recovery_config(
             return Err("[tacsim.recovery]: `pool_floor` is not negative".to_owned());
         }
     }
-    if tiers.len() > ruleset_tacsim::MAX_RECOVERY_TIERS {
+    if tiers.len() > tacsim::MAX_RECOVERY_TIERS {
         return Err(format!(
             "[tacsim.recovery]: `tiers` declares {} entries; this server takes at most {}",
             tiers.len(),
-            ruleset_tacsim::MAX_RECOVERY_TIERS
+            tacsim::MAX_RECOVERY_TIERS
         ));
     }
-    if !ruleset_tacsim::RECOVERY_INSURANCE_WORDS.contains(&insurance.as_str()) {
+    if !tacsim::RECOVERY_INSURANCE_WORDS.contains(&insurance.as_str()) {
         return Err(format!(
             "[tacsim.recovery]: `insurance` is one of {}; `{insurance}` is a policy nothing \
              applies",
-            ruleset_tacsim::RECOVERY_INSURANCE_WORDS.join(" | ")
+            tacsim::RECOVERY_INSURANCE_WORDS.join(" | ")
         ));
     }
-    Ok(ruleset_tacsim::TacsimRecoveryConfig {
+    Ok(tacsim::TacsimRecoveryConfig {
         enabled: cfg.enabled,
         pool_account: cfg.pool_account,
         pool_floor: cfg.pool_floor,
@@ -569,10 +569,10 @@ fn recovery_config(
 
 /// The most pack files this host will read for one `[tacsim]` path list.
 ///
-/// A host mirror of `ruleset_tacsim::MAX_CONFIGURED_PACKS`, so the **listing** pass can
+/// A host mirror of `tacsim::MAX_CONFIGURED_PACKS`, so the **listing** pass can
 /// consult it (independent verify B5). `verify_sources` keeps its own check of the
 /// combined `packs + seeds` count as the defence-in-depth repeat.
-pub const MAX_TACSIM_CONFIGURED_PACKS: usize = ruleset_tacsim::MAX_CONFIGURED_PACKS;
+pub const MAX_TACSIM_CONFIGURED_PACKS: usize = tacsim::MAX_CONFIGURED_PACKS;
 
 /// Read every configured pack path into `(name, bytes)` pairs, deterministically.
 ///
@@ -588,7 +588,7 @@ pub const MAX_TACSIM_CONFIGURED_PACKS: usize = ruleset_tacsim::MAX_CONFIGURED_PA
 fn read_pack_sources(
     paths: &[String],
     label: &str,
-) -> Result<Vec<ruleset_tacsim::PackSource>, String> {
+) -> Result<Vec<tacsim::PackSource>, String> {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     for entry in paths {
         let path = std::path::Path::new(entry.trim());
@@ -628,10 +628,10 @@ fn read_pack_sources(
         }
     }
     let section = label.split('.').next().unwrap_or(label);
-    let mut out: Vec<ruleset_tacsim::PackSource> = Vec::with_capacity(candidates.len());
+    let mut out: Vec<tacsim::PackSource> = Vec::with_capacity(candidates.len());
     for file in candidates {
         let (name, bytes) = read_pack_file(&file, section)?;
-        out.push(ruleset_tacsim::PackSource { name, bytes });
+        out.push(tacsim::PackSource { name, bytes });
     }
     Ok(out)
 }
@@ -693,7 +693,7 @@ mod tests {
     /// **E7 cut 1, the B lens: a malformed pack FILE refuses the boot and names it.**
     ///
     /// This is the opposite answer to a corrupt stored `tacsim:*` document, which is
-    /// skipped loudly while the world boots (`ruleset_tacsim::store`'s table). Both are
+    /// skipped loudly while the world boots (`tacsim::store`'s table). Both are
     /// asserted, in different crates, on purpose: a file is the operator's declared
     /// intent and refusing to start over a typo they can fix is right; a stored document
     /// is this world's accumulated history and refusing to start over one row of it is
@@ -716,16 +716,16 @@ mod tests {
         };
 
         // The good case first: the built-in fixture, written out and read back, boots.
-        let core = write("tacsim_core.json", ruleset_tacsim::fixture::CORE_JSON);
+        let core = write("tacsim_core.json", tacsim::fixture::CORE_JSON);
         let corridor = write(
             "tacsim_corridor.json",
-            ruleset_tacsim::fixture::CORRIDOR_JSON,
+            tacsim::fixture::CORRIDOR_JSON,
         );
         let good = TacsimCfg {
             enabled: true,
             pack_paths: vec![core.clone()],
             seed_paths: vec![corridor.clone()],
-            corridor: ruleset_tacsim::fixture::CORRIDOR_PACK.to_string(),
+            corridor: tacsim::fixture::CORRIDOR_PACK.to_string(),
             ..TacsimCfg::default()
         };
         let typed = tacsim_config(&good).expect("the fixture packs load");
@@ -739,7 +739,7 @@ mod tests {
         let garbage = write("garbage.json", "{ this is not json");
         let unknown_key = write(
             "unknown.json",
-            &ruleset_tacsim::fixture::CORE_JSON.replacen(
+            &tacsim::fixture::CORE_JSON.replacen(
                 "\"entries\"",
                 "\"surprise\": 1, \"entries\"",
                 1,
@@ -747,7 +747,7 @@ mod tests {
         );
         let bad_digest = write(
             "bad_digest.json",
-            &ruleset_tacsim::fixture::CORE_JSON.replacen(
+            &tacsim::fixture::CORE_JSON.replacen(
                 "db2702631983de33bf61e3018b7cede2add8c5aa127ae49ca26e0256bd1a6049",
                 "0000000000000000000000000000000000000000000000000000000000000000",
                 1,
@@ -781,7 +781,7 @@ mod tests {
         assert!(refused.contains("does not load"), "{refused}");
         let core_v2 = write(
             "core_v2.json",
-            &ruleset_tacsim::fixture::CORE_JSON.replacen("\"version\": 1", "\"version\": 2", 1),
+            &tacsim::fixture::CORE_JSON.replacen("\"version\": 1", "\"version\": 2", 1),
         );
         let mismatch = TacsimCfg {
             enabled: true,
@@ -815,8 +815,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("e7c1-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
-        std::fs::write(dir.join("a.json"), ruleset_tacsim::fixture::CORE_JSON).expect("writes");
-        std::fs::write(dir.join("b.json"), ruleset_tacsim::fixture::CORE_JSON).expect("writes");
+        std::fs::write(dir.join("a.json"), tacsim::fixture::CORE_JSON).expect("writes");
+        std::fs::write(dir.join("b.json"), tacsim::fixture::CORE_JSON).expect("writes");
         let cfg = TacsimCfg {
             enabled: true,
             pack_paths: vec![dir.display().to_string()],
@@ -864,7 +864,7 @@ mod tests {
         for i in 0..=MAX_TACSIM_CONFIGURED_PACKS {
             std::fs::write(
                 readable.join(format!("p{i:03}.json")),
-                ruleset_tacsim::fixture::CORE_JSON,
+                tacsim::fixture::CORE_JSON,
             )
             .expect("writes");
             // A *directory* named `*.json`: it is listed as a candidate and cannot be
@@ -896,7 +896,7 @@ mod tests {
         // And a directory inside the cap is still read, in sorted order, as before.
         let small = dir.join("small");
         std::fs::create_dir_all(&small).expect("a scratch directory");
-        std::fs::write(small.join("core.json"), ruleset_tacsim::fixture::CORE_JSON)
+        std::fs::write(small.join("core.json"), tacsim::fixture::CORE_JSON)
             .expect("writes");
         let cfg = TacsimCfg {
             enabled: true,
