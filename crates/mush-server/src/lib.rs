@@ -60,29 +60,27 @@ pub mod accounts_identity;
 pub mod action_coordinator;
 pub mod archive;
 pub mod boot;
-pub mod campaign_formations;
 pub mod config_ext;
 /// E7c10 B3: the server-side, audit-only seat attribution log.
-pub mod seat_audit;
 // E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
 pub mod decision_dispatch;
 pub mod decision_llm;
 pub mod discord_dm;
 pub mod durable_outbox;
-pub mod econ_alerts;
-pub mod econ_canon;
-pub mod econ_inbox;
 pub mod gateway_link;
 pub mod gateway_sink;
 pub mod help;
-pub mod industry_recipes;
 pub mod modules;
+// The composition adapters moved to the game crate (16b cut R-a, R2); the paths the
+// integration tests use keep resolving.
+pub use tacsim::composition::{
+    campaign_formations, econ_alerts, econ_canon, econ_inbox, industry_recipes, salvage_source,
+    seat_audit, sim_routes,
+};
 pub mod persist;
 mod process_fault;
 pub mod quarantine;
 pub mod retained;
-pub mod salvage_source;
-pub mod sim_routes;
 pub mod staff;
 pub mod store_read;
 pub mod tactics_outbox;

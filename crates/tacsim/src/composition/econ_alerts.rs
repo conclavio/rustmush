@@ -130,7 +130,7 @@ impl EconomyObserver for StaffAlerts {
         if let Some(first) = record.recommended.first() {
             lines.push(format!("  → {first}   (@econ/alerts #{id} for the rest)"));
         }
-        let audience = crate::world_task::connected_wizards(ctx.w);
+        let audience = ctx.w.connected_wizards();
         // R4: an empty audience is not a delivery. Leaving the step unrecorded is
         // what lets the economy's connect-time re-announcement page the first
         // staffer who arrives, instead of the ladder's next reminder telling them a

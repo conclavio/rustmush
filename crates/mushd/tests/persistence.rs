@@ -888,7 +888,7 @@ async fn boot_onboarding_rig(
     let staff = Arc::new(StaffQueue::new());
     let mut registry = world_task::base_registry();
     register_server_commands(&mut registry, &staff).unwrap();
-    let onboarding = ruleset_wod::OnboardingConfig {
+    let onboarding = mush_core::OnboardingConfig {
         chargen_required: true,
         start_room: LIMBO,
         start_room_unapproved: LIMBO,
@@ -1238,7 +1238,7 @@ async fn boot_wod_rig(
     mods.extend(
         mushd::modules::ruleset_modules(
             &["wod".to_string()],
-            &ruleset_wod::OnboardingConfig::default(),
+            &mush_core::OnboardingConfig::default(),
             &ruleset_wod::WodEconomyConfig::default(),
             &ruleset_shadowrun::SrEconomyConfig::default(),
         )

@@ -830,6 +830,18 @@ impl World {
         self.connected.iter().copied()
     }
 
+    /// Every connected Wizard-or-better, in id order — the one staff audience
+    /// an alert fans out to, whether from the world loop or from inside a step.
+    #[must_use]
+    pub fn connected_wizards(&self) -> Vec<ObjId> {
+        self.connected()
+            .filter(|actor| {
+                self.get(*actor)
+                    .is_some_and(|o| o.role() >= crate::flags::Role::Wizard)
+            })
+            .collect()
+    }
+
     /// Mirror an actor's live transport-connection count (engine
     /// bookkeeping — transient, never persisted). A link-dead actor is
     /// still [`is_connected`](World::is_connected) but has zero live

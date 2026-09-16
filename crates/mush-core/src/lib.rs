@@ -78,6 +78,7 @@ pub mod mechanics;
 pub mod module;
 pub mod obj;
 pub mod offer;
+pub mod onboarding;
 pub mod output;
 pub mod perm;
 pub mod request;
@@ -289,6 +290,7 @@ pub use module::{
     is_concealed, perceives_via, room_ambient,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
+pub use onboarding::OnboardingConfig;
 pub use offer::{
     ActionPresentation, InternalOffer, InternalOfferDraft, LegalActionProjectionError,
     LegalActionQuery, LegalActionResolutionError, LegalActionSubjectError,

@@ -140,7 +140,7 @@ const MEASURED: [(&str, [u32; 6]); 45] = [
     ("mush-ruleset", [0, 3, 7, 0, 0, 0]),
     ("mush-scenes", [0, 12, 7, 0, 0, 0]),
     ("mush-script", [0, 1, 0, 0, 0, 0]),
-    ("mush-server", [0, 33, 6, 1, 11, 0]),
+    ("mush-server", [0, 29, 6, 1, 11, 0]),
     ("mush-session", [0, 0, 0, 0, 0, 0]),
     ("mush-sim", [6, 42, 7, 0, 0, 0]),
     ("mush-store", [18, 283, 15, 1, 1, 2]),
@@ -150,7 +150,11 @@ const MEASURED: [(&str, [u32; 6]); 45] = [
     ("mush-worldgen", [0, 0, 2, 0, 0, 0]),
     ("mushd", [0, 1, 0, 1, 0, 0]),
     ("ruleset-shadowrun", [0, 7, 22, 0, 1, 0]),
-    ("tacsim", [0, 0, 2, 0, 0, 0]),
+    // 16b cut R-a (R2): the composition root moved here from mush-server with its
+    // three built-in-id `expect`s (housing and market title issuers, the capability
+    // vocabulary); mush-server lost those three and the boot-loader one, which was
+    // rewritten as a refusal.
+    ("tacsim", [0, 3, 2, 0, 0, 0]),
     ("ruleset-wod", [0, 28, 20, 3, 1, 0]),
 ];
 
@@ -462,7 +466,9 @@ fn the_enabled_set_is_the_one_the_measurement_produced() {
             // count is the measurement's plus two; WS01-S10B denies `expect_used` in
             // mush-session too, so that one is plus three.
             ("clippy::unwrap_used", 42),
-            ("clippy::expect_used", 10),
+            // 16b cut R-a: tacsim now carries the composition root's three expects, so
+            // it no longer denies `expect_used`; nine crates do.
+            ("clippy::expect_used", 9),
             ("clippy::indexing_slicing", 16),
             ("clippy::panic", 39),
             ("clippy::unreachable", 34),

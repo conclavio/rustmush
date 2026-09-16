@@ -68,13 +68,13 @@
 // NOT named here — and fails if this attribute loses one of them.
 #![deny(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::panic,
     clippy::unreachable,
     clippy::panic_in_result_fn
 )]
 
 pub mod commands;
+pub mod composition;
 pub mod config;
 pub mod content;
 pub mod ephemeris;

@@ -23,6 +23,39 @@ mush-content.workspace = true
 # S9.1 (D-14-33): a campaign-seed pack's places and routes are the atlas's sites and
 # connections; this crate's appliers build the records and the atlas puts them.
 mush-atlas.workspace = true
+mush-proto.workspace = true
+
+# 16b cut R-a (R2): the production composition root lives here, so the game crate
+# composes every module it boots. `ruleset-wod` and `ruleset-shadowrun` are transitional
+# until cut R-b deletes them. No engine crate depends back on this one; see
+# tests/composition_edges.rs.
+mush-config.workspace = true
+mush-store.workspace = true
+mush-comsys.workspace = true
+mush-faction.workspace = true
+mush-party.workspace = true
+mush-market.workspace = true
+mush-inventory.workspace = true
+mush-industry.workspace = true
+mush-scenes.workspace = true
+mush-propagation.workspace = true
+mush-campaign.workspace = true
+mush-tactics.workspace = true
+mush-canon.workspace = true
+mush-privileges.workspace = true
+mush-org.workspace = true
+mush-economy.workspace = true
+mush-housing.workspace = true
+mush-mail.workspace = true
+mush-jobs.workspace = true
+mush-script.workspace = true
+mush-weather.workspace = true
+ruleset-wod.workspace = true
+ruleset-shadowrun.workspace = true
+mush-llm.workspace = true
+mush-worldgen.workspace = true
+mush-npc.workspace = true
+mush-ruleset.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

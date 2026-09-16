@@ -112,7 +112,7 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
     );
     assert_eq!(commons, mush_core::ObjId(3), "start-room id assumption");
 
-    let onboarding = ruleset_wod::OnboardingConfig {
+    let onboarding = mush_core::OnboardingConfig {
         chargen_required,
         start_room: commons,
         start_room_unapproved: chargen_area,

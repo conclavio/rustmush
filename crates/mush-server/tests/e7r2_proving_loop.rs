@@ -34,7 +34,7 @@ use mush_testkit::{TestWorld, text_of};
 // ---- the rig: the PRODUCTION composition, with the whole corridor -----------
 
 fn boot() -> TestWorld {
-    let onboarding = ruleset_wod::OnboardingConfig::default();
+    let onboarding = mush_core::OnboardingConfig::default();
     let wod = ruleset_wod::WodEconomyConfig::default();
     let shadowrun = ruleset_shadowrun::SrEconomyConfig::default();
     let mut modules = server_modules_with(
@@ -349,7 +349,10 @@ fn e7r2_p3_the_production_salvage_source_is_wired_and_existence_hiding() {
 #[test]
 fn vf_a1_the_wreck_walk_is_bounded_on_records_visited() {
     let src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/salvage_source.rs"),
+        // The salvage adapter lives with the composition root in the game crate
+        // since 16b cut R-a (R2).
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tacsim/src/composition/salvage_source.rs"),
     )
     .expect("the salvage source");
     let at = src.find("fn wrecks(").expect("the wreck walk");

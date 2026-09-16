@@ -4,4 +4,4 @@
 #   PANIC_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test panic_budget
 # A raise is a reviewed diff, not a rounding error.
 # tier: ceiling
-38
+34

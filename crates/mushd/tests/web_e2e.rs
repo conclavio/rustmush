@@ -100,7 +100,7 @@ async fn boot(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig 
 async fn boot_wod(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig {
     let wod = modules::ruleset_modules(
         &["wod".to_string()],
-        &ruleset_wod::OnboardingConfig::default(),
+        &mush_core::OnboardingConfig::default(),
         &ruleset_wod::WodEconomyConfig::default(),
         &ruleset_shadowrun::SrEconomyConfig::default(),
     )

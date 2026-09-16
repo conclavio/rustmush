@@ -159,8 +159,8 @@ pub fn economy_config_with(
 /// The ruleset-facing onboarding config: resolve the room ids and fold the
 /// `start_room_unapproved` sentinel back to `start_room`.
 #[must_use]
-pub fn onboarding_ruleset(cfg: &OnboardingCfg) -> ruleset_wod::OnboardingConfig {
-    ruleset_wod::OnboardingConfig {
+pub fn onboarding_ruleset(cfg: &OnboardingCfg) -> mush_core::OnboardingConfig {
+    mush_core::OnboardingConfig {
         chargen_required: cfg.chargen_required,
         start_room: cfg.start_room_id(),
         start_room_unapproved: cfg.start_room_unapproved_id(),
