@@ -572,6 +572,14 @@ work is lost on restart) and the tick-commit/replay layer of §6.6 and §9.3 —
 
 ### 6.3 Single-writer execution
 
+> **Amended 2026-09-16 (owner, [16 §3.1](16-combat-arena.md), D-16-1).** The rule is now *one writer
+> per authority*. A running combat arena is its own authority: it has its own task, its own adaptive
+> pulse (§6.2's `FixedStep` period is not fixed for arenas), and is the single writer for its own facts
+> (poses, unit condition, contacts, orders, impacts, the match ledger) while a match runs. The world
+> task remains the single writer for everything else. The two share no state and no lock; the seam is
+> the seven messages of 16 §3.1 (custody in, intents, control, stop, ledger, frames, custody out). The
+> paragraphs below still describe every world-side domain and the arena's own internal ordering.
+
 There is no task or channel per unit or domain. Due domain ticks enter the existing single-writer
 world loop as scheduled work. A tick may mutate only through its driver and the current `Ctx`.
 

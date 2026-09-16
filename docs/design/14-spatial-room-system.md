@@ -732,6 +732,11 @@ graph-only 0/`ADJACENT_RANGE` answer when they are not — the swap its author r
 
 ### 5.3 What rulesets register
 
+> **Amended 2026-09-16 (owner, [16a Q29 to Q32](16a-combat-owner-questions.md), README superseded
+> item 6).** There are no rulesets; the game's content packs register these definitions through the C1
+> registry (`crates/tacsim/content`, [16 §4](16-combat-arena.md)). Read "ruleset" below as "the game
+> config".
+
 Units (`TacticalUnit`: size class, locomotion mode with `nominal_speed_cms`, height), weapons
 (delivery `direct | indirect | beam`, ranges, what a `Trace` result does), damage and armor,
 initiative, the encounter policy for unwatched hazard bands, the cell sizes their engagements

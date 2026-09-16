@@ -128,6 +128,11 @@ pressure limits — no separate mission system (E6 answers: LLMs draft, authorit
 
 ## 8. Units, combined arms, space combat
 
+> **Scoped 2026-09-16 (owner, [16 §2](16-combat-arena.md), W2 and W10).** On the tactical map the sky
+> is a laser kill zone: no VTOLs, aircraft or drone swarms take part in ground fights, and elevation is
+> terrain, never flight. Strategic and orbital aerospace below are untouched; "drones scout" reads
+> "drones scout until a laser sees them".
+
 **Unit design** is BattleTech in texture on the existing compositional model (`TacticalUnit` —
 sections, facets, scalar cells, installed components, separately titled major equipment;
 `mush-tactics/src/unit.rs`). A chassis supplies mass, volume, structural sections and exposed

@@ -38,6 +38,12 @@ Dependency direction: `ruleset-*` → `mush-ruleset` + `mush-dice` + core crates
 
 ## 3. Ruleset plugin API (`mush-ruleset`)
 
+> **Retired 2026-09-16 (owner, README superseded item 6, [16 §11](16-combat-arena.md)).** There is
+> one game. `mush-ruleset` remains as the platform's sheet, chargen and vitals library with exactly one
+> implementation (the TacSim character sheet); the plugin posture, `[rulesets].enabled`, the WoD and
+> Shadowrun modules of §5 and their dice pools (§4.2) are deleted in [16b cut R](16b-combat-implementation-plan.md).
+> The sections below are kept as history.
+
 ### 3.1 Compiled-in trait objects — decision and justification
 
 **Decision: rulesets are statically compiled crates registering `Arc<dyn Ruleset>` at startup**, selectable per-game via config (`[rulesets] enabled = ["wod"]`) and per-crate Cargo features to shrink builds.
