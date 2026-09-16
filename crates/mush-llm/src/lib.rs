@@ -53,6 +53,7 @@ pub mod config;
 pub mod dashboard;
 pub mod provider;
 pub mod service;
+pub mod structured;
 pub mod types;
 
 #[cfg(any(feature = "anthropic", feature = "openai"))]
@@ -84,6 +85,10 @@ pub use provider::{
 pub use service::{
     CallCtx, KillSwitch, LlmFeature, LlmService, LlmServiceBuilder, NpcTier, Priority,
     ServiceError, derive_route, user_request,
+};
+pub use structured::{
+    StructuredError, StructuredOk, StructuredSpec, all_json_objects, call_structured,
+    extract_json_object,
 };
 pub use types::{
     ChatMessage, CompletionRequest, CompletionResponse, ContentBlock, Effort, LlmStream,

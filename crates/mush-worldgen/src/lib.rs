@@ -106,9 +106,9 @@ pub use data::{
     RoomFacts, RoomState, StoredDraft, WorldgenReq, WorldgenState, building_key, draft_key,
 };
 pub use generate::{
-    brief_system_prompt, brief_user_prompt, extract_json_object, map_brief_concepts,
-    run_worldgen_async, submit_building_brief_tool, submit_room_tool, system_prompt, user_prompt,
-    user_prompt_inner,
+    all_json_objects, brief_system_prompt, brief_user_prompt, extract_json_object,
+    map_brief_concepts, run_worldgen_async, submit_building_brief_tool, submit_room_tool,
+    system_prompt, user_prompt, user_prompt_inner,
 };
 pub use mush_atlas::theme::{DescLength, Theme, resolve_theme};
 pub use plan::{PlanLimits, run_plan};

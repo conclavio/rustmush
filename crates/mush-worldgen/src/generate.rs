@@ -9,10 +9,8 @@
 //! drains the `Effect::ModuleAsync` the handler deferred.
 
 use mush_llm::{
-    CallCtx, ChatMessage, CompletionRequest, CompletionResponse, LlmError, LlmFeature, LlmService,
-    Priority, Sampling, ToolChoice, ToolDef,
+    LlmFeature, LlmService, Priority, StructuredError, StructuredSpec, ToolDef, call_structured,
 };
-use sha2::{Digest, Sha256};
 
 use crate::data::{
     BriefRoomFact, BriefSnapshot, BuildingBriefContext, BuildingBriefPayload, DraftPayload,
@@ -85,168 +83,75 @@ async fn generate_room(
     building: Option<mush_core::ObjId>,
     brief: Option<&BuildingBriefContext>,
 ) -> GenOutcome {
-    let caps = llm.caps_for(LlmFeature::WorldgenRoom).unwrap_or_default();
-    let system = system_prompt();
-    let user = user_prompt_inner(snap, brief);
-    let prompt_hash = sha256_hex(&format!("{system}\n\n{user}"));
-    // A batch room is bulk work (background semaphore); a single-room `@gen` is
-    // interactive (the builder is waiting on it).
-    let priority = if building.is_some() {
-        Priority::Background
-    } else {
-        Priority::Interactive
-    };
-
-    let force_tool = caps.tool_calling && caps.forced_tool_choice;
-    let mut req = CompletionRequest {
-        model: String::new(),
-        system: Some(system),
-        messages: vec![ChatMessage::user(user)],
-        tools: vec![submit_room_tool()],
-        tool_choice: if force_tool {
-            ToolChoice::Tool(TOOL_NAME.to_string())
+    let spec = StructuredSpec {
+        feature: LlmFeature::WorldgenRoom,
+        // A batch room is bulk work (background semaphore); a single-room `@gen`
+        // is interactive (the builder is waiting on it).
+        priority: if building.is_some() {
+            Priority::Background
         } else {
-            ToolChoice::Auto
+            Priority::Interactive
         },
-        // The route overrides max_tokens / reasoning; these are placeholders.
+        actor: Some(snap.builder),
+        system: system_prompt(),
+        user: user_prompt_inner(snap, brief),
+        tool: submit_room_tool(),
         max_tokens: 2048,
-        sampling: Sampling::default(),
-        stop_sequences: Vec::new(),
-        reasoning: None,
+        repair_hint: "`desc` is required and must be a non-empty string.".to_string(),
     };
-    let ctx = CallCtx::new(LlmFeature::WorldgenRoom, priority).with_actor(snap.builder);
-
-    let fail = |message: String, retryable: bool, budget: bool| GenOutcome::Err {
-        room: snap.room,
-        builder: snap.builder,
-        message,
-        retryable,
-        building,
-        budget,
-    };
-
-    // At most two attempts: the original + one repair.
-    let mut last_parse_err = String::new();
-    for attempt in 0..2 {
-        match llm.call(ctx, req.clone()).await {
-            Ok(resp) => match extract_draft(&resp) {
-                Ok(draft) => {
-                    return GenOutcome::Ok {
-                        room: snap.room,
-                        builder: snap.builder,
-                        draft,
-                        prose: snap.prose.clone(),
-                        prompt_hash,
-                        model: resp.model.clone(),
-                        building,
-                    };
-                }
-                Err(parse_err) => {
-                    last_parse_err = parse_err;
-                    if attempt == 0 {
-                        append_repair(&mut req, &resp, &last_parse_err);
-                        continue;
-                    }
-                }
-            },
-            // The adapter itself flagged unparseable tool JSON — same repair.
-            Err(LlmError::MalformedOutput(m)) => {
-                last_parse_err = m;
-                if attempt == 0 {
-                    append_repair_text(&mut req, &last_parse_err);
-                    continue;
-                }
-            }
-            Err(LlmError::Refused { category }) => {
-                let cat = category.map(|c| format!(" ({c})")).unwrap_or_default();
-                return fail(
-                    format!(
-                        "The model declined to describe this room{cat}. Try rephrasing \
-                         with @gen/retry <guidance>."
-                    ),
+    match call_structured::<DraftPayload, _>(llm, &spec, validate).await {
+        Ok(ok) => GenOutcome::Ok {
+            room: snap.room,
+            builder: snap.builder,
+            draft: ok.value,
+            prose: snap.prose.clone(),
+            prompt_hash: ok.prompt_hash,
+            model: ok.model,
+            building,
+        },
+        Err(e) => {
+            let (message, retryable, budget) = match &e {
+                StructuredError::Malformed { last, .. } => (
+                    format!("The model returned malformed output twice ({last}). Try @gen/retry."),
+                    true,
                     false,
-                    false,
-                );
-            }
-            // A kill switch (global `[llm].enabled = false`, per-feature, or the
-            // staff `@llm/disable`) is engaged: report it plainly rather than as
-            // a generic failure. A keyless clone hits this on every `@gen`.
-            Err(LlmError::Disabled) => {
-                return fail("LLM features are disabled.".to_string(), false, false);
-            }
-            Err(e) => {
-                let budget = matches!(e, LlmError::BudgetExceeded { .. });
-                return fail(
-                    format!("Generation failed: {e}."),
-                    e.is_retryable() || budget,
-                    budget,
-                );
+                ),
+                StructuredError::Refused { category, .. } => {
+                    let cat = category
+                        .as_ref()
+                        .map(|c| format!(" ({c})"))
+                        .unwrap_or_default();
+                    (
+                        format!(
+                            "The model declined to describe this room{cat}. Try rephrasing \
+                             with @gen/retry <guidance>."
+                        ),
+                        false,
+                        false,
+                    )
+                }
+                // A kill switch (global `[llm].enabled = false`, per-feature, or
+                // the staff `@llm/disable`) is engaged: report it plainly rather
+                // than as a generic failure. A keyless clone hits this on every `@gen`.
+                StructuredError::Disabled { .. } => {
+                    ("LLM features are disabled.".to_string(), false, false)
+                }
+                StructuredError::Call { err, .. } => (
+                    format!("Generation failed: {err}."),
+                    e.is_retryable(),
+                    e.is_budget(),
+                ),
+            };
+            GenOutcome::Err {
+                room: snap.room,
+                builder: snap.builder,
+                message,
+                retryable,
+                building,
+                budget,
             }
         }
     }
-
-    fail(
-        format!("The model returned malformed output twice ({last_parse_err}). Try @gen/retry."),
-        true,
-        false,
-    )
-}
-
-/// Append a repair turn: echo the model's raw answer, then instruct it to
-/// call the tool again with valid input.
-fn append_repair(req: &mut CompletionRequest, resp: &CompletionResponse, err: &str) {
-    let echoed = if let Some((_, input)) = resp.first_tool_use() {
-        input.to_string()
-    } else {
-        resp.text()
-    };
-    req.messages.push(ChatMessage::assistant(echoed));
-    append_repair_text(req, err);
-}
-
-/// Append only the correction instruction (used when the adapter rejected
-/// the tool JSON before we saw a response object).
-fn append_repair_text(req: &mut CompletionRequest, err: &str) {
-    req.messages.push(ChatMessage::user(format!(
-        "That was not valid: {err}. Call the {TOOL_NAME} tool again with input that \
-         matches the schema exactly. `desc` is required and must be a non-empty string. \
-         If you cannot call a tool, reply with ONLY the JSON object, nothing else."
-    )));
-}
-
-/// Extract the draft from a response: prefer the forced tool call; fall back
-/// to a JSON object embedded in the text. Validates that `desc` is non-empty.
-fn extract_draft(resp: &CompletionResponse) -> Result<DraftPayload, String> {
-    // 1. Forced/native tool call.
-    if let Some((name, input)) = resp.first_tool_use() {
-        if name != TOOL_NAME {
-            return Err(format!("unexpected tool {name:?}; expected {TOOL_NAME:?}"));
-        }
-        let draft: DraftPayload = serde_json::from_value(input.clone())
-            .map_err(|e| format!("tool input did not match the schema: {e}"))?;
-        return validate(draft);
-    }
-    // 2. JSON object(s) in the text body (the caps-without-forced-tool
-    //    fallback path). A reasoning model may emit a throwaway JSON-looking
-    //    object in a visible preamble before its real answer, so scan every
-    //    balanced object and take the LAST one that parses as a valid draft
-    //    rather than the first `{`.
-    let text = resp.text();
-    let blocks = all_json_objects(&text);
-    if blocks.is_empty() {
-        return Err("response contained no tool call and no JSON object".to_string());
-    }
-    let mut last_err = String::new();
-    for block in blocks.iter().rev() {
-        match serde_json::from_str::<DraftPayload>(block) {
-            Ok(draft) => match validate(draft) {
-                Ok(d) => return Ok(d),
-                Err(e) => last_err = e,
-            },
-            Err(e) => last_err = format!("embedded JSON did not parse: {e}"),
-        }
-    }
-    Err(last_err)
 }
 
 fn validate(draft: DraftPayload) -> Result<DraftPayload, String> {
@@ -256,69 +161,9 @@ fn validate(draft: DraftPayload) -> Result<DraftPayload, String> {
     Ok(draft)
 }
 
-/// Find the first balanced top-level JSON object in `text` (tolerating
-/// prose or code fences around it). Respects strings and escapes so a `}`
-/// inside a string value does not close the object early.
-#[must_use]
-pub fn extract_json_object(text: &str) -> Option<&str> {
-    all_json_objects(text).into_iter().next()
-}
-
-/// Every balanced top-level JSON object in `text`, in order of appearance
-/// (tolerating prose or code fences between them). Respects strings and
-/// escapes so a `}` inside a string value does not close an object early, and
-/// so a brace inside one object's string is not mistaken for a new top-level
-/// object.
-#[must_use]
-pub fn all_json_objects(text: &str) -> Vec<&str> {
-    let bytes = text.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'{' {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        let mut depth = 0i32;
-        let mut in_str = false;
-        let mut escaped = false;
-        let mut end = None;
-        for (j, &c) in bytes.iter().enumerate().skip(start) {
-            if in_str {
-                if escaped {
-                    escaped = false;
-                } else if c == b'\\' {
-                    escaped = true;
-                } else if c == b'"' {
-                    in_str = false;
-                }
-                continue;
-            }
-            match c {
-                b'"' => in_str = true,
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = Some(j);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        match end {
-            Some(j) => {
-                out.push(&text[start..=j]);
-                i = j + 1;
-            }
-            // Unbalanced from here on: no further top-level object can close.
-            None => break,
-        }
-    }
-    out
-}
+// The JSON scanners moved to `mush-llm` with the structured call (16b cut R-a,
+// R1); they stay reachable at their old paths.
+pub use mush_llm::{all_json_objects, extract_json_object};
 
 /// The stable, cache-friendly system prompt: the worldgen role + the output
 /// contract. Theme, neighbors, facts, and the builder's prose all live in
@@ -505,17 +350,6 @@ pub fn submit_room_tool() -> ToolDef {
     }
 }
 
-fn sha256_hex(s: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(s.as_bytes());
-    let digest = h.finalize();
-    let mut out = String::with_capacity(64);
-    for b in digest {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
-}
-
 // ----------------------------------------------------------------------
 // The building-brief pass (design 03 §5.3, stage 1)
 // ----------------------------------------------------------------------
@@ -525,143 +359,60 @@ fn sha256_hex(s: &str) -> String {
 /// room. Same one-shot malformed-output repair as the room path. The brief is
 /// itself a reviewable draft — cheap to steer before N room calls.
 async fn generate_brief(llm: &LlmService, snap: &BriefSnapshot) -> GenOutcome {
-    let caps = llm.caps_for(LlmFeature::WorldgenBrief).unwrap_or_default();
-    let system = brief_system_prompt();
-    let user = brief_user_prompt(snap);
-    let prompt_hash = sha256_hex(&format!("{system}\n\n{user}"));
-
-    let force_tool = caps.tool_calling && caps.forced_tool_choice;
-    let mut req = CompletionRequest {
-        model: String::new(),
-        system: Some(system),
-        messages: vec![ChatMessage::user(user)],
-        tools: vec![submit_building_brief_tool()],
-        tool_choice: if force_tool {
-            ToolChoice::Tool(BRIEF_TOOL_NAME.to_string())
-        } else {
-            ToolChoice::Auto
-        },
+    let spec = StructuredSpec {
+        feature: LlmFeature::WorldgenBrief,
+        priority: Priority::Interactive,
+        actor: Some(snap.builder),
+        system: brief_system_prompt(),
+        user: brief_user_prompt(snap),
+        tool: submit_building_brief_tool(),
         max_tokens: 4096,
-        sampling: Sampling::default(),
-        stop_sequences: Vec::new(),
-        reasoning: None,
+        repair_hint: "`palette` is required and must be a non-empty string, and `rooms` must \
+                      carry one concept per listed room."
+            .to_string(),
     };
-    let ctx =
-        CallCtx::new(LlmFeature::WorldgenBrief, Priority::Interactive).with_actor(snap.builder);
-
-    let fail = |message: String, retryable: bool| GenOutcome::BriefErr {
-        entrance: snap.entrance,
-        builder: snap.builder,
-        message,
-        retryable,
-    };
-
-    let mut last_parse_err = String::new();
-    for attempt in 0..2 {
-        match llm.call(ctx, req.clone()).await {
-            Ok(resp) => match extract_brief(&resp) {
-                Ok(brief) => {
-                    return GenOutcome::Brief {
-                        entrance: snap.entrance,
-                        builder: snap.builder,
-                        brief,
-                        prose: snap.prose.clone(),
-                        prompt_hash,
-                        model: resp.model.clone(),
-                    };
+    match call_structured::<BuildingBriefPayload, _>(llm, &spec, validate_brief).await {
+        Ok(ok) => GenOutcome::Brief {
+            entrance: snap.entrance,
+            builder: snap.builder,
+            brief: ok.value,
+            prose: snap.prose.clone(),
+            prompt_hash: ok.prompt_hash,
+            model: ok.model,
+        },
+        Err(e) => {
+            let (message, retryable) = match &e {
+                StructuredError::Malformed { last, .. } => (
+                    format!("The model returned a malformed brief twice ({last}). Try @gen/retry."),
+                    true,
+                ),
+                StructuredError::Refused { category, .. } => {
+                    let cat = category
+                        .as_ref()
+                        .map(|c| format!(" ({c})"))
+                        .unwrap_or_default();
+                    (
+                        format!(
+                            "The model declined to write a brief for this building{cat}. Try \
+                             rephrasing with @gen/retry <guidance>."
+                        ),
+                        false,
+                    )
                 }
-                Err(parse_err) => {
-                    last_parse_err = parse_err;
-                    if attempt == 0 {
-                        append_brief_repair(&mut req, &resp, &last_parse_err);
-                        continue;
-                    }
+                StructuredError::Disabled { .. } => ("LLM features are disabled.".to_string(), false),
+                // The budget case folds into `retryable`, exactly as before.
+                StructuredError::Call { err, .. } => {
+                    (format!("Brief generation failed: {err}."), e.is_retryable())
                 }
-            },
-            Err(LlmError::MalformedOutput(m)) => {
-                last_parse_err = m;
-                if attempt == 0 {
-                    append_repair_text_brief(&mut req, &last_parse_err);
-                    continue;
-                }
-            }
-            Err(LlmError::Refused { category }) => {
-                let cat = category.map(|c| format!(" ({c})")).unwrap_or_default();
-                return fail(
-                    format!(
-                        "The model declined to write a brief for this building{cat}. Try \
-                         rephrasing with @gen/retry <guidance>."
-                    ),
-                    false,
-                );
-            }
-            Err(LlmError::Disabled) => {
-                return fail("LLM features are disabled.".to_string(), false);
-            }
-            Err(e) => {
-                let budget = matches!(e, LlmError::BudgetExceeded { .. });
-                return fail(
-                    format!("Brief generation failed: {e}."),
-                    e.is_retryable() || budget,
-                );
+            };
+            GenOutcome::BriefErr {
+                entrance: snap.entrance,
+                builder: snap.builder,
+                message,
+                retryable,
             }
         }
     }
-
-    fail(
-        format!("The model returned a malformed brief twice ({last_parse_err}). Try @gen/retry."),
-        true,
-    )
-}
-
-fn append_brief_repair(req: &mut CompletionRequest, resp: &CompletionResponse, err: &str) {
-    let echoed = if let Some((_, input)) = resp.first_tool_use() {
-        input.to_string()
-    } else {
-        resp.text()
-    };
-    req.messages.push(ChatMessage::assistant(echoed));
-    append_repair_text_brief(req, err);
-}
-
-fn append_repair_text_brief(req: &mut CompletionRequest, err: &str) {
-    req.messages.push(ChatMessage::user(format!(
-        "That was not valid: {err}. Call the {BRIEF_TOOL_NAME} tool again with input that \
-         matches the schema exactly. `palette` is required and must be a non-empty string, and \
-         `rooms` must carry one concept per listed room. If you cannot call a tool, reply with \
-         ONLY the JSON object, nothing else."
-    )));
-}
-
-/// Extract the brief from a response: prefer the forced tool call; fall back
-/// to the last balanced JSON object in the text.
-fn extract_brief(resp: &CompletionResponse) -> Result<BuildingBriefPayload, String> {
-    if let Some((name, input)) = resp.first_tool_use() {
-        if name != BRIEF_TOOL_NAME {
-            return Err(format!(
-                "unexpected tool {name:?}; expected {BRIEF_TOOL_NAME:?}"
-            ));
-        }
-        let brief: BuildingBriefPayload = serde_json::from_value(input.clone())
-            .map_err(|e| format!("tool input did not match the schema: {e}"))?;
-        return validate_brief(brief);
-    }
-    let text = resp.text();
-    let blocks = all_json_objects(&text);
-    if blocks.is_empty() {
-        return Err("response contained no tool call and no JSON object".to_string());
-    }
-    let mut last_err = String::new();
-    for block in blocks.iter().rev() {
-        match serde_json::from_str::<BuildingBriefPayload>(block) {
-            Ok(brief) => match validate_brief(brief) {
-                Ok(b) => return Ok(b),
-                Err(e) => last_err = e,
-            },
-            Err(e) => last_err = format!("embedded JSON did not parse: {e}"),
-        }
-    }
-    Err(last_err)
 }
 
 fn validate_brief(brief: BuildingBriefPayload) -> Result<BuildingBriefPayload, String> {
@@ -808,6 +559,7 @@ fn resolve_concept_slot(rooms: &[BriefRoomFact], rc: &RoomConcept) -> Option<usi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mush_llm::CompletionResponse;
 
     #[test]
     fn all_json_objects_finds_each_in_order() {
@@ -843,7 +595,8 @@ mod tests {
             usage: Default::default(),
             model: "m".into(),
         };
-        let draft = extract_draft(&resp).expect("a draft");
+        let draft: DraftPayload =
+            mush_llm::structured::extract(&resp, TOOL_NAME, &validate).expect("a draft");
         assert_eq!(draft.desc, "the real room");
     }
 }
