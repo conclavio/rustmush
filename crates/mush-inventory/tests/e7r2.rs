@@ -957,11 +957,12 @@ fn e7r2_p4_the_salvage_fact_is_answered_from_the_marker_and_never_from_a_status(
 /// namespace, and a duplicate would panic at composition.
 #[test]
 fn e7r2_p4_the_fact_provider_registers_no_sixth_namespace() {
+    // The composition root lives in the game crate since 16b cut R-a (R2).
     let server = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("crates/")
-        .join("mush-server/src/modules.rs");
-    let src = std::fs::read_to_string(server).expect("modules.rs");
+        .join("tacsim/src/composition/mod.rs");
+    let src = std::fs::read_to_string(server).expect("composition/mod.rs");
     let at = src.find("with_facts(").expect("the facts composition");
     let end = src[at..].find("])").map_or(src.len(), |o| at + o);
     let body = &src[at..end];
