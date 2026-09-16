@@ -298,7 +298,6 @@ fn gateway_config(root: &Path) -> Config {
         toml::Value::String("127.0.0.1:0".to_owned()),
     )]));
     config.ipc.listen = "127.0.0.1:0".to_owned();
-    config.rulesets.enabled = Vec::new();
     config
 }
 

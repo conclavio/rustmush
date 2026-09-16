@@ -41,9 +41,7 @@ mush-jobs.workspace = true
 mush-script.workspace = true
 mush-weather.workspace = true
 # The M6 rulesets: config's [rulesets] selects which load (modules.rs).
-ruleset-wod.workspace = true
 # The M10b second ruleset (SR5): proves the plugin API scales past oWoD.
-ruleset-shadowrun.workspace = true
 # The M7 LLM layer + worldgen module: LlmService built from [llm] config,
 # WorldgenModule registered at boot, and run_worldgen_async driven off the
 # world loop from the Effect::ModuleAsync re-entry seam (world_task.rs).

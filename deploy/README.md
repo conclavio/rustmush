@@ -1,7 +1,7 @@
 # Deploying rustmush
 
-Instances are named and isolated so several can run on one box (a WoD one, a
-TacSim one, …). Each instance `<name>` gets:
+Instances are named and isolated so several can run on one box (dev1, dev2, …).
+Each instance `<name>` gets:
 
 - systemd services `<name>mush.service` + `redis-<name>mush.service`
 - working tree `/opt/rustmush/<name>` (build under `.../build`)
@@ -9,16 +9,16 @@ TacSim one, …). Each instance `<name>` gets:
 - its own SSH + HTTPS ports (dev1 = **6789** / **6790**), bound to the box's
   **external IPv4 only** (not `0.0.0.0`, not the tailscale address)
 
-The reference instance is **dev1** ([`dev1/`](dev1/)) — oWoD, ports **6788/6789/6790**.
-A second instance **dev2** ([`dev2/`](dev2/)) runs **Shadowrun** (`[rulesets].enabled = ["shadowrun"]`)
+The reference instance is **dev1** ([`dev1/`](dev1/)) — ports **6788/6789/6790**.
+A second instance **dev2** ([`dev2/`](dev2/)) runs the same game (a second box, not a second ruleset — 16b cut R-b)
 on ports **6791** (redis) / **6792** (ssh) / **6793** (https), `/opt/rustmush/dev2`.
 
 ## A new instance: render the template, do not copy a box
 
 `dev1/mushd.toml` and `dev2/mushd.toml` predate [`instance/`](instance/) and omit
-**thirteen** sections between them — `[log]`, `[store.archive]`, `[offers]`,
+**eleven** sections between them — `[log]`, `[store.archive]`, `[offers]`,
 `[resolution]`, `[discord]`, `[economy]`, `[weather]`, `[worldgen]`,
-`[onboarding]`, `[npc]`, `[wod]`, `[shadowrun]`, `[tacsim]` — so each of those
+`[onboarding]`, `[npc]`, `[tacsim]` — so each of those
 runs on a compiled-in default nobody chose: no log files, no ledger archive
 tier, key directories nobody provisioned, and every character starting in Limbo
 `#0`. Copying one of them inherits all of that silently.
@@ -26,9 +26,8 @@ tier, key directories nobody provisioned, and every character starting in Limbo
 A new instance renders [`instance/mushd.toml.tmpl`](instance/mushd.toml.tmpl)
 instead. It carries every section with a real value, and it is parameterised by
 an `instance.env` of plain `KEY=value` lines — copy
-[`instance/instance.env.example`](instance/instance.env.example) (WoD + TacSim)
-or [`instance/instance.env.shadowrun.example`](instance/instance.env.shadowrun.example)
-(SR5), edit it, and substitute:
+[`instance/instance.env.example`](instance/instance.env.example), edit it, and
+substitute:
 
 ```bash
 cp deploy/instance/instance.env.example instance.env && $EDITOR instance.env
@@ -157,8 +156,8 @@ the thing you keep. After a reset the world is a fresh seed — Limbo `#0` and G
 connect. The script READS `instance.env` with the same loop the render recipe
 uses; it never sources it.
 
-CI's `Instance provisioning acceptance` job renders both shipped instances with
+CI's `Instance provisioning acceptance` job renders the shipped instance with
 the recipe above, runs all three binaries' `--check-config` over what it
-produced, boots the WoD one against a throwaway store, and proves a typo'd
+produced, boots it against a throwaway store, and proves a typo'd
 `receipt_policy` is refused — so the templates cannot drift past the binaries
 that read them (`crates/mush-server/tests/provisioning_smoke.rs`).

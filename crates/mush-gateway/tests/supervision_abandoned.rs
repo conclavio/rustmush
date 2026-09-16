@@ -76,7 +76,6 @@ fn server_config() -> Config {
     cfg.server.data_dir = scratch_dir("server");
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
-    cfg.rulesets.enabled = vec![];
     cfg
 }
 
@@ -88,7 +87,6 @@ fn gateway_config(exit_on_abandon: bool) -> Config {
     cfg.store.store = "memory".to_string();
     cfg.server.data_dir = scratch_dir("gateway");
     cfg.ssh.listen = "127.0.0.1:0".to_string();
-    cfg.rulesets.enabled = vec![];
     cfg.ipc.exit_on_abandoned_supervision = exit_on_abandon;
     let mut web = toml::value::Table::new();
     web.insert(

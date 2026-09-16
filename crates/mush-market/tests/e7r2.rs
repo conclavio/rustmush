@@ -260,7 +260,6 @@ fn e7r2_p1_the_market_edge_set_is_exactly_core_org_economy_inventory() {
         "mush-campaign",
         "mush-propagation",
         "tacsim",
-        "ruleset-shadowrun",
         "mush-canon",
         "mush-party",
         "mush-faction",

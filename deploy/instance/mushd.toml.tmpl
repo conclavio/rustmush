@@ -166,42 +166,8 @@ plan_max_rounds = 6
 hydration_cap = 2
 hydration_strikes_to_zero = 3
 
-# Exactly one character ruleset. "wod" (oWoD20) or "shadowrun" (SR5) — they
-# share the +roll/+sheet/+chargen names, so two is a hard boot error.
-[rulesets]
-enabled = ["__RULESET__"]
-
-# The WoD layer's own economy. `personal_mode = "off"` is the pre-E5c shape and
-# the honest default for a new chronicle: housing works and staff create
-# tenancies, but no character carries money until the game runner decides it
-# should. Turn it to "abstract" or "exact" deliberately, not by drifting into it.
-[wod.economy]
-personal_mode = "off"
-housing = true
-careers = true
-default_engagement = "ambient"
-cadence = "chronicle.period"
-starting_funds_major = 0
-reserved_rooms = []
-
-# The Shadowrun layer's own economy: nuyen accounts, lifestyle billing and the
-# run board. Rendered on every instance, enabled only on the one running SR5 —
-# __RULESET__ decides which, and enabling this on a WoD box would register a
-# currency nothing spends.
-[shadowrun.economy]
-enabled = __SHADOWRUN_ECONOMY__
-instrument = "sr.nuyen"
-lifestyle_clock = "sr.month"
-lifestyle = true
-player_run_offers = true
-organization_run_offers = true
-vendor_orgs = []
-active_offer_cap = 4
-board_ttl_secs = 1209600
-board_cap = 128
-
-# The TacSim layer — a LAYER beside the one character ruleset, not a third
-# ruleset id. Rendered on every instance and switched per instance, because the
+# The TacSim layer — the one game's, since 16b cut R-b. Rendered on every
+# instance and switched per instance, because the
 # thing an operator gets wrong is not the packs, it is believing the layer is on
 # when the section was never written. An unreadable, oversized, unparseable or
 # digest-mismatched pack is a HARD BOOT ERROR NAMING THE FILE.

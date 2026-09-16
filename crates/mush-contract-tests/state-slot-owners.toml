@@ -85,27 +85,6 @@ through the economy module's own path.
 """
 
 [[site]]
-path = "crates/ruleset-wod/src/economy/boot.rs"
-accessor = "World::module_state_mut"
-slot = "EconomyStore"
-owner = "economy"
-reason = """
-The WoD faucet opens a starting account per principal and takes its id from
-`economy`'s allocator; an exhausted allocator is logged and the faucet opens
-nothing. A ruleset reaching the engine economy's store is the widest of these
-reaches and the one WS03-S14 should look at first.
-"""
-
-[[site]]
-path = "crates/ruleset-shadowrun/src/economy/boot.rs"
-accessor = "World::module_state_mut"
-slot = "EconomyStore"
-owner = "economy"
-reason = """
-The Shadowrun lifestyle boot, same allocator, same shape as the WoD row above.
-"""
-
-[[site]]
 path = "crates/mush-server/src/boot.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
@@ -295,13 +274,6 @@ accessor = "World::module_state_mut"
 slot = "WeatherState"
 owner = "weather"
 reason = "M10c end-to-end: forces a weather cell so the rendered line is deterministic."
-
-[[site]]
-path = "crates/ruleset-wod/tests/e5c.rs"
-accessor = "World::module_state_mut"
-slot = "SimState"
-owner = "faction"
-reason = "E5c: seeds the faction simulation state a WoD economy case reacts to."
 
 # ---------------------------------------------------------------------------
 # Slots seeded with no owner at all

@@ -22,7 +22,6 @@
 //! | `[game].max_characters` | `3` | characters per account cap |
 //! | `[game].ic_ratio` | `1` | IC seconds per OOC second (game-clock speed); read at boot |
 //! | `[game].ic_epoch` | `"2020-01-01 00:00"` | IC datetime at OOC unix 0 — calendar phase/start; read at boot |
-//! | `[rulesets].enabled` | `["wod"]` | ruleset module(s) to load; unknown ids are a hard boot error |
 //! | `[weather].flavor_variants` | `10` | M10 variants per weather bucket (`0` disables, hard max `64`) |
 //! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` room cap (valid range `2..=40`) |
 //! | `[worldgen].plan_cost_cap_usd` | `5.0` | S3 building agent: a proposal's cost cap; a run stops before the call that would pass it |
@@ -35,22 +34,7 @@
 //! | `[economy.cadences."<name>"].clock` | `"world_ic"` | SP1 declared cadence: `world_ic` \| `real_utc` (D-LBK-7) |
 //! | `[economy.cadences."<name>"].period_secs` | (required) | the declared cadence's period, seconds on `clock`, `> 0` |
 //! | `[economy.cadences."<name>"].catch_up` | `3` | periods one advance may cover, `1..=8` |
-//! | `[wod.economy].personal_mode` | `"off"` | E5c WoD personal economy: `off` \| `abstract` \| `exact` |
-//! | `[wod.economy].housing` | `true` | whether the WoD layer creates tenancies and registers the housing title issuer |
-//! | `[wod.economy].careers` | `true` | whether careers, stances and opportunities are evaluated |
-//! | `[wod.economy].default_engagement` | `"ambient"` | a new profile's engagement: `ambient` \| `engaged` |
-//! | `[wod.economy].cadence` | `"chronicle.period"` | the campaign clock careers and abstract housing are assessed on |
-//! | `[wod.economy].starting_funds_major` | `0` | exact mode: chargen starting funds, in major units |
-//! | `[wod.economy].reserved_rooms` | `[]` | extra `#N` rooms that may never become property rooms (D-E5-12) |
-//! | `[wod.economy.income]."<dots>"` | (none) | exact mode: income per period per Resources dot (`"0"`…`"5"`), major units |
-//! | `[shadowrun.economy].enabled` | `false` | E6a Shadowrun run-and-pay layer: accounts, lifestyle, the run board |
-//! | `[shadowrun.economy].instrument` | `"sr.nuyen"` | the currency code registered at scale 0 (D-E6-1) |
-//! | `[shadowrun.economy].lifestyle_clock` | `"sr.month"` | the declared cadence lifestyle is billed on (contributed to `[economy.cadences]`) |
-//! | `[shadowrun.economy].lifestyle` | `true` | whether lifestyle obligations are created |
-//! | `[shadowrun.economy].player_run_offers` | `true` | whether `+run/post` accepts a personal payer |
-//! | `[shadowrun.economy].organization_run_offers` | `true` | whether `+run/post … scope=<org>` is accepted |
-//! | `[shadowrun.economy.lifestyle_costs]."<tier>"` | (SR5 defaults) | monthly cost per tier, major units |
-//! | `[tacsim].enabled` | `false` | E7 TacSim layer: content packs, the campaign-seed latch, the corridor. Independent of `[rulesets]` |
+//! | `[tacsim].enabled` | `false` | E7 TacSim layer: content packs, the campaign-seed latch, the corridor |
 //! | `[tacsim].pack_paths` | `[]` | rules-definition pack files or directories; read **host-side** at boot, and an unreadable/oversized/mis-digested one is a hard boot error naming the file |
 //! | `[tacsim].seed_paths` | `[]` | campaign-seed pack files or directories, read the same way |
 //! | `[tacsim].corridor` | `""` | which seed pack `@tacsim/seed` defaults to |
@@ -332,7 +316,7 @@ impl Default for SshCfg {
 /// unapproved sheet is placed in `start_room_unapproved`, held to the chargen
 /// command set (chargen/look/say/help; channel speech and movement are gated),
 /// and dropped into the guided wizard on connect; staff approving its
-/// `wod-chargen` job lifts the gate and moves it to `start_room`. Both rooms
+/// `pilot-chargen` job lifts the gate and moves it to `start_room`. Both rooms
 /// default to `#0` (Limbo, the seeded start
 /// room), so turning the flag on with no rooms configured still works — Limbo
 /// doubles as the chargen area, and the restriction is enforced by the gate.
@@ -377,31 +361,6 @@ impl OnboardingCfg {
             self.start_room_id()
         } else {
             mush_core::ObjId(self.start_room_unapproved)
-        }
-    }
-}
-
-/// `[rulesets]` section — which compiled-in ruleset module(s) load at boot.
-///
-/// Every ruleset crate is compiled into `mushd`; this list *selects* which
-/// ones register (design 00 "Rulesets": selected by config). The only
-/// ruleset available in M6a is `"wod"` (oWoD20); listing an unknown name is
-/// a hard boot error, resolved by [`crate::modules::ruleset_modules`].
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
-pub struct RulesetsCfg {
-    /// Ruleset ids to load, in order. Registered **after** the built-in
-    /// modules so their commands/panels/job-queues wire cleanly and their
-    /// approval payload handlers see a loaded jobs module.
-    pub enabled: Vec<String>,
-}
-
-impl Default for RulesetsCfg {
-    fn default() -> Self {
-        // WoD is the flagship ruleset and the point of M6 — a config-less
-        // server is playable out of the box.
-        RulesetsCfg {
-            enabled: vec!["wod".to_string()],
         }
     }
 }
@@ -507,7 +466,7 @@ pub struct EconomyCfg {
     /// default (50,000); the typed conversion into `mush_economy::EconomyConfig`
     /// lives in `mush-server`.
     pub mint_obligation_cap_major: u64,
-    /// Per-instrument overrides, keyed by instrument code (`wod.usd`).
+    /// Per-instrument overrides, keyed by instrument code (`tacsim.credit`).
     pub instruments: BTreeMap<String, EconomyInstrumentCfg>,
     /// `[economy.cadences]` — the declared cadence clocks, keyed by name (SP1,
     /// D-LBK-7). Empty off-config: a server that declares nothing registers no
@@ -555,199 +514,15 @@ impl Default for EconomyCfg {
     }
 }
 
-/// `[wod]` — the World of Darkness ruleset's own configuration (E5c, 08d §5.1).
-///
-/// Ruleset-owned by decision **D-E5-9**: there is no platform economy switch, and
-/// the knobs below turn the *WoD layer* on and off, never the E2–E4 economy the
-/// server runs regardless.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct WodCfg {
-    /// `[wod.economy]`.
-    pub economy: WodEconomyCfg,
-}
-
-/// `[wod.economy]` — 08d §5.1's block, verbatim, plus two host-side extras
-/// (`starting_funds_major`, `reserved_rooms`).
-///
-/// The default is **`personal_mode = "off"`**: a server that has never heard of this
-/// section keeps exactly its pre-E5c behaviour — housing works, staff create
-/// tenancies, and the WoD layer creates no profile, evaluates nothing and shows
-/// nothing. `housing` defaults **on** so the title issuer stays wired as E5b wired
-/// it.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
-pub struct WodEconomyCfg {
-    /// `off` | `abstract` | `exact`. An unknown word is a hard boot error (the
-    /// `[rulesets].enabled` rule: a silently-ignored typo is worse than not
-    /// starting), resolved in `mush_server::config_ext::wod_economy_config`.
-    pub personal_mode: String,
-    /// Whether the WoD layer creates tenancies at all, and whether the server
-    /// registers `system:wod.housing` as an economy title issuer (08d §4.1's
-    /// handoff). Existing tenancies are untouched when this goes false; only new
-    /// ones stop.
-    pub housing: bool,
-    /// Whether careers, stances, opportunities and exposure are evaluated.
-    pub careers: bool,
-    /// `ambient` | `engaged` — a new profile's engagement.
-    pub default_engagement: String,
-    /// The **name** of the economy cadence clock (`@econ/cadence list`) careers and
-    /// abstract housing are assessed on. Created at the ruleset's boot if it does not
-    /// exist.
-    pub cadence: String,
-    /// Exact mode only: the funds a newly approved character starts with, in major
-    /// units, minted from `system:wod.chargen`.
-    pub starting_funds_major: u64,
-    /// Extra rooms (`#N`) that may never become property rooms (D-E5-12), chained
-    /// into `HousingModule::with_reserved_rooms` alongside `[onboarding]`'s two.
-    pub reserved_rooms: Vec<u32>,
-    /// `[wod.economy.income]` — exact mode only, and **authoritative only there**
-    /// (owner answer 3): one per-period amount in **major** units per Resources dot,
-    /// keyed `"0"`…`"5"`. Every line is bounded by `[economy]`'s mint cap (with the
-    /// per-instrument override for `wod.usd`), re-checked at every settlement.
-    pub income: BTreeMap<String, u64>,
-}
-
-impl Default for WodEconomyCfg {
-    fn default() -> Self {
-        WodEconomyCfg {
-            personal_mode: "off".to_string(),
-            housing: true,
-            careers: true,
-            default_engagement: "ambient".to_string(),
-            cadence: "chronicle.period".to_string(),
-            starting_funds_major: 0,
-            reserved_rooms: Vec::new(),
-            income: BTreeMap::new(),
-        }
-    }
-}
-
-/// `[shadowrun]` — the Shadowrun ruleset's own configuration (E6a, 08f §9).
-///
-/// Ruleset-owned exactly as `[wod]` is (D-E5-9): there is no platform economy switch,
-/// and the knobs below turn the *Shadowrun layer* on and off, never the E2–E4 economy
-/// the server runs regardless.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct ShadowrunCfg {
-    /// `[shadowrun.economy]`.
-    pub economy: ShadowrunEconomyCfg,
-}
-
-/// `[shadowrun.economy]` — 08f §9's block (answer 16), plus the board bounds.
-///
-/// The default is **`enabled = false`**: a server that has never heard of this
-/// section keeps exactly its pre-E6a behaviour — SR5 rolls dice, `nuyen` is a sheet
-/// number, and the economic layer creates nothing, evaluates nothing and shows
-/// nothing.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
-pub struct ShadowrunEconomyCfg {
-    /// Whether the layer exists at all. An `enabled = false` server still registers
-    /// the verbs; they answer "not enabled on this server".
-    pub enabled: bool,
-    /// The instrument code. `sr.nuyen` at scale 0 (D-E6-1).
-    pub instrument: String,
-    /// The **name** of the cadence clock lifestyle is assessed on. When
-    /// `[rulesets].enabled` names `shadowrun`, the host contributes the matching
-    /// `[economy.cadences]` stanza unless the operator declared it (SP1, D-LBK-7).
-    pub lifestyle_clock: String,
-    /// Whether lifestyle obligations are created at all. `false` creates no new one
-    /// and cancels nothing at boot — `@sr/migrate` ends the existing ones.
-    pub lifestyle: bool,
-    /// Whether `+run/post` accepts a personal payer.
-    pub player_run_offers: bool,
-    /// Whether `+run/post … scope=<org>` is accepted.
-    pub organization_run_offers: bool,
-    /// Parsed, inert until E6c (§11 q9).
-    pub chargen_shopping: bool,
-    /// Parsed, inert until E6c.
-    pub catalog_paths: Vec<String>,
-    /// `[shadowrun.economy.lifestyle_costs]` — one monthly cost in **major** units
-    /// per tier, keyed `"street"`…`"luxury"`. A tier the table does not name, or one
-    /// named with `0`, creates no obligation.
-    pub lifestyle_costs: BTreeMap<String, u64>,
-    /// Parsed, inert until E6c (`QUOTE_TTL_LIVE`, seconds).
-    pub quote_ttl_live: i64,
-    /// Parsed, inert until E6c (`QUOTE_TTL_REMOTE`, seconds).
-    pub quote_ttl_remote: i64,
-    /// Permille of the catalog baseline an immediate fence pays — inert until E6b.
-    pub fence_rate_immediate: u32,
-    /// Permille a consignment fence pays — inert until E6b.
-    pub fence_rate_consign: u32,
-    /// The consignment delay in seconds — inert until E6b.
-    pub fence_delay_secs: i64,
-    /// `[shadowrun.economy.fence_baseline]` — the **source-controlled reference
-    /// price** a fence quotes against, in major units, keyed on the asset's
-    /// `CatalogRef.code` (E6b, 08f §4.3 OPEN 1).
-    ///
-    /// There is no catalog until E6c, and `CatalogRef` is set nowhere today, so this
-    /// table is the whole baseline. An object whose asset record carries no catalog
-    /// reference, or one this table does not name, **cannot be quoted** — refused,
-    /// never guessed, and never priced off its `AcquisitionRecord`, which is
-    /// provenance the fence may not see (D-E6-11).
-    pub fence_baseline: BTreeMap<String, u64>,
-    /// `[shadowrun.economy].vendor_orgs` — the organization **ids** whose contract
-    /// acceptance may be performed programmatically (E6b, DL-11 / M15).
-    ///
-    /// A staff-built NPC fence has no officer and an org party accepts only through
-    /// `acts_for` holders or staff, which would put a staffer in every deal. This is
-    /// the exception, and it is deliberately **composition data**: ids only, set in
-    /// `mushd.toml`, frozen at wiring, and nothing a command or a grant can add to.
-    /// It confers no money authority at all — the escrow still posts under the org
-    /// account's own debit authority.
-    pub vendor_orgs: Vec<u64>,
-    /// The per-principal open-listing cap (§9's `MAX_OPEN_RUNS_PER_PRINCIPAL`).
-    pub active_offer_cap: usize,
-    /// How long a listing lives, in seconds — the contract's own deadline (M8).
-    pub board_ttl_secs: i64,
-    /// The whole board's open-listing cap.
-    pub board_cap: usize,
-    /// The 5,000¥ carry-over cap: **parsed and deliberately not applied** until
-    /// chargen shopping ships (answer 17).
-    pub chargen_carryover_cap: u64,
-}
-
-impl Default for ShadowrunEconomyCfg {
-    fn default() -> Self {
-        // Every literal mirrors `ruleset_shadowrun::SrEconomyConfig::default()` (kept
-        // as literals so `mush-config` needs no ruleset dep); `config_ext` converts.
-        ShadowrunEconomyCfg {
-            enabled: false,
-            instrument: "sr.nuyen".to_string(),
-            lifestyle_clock: "sr.month".to_string(),
-            lifestyle: true,
-            player_run_offers: true,
-            organization_run_offers: true,
-            chargen_shopping: false,
-            catalog_paths: Vec::new(),
-            lifestyle_costs: BTreeMap::new(),
-            fence_baseline: BTreeMap::new(),
-            vendor_orgs: Vec::new(),
-            quote_ttl_live: 3_600,
-            quote_ttl_remote: 24 * 3_600,
-            fence_rate_immediate: 300,
-            fence_rate_consign: 600,
-            fence_delay_secs: 48 * 3_600,
-            active_offer_cap: 4,
-            board_ttl_secs: 14 * 86_400,
-            board_cap: 128,
-            chargen_carryover_cap: 5_000,
-        }
-    }
-}
-
 /// `[tacsim]` — the TacSim layer's own configuration (E7 cut 1, 10b §7).
 ///
-/// **Not a ruleset block.** `[rulesets].enabled` still selects exactly one character
-/// ruleset (`wod` | `shadowrun`); TacSim is a *layer* that composes beside whichever
-/// one that is (doc 10 §20), so its switch lives here rather than in `[rulesets]`.
+/// Since 16b cut R-b the one game's block: the layer's packs and seeds, and, under
+/// `[tacsim.economy]`, the game's economy wiring. `[rulesets]` left with the two
+/// character rulesets.
 ///
 /// The default is **`enabled = false`**: a server that has never heard of this section
 /// is bit-identical to one built before E7 existed. The verbs still register and answer
-/// "not enabled on this server" — E5c deviation 1, and `[shadowrun.economy]`'s
-/// precedent.
+/// "not enabled on this server" (E5c deviation 1).
 /// **`deny_unknown_fields`, on `EconomyCadenceCfg`'s precedent** (independent verify
 /// B6). Every other block on this tree tolerates a typo, and that is survivable where
 /// a typo costs a default. `[tacsim]` is the only section whose keys carry a **boot
@@ -1339,8 +1114,6 @@ pub struct Config {
     pub discord: toml::Value,
     /// `[game]`.
     pub game: GameCfg,
-    /// `[rulesets]` — which ruleset module(s) load (M6).
-    pub rulesets: RulesetsCfg,
     /// `[weather]` — the M10 weather LLM flavor top-up knobs (variants per
     /// bucket). Off-config defaults match the crate.
     pub weather: WeatherCfg,
@@ -1351,18 +1124,11 @@ pub struct Config {
     /// verify fold, M1). Off-config defaults match the crate.
     pub economy: EconomyCfg,
     /// `[onboarding]` — the `chargen_required` gate + start rooms (M9). Off by
-    /// default; consumed by the WoD ruleset via [`OnboardingCfg::to_ruleset`].
+    /// default; consumed by the game sheet via [`OnboardingCfg::to_ruleset`].
     pub onboarding: OnboardingCfg,
-    /// `[wod]` — the WoD ruleset's own knobs (E5c, D-E5-9). `personal_mode` is
-    /// `"off"` off-config, so an unconfigured server keeps its pre-E5c behaviour.
-    pub wod: WodCfg,
-    /// `[shadowrun]` — the Shadowrun ruleset's own knobs (E6a, 08f §9). `enabled` is
-    /// `false` off-config, so an unconfigured server keeps its pre-E6a behaviour.
-    pub shadowrun: ShadowrunCfg,
     /// `[tacsim]` — the TacSim layer's own knobs (E7 cut 1, 10b §7). `enabled` is
-    /// `false` off-config, so an unconfigured server keeps its pre-E7 behaviour. It is
-    /// deliberately **not** a `[rulesets].enabled` id: TacSim is a layer beside the one
-    /// character ruleset, not a third one (doc 10 §20).
+    /// `false` off-config, so an unconfigured server keeps its pre-E7 behaviour. Since 16b
+    /// cut R-b it is also the one game's block (`[tacsim.economy]` included).
     pub tacsim: TacsimCfg,
     /// `[npc]` — the NPC agent layer's world-task knobs (H2). Defaults whole.
     #[serde(default)]
@@ -1395,13 +1161,10 @@ impl Default for Config {
             web: empty_toml_table(),
             discord: empty_toml_table(),
             game: GameCfg::default(),
-            rulesets: RulesetsCfg::default(),
             weather: WeatherCfg::default(),
             worldgen: WorldgenCfg::default(),
             economy: EconomyCfg::default(),
             onboarding: OnboardingCfg::default(),
-            wod: WodCfg::default(),
-            shadowrun: ShadowrunCfg::default(),
             tacsim: TacsimCfg::default(),
             npc: NpcCfg::default(),
             atlas: AtlasCfg::default(),
@@ -1772,19 +1535,6 @@ scene_turn_dedline_secs = 30
     }
 
     #[test]
-    fn rulesets_default_and_parse() {
-        // A config-less server loads WoD out of the box.
-        let cfg = Config::default();
-        assert_eq!(cfg.rulesets.enabled, ["wod"]);
-        // An explicit [rulesets] table overrides it.
-        let cfg: Config = toml::from_str("[rulesets]\nenabled = [\"wod\"]").unwrap();
-        assert_eq!(cfg.rulesets.enabled, ["wod"]);
-        // An empty list disables all rulesets (a bare comsys/mail server).
-        let cfg: Config = toml::from_str("[rulesets]\nenabled = []").unwrap();
-        assert!(cfg.rulesets.enabled.is_empty());
-    }
-
-    #[test]
     fn weather_and_worldgen_knobs_default_and_parse() {
         // Config-less: both fall back to the crate defaults (mirrored as
         // literals here; the typed conversion is covered in `mush-server`).
@@ -1958,8 +1708,6 @@ scene_turn_dedline_secs = 30
         assert_eq!(cfg.game.ic_epoch, "2020-01-01 00:00");
         // The example's clock knobs must build a valid clock.
         assert!(cfg.game.game_clock().is_ok());
-        // The example enables the WoD ruleset.
-        assert_eq!(cfg.rulesets.enabled, ["wod"]);
         // The example's [weather]/[worldgen] sections parse (values are
         // commented, so they resolve to the crate defaults).
         assert_eq!(cfg.weather.flavor_variants, 10);
@@ -1981,7 +1729,7 @@ scene_turn_dedline_secs = 30
     /// digest-mismatched pack is a hard boot error naming the file* — was silently not
     /// in force, because `tacsim_config`'s `if cfg.enabled` branch read nothing. This is
     /// deliberately stricter than the rest of the tree (only `EconomyCadenceCfg` had the
-    /// attribute, and `WodCfg`/`ShadowrunCfg` still do not): `[tacsim]` is the only
+    /// attribute): `[tacsim]` is the only
     /// section whose keys carry a boot precondition. The other half of the pair is
     /// `example_config_parses` above, which keeps `mushd.toml.example` loadable.
     #[test]

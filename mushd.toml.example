@@ -145,56 +145,10 @@ starter_area = true                # (S1) apply the shipped starter area — the
 # hydration_strikes_to_zero = 3    # (S3) strikes (@atlas/strike) at which a character's cap becomes
 #                                  #       zero until staff reset it. In-game: "help build".
 
-[rulesets]                         # (M6) which ruleset module loads
-# Every ruleset crate is compiled into mushd; this list SELECTS which one
-# registers. Registered after the built-in modules, so their commands (+roll,
-# +sheet, +chargen, ...), panels, and approval job queues wire cleanly. Two
-# rulesets are available: "wod" (oWoD20) and "shadowrun" (SR5). A server runs
-# EXACTLY ONE — they share the +roll/+sheet/+chargen command names, so enabling
-# two is a hard boot error. An unknown id is a hard boot error; an empty list
-# runs a ruleset-less server. In-game: "help wod" / "help shadowrun".
-enabled = ["wod"]                  # oWoD20; use ["shadowrun"] for Shadowrun 5e (SR5)
-# The "wod" ruleset ships all four templates — Mortal, Vampire (V20), Mage
-# (M20), Werewolf (W20). There is no per-splat allow-list: every template is
-# selectable, and each player picks theirs during chargen with
-# "+chargen/template <mortal|vampire|mage|werewolf>". A character is exactly one
-# template, and its sheet carries only that splat's sections.
-
-[wod.economy]                      # (E5c) the WoD ruleset's OWN economy layer
-# Ruleset-owned (D-E5-9): these knobs turn the WoD layer on and off, never the
-# E2-E4 economy the server runs regardless. "off" is the pre-E5c shape — housing
-# works and staff create tenancies, but no character carries money. Read only
-# when [rulesets].enabled names "wod"; harmless on a Shadowrun server, and
-# written out anyway so the shipped example is the whole config surface.
-personal_mode = "off"              # off | abstract | exact (an unknown word is a hard boot error)
-housing = true                     # create tenancies + register system:wod.housing as title issuer
-careers = true                     # evaluate careers, stances, opportunities, exposure
-default_engagement = "ambient"     # ambient | engaged — a new profile's engagement
-cadence = "chronicle.period"       # the economy cadence clock careers/abstract housing settle on
-starting_funds_major = 0           # exact mode only: chargen starting funds, major units
-reserved_rooms = []                # extra #N rooms that may never become property rooms
-
-[shadowrun.economy]                # (E6a) the Shadowrun ruleset's OWN economy layer
-# Ruleset-owned exactly as [wod.economy] is. Off by default: SR5 still rolls
-# dice and nuyen is still a sheet number; the accounts, lifestyle billing and
-# run board are what this switches. The verbs register either way and answer
-# "not enabled on this server" when off.
-enabled = false
-instrument = "sr.nuyen"            # the currency code, registered at scale 0
-lifestyle_clock = "sr.month"       # the declared cadence lifestyle is billed on
-lifestyle = true                   # create lifestyle obligations
-player_run_offers = true           # +run/post accepts a personal payer
-organization_run_offers = true     # +run/post ... scope=<org> is accepted
-vendor_orgs = []                   # org ids whose contract acceptance may be programmatic
-active_offer_cap = 4               # per-principal open listings
-board_ttl_secs = 1209600           # how long a listing lives (14 d)
-board_cap = 128                    # the whole board's open-listing cap
-
 [tacsim]                           # (E7 cut 1) the TacSim layer: packs, seeds, the corridor
-# TacSim is a LAYER, not a ruleset id. It coexists with whichever single
-# character ruleset [rulesets].enabled selects, and composes AFTER it, because
-# it supplies physical and civil context rather than ruleset metaphysics: a
-# ruleset decides what those facts mean to its characters. Off by default, and
+# The one game's layer (16b cut R-b). It composes AFTER the pilot sheet, because
+# it supplies the physical and civil context the sheet's ratings are read
+# against. Off by default, and
 # an off server is bit-identical to one built before E7 — the @tacsim verbs
 # still register and answer "TacSim is not enabled on this server."
 enabled = false

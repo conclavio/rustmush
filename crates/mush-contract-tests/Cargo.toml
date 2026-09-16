@@ -41,8 +41,6 @@ mush-ruleset.workspace = true
 # WS03-A1: the boot-refusal case measures the starter lot the atlas ships, so
 # the "nothing was refused" claim cannot be met by a boot that applied nothing.
 mush-atlas.workspace = true
-ruleset-wod.workspace = true
-ruleset-shadowrun.workspace = true
 mush-jobs.workspace = true
 futures.workspace = true
 smol_str.workspace = true

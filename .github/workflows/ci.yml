@@ -111,11 +111,11 @@ jobs:
           rustup toolchain install
           rustc --version
       - uses: Swatinem/rust-cache@v2
-      # Renders both shipped `instance.env` files, preflights each under both
+      # Renders the shipped `instance.env` file, preflights it under both
       # check sets AND in the real `mush-server` binary, proves a typo'd
-      # `receipt_policy` is refused by name, and boots the WoD instance (with
+      # `receipt_policy` is refused by name, and boots the shipped instance (with
       # `[store].store` overridden to "memory", the one deviation) to an enabled
-      # `[tacsim]` block and a hello manifest advertising `wod`.
+      # `[tacsim]` block and a hello manifest advertising the game's sheet.
       - name: Render, preflight and boot the shipped instances
         run: cargo test -p mush-server --test provisioning_smoke
       - name: Build the three binaries a deploy installs
@@ -124,11 +124,11 @@ jobs:
       # substitution rule; this is the recipe itself — the loop an operator
       # copies out of deploy/README.md — so the shell and the test cannot drift
       # apart about what a rendered config is.
-      - name: Render both instances with the deploy's own sed recipe
+      - name: Render the shipped instance with the deploy's own sed recipe
         run: |
           set -euo pipefail
           mkdir -p rendered
-          for env_file in instance.env.example instance.env.shadowrun.example; do
+          for env_file in instance.env.example; do
             out="rendered/${env_file%.example}.toml"
             while IFS='=' read -r k v; do
               case "$k" in ''|'#'*) continue;; esac

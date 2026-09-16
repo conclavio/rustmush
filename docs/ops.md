@@ -630,104 +630,46 @@ A runaway script therefore cannot stall the single-writer world loop — the
 budget is the safety boundary. In-game reference: `help scripting`. Default
 budgets live on `ScriptConfig` (not yet config-wired).
 
-## Rulesets (M6): the game system
+## The game sheet (16b cut R-b): one game, no loadable rulesets
 
-Every ruleset crate is **compiled into `mushd`**; `[rulesets].enabled` selects
-which one(s) actually register at boot. They load **after** the built-in
-modules, so their commands, panel feeds, and approval job queues wire cleanly
-and their approval payload handlers see a loaded jobs module.
+rustmush runs **one game**, the 2350 TacSim setting (docs/design/16-combat-arena.md,
+D-16-13/14). There is no `[rulesets]` section and no ruleset selection: the game
+crate's composition root (`crates/tacsim/src/composition`) composes the pilot
+sheet (`tacsim::sheet`, module `pilot`) after the built-in modules on every boot,
+so its commands, its panel feed and its approval queue wire cleanly and its
+approval handler sees a loaded jobs module. The two character rulesets that
+preceded it (oWoD20 and SR5) were deleted on 2026-09-16 by cut R-b of
+docs/design/16b-combat-implementation-plan.md; nothing is configurable about
+which game runs.
 
-```toml
-[rulesets]
-enabled = ["wod"]               # oWoD20 (default); or ["shadowrun"] for SR5
-```
+The **pilot sheet** is schema `("tacsim", 1)`: an identity section (name,
+callsign, concept), three ratings — gunnery, piloting, sensors, one to five dots —
+and a staff-only standing section. Player and staff surface: `+chargen` (six dots
+above the base of one across the three ratings, then a name and a callsign, then
+`+chargen/submit`, which files a `pilot-chargen` approval job; `+chargen/status`
+shows the stage), `+stat <field>=<n>` on one's own unapproved sheet, `+sheet` /
+staff `@sheet/set <who>/<field>=<value>`, and `+roll <expr>` (a dice expression
+rendered through the shared roll narration; the arena itself rolls nothing —
+doc 16 resolves per-mille probabilities without dice). Staff `+job/approve` the
+job; the handler stamps the sheet **Approved** and, with
+`[onboarding].chargen_required` on, moves the character to the live start room.
+The RNG behind `+roll` is OS-seeded in production and seeded for tests.
 
-Two rulesets are available today: **`wod`** (oWoD20) and **`shadowrun`** (SR5).
-A server runs **one ruleset** — they all register the same core commands
-(`+roll`/`+sheet`/`+chargen`), so enabling more than one is a **hard boot error**
-(`ruleset selection: ... one ruleset per server`) rather than an opaque command
-collision. Per-character ruleset dispatch across systems is a future concern.
+**Persistence.** The sheet has no module namespace and runs no store migrations:
+it is a single `sheet:tacsim` JSON attribute on the character's `obj:*` document
+(treaty ruling 7), so it rides the ordinary object write-through and **reloads
+with the world**; the reboot round trip is CI-tested against Redis
+(`crates/mushd/tests/persistence.rs::sheet_persistence_round_trip_redis_gated`).
+The only sheet-owned persisted document is the approval queue, under the jobs
+module's `mod:jobs:*` namespace like any other queue. Do not hand-edit a
+`sheet:tacsim` attribute while the server runs (the rule for any `obj:*` write).
+The sheet query is the schema-generic `<ruleset>.sheet` feed — `tacsim.sheet` —
+so the web Sheet panel renders it with no web change.
 
-An **unknown id is a hard boot error** (`ruleset selection: ... unknown
-ruleset`), consistent with the rest of config — a typo does not start a
-half-configured game. An **empty list** boots a ruleset-less server (bare
-comsys/mail/jobs/weather/scripting). Changing the list needs a restart.
-
-**`wod`** is Classic World of Darkness 20th Anniversary (oWoD20 — the
-Storyteller System). Its player + staff surface: `+chargen` (priority
-point-buy → a `wod-chargen` approval job; a storyteller `+job/approve`s it and
-the sheet flips Approved), `+sheet` / staff `@sheet/set`, `+roll <pool> [vs
-<diff>]` (d10 pool, `/spec` `/wp` `/priv` `/nowound`, inline
-`vs`/`mod`/`spec`/`ext`/`job`/`contested`), `+harm` / `+heal` / `+health` (the
-Bruised→Incapacitated track with wound penalties), and `+xp` / `+xp/spend`
-(costed raises applied atomically on `+job/approve`) / `+xp/award` (staff). The
-dice RNG is OS-seeded in production. In-game reference: `help wod`.
-
-**Splats (M6b + M10a).** `wod` ships seven **templates**: Mortal plus the Vampire
-(V20), Mage (M20), Werewolf (W20) and Changeling (C20) splats, and the two
-mortal-plus templates Ghoul (V20; a mortal bound to a vampire) and Kinfolk (W20;
-a Garou's mortal kin). There is **no per-splat config knob** — every template is
-always selectable, and a player picks theirs during chargen with
-`+chargen/template <mortal|vampire|mage|werewolf|changeling|ghoul|kinfolk>`
-(staff can re-template a sheet with `@sheet/set <who>/template=<id>`). A
-character is exactly **one** template; the ruleset builds one composed schema per
-template at boot (base + that splat's sections only), and every surface —
-`+sheet` render, sheet validation, chargen accounting, `+roll` field resolution,
-and the web sheet query — selects the active schema by the sheet's `template`
-field. So a vampire's sheet carries Disciplines / Blood Pool / Generation, a
-mage's Spheres / Arete / Quintessence / Paradox, a Garou's Rage / Gnosis /
-Renown / Gifts, a changeling's Arts / Realms / Glamour / Banality, and never
-another splat's. The splat commands (`+disc`/`+blood`/`+frenzy`,
-`+cast`/`+sphere`/`+quint`/`+paradox`, `+shift`/`+rage`/`+gnosis`/`+gifts`/`+renown`,
-`+cantrip`/`+art`/`+realm`/`+glamour`/`+banality`, `+domitor`/`+bond`, `+tribe`,
-…) are all registered at boot and self-gate on the actor's template, refusing
-everyone else ("You are not Kindred/Awakened/Garou/Kithain."). Two templates
-**share** another's command surface rather than re-registering colliding names:
-a **Ghoul** reuses the vampire `+disc`/`+blood` (which delegate to the ghoul's
-own flat Blood Pool + domitor-clan Discipline logic), and a **Kinfolk** reuses
-the werewolf `+gnosis`/`+gift` (whose gate is widened to accept Garou *or*
-Kinfolk); the strictly-Garou `+rage`/`+shift`/`+renown`/`+rank` stay Garou-only.
-
-**Persistence.** Like scripting, the WoD ruleset has **no `mod:wod:*` namespace
-and runs no store migrations**: a character sheet is a single `sheet:wod`
-JSON attribute on the character's `obj:*` document (treaty ruling 7), so it
-rides the ordinary object write-through and **reloads with the world** — there
-is no separate sheet save/load path, and the reboot round trip is CI-tested for
-both a base sheet and a splat sheet (a Vampire with Disciplines + Blood Pool,
-rebuilt from Redis alone and revalidated against the vampire schema —
-`crates/mushd/tests/persistence.rs::wod_sheet_persistence_round_trip_*` and
-`::wod_splat_sheet_persistence_round_trip_*`). The
-only ruleset-owned persisted docs are its two approval job queues, which live
-under the jobs module's `mod:jobs:*` namespace like any other queue. Do not
-hand-edit a `sheet:wod` attribute while the server runs (same rule as any
-`obj:*` write).
-
-**`shadowrun`** is **Shadowrun 5th Edition** (SR5, M10b) — the second full game
-system on the same `mush-ruleset` + `mush-dice` plugin API, selected with
-`enabled = ["shadowrun"]` (single-ruleset-per-server: it collides with `wod`).
-Its dice are a **d6 hit pool** (each 5/6 a hit) rather than oWoD's d10 pool, with
-SR5's two signatures: a **glitch** (more than half the dice show 1 — a
-**critical glitch** at zero hits) and a **Limit** that caps counted hits, which
-**Edge** can push past (`+roll/edge`: add Edge dice, waive the Limit, Rule of
-Six). Player + staff surface: `+chargen` (the **priority** point-buy —
-`+chargen/priority metatype=A attributes=B magic=C skills=D resources=E`, then
-`+stat`/`+spec`, `+chargen/submit` → a `shadowrun-chargen` approval job), `+sheet`
-/ staff `@sheet/set` (edits recompute the ceil-division derived stats — Limits,
-Condition Monitors, Initiative), `+roll <attr>+<skill>` (auto Limit + wound
-modifier; `/edge` `/edge+` `/priv` `/nowound`; inline `threshold`/`limit`/`mod`/
-`spec`/`contested`/`extended`), `+damage`/`+heal`/`+condition` (the two Condition
-Monitors with Stun→Physical and lethal Physical overflow), `+cast`/`+thread` and
-`+spell(s)`/`+powers`/`+complexforms`/`+magic`/`+resonance` (magic is
-sheet-tracked and **pool-rolled**, with **Drain**/**Fading** applied to the CM),
-`+init [/roll]`, and `+karma` / `+karma/spend` (costed raises applied atomically
-on `+job/approve`) / `+karma/award` (staff). The dice RNG is OS-seeded in
-production and injectable/seedable for tests. Persistence is identical to `wod`:
-the runner sheet is a single `sheet:shadowrun` JSON attribute on the character's
-`obj:*` document, so it rides the object write-through and **reloads with the
-world** (no separate save path); the reboot round trip is CI-tested against Redis
-(`crates/mushd/tests/shadowrun_e2e.rs::sr5_sheet_survives_redis_reboot_gated`).
-The sheet query is the schema-generic `<ruleset>.sheet` feed, so the web Sheet
-panel renders SR5 with **no** web change. In-game reference: `help shadowrun`.
+**The game's economy wiring** is `[tacsim.economy]` (`housing`, `market`,
+`instrument`, `reserved_rooms`; see `mushd.toml.example`). At boot the sheet
+registers the settlement currency `tacsim.credit` (code `cr`, scale 2)
+create-only; a currency staff registered first is left exactly as it is.
 
 ## LLM layer (M7): worldgen, budgets, kill switch
 
@@ -946,28 +888,27 @@ does when `chargen_required = true`:
 
 - a newly created, not-yet-approved character is placed in `start_room_unapproved`
   (the `ObjCreated` observer), **not** the live start room;
-- on connect it is greeted and dropped into the guided chargen **wizard**
-  (`+chargen/wizard`) — transport-agnostic, so SSH and the web client behave
-  identically;
-- it is held to a small allowlist — chargen (`+chargen`/`+stat`/`+spec`/`+sheet`),
+- on connect it is greeted and pointed at chargen (`+chargen`) — transport-agnostic,
+  so SSH and the web client behave identically;
+- it is held to a small allowlist — chargen (`+chargen`/`+stat`/`+sheet`),
   `look`, `say`/`pose`, `help`, `who`, `quit`, and the OOC channel management verbs
   — and everything else (moving onto the grid, exits, `home`, `+roll`, building)
   is refused with a "finish creating your character" notice;
 - **staff (Builder and up) and already-approved characters bypass the gate.**
 
 `+chargen/submit` finalizes the sheet (re-validated), flips it to
-`Pending(job)`, and opens a `wod-chargen` approval job. When a storyteller
+`Pending(job)`, and opens a `pilot-chargen` approval job. When a staffer
 `+job/approve <job>`s it, the handler stamps the sheet **Approved**, moves the
 character to `start_room`, and re-renders — the gate then passes on its own
 (the sheet is Approved), so nothing else has to be un-wired. Denying/bouncing the
 job leaves the character in chargen to keep editing.
 
-Persistence: the sheet is a `sheet:wod` **attribute on the player's object**, so
+Persistence: the sheet is a `sheet:tacsim` **attribute on the player's object**, so
 it rides `obj:*` write-through; the approval job is a `mod:jobs:*` document. Both
 a submitted-but-Pending sheet **and** its later Approved stamp survive a reboot —
 CI-tested in memory and against a live Redis
 (`crates/mushd/tests/persistence.rs::onboarding_persistence_round_trip*`). The
-full new-player→wizard→submit→gate→approve→play journey over real SSH is
+full new-player→chargen→submit→gate→approve→play journey over real SSH is
 `crates/mushd/tests/onboarding_e2e.rs`.
 
 ## Observability (M9): metrics, health, structured logging
@@ -1348,7 +1289,7 @@ hot-restart operational flow (and its accepted losses) is the next section.
 **The two binaries.**
 
 - **`mush-server`** owns the world: the single-writer world loop, persistence,
-  modules, rulesets, the LLM layer, staff ops. It holds **no** connection
+  modules, the game crate, the LLM layer, staff ops. It holds **no** connection
   listeners. It binds the `[ipc]` socket and waits for the gateway.
 - **`mush-gateway`** owns the front door: the SSH **and web** listeners,
   the session layer, account auth + the IP guard, and slow-client / link-dead
@@ -1359,7 +1300,7 @@ The two halves are a **clean dependency split**: they depend on neither each
 other nor the other half's deps. The gateway links only connection-side crates
 (`mush-net-ssh` / `mush-net-web` / `mush-session`, plus a `mush-store` KV handle
 for `account:*` / `token:*` / `ban:*`) and pulls in **none** of the game stack
-(`mush-llm`, the modules, the rulesets, `mush-worldgen`, `mush-npc`). The server
+(`mush-llm`, the modules, the game crate, `mush-worldgen`, `mush-npc`). The server
 links the game stack and pulls in **none** of the net/session crates. All they
 share is the dep-light `mush-config` (the `mushd.toml` model, logging, IP guard,
 account helpers) and the `mush-ipc` boundary protocol; the all-in-one `mushd`
@@ -1519,10 +1460,8 @@ can be torn down and rebuilt underneath live players — on both transports:
   exact world-loop `Barrier` has crossed any startup `CommitPending` receipt.
   Thus **Reconnected means commit-ready**, not merely "the IPC Hello arrived";
   a failed replay or barrier tears down that attempt and retries under the
-  crash-loop guard. The WoD/SR ruleset
-  working state that shapes that render survives the restart (M17): a cloaked
-  vampire stays cloaked, an accepted ST ruling still awaits its throw, an
-  extended roll keeps its progress (see *Accepted losses across a restart*).
+  crash-loop guard. Module working state that shapes that render survives the
+  restart (M17; see *Accepted losses across a restart*).
 - **A server crash is handled in-process.** If the child dies on its own, the
   gateway auto-respawns it and re-attaches every held session — the same
   hold-the-connection path as a deliberate restart. A **crash-loop guard**
@@ -1610,21 +1549,15 @@ that live in the server's RAM by design and were always documented as transient:
   provider had already been billed, still counts). Re-issue it. The *results*
   that had already landed (accepted drafts, remembered NPC facts) are persisted
   and survive.
-- **WoD / SR ruleset working state survives (M17).** The live, fiction-critical
-  scene state the WoD and Shadowrun rulesets keep in their in-RAM state slots is
-  now mirrored to their own module namespace (`mod:wod:*` / `mod:shadowrun:*`) on
-  every mutation — the same atomic per-command write-through as object writes —
-  and re-hydrated at boot **before** the first re-attached `look` renders. So a
-  mid-scene restart is invisible where it matters most: an Obfuscate-cloaked
-  vampire **stays hidden** (concealment ratings + the per-observer pierced
-  verdicts survive), an accepted-but-unthrown Storyteller ruling (M13 pending)
-  survives and the next `+roll` still consumes it as ST-authoritative, and an
-  in-progress **extended roll** (WoD and SR) keeps its accumulated successes.
-  Orphaned entries (an object destroyed while the server was down) and expired
-  pendings are dropped on reload, not resurrected. Re-seeded/transient bits are
-  **not** persisted and are accepted losses: the dice RNG re-seeds from the OS,
-  the per-character roll-log ring (`+roll/last`) comes back empty, and any open
-  `+chargen` input context is dropped (re-derivable from the persisted sheet).
+- **Module working state survives (M17).** A module's live in-RAM state slot can
+  be mirrored to its own namespace (`mod:<module>:*`) on every mutation — the same
+  atomic per-command write-through as object writes — and re-hydrated at boot
+  **before** the first re-attached `look` renders. The two character rulesets
+  that exercised this (cloaks, pending Storyteller rulings, extended rolls) were
+  deleted in 16b cut R-b; the game sheet keeps no scene state of its own (a sheet
+  is an object attribute), so today the path carries the built-in modules' own
+  stores. Re-seeded/transient bits are accepted losses: the dice RNG re-seeds from
+  the OS, and any open `+chargen` input is re-derived from the persisted sheet.
 - **TacSim scenes + the per-`(scene, obj)` scene registry — future.** Open
   scenes, their `SceneId`s (they re-number from 0 on each boot), the per-`(scene,
   obj)` `RulesetStateStore` (e.g. per-mech combat `heat`), and per-scene map
@@ -1632,9 +1565,8 @@ that live in the server's RAM by design and were always documented as transient:
   every boot. This is the reserved TacSim seam (it purges stale scene
   documents on boot by design); scene-registry rehydration for actual tactics
   scenes lands **with TacSim**. Until then, a tactics scene in progress when a
-  restart hits is not rehydrated — **re-open it afterward**. Everything the
-  ruleset persisted to durable object state (sheets, XP, wounds recorded on the
-  sheet) survives regardless; only this per-scene combat working state resets.
+  restart hits is not rehydrated — **re-open it afterward**. Everything
+  persisted to durable object state (the sheet) survives regardless; only this per-scene combat working state resets.
 
 Nothing else is silently lost. Announce a deploy anyway if players might be
 mid-chargen, mid-compose, or mid-tactics-scene, so they know to expect the dropped

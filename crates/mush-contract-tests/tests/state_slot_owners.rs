@@ -74,10 +74,10 @@ use serde::Deserialize;
 /// The checked-in baseline, beside this crate's `Cargo.toml`.
 const ALLOWLIST: &str = "state-slot-owners.toml";
 
-/// Every ruleset a production server can enable, plus the ruleset-less
-/// composition — `[rulesets].enabled` is the only knob that changes which
-/// modules compose.
-const RULESETS: [&str; 3] = ["", "wod", "shadowrun"];
+/// 16b cut R-b: there is one production composition, the game's. The label is
+/// what the messages print; the loops that once ranged over the rulesets stay,
+/// so a second composition cannot arrive without widening this list.
+const RULESETS: [&str; 1] = ["tacsim"];
 
 /// The three accessors the scan knows, spelled as a row must spell them.
 const ACCESSORS: [&str; 3] = [
@@ -148,16 +148,10 @@ fn baseline() -> Baseline {
 // The production composition
 // ---------------------------------------------------------------------------
 
-/// Every state slot a production server installs with `[rulesets].enabled =
-/// [ruleset]` (or nothing enabled, for `""`) and default configuration, built
-/// through the ONE composition root both halves boot.
-fn production_slots(ruleset: &str) -> Vec<StateSlotInfo> {
-    let mut config = mush_config::config::Config::default();
-    config.rulesets.enabled = if ruleset.is_empty() {
-        Vec::new()
-    } else {
-        vec![ruleset.to_string()]
-    };
+/// Every state slot the production server installs with default configuration,
+/// built through the ONE composition root both halves boot.
+fn production_slots(_composition: &str) -> Vec<StateSlotInfo> {
+    let config = mush_config::config::Config::default();
     // No provider is configured and the service is disabled; which modules
     // compose does not depend on it.
     let llm = Arc::new(

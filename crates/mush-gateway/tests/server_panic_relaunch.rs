@@ -84,7 +84,6 @@ fn test_config(tag: &str) -> Config {
     cfg.server.data_dir = scratch_dir(tag);
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
-    cfg.rulesets.enabled = vec![];
     cfg
 }
 
@@ -110,7 +109,6 @@ async fn ws01_s8_server_worker() {
         PathBuf::from(std::env::var_os(WORKER_DATA_ENV).expect("worker data dir"));
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = std::env::var(WORKER_IPC_ENV).expect("worker ipc endpoint");
-    cfg.rulesets.enabled = vec![];
 
     let code = match mush_server::serve(cfg, None).await {
         Ok(()) => 0,

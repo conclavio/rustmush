@@ -50,9 +50,6 @@ max_characters = 3
 ic_ratio = 1
 ic_epoch = "2020-01-01 00:00"
 
-[rulesets]
-enabled = ["shadowrun"]
-
 # --- LLM: enabled; keys come from the systemd EnvironmentFile (dev2.env) ---
 [llm]
 enabled = true

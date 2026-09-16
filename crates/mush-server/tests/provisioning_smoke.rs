@@ -38,19 +38,14 @@
 //!    other end as `pilot` in the `hello` manifest the gateway sends a web
 //!    client, with the TacSim module composed into it.
 //!
-//! # `RULESET=` is now inert (16b cut R-b)
+//! # `RULESET=` is gone (16b cut R-b)
 //!
-//! The template still renders `[rulesets] enabled = ["__RULESET__"]` and the
-//! shipped env still carries `RULESET=wod`, because `[rulesets]` still PARSES —
-//! it is deleted in a later step of this cut. **Nothing reads it.** There is one
-//! composition: `boot::game_modules` composes `tacsim::sheet::PilotRuleset`
-//! unconditionally, and no value of `RULESET=` changes a single module, panel
-//! feed or verb. So no case below asserts anything about it; the key and its
-//! `[rulesets]` block go together when the section does, and until then a box
-//! provisioned with `RULESET=anything` boots the same world.
+//! There is one composition: `boot::game_modules` composes `tacsim::sheet::PilotRuleset`
+//! unconditionally, so the template renders no `[rulesets]` block and the shipped env
+//! carries no `RULESET=` key; nothing below asserts anything about a ruleset choice.
 //!
 //! `instance.env.shadowrun.example` left [`SHIPPED_ENVS`] for the same reason:
-//! it was a parameterisation of a ruleset that no longer exists. Its one unique
+//! it was a parameterisation of a ruleset that no longer exists, and left with it. Its one unique
 //! claim — that the template renders a DISABLED `[tacsim]` block — is kept, from
 //! the one remaining env with `TACSIM_ENABLED` overridden.
 //!
@@ -338,7 +333,7 @@ fn the_server_binary_preflights_the_render_and_refuses_a_typod_receipt_policy() 
 /// - and the one game sheet comes out the other end as `pilot` in the `hello`
 ///   manifest the gateway sends a web client, with its panel feed
 ///   (`tacsim.sheet`) riding along — and the TacSim module composed into that
-///   manifest at all. (`RULESET=` decides nothing now; see this file's header.)
+///   manifest at all.
 ///
 /// `[store].store` is set to `"memory"` after loading — see this file's header.
 #[tokio::test]
@@ -455,7 +450,6 @@ async fn the_rendered_instance_boots_and_advertises_its_layers() {
 /// it was the parameterisation that turned the layer off. It named a ruleset
 /// that no longer exists, so the branch is rendered from the one remaining env
 /// with `TACSIM_ENABLED` overridden — the same substitution, one key different.
-/// (The env file itself is deleted elsewhere in this cut.)
 #[test]
 fn the_template_renders_a_disabled_tacsim_layer() {
     let dir = scratch_dir("tacsim-off");

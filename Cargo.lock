@@ -2226,8 +2226,6 @@ dependencies = [
  "mush-store",
  "mush-tactics",
  "mush-testkit",
- "ruleset-shadowrun",
- "ruleset-wod",
  "serde",
  "serde_json",
  "smol_str",
@@ -2708,8 +2706,6 @@ dependencies = [
  "mush-weather",
  "mush-worldgen",
  "rand 0.9.5",
- "ruleset-shadowrun",
- "ruleset-wod",
  "serde",
  "serde_json",
  "sha2",
@@ -2885,8 +2881,6 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "reqwest",
- "ruleset-shadowrun",
- "ruleset-wod",
  "russh",
  "serde",
  "serde_json",
@@ -3752,59 +3746,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ruleset-shadowrun"
-version = "0.1.0"
-dependencies = [
- "mush-canon",
- "mush-core",
- "mush-dice",
- "mush-economy",
- "mush-faction",
- "mush-jobs",
- "mush-market",
- "mush-org",
- "mush-party",
- "mush-proto",
- "mush-ruleset",
- "mush-scenes",
- "mush-store",
- "mush-testkit",
- "rand 0.9.5",
- "rand_chacha 0.9.0",
- "serde",
- "serde_json",
- "smol_str",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "ruleset-wod"
-version = "0.1.0"
-dependencies = [
- "mush-canon",
- "mush-core",
- "mush-dice",
- "mush-economy",
- "mush-faction",
- "mush-housing",
- "mush-jobs",
- "mush-llm",
- "mush-org",
- "mush-proto",
- "mush-ruleset",
- "mush-store",
- "mush-testkit",
- "rand 0.9.5",
- "rand_chacha 0.9.0",
- "serde",
- "serde_json",
- "smol_str",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "russh"
 version = "0.63.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4654,8 +4595,6 @@ dependencies = [
  "mush-worldgen",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
- "ruleset-shadowrun",
- "ruleset-wod",
  "serde",
  "serde_json",
  "smol_str",

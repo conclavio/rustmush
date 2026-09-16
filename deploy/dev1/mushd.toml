@@ -46,9 +46,6 @@ max_characters = 3
 ic_ratio = 1
 ic_epoch = "2020-01-01 00:00"
 
-[rulesets]
-enabled = ["wod"]
-
 # --- LLM: enabled; keys come from the systemd EnvironmentFile (dev1.env) ---
 [llm]
 enabled = true

@@ -56,7 +56,6 @@ pub mod owod20;
 pub mod parser;
 pub mod pool;
 pub mod resolution;
-pub mod sr5;
 
 pub use error::{DiceParseError, RollLimitError};
 pub use expr::{AddOp, DiceExpr, DieRecord, Keep, RollCtx, RollLimits, RollOutcome};

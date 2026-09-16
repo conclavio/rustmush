@@ -71,10 +71,10 @@ use smol_str::SmolStr;
 /// The checked-in declaration set, beside this crate's `Cargo.toml`.
 const ALLOWLIST: &str = "module-ns-owners.toml";
 
-/// Every ruleset a production server can enable, plus the ruleset-less
-/// composition — `[rulesets].enabled` is the only knob that changes which
-/// modules compose.
-const RULESETS: [&str; 3] = ["", "wod", "shadowrun"];
+/// 16b cut R-b: there is one production composition, the game's. The label is
+/// what the messages print; the loops that once ranged over the rulesets stay,
+/// so a second composition cannot arrive without widening this list.
+const RULESETS: [&str; 1] = ["tacsim"];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,15 +119,9 @@ fn production_engine(ruleset: &str) -> Engine {
     Engine::from_composition(World::new_minimal(), composition)
 }
 
-/// The module roster `[rulesets].enabled = [ruleset]` composes, straight from
-/// the composition root.
-fn production_roster(ruleset: &str) -> Vec<Box<dyn GameModule>> {
-    let mut config = mush_config::config::Config::default();
-    config.rulesets.enabled = if ruleset.is_empty() {
-        Vec::new()
-    } else {
-        vec![ruleset.to_string()]
-    };
+/// The production module roster, straight from the composition root.
+fn production_roster(_composition: &str) -> Vec<Box<dyn GameModule>> {
+    let config = mush_config::config::Config::default();
     // No provider is configured and the service is disabled; which modules
     // compose does not depend on it.
     let llm = Arc::new(

@@ -57,7 +57,6 @@ fn server_config(tag: &str) -> Config {
     cfg.server.data_dir = scratch_dir(tag);
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
-    cfg.rulesets.enabled = vec!["wod".to_string()];
     cfg
 }
 
@@ -69,7 +68,6 @@ fn gateway_config(tag: &str) -> Config {
     cfg.store.store = "memory".to_string();
     cfg.server.data_dir = scratch_dir(tag);
     cfg.ssh.listen = "127.0.0.1:0".to_string();
-    cfg.rulesets.enabled = vec![];
     let mut web = toml::value::Table::new();
     web.insert(
         "listen".to_string(),

@@ -4,14 +4,14 @@
 //! The failure mode these prove is the quiet one. Neither deployed box
 //! (`deploy/dev1`, `deploy/dev2`) writes `[log]`, `[store.archive]`, `[offers]`,
 //! `[resolution]`, `[discord]`, `[economy]`, `[weather]`, `[worldgen]`,
-//! `[onboarding]`, `[npc]`, `[wod]`, `[shadowrun]` or `[tacsim]` — thirteen
+//! `[onboarding]`, `[npc]` or `[tacsim]` — eleven
 //! sections — so each of those runs on a compiled-in default the operator never
 //! saw: no log files, no ledger archive tier, key directories nobody
 //! provisioned, and every character starting in Limbo `#0`. Nothing failed;
 //! nothing said so. `deploy/instance/mushd.toml.tmpl` is the answer, and it is
 //! only an answer while it stays complete — hence:
 //!
-//! - every one of the thirteen is declared in the rendered file, with a value
+//! - every one of the eleven is declared in the rendered file, with a value
 //!   that is demonstrably *not* the default it would have taken by omission;
 //! - a `__PLACEHOLDER__` with no line in `instance.env` fails here rather than
 //!   installing a config with `__START_ROOM__` in it;
@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use mush_config::config::{Config, ConfigError};
 
-/// The thirteen sections absent from both boxes this template exists to fix.
+/// The eleven sections absent from both boxes this template exists to fix.
 /// `[tacsim.recovery]` rides along as the sub-block `[tacsim]` gained after
 /// those boxes were written, and which `mushd.toml.example` had already drifted
 /// past.
@@ -42,8 +42,6 @@ const REQUIRED_SECTIONS: &[&str] = &[
     "worldgen",
     "onboarding",
     "npc",
-    "wod.economy",
-    "shadowrun.economy",
     "tacsim",
     "tacsim.recovery",
     "tacsim.economy",
@@ -156,10 +154,11 @@ fn rendered_instance(env_file: &str) -> (String, Config) {
     (text, cfg)
 }
 
-/// Both shipped parameterisations: the WoD instance that wants the TacSim
-/// layer, and the Shadowrun one that does not. A template only ever rendered
-/// one way has an untested branch.
-const SHIPPED_ENVS: &[&str] = &["instance.env.example", "instance.env.shadowrun.example"];
+/// The shipped parameterisation. 16b cut R-b: one game, one env — the Shadowrun
+/// env left with its ruleset, and the disabled-`[tacsim]` branch it used to
+/// exercise is rendered by `mush-server`'s `provisioning_smoke` from this one env
+/// with `TACSIM_ENABLED` overridden.
+const SHIPPED_ENVS: &[&str] = &["instance.env.example"];
 
 #[test]
 fn the_template_declares_every_section_the_deployed_boxes_lack() {

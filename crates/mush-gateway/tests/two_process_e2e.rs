@@ -53,7 +53,6 @@ fn test_config(tag: &str) -> Config {
     cfg.server.data_dir = scratch_dir(tag);
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
-    cfg.rulesets.enabled = vec![];
     cfg
 }
 

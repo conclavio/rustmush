@@ -40,7 +40,6 @@ fn test_config(tag: &str) -> Config {
     cfg.server.data_dir = scratch_dir(tag);
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
-    cfg.rulesets.enabled = vec![];
     // A wedged peer past this is torn down; keep it short but generous enough
     // that a legitimate *buffered* write never trips it on a loaded box.
     cfg.ipc.write_timeout_ms = 1000;
