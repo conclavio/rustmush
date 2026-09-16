@@ -290,7 +290,6 @@ pub use module::{
     is_concealed, perceives_via, room_ambient,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
-pub use onboarding::OnboardingConfig;
 pub use offer::{
     ActionPresentation, InternalOffer, InternalOfferDraft, LegalActionProjectionError,
     LegalActionQuery, LegalActionResolutionError, LegalActionSubjectError,
@@ -303,6 +302,7 @@ pub use offer::{
     ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId,
     ProviderOfferDraft, ResolvedAuthoritativeOffer,
 };
+pub use onboarding::OnboardingConfig;
 pub use output::{
     Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,
 };

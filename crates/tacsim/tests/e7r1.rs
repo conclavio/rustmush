@@ -12,9 +12,7 @@
 use mush_core::{Audience, GOD, ObjId};
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
-use tacsim::{
-    PackSource, RulesPack, TacsimConfig, TacsimRuleset, TacsimStore, fixture, load_pack,
-};
+use tacsim::{PackSource, RulesPack, TacsimConfig, TacsimRuleset, TacsimStore, fixture, load_pack};
 
 // ---- E7r1: the rig (e7c1.rs's, verbatim where it applies) ------------------
 

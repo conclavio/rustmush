@@ -16,12 +16,12 @@
 //! second, independent check the engine's constructor performs on data it did not
 //! author.
 
+use crate::{FormationKindDef, FormationRoleDef, TacsimStore};
 use mush_campaign::{
     Composition, FormationAuthority, FormationKind, MAX_ALLOWED_CATEGORIES, MAX_COMMAND_ROLES,
     RoleSpec,
 };
 use mush_core::World;
-use crate::{FormationKindDef, FormationRoleDef, TacsimStore};
 use smol_str::SmolStr;
 
 /// The one formation authority, handed to `CampaignModule::with_formation_kinds`

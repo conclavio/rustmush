@@ -588,10 +588,7 @@ async fn a_seeded_pack_resolves_a_route() {
 
     let said = run(
         &mut fx.booted.engine,
-        &format!(
-            "@tacsim/seed {} commit",
-            tacsim::fixture::CORRIDOR_PACK
-        ),
+        &format!("@tacsim/seed {} commit", tacsim::fixture::CORRIDOR_PACK),
     );
 
     let resolved = catalog.resolve(&fx.booted.engine.world, &route);

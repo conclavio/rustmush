@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, HashMap};
 use mush_core::{Audience, CanonicalId, GOD, ModuleBootData, ModuleWrite, ObjId};
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
+use smol_str::SmolStr;
 use tacsim::{
     MAX_CONFIGURED_PACKS, MAX_LEG_SECS, MAX_PACK_ENTRIES, MAX_PINS, MAX_RECIPE_LINES,
     MAX_RECIPE_UNITS, MAX_REQUIRES, MAX_ROUTE_PROPELLANT, MAX_SEED_OBJECTS, PACK_DIGEST_DOMAIN,
@@ -30,7 +31,6 @@ use tacsim::{
     TacsimConfig, TacsimRuleset, TacsimStore, check_requires, fixture, load_pack, pack_digest,
     store, verify_sources,
 };
-use smol_str::SmolStr;
 
 // ---- rig -------------------------------------------------------------------
 

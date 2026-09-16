@@ -10,7 +10,13 @@ use std::path::Path;
 fn the_game_crate_depends_on_no_host_crate() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let text = std::fs::read_to_string(&manifest).unwrap_or_else(|e| panic!("{manifest:?}: {e}"));
-    for host in ["mush-server", "mushd", "mush-gateway", "mush-net-ssh", "mush-net-web"] {
+    for host in [
+        "mush-server",
+        "mushd",
+        "mush-gateway",
+        "mush-net-ssh",
+        "mush-net-web",
+    ] {
         let key = format!("{host}.workspace");
         let table = format!("{host} = ");
         assert!(

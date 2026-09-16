@@ -399,7 +399,9 @@ async fn generate_brief(llm: &LlmService, snap: &BriefSnapshot) -> GenOutcome {
                         false,
                     )
                 }
-                StructuredError::Disabled { .. } => ("LLM features are disabled.".to_string(), false),
+                StructuredError::Disabled { .. } => {
+                    ("LLM features are disabled.".to_string(), false)
+                }
                 // The budget case folds into `retryable`, exactly as before.
                 StructuredError::Call { err, .. } => {
                     (format!("Brief generation failed: {err}."), e.is_retryable())

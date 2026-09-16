@@ -52,14 +52,14 @@
 
 // The composition adapters that used to be `mush-server` modules (16b cut R-a, R2):
 // each maps one library seam onto the game's data and is wired below.
-pub mod sim_routes;
-pub mod industry_recipes;
 pub mod campaign_formations;
+pub mod econ_alerts;
+pub mod econ_canon;
+pub mod econ_inbox;
+pub mod industry_recipes;
 pub mod salvage_source;
 pub mod seat_audit;
-pub mod econ_inbox;
-pub mod econ_canon;
-pub mod econ_alerts;
+pub mod sim_routes;
 
 use std::sync::Arc;
 
@@ -857,8 +857,7 @@ pub fn content_module(starter_area: bool) -> Result<Box<dyn GameModule>, String>
         .map_err(|e| format!("npc appliers: {e}"))?;
     // S9.1: a TacSim campaign-seed pack's places and routes are the atlas's
     // sites and connections, applied through the content latch like any pack.
-    crate::register_appliers(&mut appliers)
-        .map_err(|e| format!("tacsim appliers: {e}"))?;
+    crate::register_appliers(&mut appliers).map_err(|e| format!("tacsim appliers: {e}"))?;
     let mut module = mush_content::ContentModule::new().with_appliers(appliers);
     if starter_area {
         let packs = mush_atlas::starter::packs().map_err(|e| format!("starter packs: {e}"))?;
@@ -884,9 +883,7 @@ pub fn no_recovery() -> mush_campaign::RecoveryConfig {
 /// `tacsim` owns the frozen block, `mush-campaign` owns the provider, and
 /// this is the one line between them (`IndustryModule::with_recipes`' exact shape).
 #[must_use]
-pub fn recovery_policy(
-    cfg: &crate::TacsimRecoveryConfig,
-) -> mush_campaign::RecoveryConfig {
+pub fn recovery_policy(cfg: &crate::TacsimRecoveryConfig) -> mush_campaign::RecoveryConfig {
     mush_campaign::RecoveryConfig {
         enabled: cfg.enabled,
         pool_account: mush_economy::AccountId(cfg.pool_account),

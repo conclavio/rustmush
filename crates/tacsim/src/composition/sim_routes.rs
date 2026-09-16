@@ -16,9 +16,9 @@
 //! materialized index, and the `RouteDef` handed back is the store's, which
 //! already re-ran every constructor invariant when it was materialized.
 
+use crate::TacsimStore;
 use mush_core::{CanonicalId, World};
 use mush_sim::{RouteCatalog, RouteDef};
-use crate::TacsimStore;
 
 /// The one route catalog, handed to `SimulationModule::with_route_catalog` at
 /// composition. Holds nothing: it reads the per-world `TacsimStore`.

@@ -6,9 +6,9 @@
 //! a ruleset at prepare time (the industry provider consults this only at offer /
 //! draft time, where a world is available).
 
+use crate::TacsimStore;
 use mush_core::{CanonicalId, DefinitionDigest, World};
 use mush_industry::{PinnedRecipe, RecipeAuthority, RecipeLine, RecipeRef};
-use crate::TacsimStore;
 
 /// The one recipe authority, handed to `IndustryModule::with_recipes` at
 /// composition. Holds nothing: it reads the per-world `TacsimStore`.

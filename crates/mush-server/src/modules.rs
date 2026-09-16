@@ -164,7 +164,6 @@ async fn load_streams_for(
     Ok(())
 }
 
-
 /// Load only ordinary module boot data. The full public boot path is
 /// [`boot_modules`], which also hydrates the reserved typed-state partition.
 #[cfg(test)]
@@ -1415,8 +1414,7 @@ mod tests {
         let core = packs.join("tacsim_core.json");
         let corridor = packs.join("tacsim_corridor.json");
         std::fs::write(&core, tacsim::fixture::CORE_JSON).expect("the core pack file");
-        std::fs::write(&corridor, tacsim::fixture::CORRIDOR_JSON)
-            .expect("the corridor seed file");
+        std::fs::write(&corridor, tacsim::fixture::CORRIDOR_JSON).expect("the corridor seed file");
         let mut cfg = Config::default();
         cfg.store.store = "memory".to_string();
         cfg.server.data_dir = dir;

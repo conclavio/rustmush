@@ -585,10 +585,7 @@ pub const MAX_TACSIM_CONFIGURED_PACKS: usize = tacsim::MAX_CONFIGURED_PACKS;
 /// place it is a boot precondition. So the candidate list is accumulated first and the
 /// cap is applied to it, and only then is anything read. Sorted-directory order
 /// (OPEN 1) is unchanged: the listing pass is where the sort happens.
-fn read_pack_sources(
-    paths: &[String],
-    label: &str,
-) -> Result<Vec<tacsim::PackSource>, String> {
+fn read_pack_sources(paths: &[String], label: &str) -> Result<Vec<tacsim::PackSource>, String> {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     for entry in paths {
         let path = std::path::Path::new(entry.trim());
@@ -717,10 +714,7 @@ mod tests {
 
         // The good case first: the built-in fixture, written out and read back, boots.
         let core = write("tacsim_core.json", tacsim::fixture::CORE_JSON);
-        let corridor = write(
-            "tacsim_corridor.json",
-            tacsim::fixture::CORRIDOR_JSON,
-        );
+        let corridor = write("tacsim_corridor.json", tacsim::fixture::CORRIDOR_JSON);
         let good = TacsimCfg {
             enabled: true,
             pack_paths: vec![core.clone()],
@@ -739,11 +733,7 @@ mod tests {
         let garbage = write("garbage.json", "{ this is not json");
         let unknown_key = write(
             "unknown.json",
-            &tacsim::fixture::CORE_JSON.replacen(
-                "\"entries\"",
-                "\"surprise\": 1, \"entries\"",
-                1,
-            ),
+            &tacsim::fixture::CORE_JSON.replacen("\"entries\"", "\"surprise\": 1, \"entries\"", 1),
         );
         let bad_digest = write(
             "bad_digest.json",
@@ -896,8 +886,7 @@ mod tests {
         // And a directory inside the cap is still read, in sorted order, as before.
         let small = dir.join("small");
         std::fs::create_dir_all(&small).expect("a scratch directory");
-        std::fs::write(small.join("core.json"), tacsim::fixture::CORE_JSON)
-            .expect("writes");
+        std::fs::write(small.join("core.json"), tacsim::fixture::CORE_JSON).expect("writes");
         let cfg = TacsimCfg {
             enabled: true,
             pack_paths: vec![small.display().to_string()],
