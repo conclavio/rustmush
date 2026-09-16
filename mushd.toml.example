@@ -208,6 +208,82 @@ market = false
 instrument = "tacsim.credit"
 reserved_rooms = []                # extra rooms (#N) that may never become property rooms, beside [onboarding]'s two
 
+# --- The combat arena (16b cut G) --------------------------------------------
+# The five blocks doc 16 §7 adds under [tacsim], with the values of 16b §9's
+# constants table. Every one is deny_unknown_fields like [tacsim] itself, so a
+# mistyped key REFUSES THE BOOT rather than leaving you a period, a bound or a
+# threshold you believe is in force and is not.
+#
+# Every value below is the compiled-in default, written out so the block is
+# written once and so the numbers are visible. They are PARSED AND INERT today:
+# the cut that reads a field is the cut that validates it (A for the arena, T
+# for the match, S for sensors, W for resolution, H for the harness). The one
+# exception is [tacsim.sensors].max_signature_factor, which the host converts to
+# per mille at boot -- converting it is reading it, so a negative, NaN or
+# unrepresentable factor is a hard boot error naming that key.
+
+[tacsim.arena]                     # (16b cut G) the arena's clock, intent inbox and ledger bounds
+# One arena runs one match on one map as the SINGLE WRITER for that match's
+# facts (doc 16 §3.1). Arena time is milliseconds since match start, advanced by
+# wall time between pulses and clamped: past the clamp the arena records
+# `lagged` and skips the idle time rather than expanding dt to hide it.
+max_catch_up_steps = 4             # periods of wall time one pulse may absorb before it records `lagged`
+
+[tacsim.arena.tempo]               # (16b cut G) the adaptive tempo: how often the arena steps
+# The tempo decides only how OFTEN the arena steps and how output is batched --
+# never an outcome. A pulse is cut into substeps and every due event is applied
+# at its own arena timestamp between them, so the same scripted match replayed
+# at 5000, 1000 and 500 ms produces an identical event list.
+quiet_ms = 5000                    # no hostile contact held, no pending impact, no fire intent
+alert_ms = 1000                    # a contact inside alert_range_cm, a queued fire intent, or an AI approaching
+engaged_ms = 500                   # a shot, a scheduled impact, or hostiles inside weapons range
+alert_hold_ms = 30000              # ms with none of the Alert triggers before falling back to Quiet
+engaged_hold_ms = 10000            # ms since the last shot, impact or in-range pair before leaving Engaged
+alert_range_cm = 0                 # the held-contact range that raises Alert; 0 = DERIVED at match start as twice the longest weapon range in the match
+substep_max_ms = 250               # the longest substep a pulse is cut into (floored at 50 ms, and at one cell per substep)
+stall_ms = 2000                    # ms one pulse may take before the watchdog VOIDS the match
+
+[tacsim.arena.intents]             # (16b cut G) the per-unit intent queue
+max_pending_per_unit = 8           # discrete actions (LOCK, FIRE, STARTUP) one unit may have queued; continuous controls are latest-wins and do not queue
+
+[tacsim.arena.ledger]              # (16b cut G) the match ledger: the black box
+# JSON lines, chunked at 16 KiB and streamed out while the match runs, so arena
+# memory stays flat and the record survives the crash that voids the match.
+summary_ms = 5000                  # arena ms between position_summary events -- every unit, in every tempo
+max_bytes = 67108864               # 64 MiB: at 90% summaries stop, at 100% the match is stopped with Timeout
+max_unflushed_chunks = 256         # chunks the bounded egress ring may hold before the match is stopped with Void
+
+[tacsim.match]                     # (16b cut G) the match lifecycle's slots and timeouts
+startup_ms = 10000                 # ms STARTUP takes to carry a unit's power from starting to online; until then motion and fire refuse
+board_timeout_ms = 120000          # ms Boarding waits for every claimed slot to be seated before unseated slots are dropped (an empty side aborts)
+max_duration_ms = 3600000          # one hour: the longest a match runs before it ends as a timeout
+max_slots_per_side = 12            # pilot slots one side may claim (doc 16's 12 v 12); the floor is two
+
+[tacsim.sensors]                   # (16b cut G) the sensor pass
+pass_ms = 1000                     # arena ms between one unit's passes, staggered by unit id
+# THE ONLY FLOAT IN THIS TREE, and it never reaches the engine: arena state is
+# integer (centimetres, millidegrees, milliseconds, per-mille probabilities), so
+# the host converts this ONCE, at boot, into per mille -- 1.5 becomes 1500.
+max_signature_factor = 1.5         # the ceiling on a target's signature factor, which also bounds the candidate cull radius
+
+[tacsim.resolution]                # (16b cut G) where the hit-resolution tables live
+# The hit curve, the error terms, p_min and p_max: the per-mille no-dice
+# resolution. Empty is the game's own shipped content; cut W wires it.
+paths = []                         # resolution-table files, or directories searched for them
+
+[tacsim.harness]                   # (16b cut G) the scale harness's shape and thresholds
+# Doc 16's acceptance A2: 300 units placed and moving, 24 of them fighting, 150
+# weapons on their cadences, at least 12 connected fake sessions, on one core.
+# The numbers live here rather than in the harness so it runs at the
+# CONFIGURATION MAXIMA rather than at constants compiled into it.
+units = 300                        # units the harness places and moves
+fighting = 24                      # how many of those are fighting
+weapons = 150                      # weapons on their cadences
+engaged_p99_ms = 25                # the per-pulse p99 ceiling, ms, in Engaged tempo
+max_traces_per_pulse = 4000        # line-of-sight traces one pulse may make (perception has no cross-observer cache)
+max_path_queries_per_pulse = 64    # path queries one pulse may make
+max_ledger_bytes = 67108864        # 64 MiB the streamed ledger must stay under over an hour of arena time
+
 [onboarding]                       # (M9) the chargen_required gate + start rooms
 # When off (the default), a fresh character plays immediately, exactly as
 # before. When on, a newly created, not-yet-approved character is placed in the

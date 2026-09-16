@@ -274,6 +274,64 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         // a nonsense policy refuses the boot here, at the host, rather than being
         // discovered at a player's first application.
         recovery: recovery_config(&cfg.recovery)?,
+        // ---- 16b cut G — the combat arena's five blocks ----
+        //
+        // Carried, not validated, on the `[tacsim.time]` rule two comments up:
+        // nothing reads one of these yet, so a knob that configures nothing must
+        // not be able to refuse a boot. Cut A validates the arena's, T the
+        // match's, S the sensors', W the resolution tables and H the harness's,
+        // each in the commit that reads them. The ONE exception is the sensors'
+        // float, below: converting it is a read, so it is checked here.
+        arena: tacsim::config::ArenaConfig {
+            tempo: tacsim::config::TempoConfig {
+                quiet_ms: cfg.arena.tempo.quiet_ms,
+                alert_ms: cfg.arena.tempo.alert_ms,
+                engaged_ms: cfg.arena.tempo.engaged_ms,
+                alert_hold_ms: cfg.arena.tempo.alert_hold_ms,
+                engaged_hold_ms: cfg.arena.tempo.engaged_hold_ms,
+                alert_range_cm: cfg.arena.tempo.alert_range_cm,
+                substep_max_ms: cfg.arena.tempo.substep_max_ms,
+                stall_ms: cfg.arena.tempo.stall_ms,
+            },
+            max_catch_up_steps: cfg.arena.max_catch_up_steps,
+            intents: tacsim::config::IntentsConfig {
+                max_pending_per_unit: cfg.arena.intents.max_pending_per_unit,
+            },
+            ledger: tacsim::config::LedgerConfig {
+                summary_ms: cfg.arena.ledger.summary_ms,
+                max_bytes: cfg.arena.ledger.max_bytes,
+                max_unflushed_chunks: cfg.arena.ledger.max_unflushed_chunks,
+            },
+        },
+        match_: tacsim::config::MatchConfig {
+            startup_ms: cfg.match_.startup_ms,
+            board_timeout_ms: cfg.match_.board_timeout_ms,
+            max_duration_ms: cfg.match_.max_duration_ms,
+            max_slots_per_side: cfg.match_.max_slots_per_side,
+        },
+        sensors: tacsim::config::SensorsConfig {
+            pass_ms: cfg.sensors.pass_ms,
+            max_signature_factor_permille: signature_factor_permille(
+                cfg.sensors.max_signature_factor,
+            )?,
+        },
+        resolution: tacsim::config::ResolutionConfig {
+            paths: cfg
+                .resolution
+                .paths
+                .iter()
+                .map(|path| path.trim().to_string())
+                .collect(),
+        },
+        harness: tacsim::config::HarnessConfig {
+            units: cfg.harness.units,
+            fighting: cfg.harness.fighting,
+            weapons: cfg.harness.weapons,
+            engaged_p99_ms: cfg.harness.engaged_p99_ms,
+            max_traces_per_pulse: cfg.harness.max_traces_per_pulse,
+            max_path_queries_per_pulse: cfg.harness.max_path_queries_per_pulse,
+            max_ledger_bytes: cfg.harness.max_ledger_bytes,
+        },
     };
     // Verify here, at the host, so the boot fails with the file's name in the message.
     // The check is pure and the module repeats it at wiring; two evaluations of a pure
@@ -327,6 +385,52 @@ pub fn atlas_config(
     // function over the same bytes cannot disagree.
     mush_atlas::verify_sources(&typed)?;
     Ok(typed)
+}
+
+/// **16b cut G — the one float in `[tacsim]`, converted where converting it is a
+/// read.**
+///
+/// Doc 16 §3.1's determinism ruling (D-16-4) is that authoritative arena state is
+/// integer, so `[tacsim.sensors].max_signature_factor` is a TOML float exactly
+/// once — here — and the engine is handed
+/// [`tacsim::config::SensorsConfig::max_signature_factor_permille`]. The shipped
+/// `1.5` arrives as `1500`.
+///
+/// **This is the one value cut G refuses a boot over, and it is not an exception
+/// to "the cut that reads a field validates it" — it is that rule.** Converting
+/// the number is reading it. A negative factor, a `NaN`, an infinity, or one so
+/// large its per-mille has no `u32` cannot be carried, and the only alternative
+/// to refusing is inventing a number the operator never wrote.
+///
+/// The bound is the conversion's own, deliberately: a *policy* ceiling on how far
+/// a signature may stretch a sensor's range is a sensor fact, and cut S is the
+/// cut that reads sensor facts.
+///
+/// # Errors
+///
+/// A message naming `[tacsim.sensors].max_signature_factor` and the value.
+fn signature_factor_permille(factor: f64) -> Result<u32, String> {
+    let refuse = |why: &str| {
+        Err(format!(
+            "[tacsim.sensors].max_signature_factor {factor} {why}: it is read as \
+             per mille (1.5 is 1500), so it must be a finite factor from 0 to \
+             {} inclusive",
+            f64::from(u32::MAX) / 1_000.0
+        ))
+    };
+    if !factor.is_finite() || factor < 0.0 {
+        // Checked on the INPUT, before the round: `-0.0001` rounds to `-0.0`,
+        // which is not less than zero and would otherwise be accepted as 0.
+        return refuse("is not a factor");
+    }
+    let permille = (factor * 1_000.0).round();
+    if !permille.is_finite() || permille > f64::from(u32::MAX) {
+        return refuse("is too large to carry");
+    }
+    // Exact: the two guards above leave `permille` a whole, non-negative,
+    // finite value inside `u32`'s range, and a float-to-integer cast in Rust is
+    // saturating rather than panicking or undefined even when they do not.
+    Ok(permille as u32)
 }
 
 /// **E7r1 R4 — `[tacsim.recovery]`, validated at the host.**
@@ -743,6 +847,183 @@ mod tests {
         };
         assert_eq!(tacsim_config(&cfg).expect("one pack loads").packs.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- 16b cut G — the combat arena's five blocks ----
+
+    fn tacsim_cfg(toml_text: &str) -> TacsimCfg {
+        toml::from_str::<mush_config::config::Config>(toml_text)
+            .expect("the config parses")
+            .tacsim
+    }
+
+    /// Cut G: **every** value of the five blocks crosses the mapper unchanged.
+    ///
+    /// Written with values that are all different from the defaults, so a field
+    /// the mapper forgot shows up as the default rather than as the number the
+    /// operator wrote — the failure this test exists to catch, and the one a
+    /// defaults-only assertion could not see.
+    #[test]
+    fn cut_g_the_arena_blocks_round_trip_through_the_mapper() {
+        let cfg = tacsim_cfg(
+            "[tacsim.arena]\n\
+             max_catch_up_steps = 2\n\
+             [tacsim.arena.tempo]\n\
+             quiet_ms = 4000\n\
+             alert_ms = 900\n\
+             engaged_ms = 400\n\
+             alert_hold_ms = 20000\n\
+             engaged_hold_ms = 9000\n\
+             alert_range_cm = 120000\n\
+             substep_max_ms = 200\n\
+             stall_ms = 1500\n\
+             [tacsim.arena.intents]\n\
+             max_pending_per_unit = 3\n\
+             [tacsim.arena.ledger]\n\
+             summary_ms = 2500\n\
+             max_bytes = 1048576\n\
+             max_unflushed_chunks = 64\n\
+             [tacsim.match]\n\
+             startup_ms = 5000\n\
+             board_timeout_ms = 60000\n\
+             max_duration_ms = 900000\n\
+             max_slots_per_side = 4\n\
+             [tacsim.sensors]\n\
+             pass_ms = 750\n\
+             max_signature_factor = 2.25\n\
+             [tacsim.resolution]\n\
+             paths = [\"  content/resolution.json  \"]\n\
+             [tacsim.harness]\n\
+             units = 10\n\
+             fighting = 4\n\
+             weapons = 6\n\
+             engaged_p99_ms = 50\n\
+             max_traces_per_pulse = 100\n\
+             max_path_queries_per_pulse = 8\n\
+             max_ledger_bytes = 2048\n",
+        );
+        let typed = tacsim_config(&cfg).expect("the blocks map");
+
+        assert_eq!(
+            typed.arena,
+            tacsim::config::ArenaConfig {
+                tempo: tacsim::config::TempoConfig {
+                    quiet_ms: 4_000,
+                    alert_ms: 900,
+                    engaged_ms: 400,
+                    alert_hold_ms: 20_000,
+                    engaged_hold_ms: 9_000,
+                    alert_range_cm: 120_000,
+                    substep_max_ms: 200,
+                    stall_ms: 1_500,
+                },
+                max_catch_up_steps: 2,
+                intents: tacsim::config::IntentsConfig {
+                    max_pending_per_unit: 3
+                },
+                ledger: tacsim::config::LedgerConfig {
+                    summary_ms: 2_500,
+                    max_bytes: 1_048_576,
+                    max_unflushed_chunks: 64,
+                },
+            }
+        );
+        assert_eq!(
+            typed.match_,
+            tacsim::config::MatchConfig {
+                startup_ms: 5_000,
+                board_timeout_ms: 60_000,
+                max_duration_ms: 900_000,
+                max_slots_per_side: 4,
+            }
+        );
+        assert_eq!(
+            typed.sensors,
+            tacsim::config::SensorsConfig {
+                pass_ms: 750,
+                max_signature_factor_permille: 2_250,
+            }
+        );
+        assert_eq!(
+            typed.resolution.paths,
+            vec!["content/resolution.json".to_string()],
+            "a path is trimmed like [tacsim].corridor is"
+        );
+        assert_eq!(
+            typed.harness,
+            tacsim::config::HarnessConfig {
+                units: 10,
+                fighting: 4,
+                weapons: 6,
+                engaged_p99_ms: 50,
+                max_traces_per_pulse: 100,
+                max_path_queries_per_pulse: 8,
+                max_ledger_bytes: 2_048,
+            }
+        );
+
+        // And an unwritten `[tacsim]` maps 16b §9's constants table, so a box
+        // that configures none of this runs the design note's numbers.
+        let defaults = tacsim_config(&TacsimCfg::default()).expect("the defaults map");
+        assert_eq!(defaults.arena, tacsim::config::ArenaConfig::default());
+        assert_eq!(defaults.match_, tacsim::config::MatchConfig::default());
+        assert_eq!(defaults.sensors, tacsim::config::SensorsConfig::default());
+        assert_eq!(
+            defaults.resolution,
+            tacsim::config::ResolutionConfig::default()
+        );
+        assert_eq!(defaults.harness, tacsim::config::HarnessConfig::default());
+        assert_eq!(
+            defaults.sensors.max_signature_factor_permille, 1_500,
+            "the shipped 1.5 is 1500 per mille"
+        );
+    }
+
+    /// Cut G: the per-mille conversion, at the edges — and the refusal.
+    ///
+    /// The conversion is the one thing cut G reads, so it is the one thing cut G
+    /// can refuse a boot over; everything else in the five blocks is carried
+    /// unvalidated on `[tacsim.time]`'s rule.
+    #[test]
+    fn cut_g_the_signature_factor_converts_to_per_mille_or_refuses_by_name() {
+        for (factor, permille) in [
+            (0.0, 0_u32),
+            (1.0, 1_000),
+            (1.5, 1_500),
+            (2.25, 2_250),
+            // Rounds, never truncates: 1.0005 is 1000.5 per mille.
+            (1.0005, 1_001),
+            (1.0004, 1_000),
+            (0.001, 1),
+            // Under half a per mille is zero, not a refusal: a factor that small
+            // is a value question, and cut S is where values are judged.
+            (0.0004, 0),
+        ] {
+            let cfg = tacsim_cfg(&format!(
+                "[tacsim.sensors]\nmax_signature_factor = {factor}\n"
+            ));
+            assert_eq!(
+                tacsim_config(&cfg)
+                    .expect("a representable factor maps")
+                    .sensors
+                    .max_signature_factor_permille,
+                permille,
+                "{factor}"
+            );
+        }
+
+        // Negative, including the one that ROUNDS to -0.0 and would otherwise be
+        // accepted as zero; and too large to be per mille in a u32.
+        for factor in ["-1.0", "-0.0001", "1e30", "nan", "inf", "-inf"] {
+            let cfg = tacsim_cfg(&format!(
+                "[tacsim.sensors]\nmax_signature_factor = {factor}\n"
+            ));
+            let refused = tacsim_config(&cfg).expect_err(factor);
+            assert!(
+                refused.contains("[tacsim.sensors].max_signature_factor"),
+                "{factor}: the refusal must name the key: {refused}"
+            );
+        }
     }
 
     /// SP1 (D-LBK-7): a bad stanza refuses to start — a 33rd clock, a name that is

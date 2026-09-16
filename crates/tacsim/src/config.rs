@@ -20,6 +20,7 @@
 //! | `ground_pulse_ms`, `space_pulse_ms` | parsed, **inert** | cut 8's pulse periods |
 //! | all of `[tacsim.time]` | parsed, **inert** | cuts 4/8/11's rate and catch-up policy |
 //! | all of `[tacsim.recovery]` | **live** (E7r1 R4) | the recovery provider's pool, tiers, cap, thresholds, cooldown and insurance policy |
+//! | all of `[tacsim.arena]`, `[tacsim.match]`, `[tacsim.sensors]`, `[tacsim.resolution]`, `[tacsim.harness]` | parsed, **inert** (16b cut G) | the combat arena's blocks; cuts A/T/S/W/H read and validate them |
 //!
 //! `[tacsim.recovery]` was cut 11's and was **not added at all** — *a knob that parses
 //! and configures nothing is a promise, and cut 11 has not made it yet*. **E7 residue
@@ -154,6 +155,245 @@ pub const MAX_RECOVERY_TIERS: usize = 8;
 /// this set **refuses the boot**: an unrecognised policy is a policy nothing applies.
 pub const RECOVERY_INSURANCE_WORDS: [&str; 2] = ["approved_operations", "none"];
 
+// ---- 16b cut G — the combat arena's typed blocks ----------------------------
+//
+// The twins of `mush_config::config`'s five `[tacsim.*]` sub-tables, mapped by
+// `mush_server::config_ext::tacsim_config` and carried on [`TacsimConfig`]. They
+// are **parsed and inert** in cut G: nothing in this crate reads one yet, and on
+// [`TacsimTimeConfig`]'s rule the cut that reads a field is the cut that
+// validates it (A for the arena, T for the match, S for sensors, W for
+// resolution, H for the harness).
+//
+// **Integer only.** Doc 16 §3.1's determinism ruling (D-16-4) is that
+// authoritative arena state is integer — centimetres, millidegrees,
+// milliseconds, cm/s, per-mille probabilities — so no field below is a float.
+// The one configured float, `[tacsim.sensors].max_signature_factor`, becomes
+// [`SensorsConfig::max_signature_factor_permille`] once, at the host, where a
+// nonsense value can still refuse a boot.
+
+/// The arena's clock, its intent inbox and its ledger bounds (**16b cut G**;
+/// doc 16 §3.1 and §4; the values are 16b §9's constants table).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArenaConfig {
+    /// The adaptive tempo's periods and holds.
+    pub tempo: TempoConfig,
+    /// Periods of wall time one pulse may absorb after a stall before the arena
+    /// records `lagged` and skips the idle time rather than expanding `dt`
+    /// (doc 16 §3.1 "Clock and lag").
+    pub max_catch_up_steps: u32,
+    /// The per-unit intent-queue bound.
+    pub intents: IntentsConfig,
+    /// The match ledger's cadence and its two hard bounds.
+    pub ledger: LedgerConfig,
+}
+
+impl Default for ArenaConfig {
+    fn default() -> Self {
+        ArenaConfig {
+            tempo: TempoConfig::default(),
+            max_catch_up_steps: 4,
+            intents: IntentsConfig::default(),
+            ledger: LedgerConfig::default(),
+        }
+    }
+}
+
+/// The adaptive tempo (**16b cut G**; doc 16 §3.1's tempo table, its "Rate
+/// independence" and "Failure" paragraphs; D-16-2).
+///
+/// The tempo decides only how often the arena steps and how its output is
+/// batched, never an outcome. Every value is arena milliseconds except
+/// `alert_range_cm`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TempoConfig {
+    /// The `Quiet` period: no hostile contact held, no pending impact, no fire
+    /// intent, no controller approaching.
+    pub quiet_ms: u32,
+    /// The `Alert` period.
+    pub alert_ms: u32,
+    /// The `Engaged` period — the tempo the harness's p99 ceiling is measured in.
+    pub engaged_ms: u32,
+    /// Milliseconds with none of the `Alert` triggers before falling back to
+    /// `Quiet`.
+    pub alert_hold_ms: u32,
+    /// Milliseconds since the last shot, impact or in-range pair before leaving
+    /// `Engaged`.
+    pub engaged_hold_ms: u32,
+    /// The held-contact range that raises `Alert`, centimetres. **Zero means
+    /// derived**: twice the longest weapon range in the match, at match start
+    /// (16b §9).
+    pub alert_range_cm: u32,
+    /// The longest substep a pulse is cut into; the substep is
+    /// `min(substep_max_ms, cell_cm × 1000 / max_speed_cms)` floored at 50 ms, so
+    /// no unit advances more than one cell in a substep.
+    pub substep_max_ms: u32,
+    /// Milliseconds one pulse may take before the watchdog voids the match.
+    pub stall_ms: u32,
+}
+
+impl Default for TempoConfig {
+    fn default() -> Self {
+        TempoConfig {
+            quiet_ms: 5_000,
+            alert_ms: 1_000,
+            engaged_ms: 500,
+            alert_hold_ms: 30_000,
+            engaged_hold_ms: 10_000,
+            // 0 = derived at match start (16b §9).
+            alert_range_cm: 0,
+            substep_max_ms: 250,
+            stall_ms: 2_000,
+        }
+    }
+}
+
+/// The bound on the arena's per-unit intent queue (**16b cut G**; doc 16 §3.1,
+/// pulse phase 2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntentsConfig {
+    /// The most discrete actions one unit may have queued at once. Continuous
+    /// controls are latest-wins and do not queue.
+    pub max_pending_per_unit: u32,
+}
+
+impl Default for IntentsConfig {
+    fn default() -> Self {
+        IntentsConfig {
+            max_pending_per_unit: 8,
+        }
+    }
+}
+
+/// The match ledger's cadence and its two hard bounds (**16b cut G**; doc 16 §4,
+/// §3.1's egress paragraph).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LedgerConfig {
+    /// Arena milliseconds between `position_summary` events — every unit, in
+    /// every tempo.
+    pub summary_ms: u32,
+    /// The most bytes one match's ledger may reach (64 MiB): at 90% summaries
+    /// stop, at 100% the match is stopped with `Timeout`.
+    pub max_bytes: u64,
+    /// The most 16 KiB chunks the bounded egress ring may hold before the match
+    /// is stopped with `Void`.
+    pub max_unflushed_chunks: u32,
+}
+
+impl Default for LedgerConfig {
+    fn default() -> Self {
+        LedgerConfig {
+            summary_ms: 5_000,
+            // 64 MiB.
+            max_bytes: 67_108_864,
+            max_unflushed_chunks: 256,
+        }
+    }
+}
+
+/// The match lifecycle's slots and timeouts (**16b cut G**; doc 16 §3.3
+/// "Startup", §3.8 "Lifecycle", §4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MatchConfig {
+    /// Milliseconds `STARTUP` takes to carry a unit's power from `starting` to
+    /// `online`; until then motion and fire intents refuse.
+    pub startup_ms: u32,
+    /// Milliseconds `Boarding` waits for every claimed slot to be seated before
+    /// unseated slots are dropped (an empty side aborts).
+    pub board_timeout_ms: u32,
+    /// The longest a match may run before it ends as a timeout.
+    pub max_duration_ms: u32,
+    /// Pilot slots one side may claim (doc 16 §1's 12 v 12).
+    pub max_slots_per_side: u32,
+}
+
+impl Default for MatchConfig {
+    fn default() -> Self {
+        MatchConfig {
+            startup_ms: 10_000,
+            board_timeout_ms: 120_000,
+            // One hour.
+            max_duration_ms: 3_600_000,
+            max_slots_per_side: 12,
+        }
+    }
+}
+
+/// The sensor pass's cadence and its signature ceiling (**16b cut G**; doc 16
+/// §3.6 "Perception").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SensorsConfig {
+    /// Arena milliseconds between one unit's sensor passes, staggered by unit id.
+    pub pass_ms: u32,
+    /// The ceiling on a target's signature factor, **per mille**: the configured
+    /// `1.5` arrives here as `1500`.
+    ///
+    /// Doc 16 §3.1 (D-16-4): the engine stores nothing in floating point, so the
+    /// `[tacsim.sensors].max_signature_factor` float is converted exactly once,
+    /// in `mush_server::config_ext::tacsim_config`, where a negative, `NaN` or
+    /// absurd factor is a hard boot error naming that key.
+    pub max_signature_factor_permille: u32,
+}
+
+impl Default for SensorsConfig {
+    fn default() -> Self {
+        SensorsConfig {
+            pass_ms: 1_000,
+            // 1.5 × 1000.
+            max_signature_factor_permille: 1_500,
+        }
+    }
+}
+
+/// Where the hit-resolution tables live (**16b cut G**; doc 16 §4's
+/// `resolution.json` row).
+///
+/// The tables are the hit curve, the error terms, `p_min` and `p_max` — the
+/// per-mille no-dice resolution of D-16-9. **Inert:** cut W reads and validates
+/// them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResolutionConfig {
+    /// Resolution-table files, or directories searched for them. Empty is the
+    /// game's own shipped content, which cut W wires.
+    pub paths: Vec<String>,
+}
+
+/// The scale harness's shape and its thresholds (**16b cut G**; doc 16 §1's
+/// acceptance A2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HarnessConfig {
+    /// Units the harness places and moves.
+    pub units: u32,
+    /// How many of those are fighting.
+    pub fighting: u32,
+    /// Weapons on their cadences.
+    pub weapons: u32,
+    /// The per-pulse p99 ceiling, milliseconds, in `Engaged` tempo.
+    pub engaged_p99_ms: u32,
+    /// The most line-of-sight traces one pulse may make.
+    pub max_traces_per_pulse: u32,
+    /// The most path queries one pulse may make.
+    pub max_path_queries_per_pulse: u32,
+    /// The most bytes the streamed ledger may reach over the harness's hour of
+    /// arena time (64 MiB) — the proof that memory stays flat because the ledger
+    /// leaves.
+    pub max_ledger_bytes: u64,
+}
+
+impl Default for HarnessConfig {
+    fn default() -> Self {
+        HarnessConfig {
+            units: 300,
+            fighting: 24,
+            weapons: 150,
+            engaged_p99_ms: 25,
+            max_traces_per_pulse: 4_000,
+            max_path_queries_per_pulse: 64,
+            // 64 MiB.
+            max_ledger_bytes: 67_108_864,
+        }
+    }
+}
+
 /// One pack file the host has already read, as `(name, bytes)`.
 ///
 /// **OPEN 1, taken as written: the host reads, the ruleset parses.** The name is
@@ -189,6 +429,22 @@ pub struct TacsimConfig {
     pub time: TacsimTimeConfig,
     /// **E7 residue pass 1, R4** — the recovery provider's policy. **Live.**
     pub recovery: TacsimRecoveryConfig,
+    /// **16b cut G** — the arena's clock, intent inbox and ledger bounds.
+    /// **Parsed, inert** until cut A.
+    pub arena: ArenaConfig,
+    /// **16b cut G** — the match lifecycle's slots and timeouts. **Parsed,
+    /// inert** until cut T. `match_` because `match` is a keyword; the TOML key
+    /// is `match`.
+    pub match_: MatchConfig,
+    /// **16b cut G** — the sensor pass's cadence and its per-mille signature
+    /// ceiling. **Parsed, inert** until cut S.
+    pub sensors: SensorsConfig,
+    /// **16b cut G** — where the resolution tables live. **Parsed, inert** until
+    /// cut W.
+    pub resolution: ResolutionConfig,
+    /// **16b cut G** — the scale harness's shape and thresholds. **Parsed,
+    /// inert** until cut H.
+    pub harness: HarnessConfig,
 }
 
 impl TacsimConfig {

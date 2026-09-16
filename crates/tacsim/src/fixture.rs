@@ -133,6 +133,15 @@ pub fn config() -> TacsimConfig {
         // granted hulls would be a policy nobody wrote, and doc 10 §11's proving
         // loop is item 11's, not this pass's.
         recovery: crate::config::TacsimRecoveryConfig::default(),
+        // 16b cut G: the combat arena's five blocks, at their defaults — which
+        // are 16b §9's constants table. The literal stays exhaustive rather than
+        // taking `..Default::default()`, so a block added later has to be
+        // considered here rather than silently appearing in every fixture.
+        arena: crate::config::ArenaConfig::default(),
+        match_: crate::config::MatchConfig::default(),
+        sensors: crate::config::SensorsConfig::default(),
+        resolution: crate::config::ResolutionConfig::default(),
+        harness: crate::config::HarnessConfig::default(),
     }
 }
 

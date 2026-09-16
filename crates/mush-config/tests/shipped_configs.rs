@@ -30,7 +30,9 @@ use mush_config::config::{Config, ConfigError};
 /// The eleven sections absent from both boxes this template exists to fix.
 /// `[tacsim.recovery]` rides along as the sub-block `[tacsim]` gained after
 /// those boxes were written, and which `mushd.toml.example` had already drifted
-/// past.
+/// past; `[tacsim.economy]` and the eight combat blocks of 16b cut G are later
+/// additions held to the same rule. The count in the prose above is about the
+/// deployed boxes' history, not the length of this list.
 const REQUIRED_SECTIONS: &[&str] = &[
     "log",
     "store.archive",
@@ -45,6 +47,17 @@ const REQUIRED_SECTIONS: &[&str] = &[
     "tacsim",
     "tacsim.recovery",
     "tacsim.economy",
+    // 16b cut G — the combat arena's five blocks, three of them with their own
+    // sub-tables. Doc 16 §7's Configuration paragraph requires all of them in
+    // the example, the instance template and both dev deployment files.
+    "tacsim.arena",
+    "tacsim.arena.tempo",
+    "tacsim.arena.intents",
+    "tacsim.arena.ledger",
+    "tacsim.match",
+    "tacsim.sensors",
+    "tacsim.resolution",
+    "tacsim.harness",
 ];
 
 fn repo_root() -> PathBuf {

@@ -55,6 +55,37 @@
 //! | `[tacsim.recovery].max_operational_assets` | `0` | the eligibility threshold, over **accessible** assets |
 //! | `[tacsim.recovery].insurance` | `"approved_operations"` | the insurance policy word; `none` is the other |
 //! | `[tacsim.recovery].upkeep_per_period` | `0` | the lease's rent obligation, per campaign cadence period |
+//! | `[tacsim.economy].housing` | `true` | 16b cut R-b: whether the housing title issuer (`system:tacsim.housing`) is registered so `@property/create` can mint tenancies |
+//! | `[tacsim.economy].market` | `false` | whether the market composes with its title issuer (`system:tacsim.market`) |
+//! | `[tacsim.economy].instrument` | `"tacsim.credit"` | the settlement currency the sheet registers create-only at boot (doc 11 §2); must be a canonical instrument id |
+//! | `[tacsim.economy].reserved_rooms` | `[]` | extra `#N` rooms that may never become property rooms, beside `[onboarding]`'s two |
+//! | `[tacsim.arena.tempo].quiet_ms` | `5000` | **16b cut G** (doc 16 §3.1): the `Quiet` pulse period, milliseconds |
+//! | `[tacsim.arena.tempo].alert_ms` | `1000` | the `Alert` pulse period, milliseconds |
+//! | `[tacsim.arena.tempo].engaged_ms` | `500` | the `Engaged` pulse period, milliseconds — the tempo the harness's p99 is measured in |
+//! | `[tacsim.arena.tempo].alert_hold_ms` | `30000` | milliseconds with no `Alert` trigger before the arena falls back to `Quiet` |
+//! | `[tacsim.arena.tempo].engaged_hold_ms` | `10000` | milliseconds since the last shot, impact or in-range pair before `Engaged` is left |
+//! | `[tacsim.arena.tempo].alert_range_cm` | `0` | the held-contact range that raises `Alert`, centimetres; **`0` is derived** at match start as twice the longest weapon range in the match |
+//! | `[tacsim.arena.tempo].substep_max_ms` | `250` | the longest substep a pulse is cut into (doc 16 §3.1 rate independence) |
+//! | `[tacsim.arena.tempo].stall_ms` | `2000` | milliseconds one pulse may take before the watchdog voids the match |
+//! | `[tacsim.arena].max_catch_up_steps` | `4` | periods of wall time one pulse may absorb before the arena records `lagged` and skips the idle time |
+//! | `[tacsim.arena.intents].max_pending_per_unit` | `8` | discrete actions one unit may have queued at once |
+//! | `[tacsim.arena.ledger].summary_ms` | `5000` | arena milliseconds between `position_summary` ledger events (doc 16 §4) |
+//! | `[tacsim.arena.ledger].max_bytes` | `67108864` | 64 MiB: at 90% summaries stop, at 100% the match is stopped with `Timeout` |
+//! | `[tacsim.arena.ledger].max_unflushed_chunks` | `256` | 16 KiB chunks the egress ring may hold before the match is stopped with `Void` |
+//! | `[tacsim.match].startup_ms` | `10000` | **16b cut G** (doc 16 §3.3): milliseconds `STARTUP` takes to bring a unit's power online |
+//! | `[tacsim.match].board_timeout_ms` | `120000` | milliseconds `Boarding` waits before unseated slots are dropped (doc 16 §3.8) |
+//! | `[tacsim.match].max_duration_ms` | `3600000` | the longest a match runs before it ends as a timeout |
+//! | `[tacsim.match].max_slots_per_side` | `12` | pilot slots one side may claim (doc 16 §1's 12 v 12) |
+//! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
+//! | `[tacsim.sensors].max_signature_factor` | `1.5` | the ceiling on a target's signature factor; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism) |
+//! | `[tacsim.resolution].paths` | `[]` | **16b cut G** (doc 16 §4): the resolution tables (hit curve, error terms, `p_min`, `p_max`); parsed and **inert** until cut W reads them |
+//! | `[tacsim.harness].units` | `300` | **16b cut G** (doc 16 §1 A2): units the scale harness places and moves |
+//! | `[tacsim.harness].fighting` | `24` | how many of those are fighting |
+//! | `[tacsim.harness].weapons` | `150` | weapons on their cadences |
+//! | `[tacsim.harness].engaged_p99_ms` | `25` | the per-pulse p99 ceiling in `Engaged` tempo |
+//! | `[tacsim.harness].max_traces_per_pulse` | `4000` | line-of-sight traces one pulse may make |
+//! | `[tacsim.harness].max_path_queries_per_pulse` | `64` | path queries one pulse may make |
+//! | `[tacsim.harness].max_ledger_bytes` | `67108864` | 64 MiB the streamed ledger must stay under over an hour of arena time |
 //! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
 //! | `[atlas].nearest_room_cells` | `8` | S4: cells a pose may stand off every footprint and still resolve to the nearest room |
@@ -564,6 +595,23 @@ pub struct TacsimCfg {
     pub recovery: TacsimRecoveryCfg,
     /// `[tacsim.economy]` — **16b cut R-b**: the single game's economy wiring.
     pub economy: TacsimEconomyCfg,
+    /// `[tacsim.arena]` — **16b cut G**: the combat arena's clock, intent inbox
+    /// and ledger bounds (doc 16 §3.1, §4).
+    pub arena: TacsimArenaCfg,
+    /// `[tacsim.match]` — **16b cut G**: the match lifecycle's slots and timeouts
+    /// (doc 16 §3.3, §3.8). `match_` because `match` is a keyword; the TOML key is
+    /// `match`.
+    #[serde(rename = "match")]
+    pub match_: TacsimMatchCfg,
+    /// `[tacsim.sensors]` — **16b cut G**: the sensor pass's cadence and its
+    /// signature ceiling (doc 16 §3.6).
+    pub sensors: TacsimSensorsCfg,
+    /// `[tacsim.resolution]` — **16b cut G**: where the hit-resolution tables live
+    /// (doc 16 §4).
+    pub resolution: TacsimResolutionCfg,
+    /// `[tacsim.harness]` — **16b cut G**: the scale harness's shape and its
+    /// thresholds (doc 16 §1, acceptance A2).
+    pub harness: TacsimHarnessCfg,
 }
 
 /// `[tacsim.economy]` — what the composition root turns on for the one game's
@@ -683,6 +731,11 @@ impl Default for TacsimCfg {
             time: TacsimTimeCfg::default(),
             recovery: TacsimRecoveryCfg::default(),
             economy: TacsimEconomyCfg::default(),
+            arena: TacsimArenaCfg::default(),
+            match_: TacsimMatchCfg::default(),
+            sensors: TacsimSensorsCfg::default(),
+            resolution: TacsimResolutionCfg::default(),
+            harness: TacsimHarnessCfg::default(),
         }
     }
 }
@@ -821,6 +874,283 @@ pub struct EphemerisCfg {
     pub epoch: i64,
     /// Permille of the real sky's motion per IC second; 0 is frozen.
     pub rate: u32,
+}
+
+// ---- 16b cut G — the combat arena's five blocks -----------------------------
+//
+// Doc 16 §7's "Configuration" paragraph, with the values of 16b §9's constants
+// table. Every one of the five is `deny_unknown_fields` on [`TacsimCfg`]'s own
+// precedent, and every one is **parsed and inert** in cut G: no field below has a
+// reader yet, so on `[tacsim.time]`'s rule (`config_ext::tacsim_config`'s comment)
+// nothing here validates a *value* — the cut that reads a field is the cut that
+// validates it (A for the arena, T for the match, S for sensors, W for
+// resolution, H for the harness). What cut G does enforce is *shape*: a mistyped
+// key refuses the boot rather than leaving the operator a period, a bound or a
+// threshold they believe is in force and is not.
+
+/// `[tacsim.arena]` — the combat arena's clock, its intent inbox and its ledger
+/// bounds (**16b cut G**; doc 16 §3.1 "Time, tempo and authority" and §4).
+///
+/// One arena runs one match on one map as the single writer for that match's
+/// facts. Everything here bounds that task: how often it steps, how much wall
+/// time one pulse may absorb, how much a pilot may queue, and how much black box
+/// the match may leave behind.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimArenaCfg {
+    /// `[tacsim.arena.tempo]` — the adaptive pulse periods and their holds.
+    pub tempo: TacsimTempoCfg,
+    /// Periods of wall time one pulse may absorb after a stall before the arena
+    /// records `lagged` and skips the idle time rather than expanding `dt` to hide
+    /// it (doc 16 §3.1 "Clock and lag"; doc 06 §6.4).
+    pub max_catch_up_steps: u32,
+    /// `[tacsim.arena.intents]` — the per-unit intent inbox bound.
+    pub intents: TacsimIntentsCfg,
+    /// `[tacsim.arena.ledger]` — the match ledger's summary cadence and its two
+    /// hard bounds.
+    pub ledger: TacsimLedgerCfg,
+}
+
+impl Default for TacsimArenaCfg {
+    fn default() -> Self {
+        TacsimArenaCfg {
+            tempo: TacsimTempoCfg::default(),
+            max_catch_up_steps: 4,
+            intents: TacsimIntentsCfg::default(),
+            ledger: TacsimLedgerCfg::default(),
+        }
+    }
+}
+
+/// `[tacsim.arena.tempo]` — the adaptive tempo (**16b cut G**; doc 16 §3.1's
+/// tempo table and its "Rate independence" and "Failure" paragraphs).
+///
+/// The tempo decides only how often the arena steps and how its output is
+/// batched; it never decides an outcome (D-16-2). Every value is arena
+/// milliseconds except `alert_range_cm`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimTempoCfg {
+    /// The `Quiet` period: the arena's default step when no unit holds a hostile
+    /// contact, no impact is pending, no fire intent is queued and no controller
+    /// is approaching.
+    pub quiet_ms: u32,
+    /// The `Alert` period: a contact is held inside `alert_range_cm`, a fire
+    /// intent is queued, or a controller has entered `Approach`.
+    pub alert_ms: u32,
+    /// The `Engaged` period: a shot is fired, an impact is scheduled, or hostile
+    /// units are inside weapons range of each other. The harness's p99 ceiling is
+    /// measured in this tempo.
+    pub engaged_ms: u32,
+    /// Milliseconds with none of the `Alert` triggers before the arena falls back
+    /// to `Quiet`.
+    pub alert_hold_ms: u32,
+    /// Milliseconds since the last shot, impact or in-range pair before the arena
+    /// leaves `Engaged`.
+    pub engaged_hold_ms: u32,
+    /// The range, centimetres, under which a held contact raises the tempo to
+    /// `Alert`. **Zero means derived**: the arena takes twice the longest weapon
+    /// range in the match, at match start (16b §9's `tempo.alert_range_cm` row).
+    pub alert_range_cm: u32,
+    /// The longest substep a pulse is cut into. Doc 16 §3.1: a pulse is a
+    /// sequence of substeps of `min(substep_max_ms, cell_cm × 1000 /
+    /// max_speed_cms)`, floored at 50 ms, so no unit advances more than one cell
+    /// in a substep and the outcome is the same at every period.
+    pub substep_max_ms: u32,
+    /// Milliseconds one pulse may take before the watchdog voids the match, the
+    /// same way a panic does (doc 16 §3.1 "Failure").
+    pub stall_ms: u32,
+}
+
+impl Default for TacsimTempoCfg {
+    fn default() -> Self {
+        TacsimTempoCfg {
+            quiet_ms: 5_000,
+            alert_ms: 1_000,
+            engaged_ms: 500,
+            alert_hold_ms: 30_000,
+            engaged_hold_ms: 10_000,
+            // 0 = derived at match start as twice the longest weapon range in
+            // the match (16b §9).
+            alert_range_cm: 0,
+            substep_max_ms: 250,
+            stall_ms: 2_000,
+        }
+    }
+}
+
+/// `[tacsim.arena.intents]` — the bound on the arena's per-unit intent queue
+/// (**16b cut G**; doc 16 §3.1, pulse phase 2).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimIntentsCfg {
+    /// The most discrete actions (`LOCK`, `FIRE`, `STARTUP`) one unit may have
+    /// queued at once. Continuous controls are latest-wins and do not queue.
+    pub max_pending_per_unit: u32,
+}
+
+impl Default for TacsimIntentsCfg {
+    fn default() -> Self {
+        TacsimIntentsCfg {
+            max_pending_per_unit: 8,
+        }
+    }
+}
+
+/// `[tacsim.arena.ledger]` — the match ledger's cadence and its two hard bounds
+/// (**16b cut G**; doc 16 §4 "Ledger events", §3.1's egress paragraph).
+///
+/// The ledger is the match's black box: JSON lines chunked at 16 KiB and streamed
+/// to the world's own writer lane while the match runs, so arena memory stays
+/// flat and the record survives a crash that voids the match.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimLedgerCfg {
+    /// Arena milliseconds between `position_summary` events — every unit, in
+    /// every tempo. There is no per-pulse `moved` event; this is the position
+    /// record.
+    pub summary_ms: u32,
+    /// The most bytes one match's ledger may reach (64 MiB): at 90% summaries
+    /// stop, and at 100% the match is stopped with `Timeout`.
+    pub max_bytes: u64,
+    /// The most 16 KiB chunks that may sit unflushed in the arena's bounded
+    /// egress ring. Past it the world cannot keep up and the match is stopped
+    /// with `Void`.
+    pub max_unflushed_chunks: u32,
+}
+
+impl Default for TacsimLedgerCfg {
+    fn default() -> Self {
+        TacsimLedgerCfg {
+            summary_ms: 5_000,
+            // 64 MiB.
+            max_bytes: 67_108_864,
+            max_unflushed_chunks: 256,
+        }
+    }
+}
+
+/// `[tacsim.match]` — the match lifecycle's slots and timeouts (**16b cut G**;
+/// doc 16 §3.3 "Startup", §3.8 "Lifecycle", §4).
+///
+/// The TOML key is `match`; the Rust field is `match_` because `match` is a
+/// keyword ([`TacsimCfg::match_`] carries the `serde(rename)`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimMatchCfg {
+    /// Milliseconds `STARTUP` takes to carry a unit's power from `starting` to
+    /// `online`, scheduled as a due event; until then motion and fire intents
+    /// refuse (doc 16 §3.3).
+    pub startup_ms: u32,
+    /// Milliseconds `Boarding` waits for every claimed slot to be seated before
+    /// unseated slots are dropped and the match runs anyway — an empty side
+    /// aborts (doc 16 §3.8).
+    pub board_timeout_ms: u32,
+    /// The longest a match may run before it ends as a timeout (doc 16 §3.8, §4).
+    pub max_duration_ms: u32,
+    /// Pilot slots one side may claim: doc 16 §1's 12 v 12, and the floor is two
+    /// per side (doc 16 §3.8's `Selection`).
+    pub max_slots_per_side: u32,
+}
+
+impl Default for TacsimMatchCfg {
+    fn default() -> Self {
+        TacsimMatchCfg {
+            startup_ms: 10_000,
+            board_timeout_ms: 120_000,
+            // One hour.
+            max_duration_ms: 3_600_000,
+            max_slots_per_side: 12,
+        }
+    }
+}
+
+/// `[tacsim.sensors]` — the sensor pass's cadence and its signature ceiling
+/// (**16b cut G**; doc 16 §3.6 "Perception").
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimSensorsCfg {
+    /// Arena milliseconds between one unit's sensor passes, staggered by unit id
+    /// and run as a due event at its own timestamp.
+    pub pass_ms: u32,
+    /// The ceiling on a target's signature factor — the multiplier a class and
+    /// posture may apply to a sensor's range, which also bounds the candidate
+    /// cull radius (doc 16 §3.6 steps 1 and 3).
+    ///
+    /// **The one float in this tree, and it never reaches the engine.** Doc 16
+    /// §3.1's determinism rule is that authoritative arena state is integer, so
+    /// `mush_server::config_ext::tacsim_config` converts this once into per-mille
+    /// and hands the engine a `u32`; that conversion **is** a read, so a negative,
+    /// `NaN` or absurd factor is a hard boot error naming this key.
+    pub max_signature_factor: f64,
+}
+
+impl Default for TacsimSensorsCfg {
+    fn default() -> Self {
+        TacsimSensorsCfg {
+            pass_ms: 1_000,
+            max_signature_factor: 1.5,
+        }
+    }
+}
+
+/// `[tacsim.resolution]` — where the hit-resolution tables live (**16b cut G**;
+/// doc 16 §4's `resolution.json` row).
+///
+/// The tables are the hit curve, the error terms, `p_min` and `p_max`: the
+/// per-mille no-dice resolution of D-16-9. **Parsed and inert here** — cut W is
+/// the cut that reads a table and therefore the cut that validates one.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimResolutionCfg {
+    /// Resolution-table files, or directories searched for them. Empty — the
+    /// default — is the game's own shipped content, which cut W wires.
+    pub paths: Vec<String>,
+}
+
+/// `[tacsim.harness]` — the scale harness's shape and its thresholds (**16b cut
+/// G**; doc 16 §1's acceptance A2).
+///
+/// A2 is *300 units placed and moving, 24 of them fighting, 150 weapons on their
+/// cadences, one sensor pass per unit per second of arena time, at least 12
+/// connected fake sessions, on one core*, with a per-pulse p99 under 25 ms in
+/// `Engaged`. These are that acceptance's numbers, in config so the harness runs
+/// at the configuration maxima rather than at constants compiled into it.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimHarnessCfg {
+    /// Units the harness places and moves on the arena window.
+    pub units: u32,
+    /// How many of those are fighting.
+    pub fighting: u32,
+    /// Weapons on their cadences across the fighting units.
+    pub weapons: u32,
+    /// The per-pulse p99 ceiling, milliseconds, in `Engaged` tempo.
+    pub engaged_p99_ms: u32,
+    /// The most line-of-sight traces one pulse may make. Perception has no
+    /// cross-observer cache, so this is the bound that keeps it affordable.
+    pub max_traces_per_pulse: u32,
+    /// The most path queries one pulse may make.
+    pub max_path_queries_per_pulse: u32,
+    /// The most bytes the streamed ledger may reach over the harness's hour of
+    /// arena time (64 MiB) — the proof that resident memory stays flat because
+    /// the ledger leaves.
+    pub max_ledger_bytes: u64,
+}
+
+impl Default for TacsimHarnessCfg {
+    fn default() -> Self {
+        TacsimHarnessCfg {
+            units: 300,
+            fighting: 24,
+            weapons: 150,
+            engaged_p99_ms: 25,
+            max_traces_per_pulse: 4_000,
+            max_path_queries_per_pulse: 64,
+            // 64 MiB.
+            max_ledger_bytes: 67_108_864,
+        }
+    }
 }
 
 /// `[worldgen]` section — the M10 batch `@gen/building` knobs and, since S3, the
@@ -1712,6 +2042,16 @@ scene_turn_dedline_secs = 30
         // commented, so they resolve to the crate defaults).
         assert_eq!(cfg.weather.flavor_variants, 10);
         assert_eq!(cfg.worldgen.batch_max_rooms, 40);
+        // 16b cut G: the example writes the combat arena's eight tables out with
+        // real values rather than commenting them, so this is also the check that
+        // those values ARE the defaults. A drift between the shipped file and the
+        // code is a red test here rather than a box quietly running a number
+        // nobody wrote.
+        assert_eq!(cfg.tacsim.arena, TacsimArenaCfg::default());
+        assert_eq!(cfg.tacsim.match_, TacsimMatchCfg::default());
+        assert_eq!(cfg.tacsim.sensors, TacsimSensorsCfg::default());
+        assert_eq!(cfg.tacsim.resolution, TacsimResolutionCfg::default());
+        assert_eq!(cfg.tacsim.harness, TacsimHarnessCfg::default());
         // The example's [llm] block is captured raw here; its typed parse into
         // `mush_llm::LlmConfig` is covered by the server crate that owns it.
         assert!(cfg.llm.is_table());
@@ -1752,6 +2092,218 @@ scene_turn_dedline_secs = 30
             toml::from_str("[tacsim]\nenabled = true\npack_paths = [\"a.json\"]\n").unwrap();
         assert!(cfg.tacsim.enabled);
         assert_eq!(cfg.tacsim.pack_paths, vec!["a.json".to_string()]);
+    }
+
+    // ---- 16b cut G — the combat arena's five blocks ----
+
+    /// Cut G, the defaults: an **empty** config carries 16b §9's constants table
+    /// exactly. This is the assertion that makes every shipped file below
+    /// redundant-on-purpose rather than load-bearing — a box that writes none of
+    /// these sections runs the numbers the design note names.
+    #[test]
+    fn cut_g_the_five_arena_blocks_default_to_the_constants_table() {
+        let cfg: Config = toml::from_str("").expect("an empty config parses");
+        let arena = &cfg.tacsim.arena;
+        assert_eq!(
+            (
+                arena.tempo.quiet_ms,
+                arena.tempo.alert_ms,
+                arena.tempo.engaged_ms
+            ),
+            (5_000, 1_000, 500),
+            "[tacsim.arena.tempo] periods"
+        );
+        assert_eq!(
+            (arena.tempo.alert_hold_ms, arena.tempo.engaged_hold_ms),
+            (30_000, 10_000),
+            "[tacsim.arena.tempo] holds"
+        );
+        assert_eq!(
+            arena.tempo.alert_range_cm, 0,
+            "0 is the DERIVED sentinel: twice the longest weapon range in the match"
+        );
+        assert_eq!(
+            (arena.tempo.substep_max_ms, arena.tempo.stall_ms),
+            (250, 2_000)
+        );
+        assert_eq!(arena.max_catch_up_steps, 4);
+        assert_eq!(arena.intents.max_pending_per_unit, 8);
+        assert_eq!(
+            (
+                arena.ledger.summary_ms,
+                arena.ledger.max_bytes,
+                arena.ledger.max_unflushed_chunks
+            ),
+            (5_000, 67_108_864, 256),
+            "[tacsim.arena.ledger]; max_bytes is 64 MiB"
+        );
+
+        let m = &cfg.tacsim.match_;
+        assert_eq!(
+            (
+                m.startup_ms,
+                m.board_timeout_ms,
+                m.max_duration_ms,
+                m.max_slots_per_side
+            ),
+            (10_000, 120_000, 3_600_000, 12),
+            "[tacsim.match]"
+        );
+
+        assert_eq!(cfg.tacsim.sensors.pass_ms, 1_000);
+        assert!(
+            (cfg.tacsim.sensors.max_signature_factor - 1.5).abs() < f64::EPSILON,
+            "[tacsim.sensors].max_signature_factor is 1.5"
+        );
+
+        assert!(
+            cfg.tacsim.resolution.paths.is_empty(),
+            "[tacsim.resolution].paths defaults empty; cut W wires the shipped tables"
+        );
+
+        let h = &cfg.tacsim.harness;
+        assert_eq!((h.units, h.fighting, h.weapons), (300, 24, 150));
+        assert_eq!(h.engaged_p99_ms, 25);
+        assert_eq!(
+            (h.max_traces_per_pulse, h.max_path_queries_per_pulse),
+            (4_000, 64)
+        );
+        assert_eq!(h.max_ledger_bytes, 67_108_864, "64 MiB");
+    }
+
+    /// Cut G: every key of all eight tables parses to what it says. Written as
+    /// one explicit config so a field added to a struct without a line here is
+    /// visible as an untested key rather than silently defaulting.
+    #[test]
+    fn cut_g_the_five_arena_blocks_parse_an_explicit_table() {
+        let cfg: Config = toml::from_str(
+            "[tacsim.arena]\n\
+             max_catch_up_steps = 2\n\
+             [tacsim.arena.tempo]\n\
+             quiet_ms = 4000\n\
+             alert_ms = 900\n\
+             engaged_ms = 400\n\
+             alert_hold_ms = 20000\n\
+             engaged_hold_ms = 9000\n\
+             alert_range_cm = 120000\n\
+             substep_max_ms = 200\n\
+             stall_ms = 1500\n\
+             [tacsim.arena.intents]\n\
+             max_pending_per_unit = 3\n\
+             [tacsim.arena.ledger]\n\
+             summary_ms = 2500\n\
+             max_bytes = 1048576\n\
+             max_unflushed_chunks = 64\n\
+             [tacsim.match]\n\
+             startup_ms = 5000\n\
+             board_timeout_ms = 60000\n\
+             max_duration_ms = 900000\n\
+             max_slots_per_side = 4\n\
+             [tacsim.sensors]\n\
+             pass_ms = 750\n\
+             max_signature_factor = 2.25\n\
+             [tacsim.resolution]\n\
+             paths = [\"content/resolution.json\"]\n\
+             [tacsim.harness]\n\
+             units = 10\n\
+             fighting = 4\n\
+             weapons = 6\n\
+             engaged_p99_ms = 50\n\
+             max_traces_per_pulse = 100\n\
+             max_path_queries_per_pulse = 8\n\
+             max_ledger_bytes = 2048\n",
+        )
+        .expect("the written-out blocks parse");
+
+        let arena = &cfg.tacsim.arena;
+        assert_eq!(arena.max_catch_up_steps, 2);
+        assert_eq!(
+            (
+                arena.tempo.quiet_ms,
+                arena.tempo.alert_ms,
+                arena.tempo.engaged_ms,
+                arena.tempo.alert_hold_ms,
+                arena.tempo.engaged_hold_ms,
+                arena.tempo.alert_range_cm,
+                arena.tempo.substep_max_ms,
+                arena.tempo.stall_ms,
+            ),
+            (4_000, 900, 400, 20_000, 9_000, 120_000, 200, 1_500)
+        );
+        assert_eq!(arena.intents.max_pending_per_unit, 3);
+        assert_eq!(
+            (
+                arena.ledger.summary_ms,
+                arena.ledger.max_bytes,
+                arena.ledger.max_unflushed_chunks
+            ),
+            (2_500, 1_048_576, 64)
+        );
+
+        let m = &cfg.tacsim.match_;
+        assert_eq!(
+            (
+                m.startup_ms,
+                m.board_timeout_ms,
+                m.max_duration_ms,
+                m.max_slots_per_side
+            ),
+            (5_000, 60_000, 900_000, 4),
+            "the TOML key is `match`, the Rust field `match_`"
+        );
+
+        assert_eq!(cfg.tacsim.sensors.pass_ms, 750);
+        assert!((cfg.tacsim.sensors.max_signature_factor - 2.25).abs() < f64::EPSILON);
+        assert_eq!(
+            cfg.tacsim.resolution.paths,
+            vec!["content/resolution.json".to_string()]
+        );
+
+        let h = &cfg.tacsim.harness;
+        assert_eq!(
+            (
+                h.units,
+                h.fighting,
+                h.weapons,
+                h.engaged_p99_ms,
+                h.max_traces_per_pulse,
+                h.max_path_queries_per_pulse,
+            ),
+            (10, 4, 6, 50, 100, 8)
+        );
+        assert_eq!(h.max_ledger_bytes, 2_048);
+    }
+
+    /// Cut G's one enforced property: **a typo in any of the eight tables refuses
+    /// the boot, naming the key.** No value here has a reader yet — the cut that
+    /// reads a field validates it — so shape is all cut G can enforce, and it is
+    /// 16b §3's "a typo in a new section refuses boot".
+    ///
+    /// `match_` is here twice on purpose: the Rust field name must NOT be
+    /// accepted as a TOML key, or an operator who writes `[tacsim.match_]` gets a
+    /// section the server silently ignores.
+    #[test]
+    fn cut_g_an_unknown_key_in_any_arena_block_refuses_to_start() {
+        for (text, key) in [
+            (
+                "[tacsim.arena]\nmax_catch_up_step = 4\n",
+                "max_catch_up_step",
+            ),
+            ("[tacsim.arena.tempo]\nquiet = 5000\n", "quiet"),
+            ("[tacsim.arena.intents]\nmax_pending = 8\n", "max_pending"),
+            ("[tacsim.arena.ledger]\nmax_byte = 1\n", "max_byte"),
+            ("[tacsim.match]\nstartup = 10000\n", "startup"),
+            ("[tacsim.sensors]\npass = 1000\n", "pass"),
+            ("[tacsim.resolution]\npath = []\n", "path"),
+            ("[tacsim.harness]\nunit = 300\n", "unit"),
+            // The keyword dodge: `match_` is the Rust spelling, never the key.
+            ("[tacsim]\nmatch_ = {}\n", "match_"),
+        ] {
+            let refused = toml::from_str::<Config>(text).expect_err(text);
+            let refused = refused.to_string();
+            assert!(refused.contains(key), "{text}: {refused}");
+            assert!(refused.contains("unknown field"), "{text}: {refused}");
+        }
     }
 
     #[test]

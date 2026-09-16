@@ -216,6 +216,60 @@ market = false
 instrument = "tacsim.credit"
 reserved_rooms = []
 
+# The combat arena (16b cut G; doc 16 §7's Configuration paragraph, values from
+# 16b §9's constants table). Five blocks, all deny_unknown_fields like [tacsim]
+# itself, so a mistyped key refuses the boot. NOTHING HERE IS PER-INSTANCE: these
+# are the game's numbers, written out so the operator can see them and so a box
+# never silently runs a compiled-in default nobody read. They are parsed and
+# inert until the cut that reads a field, which is the cut that validates it --
+# except [tacsim.sensors].max_signature_factor, which the host converts to per
+# mille at boot, so a negative, NaN or unrepresentable factor refuses the boot
+# naming that key.
+[tacsim.arena]
+max_catch_up_steps = 4
+
+[tacsim.arena.tempo]
+quiet_ms = 5000
+alert_ms = 1000
+engaged_ms = 500
+alert_hold_ms = 30000
+engaged_hold_ms = 10000
+# 0 = derived at match start as twice the longest weapon range in the match.
+alert_range_cm = 0
+substep_max_ms = 250
+stall_ms = 2000
+
+[tacsim.arena.intents]
+max_pending_per_unit = 8
+
+[tacsim.arena.ledger]
+summary_ms = 5000
+max_bytes = 67108864
+max_unflushed_chunks = 256
+
+[tacsim.match]
+startup_ms = 10000
+board_timeout_ms = 120000
+max_duration_ms = 3600000
+max_slots_per_side = 12
+
+[tacsim.sensors]
+pass_ms = 1000
+# The only float; the host reads it as per mille (1.5 -> 1500).
+max_signature_factor = 1.5
+
+[tacsim.resolution]
+paths = []
+
+[tacsim.harness]
+units = 300
+fighting = 24
+weapons = 150
+engaged_p99_ms = 25
+max_traces_per_pulse = 4000
+max_path_queries_per_pulse = 64
+max_ledger_bytes = 67108864
+
 # Onboarding. The start rooms are REAL SEEDED ROOMS, not #0. Limbo is the
 # bootstrap room the store seeds with God — it is reserved from housing, it is
 # where a world with nothing else in it puts you, and it is not a place to open
