@@ -11,6 +11,29 @@ mush-core.workspace = true
 mush-proto.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
+# 16b cut R-b: the `toy-ruleset` test ruleset only. Optional so a production
+# build of `mush-server` (which depends on this crate normally) pulls none of
+# them. The `mush-ruleset` edge closes a DEV-dependency cycle
+# (`mush-ruleset` dev-depends on this crate), which cargo permits.
+mush-ruleset = { workspace = true, optional = true }
+mush-dice = { workspace = true, optional = true }
+mush-jobs = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+rand_chacha = { workspace = true, optional = true }
+
+[features]
+# A miniature, self-contained ruleset (`toy`) for the platform tests that used
+# to exercise sheet/chargen/perception/NPC/authoritative-action contracts
+# through game content. Off by default.
+toy-ruleset = [
+    "dep:mush-ruleset",
+    "dep:mush-dice",
+    "dep:mush-jobs",
+    "dep:serde",
+    "dep:rand",
+    "dep:rand_chacha",
+]
 
 [lints]
 workspace = true

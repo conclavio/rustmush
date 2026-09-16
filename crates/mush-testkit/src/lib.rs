@@ -43,6 +43,18 @@
 
 pub mod proc;
 
+/// The `toy` test ruleset (16b cut R-b): a miniature [`Ruleset`] carrying the
+/// platform seams the deleted game rulesets used to carry — a sheet + vitals,
+/// a one-stage chargen filing an approval job, the onboarding gate/hook/spawn
+/// trio, NPC grounding with a dice ability, a concealment `Perceive` hook, a
+/// gated narration channel, and one authoritative, resource-backed
+/// `ActionProvider`. Behind the `toy-ruleset` feature so a production build
+/// pulls nothing extra.
+///
+/// [`Ruleset`]: mush_ruleset::Ruleset
+#[cfg(feature = "toy-ruleset")]
+pub mod toy_ruleset;
+
 use std::collections::HashMap;
 
 use mush_core::{
