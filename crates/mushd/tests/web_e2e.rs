@@ -95,17 +95,13 @@ async fn boot(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig 
     boot_inner(tag, session_config, auth_burst, Vec::new()).await
 }
 
-/// Boot with the wod ruleset loaded too (adds the `wod.sheet`/`wod.roll`
-/// feeds + `+chargen`/`+sheet` surface), for the sheet-over-web test.
-async fn boot_wod(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig {
-    let wod = modules::ruleset_modules(
-        &["wod".to_string()],
-        &mush_core::OnboardingConfig::default(),
-        &ruleset_wod::WodEconomyConfig::default(),
-        &ruleset_shadowrun::SrEconomyConfig::default(),
-    )
-    .expect("wod ruleset");
-    boot_inner(tag, session_config, auth_burst, wod).await
+/// Boot with the game's character ruleset loaded too (adds the `tacsim.sheet`
+/// feed + the `+chargen`/`+stat`/`+sheet` surface), for the sheet-over-web
+/// test. `boot` alone composes no ruleset, exactly as `server_modules` does not.
+async fn boot_pilot(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig {
+    let ruleset =
+        modules::ruleset_modules(&mush_core::OnboardingConfig::default(), &Default::default());
+    boot_inner(tag, session_config, auth_burst, ruleset).await
 }
 
 /// Boot with the M7 worldgen module registered against a network-free
@@ -991,7 +987,7 @@ fn metric_value(text: &str, prefix: &str) -> f64 {
 /// metrics text.
 #[tokio::test(flavor = "multi_thread")]
 async fn metrics_healthz_and_stats_reflect_real_state() {
-    let rig = boot_wod("metrics-real", SessionConfig::default(), 0).await;
+    let rig = boot("metrics-real", SessionConfig::default(), 0).await;
     let (god_handle, mut god) = god_terminal(&rig).await;
 
     // Real activity: a few commands (each bumps the world-loop command
@@ -1075,37 +1071,53 @@ async fn metrics_healthz_and_stats_reflect_real_state() {
 // The M6b web deliverable: a character sheet reaches the web client.
 // ---------------------------------------------------------------------------
 
-/// With the wod ruleset loaded, `Query::Sheet` routes to the ruleset's
-/// `<ruleset>.sheet` handler (not the pre-M6 "unavailable" bridge stub), so
-/// the schema-driven web Sheet panel actually gets data. Regression guard for
-/// the web_bridge routing gap the M6b web agent flagged.
+/// With the game's character ruleset loaded, `Query::Sheet` routes to the
+/// ruleset's `<ruleset>.sheet` handler (not the pre-M6 "unavailable" bridge
+/// stub), so the schema-driven web Sheet panel actually gets data. Regression
+/// guard for the web_bridge routing gap the M6b web agent flagged.
+///
+/// 16b cut R-b: this was four tests — a Mortal, a Changeling, a Ghoul and a
+/// Kinfolk — because the WoD ruleset dispatched a different schema per
+/// `template` and each splat was its own risk that the generic web panel would
+/// need a change. The game has **one** sheet and no templates, so the
+/// per-template cases have no subject left; what they all actually proved (the
+/// reply is the ruleset's own Panel keyframe on its feed, carrying a schema and
+/// the staff-written data) is what stays, once.
 #[tokio::test(flavor = "multi_thread")]
 async fn sheet_query_routes_to_the_ruleset_over_web() {
-    let rig = boot_wod("sheet", SessionConfig::default(), 0).await;
+    let rig = boot_pilot("sheet", SessionConfig::default(), 0).await;
     let (_god_handle, mut god) = god_terminal(&rig).await;
 
-    // The hello manifest advertises the ruleset's sheet feed + "wod" feature,
-    // which is what gates the web client into asking for a sheet at all.
+    // The hello manifest advertises the sheet module and its feed, which is
+    // what gates the web client into asking for a sheet at all. The feature is
+    // the MODULE's name (`pilot`) and the feed is the SCHEMA's ruleset id
+    // (`tacsim`) — the two deliberately differ.
     let (token, key) = register(&rig, "mina", "hunter42", "Mina").await;
     let mut ws = connect_ws(&rig, &token, key, "").await.expect("ws connect");
     let (features, panels) = expect_hello(&mut ws).await;
     assert!(
-        features.iter().any(|f| f == "wod"),
-        "wod feature: {features:?}"
+        features.iter().any(|f| f == "pilot"),
+        "pilot feature: {features:?}"
     );
     let sheet_feed = panels
         .iter()
         .find(|p| p.ends_with(".sheet"))
         .cloned()
         .expect("a <ruleset>.sheet feed in the manifest");
+    assert_eq!(sheet_feed, "tacsim.sheet", "the one sheet feed: {panels:?}");
     // Drain the entry stream (SessionInfo + room render).
     let _ = expect_env(&mut ws, "Connected as Mina").await;
     let _ = expect_env(&mut ws, "Limbo(#0)").await;
     god.expect("Mina has connected.").await;
 
-    // Staff give Mina a sheet by setting a stat (creates the sheet:wod doc).
-    god.send_line("@sheet/set Mina/strength=3").await;
-    god.expect("Set Mina/strength").await;
+    // Staff give Mina a sheet by setting stats (creates the sheet:tacsim doc):
+    // one rating, and one staff-only standing field a player could not write.
+    god.send_line("@sheet/set Mina/gunnery=3").await;
+    god.expect("Set Mina/gunnery").await;
+    god.send_line("@sheet/set Mina/callsign=Ladder").await;
+    god.expect("Set Mina/callsign").await;
+    god.send_line("@sheet/set Mina/reputation=2").await;
+    god.expect("Set Mina/reputation").await;
 
     // The web client asks for its sheet; the reply is the ruleset handler's
     // keyframe, carrying the schema + data — NOT the old "unavailable" Sys.
@@ -1125,244 +1137,35 @@ async fn sheet_query_routes_to_the_ruleset_over_web() {
         panic!("expected a sheet Panel keyframe, got {event:?}");
     };
     assert_eq!(feed.as_str(), sheet_feed, "reply rides the sheet feed");
-    assert!(
-        data.get("schema").is_some(),
-        "sheet payload carries the schema: {data}"
-    );
-    assert_eq!(
-        data["data"]["strength"], 3,
-        "the staff-set strength reached the web sheet: {data}"
-    );
-}
 
-/// M10a: the schema-generic web Sheet panel needs **no** change to serve a new
-/// template — the `wod.sheet` query selects the character's active
-/// (template-dispatched) schema and returns a well-formed schema + data payload
-/// for a **Changeling** exactly as it does for a Mortal. This confirms the
-/// payload is well-formed for one of the M10a templates: the returned schema is
-/// the changeling one (Fae / Arts / Realms sections, not Disciplines) and the
-/// staff-set changeling fields ride the `data` block.
-#[tokio::test(flavor = "multi_thread")]
-async fn changeling_sheet_routes_over_web() {
-    let rig = boot_wod("changeling-sheet", SessionConfig::default(), 0).await;
-    let (_god_handle, mut god) = god_terminal(&rig).await;
-
-    let (token, key) = register(&rig, "titania", "hunter42", "Titania").await;
-    let mut ws = connect_ws(&rig, &token, key, "").await.expect("ws connect");
-    let (features, panels) = expect_hello(&mut ws).await;
-    assert!(
-        features.iter().any(|f| f == "wod"),
-        "wod feature: {features:?}"
-    );
-    let sheet_feed = panels
-        .iter()
-        .find(|p| p.ends_with(".sheet"))
-        .cloned()
-        .expect("a <ruleset>.sheet feed in the manifest");
-    let _ = expect_env(&mut ws, "Connected as Titania").await;
-    let _ = expect_env(&mut ws, "Limbo(#0)").await;
-    god.expect("Titania has connected.").await;
-
-    // Staff turn Titania Kithain and set some Fae traits (re-shapes the sheet to
-    // the changeling schema; a mortal's schema has none of these fields).
-    god.send_line("@sheet/set Titania/template=changeling")
-        .await;
-    god.expect("Set Titania/template = changeling").await;
-    god.send_line("@sheet/set Titania/kith=pooka").await;
-    god.expect("Set Titania/kith").await;
-    god.send_line("@sheet/set Titania/glamour=3").await;
-    god.expect("Set Titania/glamour").await;
-    god.send_line("@sheet/set Titania/arts:Chicanery=2").await;
-    god.expect("Set Titania/arts:Chicanery").await;
-
-    // The web client asks for its sheet; the reply carries the changeling
-    // schema + data.
-    send_cmd(
-        &mut ws,
-        &ClientCommand::Req {
-            id: 9,
-            q: Query::Sheet,
-        },
-    )
-    .await;
-    let env = expect_env(&mut ws, "[reply 9]").await;
-    let OutputEvent::Reply { id: 9, event } = &env.event else {
-        panic!("expected Reply 9, got {:?}", env.event);
-    };
-    let OutputEvent::Panel { feed, data, .. } = event.as_ref() else {
-        panic!("expected a sheet Panel keyframe, got {event:?}");
-    };
-    assert_eq!(feed.as_str(), sheet_feed, "reply rides the sheet feed");
-
-    // The payload is well-formed: it carries a schema, and that schema is the
-    // *changeling* one (Arts / Glamour present, Disciplines absent).
+    // The payload is well-formed: a schema, and it is the game's one schema.
     let schema = data.get("schema").expect("sheet payload carries a schema");
     let schema_str = schema.to_string();
     assert!(
-        schema_str.contains("arts") && schema_str.contains("glamour"),
-        "the selected schema is the changeling one: {schema_str}"
+        schema_str.contains("gunnery")
+            && schema_str.contains("piloting")
+            && schema_str.contains("sensors"),
+        "the schema is the pilot one: {schema_str}"
     );
     assert!(
-        !schema_str.contains("disciplines"),
-        "the changeling schema has no Disciplines: {schema_str}"
+        !schema_str.contains("template"),
+        "there is no template dispatch left to select a schema: {schema_str}"
     );
 
-    // The staff-set changeling fields reached the web sheet data block.
-    assert_eq!(data["data"]["template"], "changeling");
-    assert_eq!(data["data"]["kith"], "pooka");
-    assert_eq!(data["data"]["glamour"], 3);
+    // ...and the staff-written fields reached the web sheet's data block —
+    // except the staff-only one, which the handler strips for a mortal viewer.
     assert_eq!(
-        data["data"]["arts"]["Chicanery"], 2,
-        "the Arts map rode the web sheet data: {data}"
+        data["data"]["gunnery"], 3,
+        "the staff-set rating reached the web sheet: {data}"
     );
-}
-
-/// M10a: the schema-generic web Sheet panel serves a **Ghoul** with no web
-/// change — the payload carries the ghoul schema (Disciplines + Blood Pool, not
-/// Fae / Spheres) and the staff-set ghoul fields ride the `data` block.
-#[tokio::test(flavor = "multi_thread")]
-async fn ghoul_sheet_routes_over_web() {
-    let rig = boot_wod("ghoul-sheet", SessionConfig::default(), 0).await;
-    let (_god_handle, mut god) = god_terminal(&rig).await;
-
-    let (token, key) = register(&rig, "renfield", "hunter42", "Renfield").await;
-    let mut ws = connect_ws(&rig, &token, key, "").await.expect("ws connect");
-    let (features, panels) = expect_hello(&mut ws).await;
+    assert_eq!(data["data"]["callsign"], "Ladder");
     assert!(
-        features.iter().any(|f| f == "wod"),
-        "wod feature: {features:?}"
+        data["data"].get("reputation").is_none(),
+        "a staff-only field is stripped from a mortal's own sheet: {data}"
     );
-    let sheet_feed = panels
-        .iter()
-        .find(|p| p.ends_with(".sheet"))
-        .cloned()
-        .expect("a <ruleset>.sheet feed in the manifest");
-    let _ = expect_env(&mut ws, "Connected as Renfield").await;
-    let _ = expect_env(&mut ws, "Limbo(#0)").await;
-    god.expect("Renfield has connected.").await;
-
-    // Staff turn Renfield a ghoul and set some Kindred-adjacent traits.
-    god.send_line("@sheet/set Renfield/template=ghoul").await;
-    god.expect("Set Renfield/template = ghoul").await;
-    god.send_line("@sheet/set Renfield/domitor_clan=gangrel")
-        .await;
-    god.expect("Set Renfield/domitor_clan").await;
-    god.send_line("@sheet/set Renfield/disciplines:Potence=1")
-        .await;
-    god.expect("Set Renfield/disciplines:Potence").await;
-    god.send_line("@sheet/set Renfield/bloodpool=6").await;
-    god.expect("Set Renfield/bloodpool").await;
-
-    send_cmd(
-        &mut ws,
-        &ClientCommand::Req {
-            id: 11,
-            q: Query::Sheet,
-        },
-    )
-    .await;
-    let env = expect_env(&mut ws, "[reply 11]").await;
-    let OutputEvent::Reply { id: 11, event } = &env.event else {
-        panic!("expected Reply 11, got {:?}", env.event);
-    };
-    let OutputEvent::Panel { feed, data, .. } = event.as_ref() else {
-        panic!("expected a sheet Panel keyframe, got {event:?}");
-    };
-    assert_eq!(feed.as_str(), sheet_feed, "reply rides the sheet feed");
-
-    // The payload is the *ghoul* schema (Disciplines + Blood Pool present, Fae /
-    // Spheres absent).
-    let schema = data.get("schema").expect("sheet payload carries a schema");
-    let schema_str = schema.to_string();
-    assert!(
-        schema_str.contains("disciplines") && schema_str.contains("bloodpool"),
-        "the selected schema is the ghoul one: {schema_str}"
-    );
-    assert!(
-        !schema_str.contains("\"arts\"") && !schema_str.contains("spheres"),
-        "the ghoul schema has no Fae/Spheres: {schema_str}"
-    );
-
-    assert_eq!(data["data"]["template"], "ghoul");
-    assert_eq!(data["data"]["domitor_clan"], "gangrel");
-    assert_eq!(data["data"]["bloodpool"], 6);
     assert_eq!(
-        data["data"]["disciplines"]["Potence"], 1,
-        "the Disciplines map rode the web sheet data: {data}"
-    );
-}
-
-/// M10a: the schema-generic web Sheet panel serves a **Kinfolk** with no web
-/// change — the payload carries the kinfolk schema (Gnosis + Gifts, not Rage /
-/// Disciplines) and the staff-set kinfolk fields ride the `data` block.
-#[tokio::test(flavor = "multi_thread")]
-async fn kinfolk_sheet_routes_over_web() {
-    let rig = boot_wod("kinfolk-sheet", SessionConfig::default(), 0).await;
-    let (_god_handle, mut god) = god_terminal(&rig).await;
-
-    let (token, key) = register(&rig, "willa", "hunter42", "Willa").await;
-    let mut ws = connect_ws(&rig, &token, key, "").await.expect("ws connect");
-    let (features, panels) = expect_hello(&mut ws).await;
-    assert!(
-        features.iter().any(|f| f == "wod"),
-        "wod feature: {features:?}"
-    );
-    let sheet_feed = panels
-        .iter()
-        .find(|p| p.ends_with(".sheet"))
-        .cloned()
-        .expect("a <ruleset>.sheet feed in the manifest");
-    let _ = expect_env(&mut ws, "Connected as Willa").await;
-    let _ = expect_env(&mut ws, "Limbo(#0)").await;
-    god.expect("Willa has connected.").await;
-
-    // Staff turn Willa Kinfolk and set some traits (gnosis is chargen-locked but
-    // @sheet/set is staff and writes it directly).
-    god.send_line("@sheet/set Willa/template=kinfolk").await;
-    god.expect("Set Willa/template = kinfolk").await;
-    god.send_line("@sheet/set Willa/tribe=fianna").await;
-    god.expect("Set Willa/tribe").await;
-    god.send_line("@sheet/set Willa/gnosis=3").await;
-    god.expect("Set Willa/gnosis").await;
-    god.send_line("@sheet/set Willa/gifts:Persuasion=1").await;
-    god.expect("Set Willa/gifts:Persuasion").await;
-
-    send_cmd(
-        &mut ws,
-        &ClientCommand::Req {
-            id: 13,
-            q: Query::Sheet,
-        },
-    )
-    .await;
-    let env = expect_env(&mut ws, "[reply 13]").await;
-    let OutputEvent::Reply { id: 13, event } = &env.event else {
-        panic!("expected Reply 13, got {:?}", env.event);
-    };
-    let OutputEvent::Panel { feed, data, .. } = event.as_ref() else {
-        panic!("expected a sheet Panel keyframe, got {event:?}");
-    };
-    assert_eq!(feed.as_str(), sheet_feed, "reply rides the sheet feed");
-
-    // The payload is the *kinfolk* schema (Gnosis + Gifts present, Rage /
-    // Disciplines absent).
-    let schema = data.get("schema").expect("sheet payload carries a schema");
-    let schema_str = schema.to_string();
-    assert!(
-        schema_str.contains("gnosis") && schema_str.contains("gifts"),
-        "the selected schema is the kinfolk one: {schema_str}"
-    );
-    assert!(
-        !schema_str.contains("\"rage\"") && !schema_str.contains("disciplines"),
-        "the kinfolk schema has no Rage/Disciplines: {schema_str}"
-    );
-
-    assert_eq!(data["data"]["template"], "kinfolk");
-    assert_eq!(data["data"]["tribe"], "fianna");
-    assert_eq!(data["data"]["gnosis"], 3);
-    assert_eq!(
-        data["data"]["gifts"]["Persuasion"], 1,
-        "the Gifts map rode the web sheet data: {data}"
+        data["approved"]["state"], "unapproved",
+        "an unapproved sheet says so on the panel: {data}"
     );
 }
 

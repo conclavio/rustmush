@@ -49,7 +49,12 @@ fn rust_sources(root: &Path, files: &mut Vec<PathBuf>) {
 fn ruleset_command_code_writes_sheets_through_put_in() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = Vec::new();
-    for crate_dir in ["ruleset-wod", "ruleset-shadowrun"] {
+    // 16b cut R-b: the two deleted game rulesets are replaced by the crates that
+    // still call `mush_ruleset::register_sheet_commands` — the game's own pilot
+    // sheet in `tacsim`, and the `toy` test ruleset in `mush-testkit`. Their
+    // whole `src` trees are scanned (a superset of the sheet code), which is the
+    // stricter reading of the same tripwire.
+    for crate_dir in ["tacsim", "mush-testkit"] {
         rust_sources(&crates.join(crate_dir).join("src"), &mut files);
     }
     files.push(crates.join("mush-ruleset").join("src").join("commands.rs"));

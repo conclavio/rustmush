@@ -3,7 +3,7 @@
 //! not depend on `mush-llm` / `mush-weather` / `mush-worldgen` / `ruleset-wod`.
 
 use mush_config::config::{
-    AtlasCfg, EconomyCfg, OnboardingCfg, ShadowrunCfg, TacsimCfg, WeatherCfg, WodCfg, WorldgenCfg,
+    AtlasCfg, EconomyCfg, OnboardingCfg, TacsimCfg, WeatherCfg, WorldgenCfg,
 };
 use serde::Deserialize;
 
@@ -167,183 +167,32 @@ pub fn onboarding_ruleset(cfg: &OnboardingCfg) -> mush_core::OnboardingConfig {
     }
 }
 
-/// The ruleset-facing `[wod.economy]` config (E5c, 08d §5.1, D-E5-9).
-///
-/// Every word is validated here rather than defaulted, on `[rulesets].enabled`'s
-/// rule: a silently-ignored typo is worse than not starting. `personal_mode = "exat"`
-/// must not quietly become `off` and leave a game-runner wondering why nobody has a
-/// wallet.
+/// `[tacsim.economy]` → the one game's economy wiring (16b cut R-b). The instrument
+/// id is validated here, on `[rulesets].enabled`'s old rule: a silently-ignored typo
+/// is worse than not starting.
 ///
 /// # Errors
 ///
-/// An unknown `personal_mode` or `default_engagement`, an income key that is not a
-/// Resources dot `0..=5`, or an empty `cadence`.
-pub fn wod_economy_config(cfg: &WodCfg) -> Result<ruleset_wod::WodEconomyConfig, String> {
+/// An instrument id that is not a canonical id.
+pub fn tacsim_economy_config(cfg: &TacsimCfg) -> Result<tacsim::GameEconomyConfig, String> {
     let e = &cfg.economy;
-    let personal_mode = ruleset_wod::PersonalMode::parse(&e.personal_mode).ok_or_else(|| {
-        format!(
-            "[wod.economy].personal_mode: unknown mode {:?} (expected \"off\", \"abstract\" or \
-             \"exact\")",
-            e.personal_mode
-        )
-    })?;
-    let default_engagement =
-        ruleset_wod::Engagement::parse(&e.default_engagement).ok_or_else(|| {
-            format!(
-                "[wod.economy].default_engagement: unknown value {:?} (expected \"ambient\" or \
-                 \"engaged\")",
-                e.default_engagement
-            )
-        })?;
-    let cadence = e.cadence.trim();
-    if cadence.is_empty() {
-        return Err("[wod.economy].cadence: a campaign clock needs a name".to_string());
+    let instrument = e.instrument.trim();
+    if instrument.is_empty() || mush_economy::InstrumentId::new(instrument).is_none() {
+        return Err(format!(
+            "[tacsim.economy].instrument: {:?} is not a usable instrument id",
+            e.instrument
+        ));
     }
-    let mut income = std::collections::BTreeMap::new();
-    for (dot, amount) in &e.income {
-        let n: u8 = dot.trim().parse().map_err(|_| {
-            format!("[wod.economy.income]: {dot:?} is not a Resources dot (use \"0\"…\"5\")")
-        })?;
-        if n > 5 {
-            return Err(format!(
-                "[wod.economy.income]: {dot:?} is out of the Resources band (0…5)"
-            ));
-        }
-        income.insert(n, *amount);
-    }
-    Ok(ruleset_wod::WodEconomyConfig {
-        personal_mode,
+    Ok(tacsim::GameEconomyConfig {
         housing: e.housing,
-        careers: e.careers,
-        default_engagement,
-        cadence: smol_str::SmolStr::new(cadence),
-        starting_funds_major: e.starting_funds_major,
+        market: e.market,
+        instrument: smol_str::SmolStr::new(instrument),
         reserved_rooms: e
             .reserved_rooms
             .iter()
             .copied()
             .map(mush_core::ObjId)
             .collect(),
-        income,
-    })
-}
-
-/// The declared cadences a Shadowrun server contributes to `[economy.cadences]`
-/// (the E6a addendum; §11 q1's defaults).
-///
-/// `sr.month` on the world's IC clock, a thirty-IC-day period, clock-level catch-up
-/// 3 — the clock *forgives* on the clock; the lifestyle schedule's own
-/// `maximum_catch_up` is 1 and decides *attempts* (D-E6-23, G12).
-#[must_use]
-pub fn shadowrun_cadences(
-    cfg: &ruleset_shadowrun::SrEconomyConfig,
-) -> Vec<(String, mush_economy::DeclaredCadence)> {
-    if !cfg.enabled {
-        return Vec::new();
-    }
-    vec![(
-        cfg.lifestyle_clock.to_string(),
-        mush_economy::DeclaredCadence {
-            clock: mush_economy::DeclaredCadenceClock::WorldIc,
-            period_secs: ruleset_shadowrun::SR_MONTH_PERIOD_SECS,
-            catch_up: ruleset_shadowrun::SR_MONTH_CATCH_UP,
-        },
-    )]
-}
-
-/// The ruleset-facing `[shadowrun.economy]` config (E6a, 08f §9, answer 16).
-///
-/// Every word is validated here rather than defaulted, on `[rulesets].enabled`'s
-/// rule: a silently-ignored typo is worse than not starting. A `lifestyle_costs` key
-/// that is not a tier must not quietly become "this tier is free".
-///
-/// # Errors
-///
-/// An unknown lifestyle tier in `lifestyle_costs`, an empty `instrument` or
-/// `lifestyle_clock`, a permille fence rate above 1000, or a non-positive
-/// `board_ttl_secs`.
-pub fn shadowrun_economy_config(
-    cfg: &ShadowrunCfg,
-) -> Result<ruleset_shadowrun::SrEconomyConfig, String> {
-    let e = &cfg.economy;
-    let instrument = e.instrument.trim();
-    if instrument.is_empty() {
-        return Err("[shadowrun.economy].instrument: an instrument needs a code".to_string());
-    }
-    let clock = e.lifestyle_clock.trim();
-    if clock.is_empty() {
-        return Err(
-            "[shadowrun.economy].lifestyle_clock: a campaign clock needs a name".to_string(),
-        );
-    }
-    for rate in [e.fence_rate_immediate, e.fence_rate_consign] {
-        if rate > 1_000 {
-            return Err(format!(
-                "[shadowrun.economy]: a fence rate is permille of the baseline; {rate} is above \
-                 1000"
-            ));
-        }
-    }
-    if e.board_ttl_secs <= 0 {
-        return Err(
-            "[shadowrun.economy].board_ttl_secs: a listing needs a positive window".to_string(),
-        );
-    }
-    let mut lifestyle_costs = if e.lifestyle_costs.is_empty() {
-        ruleset_shadowrun::default_lifestyle_costs()
-    } else {
-        std::collections::BTreeMap::new()
-    };
-    for (tier, cost) in &e.lifestyle_costs {
-        let t = ruleset_shadowrun::LifestyleTier::parse(tier).ok_or_else(|| {
-            format!(
-                "[shadowrun.economy.lifestyle_costs]: {tier:?} is not a lifestyle tier (use \
-                 \"street\", \"squatter\", \"low\", \"middle\", \"high\" or \"luxury\")"
-            )
-        })?;
-        lifestyle_costs.insert(t, *cost);
-    }
-    // E6b (OPEN 1): the source-controlled fence baseline, keyed on a catalog code.
-    // A code must be non-empty and bounded, and a zero baseline is refused rather
-    // than silently pricing an object at nothing.
-    let mut fence_baseline: std::collections::BTreeMap<smol_str::SmolStr, u64> =
-        std::collections::BTreeMap::new();
-    for (code, price) in &e.fence_baseline {
-        let code = code.trim();
-        if code.is_empty() || code.len() > ruleset_shadowrun::MAX_CATALOG_CODE_BYTES {
-            return Err(format!(
-                "[shadowrun.economy.fence_baseline]: {code:?} is not a usable catalog code (1..={}                  bytes)",
-                ruleset_shadowrun::MAX_CATALOG_CODE_BYTES
-            ));
-        }
-        if *price == 0 {
-            return Err(format!(
-                "[shadowrun.economy.fence_baseline]: {code:?} has a zero baseline; remove the row                  instead — an item with no reference price cannot be quoted"
-            ));
-        }
-        fence_baseline.insert(smol_str::SmolStr::new(code), *price);
-    }
-    Ok(ruleset_shadowrun::SrEconomyConfig {
-        enabled: e.enabled,
-        instrument: smol_str::SmolStr::new(instrument),
-        lifestyle_clock: smol_str::SmolStr::new(clock),
-        lifestyle: e.lifestyle,
-        player_run_offers: e.player_run_offers,
-        organization_run_offers: e.organization_run_offers,
-        chargen_shopping: e.chargen_shopping,
-        catalog_paths: e.catalog_paths.clone(),
-        lifestyle_costs,
-        quote_ttl_live: e.quote_ttl_live,
-        quote_ttl_remote: e.quote_ttl_remote,
-        fence_rate_immediate: e.fence_rate_immediate,
-        fence_rate_consign: e.fence_rate_consign,
-        fence_delay_secs: e.fence_delay_secs,
-        fence_baseline,
-        vendor_orgs: e.vendor_orgs.clone(),
-        active_offer_cap: e.active_offer_cap,
-        board_ttl_secs: e.board_ttl_secs,
-        board_cap: e.board_cap,
-        chargen_carryover_cap: e.chargen_carryover_cap,
     })
 }
 

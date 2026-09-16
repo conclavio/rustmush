@@ -1,13 +1,18 @@
 //! M11 perception vertical, end to end through the real mushd module wiring
-//! (built-ins + worldgen + the `npc` module grounded by the WoD adapter + the
-//! seeded WoD ruleset), ungated and fully in-memory — the same harness shape as
-//! `npc_e2e`, driven by hand so the off-loop NPC turn is deterministic.
+//! (built-ins + worldgen + the `npc` module grounded by the ruleset adapter +
+//! the seeded `toy` ruleset), ungated and fully in-memory — the same harness
+//! shape as `npc_e2e`, driven by hand so the off-loop NPC turn is
+//! deterministic.
 //!
 //! Proves the NPC-as-observer half of the vertical (design D5): a bartender NPC
-//! reacts to a vampire's speech only when it can *perceive* the vampire. A
-//! ghoul bartender with Auspex pierces an Obfuscate veil and takes its turn; a
-//! mundane bartender with no Auspex is met with true silence — no stimulus, no
-//! turn, no tokens.
+//! reacts to a hider's speech only when it can *perceive* the hider. A sharp
+//! bartender pierces the concealment and takes its turn; a dull one is met with
+//! true silence — no stimulus, no turn, no tokens.
+//!
+//! 16b cut R-b: the WoD ruleset this was written against is gone, so the
+//! concealment fixture is the toy's `+toyhide` flag and its Awareness-vs-Stealth
+//! `HookPoint::Perceive` gate. The platform property is unchanged; only the
+//! splat's dice are.
 
 use std::sync::Arc;
 
@@ -19,6 +24,7 @@ use mush_core::{
 use mush_llm::{BudgetConfig, LlmProvider, LlmService, MockProvider, RouteConfig};
 use mush_proto::OutputEvent;
 use mush_store::InMemoryStore;
+use mush_testkit::toy_ruleset::ToyRuleset;
 use smol_str::SmolStr;
 
 use mushd::modules;
@@ -26,7 +32,7 @@ use mushd::world_task::base_registry;
 
 use mush_npc::AgentGrounding;
 
-/// Fixed RNG seed for the WoD module → deterministic dice.
+/// Fixed RNG seed for the toy module → deterministic dice.
 const SEED: u64 = 0xB0A7;
 
 // ----------------------------------------------------------------------
@@ -46,9 +52,9 @@ impl Rig {
         let mut mods = modules::server_modules();
         mods.push(modules::worldgen_module(Arc::clone(llm)));
         let grounding: Arc<dyn AgentGrounding> =
-            modules::npc_agent_adapter(&["wod".to_string()]).expect("wod grounding adapter");
+            Arc::new(modules::RulesetAgent::new(ToyRuleset::with_seed(SEED)));
         mods.push(modules::npc_module(Some(grounding)));
-        mods.push(Box::new(ruleset_wod::WodRuleset::with_seed(SEED)));
+        mods.push(Box::new(ToyRuleset::with_seed(SEED)));
 
         let mut engine =
             Engine::with_modules(World::new_minimal(), registry, mods).expect("module wiring");
@@ -181,12 +187,11 @@ fn make_bartender(rig: &mut Rig, template: &str) -> ObjId {
     rig.npc_id("Bartender")
 }
 
-/// Make an existing player a vampire with `obfuscate` dots of Obfuscate.
-fn make_vampire(rig: &mut Rig, name: &str, obfuscate: i32) {
-    rig.staff(&format!("@sheet/set {name}/template=vampire"));
-    rig.staff(&format!(
-        "@sheet/set {name}/disciplines:Obfuscate={obfuscate}"
-    ));
+/// Give an existing player a toy sheet with `stealth` dots, so `+toyhide on`
+/// conceals them from anyone whose Awareness falls short.
+fn make_hider(rig: &mut Rig, name: &str, stealth: i32) {
+    rig.staff(&format!("@sheet/set {name}/template=alpha"));
+    rig.staff(&format!("@sheet/set {name}/stealth={stealth}"));
 }
 
 // ----------------------------------------------------------------------
@@ -194,13 +199,13 @@ fn make_vampire(rig: &mut Rig, name: &str, obfuscate: i32) {
 // ----------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_mundane_bartender_never_notices_a_cloaked_vampire() {
+async fn a_dull_bartender_never_notices_a_concealed_speaker() {
     let svc = service();
     let mut rig = Rig::boot(&svc).await;
-    let _bar = make_bartender(&mut rig, "mortal"); // no Auspex
+    let _bar = make_bartender(&mut rig, "alpha"); // Awareness 0
 
     let vlad = rig.player("Vlad");
-    make_vampire(&mut rig, "Vlad", 3);
+    make_hider(&mut rig, "Vlad", 3);
 
     // Control: while in plain sight, the bartender wakes to Vlad's speech.
     rig.run(vlad, "say Evening.");
@@ -210,37 +215,37 @@ async fn a_mundane_bartender_never_notices_a_cloaked_vampire() {
         "a visible speaker wakes the bartender (baseline)"
     );
 
-    // Now Vlad cloaks and speaks: the mundane bartender neither hears nor wakes.
-    rig.run(vlad, "+obfuscate on");
+    // Now Vlad conceals himself and speaks: the dull bartender neither hears
+    // nor wakes.
+    rig.run(vlad, "+toyhide on");
     rig.run(vlad, "say You never saw me.");
     rig.set_now(1_010);
     assert!(
         rig.one_turn().is_none(),
-        "a mundane bartender is met with true silence — no stimulus, no turn"
+        "a dull bartender is met with true silence — no stimulus, no turn"
     );
 }
 
 #[tokio::test]
-async fn a_ghoul_bartender_with_auspex_pierces_the_veil() {
+async fn a_sharp_bartender_pierces_the_concealment() {
     let svc = service();
     let mut rig = Rig::boot(&svc).await;
-    let bar = make_bartender(&mut rig, "ghoul");
-    // Overwhelming senses: Perception + Awareness 5 and Auspex 5.
+    let bar = make_bartender(&mut rig, "alpha");
+    // Overwhelming senses: Perception + Awareness 5.
     rig.staff("@sheet/set Bartender/perception=5");
     rig.staff("@sheet/set Bartender/awareness=5");
-    rig.staff("@sheet/set Bartender/disciplines:Auspex=5");
 
     let vlad = rig.player("Vlad");
-    make_vampire(&mut rig, "Vlad", 2);
+    make_hider(&mut rig, "Vlad", 2);
 
-    // Vlad cloaks (the bartender rolls once, now) and speaks: Auspex pierces the
-    // veil, so the bartender still takes its turn against the speaker it senses.
-    rig.run(vlad, "+obfuscate on");
-    rig.run(vlad, "say Do you sense me, ghoul?");
+    // Vlad conceals himself and speaks: Awareness 5 clears Stealth 2, so the
+    // bartender still takes its turn against the speaker it senses.
+    rig.run(vlad, "+toyhide on");
+    rig.run(vlad, "say Do you sense me?");
     rig.set_now(1_003);
     let turn = rig.one_turn();
     assert!(
         matches!(turn, Some((npc, _, _)) if npc == bar),
-        "the Auspex ghoul bartender perceives the cloaked vampire and wakes"
+        "the sharp-eared bartender perceives the concealed speaker and wakes"
     );
 }

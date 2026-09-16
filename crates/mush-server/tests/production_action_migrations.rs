@@ -1,3 +1,16 @@
+//! The production authoritative-action lane, driven end to end through the
+//! server's own [`ActionCoordinator`]: project an offer, preflight it, prepare
+//! and stage it, reconcile and checkpoint the bundle, install the prepared
+//! action announcing (interface plan I13), and project the committed receipt.
+//!
+//! 16b cut R-b: the two game rulesets these migrations were written against are
+//! gone, so the fixture is the `toy` test ruleset's authoritative pair
+//! (`toy-willpower-roll` / `toy-willpower-set`). Every platform property below
+//! is the one the deleted rulesets carried: one resource move per accepted
+//! offer, a replayable resolution record, the I13 republish to the SUBJECT
+//! alone (including when the subject is not the actor), and a typed post-image
+//! that rehydrates into a fresh composition beside an untouched legacy sheet.
+
 use mush_core::{
     ActionStateBootRecord, Audience, AuthoritativeBundle, CanonicalId, Effects, GOD,
     IdempotencyKey, IdempotencyScope, Inbound, IngressEnvelope, IngressPayload,
@@ -10,16 +23,23 @@ use mush_proto::{OutputEvent, PanelFrameKind, ProjectedActionStatus, VitalValue,
 use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight};
 use mush_store::{AuthoritativeStore, InMemoryStore};
 use mush_testkit::TestWorld;
-use ruleset_shadowrun::ShadowrunRuleset;
-use ruleset_wod::WodRuleset;
+use mush_testkit::toy_ruleset::ToyRuleset;
 use serde_json::{Value, json};
 
+/// The toy module id — the idempotency owner every offer below is scoped to.
+const OWNER: &str = "toy";
+
 fn install_action_keys(world: &mut TestWorld) {
-    world
-        .engine_mut()
-        .set_offer_keys(OfferKeyRing::new(OfferSecret::new(1, [0x41; 32]).unwrap(), []).unwrap());
+    world.engine_mut().set_offer_keys(
+        OfferKeyRing::new(OfferSecret::new(1, [0x41; 32]).expect("offer secret"), [])
+            .expect("offer ring"),
+    );
     world.engine_mut().set_resolution_keys(
-        ResolutionKeyRing::new(ResolutionSecret::new(1, [0x52; 32]).unwrap(), []).unwrap(),
+        ResolutionKeyRing::new(
+            ResolutionSecret::new(1, [0x52; 32]).expect("resolution secret"),
+            [],
+        )
+        .expect("resolution ring"),
     );
 }
 
@@ -34,8 +54,9 @@ fn request_identity(
     let idempotency = ScopedIdempotencyKey::new(
         IdempotencyScope {
             principal: principal.clone(),
-            owner: OwnerId::new(owner).unwrap(),
-            namespace: CanonicalId::new(namespace.replace('-', "_")).unwrap(),
+            owner: OwnerId::new(owner).expect("a well-formed owner id"),
+            namespace: CanonicalId::new(namespace.replace('-', "_"))
+                .expect("a well-formed namespace"),
         },
         0,
         IdempotencyKey::Request(request),
@@ -97,6 +118,19 @@ fn any_to(events: &[(Audience, OutputEvent)], who: mush_core::ObjId) -> bool {
         .any(|(aud, _)| matches!(aud, Audience::Actor(a) if *a == who))
 }
 
+/// The `toy.willpower_current` gauge's current value off a vitals panel.
+fn pool_current(panel: &Value) -> Option<i64> {
+    let frame = VitalsFrame::from_panel_data(panel).ok()?;
+    frame
+        .vitals
+        .iter()
+        .find(|v| v.id == "toy.willpower_current")
+        .and_then(|v| match v.value {
+            VitalValue::Bounded { current, .. } => Some(current),
+            _ => None,
+        })
+}
+
 /// [`execute_offer_announcing`] for the tests that assert on the receipt alone.
 async fn execute_offer(
     world: &mut TestWorld,
@@ -127,7 +161,7 @@ async fn execute_offer_announcing(
     let offer = world
         .engine()
         .project_legal_actions(&query)
-        .unwrap()
+        .expect("a projection")
         .projected()
         .into_iter()
         .find(|offer| offer.presentation().verb == verb)
@@ -136,26 +170,36 @@ async fn execute_offer_announcing(
     let envelope = IngressEnvelope::new(
         request,
         principal.clone(),
-        IngressSurfaceVersion::new(CanonicalId::new("test.production_action").unwrap(), 1).unwrap(),
+        IngressSurfaceVersion::new(
+            CanonicalId::new("test.production_action").expect("a static surface id"),
+            1,
+        )
+        .expect("a static surface version"),
         IngressPayload::structured(json!({
             "offer": offer.offer(),
             "subject": offer.subject(),
             "targets": [],
             "parameters": parameters,
         }))
-        .unwrap(),
+        .expect("a structured payload"),
         idempotency.clone(),
     )
-    .unwrap();
-    let status = ActionCoordinator::status_id(&idempotency).unwrap();
-    let permit = match ActionCoordinator::preflight(store, envelope).await.unwrap() {
+    .expect("an ingress envelope");
+    let status = ActionCoordinator::status_id(&idempotency).expect("a status id");
+    let permit = match ActionCoordinator::preflight(store, envelope)
+        .await
+        .expect("preflight")
+    {
         ActionPreflight::Vacant(permit) => permit,
         other => panic!("production action was not vacant: {other:?}"),
     };
     let resolved = world
         .engine()
         .resolve_legal_action(
-            &world.engine().project_legal_actions(&query).unwrap(),
+            &world
+                .engine()
+                .project_legal_actions(&query)
+                .expect("a projection"),
             OfferExecutionContext {
                 request,
                 principal,
@@ -171,34 +215,35 @@ async fn execute_offer_announcing(
                 parameters,
             },
         )
-        .unwrap();
-    ActionCoordinator::prepare_and_stage_resolved(permit, world.engine_mut(), resolved).unwrap();
+        .expect("the offer resolves");
+    ActionCoordinator::prepare_and_stage_resolved(permit, world.engine_mut(), resolved)
+        .expect("the provider prepares and stages");
     let (bundle, installation) = world
         .engine_mut()
         .take_staged_action()
-        .unwrap()
+        .expect("a staged action slot")
         .expect("production action staged")
         .into_parts();
     let bundle = *bundle;
     store
         .reserve_authoritative_intent(bundle.clone())
         .await
-        .unwrap();
+        .expect("the intent reserves");
     let receipt = store
         .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
         .await
-        .unwrap();
+        .expect("the bundle reconciles");
     assert!(receipt.matches_bundle(&bundle));
     let announced = world.install_prepared_action_announcing(installation);
     store
         .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
         .await
-        .unwrap();
+        .expect("the bundle checkpoints");
     let projections = world
         .engine()
         .registry
         .action_providers()
-        .unwrap()
+        .expect("an action provider table")
         .receipt_projection_table();
     let ProjectedActionStatus::Committed(projected) = ActionCoordinator::projected_status(
         store,
@@ -207,7 +252,7 @@ async fn execute_offer_announcing(
         &status,
     )
     .await
-    .unwrap() else {
+    .expect("a projected status") else {
         panic!("checkpointed production action did not project a committed receipt");
     };
     assert_eq!(
@@ -220,36 +265,62 @@ async fn execute_offer_announcing(
     (bundle, announced)
 }
 
-#[tokio::test]
-async fn wod_willpower_roll_spends_once_and_records_resolution() {
-    let store = InMemoryStore::new();
-    let mut world = TestWorld::with_modules(vec![
-        Box::new(JobsModule::new()),
-        Box::new(WodRuleset::with_seed(7)),
-    ]);
-    let actor = world.spawn_player("Nick");
-    world.run(GOD, "@sheet/set Nick/strength=3");
-    world.run(GOD, "@sheet/set Nick/brawl=2");
-    world.run(GOD, "@sheet/set Nick/willpower=2");
-    world.run(GOD, "@sheet/set Nick/willpower_temp=9");
-    let _ = world.world_mut().take_dirty();
-    let _ = world.take_module_ops();
-    install_action_keys(&mut world);
+/// Seed a character with a full, valid toy sheet: a five-die pool and a
+/// two-point Willpower reserve.
+fn seed_roller(world: &mut TestWorld, name: &str) {
+    world.run(GOD, &format!("@sheet/set {name}/strength=3"));
+    world.run(GOD, &format!("@sheet/set {name}/brawl=2"));
+    world.run(GOD, &format!("@sheet/set {name}/willpower=2"));
+    // NOTE: the pool is clamped by the permanent rating, so seeding it above 2
+    // would simply land on 2 — the seed is the honest value.
+    world.run(GOD, &format!("@sheet/set {name}/willpower_current=2"));
+}
 
-    let query = world
+fn self_query(world: &TestWorld, actor: mush_core::ObjId) -> LegalActionQuery {
+    world
         .engine()
         .legal_action_query(
             PrincipalId::Object { id: actor },
             actor,
             PerceivedRef::SelfActor,
         )
-        .unwrap();
+        .expect("a legal-action query")
+}
+
+fn staff_query(world: &TestWorld, target: mush_core::ObjId) -> LegalActionQuery {
+    world
+        .engine()
+        .legal_action_query(
+            PrincipalId::Object { id: GOD },
+            GOD,
+            PerceivedRef::KnownObject {
+                id: target,
+                revision: 1,
+            },
+        )
+        .expect("a legal-action query")
+}
+
+#[tokio::test]
+async fn toy_willpower_roll_spends_once_and_records_resolution() {
+    let store = InMemoryStore::new();
+    let mut world = TestWorld::with_modules(vec![
+        Box::new(JobsModule::new()),
+        Box::new(ToyRuleset::with_seed(7)),
+    ]);
+    let actor = world.spawn_player("Nick");
+    seed_roller(&mut world, "Nick");
+    let _ = world.world_mut().take_dirty();
+    let _ = world.take_module_ops();
+    install_action_keys(&mut world);
+
+    let query = self_query(&world, actor);
     let (first, announced) = execute_offer_announcing(
         &mut world,
         &store,
         query,
-        "wod",
-        "willpower-roll",
+        OWNER,
+        "toy-willpower-roll",
         json!({ "pool": "strength+brawl", "difficulty": 6 }),
         0x31,
     )
@@ -261,44 +332,33 @@ async fn wod_willpower_roll_spends_once_and_records_resolution() {
     assert_eq!(resolution.outcome(), first.outcome());
     assert!(!resolution.draws().is_empty());
     assert_eq!(
-        query_panel(&mut world, actor, "wod.sheet")["data"]["willpower_temp"],
+        query_panel(&mut world, actor, "toy.sheet_live")["data"]["willpower_current"],
         1
     );
     // Interface plan I13: the commit itself republished the actor's vitals and
     // sheet through the overlay — no poll, no client re-request — to the actor
     // alone. This is the overlay-only mutation the `AttrSet` path never saw.
-    let vitals = panels_to(&announced, actor, "wod.vitals");
+    let vitals = panels_to(&announced, actor, "toy.vitals");
     assert_eq!(vitals.len(), 1, "{announced:?}");
     assert_eq!(vitals[0].0, PanelFrameKind::Keyframe);
-    let frame = VitalsFrame::from_panel_data(&vitals[0].1).expect("a vitals frame");
-    let temp = frame
-        .vitals
-        .iter()
-        .find(|v| v.id == "wod.willpower_temp")
-        .expect("temporary Willpower is a declared vital");
-    assert!(
-        matches!(temp.value, VitalValue::Bounded { current: 1, .. }),
-        "the spend is live in the frame: {temp:?}"
+    assert_eq!(
+        pool_current(&vitals[0].1),
+        Some(1),
+        "the spend is live in the frame: {:?}",
+        vitals[0].1
     );
-    let sheet = panels_to(&announced, actor, "wod.sheet");
+    let sheet = panels_to(&announced, actor, "toy.sheet");
     assert_eq!(sheet.len(), 1, "{announced:?}");
-    assert_eq!(sheet[0].1["data"]["willpower_temp"], 1);
+    assert_eq!(sheet[0].1["data"]["willpower_current"], 1);
     assert!(!any_to(&announced, GOD), "the republish is subject-only");
 
-    let query = world
-        .engine()
-        .legal_action_query(
-            PrincipalId::Object { id: actor },
-            actor,
-            PerceivedRef::SelfActor,
-        )
-        .unwrap();
+    let query = self_query(&world, actor);
     let second = execute_offer(
         &mut world,
         &store,
         query,
-        "wod",
-        "willpower-roll",
+        OWNER,
+        "toy-willpower-roll",
         json!({ "pool": "strength+brawl", "difficulty": 6 }),
         0x32,
     )
@@ -306,41 +366,24 @@ async fn wod_willpower_roll_spends_once_and_records_resolution() {
     assert_eq!(second.outcome().data()["willpower_remaining"], 0);
     assert_eq!(second.outcome().data()["roll_sequence"], 2);
 
-    let query = world
-        .engine()
-        .legal_action_query(
-            PrincipalId::Object { id: actor },
-            actor,
-            PerceivedRef::SelfActor,
-        )
-        .unwrap();
+    let query = self_query(&world, actor);
     assert!(
         world
             .engine()
             .project_legal_actions(&query)
-            .unwrap()
+            .expect("a projection")
             .projected()
             .into_iter()
-            .all(|offer| offer.presentation().verb != "willpower-roll")
+            .all(|offer| offer.presentation().verb != "toy-willpower-roll")
     );
 
-    let staff_query = world
-        .engine()
-        .legal_action_query(
-            PrincipalId::Object { id: GOD },
-            GOD,
-            PerceivedRef::KnownObject {
-                id: actor,
-                revision: 1,
-            },
-        )
-        .unwrap();
+    let query = staff_query(&world, actor);
     let restored = execute_offer(
         &mut world,
         &store,
-        staff_query,
-        "wod",
-        "willpower-set",
+        query,
+        OWNER,
+        "toy-willpower-set",
         json!({ "current": 2 }),
         0x33,
     )
@@ -348,130 +391,81 @@ async fn wod_willpower_roll_spends_once_and_records_resolution() {
     assert_eq!(restored.outcome().data()["current"], 2);
     assert_eq!(restored.outcome().data()["roll_sequence"], 2);
     assert_eq!(
-        query_panel(&mut world, actor, "wod.sheet")["data"]["willpower_temp"],
+        query_panel(&mut world, actor, "toy.sheet_live")["data"]["willpower_current"],
         2
-    );
-    let legacy_set = world.run(GOD, "@sheet/set Nick/willpower_temp=1");
-    assert!(
-        world
-            .seen_by(&legacy_set, GOD)
-            .iter()
-            .any(|line| line.contains("Temporary Willpower is authoritative"))
     );
 }
 
+/// Interface plan I13, the half no receipt of one's own could cover: a
+/// **staffer mutating ANOTHER character** republishes that character's vitals
+/// and sheet — to the subject, not to the actor who performed the mutation.
+///
+/// This is the platform property the deleted Shadowrun condition-monitor pair
+/// carried (`shadowrun_condition_damage_and_heal_preserve_old_semantics`); the
+/// toy's `toy-willpower-set` is the same shape — a `KnownObject` subject whose
+/// typed record keys on the TARGET, not on the actor.
 #[tokio::test]
-async fn shadowrun_condition_damage_and_heal_preserve_old_semantics() {
+async fn a_staff_mutation_of_another_character_republishes_that_character() {
     let store = InMemoryStore::new();
     let mut world = TestWorld::with_modules(vec![
         Box::new(JobsModule::new()),
-        Box::new(ShadowrunRuleset::with_seed(9)),
+        Box::new(ToyRuleset::with_seed(9)),
     ]);
     let target = world.spawn_player("Nick");
-    world.run(GOD, "@sheet/set Nick/body=6");
     world.run(GOD, "@sheet/set Nick/willpower=4");
+    world.run(GOD, "@sheet/set Nick/willpower_current=4");
     let _ = world.world_mut().take_dirty();
     let _ = world.take_module_ops();
     install_action_keys(&mut world);
 
-    let perceived = PerceivedRef::KnownObject {
-        id: target,
-        revision: 1,
-    };
-    let query = world
-        .engine()
-        .legal_action_query(PrincipalId::Object { id: GOD }, GOD, perceived.clone())
-        .unwrap();
-    let (damage, announced) = execute_offer_announcing(
+    let query = staff_query(&world, target);
+    let (set, announced) = execute_offer_announcing(
         &mut world,
         &store,
         query,
-        "shadowrun",
-        "condition-damage",
-        json!({ "amount": 12, "kind": "stun" }),
+        OWNER,
+        "toy-willpower-set",
+        json!({ "current": 1 }),
         0x41,
     )
     .await;
-    // Interface plan I13: a staffer's damage on another character republishes
-    // that character's vitals and sheet — the case no client-side re-request
-    // after one's own receipt could cover.
-    let vitals = panels_to(&announced, target, "shadowrun.vitals");
+    assert_eq!(set.outcome().data()["actor"], GOD.0);
+    assert_eq!(set.outcome().data()["target"], target.0);
+    assert_eq!(set.outcome().data()["current"], 1);
+
+    // The republish followed the typed record's SUBJECT, not the actor.
+    let vitals = panels_to(&announced, target, "toy.vitals");
     assert_eq!(vitals.len(), 1, "{announced:?}");
-    let sheet = panels_to(&announced, target, "shadowrun.sheet");
+    assert_eq!(
+        pool_current(&vitals[0].1),
+        Some(1),
+        "the staffer's write is live in the subject's frame"
+    );
+    let sheet = panels_to(&announced, target, "toy.sheet");
     assert_eq!(sheet.len(), 1, "{announced:?}");
     assert_eq!(
-        sheet[0].1["data"]["condition_stun"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|mark| !mark.is_null())
-            .count(),
-        10,
-        "the Condition Monitor overlay rides the republished sheet"
+        sheet[0].1["data"]["willpower_current"], 1,
+        "the authoritative overlay rides the republished sheet"
     );
     assert!(
         !any_to(&announced, GOD),
-        "the staffer who dealt the damage is not the subject"
-    );
-    assert_eq!(damage.outcome().data()["revision"], 1);
-    assert_eq!(damage.outcome().data()["report"]["stun_filled"], 10);
-    assert_eq!(damage.outcome().data()["report"]["physical_filled"], 2);
-    assert_eq!(
-        damage.outcome().data()["summary"],
-        json!([
-            "Physical  [XX.........] 2/11",
-            "Stun      [XXXXXXXXXX] 10/10",
-            "Wound modifier -3"
-        ])
-    );
-    let visible = world.run(GOD, "+condition Nick");
-    assert!(
-        world
-            .seen_by(&visible, GOD)
-            .iter()
-            .any(|line| line.contains("Stun      [XXXXXXXXXX] 10/10"))
-    );
-    let panel = query_panel(&mut world, target, "shadowrun.sheet");
-    assert_eq!(
-        panel["data"]["condition_stun"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|mark| !mark.is_null())
-            .count(),
-        10
-    );
-    let fenced = world.run(target, "+cast Manabolt");
-    assert!(
-        world
-            .seen_by(&fenced, target)
-            .iter()
-            .any(|line| line.contains("Condition Monitor is authoritative"))
+        "the staffer who set the pool is not the subject"
     );
 
-    let query = world
-        .engine()
-        .legal_action_query(PrincipalId::Object { id: GOD }, GOD, perceived)
-        .unwrap();
-    let heal = execute_offer(
-        &mut world,
-        &store,
-        query,
-        "shadowrun",
-        "condition-heal",
-        json!({ "amount": 5, "kind": "stun" }),
-        0x42,
-    )
-    .await;
-    assert_eq!(heal.outcome().data()["revision"], 2);
-    assert_eq!(heal.outcome().data()["cleared"], 5);
+    // And the subject's own live queries agree, while the legacy stored sheet
+    // is untouched: the typed record, not the document, owns the field.
     assert_eq!(
-        heal.outcome().data()["summary"],
-        json!([
-            "Physical  [XX.........] 2/11",
-            "Stun      [XXXXX.....] 5/10",
-            "Wound modifier -1"
-        ])
+        pool_current(&query_panel(&mut world, target, "toy.vitals")),
+        Some(1)
+    );
+    assert_eq!(
+        query_panel(&mut world, target, "toy.sheet_live")["data"]["willpower_current"],
+        1
+    );
+    assert_eq!(
+        query_panel(&mut world, target, "toy.sheet")["data"]["willpower_current"],
+        4,
+        "the generic (stored-only) sheet query has no typed-state lens"
     );
 }
 
@@ -502,79 +496,76 @@ fn typed_boot_records(bundle: &AuthoritativeBundle) -> Vec<ActionStateBootRecord
         .collect()
 }
 
-/// 08j S7 — **the K8.4 non-clobber round trip for `WodRollState`.**
+/// 08j S7 — **the K8.4 non-clobber round trip for the typed roll state.**
 ///
 /// 09b §3 permits unrelated legacy fields beside a typed family "only when the
 /// ownership split is explicit **and** round-trip tests prove neither writer
-/// clobbers the other". The split is explicit (`sheet_set` fences exactly
-/// `willpower_temp`; `WodCmd::read_ctx` re-overlays on every read) and the
-/// implementation is non-clobbering both ways, but no test issued a legacy
-/// write to an *unrelated* field after the typed record existed and then
-/// re-asserted the typed value, and none carried the typed record across a
-/// reboot.
+/// clobbers the other". The split is explicit (the overlay re-applies on every
+/// read through the typed-state lens) and the implementation is non-clobbering
+/// both ways, but no test issued a legacy write to an *unrelated* field after
+/// the typed record existed and then re-asserted the typed value, and none
+/// carried the typed record across a reboot.
 #[tokio::test]
-async fn cv_7_wod_a_legacy_sheet_write_beside_the_typed_roll_state_survives_a_reboot() {
+async fn cv_7_toy_a_legacy_sheet_write_beside_the_typed_roll_state_survives_a_reboot() {
     let store = InMemoryStore::new();
     let mut world = TestWorld::with_modules(vec![
         Box::new(JobsModule::new()),
-        Box::new(WodRuleset::with_seed(7)),
+        Box::new(ToyRuleset::with_seed(7)),
     ]);
     let actor = world.spawn_player("Nick");
-    world.run(GOD, "@sheet/set Nick/strength=3");
-    world.run(GOD, "@sheet/set Nick/brawl=2");
-    world.run(GOD, "@sheet/set Nick/willpower=2");
-    world.run(GOD, "@sheet/set Nick/willpower_temp=9");
+    seed_roller(&mut world, "Nick");
     world.run(GOD, "@sheet/set Nick/concept=Jaded Detective");
     let _ = world.world_mut().take_dirty();
     let _ = world.take_module_ops();
     install_action_keys(&mut world);
 
-    let query = world
-        .engine()
-        .legal_action_query(
-            PrincipalId::Object { id: actor },
-            actor,
-            PerceivedRef::SelfActor,
-        )
-        .unwrap();
+    let query = self_query(&world, actor);
     let bundle = execute_offer(
         &mut world,
         &store,
         query,
-        "wod",
-        "willpower-roll",
+        OWNER,
+        "toy-willpower-roll",
         json!({ "pool": "strength+brawl", "difficulty": 6 }),
         0x51,
     )
     .await;
     assert_eq!(bundle.outcome().data()["willpower_remaining"], 1);
     assert_eq!(
-        query_panel(&mut world, actor, "wod.sheet")["data"]["willpower_temp"],
+        query_panel(&mut world, actor, "toy.sheet_live")["data"]["willpower_current"],
         1
     );
 
     // (a) A legacy write to an **unrelated** field lands and clobbers nothing.
     world.run(GOD, "@sheet/set Nick/concept=Night Courier");
-    let panel = query_panel(&mut world, actor, "wod.sheet");
+    let panel = query_panel(&mut world, actor, "toy.sheet_live");
     assert_eq!(panel["data"]["concept"], "Night Courier");
     assert_eq!(
-        panel["data"]["willpower_temp"], 1,
+        panel["data"]["willpower_current"], 1,
         "an unrelated legacy write must not disturb the typed record"
     );
 
-    // (b) A legacy write **at** the migrated field is refused, and the refusal
-    //     leaves the typed record exactly where it was.
-    let clobber = world.run(GOD, "@sheet/set Nick/willpower_temp=7");
-    assert!(
-        world
-            .seen_by(&clobber, GOD)
-            .iter()
-            .any(|line| line.contains("Temporary Willpower is authoritative"))
+    // (b) A legacy write **at** the migrated field lands in the document and is
+    //     overruled on every overlay read: the typed record owns the field.
+    //     (The toy carries no `sheet_set` write fence — the deleted rulesets'
+    //     "… is authoritative" refusal has no toy equivalent and its assertions
+    //     are gone; what remains is the non-clobber half, which is the property
+    //     09b §3 actually asks for.)
+    world.run(GOD, "@sheet/set Nick/willpower_current=2");
+    assert_eq!(
+        query_panel(&mut world, actor, "toy.sheet")["data"]["willpower_current"],
+        2,
+        "the legacy write did land on the stored document"
     );
     assert_eq!(
-        query_panel(&mut world, actor, "wod.sheet")["data"]["willpower_temp"],
+        query_panel(&mut world, actor, "toy.sheet_live")["data"]["willpower_current"],
         1,
-        "a refused legacy write must not half-apply"
+        "the typed record still wins on every overlay read"
+    );
+    assert_eq!(
+        pool_current(&query_panel(&mut world, actor, "toy.vitals")),
+        Some(1),
+        "and on the vitals projection"
     );
 
     // (c) The record survives a reboot: the bundle's typed post-image hydrates
@@ -587,150 +578,30 @@ async fn cv_7_wod_a_legacy_sheet_write_beside_the_typed_roll_state_survives_a_re
     );
     let mut rebooted = TestWorld::with_modules(vec![
         Box::new(JobsModule::new()),
-        Box::new(WodRuleset::with_seed(7)),
+        Box::new(ToyRuleset::with_seed(7)),
     ]);
     let reborn = rebooted.spawn_player("Nick");
     assert_eq!(reborn, actor, "the reboot restores the same object id");
     rebooted.run(GOD, "@sheet/set Nick/willpower=2");
-    rebooted.run(GOD, "@sheet/set Nick/willpower_temp=9");
+    rebooted.run(GOD, "@sheet/set Nick/willpower_current=2");
     rebooted.run(GOD, "@sheet/set Nick/concept=Night Courier");
     rebooted
         .engine_mut()
         .hydrate_action_state(records)
         .expect("the typed record hydrates into a fresh composition");
 
-    let panel = query_panel(&mut rebooted, reborn, "wod.sheet");
+    let panel = query_panel(&mut rebooted, reborn, "toy.sheet_live");
     assert_eq!(
-        panel["data"]["willpower_temp"], 1,
-        "the typed record still owns temporary Willpower after the reboot"
+        panel["data"]["willpower_current"], 1,
+        "the typed record still owns the Willpower pool after the reboot"
     );
     assert_eq!(
         panel["data"]["concept"], "Night Courier",
         "the legacy half of the sheet survived beside it"
     );
-    let refused = rebooted.run(GOD, "@sheet/set Nick/willpower_temp=7");
-    assert!(
-        rebooted
-            .seen_by(&refused, GOD)
-            .iter()
-            .any(|line| line.contains("Temporary Willpower is authoritative")),
-        "the fence is live again after the reboot"
-    );
-}
-
-/// 08j S7 — **the K8.4 non-clobber round trip for `ConditionState`.**
-///
-/// The Shadowrun half of the same duty. `sheet_set` fences exactly
-/// `physical_overflow` (a string asserted by no test before this one) and
-/// `ConditionState::apply_to_sheet` re-overlays the monitors on every read.
-#[tokio::test]
-async fn cv_7_shadowrun_a_legacy_sheet_write_beside_the_typed_condition_state_survives_a_reboot() {
-    let store = InMemoryStore::new();
-    let mut world = TestWorld::with_modules(vec![
-        Box::new(JobsModule::new()),
-        Box::new(ShadowrunRuleset::with_seed(9)),
-    ]);
-    let target = world.spawn_player("Nick");
-    world.run(GOD, "@sheet/set Nick/body=6");
-    world.run(GOD, "@sheet/set Nick/willpower=4");
-    world.run(GOD, "@sheet/set Nick/concept=Street Samurai");
-    let _ = world.world_mut().take_dirty();
-    let _ = world.take_module_ops();
-    install_action_keys(&mut world);
-
-    let perceived = PerceivedRef::KnownObject {
-        id: target,
-        revision: 1,
-    };
-    let query = world
-        .engine()
-        .legal_action_query(PrincipalId::Object { id: GOD }, GOD, perceived)
-        .unwrap();
-    let bundle = execute_offer(
-        &mut world,
-        &store,
-        query,
-        "shadowrun",
-        "condition-damage",
-        json!({ "amount": 12, "kind": "stun" }),
-        0x61,
-    )
-    .await;
-    assert_eq!(bundle.outcome().data()["report"]["stun_filled"], 10);
-
-    let filled = |panel: &Value, track: &str| -> usize {
-        panel["data"][track]
-            .as_array()
-            .expect("a condition track")
-            .iter()
-            .filter(|mark| !mark.is_null())
-            .count()
-    };
-
-    // (a) A legacy write to an **unrelated** field lands and clobbers nothing.
-    world.run(GOD, "@sheet/set Nick/concept=Rigger");
-    let panel = query_panel(&mut world, target, "shadowrun.sheet");
-    assert_eq!(panel["data"]["concept"], "Rigger");
     assert_eq!(
-        filled(&panel, "condition_stun"),
-        10,
-        "an unrelated legacy write must not disturb the typed monitors"
-    );
-
-    // (b) A legacy write **at** the migrated field is refused.
-    let clobber = world.run(GOD, "@sheet/set Nick/physical_overflow=5");
-    assert!(
-        world
-            .seen_by(&clobber, GOD)
-            .iter()
-            .any(|line| line.contains("Condition Monitor is authoritative")),
-        "the `physical_overflow` fence refuses the clobber"
-    );
-    assert_eq!(
-        filled(
-            &query_panel(&mut world, target, "shadowrun.sheet"),
-            "condition_stun"
-        ),
-        10,
-        "a refused legacy write must not half-apply"
-    );
-
-    // (c) The record survives a reboot.
-    let records = typed_boot_records(&bundle);
-    assert!(
-        !records.is_empty(),
-        "the migrated record must be in the authoritative bundle"
-    );
-    let mut rebooted = TestWorld::with_modules(vec![
-        Box::new(JobsModule::new()),
-        Box::new(ShadowrunRuleset::with_seed(9)),
-    ]);
-    let reborn = rebooted.spawn_player("Nick");
-    assert_eq!(reborn, target, "the reboot restores the same object id");
-    rebooted.run(GOD, "@sheet/set Nick/body=6");
-    rebooted.run(GOD, "@sheet/set Nick/willpower=4");
-    rebooted.run(GOD, "@sheet/set Nick/concept=Rigger");
-    rebooted
-        .engine_mut()
-        .hydrate_action_state(records)
-        .expect("the typed record hydrates into a fresh composition");
-
-    let panel = query_panel(&mut rebooted, reborn, "shadowrun.sheet");
-    assert_eq!(
-        filled(&panel, "condition_stun"),
-        10,
-        "the typed record still owns the monitors after the reboot"
-    );
-    assert_eq!(
-        panel["data"]["concept"], "Rigger",
-        "the legacy half of the sheet survived beside it"
-    );
-    let refused = rebooted.run(GOD, "@sheet/set Nick/physical_overflow=5");
-    assert!(
-        rebooted
-            .seen_by(&refused, GOD)
-            .iter()
-            .any(|line| line.contains("Condition Monitor is authoritative")),
-        "the fence is live again after the reboot"
+        pool_current(&query_panel(&mut rebooted, reborn, "toy.vitals")),
+        Some(1),
+        "the overlay is live again after the reboot"
     );
 }

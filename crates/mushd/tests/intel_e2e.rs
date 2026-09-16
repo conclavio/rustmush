@@ -1,14 +1,19 @@
 //! M12 informant loop, end to end through the real mushd module wiring
-//! (built-ins + worldgen + the `npc` module grounded by the WoD adapter + the
-//! seeded WoD ruleset), ungated and fully in-memory — the same harness shape as
-//! `perception_e2e`, driven by hand so the perception roll is deterministic.
+//! (built-ins + worldgen + the `npc` module grounded by the ruleset adapter +
+//! the seeded `toy` ruleset), ungated and fully in-memory — the same harness
+//! shape as `perception_e2e`, driven by hand so the perception gate is
+//! deterministic.
 //!
 //! Proves the load-bearing correctness property (P1): an informant can report
-//! ONLY what its NPC actually PERCEIVED. A ghoul bartender with Auspex, set to
-//! report to a domitor, PIERCES a cloaked vampire's veil and files a `Concealed`
-//! intel record — which the domitor pulls with `+intel`. A mundane bartender,
-//! met with true silence, pierces nothing and files nothing, so its domitor's
-//! `+intel` is empty.
+//! ONLY what its NPC actually PERCEIVED. A sharp-eared bartender, set to report
+//! to a principal, PIERCES a concealed character's cover and files a
+//! `Concealed` intel record — which the principal pulls with `+intel`. A dull
+//! bartender, met with true silence, pierces nothing and files nothing, so its
+//! principal's `+intel` is empty.
+//!
+//! 16b cut R-b: the WoD ruleset this was written against is gone, so the
+//! concealment fixture is the toy's `+toyhide` flag and its Awareness-vs-Stealth
+//! `HookPoint::Perceive` gate.
 
 use std::sync::Arc;
 
@@ -16,13 +21,14 @@ use mush_core::{ConnId, Effects, Engine, GOD, Inbound, ObjId, ObjKind, Outbox, W
 use mush_llm::{BudgetConfig, LlmProvider, LlmService, MockProvider, RouteConfig};
 use mush_proto::OutputEvent;
 use mush_store::InMemoryStore;
+use mush_testkit::toy_ruleset::ToyRuleset;
 
 use mushd::modules;
 use mushd::world_task::base_registry;
 
 use mush_npc::AgentGrounding;
 
-/// Fixed RNG seed for the WoD module → deterministic perception dice.
+/// Fixed RNG seed for the toy module → deterministic dice.
 const SEED: u64 = 0xB0A7;
 
 // ----------------------------------------------------------------------
@@ -42,9 +48,9 @@ impl Rig {
         let mut mods = modules::server_modules();
         mods.push(modules::worldgen_module(Arc::clone(llm)));
         let grounding: Arc<dyn AgentGrounding> =
-            modules::npc_agent_adapter(&["wod".to_string()]).expect("wod grounding adapter");
+            Arc::new(modules::RulesetAgent::new(ToyRuleset::with_seed(SEED)));
         mods.push(modules::npc_module(Some(grounding)));
-        mods.push(Box::new(ruleset_wod::WodRuleset::with_seed(SEED)));
+        mods.push(Box::new(ToyRuleset::with_seed(SEED)));
 
         let mut engine =
             Engine::with_modules(World::new_minimal(), registry, mods).expect("module wiring");
@@ -129,7 +135,7 @@ fn service() -> Arc<LlmService> {
 }
 
 /// Create + configure a bartender NPC with a `template` sheet, reporting to
-/// `principal` (the domitor it files intel for).
+/// `principal` (the character it files intel for).
 fn make_informant_bartender(rig: &mut Rig, template: &str, principal: &str) {
     let out = rig.staff("@agent/create Bartender");
     assert!(out.contains("Created NPC agent Bartender"), "{out}");
@@ -142,47 +148,42 @@ fn make_informant_bartender(rig: &mut Rig, template: &str, principal: &str) {
     assert!(out.contains("Set principal on Bartender"), "{out}");
 }
 
-/// Make an existing player a vampire with `obfuscate` dots of Obfuscate.
-fn make_vampire(rig: &mut Rig, name: &str, obfuscate: i32) {
-    rig.staff(&format!("@sheet/set {name}/template=vampire"));
-    rig.staff(&format!(
-        "@sheet/set {name}/disciplines:Obfuscate={obfuscate}"
-    ));
+/// Give an existing player a toy sheet with `stealth` dots, so `+toyhide on`
+/// conceals them from anyone whose Awareness falls short.
+fn make_hider(rig: &mut Rig, name: &str, stealth: i32) {
+    rig.staff(&format!("@sheet/set {name}/template=alpha"));
+    rig.staff(&format!("@sheet/set {name}/stealth={stealth}"));
 }
 
 // ----------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------
 
-/// P1 (positive): a ghoul bartender with overwhelming senses pierces a cloaked
-/// vampire's veil and FILES the pierced sighting; its domitor pulls it via
-/// `+intel` and sees a `concealed` record about the vampire.
+/// P1 (positive): a bartender with overwhelming senses pierces a concealed
+/// character's cover and FILES the pierced sighting; its principal pulls it via
+/// `+intel` and sees a `concealed` record about them.
 #[tokio::test]
-async fn ghoul_informant_pierces_and_files_intel_the_domitor_pulls() {
+async fn sharp_informant_pierces_and_files_intel_the_principal_pulls() {
     let svc = service();
     let mut rig = Rig::boot(&svc).await;
-    let marcus = rig.player("Marcus"); // the domitor
-    make_informant_bartender(&mut rig, "ghoul", "Marcus");
-    // Overwhelming senses: Perception + Awareness 5 and Auspex 5.
+    let marcus = rig.player("Marcus"); // the principal
+    make_informant_bartender(&mut rig, "alpha", "Marcus");
+    // Overwhelming senses: Perception + Awareness 5.
     rig.staff("@sheet/set Bartender/perception=5");
     rig.staff("@sheet/set Bartender/awareness=5");
-    rig.staff("@sheet/set Bartender/disciplines:Auspex=5");
 
     let vlad = rig.player("Vlad");
-    make_vampire(&mut rig, "Vlad", 2);
+    make_hider(&mut rig, "Vlad", 2);
 
-    // Vlad cloaks (the bartender rolls once, now) and speaks: Auspex pierces the
-    // veil, so the informant perceives him and files the notable pierce.
-    rig.run(vlad, "+obfuscate on");
-    rig.run(vlad, "say Do you sense me, ghoul?");
+    // Vlad conceals himself and speaks: Awareness 5 clears Stealth 2, so the
+    // informant perceives him and files the notable pierce.
+    rig.run(vlad, "+toyhide on");
+    rig.run(vlad, "say Do you sense me?");
 
     // Marcus debriefs his asset: a concealed-pierce record about Vlad.
     let out = rig.actor_sys(marcus, "+intel");
     assert!(out.contains("Your intel log"), "{out}");
-    assert!(
-        out.contains("Vlad"),
-        "the pierced vampire is reported: {out}"
-    );
+    assert!(out.contains("Vlad"), "the pierced hider is reported: {out}");
     assert!(
         out.contains("[concealed]"),
         "filed as a pierced concealment: {out}"
@@ -203,22 +204,24 @@ async fn ghoul_informant_pierces_and_files_intel_the_domitor_pulls() {
     assert!(none.contains("No intel on file about Nobody"), "{none}");
 }
 
-/// P1 (negative, the load-bearing property): a mundane bartender is met with
-/// true silence by the cloaked vampire — it perceives nothing, so it files
-/// nothing, and its domitor's `+intel` is empty.
+/// P1 (negative, the load-bearing property): a dull bartender is met with true
+/// silence by the concealed character — it perceives nothing, so it files
+/// nothing, and its principal's `+intel` is empty.
 #[tokio::test]
-async fn mundane_informant_perceives_nothing_and_files_nothing() {
+async fn dull_informant_perceives_nothing_and_files_nothing() {
     let svc = service();
     let mut rig = Rig::boot(&svc).await;
     let marcus = rig.player("Marcus");
-    make_informant_bartender(&mut rig, "mortal", "Marcus"); // no Auspex
+    // A default `alpha` sheet reads Awareness 0 — it clears no Stealth at all.
+    make_informant_bartender(&mut rig, "alpha", "Marcus");
 
     let vlad = rig.player("Vlad");
-    make_vampire(&mut rig, "Vlad", 3);
+    make_hider(&mut rig, "Vlad", 3);
 
-    // Vlad cloaks and speaks: the mundane bartender neither hears nor sees him,
-    // so nothing is ever filed (P1 — an informant reports only what it perceives).
-    rig.run(vlad, "+obfuscate on");
+    // Vlad conceals himself and speaks: the dull bartender neither hears nor
+    // sees him, so nothing is ever filed (P1 — an informant reports only what
+    // it perceives).
+    rig.run(vlad, "+toyhide on");
     rig.run(vlad, "say You never saw me.");
     rig.set_now(1_010);
 

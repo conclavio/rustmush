@@ -471,38 +471,36 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// S6 (doc 14 §4.6): a ruleset composes its rules interface beside it,
-    /// carrying the chargen stages; no ruleset, no interface.
+    /// S6 (doc 14 §4.6): the game's sheet composes its rules interface beside it,
+    /// carrying the chargen stages.
+    ///
+    /// 16b cut R-b: there is no ruleset SELECTION left to prove — `ruleset_modules`
+    /// is infallible and always answers the pilot sheet — so what this pins is the
+    /// PAIRING and its order. The interface snapshots the ruleset's stages at
+    /// composition, so it has to come second, and it has to carry the stages the
+    /// sheet's own chargen declares rather than an empty list.
     #[test]
     fn a_ruleset_brings_its_rules_interface() {
         let mods = ruleset_modules(
-            &["wod".to_string()],
             &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        )
-        .expect("wod composes");
-        let names: Vec<&str> = mods.iter().map(|m| m.name()).collect();
-        assert_eq!(names.len(), 2, "{names:?}");
-        assert_eq!(names[1], mush_ruleset::interface::RULES_INTERFACE_MODULE);
-        let none = ruleset_modules(
-            &[],
-            &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        )
-        .expect("nothing composes");
-        assert!(none.is_empty());
-        // Two rulesets still collide, interface or not.
-        assert!(
-            ruleset_modules(
-                &["wod".to_string(), "shadowrun".to_string()],
-                &mush_core::OnboardingConfig::default(),
-                &ruleset_wod::WodEconomyConfig::default(),
-                &ruleset_shadowrun::SrEconomyConfig::default(),
-            )
-            .is_err()
+            &tacsim::GameEconomyConfig::default(),
         );
+        let names: Vec<&str> = mods.iter().map(|m| m.name()).collect();
+        assert_eq!(
+            names,
+            [
+                tacsim::sheet::NS,
+                mush_ruleset::interface::RULES_INTERFACE_MODULE
+            ],
+            "the pilot sheet, and the interface that fronts its chargen stages"
+        );
+        // The stages really came off the sheet: `PilotRuleset::chargen` is `Some`,
+        // and its three stages are what the interface was built from.
+        let rs = tacsim::sheet::PilotRuleset::new();
+        let stages = mush_ruleset::Ruleset::chargen(&rs)
+            .expect("the one game sheet has a chargen flow")
+            .stages();
+        assert_eq!(stages.len(), 3, "{stages:?}");
     }
     use std::sync::{Arc, Mutex};
 
@@ -1397,13 +1395,16 @@ mod tests {
     // `tests/boot_parity.rs` makes from the integration side; this is the
     // `--lib` copy, because a `--lib` test is what CI names.
 
-    /// A memory-backed config for one `[rulesets].enabled` id, on a scratch data
-    /// dir, with the corridor fixture written out as the two pack FILES a host
-    /// configures — the path an operator's own pack takes, digests and all
-    /// (`tests/boot_parity.rs`'s `enable_tacsim` shape).
-    fn production_config(tag: &str, ruleset: &str) -> Config {
+    /// A memory-backed config on a scratch data dir, with the corridor fixture
+    /// written out as the two pack FILES a host configures — the path an operator's
+    /// own pack takes, digests and all (`tests/boot_parity.rs`'s `enable_tacsim`
+    /// shape).
+    ///
+    /// 16b cut R-b: no `[rulesets].enabled` id is set, because nothing reads one —
+    /// there is exactly one composition.
+    fn production_config(tag: &str) -> Config {
         let dir = std::env::temp_dir().join(format!(
-            "mush-{tag}-{ruleset}-{}-{}",
+            "mush-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1418,7 +1419,6 @@ mod tests {
         let mut cfg = Config::default();
         cfg.store.store = "memory".to_string();
         cfg.server.data_dir = dir;
-        cfg.rulesets.enabled = vec![ruleset.to_string()];
         cfg.tacsim.enabled = true;
         cfg.tacsim.pack_paths = vec![core.display().to_string()];
         cfg.tacsim.seed_paths = vec![corridor.display().to_string()];
@@ -1438,8 +1438,8 @@ mod tests {
         /// `game_modules` is sync, so no runtime is needed; it composes worldgen
         /// and the NPC agent, so it needs an `LlmService` — keyless, which still
         /// builds and speaks to nothing.
-        fn build(tag: &str, ruleset: &str) -> Self {
-            let cfg = production_config(tag, ruleset);
+        fn build(tag: &str) -> Self {
+            let cfg = production_config(tag);
             let llm_config = crate::config_ext::llm_config(&cfg.llm).expect("[llm] parses");
             let llm = Arc::new(
                 LlmService::from_config(&llm_config).expect("a keyless service still builds"),
@@ -1468,23 +1468,18 @@ mod tests {
     /// The roster the CI gate used to hand-assemble, kept ONLY as an explicitly
     /// documented negative control: it composes, and it is not what a server
     /// boots — which is exactly why certifying it proved nothing.
-    fn hand_built_roster(ruleset: &str) -> Vec<Box<dyn GameModule>> {
+    fn hand_built_roster() -> Vec<Box<dyn GameModule>> {
         let onboarding = mush_core::OnboardingConfig::default();
-        let wod = ruleset_wod::WodEconomyConfig::default();
-        let shadowrun = ruleset_shadowrun::SrEconomyConfig::default();
+        let game = tacsim::GameEconomyConfig::default();
         let mut modules = server_modules_with(
             mush_weather::WeatherConfig::default(),
             mush_economy::EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
             &onboarding,
-            (ruleset == "wod").then_some(&wod),
-            (ruleset == "shadowrun").then_some(&shadowrun),
+            &game,
             mush_campaign::RecoveryConfig::default(),
         );
-        modules.extend(
-            ruleset_modules(&[ruleset.to_owned()], &onboarding, &wod, &shadowrun)
-                .expect("one production ruleset"),
-        );
+        modules.extend(ruleset_modules(&onboarding, &game));
         modules.push(tacsim_module(tacsim::fixture::config()));
         modules
     }
@@ -1495,84 +1490,85 @@ mod tests {
     /// Drift becomes a named failure rather than a silent re-certification: a
     /// module added, dropped or reordered in `boot::game_modules` fails this
     /// assert with `boot.rs` in the message. (`tests/boot_parity.rs`'s
-    /// `expected_roster` states the same golden over the whole
-    /// `{no ruleset | wod | shadowrun} x {tacsim off | on}` matrix; the two must
-    /// agree, and this is the copy the `--lib` gate can see.)
+    /// `expected_roster` states the same golden from the integration side; the
+    /// two must agree, and this is the copy the `--lib` gate can see.)
+    ///
+    /// 16b cut R-b: there is ONE composition, so the matrix this used to loop
+    /// over is gone with the two character rulesets it selected. The property is
+    /// unchanged — the certified roster is the roster a server boots.
     #[test]
     fn the_ci_gated_composition_is_the_boot_composition() {
-        for ruleset in ["wod", "shadowrun"] {
-            let roster = ProductionRoster::build("k85-order", ruleset);
-            let expected = [
-                "comsys",
-                "canon",
-                "privileges",
-                "org",
-                "faction",
-                "scenes",
-                "sim",
-                // S1: the atlas, right after the placement graph S2's journeys read.
-                "atlas",
-                "tactics",
-                "propagation",
-                "economy",
-                "inventory",
-                "industry",
-                "campaign",
-                "mail",
-                "jobs",
-                "housing",
-                "weather",
-                "party",
-                "market",
-                "script",
-                // The composition root's own two, after the built-ins — the pair
-                // the hand-built roster never had.
-                "worldgen",
-                "npc",
-                // ...then the character ruleset `[rulesets].enabled` selected,
-                // and (S6) the rules interface composed beside it...
-                ruleset,
-                "rules_interface",
-                // ...the TacSim layer next: its boot reads that ruleset's facts...
-                "tacsim",
-                // ...and the content module LAST: its boot pass drives every other
-                // module's appliers, so each owner hydrates before it runs (S1).
-                "content",
-            ];
-            assert_eq!(
-                roster.names(),
-                expected,
-                "the {ruleset} roster drifted from the golden; if that was deliberate, \
-                 `boot::game_modules` and this list move together"
-            );
+        let roster = ProductionRoster::build("k85-order");
+        let expected = [
+            "comsys",
+            "canon",
+            "privileges",
+            "org",
+            "faction",
+            "scenes",
+            "sim",
+            // S1: the atlas, right after the placement graph S2's journeys read.
+            "atlas",
+            "tactics",
+            "propagation",
+            "economy",
+            "inventory",
+            "industry",
+            "campaign",
+            "mail",
+            "jobs",
+            "housing",
+            "weather",
+            "party",
+            "market",
+            "script",
+            // The composition root's own two, after the built-ins — the pair
+            // the hand-built roster never had.
+            "worldgen",
+            "npc",
+            // ...then the one game sheet, and (S6) the rules interface composed
+            // beside it...
+            "pilot",
+            "rules_interface",
+            // ...the TacSim layer next: its boot reads that sheet's facts...
+            "tacsim",
+            // ...and the content module LAST: its boot pass drives every other
+            // module's appliers, so each owner hydrates before it runs (S1).
+            "content",
+        ];
+        assert_eq!(
+            roster.names(),
+            expected,
+            "the roster drifted from the golden; if that was deliberate, \
+             `boot::game_modules` and this list move together"
+        );
 
-            let hand_built: Vec<&str> = hand_built_roster(ruleset)
-                .iter()
-                .map(|m| m.name())
-                .collect();
-            assert_ne!(
-                hand_built,
-                roster.names(),
-                "the hand-built roster is kept only as a negative control; if it has \
-                 become the production roster, delete it and this half of the test"
+        let hand_built: Vec<&str> = hand_built_roster().iter().map(|m| m.name()).collect();
+        assert_ne!(
+            hand_built,
+            roster.names(),
+            "the hand-built roster is kept only as a negative control; if it has \
+             become the production roster, delete it and this half of the test"
+        );
+        for missing in ["worldgen", "npc"] {
+            assert!(
+                !hand_built.contains(&missing) && roster.names().contains(&missing),
+                "{missing} is what the hand-built roster leaves out"
             );
-            for missing in ["worldgen", "npc"] {
-                assert!(
-                    !hand_built.contains(&missing) && roster.names().contains(&missing),
-                    "{missing} is what the hand-built roster leaves out"
-                );
-            }
         }
     }
 
     #[test]
     fn k8_5_production_compositions_publish_command_compatibility() {
-        for ruleset in ["wod", "shadowrun"] {
+        {
             // WS04-S8: the roster a server boots, read through the one root, with
             // the TacSim layer composed from pack FILES. So this gate's `@tacsim`
             // row fails the day `boot::game_modules` stops pushing the layer —
             // the property the hand-built list could never have.
-            let mut roster = ProductionRoster::build("k85", ruleset);
+            //
+            // 16b cut R-b: one composition, so the `{wod, shadowrun}` loop this
+            // block used to sit inside is gone. Every row below is unchanged.
+            let mut roster = ProductionRoster::build("k85");
             let composition =
                 Engine::compose_modules(crate::world_task::base_registry(), roster.take())
                     .expect("production composition declares every command lane");
@@ -1583,7 +1579,7 @@ mod tests {
                 .collect::<Vec<_>>();
             assert!(
                 registrations.len() > 50,
-                "unexpectedly small {ruleset} command surface"
+                "unexpectedly small command surface"
             );
             assert!(
                 registrations.iter().any(|(spec, owner, class)| {
@@ -1800,34 +1796,22 @@ mod tests {
                     "the campaign seat lane {name} must publish {class:?}"
                 );
             }
-            // ---- E7r2: P0c — `+nuyen` is `ReadOnly`, in its own group ----
+            // ---- 16b cut R-b: the one game sheet's own lane ----
             //
-            // E7 residue pass 1's fold recorded `+nuyen` in the class tripwire's
-            // `KNOWN_CLASS_DRIFT`: the allowlist declared `read-only` while
-            // `ShadowrunRuleset::register`'s module-wide
-            // `classify_commands(LegacyPostImage)` published a post-image writer.
-            // `nuyen_cmd` writes nothing, so pass 2 fixed the CLASS: its own
-            // registration group, `ReadOnly` before its `reg.command`, with
-            // `LegacyPostImage` restored after. `KNOWN_CLASS_DRIFT` is now empty and
-            // this row is what keeps the group from being folded back in.
-            if ruleset == "shadowrun" {
+            // E7r2 P0c's `+nuyen`/`@sr` rows left with `ruleset-shadowrun`. What
+            // replaces them is the same claim about the module that replaced it:
+            // `PilotRuleset::register` classifies its whole group
+            // `LegacyPostImage` before its first `reg.command` (a sheet write is a
+            // bounded whole-document post-image), so every verb it publishes rides
+            // that one lane and none of them silently rides another.
+            for name in ["+sheet", "@sheet", "+chargen", "+stat", "+roll"] {
                 assert!(
                     registrations.iter().any(|(spec, owner, class)| {
-                        spec.name == "+nuyen"
-                            && *owner == Some("shadowrun")
-                            && *class == mush_core::CommandCompatibility::ReadOnly
-                    }),
-                    "the shadowrun nuyen read must publish `ReadOnly`"
-                );
-                // …and the group is restored, so the ruleset's own documents keep
-                // riding the class they always did.
-                assert!(
-                    registrations.iter().any(|(spec, owner, class)| {
-                        spec.name == "@sr"
-                            && *owner == Some("shadowrun")
+                        spec.name == name
+                            && *owner == Some("pilot")
                             && *class == mush_core::CommandCompatibility::LegacyPostImage
                     }),
-                    "the shadowrun lane restores `LegacyPostImage` after the read group"
+                    "the pilot sheet lane {name} must publish `LegacyPostImage`"
                 );
             }
             assert!(registrations.iter().any(|(_, owner, class)| {
@@ -1856,23 +1840,20 @@ mod tests {
     /// The refusal is a hard error, so the roster it runs over has to be
     /// checked, not assumed. Today no shipped `BehaviorSpec` declares
     /// contextual commands at all, so the pass has nothing to refuse; this test
-    /// is what says so out loud, per ruleset, and what fails the day a module
-    /// adds a behavior command whose verb the global table already answers.
+    /// is what says so out loud and what fails the day a module adds a behavior
+    /// command whose verb the global table already answers.
     /// (The unit proof of the mechanism itself lives in `mush-core`'s
     /// `tests/module_api.rs`; it cannot build a production roster from there
     /// without `mush-core` depending on `mush-server`.)
     #[test]
     fn production_composition_registers_no_shadowing_verb() {
-        for ruleset in ["wod", "shadowrun"] {
-            // WS04-S8: the same production root `k8_5` reads, for the same
-            // reason — a refusal checked over a roster nobody boots says nothing
-            // about the boot.
-            let mut roster = ProductionRoster::build("shadowing", ruleset);
-            Engine::compose_modules(crate::world_task::base_registry(), roster.take())
-                .unwrap_or_else(|error| {
-                    panic!("the {ruleset} composition must not shadow a behavior verb: {error}")
-                });
-        }
+        // WS04-S8: the same production root `k8_5` reads, for the same
+        // reason — a refusal checked over a roster nobody boots says nothing
+        // about the boot.
+        let mut roster = ProductionRoster::build("shadowing");
+        Engine::compose_modules(crate::world_task::base_registry(), roster.take()).unwrap_or_else(
+            |error| panic!("the composition must not shadow a behavior verb: {error}"),
+        );
     }
 
     /// E7 cut 3: the claim's titled object is minted by
@@ -1889,8 +1870,7 @@ mod tests {
             mush_economy::EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
             &onboarding,
-            None,
-            None,
+            &tacsim::GameEconomyConfig::default(),
             mush_campaign::RecoveryConfig::default(),
         ));
         // The economy composed at all, and the industry store came with it —
@@ -1936,8 +1916,7 @@ mod tests {
             mush_economy::EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
             &onboarding,
-            None,
-            None,
+            &tacsim::GameEconomyConfig::default(),
             mush_campaign::RecoveryConfig::default(),
         ));
         let families = tw
@@ -1977,25 +1956,30 @@ mod tests {
         );
     }
 
-    /// E5c-C231 (look-back fold): the `[wod.economy].reserved_rooms` →
-    /// `server_modules_with` → `HousingModule::with_reserved_rooms` chain, pinned
-    /// before Shadowrun copies the plumbing — housing's store is told every room the
-    /// config names, plus `[onboarding]`'s two start rooms and Limbo.
+    /// E5c-C231 (look-back fold), re-pointed by 16b cut R-b: the
+    /// `[tacsim.economy].reserved_rooms` → `server_modules_with` →
+    /// `HousingModule::with_reserved_rooms` chain. Housing's store is told every room
+    /// the config names, plus `[onboarding]`'s two start rooms and Limbo.
+    ///
+    /// The `housing` knob still gates BOTH halves of the title issuer at once, which
+    /// is the property `server_modules_with` computes `housing_on` once for: with it
+    /// off, housing names no issuer and the economy lists none, so `@property/create`
+    /// refuses in housing's own words rather than with a permission refusal.
     #[test]
-    fn lb_e5cc231_the_wod_reserved_rooms_reach_housing_through_server_modules_with() {
+    fn lb_e5cc231_the_reserved_rooms_reach_housing_through_server_modules_with() {
         use mush_testkit::TestWorld;
         let onboarding = mush_core::OnboardingConfig::default();
-        let wod = ruleset_wod::WodEconomyConfig {
+        let game = tacsim::GameEconomyConfig {
             reserved_rooms: vec![mush_core::ObjId(4_242), mush_core::ObjId(4_243)],
-            ..ruleset_wod::WodEconomyConfig::default()
+            ..tacsim::GameEconomyConfig::default()
         };
+        assert!(game.housing, "housing is on at the game's defaults");
         let tw = TestWorld::with_modules(server_modules_with(
             mush_weather::WeatherConfig::default(),
             mush_economy::EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
             &onboarding,
-            Some(&wod),
-            None,
+            &game,
             mush_campaign::RecoveryConfig::default(),
         ));
         let store = tw
@@ -2019,19 +2003,23 @@ mod tests {
             !store.is_reserved(mush_core::ObjId(9_999)),
             "an unnamed room was reserved"
         );
-        assert!(
-            store.issuer().is_some(),
+        assert_eq!(
+            store.issuer().map(|i| i.as_str().to_string()).as_deref(),
+            Some(housing_title_issuer().as_str()),
             "the title issuer is wired with housing on"
         );
-        // A server without the WoD ruleset reserves the host's rooms alone and wires
+        // `[tacsim.economy].housing = false` reserves the host's rooms alone and wires
         // no issuer.
+        let off = tacsim::GameEconomyConfig {
+            housing: false,
+            ..tacsim::GameEconomyConfig::default()
+        };
         let tw = TestWorld::with_modules(server_modules_with(
             mush_weather::WeatherConfig::default(),
             mush_economy::EconomyConfig::default(),
             mush_atlas::AtlasConfig::default(),
             &onboarding,
-            None,
-            None,
+            &off,
             mush_campaign::RecoveryConfig::default(),
         ));
         let store = tw
@@ -2047,8 +2035,13 @@ mod tests {
     /// composition-frozen clock registry through `economy_config` →
     /// `server_modules_with` → `EconomyModule::register`, is created at boot, and
     /// is read through `Engine::clock_now` as `Registered { economy, cadence.<name> }`.
-    /// The WoD layer, booting after the economy, finds the declared campaign clock
-    /// by name instead of minting its own manual one.
+    /// A layer booting after the economy finds the declared clock by name instead of
+    /// minting its own manual one.
+    ///
+    /// 16b cut R-b: the cadence is **test-declared**. It used to be the WoD layer's
+    /// own `chronicle.period`, asserted against `WodEconomyConfig::cadence`; the
+    /// mechanism under test — declaration → registry → `clock_now` — never was the
+    /// ruleset's, and the one game declares no cadence of its own today.
     #[test]
     fn sp1_a_declared_cadence_reaches_the_registry_through_server_modules_with() {
         use mush_testkit::TestWorld;
@@ -2059,26 +2052,16 @@ mod tests {
         .expect("parses");
         let economy = crate::config_ext::economy_config(&cfg.economy).expect("converts");
         let onboarding = mush_core::OnboardingConfig::default();
-        let wod = ruleset_wod::WodEconomyConfig::default();
-        assert_eq!(wod.cadence, "chronicle.period");
+        let game = tacsim::GameEconomyConfig::default();
         let mut mods = server_modules_with(
             mush_weather::WeatherConfig::default(),
             economy,
             mush_atlas::AtlasConfig::default(),
             &onboarding,
-            Some(&wod),
-            None,
+            &game,
             mush_campaign::RecoveryConfig::default(),
         );
-        mods.extend(
-            ruleset_modules(
-                &["wod".to_string()],
-                &onboarding,
-                &wod,
-                &ruleset_shadowrun::SrEconomyConfig::default(),
-            )
-            .expect("wod"),
-        );
+        mods.extend(ruleset_modules(&onboarding, &game));
         let tw = TestWorld::with_modules(mods);
         let clock = mush_core::ClockRef::Registered {
             owner: mush_core::OwnerId::new("economy").expect("owner"),
@@ -2108,12 +2091,12 @@ mod tests {
         assert_eq!(
             store.snapshot().cadences().count(),
             1,
-            "the WoD layer minted its own"
+            "exactly the declared one: no layer minted a manual cadence beside it"
         );
         // An undeclared id has no provider.
         let other = mush_core::ClockRef::Registered {
             owner: mush_core::OwnerId::new("economy").expect("owner"),
-            id: mush_core::CanonicalId::new("cadence.sr.month").expect("id"),
+            id: mush_core::CanonicalId::new("cadence.undeclared.month").expect("id"),
             generation: 1,
         };
         assert!(matches!(
@@ -2173,14 +2156,13 @@ mod tests {
         );
     }
 
-    /// E7 cut 1 (10b §3.1, doc 10 §20): **the TacSim layer composes after the one
-    /// character ruleset**, and its order position is what makes that true.
+    /// E7 cut 1 (10b §3.1, doc 10 §20): **the TacSim layer composes after the
+    /// character sheet**, and its order position is what makes that true.
     ///
     /// `on_world_loaded` runs in list order, so registering last is what lets TacSim's
-    /// boot read the character ruleset's facts while the ruleset reads TacSim's
-    /// environmental facts through the generic seam. `[rulesets].enabled` is untouched
-    /// by any of this: it still selects exactly one of `wod` | `shadowrun`, and TacSim
-    /// is switched by `[tacsim].enabled` alone.
+    /// boot read the sheet's facts while the sheet reads TacSim's environmental facts
+    /// through the generic seam. `[tacsim].enabled` switches the layer's BEHAVIOUR and
+    /// never its place in this list.
     ///
     /// W1-B7-FIX: the roster comes from [`ProductionRoster`] — the one root
     /// `boot::game_modules` — rather than being hand-assembled here. WS04-S8's
@@ -2193,79 +2175,52 @@ mod tests {
     #[test]
     fn e7c1_wiring_tacsim_composes_after_the_character_ruleset() {
         use mush_testkit::TestWorld;
-        for ruleset in ["wod", "shadowrun"] {
-            let mut roster = ProductionRoster::build("e7c1", ruleset);
-            let tw = TestWorld::with_modules(roster.take());
-            let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
-            assert_eq!(
-                names,
-                [
-                    "comsys",
-                    "canon",
-                    "privileges",
-                    "org",
-                    "faction",
-                    "scenes",
-                    "sim",
-                    "atlas",
-                    "tactics",
-                    "propagation",
-                    "economy",
-                    "inventory",
-                    // E7 cut 3: immediately after `mush-inventory`, whose handles
-                    // and family delegation it needs, and before `mush-market`,
-                    // which it does not touch.
-                    "industry",
-                    // E7 cut 9: the campaign layer, after economy/org/canon.
-                    "campaign",
-                    "mail",
-                    "jobs",
-                    "housing",
-                    "weather",
-                    "party",
-                    "market",
-                    "script",
-                    // The composition root's own two, which only `game_modules`
-                    // adds.
-                    "worldgen",
-                    "npc",
-                    ruleset,
-                    "rules_interface",
-                    "tacsim",
-                    // S1: and the content module after it — the boot pass that
-                    // drives every other module's appliers runs last of all.
-                    "content"
-                ],
-                "the TacSim layer must be last, after the character ruleset — only the                  content module composes after it"
-            );
-        }
-    }
-
-    /// E7 cut 1: `[rulesets].enabled` is untouched — TacSim is not one of its ids, and
-    /// asking for it as a ruleset is still an unknown-ruleset error.
-    #[test]
-    fn e7c1_wiring_tacsim_is_not_a_ruleset_id() {
-        let err = match ruleset_modules(
-            &["tacsim".to_string()],
-            &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        ) {
-            Err(e) => e,
-            Ok(_) => panic!("tacsim is a layer, not a ruleset id"),
-        };
-        assert!(err.contains("unknown ruleset"), "{err}");
-        // And the single-ruleset guard is unchanged by cut 1.
-        let err = match ruleset_modules(
-            &["wod".to_string(), "shadowrun".to_string()],
-            &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        ) {
-            Err(e) => e,
-            Ok(_) => panic!("two rulesets must be rejected"),
-        };
-        assert!(err.contains("one ruleset per server"), "{err}");
+        let mut roster = ProductionRoster::build("e7c1");
+        let tw = TestWorld::with_modules(roster.take());
+        let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
+        assert_eq!(
+            names,
+            [
+                "comsys",
+                "canon",
+                "privileges",
+                "org",
+                "faction",
+                "scenes",
+                "sim",
+                "atlas",
+                "tactics",
+                "propagation",
+                "economy",
+                "inventory",
+                // E7 cut 3: immediately after `mush-inventory`, whose handles
+                // and family delegation it needs, and before `mush-market`,
+                // which it does not touch.
+                "industry",
+                // E7 cut 9: the campaign layer, after economy/org/canon.
+                "campaign",
+                "mail",
+                "jobs",
+                "housing",
+                "weather",
+                "party",
+                "market",
+                "script",
+                // The composition root's own two, which only `game_modules`
+                // adds.
+                "worldgen",
+                "npc",
+                // 16b cut R-b: the one game sheet, and its rules interface.
+                "pilot",
+                "rules_interface",
+                "tacsim",
+                // S1: and the content module after it — the boot pass that
+                // drives every other module's appliers runs last of all.
+                "content"
+            ],
+            "the TacSim layer must come after the character sheet — only the content \
+             module composes after it"
+        );
     }
 
     #[test]
@@ -2313,104 +2268,6 @@ mod tests {
     }
 
     #[test]
-    fn ruleset_modules_selects_wod() {
-        // "wod" resolves to the WoD ruleset module; the id survives boot.
-        let mods = ruleset_modules(
-            &["wod".to_string()],
-            &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        )
-        .unwrap();
-        assert_eq!(mods.len(), 2, "the ruleset and its rules interface");
-        assert_eq!(mods[0].name(), "wod");
-        assert_eq!(mods[1].name(), "rules_interface");
-        // Case/whitespace-insensitive.
-        let mods = ruleset_modules(
-            &["  WoD ".to_string()],
-            &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        )
-        .unwrap();
-        assert_eq!(mods[0].name(), "wod");
-        // Empty list is fine (a ruleset-less server).
-        assert!(
-            ruleset_modules(
-                &[],
-                &mush_core::OnboardingConfig::default(),
-                &ruleset_wod::WodEconomyConfig::default(),
-                &ruleset_shadowrun::SrEconomyConfig::default(),
-            )
-            .unwrap()
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn ruleset_modules_selects_shadowrun() {
-        // "shadowrun" (M10b) resolves to the SR5 ruleset module.
-        let mods = ruleset_modules(
-            &["shadowrun".to_string()],
-            &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        )
-        .unwrap();
-        assert_eq!(mods.len(), 2, "the ruleset and its rules interface");
-        assert_eq!(mods[0].name(), "shadowrun");
-        assert_eq!(mods[1].name(), "rules_interface");
-    }
-
-    #[test]
-    fn ruleset_modules_rejects_two_rulesets_at_once() {
-        // Single-ruleset-per-server: enabling wod AND shadowrun (both register
-        // +roll/+sheet/+chargen) is caught here with a clear message, not left
-        // to surface as an opaque command collision at registration.
-        let err = match ruleset_modules(
-            &["wod".to_string(), "shadowrun".to_string()],
-            &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        ) {
-            Err(e) => e,
-            Ok(_) => panic!("enabling two rulesets must be rejected"),
-        };
-        assert!(err.contains("one ruleset per server"), "{err}");
-    }
-
-    #[test]
-    fn ruleset_modules_rejects_unknown_and_duplicate() {
-        // `unwrap_err` needs `Debug` on the Ok value; `dyn GameModule` has
-        // none, so match the error out by hand.
-        //
-        // E7 cut 1: the unknown id used to be `"tacsim"`, which is now a real thing —
-        // a *layer* switched by `[tacsim].enabled`, deliberately not a `[rulesets]` id
-        // (doc 10 §20). Keeping it here would have read as "tacsim is not a ruleset yet",
-        // which is the opposite of the decision. `"nosuch"` names nothing and never will.
-        let err = match ruleset_modules(
-            &["nosuch".to_string()],
-            &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        ) {
-            Err(e) => e,
-            Ok(_) => panic!("unknown ruleset must be rejected"),
-        };
-        assert!(err.contains("unknown ruleset"), "{err}");
-        let err = match ruleset_modules(
-            &["wod".to_string(), "wod".to_string()],
-            &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        ) {
-            Err(e) => e,
-            Ok(_) => panic!("duplicate ruleset must be rejected"),
-        };
-        assert!(err.contains("more than once"), "{err}");
-    }
-
-    #[test]
     fn worldgen_registers_in_the_full_boot_list() {
         // main.rs's assembly: built-ins THEN worldgen THEN the config-selected
         // ruleset, sharing one registry. Worldgen registers with a
@@ -2428,15 +2285,10 @@ mod tests {
         );
         let mut mods = server_modules();
         mods.push(worldgen_module(Arc::clone(&llm)));
-        mods.extend(
-            ruleset_modules(
-                &["wod".to_string()],
-                &mush_core::OnboardingConfig::default(),
-                &ruleset_wod::WodEconomyConfig::default(),
-                &ruleset_shadowrun::SrEconomyConfig::default(),
-            )
-            .unwrap(),
-        );
+        mods.extend(ruleset_modules(
+            &mush_core::OnboardingConfig::default(),
+            &tacsim::GameEconomyConfig::default(),
+        ));
         let tw = TestWorld::with_modules(mods);
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
@@ -2470,7 +2322,8 @@ mod tests {
                 "market",
                 "script",
                 "worldgen",
-                "wod",
+                // 16b cut R-b: the one game sheet, and its rules interface.
+                "pilot",
                 "rules_interface"
             ]
         );
@@ -2511,79 +2364,85 @@ mod tests {
     }
 
     #[test]
-    fn ruleset_agent_grounds_a_shadowrun_npc_end_to_end() {
+    fn ruleset_agent_grounds_a_pilot_npc_end_to_end() {
         // The generic grounding adapter carries the API-scaling claim end-to-end:
-        // on a shadowrun-only world, an NPC grounds through the Ruleset trait
-        // (sheet bootstrap + capability profile), not the concrete WodAgent.
+        // the NPC host dispatches through the `Ruleset` trait, so the game's own
+        // sheet grounds its NPCs with no NPC-wiring of its own. 16b cut R-b
+        // re-points it at the one sheet and its one ability; the seam is the same
+        // one that used to carry `wod_roll` and `sr_roll`.
         use mush_npc::AgentGrounding;
         use mush_testkit::TestWorld;
-        let mut mods = server_modules(); // carries the jobs module the ruleset needs
-        mods.extend(
-            ruleset_modules(
-                &["shadowrun".to_string()],
-                &mush_core::OnboardingConfig::default(),
-                &ruleset_wod::WodEconomyConfig::default(),
-                &ruleset_shadowrun::SrEconomyConfig::default(),
-            )
-            .unwrap(),
-        );
+        let mut mods = server_modules(); // carries the jobs module the sheet needs
+        mods.extend(ruleset_modules(
+            &mush_core::OnboardingConfig::default(),
+            &tacsim::GameEconomyConfig::default(),
+        ));
         let mut tw = TestWorld::with_modules(mods);
         let npc = tw.spawn_player("Ganger");
-        let agent = RulesetAgent::new(ruleset_shadowrun::ShadowrunRuleset::new());
+        let agent = RulesetAgent::new(tacsim::sheet::PilotRuleset::new());
         // No sheet yet → dialogue-only (no profile).
         assert!(
             agent.profile(tw.world(), npc).is_none(),
             "an NPC with no sheet does not ground"
         );
-        // The `@agent/sheet` bootstrap gives it a real SR5 sheet via Ruleset::init_sheet.
+        // The `@agent/sheet` bootstrap gives it a real pilot sheet via
+        // Ruleset::init_sheet.
         agent
             .init_sheet(tw.world_mut(), npc, "", npc)
-            .expect("SR5 init_sheet writes a sheet");
-        // Now it grounds: a capability profile carrying the sr_roll tool.
+            .expect("init_sheet writes a sheet");
+        // Now it grounds: a capability profile carrying the one `check` tool.
         let prof = agent
             .profile(tw.world(), npc)
-            .expect("SR5 NPC grounds through the generic Ruleset seam after init_sheet");
+            .expect("the NPC grounds through the generic Ruleset seam after init_sheet");
         assert!(
-            prof.tools.iter().any(|t| t.name == "sr_roll"),
-            "the grounded SR5 NPC exposes the sr_roll ability: {:?}",
+            prof.tools
+                .iter()
+                .any(|t| t.name == tacsim::sheet::agent::CHECK_ABILITY),
+            "the grounded NPC exposes the check ability: {:?}",
             prof.tools
         );
-    }
-
-    #[test]
-    fn npc_agent_adapter_grounds_every_enabled_ruleset() {
-        // The generic grounding adapter is built for any ruleset that grounds
-        // NPCs — wod AND shadowrun (each dispatches through its Ruleset trait
-        // impl). A ruleset-less config, or one whose ruleset has no grounding,
-        // runs NPCs dialogue-only (None).
-        assert!(npc_agent_adapter(&["wod".to_string()]).is_some());
-        assert!(npc_agent_adapter(&["  WoD ".to_string()]).is_some());
+        // …and the ability really runs on the world loop, against that NPC's own
+        // sheet, through the same adapter the NPC module holds.
+        let mut out = mush_core::Outbox::new();
+        let outcome = agent
+            .invoke_ability(
+                tw.world_mut(),
+                &mut out,
+                npc,
+                tacsim::sheet::agent::CHECK_ABILITY,
+                serde_json::json!({ "rating": "gunnery", "difficulty": 7 }),
+            )
+            .expect("the one ability resolves");
         assert!(
-            npc_agent_adapter(&["shadowrun".to_string()]).is_some(),
-            "SR5 NPCs must ground through the generic Ruleset seam, not just WoD"
+            outcome.summary.contains("gunnery check"),
+            "{}",
+            outcome.summary
         );
-        assert!(npc_agent_adapter(&["  Shadowrun ".to_string()]).is_some());
-        assert!(npc_agent_adapter(&[]).is_none());
-        assert!(npc_agent_adapter(&["tacsim".to_string()]).is_none());
+        // Anything else is unknown: there is exactly one ability.
+        assert!(matches!(
+            agent.invoke_ability(
+                tw.world_mut(),
+                &mut out,
+                npc,
+                "wod_roll",
+                serde_json::json!({}),
+            ),
+            Err(mush_ruleset::AbilityError::Unknown(_))
+        ));
     }
 
     #[test]
     fn full_boot_list_registers_without_collision() {
-        // The production concatenation main.rs builds — built-ins THEN the
-        // config-selected wod ruleset — shares one registry with no
-        // collision, and wod registers last (after jobs, so its approval
-        // payload handlers see a loaded jobs module).
+        // The production concatenation `boot::game_modules` builds — built-ins
+        // THEN the one game sheet — shares one registry with no collision, and
+        // the sheet registers last (after jobs, so its approval payload handler
+        // sees a loaded jobs module).
         use mush_testkit::TestWorld;
         let mut mods = server_modules();
-        mods.extend(
-            ruleset_modules(
-                &["wod".to_string()],
-                &mush_core::OnboardingConfig::default(),
-                &ruleset_wod::WodEconomyConfig::default(),
-                &ruleset_shadowrun::SrEconomyConfig::default(),
-            )
-            .unwrap(),
-        );
+        mods.extend(ruleset_modules(
+            &mush_core::OnboardingConfig::default(),
+            &tacsim::GameEconomyConfig::default(),
+        ));
         let tw = TestWorld::with_modules(mods);
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
@@ -2616,19 +2475,36 @@ mod tests {
                 "party",
                 "market",
                 "script",
-                "wod",
+                // 16b cut R-b: the one game sheet, and its rules interface.
+                "pilot",
                 "rules_interface"
             ]
         );
-        // The ruleset's surface is live: +roll / +sheet registered, the
-        // wod.roll panel feed present, and the chargen/xp job queues too.
+        // The sheet's surface is live: +roll / +sheet / +chargen / +stat
+        // registered, and the one panel feed present. The feed is named for the
+        // SCHEMA's ruleset id (`tacsim`), not the module's name (`pilot`) —
+        // `register_sheet_commands` reserves `<schema.ruleset>.sheet`.
         assert!(tw.registry().spec_of("+roll").is_some());
         assert!(tw.registry().spec_of("+sheet").is_some());
-        assert!(
-            tw.registry()
-                .panel_feeds()
-                .iter()
-                .any(|(feed, _)| feed == "wod.roll")
-        );
+        assert!(tw.registry().spec_of("+chargen").is_some());
+        assert!(tw.registry().spec_of("+stat").is_some());
+        let feeds: Vec<&str> = tw
+            .registry()
+            .panel_feeds()
+            .iter()
+            .map(|(feed, _)| feed.as_str())
+            .collect();
+        assert!(feeds.contains(&"tacsim.sheet"), "{feeds:?}");
+        // …and that is the sheet's ONLY feed. No `tacsim.roll`, and no
+        // `tacsim.vitals`: doc 16 §3.3 leaves M32's `TacticalUnit` cells the one
+        // damage authority, so the sheet declares no health track to publish.
+        // (`tactics.vitals` is the tactical layer's own feed and is a different
+        // module's.)
+        for absent in ["tacsim.roll", "tacsim.vitals", "pilot.sheet"] {
+            assert!(
+                !feeds.contains(&absent),
+                "{absent} must not be a feed: {feeds:?}"
+            );
+        }
     }
 }

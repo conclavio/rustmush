@@ -1,9 +1,14 @@
 //! H2c: `UseAbility` onto the coordinator (`docs/design/11-h-implementation-plan.md`
-//! §3.2 H2c). A Willpower-backed `wod_roll` chosen by the model becomes the
-//! NPC's own `willpower_roll` submission through the one authoritative
-//! ingress; a plain `wod_roll` still runs the legacy ability (the pinned
+//! §3.2 H2c). A Willpower-backed `toy_roll` chosen by the model becomes the
+//! NPC's own `toy_willpower_roll` submission through the one authoritative
+//! ingress; a plain `toy_roll` still runs the legacy ability (the pinned
 //! residual); a jailbroken tool name maps to nothing and is refused; the
 //! submission's key is deterministic over the NPC, the turn and the ability.
+//!
+//! 16b cut R-b: the WoD ruleset this used to be written against is gone, so the
+//! fixture is the `toy` test ruleset — the same platform seam (a grounding over
+//! a `Ruleset` whose `projected_ability` re-routes exactly one shape of one
+//! ability onto an authoritative action) with none of a splat's arithmetic.
 
 use std::sync::Arc;
 
@@ -12,22 +17,32 @@ use mush_core::{
     ParsedArgs, PerceivedRef, ResolutionKeyRing, ResolutionSecret, SwitchSet, WorldCommand,
 };
 use mush_npc::{AgentGrounding, NpcModule, ability_submit_key};
-use mush_server::modules::npc_agent_adapter;
+use mush_server::modules::RulesetAgent;
+use mush_testkit::toy_ruleset::ToyRuleset;
 use mush_testkit::{TestWorld, text_of};
 use smol_str::SmolStr;
 
+/// Fixed dice seed, so the legacy `toy_roll` narration is reproducible.
+const SEED: u64 = 7;
+
 fn boot() -> TestWorld {
     let grounding: Arc<dyn AgentGrounding> =
-        npc_agent_adapter(&["wod".to_string()]).expect("the wod grounding adapter");
+        Arc::new(RulesetAgent::new(ToyRuleset::with_seed(SEED)));
     let mut tw = TestWorld::with_modules(vec![
         Box::new(mush_jobs::JobsModule::new()),
-        Box::new(ruleset_wod::WodRuleset::with_seed(7)),
+        Box::new(ToyRuleset::with_seed(SEED)),
         Box::new(NpcModule::with_grounding(grounding)),
     ]);
-    tw.engine_mut()
-        .set_offer_keys(OfferKeyRing::new(OfferSecret::new(1, [0x6b; 32]).unwrap(), []).unwrap());
+    tw.engine_mut().set_offer_keys(
+        OfferKeyRing::new(OfferSecret::new(1, [0x6b; 32]).expect("offer secret"), [])
+            .expect("offer ring"),
+    );
     tw.engine_mut().set_resolution_keys(
-        ResolutionKeyRing::new(ResolutionSecret::new(1, [0x72; 32]).unwrap(), []).unwrap(),
+        ResolutionKeyRing::new(
+            ResolutionSecret::new(1, [0x72; 32]).expect("resolution secret"),
+            [],
+        )
+        .expect("resolution ring"),
     );
     tw
 }
@@ -45,16 +60,18 @@ struct Rig {
     player: ObjId,
 }
 
-/// A room with a connected player and an NPC agent with a mortal WoD sheet
+/// A room with a connected player and an NPC agent with an `alpha` toy sheet
 /// and Willpower to spend.
 fn rig(tw: &mut TestWorld) -> Rig {
     let room = tw
         .world_mut()
         .create(ObjKind::Room, "The Bar", GOD, None)
-        .unwrap();
-    tw.world_mut().move_to(GOD, room).unwrap();
+        .expect("a room");
+    tw.world_mut().move_to(GOD, room).expect("god moves in");
     let player = tw.spawn_player("Pat");
-    tw.world_mut().move_to(player, room).unwrap();
+    tw.world_mut()
+        .move_to(player, room)
+        .expect("the player moves in");
     tw.world_mut().set_connected(player, true);
     tw.world_mut().set_live_conns(player, 1);
     let created = texts(tw, GOD, "@agent/create Bob");
@@ -63,13 +80,13 @@ fn rig(tw: &mut TestWorld) -> Rig {
         .chars()
         .take_while(char::is_ascii_digit)
         .collect();
-    let npc = ObjId(digits.parse().unwrap());
-    let sheet = texts(tw, GOD, "@agent/sheet Bob=mortal");
+    let npc = ObjId(digits.parse().expect("the create line names a numeric id"));
+    let sheet = texts(tw, GOD, "@agent/sheet Bob=alpha");
     assert!(sheet.contains("sheet"), "{sheet}");
     for line in [
         "@sheet/set Bob/strength=3",
         "@sheet/set Bob/willpower=5",
-        "@sheet/set Bob/willpower_temp=3",
+        "@sheet/set Bob/willpower_current=3",
     ] {
         let out = texts(tw, GOD, line);
         assert!(
@@ -163,7 +180,7 @@ fn h2c_a_willpower_backed_roll_becomes_the_npcs_own_authoritative_submission() {
     let (correlation, text) = complete_turn(&mut tw, &r, 1_000, |npc| {
         ability_payload(
             npc,
-            "wod_roll",
+            "toy_roll",
             serde_json::json!({ "pool_expr": "strength", "willpower": true, "difficulty": 7 }),
         )
     });
@@ -171,9 +188,12 @@ fn h2c_a_willpower_backed_roll_becomes_the_npcs_own_authoritative_submission() {
         tw.engine().has_authoritative_submit(),
         "no authoritative submission was queued: {text}"
     );
-    let submit = tw.engine_mut().take_authoritative_submit().unwrap();
+    let submit = tw
+        .engine_mut()
+        .take_authoritative_submit()
+        .expect("a queued submission");
     assert_eq!(submit.actor, r.npc);
-    assert_eq!(submit.action.key().id.as_str(), "willpower_roll");
+    assert_eq!(submit.action.key().id.as_str(), "toy_willpower_roll");
     assert_eq!(submit.subject, PerceivedRef::SelfActor);
     assert!(submit.targets.is_empty());
     assert_eq!(submit.parameters["pool"], "strength");
@@ -181,11 +201,11 @@ fn h2c_a_willpower_backed_roll_becomes_the_npcs_own_authoritative_submission() {
     assert_eq!(submit.parameters["ignore_wounds"], false);
     assert_eq!(
         submit.key,
-        ability_submit_key(r.npc, correlation, "wod_roll")
+        ability_submit_key(r.npc, correlation, "toy_roll")
     );
     // Nothing rolled on the legacy path: no roll narration reached the room,
-    // and the temporary Willpower is untouched until the coordinator spends it.
-    assert!(!text.contains("rolls"), "the legacy roll ran: {text}");
+    // and the Willpower pool is untouched until the coordinator spends it.
+    assert!(!text.contains("roll  "), "the legacy roll ran: {text}");
     let sheet = texts(&mut tw, GOD, "@sheet Bob");
     assert!(sheet.contains("3"), "{sheet}");
 }
@@ -197,7 +217,7 @@ fn h2c_a_plain_roll_still_runs_the_legacy_ability_and_queues_nothing() {
     let (_, text) = complete_turn(&mut tw, &r, 1_000, |npc| {
         ability_payload(
             npc,
-            "wod_roll",
+            "toy_roll",
             serde_json::json!({ "pool_expr": "strength" }),
         )
     });
@@ -206,7 +226,7 @@ fn h2c_a_plain_roll_still_runs_the_legacy_ability_and_queues_nothing() {
         "a plain roll must stay on the residual path"
     );
     assert!(
-        text.contains("rolls") || text.contains("Strength") || text.contains("success"),
+        text.contains("roll  ") || text.contains("Strength") || text.contains("success"),
         "the legacy roll did not narrate: {text}"
     );
 }
@@ -228,12 +248,12 @@ fn h2c_a_jailbroken_ability_name_maps_to_nothing_and_is_refused() {
 
 #[test]
 fn h2c_the_submission_key_is_deterministic_over_npc_turn_and_ability() {
-    let a = ability_submit_key(ObjId(4), 77, "wod_roll");
-    let b = ability_submit_key(ObjId(4), 77, "wod_roll");
+    let a = ability_submit_key(ObjId(4), 77, "toy_roll");
+    let b = ability_submit_key(ObjId(4), 77, "toy_roll");
     assert_eq!(a, b, "the same completion twice is one submission");
-    assert_ne!(a, ability_submit_key(ObjId(4), 78, "wod_roll"));
-    assert_ne!(a, ability_submit_key(ObjId(5), 77, "wod_roll"));
-    assert_eq!(a.as_str(), "npc-4-77-wod-roll");
+    assert_ne!(a, ability_submit_key(ObjId(4), 78, "toy_roll"));
+    assert_ne!(a, ability_submit_key(ObjId(5), 77, "toy_roll"));
+    assert_eq!(a.as_str(), "npc-4-77-toy-roll");
     assert_eq!(
         ability_submit_key(ObjId(4), 1, "@Shut Down!").as_str(),
         "npc-4-1--shut-down-"

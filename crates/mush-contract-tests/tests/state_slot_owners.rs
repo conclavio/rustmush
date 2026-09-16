@@ -212,10 +212,10 @@ fn owner_map() -> BTreeMap<&'static str, BTreeSet<String>> {
 /// it cannot happen (the compose step refuses it); a type joining it for any
 /// other reason is a slot whose owner depends on configuration, and WS03-S14
 /// has to know that before it refuses anything.
-const SHARED_RULESET_SLOTS: [&str; 2] = [
-    "mush_ruleset::vitals::SheetSchemaFps",
-    "mush_ruleset::vitals::VitalsRevisions",
-];
+///
+/// 16b cut R-b: one composition, so nothing is shared any more; the pin stays
+/// empty so a slot with two owners is a reviewed decision again.
+const SHARED_RULESET_SLOTS: [&str; 0] = [];
 
 /// The last segment of a `std::any::type_name` path, generics stripped —
 /// `mush_npc::state::NpcState` becomes `NpcState`, which is how source writes

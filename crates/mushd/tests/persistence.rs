@@ -809,60 +809,31 @@ async fn m5_module_persistence_round_trip_redis_gated() {
 }
 
 // ---------------------------------------------------------------------------
-// M9 onboarding persistence twin: a submitted chargen sheet is a `sheet:wod`
+// M9 onboarding persistence twin: a submitted chargen sheet is a `sheet:tacsim`
 // attribute on the player's obj doc (treaty ruling 7), so it rides obj:*
-// write-through; the `wod-chargen` approval JOB is a `jobs:*` module doc. This
+// write-through; the `pilot-chargen` approval JOB is a `jobs:*` module doc. This
 // proves BOTH the Pending sheet AND — after staff approval on a rebooted
 // server — the Approved sheet survive a reboot-from-store-alone. Exercised
 // in-memory (ungated) and against a live Redis.
+//
+// 16b cut R-b: the journey used to be 45 guided-wizard lines fed into an input
+// context. The game's chargen has no wizard and no session — the in-progress
+// sheet IS the state — so the same journey is now seven ordinary commands, and
+// what is being persisted is the same document either way.
 // ---------------------------------------------------------------------------
 
-/// The guided-wizard line sequence that builds a balanced vampire and submits
-/// it (the same allocation `onboarding_e2e` drives over SSH). Fed as ordinary
-/// input lines while the connect-time wizard context is on top of the stack.
-const VAMPIRE_WIZARD: &[&str] = &[
-    "vampire",
-    "next",
-    "concept=Jaded Detective",
-    "next",
-    "physical=7 social=5 mental=3",
-    "next",
-    "strength=4",
-    "dexterity=4",
-    "stamina=2",
-    "charisma=3",
-    "manipulation=3",
-    "appearance=2",
-    "perception=2",
-    "intelligence=2",
-    "wits=2",
-    "next",
-    "talents=13 skills=9 knowledges=5",
-    "next",
-    "brawl=3",
-    "alertness=3",
-    "subterfuge=3",
-    "intimidation=3",
-    "streetwise=1",
-    "firearms=3",
-    "drive=3",
-    "stealth=3",
-    "investigation=3",
-    "occult=2",
-    "next",
-    "Resources=3",
-    "Allies=2",
-    "next",
-    "clan=brujah",
-    "Celerity=2",
-    "Potence=1",
-    "next",
-    "conscience=4",
-    "self_control=3",
-    "courage=3",
-    "next", // Freebies (balanced — nothing to spend)
-    "next", // Review
-    "submit",
+/// The command sequence that spends the six-point pool exactly, names the
+/// pilot, and files the sheet (the same allocation `onboarding_e2e` drives over
+/// SSH): gunnery 4 / piloting 3 / sensors 2 is `3 + 2 + 1 == 6` dots above the
+/// free one every rating starts at.
+const PILOT_CHARGEN: &[&str] = &[
+    "+chargen",
+    "+stat name=Ada Renard",
+    "+stat callsign=Ladder",
+    "+stat gunnery=4",
+    "+stat piloting=3",
+    "+stat sensors=2",
+    "+chargen/submit",
 ];
 
 /// Extract the job id from a `Submitted for approval as job N.` line.
@@ -876,10 +847,10 @@ fn parse_job_id(line: &str) -> u64 {
         .expect("job id parses")
 }
 
-/// Boot a rig with the jobs + WoD(onboarding) modules, `chargen_required` on
+/// Boot a rig with the jobs + character-ruleset modules, `chargen_required` on
 /// and both start rooms = Limbo (the distinct-room approval move is covered
-/// ungated by ruleset-wod's onboarding suite and by `onboarding_e2e`; this twin
-/// isolates sheet + approval *persistence*).
+/// ungated by the ruleset's own onboarding suite and by `onboarding_e2e`; this
+/// twin isolates sheet + approval *persistence*).
 async fn boot_onboarding_rig(
     store: &Arc<dyn ObjectStore>,
     guard: &Arc<IpGuard>,
@@ -893,10 +864,12 @@ async fn boot_onboarding_rig(
         start_room: LIMBO,
         start_room_unapproved: LIMBO,
     };
-    let mods: Vec<Box<dyn mush_core::GameModule>> = vec![
-        Box::new(mush_jobs::JobsModule::new()),
-        Box::new(ruleset_wod::WodRuleset::new().onboarding(onboarding)),
-    ];
+    let mut mods: Vec<Box<dyn mush_core::GameModule>> =
+        vec![Box::new(mush_jobs::JobsModule::new())];
+    mods.extend(mushd::modules::ruleset_modules(
+        &onboarding,
+        &Default::default(),
+    ));
     let mut engine = Engine::with_modules(world, registry, mods).expect("module registration");
     mushd::modules::boot_modules(&mut engine, &**store)
         .await
@@ -918,34 +891,34 @@ async fn boot_onboarding_rig(
     (sessions, handles)
 }
 
-/// Read `who`'s WoD sheet from a bare-reloaded world (no task) — the
+/// Read `who`'s sheet from a bare-reloaded world (no task) — the
 /// reboot-from-store-alone assertion path.
 fn reloaded_sheet(world: &mush_core::World, who: ObjId) -> mush_ruleset::SheetDoc {
     let attr = world
-        .attr(who, "sheet:wod")
+        .attr(who, "sheet:tacsim")
         .and_then(mush_core::Attr::as_json)
-        .expect("a persisted sheet:wod attr");
+        .expect("a persisted sheet:tacsim attr");
     serde_json::from_value(attr.clone()).expect("sheet decodes")
 }
 
 async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
     let guard = Arc::new(IpGuard::new());
 
-    // --- first boot: a new player is dropped into the wizard, builds a ---
-    // --- vampire, and submits it for approval. ---------------------------
+    // --- first boot: a new player is greeted into chargen, builds a ------
+    // --- pilot, and submits it for approval. -----------------------------
     let (sessions, handles) = boot_onboarding_rig(&store, &guard).await;
     let world = handles.handle.clone();
     // The ack-gated create fires the ObjCreated observer (placed in the chargen
     // area, = Limbo here) and lands the creation batch in the store.
     let nick = world.create_player("Nick").await.expect("create Nick");
-    // Connecting drops Nick into the guided wizard (the Connected hook).
+    // Connecting greets Nick and points at +chargen (the Connected hook).
     let mut nick_rx = attach_direct(&sessions, &world, 2, nick, "nick").await;
     assert!(
         world.barrier().await,
         "onboarding connect-hook commit barrier"
     );
     let mut submitted = None;
-    for line in VAMPIRE_WIZARD {
+    for line in PILOT_CHARGEN {
         assert!(
             world
                 .inbound(Inbound::Cmd {
@@ -955,19 +928,19 @@ async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
                 })
                 .await
         );
-        assert!(world.barrier().await, "wizard mutation commit barrier");
-        if *line == "submit" {
+        assert!(world.barrier().await, "chargen mutation commit barrier");
+        if *line == "+chargen/submit" {
             submitted = Some(expect_text(&mut nick_rx, "Submitted for approval as job").await);
         } else {
             // The exact barrier makes this command's prompt/output observable;
             // consume it now so the bounded fake client is not mistaken for a
-            // slow connection during the deliberately long wizard journey.
+            // slow connection during the journey.
             while nick_rx.try_recv().is_ok() {}
         }
     }
-    let ev = submitted.expect("wizard submit acknowledgement");
+    let ev = submitted.expect("chargen submit acknowledgement");
     let job = parse_job_id(&text_of(&ev));
-    // Every wizard action crossed its exact barrier; creation independently
+    // Every chargen action crossed its exact barrier; creation independently
     // proves the world remains writable after the submitted sheet/job commit.
     world.create_player("Fence").await.expect("fence create");
 
@@ -980,11 +953,13 @@ async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
         doc.approved
     );
     assert_eq!(
-        doc.text("template"),
-        Some("vampire"),
-        "sheet content (template) survives the reboot"
+        doc.text("callsign"),
+        Some("Ladder"),
+        "sheet content (the identity block) survives the reboot"
     );
-    assert_eq!(doc.text("clan"), Some("brujah"));
+    assert_eq!(doc.number("gunnery"), Some(4), "the bought ratings survive");
+    assert_eq!(doc.number("piloting"), Some(3));
+    assert_eq!(doc.number("sensors"), Some(2));
 
     // --- reboot #2 (task): staff approve the persisted job. --------------
     let (sessions2, handles2) = boot_onboarding_rig(&store, &guard).await;
@@ -1218,15 +1193,23 @@ async fn worldgen_persistence_round_trip_redis_gated() {
 }
 
 // ---------------------------------------------------------------------------
-// M6a sheet-persistence twin: a WoD sheet is an object attribute (treaty
+// M6a sheet-persistence twin: a character sheet is an object attribute (treaty
 // ruling 7), so it rides the SAME obj write-through as any @set and reloads
 // with the world — no module namespace, no separate boot load. This proves
 // the reboot round trip and that the reloaded sheet still validates.
+//
+// 16b cut R-b: there used to be a second twin below this one that built a
+// Vampire, a Mage, a Werewolf, a Changeling, a Ghoul and a Kinfolk, rebooted,
+// and re-validated each against the per-template schema its own `template`
+// field selected. The game has ONE schema and no template dispatch, so the six
+// per-template cases have no subject left and are gone; the claim they shared
+// with this twin — the sheet is an ordinary attr that survives a bare store
+// reload and still validates — is proved once, here, over the one schema.
 // ---------------------------------------------------------------------------
 
-/// Boot a full server rig with the built-in modules **plus the WoD ruleset**
-/// (the `[rulesets].enabled = ["wod"]` selection main.rs makes).
-async fn boot_wod_rig(
+/// Boot a full server rig with the built-in modules **plus the game's character
+/// ruleset** (the composition `mush_server::boot::build_engine` makes).
+async fn boot_sheet_rig(
     store: &Arc<dyn ObjectStore>,
     guard: &Arc<IpGuard>,
 ) -> (Arc<SessionManager>, PersistHandles) {
@@ -1235,15 +1218,10 @@ async fn boot_wod_rig(
     let mut registry = world_task::base_registry();
     register_server_commands(&mut registry, &staff).unwrap();
     let mut mods = mushd::modules::server_modules();
-    mods.extend(
-        mushd::modules::ruleset_modules(
-            &["wod".to_string()],
-            &mush_core::OnboardingConfig::default(),
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        )
-        .expect("wod ruleset"),
-    );
+    mods.extend(mushd::modules::ruleset_modules(
+        &mush_core::OnboardingConfig::default(),
+        &Default::default(),
+    ));
     let mut engine =
         Engine::with_modules(world, registry, mods).expect("module + ruleset registration");
     mushd::modules::boot_modules(&mut engine, &**store)
@@ -1266,26 +1244,32 @@ async fn boot_wod_rig(
     (sessions, handles)
 }
 
-/// Build a character's WoD sheet through the live `@sheet/set` command path,
-/// fence on an ack-gated create so every sheet write has landed, then reboot
-/// from the store alone and assert the sheet survived, holds its values, and
-/// still validates against the ruleset schema. Ungated + Redis-gated below.
-async fn wod_sheet_round_trip(store: Arc<dyn ObjectStore>) {
+/// Build a character's sheet through the live `@sheet/set` command path, fence
+/// on an ack-gated create so every sheet write has landed, then reboot from the
+/// store alone and assert the sheet survived, holds its values, and still
+/// validates against the ruleset schema. Every section of the sheet is written
+/// — the free-text identity block, the rating dots, and a staff-only standing
+/// field a player could never set — so the reload covers each field TYPE the
+/// schema declares, which is what the six deleted per-template cases were
+/// really exercising. Ungated + Redis-gated below.
+async fn sheet_round_trip(store: Arc<dyn ObjectStore>) {
     use mush_ruleset::{Ruleset, SheetDoc};
 
     let guard = Arc::new(IpGuard::new());
 
     // --- first boot: create a character, staff-build their sheet. ---------
-    let (sessions, handles) = boot_wod_rig(&store, &guard).await;
+    let (sessions, handles) = boot_sheet_rig(&store, &guard).await;
     let world = handles.handle.clone();
     let _god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
 
     let nick = world.create_player("Nick").await.expect("create Nick");
     // Staff-edit the sheet (@sheet/set is Royalty-gated; God qualifies). The
     // sheet is an attr on Nick's object, so these writes ride obj:* through.
-    god_cmd_committed(&world, "@sheet/set Nick/strength=3").await;
-    god_cmd_committed(&world, "@sheet/set Nick/brawl=4").await;
-    god_cmd_committed(&world, "@sheet/set Nick/willpower=6").await;
+    god_cmd_committed(&world, "@sheet/set Nick/callsign=Ladder").await;
+    god_cmd_committed(&world, "@sheet/set Nick/gunnery=4").await;
+    god_cmd_committed(&world, "@sheet/set Nick/piloting=3").await;
+    god_cmd_committed(&world, "@sheet/set Nick/reputation=2").await;
+    god_cmd_committed(&world, "@sheet/set Nick/certifications:Lance Lead=veteran").await;
 
     // Every sheet edit crossed its exact barrier; creation independently
     // verifies the world remains writable afterward.
@@ -1294,16 +1278,26 @@ async fn wod_sheet_round_trip(store: Arc<dyn ObjectStore>) {
     // --- reboot: hydrate a fresh world from the store alone. --------------
     let reloaded = load_or_seed_world(&*store).await.expect("reload");
     let attr = reloaded
-        .attr(nick, "sheet:wod")
+        .attr(nick, "sheet:tacsim")
         .and_then(mush_core::Attr::as_json)
         .expect("the sheet attribute survived the reboot");
     let doc: SheetDoc = serde_json::from_value(attr.clone()).expect("sheet decodes");
-    assert_eq!(doc.number("strength"), Some(3), "strength survived");
-    assert_eq!(doc.number("brawl"), Some(4), "brawl survived");
-    assert_eq!(doc.number("willpower"), Some(6), "willpower survived");
+    assert_eq!(doc.text("callsign"), Some("Ladder"), "callsign survived");
+    assert_eq!(doc.number("gunnery"), Some(4), "gunnery survived");
+    assert_eq!(doc.number("piloting"), Some(3), "piloting survived");
+    assert_eq!(
+        doc.number("sensors"),
+        Some(1),
+        "an untouched rating reloads at its schema default, not absent"
+    );
+    assert_eq!(doc.number("reputation"), Some(2), "reputation survived");
+    assert_eq!(
+        doc.map("certifications").expect("the map field survived")["Lance Lead"],
+        serde_json::json!("veteran")
+    );
 
-    // And the reloaded sheet still validates against the WoD schema.
-    let ruleset = ruleset_wod::WodRuleset::new();
+    // And the reloaded sheet still validates against the game's schema.
+    let ruleset = tacsim::sheet::PilotRuleset::new();
     mush_ruleset::validate(ruleset.sheet_schema(), &doc.data)
         .expect("reloaded sheet must validate against the ruleset schema");
 
@@ -1315,18 +1309,18 @@ async fn wod_sheet_round_trip(store: Arc<dyn ObjectStore>) {
 /// The sheet-persistence twin over an in-memory store — ungated, so CI proves
 /// the reboot round trip without a live Redis.
 #[tokio::test(flavor = "multi_thread")]
-async fn wod_sheet_persistence_round_trip_in_memory() {
-    wod_sheet_round_trip(Arc::new(InMemoryStore::new())).await;
+async fn sheet_persistence_round_trip_in_memory() {
+    sheet_round_trip(Arc::new(InMemoryStore::new())).await;
 }
 
 /// The same twin over a live Redis — the reboot-from-Redis-alone surrogate.
 /// Gated on `REDIS_URL`; runs in db 11 (dbs 12–15 are claimed by the other
 /// gated tests, which run in parallel).
 #[tokio::test(flavor = "multi_thread")]
-async fn wod_sheet_persistence_round_trip_redis_gated() {
+async fn sheet_persistence_round_trip_redis_gated() {
     let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
         eprintln!(
-            "skipping wod_sheet_persistence_round_trip_redis_gated: REDIS_URL not set \
+            "skipping sheet_persistence_round_trip_redis_gated: REDIS_URL not set \
              (no live Redis on this machine)"
         );
         return;
@@ -1336,337 +1330,7 @@ async fn wod_sheet_persistence_round_trip_redis_gated() {
         .await
         .expect("connect to REDIS_URL");
     store.wipe_namespaces().await.expect("wipe test namespaces");
-    wod_sheet_round_trip(Arc::new(store)).await;
-}
-
-/// The M6b/M10a splat twin: staff-build one of **each** splat — a Vampire
-/// (Disciplines / Blood Pool / Generation), a Mage (Spheres / Arete /
-/// Quintessence), a Werewolf (the Garou block, the split Rage/Gnosis pools,
-/// `current_form` and Gifts), a Changeling (the Fae block, Arts / Realms
-/// dots-maps and the split Glamour pool), a Ghoul (the Ghoul block, the
-/// Disciplines map, the flat Blood Pool and the Blood Bond), and a Kinfolk (the
-/// Kinfolk block, the split Gnosis pool, the Gifts map and the Delirium flag) —
-/// reboot from the store alone, and assert every splat sheet survived, holds its
-/// own values, and still validates against the per-template schema selected by
-/// its `template` field (not merely the base mortal one).
-async fn wod_splat_sheet_round_trip(store: Arc<dyn ObjectStore>) {
-    use mush_ruleset::SheetDoc;
-
-    let guard = Arc::new(IpGuard::new());
-
-    // --- first boot: create a character, staff-build a Kindred sheet. ------
-    let (sessions, handles) = boot_wod_rig(&store, &guard).await;
-    let world = handles.handle.clone();
-    let _god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
-
-    let vlad = world.create_player("Vlad").await.expect("create Vlad");
-    // Turn Kindred (re-shapes the sheet to the vampire schema), then set the
-    // splat-only fields. A mortal's schema has none of these — they exist only
-    // because the sheet's `template` is now `vampire`.
-    god_cmd_committed(&world, "@sheet/set Vlad/template=vampire").await;
-    god_cmd_committed(&world, "@sheet/set Vlad/clan=brujah").await;
-    god_cmd_committed(&world, "@sheet/set Vlad/generation=10").await;
-    god_cmd_committed(&world, "@sheet/set Vlad/disciplines:Celerity=2").await;
-    god_cmd_committed(&world, "@sheet/set Vlad/disciplines:Potence=1").await;
-    god_cmd_committed(&world, "@sheet/set Vlad/bloodpool=8").await;
-    god_cmd_committed(&world, "@sheet/set Vlad/strength=3").await;
-
-    // A Mage — Spheres / Arete / Quintessence must survive on the mage schema.
-    let mira = world.create_player("Mira").await.expect("create Mira");
-    god_cmd_committed(&world, "@sheet/set Mira/template=mage").await;
-    god_cmd_committed(&world, "@sheet/set Mira/affiliation=order_of_hermes").await;
-    god_cmd_committed(&world, "@sheet/set Mira/arete=3").await;
-    god_cmd_committed(&world, "@sheet/set Mira/spheres:Forces=3").await;
-    god_cmd_committed(&world, "@sheet/set Mira/quintessence=2").await;
-
-    // A Werewolf — the Garou block, the split Rage/Gnosis pools, `current_form`
-    // and Gifts must all survive on the werewolf schema.
-    let rex = world.create_player("Rex").await.expect("create Rex");
-    god_cmd_committed(&world, "@sheet/set Rex/template=werewolf").await;
-    god_cmd_committed(&world, "@sheet/set Rex/breed=lupus").await;
-    god_cmd_committed(&world, "@sheet/set Rex/auspice=ahroun").await;
-    god_cmd_committed(&world, "@sheet/set Rex/tribe=get_of_fenris").await;
-    god_cmd_committed(&world, "@sheet/set Rex/rage=5").await;
-    god_cmd_committed(&world, "@sheet/set Rex/rage_temp=3").await;
-    god_cmd_committed(&world, "@sheet/set Rex/gnosis=5").await;
-    god_cmd_committed(&world, "@sheet/set Rex/current_form=crinos").await;
-    god_cmd_committed(&world, "@sheet/set Rex/gifts:Razor Claws=2").await;
-
-    // A Changeling (M10a) — the Fae block, Arts / Realms dots-maps, and the
-    // Glamour pool must all survive on the changeling schema.
-    let nuala = world.create_player("Nuala").await.expect("create Nuala");
-    god_cmd_committed(&world, "@sheet/set Nuala/template=changeling").await;
-    god_cmd_committed(&world, "@sheet/set Nuala/kith=pooka").await;
-    god_cmd_committed(&world, "@sheet/set Nuala/seeming=childling").await;
-    god_cmd_committed(&world, "@sheet/set Nuala/court=seelie").await;
-    god_cmd_committed(&world, "@sheet/set Nuala/arts:Chicanery=2").await;
-    god_cmd_committed(&world, "@sheet/set Nuala/realms:Actor=3").await;
-    god_cmd_committed(&world, "@sheet/set Nuala/glamour=4").await;
-    god_cmd_committed(&world, "@sheet/set Nuala/glamour_temp=3").await;
-    god_cmd_committed(&world, "@sheet/set Nuala/banality=2").await;
-
-    // A Ghoul (M10a) — the Ghoul block, the Disciplines map (free Potence plus a
-    // domitor-clan pick), the flat Blood Pool and the Blood Bond must survive on
-    // the ghoul schema (which carries no clan/generation/weakness).
-    let grimm = world.create_player("Grimm").await.expect("create Grimm");
-    god_cmd_committed(&world, "@sheet/set Grimm/template=ghoul").await;
-    god_cmd_committed(&world, "@sheet/set Grimm/domitor_clan=gangrel").await;
-    god_cmd_committed(&world, "@sheet/set Grimm/domitor=Lady Sascha").await;
-    god_cmd_committed(&world, "@sheet/set Grimm/disciplines:Potence=1").await;
-    god_cmd_committed(&world, "@sheet/set Grimm/disciplines:Fortitude=2").await;
-    god_cmd_committed(&world, "@sheet/set Grimm/bloodpool=6").await;
-    god_cmd_committed(&world, "@sheet/set Grimm/bond_level=2").await;
-
-    // A Kinfolk (M10a) — the Kinfolk block, the split Gnosis pool, the Gifts map
-    // and the Delirium-immunity flag must survive on the kinfolk schema (no
-    // Rage / Renown / Disciplines).
-    let willa = world.create_player("Willa").await.expect("create Willa");
-    god_cmd_committed(&world, "@sheet/set Willa/template=kinfolk").await;
-    god_cmd_committed(&world, "@sheet/set Willa/tribe=fianna").await;
-    god_cmd_committed(&world, "@sheet/set Willa/gnosis=3").await;
-    god_cmd_committed(&world, "@sheet/set Willa/gnosis_temp=2").await;
-    god_cmd_committed(&world, "@sheet/set Willa/gifts:Persuasion=1").await;
-
-    // Every sheet edit crossed its exact barrier; creation independently probes
-    // that the world remains writable after the full build.
-    world.create_player("Fence").await.expect("fence create");
-
-    // --- reboot: hydrate a fresh world from the store alone. --------------
-    let reloaded = load_or_seed_world(&*store).await.expect("reload");
-    let attr = reloaded
-        .attr(vlad, "sheet:wod")
-        .and_then(mush_core::Attr::as_json)
-        .expect("the vampire sheet attribute survived the reboot");
-    let doc: SheetDoc = serde_json::from_value(attr.clone()).expect("sheet decodes");
-    assert_eq!(doc.text("template"), Some("vampire"), "template survived");
-    assert_eq!(doc.text("clan"), Some("brujah"), "clan survived");
-    assert_eq!(doc.number("generation"), Some(10), "generation survived");
-    assert_eq!(doc.number("bloodpool"), Some(8), "Blood Pool survived");
-    assert_eq!(doc.number("strength"), Some(3), "base trait survived");
-    let disc = doc.map("disciplines").expect("Disciplines map survived");
-    assert_eq!(disc["Celerity"], serde_json::json!(2));
-    assert_eq!(disc["Potence"], serde_json::json!(1));
-
-    // The reloaded sheet validates against the VAMPIRE schema (selected by the
-    // sheet's `template`), which the base mortal schema could not do — proving
-    // the splat sections round-tripped, not just the shared base.
-    let ruleset = ruleset_wod::WodRuleset::new();
-    let schema = ruleset.schema_for(&doc);
-    assert!(
-        schema.field("disciplines").is_some(),
-        "the selected schema is the vampire one"
-    );
-    mush_ruleset::validate(&schema, &doc.data)
-        .expect("reloaded vampire sheet must validate against the vampire schema");
-
-    // --- Mage: Spheres / Arete / Quintessence survived on the mage schema. ---
-    let mattr = reloaded
-        .attr(mira, "sheet:wod")
-        .and_then(mush_core::Attr::as_json)
-        .expect("the mage sheet survived the reboot");
-    let mdoc: SheetDoc = serde_json::from_value(mattr.clone()).expect("mage sheet decodes");
-    assert_eq!(
-        mdoc.text("template"),
-        Some("mage"),
-        "mage template survived"
-    );
-    assert_eq!(mdoc.number("arete"), Some(3), "Arete survived");
-    assert_eq!(
-        mdoc.number("quintessence"),
-        Some(2),
-        "Quintessence survived"
-    );
-    assert_eq!(
-        mdoc.map("spheres").expect("Spheres map survived")["Forces"],
-        serde_json::json!(3)
-    );
-    let mschema = ruleset.schema_for(&mdoc);
-    assert!(
-        mschema.field("spheres").is_some() && mschema.field("disciplines").is_none(),
-        "the selected schema is the mage one"
-    );
-    mush_ruleset::validate(&mschema, &mdoc.data)
-        .expect("reloaded mage sheet must validate against the mage schema");
-
-    // --- Werewolf: Garou block, split Rage/Gnosis pools, form + Gifts. -------
-    let wattr = reloaded
-        .attr(rex, "sheet:wod")
-        .and_then(mush_core::Attr::as_json)
-        .expect("the werewolf sheet survived the reboot");
-    let wdoc: SheetDoc = serde_json::from_value(wattr.clone()).expect("werewolf sheet decodes");
-    assert_eq!(
-        wdoc.text("template"),
-        Some("werewolf"),
-        "werewolf template survived"
-    );
-    assert_eq!(wdoc.number("rage"), Some(5), "permanent Rage survived");
-    assert_eq!(
-        wdoc.number("rage_temp"),
-        Some(3),
-        "temporary Rage pool survived independently of the permanent rating"
-    );
-    assert_eq!(wdoc.number("gnosis"), Some(5), "Gnosis survived");
-    assert_eq!(
-        wdoc.text("current_form"),
-        Some("crinos"),
-        "current_form survived (was not reset to homid)"
-    );
-    assert_eq!(
-        wdoc.map("gifts").expect("Gifts map survived")["Razor Claws"],
-        serde_json::json!(2)
-    );
-    let wschema = ruleset.schema_for(&wdoc);
-    assert!(
-        wschema.field("gifts").is_some() && wschema.field("spheres").is_none(),
-        "the selected schema is the werewolf one"
-    );
-    mush_ruleset::validate(&wschema, &wdoc.data)
-        .expect("reloaded werewolf sheet must validate against the werewolf schema");
-
-    // --- Changeling: Fae block, Arts / Realms maps + Glamour pool. ----------
-    let cattr = reloaded
-        .attr(nuala, "sheet:wod")
-        .and_then(mush_core::Attr::as_json)
-        .expect("the changeling sheet survived the reboot");
-    let cdoc: SheetDoc = serde_json::from_value(cattr.clone()).expect("changeling sheet decodes");
-    assert_eq!(
-        cdoc.text("template"),
-        Some("changeling"),
-        "changeling template survived"
-    );
-    assert_eq!(cdoc.text("kith"), Some("pooka"), "kith survived");
-    assert_eq!(
-        cdoc.number("glamour"),
-        Some(4),
-        "permanent Glamour survived"
-    );
-    assert_eq!(
-        cdoc.number("glamour_temp"),
-        Some(3),
-        "temporary Glamour pool survived independently of the permanent rating"
-    );
-    assert_eq!(cdoc.number("banality"), Some(2), "Banality survived");
-    assert_eq!(
-        cdoc.map("arts").expect("Arts map survived")["Chicanery"],
-        serde_json::json!(2)
-    );
-    assert_eq!(
-        cdoc.map("realms").expect("Realms map survived")["Actor"],
-        serde_json::json!(3)
-    );
-    let cschema = ruleset.schema_for(&cdoc);
-    assert!(
-        cschema.field("arts").is_some()
-            && cschema.field("glamour").is_some()
-            && cschema.field("disciplines").is_none(),
-        "the selected schema is the changeling one"
-    );
-    mush_ruleset::validate(&cschema, &cdoc.data)
-        .expect("reloaded changeling sheet must validate against the changeling schema");
-
-    // --- Ghoul: Ghoul block, Disciplines map, flat Blood Pool + Blood Bond. --
-    let gattr = reloaded
-        .attr(grimm, "sheet:wod")
-        .and_then(mush_core::Attr::as_json)
-        .expect("the ghoul sheet survived the reboot");
-    let gdoc: SheetDoc = serde_json::from_value(gattr.clone()).expect("ghoul sheet decodes");
-    assert_eq!(
-        gdoc.text("template"),
-        Some("ghoul"),
-        "ghoul template survived"
-    );
-    assert_eq!(
-        gdoc.text("domitor_clan"),
-        Some("gangrel"),
-        "domitor clan survived"
-    );
-    assert_eq!(gdoc.number("bloodpool"), Some(6), "Blood Pool survived");
-    assert_eq!(gdoc.number("bond_level"), Some(2), "Blood Bond survived");
-    let gdisc = gdoc.map("disciplines").expect("Disciplines map survived");
-    assert_eq!(
-        gdisc["Potence"],
-        serde_json::json!(1),
-        "free Potence survived"
-    );
-    assert_eq!(gdisc["Fortitude"], serde_json::json!(2));
-    let gschema = ruleset.schema_for(&gdoc);
-    assert!(
-        gschema.field("disciplines").is_some()
-            && gschema.field("bloodpool").is_some()
-            && gschema.field("generation").is_none()
-            && gschema.field("spheres").is_none(),
-        "the selected schema is the ghoul one"
-    );
-    mush_ruleset::validate(&gschema, &gdoc.data)
-        .expect("reloaded ghoul sheet must validate against the ghoul schema");
-
-    // --- Kinfolk: Kinfolk block, split Gnosis pool, Gifts + Delirium flag. ---
-    let kattr = reloaded
-        .attr(willa, "sheet:wod")
-        .and_then(mush_core::Attr::as_json)
-        .expect("the kinfolk sheet survived the reboot");
-    let kdoc: SheetDoc = serde_json::from_value(kattr.clone()).expect("kinfolk sheet decodes");
-    assert_eq!(
-        kdoc.text("template"),
-        Some("kinfolk"),
-        "kinfolk template survived"
-    );
-    assert_eq!(kdoc.text("tribe"), Some("fianna"), "tribe survived");
-    assert_eq!(kdoc.number("gnosis"), Some(3), "permanent Gnosis survived");
-    assert_eq!(
-        kdoc.number("gnosis_temp"),
-        Some(2),
-        "temporary Gnosis pool survived independently of the permanent rating"
-    );
-    assert_eq!(
-        kdoc.number("delirium_immune"),
-        Some(1),
-        "Delirium immunity survived"
-    );
-    assert_eq!(
-        kdoc.map("gifts").expect("Gifts map survived")["Persuasion"],
-        serde_json::json!(1)
-    );
-    let kschema = ruleset.schema_for(&kdoc);
-    assert!(
-        kschema.field("gnosis").is_some()
-            && kschema.field("gifts").is_some()
-            && kschema.field("rage").is_none()
-            && kschema.field("disciplines").is_none(),
-        "the selected schema is the kinfolk one"
-    );
-    mush_ruleset::validate(&kschema, &kdoc.data)
-        .expect("reloaded kinfolk sheet must validate against the kinfolk schema");
-
-    drop(handles);
-}
-
-/// The splat-sheet twin over an in-memory store — ungated CI coverage.
-#[tokio::test(flavor = "multi_thread")]
-async fn wod_splat_sheet_persistence_round_trip_in_memory() {
-    wod_splat_sheet_round_trip(Arc::new(InMemoryStore::new())).await;
-}
-
-/// The splat-sheet twin over a live Redis — a Vampire, a Mage, a Werewolf, a
-/// Changeling, a Ghoul and a Kinfolk built, rebooted from Redis alone, and each
-/// revalidated against its own per-template schema. Gated on `REDIS_URL`; runs
-/// in db 10 (dbs 11–15 are claimed by the other gated tests, which run in
-/// parallel).
-#[tokio::test(flavor = "multi_thread")]
-async fn wod_splat_sheet_persistence_round_trip_redis_gated() {
-    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
-        eprintln!(
-            "skipping wod_splat_sheet_persistence_round_trip_redis_gated: REDIS_URL not set \
-             (no live Redis on this machine)"
-        );
-        return;
-    };
-    let url = support::redis_url_with_db(&url, 10);
-    let store = mush_store::RedisStore::connect(&url)
-        .await
-        .expect("connect to REDIS_URL");
-    store.wipe_namespaces().await.expect("wipe test namespaces");
-    wod_splat_sheet_round_trip(Arc::new(store)).await;
+    sheet_round_trip(Arc::new(store)).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2450,9 +2114,9 @@ fn npc_service() -> Arc<LlmService> {
     )
 }
 
-/// Boot the full production module set with the `npc` module (WoD-grounded) and
-/// the WoD ruleset — exactly as `main.rs` assembles them — plus the service on
-/// the world task.
+/// Boot the full production module set with the `npc` module (grounded by the
+/// game's sheet) and that character ruleset — exactly as `main.rs` assembles
+/// them — plus the service on the world task.
 async fn boot_npc_rig(
     store: &Arc<dyn ObjectStore>,
     guard: &Arc<IpGuard>,
@@ -2464,10 +2128,13 @@ async fn boot_npc_rig(
     register_server_commands(&mut registry, &staff).unwrap();
     let mut mods = mushd::modules::server_modules();
     mods.push(mushd::modules::worldgen_module(Arc::clone(&llm)));
-    let grounding: Arc<dyn mush_npc::AgentGrounding> =
-        mushd::modules::npc_agent_adapter(&["wod".to_string()]).expect("wod grounding");
-    mods.push(mushd::modules::npc_module(Some(grounding)));
-    mods.push(Box::new(ruleset_wod::WodRuleset::new()));
+    mods.push(mushd::modules::npc_module(
+        mushd::modules::npc_agent_adapter(),
+    ));
+    mods.extend(mushd::modules::ruleset_modules(
+        &mush_core::OnboardingConfig::default(),
+        &Default::default(),
+    ));
     let mut engine = Engine::with_modules(world, registry, mods).expect("npc module registration");
     mushd::modules::boot_modules(&mut engine, &**store)
         .await

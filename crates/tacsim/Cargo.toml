@@ -56,6 +56,14 @@ mush-llm.workspace = true
 mush-worldgen.workspace = true
 mush-npc.workspace = true
 mush-ruleset.workspace = true
+
+# 16b cut R-b (R4): the one game sheet (`sheet/`). `mush-dice` is the expression
+# evaluator behind `+roll` and the `check` ability (R5 keeps exactly that layer and
+# deletes `owod20`/`sr5`); `rand`/`rand_chacha` are the module-state RNG those roll
+# over, seeded per composition exactly as `ruleset-wod`'s state slot was.
+mush-dice.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

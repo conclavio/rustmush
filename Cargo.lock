@@ -2794,7 +2794,13 @@ name = "mush-testkit"
 version = "0.1.0"
 dependencies = [
  "mush-core",
+ "mush-dice",
+ "mush-jobs",
  "mush-proto",
+ "mush-ruleset",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "serde",
  "serde_json",
  "smol_str",
 ]
@@ -2886,6 +2892,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "smol_str",
+ "tacsim",
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite 0.30.0",
@@ -4620,6 +4627,7 @@ dependencies = [
  "mush-config",
  "mush-content",
  "mush-core",
+ "mush-dice",
  "mush-economy",
  "mush-faction",
  "mush-housing",
@@ -4644,6 +4652,8 @@ dependencies = [
  "mush-testkit",
  "mush-weather",
  "mush-worldgen",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
  "ruleset-shadowrun",
  "ruleset-wod",
  "serde",

@@ -20,18 +20,24 @@
 //!
 //! The registry under test is the production composition, built the way
 //! `mush-server`'s `build_engine` builds it: the core and engine registry, the
-//! server's staff commands, `server_modules_with`, worldgen, the NPC module and a
-//! ruleset — once per ruleset, because rustmush runs one ruleset per server and
-//! `wod`/`shadowrun` collide on `+roll`/`+sheet`/`+chargen`. "Every ruleset
-//! enabled" is therefore the union over every single-ruleset composition, with
-//! default configuration (`[rulesets].enabled` is the only knob that changes
-//! which verbs exist).
+//! server's staff commands, `server_modules_with`, worldgen, the NPC module, the
+//! game's character sheet, the TacSim layer and the content module, with default
+//! configuration.
+//!
+//! **16b cut R-b: there is exactly ONE composition.** This file used to build one
+//! per `[rulesets].enabled` id and take the union, because rustmush ran one
+//! character ruleset per server and `wod`/`shadowrun` collided on
+//! `+roll`/`+sheet`/`+chargen`. Both rulesets are gone, `ruleset_modules` is
+//! infallible and composes the one game sheet unconditionally, and no config knob
+//! changes which verbs exist — so the "union over every single-ruleset
+//! composition" is the one composition, and [`RULESETS`] is gone with the loop it
+//! drove.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use mush_core::{CommandCompatibility, Engine};
+use mush_core::{CommandCompatibility, Engine, GameModule, ModuleComposition};
 use mush_server::config_ext;
 use mush_server::modules;
 use mush_server::staff::{StaffQueue, register_server_commands};
@@ -50,9 +56,6 @@ const CATEGORIES: [&str; 5] = [
     "economy-carve-out",
 ];
 
-/// Every ruleset a production server can enable (`mush_server::modules::ruleset_modules`).
-const RULESETS: [&str; 2] = ["wod", "shadowrun"];
-
 /// How many `baseline` entries the pin carries — every command registered on
 /// `main` at `b0e3b52`, **less the ones since re-categorized**. A baseline entry may
 /// be **retired** with its verb, or **re-declared** under a real category once it
@@ -70,7 +73,13 @@ const RULESETS: [&str; 2] = ["wod", "shadowrun"];
 /// `Ctx::submit_authoritative(domain_pulse_arm, ..)` and arms the domain's
 /// durable pulse cursor. It is `authoritative` now, with its reasons in the
 /// stanza.
-const PINNED_BASELINE: usize = 151;
+///
+/// 151 -> 98 with 16b cut R-b (2026-09-16): the two character rulesets left the
+/// composition, and 53 baseline verbs retired with them (the 49 pinned as one
+/// composition only, plus `+cast`, `+heal`, `+resonance` and `+spec`, which both
+/// registered and nothing else did). The one game sheet registers `+sheet`,
+/// `@sheet`, `+chargen`, `+stat` and `+roll` under the same names.
+const PINNED_BASELINE: usize = 98;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,17 +104,14 @@ struct Handler {
     note: Option<String>,
 }
 
-/// The primary verb of every command the production server registers with
-/// `[rulesets].enabled = [ruleset]` and default configuration, composed exactly
-/// as `build_engine` composes it (help topics are prose, not commands, and are
-/// not loaded).
-fn production_commands(ruleset: &str) -> BTreeSet<String> {
+/// The production module roster with default configuration, composed exactly as
+/// `build_engine` composes it.
+///
+/// 16b cut R-b: no ruleset argument. `[rulesets].enabled` selected one of two
+/// character rulesets and is read by nothing; the one game sheet
+/// (`ruleset_modules`) composes unconditionally and infallibly.
+fn production_modules() -> Vec<Box<dyn GameModule>> {
     let config = mush_config::config::Config::default();
-    let enabled = vec![ruleset.to_string()];
-    let staff = Arc::new(StaffQueue::new());
-    let mut registry = base_registry();
-    register_server_commands(&mut registry, &staff)
-        .expect("server command registration must not collide");
     // The worldgen module wants an LLM service; no provider is configured and the
     // service is disabled, which changes nothing about which verbs register.
     let llm = Arc::new(
@@ -114,20 +120,15 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
             .build(),
     );
     let onboarding = config_ext::onboarding_ruleset(&config.onboarding);
-    let wod_economy =
-        config_ext::wod_economy_config(&config.wod).expect("the default [wod.economy] converts");
-    let wod_selected = enabled.iter().any(|r| r.eq_ignore_ascii_case("wod"));
-    let sr_economy = config_ext::shadowrun_economy_config(&config.shadowrun)
-        .expect("the default [shadowrun.economy] converts");
-    let sr_selected = enabled.iter().any(|r| r.eq_ignore_ascii_case("shadowrun"));
+    let game = config_ext::tacsim_economy_config(&config.tacsim)
+        .expect("the default [tacsim.economy] converts");
     let mut mods = modules::server_modules_with(
         config_ext::weather_config(&config.weather),
         config_ext::economy_config(&config.economy).expect("the default [economy] converts"),
         config_ext::atlas_config(&config.atlas, &config.worldgen)
             .expect("the default [atlas] converts"),
         &onboarding,
-        wod_selected.then_some(&wod_economy),
-        sr_selected.then_some(&sr_economy),
+        &game,
         // E7r1 R4: this composition carries no `[tacsim.recovery]`, so the provider
         // is disabled — `@recovery` still registers, which is exactly what lets this
         // tripwire see it.
@@ -137,18 +138,13 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
         Arc::clone(&llm),
         config_ext::worldgen_config(&config.worldgen),
     ));
-    mods.push(modules::npc_module(modules::npc_agent_adapter(&enabled)));
-    mods.extend(
-        modules::ruleset_modules(&enabled, &onboarding, &wod_economy, &sr_economy)
-            .expect("a known ruleset composes"),
-    );
-    // E7 cut 1: the TacSim layer is part of every production composition — it is not a
-    // `[rulesets]` id but a layer switched by `[tacsim].enabled` (doc 10 §20), and it
-    // composes after the character ruleset. `RULESETS` therefore does NOT gain
-    // `"tacsim"`; the layer is pushed here instead, so its verbs are enumerated in both
-    // single-ruleset compositions. Default configuration means `enabled = false`, and
-    // the verbs still register (they answer "not enabled on this server"), which is
-    // exactly what makes the surface the tripwire watches independent of the operator's
+    mods.push(modules::npc_module(modules::npc_agent_adapter()));
+    mods.extend(modules::ruleset_modules(&onboarding, &game));
+    // E7 cut 1: the TacSim layer is part of every production composition — it is a
+    // layer switched by `[tacsim].enabled` (doc 10 §20) and it composes after the
+    // character sheet. Default configuration means `enabled = false`, and the verbs
+    // still register (they answer "not enabled on this server"), which is exactly
+    // what makes the surface the tripwire watches independent of the operator's
     // switches.
     mods.push(modules::tacsim_module(
         config_ext::tacsim_config(&config.tacsim).expect("the default [tacsim] converts"),
@@ -158,11 +154,24 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
     mods.push(
         modules::content_module(config.game.starter_area).expect("the content module composes"),
     );
-    // `build_engine`'s own step: compose and freeze every registry before any world
-    // record exists. The verbs are fixed here; no world and no boot are needed.
-    let composition = Engine::compose_modules(registry, mods)
-        .expect("the production composition registers without collision");
-    composition
+    mods
+}
+
+/// `build_engine`'s own step: compose and freeze every registry before any world
+/// record exists. The verbs are fixed here; no world and no boot are needed.
+fn production_composition() -> ModuleComposition {
+    let staff = Arc::new(StaffQueue::new());
+    let mut registry = base_registry();
+    register_server_commands(&mut registry, &staff)
+        .expect("server command registration must not collide");
+    Engine::compose_modules(registry, production_modules())
+        .expect("the production composition registers without collision")
+}
+
+/// The primary verb of every command the production server registers with default
+/// configuration (help topics are prose, not commands, and are not loaded).
+fn production_commands() -> BTreeSet<String> {
+    production_composition()
         .registry()
         .specs()
         .map(|spec| spec.name.to_string())
@@ -178,54 +187,8 @@ fn production_commands(ruleset: &str) -> BTreeSet<String> {
 /// `@wo`, the one verb whose lane changed, carrying cut 4's note and an unchecked
 /// class. The composition is the same one `production_commands` builds; only the
 /// projection differs.
-fn published_classes(ruleset: &str) -> BTreeMap<String, CommandCompatibility> {
-    let config = mush_config::config::Config::default();
-    let enabled = vec![ruleset.to_string()];
-    let staff = Arc::new(StaffQueue::new());
-    let mut registry = base_registry();
-    register_server_commands(&mut registry, &staff)
-        .expect("server command registration must not collide");
-    let llm = Arc::new(
-        mush_llm::LlmService::builder()
-            .global_enabled(false)
-            .build(),
-    );
-    let onboarding = config_ext::onboarding_ruleset(&config.onboarding);
-    let wod_economy =
-        config_ext::wod_economy_config(&config.wod).expect("the default [wod.economy] converts");
-    let wod_selected = enabled.iter().any(|r| r.eq_ignore_ascii_case("wod"));
-    let sr_economy = config_ext::shadowrun_economy_config(&config.shadowrun)
-        .expect("the default [shadowrun.economy] converts");
-    let sr_selected = enabled.iter().any(|r| r.eq_ignore_ascii_case("shadowrun"));
-    let mut mods = modules::server_modules_with(
-        config_ext::weather_config(&config.weather),
-        config_ext::economy_config(&config.economy).expect("the default [economy] converts"),
-        config_ext::atlas_config(&config.atlas, &config.worldgen)
-            .expect("the default [atlas] converts"),
-        &onboarding,
-        wod_selected.then_some(&wod_economy),
-        sr_selected.then_some(&sr_economy),
-        modules::no_recovery(),
-    );
-    mods.push(modules::worldgen_module_with(
-        Arc::clone(&llm),
-        config_ext::worldgen_config(&config.worldgen),
-    ));
-    mods.push(modules::npc_module(modules::npc_agent_adapter(&enabled)));
-    mods.extend(
-        modules::ruleset_modules(&enabled, &onboarding, &wod_economy, &sr_economy)
-            .expect("a known ruleset composes"),
-    );
-    mods.push(modules::tacsim_module(
-        config_ext::tacsim_config(&config.tacsim).expect("the default [tacsim] converts"),
-    ));
-    // S1: the content module last, as `build_engine` composes it. It registers no
-    // verb; it is here so this is the production roster and not most of it.
-    mods.push(
-        modules::content_module(config.game.starter_area).expect("the content module composes"),
-    );
-    let composition = Engine::compose_modules(registry, mods)
-        .expect("the production composition registers without collision");
+fn published_classes() -> BTreeMap<String, CommandCompatibility> {
+    let composition = production_composition();
     let registry = composition.registry();
     registry
         .specs()
@@ -280,10 +243,10 @@ fn category_of(class: CommandCompatibility) -> &'static str {
 /// for that verb** (B8; F10(a)) — the cross-check that did not exist.
 ///
 /// `baseline` is exempt by construction: it is a provenance word, not a class, and
-/// the 157 verbs it covers publish whatever their pre-K8.5 registration published.
+/// the verbs it covers publish whatever their pre-K8.5 registration published.
 /// Every non-baseline stanza is a deliberate declaration and is checked against the
-/// composition, in **both** single-ruleset compositions, so a class that differs
-/// between them is a problem this names rather than one it averages away.
+/// one production composition (16b cut R-b: there is no longer a per-ruleset
+/// composition for a class to differ between).
 #[test]
 fn vf_b8a_every_stanzas_category_matches_the_class_the_composition_publishes() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(ALLOWLIST);
@@ -293,8 +256,8 @@ fn vf_b8a_every_stanzas_category_matches_the_class_the_composition_publishes() {
         .unwrap_or_else(|error| panic!("{} does not parse: {error}", path.display()));
     let mut problems: Vec<String> = Vec::new();
     let mut seen_drift: BTreeSet<&str> = BTreeSet::new();
-    for ruleset in RULESETS {
-        let published = published_classes(ruleset);
+    {
+        let published = published_classes();
         for handler in &list.handler {
             if handler.category == "baseline" {
                 continue;
@@ -313,7 +276,11 @@ fn vf_b8a_every_stanzas_category_matches_the_class_the_composition_publishes() {
                 continue;
             }
             problems.push(format!(
-                "[{ruleset}] {:?}: the stanza declares category {:?}, but the composition                  publishes {expected:?} ({class:?}). Either the registration moved lanes                  without the stanza, or the stanza claims a lane the verb does not ride. If                  this is deliberate and cannot be fixed in this commit, add it to                  KNOWN_CLASS_DRIFT with the reason.",
+                "{:?}: the stanza declares category {:?}, but the composition publishes \
+                 {expected:?} ({class:?}). Either the registration moved lanes without the \
+                 stanza, or the stanza claims a lane the verb does not ride. If this is \
+                 deliberate and cannot be fixed in this commit, add it to KNOWN_CLASS_DRIFT \
+                 with the reason.",
                 handler.name, handler.category
             ));
         }
@@ -370,12 +337,14 @@ fn vf_b8b_the_wo_note_records_the_money_leg() {
     }
 }
 
-/// The union over every single-ruleset production composition.
+/// Every verb the production composition registers.
+///
+/// 16b cut R-b: this used to be the UNION over every single-ruleset composition.
+/// There is one composition, so the union is it — the name is kept because the
+/// allowlist's own language ("every command the production server registers") is
+/// what the tripwire below is written against.
 fn registered_commands() -> BTreeSet<String> {
-    RULESETS
-        .iter()
-        .flat_map(|r| production_commands(r))
-        .collect()
+    production_commands()
 }
 
 fn stanza_to_add(name: &str) -> String {
@@ -486,18 +455,42 @@ fn every_registered_command_is_pinned_in_the_allowlist_with_a_category() {
     );
 }
 
-/// The pinned file's own consistency: the union is exactly what the two
-/// compositions register, and neither composition is empty — so a ruleset that
-/// stops composing cannot silently shrink the surface the tripwire watches.
+/// The pinned file's own consistency: the surface the tripwire watches is not
+/// empty, and the game's own sheet is really in it — so a module that stops
+/// composing cannot silently shrink what the allowlist is measured against.
+///
+/// 16b cut R-b: this used to walk `RULESETS` and check each single-ruleset
+/// composition contributed to the union. With one composition the union claim is
+/// a tautology, so what is left is the claim that made it worth having — a
+/// composition that quietly lost a module would shrink `registered_commands`,
+/// and every stanza for the verbs it had would then fail as "listed but nothing
+/// registers it" with no hint why. These rows say why.
 #[test]
-fn every_single_ruleset_composition_contributes_to_the_union() {
-    let union = registered_commands();
-    for ruleset in RULESETS {
-        let names = production_commands(ruleset);
-        assert!(!names.is_empty(), "{ruleset}: no commands registered");
+fn the_production_composition_carries_the_surface_the_allowlist_watches() {
+    let names = registered_commands();
+    assert!(!names.is_empty(), "no commands registered");
+    // The one game sheet's verbs (`pilot`), the TacSim layer's (`tacsim`), and a
+    // built-in from each end of the roster — enough that a dropped module is a
+    // named failure rather than a wall of unlisted stanzas.
+    for verb in [
+        // the game sheet
+        "+sheet",
+        "+chargen",
+        "+stat",
+        "+roll",
+        // the TacSim layer
+        "@tacsim",
+        "@corridor",
+        // the NPC module, and worldgen
+        "@agent",
+        "@gen",
+        // the economy's two title-minting layers
+        "@market",
+        "@property",
+    ] {
         assert!(
-            names.is_subset(&union),
-            "{ruleset}: the union misses one of its commands"
+            names.contains(verb),
+            "{verb} is not registered: the production composition dropped a module"
         );
     }
 }

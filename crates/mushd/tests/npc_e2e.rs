@@ -1,19 +1,23 @@
 //! M8 NPC-agent end-to-end tests, wired exactly as `main.rs` boots the server
-//! (built-ins + worldgen + the `npc` module with the WoD grounding adapter +
-//! the WoD ruleset), but ungated and fully in-memory: no network, no Redis, no
-//! real LLM. A [`MockProvider`] returns scripted tool/JSON actions, and the
+//! (built-ins + worldgen + the `npc` module with a ruleset grounding adapter +
+//! a character ruleset), but ungated and fully in-memory: no network, no Redis,
+//! no real LLM. A [`MockProvider`] returns scripted tool/JSON actions, and the
 //! off-loop NPC turn + typed re-entry are driven by hand (the same two-phase
 //! path `world_task::spawn_effects` runs) so the whole flow is deterministic.
 //!
+//! 16b cut R-b: the WoD ruleset this was written against is gone, so the
+//! grounded ruleset is the `toy` test ruleset — same seams (a sheet, an
+//! `agent_profile` summary, one dice ability), none of a splat's arithmetic.
+//!
 //! Coverage (the M8 demo, asserted end to end):
 //! - staff `@agent/create` a bartender, `@agent/set` its persona + tier, and
-//!   `@agent/sheet` + `@sheet/set` give it a real WoD sheet;
+//!   `@agent/sheet` + `@sheet/set` give it a real sheet;
 //! - a player says something → after the coalescing window the NPC's turn fires
 //!   → the NPC SAYS a line rendered through the normal formatter ("Bartender
 //!   says, ...") that the room sees;
 //! - the assembled prompt carries the persona + the ruleset sheet summary + the
 //!   delimited/escaped player speech (via a capturing mock);
-//! - a `wod_roll` ability rolls the NPC's REAL sheet pool (Strength+Brawl = 7
+//! - a `toy_roll` ability rolls the NPC's REAL sheet pool (Strength+Brawl = 7
 //!   dice) and the result reaches the room;
 //! - a player leaving empties the room → no further NPC wakes, no tokens;
 //! - a prompt-injection line yields only an allowlisted say/pose, NEVER a
@@ -35,12 +39,13 @@ use mush_llm::{
 use mush_npc::{AgentGrounding, run_npc_turn_async};
 use mush_proto::{NarrativeKind, OutputEvent};
 use mush_store::InMemoryStore;
+use mush_testkit::toy_ruleset::ToyRuleset;
 use smol_str::SmolStr;
 
 use mushd::modules;
 use mushd::world_task::base_registry;
 
-/// Fixed RNG seed for the WoD module → deterministic dice.
+/// Fixed RNG seed for the toy module → deterministic dice.
 const SEED: u64 = 0xB0A7;
 
 // ----------------------------------------------------------------------
@@ -53,8 +58,8 @@ struct Rig {
 }
 
 impl Rig {
-    /// Boot the full production module set (built-ins + worldgen + npc(WoD) +
-    /// the seeded WoD ruleset) over an in-memory store, `llm` driving the
+    /// Boot the full production module set (built-ins + worldgen + npc(toy) +
+    /// the seeded `toy` ruleset) over an in-memory store, `llm` driving the
     /// off-loop turns. God is relocated into a fresh Bar room to run staff
     /// commands from.
     async fn boot(llm: &Arc<LlmService>) -> Rig {
@@ -62,13 +67,14 @@ impl Rig {
         let registry = base_registry();
 
         // main.rs's assembly order: built-ins, worldgen, npc (grounded by the
-        // WoD adapter), then the ruleset — here seeded for deterministic dice.
+        // generic ruleset adapter), then the ruleset — here seeded for
+        // deterministic dice.
         let mut mods = modules::server_modules();
         mods.push(modules::worldgen_module(Arc::clone(llm)));
         let grounding: Arc<dyn AgentGrounding> =
-            modules::npc_agent_adapter(&["wod".to_string()]).expect("wod grounding adapter");
+            Arc::new(modules::RulesetAgent::new(ToyRuleset::with_seed(SEED)));
         mods.push(modules::npc_module(Some(grounding)));
-        mods.push(Box::new(ruleset_wod::WodRuleset::with_seed(SEED)));
+        mods.push(Box::new(ToyRuleset::with_seed(SEED)));
 
         let mut engine =
             Engine::with_modules(World::new_minimal(), registry, mods).expect("module wiring");
@@ -266,7 +272,7 @@ async fn staff_configures_npc_and_it_greets_a_player_through_the_formatter() {
     let mut rig = Rig::boot(&svc).await;
     let npc = make_bartender(&mut rig);
     // Give it a rollable sheet so the prompt carries a capability summary.
-    let out = rig.staff("@agent/sheet Bartender=mortal");
+    let out = rig.staff("@agent/sheet Bartender=alpha");
     assert!(out.contains("sheet"), "{out}");
 
     let alice = rig.player("Alice");
@@ -290,7 +296,7 @@ async fn staff_configures_npc_and_it_greets_a_player_through_the_formatter() {
         "persona in system prompt"
     );
     assert!(
-        system.contains("mortal") || system.contains("Willpower"),
+        system.contains("alpha") || system.contains("Willpower"),
         "sheet summary in system prompt: {system}"
     );
     let user: String = req
@@ -394,12 +400,12 @@ async fn world_knowledge_framing_and_secret_exclusion_in_the_assembled_prompt() 
 }
 
 #[tokio::test]
-async fn wod_roll_uses_the_npcs_real_sheet_pool() {
+async fn toy_roll_uses_the_npcs_real_sheet_pool() {
     let (svc, mock) = service();
     let mut rig = Rig::boot(&svc).await;
     let npc = make_bartender(&mut rig);
     // Real traits: Strength 4 + Brawl 3 = a 7-die pool.
-    rig.staff("@agent/sheet Bartender=mortal");
+    rig.staff("@agent/sheet Bartender=alpha");
     let s = rig.staff("@sheet/set Bartender/strength=4");
     assert!(s.contains("strength") || s.contains("Set"), "{s}");
     rig.staff("@sheet/set Bartender/brawl=3");
@@ -412,7 +418,7 @@ async fn wod_roll_uses_the_npcs_real_sheet_pool() {
     // The model requests a roll of its own pool.
     mock.push_response(tool_resp(vec![ContentBlock::ToolUse {
         id: "r1".into(),
-        name: "wod_roll".into(),
+        name: "toy_roll".into(),
         input: serde_json::json!({ "pool_expr": "strength+brawl", "difficulty": 6 }),
     }]));
     let done = run_npc_turn_async(&svc, &payload).await;

@@ -21,6 +21,10 @@ tokio.workspace = true
 workspace = true
 
 [dev-dependencies]
+# 16b cut R-b: the contract probes that used the deleted game rulesets as
+# sheet / vitals / NPC-grounding fixtures drive the `toy` test ruleset instead.
+# The normal dependency above stays featureless.
+mush-testkit = { workspace = true, features = ["toy-ruleset"] }
 # The rule-1 allowlist tripwire (tests/legacy_handler_allowlist.rs) composes the
 # production command registry the way `mush-server`'s `build_engine` does.
 mush-config.workspace = true

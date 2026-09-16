@@ -77,11 +77,23 @@ pub mod commands;
 pub mod composition;
 pub mod config;
 pub mod content;
+pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
 pub mod pack;
 pub mod record;
 pub mod seed;
+/// 16b cut R-b (R4): **the one game sheet** — pilot ratings, the character-first
+/// facts of doc 10 §17–§19, `+sheet`/`+chargen`/`+stat`/`+roll` over
+/// [`mush_ruleset`]'s schema library, and the single NPC `check` ability that
+/// replaces `wod_roll` and `sr_roll`.
+///
+/// It is a **second** [`GameModule`] in this crate, named
+/// [`sheet::NS`] (`"pilot"`) because this one is named [`NS`] (`"tacsim"`) and a
+/// module's name is its persistence namespace; the sheet's *ruleset* id stays
+/// `"tacsim"`, so storage and the wire are `sheet:tacsim` and `tacsim.sheet`.
+/// [`sheet`]'s own docs carry the whole argument.
+pub mod sheet;
 pub mod store;
 
 use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar};
@@ -93,6 +105,7 @@ pub use config::{
     TacsimRecoveryConfig, TacsimTimeConfig,
 };
 pub use content::{CORRIDOR_MODE, GM_PER_KM, SITE_HALF_GM, register_appliers};
+pub use economy::{CREDIT, CREDIT_CODE, CREDIT_SCALE, GameEconomyConfig};
 pub use ephemeris::{AU_KM, Body, Ephemeris, MAX_ORBIT_UAU, MAX_PERIOD_MDAYS, separation_km};
 pub use pack::BodyDef;
 pub use pack::{
@@ -106,6 +119,13 @@ pub use pack::{
 };
 pub use record::{PackRecord, PinRecord, SeedApplication};
 pub use seed::{PlannedObject, SeedError, SeedOutcome, SeedPlan};
+// 16b cut R-b (R4). The sheet ruleset is deliberately NOT re-exported as
+// `TacsimRuleset`: that name is this crate's packs-and-seed layer, and the two
+// are different modules with different namespaces (see [`sheet`]).
+pub use sheet::{
+    PilotProfile, PilotRuleset, PilotSheetState, TacsimChargen, agent as sheet_agent,
+    onboarding as sheet_onboarding,
+};
 pub use store::{MAX_PINS, NS, PACK_PAGE, ResolveError, TacsimStore};
 
 /// **Parse and verify every pack the host read** — the one function both the host's

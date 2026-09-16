@@ -71,8 +71,8 @@ fn scratch_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// The SERVER config: in-memory, ephemeral IPC, the `wod` ruleset loaded so the
-/// boot Hello manifest carries the `<ruleset>.sheet` feed + `wod` feature — the
+/// The SERVER config: in-memory, ephemeral IPC, the game sheet composed so the
+/// boot Hello manifest carries the `<ruleset>.sheet` feed + `pilot` feature — the
 /// same rich manifest the all-in-one advertises, re-delivered on every reboot.
 fn server_config(tag: &str) -> Config {
     let mut cfg = Config::default();
@@ -361,7 +361,7 @@ async fn web_connection_survives_server_restart_with_world_intact() {
         .expect("ws connect through the split gateway");
 
     // The hello manifest is NON-EMPTY and matches the all-in-one's surface (the
-    // per-module features comsys→channels/mail + the wod ruleset's sheet, panel
+    // per-module features comsys→channels/mail + the game sheet's, panel
     // feeds who/comsys/mail + <ruleset>.sheet) — proving the server shipped its
     // real manifest over IPC at boot and the gateway wired it into WebConfig.
     let (features, panels) = expect_hello(&mut ws).await;
@@ -370,7 +370,7 @@ async fn web_connection_survives_server_restart_with_world_intact() {
         "features must not be empty: {features:?}"
     );
     assert!(!panels.is_empty(), "panels must not be empty: {panels:?}");
-    for f in ["channels", "wod"] {
+    for f in ["channels", "pilot"] {
         assert!(
             features.iter().any(|x| x == f),
             "feature {f} in {features:?}"

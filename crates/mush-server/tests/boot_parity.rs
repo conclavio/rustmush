@@ -27,10 +27,13 @@
 //! split half is the production target and `mushd` is the local rig. Four
 //! groups are added here:
 //!
-//! - the roster and `build_hello_manifest` goldens over the whole
-//!   `{no ruleset | wod | shadowrun} x {tacsim off | on}` matrix, so a module
-//!   added, dropped or reordered fails a named test with `boot.rs` in the
-//!   message rather than changing what a client is told in silence;
+//! - the roster and `build_hello_manifest` goldens over the one production
+//!   composition x `{tacsim off | on}`, so a module added, dropped or reordered
+//!   fails a named test with `boot.rs` in the message rather than changing what
+//!   a client is told in silence. (16b cut R-b collapsed the `{no ruleset | wod
+//!   | shadowrun}` half of that matrix: the two character rulesets are gone and
+//!   the one game sheet composes unconditionally, so there is exactly one
+//!   composition left to state a golden for.);
 //! - the config-read coverage table below — every boot-relevant knob set to a
 //!   non-default value with an observable asserted, on EVERY entry point that
 //!   reads it, including the `serve_with_store` caller-supplied-store branch
@@ -62,7 +65,7 @@
 //! | `[llm].decision_workers` | `build_engine` -> `BootedEngine` | `the_engine_knobs_reach_the_booted_world` |
 //! | `[game].max_characters` | `build_engine` -> `@newchar` | `the_engine_knobs_reach_the_booted_world` |
 //! | `[offers].key_dir`, `[server].data_dir` (decision keys) | `build_engine` key rings | `the_engine_knobs_reach_the_booted_world` |
-//! | `[rulesets].enabled` | `game_modules` | the roster/manifest matrix |
+//! | `[tacsim.economy].housing` / `.market` / `.reserved_rooms` | `game_modules` -> `server_modules_with` | `modules.rs`'s `lb_e5cc231_…`, `tests/market_issuer.rs` |
 //!
 //! A knob added to `mush-config` and never wired into `boot.rs` leaves a row
 //! missing from this table — a documented, greppable gap rather than a silent
@@ -100,15 +103,17 @@ fn scratch_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// A memory-backed config on a scratch data dir, with the WoD ruleset selected —
-/// `[rulesets].enabled`'s own default, and therefore the roster a stock server
+/// A memory-backed config on a scratch data dir — the roster a stock server
 /// composes.
-fn wod_config(tag: &str) -> Config {
+///
+/// 16b cut R-b: there is nothing to select. `[rulesets].enabled` selected one of
+/// two character rulesets and is read by nothing now, so the stock config IS the
+/// production composition.
+fn stock_config(tag: &str) -> Config {
     let mut cfg = Config::default();
     cfg.store.store = "memory".to_string();
     cfg.server.data_dir = scratch_dir(tag);
     cfg.ipc.listen = "127.0.0.1:0".to_string();
-    cfg.rulesets.enabled = vec!["wod".to_string()];
     cfg
 }
 
@@ -189,7 +194,7 @@ impl Drop for Fixture {
 /// whole file measures against — over a stock memory-backed config `mutate` may
 /// adjust first.
 async fn boot_fixture(tag: &str, mutate: impl FnOnce(&mut Config)) -> Fixture {
-    let mut cfg = wod_config(tag);
+    let mut cfg = stock_config(tag);
     mutate(&mut cfg);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let spool = spool(&cfg);
@@ -204,16 +209,19 @@ async fn boot_fixture(tag: &str, mutate: impl FnOnce(&mut Config)) -> Fixture {
     }
 }
 
-/// The roster the composition root builds for a given `[rulesets].enabled`
-/// selection — **the golden**, and the one place this suite states it.
+/// The roster the composition root builds — **the golden**, and the one place
+/// this suite states it.
 ///
 /// The built-ins first (`modules::server_modules_with`), then the root's own
-/// worldgen and NPC modules, then the selected character ruleset if there is
-/// one, and the TacSim layer LAST. `tacsim` is in the list whether or not
+/// worldgen and NPC modules, then the one game sheet and its rules interface,
+/// then the TacSim layer, then content. `tacsim` is in the list whether or not
 /// `[tacsim].enabled`: the layer always composes (its state slot always
 /// exists), and the flag decides what it DOES, not whether a client is told
 /// about it.
-fn expected_roster(ruleset: Option<&str>) -> Vec<&str> {
+///
+/// 16b cut R-b: the `Option<&str>` selection is gone with the two character
+/// rulesets. `pilot` and `rules_interface` are now unconditional rows.
+fn expected_roster() -> Vec<&'static str> {
     let mut roster = vec![
         "comsys",
         "canon",
@@ -241,13 +249,11 @@ fn expected_roster(ruleset: Option<&str>) -> Vec<&str> {
         "worldgen",
         "npc",
     ];
-    // ...then the character ruleset `[rulesets].enabled` selected, if any,
-    // and (S6) the rules interface the server composes beside it.
-    roster.extend(ruleset);
-    if ruleset.is_some() {
-        roster.push("rules_interface");
-    }
-    // ...the TacSim layer next: its boot reads the character ruleset's facts.
+    // ...then the one game sheet, and (S6) the rules interface the server
+    // composes beside it — both unconditional since 16b cut R-b.
+    roster.push("pilot");
+    roster.push("rules_interface");
+    // ...the TacSim layer next: its boot reads the character sheet's facts.
     roster.push("tacsim");
     // ...and the content module LAST: its boot pass drives every other module's
     // appliers, so every owner must have hydrated before it runs (S1).
@@ -255,9 +261,9 @@ fn expected_roster(ruleset: Option<&str>) -> Vec<&str> {
     roster
 }
 
-/// The panel feeds every configuration advertises, in registration order, plus
-/// the two `build_hello_manifest` appends engine-side.
-fn expected_panels(ruleset_panels: &[&'static str]) -> Vec<&'static str> {
+/// The panel feeds the composition advertises, in registration order, plus the
+/// two `build_hello_manifest` appends engine-side.
+fn expected_panels() -> Vec<&'static str> {
     let mut panels = vec![
         "commands.list",
         "comsys",
@@ -275,21 +281,17 @@ fn expected_panels(ruleset_panels: &[&'static str]) -> Vec<&'static str> {
         "npc.thinking",
         "intel",
     ];
-    panels.extend(ruleset_panels);
+    // 16b cut R-b: the one game sheet's ONE feed, where the selected ruleset's
+    // block of three used to sit. It is named for the sheet SCHEMA's ruleset id
+    // (`tacsim`) and not for the module (`pilot`): `register_sheet_commands`
+    // reserves `<schema.ruleset>.sheet`. There is deliberately no `.roll` feed
+    // and no `.vitals` feed — doc 16 §3.3 leaves M32's `TacticalUnit` cells the
+    // one damage authority, so the sheet declares no health track to publish.
+    panels.push("tacsim.sheet");
     panels.push("who");
     panels.push("legal.actions");
     panels
 }
-
-/// `{no ruleset | wod | shadowrun}` and the panel feeds each ruleset adds.
-const RULESET_MATRIX: [(Option<&str>, &[&str]); 3] = [
-    (None, &[]),
-    (Some("wod"), &["wod.roll", "wod.sheet", "wod.vitals"]),
-    (
-        Some("shadowrun"),
-        &["sr.roll", "shadowrun.sheet", "shadowrun.vitals"],
-    ),
-];
 
 /// A `MakeWriter` that collects formatted log lines into a shared buffer.
 #[derive(Clone, Default)]
@@ -331,19 +333,19 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
 /// module at all. This is the same claim made about the roster a server boots.
 #[test]
 fn game_modules_pins_the_composition_order() {
-    let cfg = wod_config("order");
+    let cfg = stock_config("order");
     let llm = llm_handle(&cfg);
     let mods = boot::game_modules(&cfg, &llm).expect("the stock roster composes");
     assert_eq!(
         names(&mods),
-        expected_roster(Some("wod")),
+        expected_roster(),
         "the roster, and the one place its order is stated"
     );
     assert_eq!(
         names(&mods).iter().rev().nth(1).copied(),
         Some("tacsim"),
-        "the TacSim layer must compose after the character ruleset: its boot reads that \
-         ruleset's facts; only the content module, whose boot pass drives every other \
+        "the TacSim layer must compose after the character sheet: its boot reads that \
+         sheet's facts; only the content module, whose boot pass drives every other \
          module's appliers, comes after it"
     );
     assert_eq!(
@@ -380,17 +382,20 @@ async fn the_split_boot_carries_the_operator_recovery_policy() {
 
 // ---- 1b: the roster and the hello manifest, across the matrix --------------
 
-/// The roster AND the web `hello` manifest, as goldens, over
-/// `{no ruleset | wod | shadowrun} x {tacsim off | on}` — measured on the SPLIT
-/// root, which is the production half and therefore the reference the all-in-one
-/// is equal to, rather than the other way round.
+/// The roster AND the web `hello` manifest, as goldens, over the one production
+/// composition x `{tacsim off | on}` — measured on the SPLIT root, which is the
+/// production half and therefore the reference the all-in-one is equal to,
+/// rather than the other way round.
 ///
-/// Two claims only a matrix can make:
+/// 16b cut R-b collapsed the `{no ruleset | wod | shadowrun}` half of this
+/// matrix. It used to make the claim *"`[rulesets].enabled` moves exactly one
+/// module and one block of panel feeds, and moves nothing else"*; there is one
+/// composition now, and what is left of that claim is stated positively — the
+/// sheet is `pilot` and `rules_interface`, and its panel feeds are exactly
+/// `tacsim.sheet` (see [`expected_roster`] and [`expected_panels`]).
 ///
-/// - `[rulesets].enabled` moves exactly one module and one block of panel
-///   feeds, and moves nothing else. A ruleset that quietly registered a second
-///   module, or a built-in that only composes when a ruleset is selected, is a
-///   diff in this golden.
+/// The claim only a matrix can make survives whole:
+///
 /// - `[tacsim].enabled` moves NOTHING in the manifest. The layer composes
 ///   either way (its state slot always exists), so the feature is advertised
 ///   either way and the flag decides what the layer DOES — which is why
@@ -403,65 +408,68 @@ async fn the_split_boot_carries_the_operator_recovery_policy() {
 /// the one file to edit when a module is added on purpose.
 #[tokio::test]
 async fn the_roster_and_hello_manifest_are_golden_across_the_matrix() {
-    for (ruleset, ruleset_panels) in RULESET_MATRIX {
-        for tacsim_on in [false, true] {
-            let tag = format!("matrix-{}-{tacsim_on}", ruleset.unwrap_or("none"));
-            let fx = boot_fixture(&tag, |cfg| {
-                cfg.rulesets.enabled = ruleset.map(str::to_string).into_iter().collect();
-                if tacsim_on {
-                    enable_tacsim(cfg);
-                }
-            })
-            .await;
-            let case = format!("[rulesets] = {ruleset:?}, [tacsim].enabled = {tacsim_on}");
+    for tacsim_on in [false, true] {
+        let tag = format!("matrix-{tacsim_on}");
+        let fx = boot_fixture(&tag, |cfg| {
+            if tacsim_on {
+                enable_tacsim(cfg);
+            }
+        })
+        .await;
+        let case = format!("[tacsim].enabled = {tacsim_on}");
 
-            let roster = names(fx.booted.engine.modules());
-            assert_eq!(
-                roster,
-                expected_roster(ruleset),
-                "the booted roster drifted from the golden ({case}); if that was \
-                 deliberate, `game_modules` in crates/mush-server/src/boot.rs is the \
-                 one file to edit"
-            );
+        let roster = names(fx.booted.engine.modules());
+        assert_eq!(
+            roster,
+            expected_roster(),
+            "the booted roster drifted from the golden ({case}); if that was \
+             deliberate, `game_modules` in crates/mush-server/src/boot.rs is the \
+             one file to edit"
+        );
 
-            let (features, panels) = boot::build_hello_manifest(&fx.booted.engine);
-            let features: Vec<&str> = features.iter().map(String::as_str).collect();
-            let expected_features: Vec<&str> = expected_roster(ruleset)
-                .into_iter()
-                .map(|name| if name == "comsys" { "channels" } else { name })
-                .collect();
-            assert_eq!(
-                features, expected_features,
-                "the web hello FEATURES are the roster with comsys advertised as \
-                 channels, and nothing else ({case})"
-            );
-            let panels: Vec<&str> = panels.iter().map(String::as_str).collect();
-            assert_eq!(
-                panels,
-                expected_panels(ruleset_panels),
-                "the web hello PANELS drifted from the golden ({case}): a module \
-                 registered or dropped a panel feed, and every web client was told so \
-                 in silence"
-            );
-            assert!(
-                features.contains(&"tacsim"),
-                "the SPLIT root's hello must advertise the tacsim layer ({case}): \
-                 before WS04-S2 it composed no such module and could not"
-            );
+        let (features, panels) = boot::build_hello_manifest(&fx.booted.engine);
+        let features: Vec<&str> = features.iter().map(String::as_str).collect();
+        let expected_features: Vec<&str> = expected_roster()
+            .into_iter()
+            .map(|name| if name == "comsys" { "channels" } else { name })
+            .collect();
+        assert_eq!(
+            features, expected_features,
+            "the web hello FEATURES are the roster with comsys advertised as \
+             channels, and nothing else ({case})"
+        );
+        let panels: Vec<&str> = panels.iter().map(String::as_str).collect();
+        assert_eq!(
+            panels,
+            expected_panels(),
+            "the web hello PANELS drifted from the golden ({case}): a module \
+             registered or dropped a panel feed, and every web client was told so \
+             in silence"
+        );
+        assert!(
+            features.contains(&"tacsim"),
+            "the SPLIT root's hello must advertise the tacsim layer ({case}): \
+             before WS04-S2 it composed no such module and could not"
+        );
+        // …and `[tacsim]` still moves NO module: the game sheet composes on both
+        // arms, which is the half of the old matrix's claim that survives.
+        assert!(
+            features.contains(&"pilot") && features.contains(&"rules_interface"),
+            "the one game sheet composes whatever [tacsim] says ({case}): {features:?}"
+        );
 
-            let tacsim = fx
-                .booted
-                .engine
-                .world
-                .module_state::<TacsimStore>()
-                .expect("the layer composes whatever [tacsim].enabled says");
-            assert_eq!(
-                tacsim.enabled(),
-                tacsim_on,
-                "[tacsim].enabled decides what the composed layer DOES, and that is \
-                 the only thing it decides ({case})"
-            );
-        }
+        let tacsim = fx
+            .booted
+            .engine
+            .world
+            .module_state::<TacsimStore>()
+            .expect("the layer composes whatever [tacsim].enabled says");
+        assert_eq!(
+            tacsim.enabled(),
+            tacsim_on,
+            "[tacsim].enabled decides what the composed layer DOES, and that is \
+             the only thing it decides ({case})"
+        );
     }
 }
 
@@ -473,7 +481,7 @@ async fn the_roster_and_hello_manifest_are_golden_across_the_matrix() {
 /// God alone. No provider is configured on any of these boots, and none is needed.
 #[tokio::test]
 async fn the_starter_area_boots_once_and_is_durable() {
-    let cfg = wod_config("starter");
+    let cfg = stock_config("starter");
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let quarantine = spool(&cfg);
     let rooms = |engine: &mush_core::Engine| {
@@ -521,7 +529,7 @@ async fn the_starter_area_boots_once_and_is_durable() {
     assert!(content.latches.all().all(|l| l.anomaly().is_none()));
     drop(again);
 
-    let mut off = wod_config("starter-off");
+    let mut off = stock_config("starter-off");
     off.game.starter_area = false;
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let spool_off = spool(&off);
@@ -611,7 +619,7 @@ async fn a_seeded_pack_resolves_a_route() {
 /// the message says which file.
 #[tokio::test]
 async fn a_digest_mismatched_pack_fails_the_split_boot() {
-    let mut cfg = wod_config("tampered");
+    let mut cfg = stock_config("tampered");
     enable_tacsim(&mut cfg);
     let path = PathBuf::from(&cfg.tacsim.pack_paths[0]);
     let tampered = std::fs::read_to_string(&path)
@@ -678,7 +686,7 @@ async fn stop_ledger_archive_joins_the_pass_rather_than_detaching_it() {
 /// a gateway connect and disconnect, and requires `serve` to return.
 #[tokio::test]
 async fn the_split_shutdown_awaits_the_archive_job() {
-    let mut cfg = wod_config("shutdown");
+    let mut cfg = stock_config("shutdown");
     cfg.store.archive.enabled = true;
     let data_dir = cfg.server.data_dir.clone();
     let (bound_tx, bound_rx) = tokio::sync::oneshot::channel();
@@ -731,7 +739,7 @@ async fn the_split_shutdown_awaits_the_archive_job() {
 fn check_config_finds_the_world_half_refusals_without_booting() {
     // A stock config preflights clean, or the flag is a thing that always says
     // no and no operator would run it twice.
-    let mut cfg = wod_config("check-clean");
+    let mut cfg = stock_config("check-clean");
     assert!(
         boot::check_config(&cfg).is_empty(),
         "{:?}",
@@ -741,7 +749,7 @@ fn check_config_finds_the_world_half_refusals_without_booting() {
     // (a) a pack whose bytes no longer match its declared digest — the refusal
     // `a_digest_mismatched_pack_fails_the_split_boot` proves the boot makes,
     // made here without opening the store.
-    let mut tampered_cfg = wod_config("check-tampered");
+    let mut tampered_cfg = stock_config("check-tampered");
     enable_tacsim(&mut tampered_cfg);
     let path = PathBuf::from(&tampered_cfg.tacsim.pack_paths[0]);
     let tampered = std::fs::read_to_string(&path)
@@ -773,7 +781,7 @@ fn check_config_finds_the_world_half_refusals_without_booting() {
     // (c) S1: `[atlas].pack_paths` is host-read and boot-fatal exactly as
     // `[tacsim].pack_paths` is, so the preflight has to find it too — and name
     // the file, which is the whole reason the atlas reads its packs host-side.
-    let mut atlas_cfg = wod_config("check-atlas");
+    let mut atlas_cfg = stock_config("check-atlas");
     let missing = PathBuf::from(&atlas_cfg.server.data_dir).join("no-such-pack.json");
     atlas_cfg.atlas.pack_paths = vec![missing.display().to_string()];
     let refusals = boot::check_config(&atlas_cfg);
@@ -870,7 +878,7 @@ async fn the_engine_knobs_reach_the_booted_world() {
 /// backend is a promise nothing in RAM can keep.
 #[tokio::test]
 async fn the_store_knobs_are_read_where_the_store_is_opened() {
-    let mut cfg = wod_config("store-knobs");
+    let mut cfg = stock_config("store-knobs");
 
     // A spelling the parser does not know refuses, naming the value.
     cfg.store.receipt_policy = "hostpowerloss".to_owned();
@@ -937,7 +945,7 @@ async fn the_store_knobs_are_read_where_the_store_is_opened() {
 /// interest cache cannot be poisoned by a sibling running first.
 #[tokio::test]
 async fn a_caller_supplied_store_says_the_archive_tier_is_ignored() {
-    let mut cfg = wod_config("archive-ignored");
+    let mut cfg = stock_config("archive-ignored");
     cfg.store.archive.enabled = true;
     let data_dir = cfg.server.data_dir.clone();
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());

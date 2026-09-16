@@ -30,13 +30,29 @@
 //! 3. the negative control: a single typo'd `receipt_policy` in an otherwise
 //!    good render is REFUSED, by name, at both levels. Without this the job
 //!    above is a check that always says yes;
-//! 4. and the rendered WoD instance boots: `open_store` opens the J5 archive
+//! 4. and the rendered instance boots: `open_store` opens the J5 archive
 //!    tier the template enables, `spawn_ledger_archive` binds its handle rather
 //!    than leaving the nightly pass unscheduled, `TACSIM_ENABLED=true` arrives
 //!    as an ENABLED `[tacsim]` block on the loaded config (which is where that
-//!    key is decided — see the boot case), and `RULESET=wod` comes out the
-//!    other end as `wod` in the `hello` manifest the gateway sends a web
+//!    key is decided — see the boot case), and the one game sheet comes out the
+//!    other end as `pilot` in the `hello` manifest the gateway sends a web
 //!    client, with the TacSim module composed into it.
+//!
+//! # `RULESET=` is now inert (16b cut R-b)
+//!
+//! The template still renders `[rulesets] enabled = ["__RULESET__"]` and the
+//! shipped env still carries `RULESET=wod`, because `[rulesets]` still PARSES —
+//! it is deleted in a later step of this cut. **Nothing reads it.** There is one
+//! composition: `boot::game_modules` composes `tacsim::sheet::PilotRuleset`
+//! unconditionally, and no value of `RULESET=` changes a single module, panel
+//! feed or verb. So no case below asserts anything about it; the key and its
+//! `[rulesets]` block go together when the section does, and until then a box
+//! provisioned with `RULESET=anything` boots the same world.
+//!
+//! `instance.env.shadowrun.example` left [`SHIPPED_ENVS`] for the same reason:
+//! it was a parameterisation of a ruleset that no longer exists. Its one unique
+//! claim — that the template renders a DISABLED `[tacsim]` block — is kept, from
+//! the one remaining env with `TACSIM_ENABLED` overridden.
 //!
 //! # What is overridden, and why
 //!
@@ -67,9 +83,9 @@ use mush_server::quarantine::QuarantineSpool;
 
 // ---- the render, which is the deploy's render -------------------------------
 
-/// Both shipped parameterisations: the WoD instance that wants the TacSim
-/// layer, and the Shadowrun one that does not.
-const SHIPPED_ENVS: &[&str] = &["instance.env.example", "instance.env.shadowrun.example"];
+/// The shipped parameterisation. 16b cut R-b: one game, one env — see this
+/// file's header for why `instance.env.shadowrun.example` left the list.
+const SHIPPED_ENVS: &[&str] = &["instance.env.example"];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -302,9 +318,9 @@ fn the_server_binary_preflights_the_render_and_refuses_a_typod_receipt_policy() 
 
 // ---- 4: the rendered WoD instance boots the world it describes --------------
 
-/// The one full boot. `instance.env.example` is the reference instance — WoD
-/// with the TacSim layer on — and this asserts that the three things the
-/// template decides and nothing else checks actually reach a booted world:
+/// The one full boot. `instance.env.example` is the reference instance — the
+/// TacSim layer on — and this asserts that the three things the template decides
+/// and nothing else checks actually reach a booted world:
 ///
 /// - `[store.archive].enabled = true` opens the J5 tier (`open_store`), which
 ///   is the half of the ledger's durability story config owns: with it off,
@@ -319,13 +335,14 @@ fn the_server_binary_preflights_the_render_and_refuses_a_typod_receipt_policy() 
 ///   unconditionally (boot.rs — the `if tacsim.enabled` above it only logs),
 ///   so `tacsim` is in the feature list of every config and an assertion there
 ///   would pass with the key flipped;
-/// - `RULESET=wod` comes out the other end as `wod` in the `hello` manifest the
-///   gateway sends a web client, with `shadowrun` absent and the WoD panel feeds
-///   riding along — and the TacSim module composed into that manifest at all.
+/// - and the one game sheet comes out the other end as `pilot` in the `hello`
+///   manifest the gateway sends a web client, with its panel feed
+///   (`tacsim.sheet`) riding along — and the TacSim module composed into that
+///   manifest at all. (`RULESET=` decides nothing now; see this file's header.)
 ///
 /// `[store].store` is set to `"memory"` after loading — see this file's header.
 #[tokio::test]
-async fn the_rendered_wod_instance_boots_and_advertises_its_layers() {
+async fn the_rendered_instance_boots_and_advertises_its_layers() {
     let dir = scratch_dir("boot");
     let data = dir.join("data");
     std::fs::create_dir_all(&data).expect("the scratch data dir");
@@ -407,16 +424,20 @@ async fn the_rendered_wod_instance_boots_and_advertises_its_layers() {
         "the TacSim module must compose into the hello manifest: {features:?}"
     );
     assert!(
-        features.iter().any(|f| f == "wod"),
-        "RULESET=wod must reach the hello manifest: {features:?}"
+        features.iter().any(|f| f == "pilot"),
+        "the one game sheet must reach the hello manifest: {features:?}"
     );
+    // 16b cut R-b: the two character rulesets are gone, and a rendered instance
+    // must not somehow still be advertising one.
+    for gone in ["wod", "shadowrun"] {
+        assert!(
+            !features.iter().any(|f| f == gone),
+            "{gone} is not composed by any server: {features:?}"
+        );
+    }
     assert!(
-        !features.iter().any(|f| f == "shadowrun"),
-        "the WoD instance must not compose the Shadowrun ruleset: {features:?}"
-    );
-    assert!(
-        panels.iter().any(|p| p == "wod.sheet"),
-        "the selected ruleset's panel feeds ride the same manifest: {panels:?}"
+        panels.iter().any(|p| p == "tacsim.sheet"),
+        "the sheet's panel feed rides the same manifest: {panels:?}"
     );
 
     boot::stop_ledger_archive(job).await;
@@ -425,22 +446,26 @@ async fn the_rendered_wod_instance_boots_and_advertises_its_layers() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The other parameterisation, without a second full boot: the Shadowrun env
-/// selects its own ruleset and turns the TacSim layer OFF, and those are the
-/// two keys that differ. A template only ever exercised one way has an untested
-/// branch — and `[tacsim].enabled` is the one that decides whether any pack
-/// file is read at all.
+/// The template's OTHER branch, without a second full boot: `TACSIM_ENABLED`
+/// false. A template only ever exercised one way has an untested branch — and
+/// `[tacsim].enabled` is the one that decides whether any pack file is read at
+/// all.
+///
+/// 16b cut R-b: `instance.env.shadowrun.example` used to own this case, because
+/// it was the parameterisation that turned the layer off. It named a ruleset
+/// that no longer exists, so the branch is rendered from the one remaining env
+/// with `TACSIM_ENABLED` overridden — the same substitution, one key different.
+/// (The env file itself is deleted elsewhere in this cut.)
 #[test]
-fn the_shadowrun_instance_selects_its_own_ruleset_and_leaves_tacsim_off() {
-    let dir = scratch_dir("shadowrun");
-    let (path, _) = render_instance("instance.env.shadowrun.example", &dir, &[]);
+fn the_template_renders_a_disabled_tacsim_layer() {
+    let dir = scratch_dir("tacsim-off");
+    let (path, _) = render_instance(
+        "instance.env.example",
+        &dir,
+        &[("TACSIM_ENABLED", "false".to_string())],
+    );
     let cfg = load(&path);
 
-    assert_eq!(
-        cfg.rulesets.enabled,
-        vec!["shadowrun".to_string()],
-        "RULESET=shadowrun must select exactly the Shadowrun ruleset"
-    );
     assert!(
         !cfg.tacsim.enabled,
         "TACSIM_ENABLED=false must leave the layer off"

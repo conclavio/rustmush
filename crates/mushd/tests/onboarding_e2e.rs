@@ -1,30 +1,41 @@
-//! The M9 headline demo as one scripted end-to-end journey over real SSH:
-//! **new player signs up → guided chargen → approved → plays**.
+//! The onboarding deliverable as one scripted end-to-end journey over real SSH:
+//! **new player signs up → character generation → approved → plays**.
 //!
 //! Boots the whole server (world task, session layer, store-backed accounts,
-//! IP guard, the built-in modules + worldgen + npc + the WoD ruleset with
+//! IP guard, the built-in modules + worldgen + npc + the one game sheet with
 //! `chargen_required` on) on an ephemeral port — production wiring except for
 //! port, paths, and an in-memory store — then drives real russh clients:
 //!
 //! - A brand-new player `create`s an account over the welcome screen, is
-//!   placed in the restricted chargen area, and is **dropped into the guided
-//!   wizard** on connect (the transport-agnostic `Connected` hook — no SSH
+//!   placed in the restricted chargen area, and is **greeted and pointed at
+//!   `+chargen`** on connect (the transport-agnostic `Connected` hook — no SSH
 //!   code path special-cases it).
-//! - They build a full vampire through the wizard's steps and `submit`, which
-//!   files a `wod-chargen` approval job and flips the sheet to Pending.
-//! - While Pending they are **blocked** from a live-grid command (`+roll`) by
-//!   the onboarding gate.
+//! - While unapproved they are **blocked** by the onboarding gate from both a
+//!   live-grid verb (`+roll`) and an *exit*, which the gate refuses by
+//!   resolution rather than by verb name.
+//! - They spend the six-point rating pool, name the pilot, and
+//!   `+chargen/submit`, which files a `pilot-chargen` approval job and flips
+//!   the sheet to Pending.
+//! - A **reconnect while Pending** is greeted with the open job rather than
+//!   invited back into chargen.
 //! - Staff (God) `+job/approve` the job; the gate lifts, the character is
 //!   **moved to the live start room** and re-rendered, and the same `+roll`
 //!   now works.
 //!
-//! A second journey proves the back-compat default (`chargen_required = false`):
-//! a new player is **not** forced into a wizard, lands in Limbo, and the
-//! classic M6 `+chargen` opens normally.
+//! A second journey proves the ungated default (`chargen_required = false`):
+//! a new player is **not** greeted into chargen, lands in Limbo, and `+chargen`
+//! opens normally.
+//!
+//! 16b cut R-b: this used to drive `ruleset-wod`'s guided wizard (a template,
+//! attribute/ability priority tiers, virtues and freebies — 79 scripted lines).
+//! The game's chargen is three commands, so the journey below is the same
+//! journey over the sheet that exists.
 //!
 //! No real LLM is ever called: the worldgen/npc modules are wired to a
 //! `MockProvider`-backed [`LlmService`] with the global kill switch engaged,
 //! and nothing in the onboarding flow reaches the LLM anyway.
+
+mod support;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -34,7 +45,6 @@ use std::time::Duration;
 use mush_core::{Engine, GOD, ObjKind};
 use mush_llm::{LlmProvider, LlmService, MockProvider};
 use mush_session::{SessionConfig, SessionManager};
-use russh::ChannelMsg;
 
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
 use mushd::accounts::{Accounts, hash_password};
@@ -45,14 +55,9 @@ use mushd::ssh_bridge::{SshBridge, SshListener, start_listener};
 use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::world_task::{self, PersistHandles, ServerDeps};
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
-const GM_PASSWORD: &str = "gm-secret-1";
+use support::{Term, play_client, scratch_dir, strip_ansi};
 
-fn scratch_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("mushd-onboarding-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
+const GM_PASSWORD: &str = "gm-secret-1";
 
 /// A running server plus the handles that keep it alive for the test's life.
 struct Server {
@@ -71,11 +76,10 @@ impl Drop for Server {
 /// Boot the full production module stack over SSH with `chargen_required` set
 /// as requested. The world is seeded fresh (Limbo `#0`, God `#1`), then two
 /// rooms are created — a chargen area (`#2`) and the live start room (`#3`) —
-/// and the WoD onboarding config points at them. The `boss` account is linked
-/// to God so staff can approve over the same front door.
+/// and `[onboarding]` points at them. The `boss` account is linked to God so
+/// staff can approve over the same front door.
 async fn boot(tag: &str, chargen_required: bool) -> Server {
     let dir = scratch_dir(tag);
-    std::fs::create_dir_all(&dir).unwrap();
 
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     store
@@ -132,20 +136,12 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
             .build(),
     );
 
+    // The production assembly (`mush_server::boot::build_engine`): built-ins,
+    // worldgen, the sheet-grounded NPC module, then the one game ruleset.
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(&llm)));
-    let grounding = modules::npc_agent_adapter(&["wod".to_string()])
-        .map(|a| a as Arc<dyn mush_npc::AgentGrounding>);
-    mods.push(modules::npc_module(grounding));
-    mods.extend(
-        modules::ruleset_modules(
-            &["wod".to_string()],
-            &onboarding,
-            &ruleset_wod::WodEconomyConfig::default(),
-            &ruleset_shadowrun::SrEconomyConfig::default(),
-        )
-        .expect("wod ruleset"),
-    );
+    mods.push(modules::npc_module(modules::npc_agent_adapter()));
+    mods.extend(modules::ruleset_modules(&onboarding, &Default::default()));
 
     let mut engine = Engine::with_modules(world, registry, mods).expect("modules");
     modules::boot_modules(&mut engine, &*store)
@@ -196,191 +192,36 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
     }
 }
 
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
+/// Assert `needle` has NOT appeared since `mark`. Every caller pairs this with
+/// an `expect_after` on the same span, which is the round-trip barrier proving
+/// the command was processed.
+fn not_seen_since(term: &Term, mark: usize, needle: &str) -> bool {
+    !strip_ansi(&term.seen[mark..]).contains(needle)
 }
 
-/// Drop ANSI CSI sequences so assertions match what a player reads.
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// One player's terminal: an SSH channel plus everything it has printed.
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    async fn expect(&mut self, needle: &str) {
-        self.expect_after(0, needle).await;
-    }
-
-    async fn expect_after(&mut self, mark: usize, needle: &str) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        while !strip_ansi(&self.seen[mark..]).contains(needle) {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    /// Assert `needle` has NOT appeared since `mark` after the pipeline has
-    /// drained — a round-trip barrier line proves the command was processed.
-    fn not_seen_since(&self, mark: usize, needle: &str) -> bool {
-        !strip_ansi(&self.seen[mark..]).contains(needle)
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-}
-
-/// `ssh play@addr` with a PTY + shell, landing on the welcome screen.
-async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
-        .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
-}
-
-/// Drive the guided wizard from the Template step through `submit`, building a
-/// balanced vampire (the same allocation the ruleset's in-process onboarding
-/// test uses). Returns the wizard-reported `wod-chargen` job id, parsed from
-/// the submit confirmation.
 async fn send_and_expect(t: &mut Term, line: &str, needle: &str) {
     let mark = t.mark();
     t.send_line(line).await;
     t.expect_after(mark, needle).await;
 }
 
-async fn wizard_vampire_and_submit(t: &mut Term) -> u64 {
-    // Template.
-    send_and_expect(t, "vampire", "Template set to vampire").await;
-
-    // Concept + attributes + abilities + backgrounds (balanced).
-    for line in [
-        "next",
-        "concept=Jaded Detective",
-        "next",
-        "physical=7 social=5 mental=3",
-        "next",
-        "strength=4",
-        "dexterity=4",
-        "stamina=2",
-        "charisma=3",
-        "manipulation=3",
-        "appearance=2",
-        "perception=2",
-        "intelligence=2",
-        "wits=2",
-        "next",
-        "talents=13 skills=9 knowledges=5",
-        "next",
-        "brawl=3",
-        "alertness=3",
-        "subterfuge=3",
-        "intimidation=3",
-        "streetwise=1",
-        "firearms=3",
-        "drive=3",
-        "stealth=3",
-        "investigation=3",
-        "occult=2",
-        "next",
-        "Resources=3",
-        "Allies=2",
+/// Spend the six-point pool exactly, name the pilot, and file the sheet.
+///
+/// Gunnery 4 / piloting 3 / sensors 2 is `3 + 2 + 1 == 6` — the budget counts
+/// dots **above** the free one every rating starts at. Returns the
+/// `pilot-chargen` job id, parsed from the submit confirmation.
+async fn build_a_pilot_and_submit(t: &mut Term) -> u64 {
+    send_and_expect(t, "+chargen", "A blank pilot sheet is yours").await;
+    for (line, acknowledgement) in [
+        ("+stat name=Ada Renard", "Set name = Ada Renard."),
+        ("+stat callsign=Ladder", "Set callsign = Ladder."),
+        ("+stat gunnery=4", "Set gunnery = 4."),
+        ("+stat piloting=3", "Set piloting = 3."),
+        ("+stat sensors=2", "Set sensors = 2."),
     ] {
-        let mark = t.mark();
-        t.send_line(line).await;
-        let acknowledgement = match line {
-            "next" => "--- ".to_string(),
-            "concept=Jaded Detective" => "concept set.".to_string(),
-            "physical=7 social=5 mental=3" => "Attribute priorities set.".to_string(),
-            "talents=13 skills=9 knowledges=5" => "Ability priorities set.".to_string(),
-            "Resources=3" | "Allies=2" => {
-                let (name, value) = line.split_once('=').expect("background=value");
-                format!("Background {name} = {value}.")
-            }
-            _ => {
-                let (field, value) = line.split_once('=').expect("field=value");
-                format!("{field} = {value}.")
-            }
-        };
-        t.expect_after(mark, &acknowledgement).await;
+        send_and_expect(t, line, acknowledgement).await;
     }
-    // Splat: clan + a 3-dot Discipline pool (the budget names the pool).
-    send_and_expect(t, "next", "--- Template Traits ---").await;
-    send_and_expect(t, "clan=brujah", "clan set.").await;
-    send_and_expect(t, "Celerity=2", "Celerity = 2.").await;
-    send_and_expect(t, "Potence=1", "Potence = 1.").await;
-
-    // Virtues.
-    send_and_expect(t, "next", "--- Virtues ---").await;
-    send_and_expect(t, "conscience=4", "conscience = 4.").await;
-    send_and_expect(t, "self_control=3", "self_control = 3.").await;
-    send_and_expect(t, "courage=3", "courage = 3.").await;
-    // Freebies (balanced — nothing to spend) → Review → submit.
-    send_and_expect(t, "next", "--- Freebies ---").await;
-    send_and_expect(t, "next", "--- Review & Submit ---").await;
-    send_and_expect(t, "submit", "Submitted for approval as job").await;
+    send_and_expect(t, "+chargen/submit", "Submitted for approval as job").await;
 
     // Parse the job id out of the confirmation line.
     let hay = strip_ansi(&t.seen);
@@ -393,7 +234,7 @@ async fn wizard_vampire_and_submit(t: &mut Term) -> u64 {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn new_player_signs_up_guided_chargen_approved_plays() {
+async fn new_player_signs_up_builds_a_pilot_is_approved_and_plays() {
     let server = boot("gated", true).await;
     let addr = server.addr;
 
@@ -402,31 +243,68 @@ async fn new_player_signs_up_guided_chargen_approved_plays() {
     god.expect("Welcome to the onboarding MUSH!").await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     god.expect("Connected as God").await;
+    // A global exit on Limbo, so the gate has real movement to refuse: an exit
+    // held by Limbo resolves from any room, including the chargen area.
+    let dig_mark = god.mark();
+    god.send_line("@dig Waystation=out,back").await;
+    god.expect_after(dig_mark, "Opened exit out").await;
 
-    // --- A brand-new player creates an account and is dropped into the ---
-    // --- guided wizard (the connect-time hook, over real SSH). -----------
+    // --- A brand-new player creates an account, lands in the restricted --
+    // --- chargen area, and is greeted by the connect-time hook. ----------
     let (nick_handle, mut nick) = play_client(addr).await;
     nick.expect("connect <account> <password>").await;
     nick.send_line("create Nick secret123").await;
     nick.expect("Account created.").await;
     nick.expect("Connected as Nick").await;
-    // Dropped straight into the guided wizard by the connect-time hook. The
-    // initial auto-look is correctly suppressed (it would otherwise be fed to
-    // the wizard as a bogus template line); the wizard's own prompt stands.
-    nick.expect("Guided Character Creation").await;
+    // The ObjCreated observer placed them in `start_room_unapproved`...
+    nick.expect("Chargen Nexus").await;
+    // ...and the Connected hook points them at the three commands they have.
+    nick.expect("Type +chargen").await;
 
-    // --- Build a vampire through the wizard and submit. -------------------
-    let job = wizard_vampire_and_submit(&mut nick).await;
-
-    // --- Gate holds: a live-grid roll is refused while Pending. -----------
+    // --- The gate holds: a live-grid verb is refused... -------------------
     let blocked_mark = nick.mark();
-    nick.send_line("+roll strength").await;
+    nick.send_line("+roll 2d6").await;
     nick.expect_after(blocked_mark, "must finish creating")
         .await;
-    // The refusal was the gate's, not a dice result.
     assert!(
-        nick.not_seen_since(blocked_mark, "roll  Nick"),
+        not_seen_since(&nick, blocked_mark, "roll  Nick"),
         "a gated +roll must not produce a roll result"
+    );
+
+    // --- ...and so is an exit, which no verb allowlist would catch. -------
+    let exit_mark = nick.mark();
+    nick.send_line("out").await;
+    nick.expect_after(exit_mark, "must finish creating").await;
+    assert!(
+        not_seen_since(&nick, exit_mark, "Waystation"),
+        "the gated exit must not move Nick onto the live grid"
+    );
+
+    // --- Build the pilot and file it for approval. ------------------------
+    let job = build_a_pilot_and_submit(&mut nick).await;
+
+    // --- Still gated while Pending. ---------------------------------------
+    let pending_mark = nick.mark();
+    nick.send_line("+roll 2d6").await;
+    nick.expect_after(pending_mark, "must finish creating")
+        .await;
+
+    // --- A reconnect while Pending is told about the open job rather than -
+    // --- invited back into a chargen they cannot edit. --------------------
+    nick.send_line("quit").await;
+    nick.expect_close().await;
+    let _ = nick_handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+    let (nick_handle, mut nick) = play_client(addr).await;
+    nick.expect("connect <account> <password>").await;
+    nick.send_line("connect Nick secret123").await;
+    nick.expect("Connected as Nick").await;
+    nick.expect("awaiting approval").await;
+    assert!(
+        strip_ansi(&nick.seen).contains(&format!("job {job}")),
+        "the greeting names the open job: {:?}",
+        nick.seen
     );
 
     // --- Staff approves the chargen job. ---------------------------------
@@ -437,13 +315,14 @@ async fn new_player_signs_up_guided_chargen_approved_plays() {
 
     // --- Gate lifts: Nick is moved to the live start room, re-rendered, --
     // --- and the same roll now works. ------------------------------------
-    nick.expect("approved").await; // "...has been approved — welcome to the game!"
-    nick.expect("The Commons").await; // re-rendered in the live start room
+    let approved_mark = nick.mark();
+    nick.expect_after(approved_mark, "approved").await; // "...has been approved!"
+    nick.expect_after(approved_mark, "The Commons").await; // re-rendered there
     let play_mark = nick.mark();
-    nick.send_line("+roll strength").await;
+    nick.send_line("+roll 2d6").await;
     nick.expect_after(play_mark, "roll  Nick").await;
     assert!(
-        nick.not_seen_since(play_mark, "must finish creating"),
+        not_seen_since(&nick, play_mark, "must finish creating"),
         "an approved character's +roll must not be gated"
     );
 
@@ -456,8 +335,8 @@ async fn new_player_signs_up_guided_chargen_approved_plays() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn chargen_not_required_leaves_classic_flow_intact() {
-    // The back-compat default: no gate, no forced wizard, classic +chargen.
+async fn chargen_not_required_leaves_the_grid_open() {
+    // The default: no gate, no greeting, `+chargen` is an ordinary command.
     let server = boot("ungated", false).await;
     let addr = server.addr;
 
@@ -470,26 +349,28 @@ async fn chargen_not_required_leaves_classic_flow_intact() {
     // onboarding spawn observer is inert when chargen_required is off.
     mort.expect("Limbo #0").await;
 
-    // No wizard was forced: an ordinary command runs immediately, and the
-    // classic M6 +chargen opens a session rather than being gated.
+    // Nothing was pushed at them: an ordinary command runs immediately.
     let mark = mort.mark();
     mort.send_line("say hello world").await;
     mort.expect_after(mark, "Morty says, \"hello world\"").await;
     assert!(
-        mort.not_seen_since(mark, "Guided Character Creation"),
-        "no wizard is forced when chargen_required is off"
+        not_seen_since(&mort, mark, "Type +chargen"),
+        "no chargen greeting is pushed when chargen_required is off"
     );
 
+    // And +chargen opens normally rather than being gated.
     let chargen_mark = mort.mark();
     mort.send_line("+chargen").await;
-    mort.expect_after(chargen_mark, "Pick a splat").await;
+    mort.expect_after(chargen_mark, "A blank pilot sheet is yours")
+        .await;
     assert!(
-        mort.not_seen_since(chargen_mark, "must finish creating"),
+        not_seen_since(&mort, chargen_mark, "must finish creating"),
         "+chargen is never gated when chargen_required is off"
     );
-    // The classic template surface works: pick mortal.
-    mort.send_line("+chargen/template mortal").await;
-    mort.expect_after(chargen_mark, "mortal").await;
+    // The budget surface works: spend a point.
+    let stat_mark = mort.mark();
+    mort.send_line("+stat gunnery=3").await;
+    mort.expect_after(stat_mark, "Set gunnery = 3.").await;
 
     let _ = mort_handle
         .disconnect(russh::Disconnect::ByApplication, "", "")

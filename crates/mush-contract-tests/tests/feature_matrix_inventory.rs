@@ -213,6 +213,7 @@ const CENSUS: &[&str] = &[
     "mush-server/fault-injection",
     "mush-sim/debug-checks",
     "mush-sim/testkit",
+    "mush-testkit/toy-ruleset",
     "mushd/tls",
 ];
 
@@ -279,8 +280,8 @@ fn the_scanner_still_finds_the_known_features() {
         .collect();
     assert_eq!(
         (declared.len(), crates.len()),
-        (11, 8),
-        "11 toggleable features across 8 crates at the WS24-S4 fold: {declared:?}"
+        (12, 9),
+        "11 toggleable features across 8 crates at the WS24-S4 fold, plus mush-testkit/toy-ruleset \n         (16b cut R-b): {declared:?}"
     );
 }
 

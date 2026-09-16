@@ -298,43 +298,16 @@ pub fn game_modules(
     // the built-ins.
     let atlas = config_ext::atlas_config(&config.atlas, &config.worldgen)?;
     let onboarding = config_ext::onboarding_ruleset(&config.onboarding);
-    // E5c: `[wod.economy]`, validated here (an unknown mode is a hard boot error).
-    // `None` when no WoD ruleset is enabled — that is what gates the housing title
-    // issuer (08d §2).
-    let wod_economy = config_ext::wod_economy_config(&config.wod)?;
-    let wod_selected = config
-        .rulesets
-        .enabled
-        .iter()
-        .any(|r| r.trim().eq_ignore_ascii_case("wod"));
-    // E6a: `[shadowrun.economy]`, validated here (an unknown lifestyle tier is a
-    // hard boot error). `None` when no Shadowrun ruleset is enabled — that is what
-    // gates the run board's economy observer (08f §2's `issuers` pattern).
-    let sr_economy = config_ext::shadowrun_economy_config(&config.shadowrun)?;
-    let sr_selected = config
-        .rulesets
-        .enabled
-        .iter()
-        .any(|r| r.trim().eq_ignore_ascii_case("shadowrun"));
-    // SP1 / D-LBK-7: a Shadowrun server needs `sr.month` declared or no lifestyle
-    // obligation can exist, so the host contributes the stanza — unless the operator
-    // declared one of that name themselves, in which case theirs stands.
-    let contributed: Vec<(String, mush_economy::DeclaredCadence)> = if sr_selected {
-        config_ext::shadowrun_cadences(&sr_economy)
-    } else {
-        Vec::new()
-    };
-    let contributed: Vec<(&str, mush_economy::DeclaredCadence)> = contributed
-        .iter()
-        .map(|(n, d)| (n.as_str(), d.clone()))
-        .collect();
+    // 16b cut R-b: `[tacsim.economy]`, validated here (a bad instrument id is a hard
+    // boot error). It decides the housing and market title issuers.
+    let game = config_ext::tacsim_economy_config(&config.tacsim)?;
+    let contributed: Vec<(&str, mush_economy::DeclaredCadence)> = Vec::new();
     let mut mods = modules::server_modules_with(
         config_ext::weather_config(&config.weather),
         config_ext::economy_config_with(&config.economy, &contributed)?,
         atlas,
         &onboarding,
-        wod_selected.then_some(&wod_economy),
-        sr_selected.then_some(&sr_economy),
+        &game,
         // E7r1 R4: the composed roster ends in the TacSim layer, so the recovery
         // provider gets the operator's own `[tacsim.recovery]` policy. A disabled
         // block is still fail-closed, and `@recovery` says so out loud.
@@ -344,22 +317,14 @@ pub fn game_modules(
         Arc::clone(llm),
         config_ext::worldgen_config(&config.worldgen),
     ));
-    // M8: the NPC agent module, grounded by the enabled ruleset's sheet +
-    // on-loop abilities through the generic ruleset grounding adapter (WoD,
-    // Shadowrun, …); dialogue-only when no ruleset is enabled.
-    let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
-    mods.push(modules::npc_module_with(npc_grounding, &config.npc));
-    let rulesets = modules::ruleset_modules(
-        &config.rulesets.enabled,
-        &onboarding,
-        &wod_economy,
-        &sr_economy,
-    )
-    .map_err(|e| format!("ruleset selection: {e}"))?;
-    if !rulesets.is_empty() {
-        tracing::info!(rulesets = ?config.rulesets.enabled, "rulesets enabled");
-    }
-    mods.extend(rulesets);
+    // M8: the NPC agent module, grounded by the game's sheet and on-loop abilities
+    // through the generic ruleset grounding adapter.
+    mods.push(modules::npc_module_with(
+        modules::npc_agent_adapter(),
+        &config.npc,
+    ));
+    // 16b cut R-b: the one game's character sheet and its rules interface.
+    mods.extend(modules::ruleset_modules(&onboarding, &game));
     // E7 cut 1: the TacSim layer, **after** the character ruleset. Its config was
     // read above, before the module list, for `[tacsim.recovery]`'s sake.
     if tacsim.enabled {

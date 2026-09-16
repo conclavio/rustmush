@@ -101,6 +101,11 @@ thiserror.workspace = true
 [dev-dependencies]
 fred.workspace = true
 mush-contract-tests.workspace = true
+# 16b cut R-b: the platform tests that used the deleted game rulesets as sheet /
+# NPC / authoritative-action fixtures drive the `toy` test ruleset instead. The
+# normal dependency above stays featureless, so no release build of
+# `mush-server` pulls the toy or its dice/jobs edges.
+mush-testkit = { workspace = true, features = ["toy-ruleset"] }
 # WS01-S11D: not new crate edges — both are normal dependencies above. The test
 # build additionally turns on their `debug-checks` features, which is where the
 # two recomputation-equivalence walks that used to ride `cfg(debug_assertions)`

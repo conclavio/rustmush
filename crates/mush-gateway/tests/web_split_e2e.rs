@@ -1,6 +1,6 @@
 //! M16d (W1): the split gateway serves the WEB client.
 //!
-//! `mush-server` (world task + persistence + modules, wod ruleset loaded) and
+//! `mush-server` (world task + persistence + modules, the game sheet composed) and
 //! `mush-gateway` (SSH listener + WEB listener + session layer + accounts) run
 //! as two independent tokio runtimes on their own OS threads, joined by a real
 //! localhost TCP boundary speaking the `mush-ipc` protocol. A real WebSocket
@@ -49,8 +49,8 @@ fn scratch_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// The SERVER config: in-memory, ephemeral IPC, wod ruleset loaded so the boot
-/// Hello manifest carries the `<ruleset>.sheet` feed + `wod` feature.
+/// The SERVER config: in-memory, ephemeral IPC, the game sheet composed so the boot
+/// Hello manifest carries the `<ruleset>.sheet` feed + `pilot` feature.
 fn server_config(tag: &str) -> Config {
     let mut cfg = Config::default();
     cfg.store.store = "memory".to_string();
@@ -252,7 +252,7 @@ async fn web_client_serves_through_split_gateway() {
 
     // The hello manifest is NON-EMPTY and matches the all-in-one's surface: the
     // per-module features (comsys→channels, mail) and panel feeds (who, mail,
-    // comsys), plus the wod ruleset's sheet feature + feed — proving the server
+    // comsys), plus the game sheet's feature + feed — proving the server
     // shipped its real manifest over IPC and the gateway wired it into WebConfig.
     let (features, panels) = expect_hello(&mut ws).await;
     assert!(
@@ -260,7 +260,7 @@ async fn web_client_serves_through_split_gateway() {
         "features must not be empty: {features:?}"
     );
     assert!(!panels.is_empty(), "panels must not be empty: {panels:?}");
-    for f in ["channels", "mail", "wod"] {
+    for f in ["channels", "mail", "pilot"] {
         assert!(
             features.iter().any(|x| x == f),
             "feature {f} in {features:?}"

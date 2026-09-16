@@ -41,6 +41,11 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: Test
         run: cargo test --workspace --no-fail-fast
+      # 16b cut R-b: the testkit's toy ruleset is a test-only feature the host crates'
+      # dev-dependencies enable; naming it here is what lets the feature census (the
+      # `feature_matrix_inventory` gate) see that a job compiles it.
+      - name: The testkit toy ruleset
+        run: cargo test -p mush-testkit --features mush-testkit/toy-ruleset
       - name: Panic hook and per-half log files (WS01-S13; the child half is #[ignore]d and spawned by its sibling)
         run: cargo test -p mushd --test world_panic_exit
       - name: TS bindings drift check (Linux only)
@@ -260,7 +265,6 @@ jobs:
         run: |
           cargo test -p mushd --test persistence -- --test-threads=1
           cargo test -p mushd --test m10c_e2e m10c_persistence_twin_redis_gated -- --exact --test-threads=1
-          cargo test -p mushd --test shadowrun_e2e sr5_sheet_survives_redis_reboot_gated -- --exact --test-threads=1
 
   # H3 (11-h §3.3): the scale harness — cold journal replay, world boot,
   # the authoritative write-through soak and the tick-shaped bundle. Every

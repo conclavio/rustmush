@@ -35,21 +35,19 @@ use mush_testkit::{TestWorld, text_of};
 
 fn boot() -> TestWorld {
     let onboarding = mush_core::OnboardingConfig::default();
-    let wod = ruleset_wod::WodEconomyConfig::default();
-    let shadowrun = ruleset_shadowrun::SrEconomyConfig::default();
+    // 16b cut R-b: one composition. The four ruleset lines this used to carry
+    // selected `shadowrun` and passed `[shadowrun.economy]` into the built-ins;
+    // the body below is TacSim-only and always was.
+    let game = tacsim::GameEconomyConfig::default();
     let mut modules = server_modules_with(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         mush_atlas::AtlasConfig::default(),
         &onboarding,
-        None,
-        Some(&shadowrun),
+        &game,
         mush_campaign::RecoveryConfig::default(),
     );
-    modules.extend(
-        ruleset_modules(&["shadowrun".to_owned()], &onboarding, &wod, &shadowrun)
-            .expect("one production ruleset"),
-    );
+    modules.extend(ruleset_modules(&onboarding, &game));
     // E7r2 P5: the whole Mars–Phobos–Ceres corridor, as `tacsim.corridor@2`.
     modules.push(tacsim_module(tacsim::fixture::config_v2()));
     TestWorld::with_modules(modules)

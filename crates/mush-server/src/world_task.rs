@@ -9297,38 +9297,6 @@ fn spawn_effect_list(
                             );
                         }
                     });
-                } else if module.as_str() == ruleset_wod::NS {
-                    // M13 WoD Storyteller adjudication: run the ruling /
-                    // interpretation pass off-loop against the shared
-                    // LlmService, then re-enter with the serialized StResult
-                    // (the ruling is re-validated + the outcome applied on-loop
-                    // in the ruleset's completion). Never blocks the tick.
-                    let Some(llm) = llm.cloned() else {
-                        tracing::warn!(
-                            correlation,
-                            "wod Effect::ModuleAsync dropped: no LlmService on this world task"
-                        );
-                        continue;
-                    };
-                    tokio::spawn(async move {
-                        let result = ruleset_wod::run_st_async(&llm, &payload).await;
-                        let done = WorldCommand::ModuleAsyncDone {
-                            module,
-                            actor,
-                            correlation,
-                            payload: result,
-                        };
-                        if tx
-                            .send(WorldMsg::Inbound(Inbound::Apply(done)))
-                            .await
-                            .is_err()
-                        {
-                            tracing::debug!(
-                                correlation,
-                                "wod st completion after shutdown dropped"
-                            );
-                        }
-                    });
                 } else {
                     tracing::warn!(
                         %module,

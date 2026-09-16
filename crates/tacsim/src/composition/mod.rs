@@ -86,12 +86,9 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
         // S1: default `[atlas]` limits, an empty shelf but for the shipped packs.
         mush_atlas::AtlasConfig::default(),
         &mush_core::OnboardingConfig::default(),
-        // `[rulesets].enabled` defaults to `["wod"]`, so the default composition is a
-        // WoD server and the housing title issuer stays wired exactly as E5b wired
-        // it. A host that enables no WoD ruleset passes `None` (see
-        // [`server_modules_with`]).
-        Some(&ruleset_wod::WodEconomyConfig::default()),
-        None,
+        // 16b cut R-b: the one game's economy wiring, at its defaults (housing on,
+        // market off, the credit).
+        &crate::economy::GameEconomyConfig::default(),
         // E7r1 R4: the default composition composes no TacSim layer, so the provider
         // is disabled — `@recovery` registers and answers "not enabled".
         mush_campaign::RecoveryConfig::default(),
@@ -106,26 +103,23 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
 /// those sections in `mushd.toml` actually reach their modules; every other caller
 /// (tests) takes the crate defaults via [`server_modules`].
 ///
-/// `wod` is `None` when `[rulesets].enabled` does not select the WoD ruleset. That
-/// is what 08d §2's "the server registers `system:wod.housing` **only when the WoD
-/// ruleset is configured**" means in code, and it replaces E5b's unconditional
-/// wiring: a Shadowrun-only server no longer carries a title issuer for a ruleset it
-/// does not load.
+/// `game` is `[tacsim.economy]` (16b cut R-b): whether the housing and market title
+/// issuers are registered at all, and the extra reserved rooms. It replaces the
+/// per-ruleset economy configs of the two deleted character rulesets.
 #[must_use]
 pub fn server_modules_with(
     weather: mush_weather::WeatherConfig,
     economy: mush_economy::EconomyConfig,
     atlas: mush_atlas::AtlasConfig,
     onboarding: &mush_core::OnboardingConfig,
-    wod: Option<&ruleset_wod::WodEconomyConfig>,
-    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
+    game: &crate::economy::GameEconomyConfig,
     recovery: mush_campaign::RecoveryConfig,
 ) -> Vec<Box<dyn GameModule>> {
     // The issuer is registered when the WoD ruleset is configured **and** its housing
     // knob is on. `issue_title` refuses an issuer that is not on both the economy's
     // list and `HousingModule::with_issuer`, so the two are computed once, here, and
     // a mismatch is impossible by construction.
-    let housing_on = wod.is_some_and(|w| w.housing);
+    let housing_on = game.housing;
     let mut issuers: Vec<mush_org::SystemPrincipalId> = if housing_on {
         vec![housing_title_issuer()]
     } else {
@@ -140,7 +134,7 @@ pub fn server_modules_with(
     // table and the market's own name cannot disagree by construction — the
     // disagreement being what `issue_title` answers `Unauthorized` to, from inside a
     // verb whose operator never named an issuer at all.
-    let market_on = shadowrun.is_some_and(|s| s.enabled);
+    let market_on = game.market;
     if market_on {
         issuers.push(market_title_issuer());
     }
@@ -164,10 +158,7 @@ pub fn server_modules_with(
         mush_core::LIMBO,
     ]
     .into_iter()
-    .chain(
-        wod.into_iter()
-            .flat_map(|w| w.reserved_rooms.iter().copied()),
-    )
+    .chain(game.reserved_rooms.iter().copied())
     .collect();
     vec![
         Box::new(mush_comsys::ComsysModule::new()),
@@ -312,7 +303,7 @@ pub fn server_modules_with(
             // E5b: housing's exact-mode mirror joins the canon bridge. It hears the
             // obligation and contract transitions a lease is made of; abstract mode
             // does not need it at all.
-            .with_observers(econ_observers(shadowrun))
+            .with_observers(econ_observers())
             // E5b: `system:wod.housing` mints the title record on a property's anchor
             // room through `mush_economy::issue_title` (D-E3-13, 08d §2). The same
             // principal is wired into `HousingModule::with_issuer` below, and
@@ -361,7 +352,7 @@ pub fn server_modules_with(
             // `[shadowrun.economy].vendor_orgs`, frozen here — and conferring no
             // money authority whatever: the escrow still posts under the org
             // account's own debit authority and still refuses when it is short.
-            .with_party_caps(vendor_caps(shadowrun)),
+            .with_party_caps(Vec::new()),
         ),
         // E7 cut 2 (10b §3.2, Q13A/Q2D, D-E7-3): the neutral quantity authority.
         // It boots **immediately after `mush-economy`** because its own boot
@@ -510,9 +501,9 @@ pub fn server_modules_with(
         // order.
         Box::new({
             let m = mush_market::MarketModule::new()
-                .with_catalog_sources(market_catalog_sources(shadowrun))
-                .with_availability(market_availability(shadowrun))
-                .with_delivery(market_delivery(shadowrun))
+                .with_catalog_sources(Vec::new())
+                .with_availability(Vec::new())
+                .with_delivery(Vec::new())
                 // E7r2 P1 (§15.5 (b′)): `IndustryModule::with_inventory`'s shape
                 // exactly. It carries a **capability**; the authority to write with it
                 // is `with_quantity_delegates(["industry", "market"])` above, and
@@ -536,85 +527,10 @@ pub fn server_modules_with(
     ]
 }
 
-/// The wiring-frozen party capabilities (E6b, DL-11 / M15).
-///
-/// Empty unless the Shadowrun economic layer is **enabled** and the operator listed
-/// organization ids in `[shadowrun.economy].vendor_orgs` — the fail-closed default is
-/// that no principal is programmatically acceptable, which is exactly E6a.
-fn vendor_caps(
-    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
-) -> Vec<(mush_org::PrincipalId, mush_economy::PartyCap)> {
-    shadowrun
-        .filter(|s| s.enabled)
-        .map(|s| {
-            s.vendor_orgs
-                .iter()
-                .map(|id| {
-                    (
-                        mush_org::PrincipalId::Organization(mush_org::OrgId(*id)),
-                        mush_economy::PartyCap::Accept,
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// The market's content-pack sources (E6c B9). Empty unless the Shadowrun economic
-/// layer is enabled: a server with no ruleset content loads no pack, which is the
-/// fail-closed default.
-fn market_catalog_sources(
-    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
-) -> Vec<Arc<dyn mush_market::CatalogSource>> {
-    shadowrun
-        .filter(|s| s.enabled)
-        .map(|s| {
-            let source: Arc<dyn mush_market::CatalogSource> =
-                Arc::new(ruleset_shadowrun::SrCatalogSource::new(s));
-            vec![source]
-        })
-        .unwrap_or_default()
-}
-
-/// The market's availability engines (E6c B7). `mush-market` holds the rule shape and
-/// the recorded outcome and **rolls nothing**; the dice are the ruleset's.
-fn market_availability(
-    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
-) -> Vec<Arc<dyn mush_market::AvailabilityProvider>> {
-    shadowrun
-        .filter(|s| s.enabled)
-        .map(|_| {
-            let p: Arc<dyn mush_market::AvailabilityProvider> =
-                Arc::new(ruleset_shadowrun::SrAvailability::new());
-            vec![p]
-        })
-        .unwrap_or_default()
-}
-
-/// The market's delivery providers (E6c B6). A `Representation::Asset` needs none —
-/// its title moves as an ordinary E4b2 deliverable inside the settlement.
-fn market_delivery(
-    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
-) -> Vec<Arc<dyn mush_market::DeliveryProvider>> {
-    shadowrun
-        .filter(|s| s.enabled)
-        .map(|_| {
-            let p: Arc<dyn mush_market::DeliveryProvider> = Arc::new(ruleset_shadowrun::SrDelivery);
-            vec![p]
-        })
-        .unwrap_or_default()
-}
-
-/// The economy observer table this server freezes at wiring.
-///
-/// The Shadowrun board's mirror joins it **only when the Shadowrun economic layer is
-/// configured** (08f §2's `issuers` pattern): an observer that fires on every
-/// contract transition on a WoD server would be a table entry doing nothing, and the
-/// board it mirrors would not exist.
-fn econ_observers(
-    shadowrun: Option<&ruleset_shadowrun::SrEconomyConfig>,
-) -> Vec<Arc<dyn mush_economy::EconomyObserver>> {
-    let mut out: Vec<Arc<dyn mush_economy::EconomyObserver>> = vec![
+/// The economy observer table this server freezes at wiring (16b cut R-b: the one
+/// game's; the Shadowrun board's mirror left with its ruleset).
+fn econ_observers() -> Vec<Arc<dyn mush_economy::EconomyObserver>> {
+    vec![
         Arc::new(self::econ_canon::CanonEvidenceBridge),
         Arc::new(mush_housing::HousingEconomyObserver),
         // E6a step 1 (DL-04): an organization's officers are told, kinds only, what
@@ -625,20 +541,9 @@ fn econ_observers(
         Arc::new(self::econ_alerts::StaffAlerts::default()),
         // E6c: the market's ear. It hears one thing — a contract reaching a terminal
         // state — and turns a settlement into the trade-tape row the safe public
-        // projection folds, a cancellation or expiry back into stock. It is
-        // unconditional because `mush-market` is game-neutral and a WoD or TacSim
-        // server's market is the same market.
+        // projection folds, a cancellation or expiry back into stock.
         Arc::new(mush_market::MarketObserver),
-    ];
-    if let Some(sr) = shadowrun.filter(|s| s.enabled) {
-        // E6a (D-E6-5): mirrors `ContractChanged` onto the run board and releases the
-        // crewed party through `mush_party`'s own seam; drives the lifestyle
-        // miss/downgrade rule from `ObligationChanged`.
-        out.push(Arc::new(ruleset_shadowrun::SrBoardObserver::new(
-            sr.clone(),
-        )));
-    }
-    out
+    ]
 }
 
 /// The system principal housing mints property titles under (08d §2, D-E3-13).
@@ -649,7 +554,7 @@ fn econ_observers(
 /// `@property/create` rather than a silent capability.
 #[must_use]
 pub fn housing_title_issuer() -> mush_org::SystemPrincipalId {
-    mush_org::SystemPrincipalId::new("wod.housing")
+    mush_org::SystemPrincipalId::new("tacsim.housing")
         .expect("a built-in system principal id is well-formed")
 }
 
@@ -666,7 +571,7 @@ pub fn housing_title_issuer() -> mush_org::SystemPrincipalId {
 /// so every non-Shadowrun server held a name the economy did not list.
 #[must_use]
 pub fn market_title_issuer() -> mush_org::SystemPrincipalId {
-    mush_org::SystemPrincipalId::new("sr.market")
+    mush_org::SystemPrincipalId::new("tacsim.market")
         .expect("a built-in system principal id is well-formed")
 }
 
@@ -695,29 +600,6 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
         .collect()
 }
 
-/// The ruleset module(s) named in `[rulesets].enabled`, in listed order.
-///
-/// Every ruleset crate is compiled into `mushd`; this maps the configured
-/// ids to their modules. Registered **after** [`server_modules`] so a
-/// ruleset's commands, panel feeds, and job queues wire cleanly and its
-/// approval payload handlers (registered in `on_world_loaded`) run after the
-/// jobs module's state slot exists.
-///
-/// A ruleset's sheets ride the object attr write-through (treaty ruling 7),
-/// so they load with the world — a ruleset registers no boot namespace and
-/// needs no separate boot-data load here.
-///
-/// An unknown id is a hard error (consistent with the rest of config: a
-/// silently-ignored typo is worse than not starting). The ids available as of
-/// M10b are `"wod"` (oWoD20) and `"shadowrun"` (SR5); duplicates are rejected.
-///
-/// **Single-ruleset-per-server.** Every ruleset registers the same core
-/// command surface (`+roll`/`+sheet`/`+chargen`/…), so two of them cannot share
-/// one registry — enabling more than one is a configuration error caught here
-/// with a clear message (rather than surfacing downstream as an opaque
-/// command-collision at registration). Enable exactly one ruleset, or none (a
-/// bare comsys/mail server). Per-character ruleset dispatch across systems is a
-/// future concern.
 /// S6: the rules-interface module for `rs`: its display name and its chargen
 /// stages, snapshotted at composition.
 fn rules_interface_for<R: mush_ruleset::Ruleset>(
@@ -727,66 +609,24 @@ fn rules_interface_for<R: mush_ruleset::Ruleset>(
     mush_ruleset::interface::RulesInterfaceModule::new(rs.display_name().to_string(), stages)
 }
 
+/// The one game's character ruleset and its rules interface (16b cut R-b, D-16-14):
+/// the pilot sheet, composed unconditionally **after** [`server_modules`] so its
+/// commands, panel feed and approval queue wire cleanly and its payload handler
+/// (registered in `on_world_loaded`) runs after the jobs module's state slot
+/// exists. `[rulesets].enabled` is gone with the two rulesets it selected.
+#[must_use]
 pub fn ruleset_modules(
-    enabled: &[String],
     onboarding: &mush_core::OnboardingConfig,
-    wod: &ruleset_wod::WodEconomyConfig,
-    shadowrun: &ruleset_shadowrun::SrEconomyConfig,
-) -> Result<Vec<Box<dyn GameModule>>, String> {
-    let mut seen: Vec<String> = Vec::new();
-    let mut mods: Vec<Box<dyn GameModule>> = Vec::new();
+    game: &crate::economy::GameEconomyConfig,
+) -> Vec<Box<dyn GameModule>> {
+    let rs = crate::sheet::PilotRuleset::new()
+        .onboarding(onboarding.clone())
+        .economy(game.clone());
     // S6 (doc 14 §4.6): beside the ruleset, the small module that fronts its
-    // chargen stages and the help topics as the off-duty gamemaster's
-    // interface; the stages are snapshotted here, before the ruleset is boxed.
-    let mut rules_interface: Option<Box<dyn GameModule>> = None;
-    for id in enabled {
-        let key = id.trim().to_lowercase();
-        if seen.contains(&key) {
-            return Err(format!("[rulesets].enabled lists {id:?} more than once"));
-        }
-        match key.as_str() {
-            "wod" => {
-                let rs = ruleset_wod::WodRuleset::new()
-                    .onboarding(onboarding.clone())
-                    .economy(wod.clone());
-                rules_interface = Some(Box::new(rules_interface_for(&rs)));
-                mods.push(Box::new(rs));
-            }
-            "shadowrun" => {
-                // SR5 (M10b). Single-ruleset-per-server: wod and shadowrun both
-                // register +roll/+sheet/+chargen, so a server runs one of them.
-                // SR5 has no onboarding gate wired yet.
-                //
-                // E6a: `[shadowrun.economy]` is frozen into the ruleset here, exactly
-                // as `[wod.economy]` is above. `enabled = false` off-config, so an
-                // unconfigured server keeps its pre-E6a behaviour.
-                let rs = ruleset_shadowrun::ShadowrunRuleset::new().economy(shadowrun.clone());
-                rules_interface = Some(Box::new(rules_interface_for(&rs)));
-                mods.push(Box::new(rs));
-            }
-            _ => {
-                return Err(format!(
-                    "[rulesets].enabled: unknown ruleset {id:?} (available: \"wod\", \"shadowrun\")"
-                ));
-            }
-        }
-        seen.push(key);
-    }
-    // Single ruleset per server: two rulesets would collide on the shared
-    // +roll/+sheet/+chargen command names. Fail here with an explanation
-    // instead of letting Engine::with_modules report an opaque collision.
-    if mods.len() > 1 {
-        return Err(format!(
-            "[rulesets].enabled selects {} rulesets ({enabled:?}), but rustmush runs one \
-             ruleset per server — they all register +roll/+sheet/+chargen, so more than one \
-             collides. Enable exactly one (e.g. [\"shadowrun\"]) or none.",
-            mods.len()
-        ));
-    }
-    if let Some(m) = rules_interface {
-        mods.push(m);
-    }
-    Ok(mods)
+    // chargen stages and the help topics as the off-duty gamemaster's interface;
+    // the stages are snapshotted here, before the ruleset is boxed.
+    let rules_interface = rules_interface_for(&rs);
+    vec![Box::new(rs), Box::new(rules_interface)]
 }
 
 /// The **TacSim layer** (E7 cut 1, 10b §3.1), composed **after** the character
@@ -947,31 +787,16 @@ pub fn npc_module_with(
     Box::new(module.with_scene_turn_deadline_secs(i64::from(npc.scene_turn_deadline_secs)))
 }
 
-/// Build the NPC↔ruleset grounding adapter for the enabled ruleset, if one
-/// grounds NPC agents. `main.rs` passes it to [`npc_module`]. Grounding
-/// dispatches through the generic [`RulesetAgent`], so **every** ruleset — not
-/// just WoD — grounds its NPCs: a shadowrun-only server grounds SR5 NPCs
-/// (sheet summary + `sr_roll` + `@agent/sheet`) exactly as a wod server grounds
-/// WoD NPCs. A ruleset-less config leaves NPCs dialogue-only (`None`).
-///
-/// Single-ruleset-per-server (see [`ruleset_modules`]), so at most one entry
-/// matches; the first recognized id wins.
+/// The NPC grounding adapter over the one game's sheet (16b cut R-b): every
+/// production composition grounds its NPCs through the generic [`RulesetAgent`]
+/// (sheet summary, the `check` ability, `@agent/sheet`). `main.rs` passes it to
+/// [`npc_module`]. It is `Some` on every server; the `Option` is the seam's shape
+/// for a host that deliberately composes dialogue-only NPCs.
 #[must_use]
-pub fn npc_agent_adapter(enabled: &[String]) -> Option<Arc<dyn mush_npc::AgentGrounding>> {
-    for id in enabled {
-        match id.trim().to_ascii_lowercase().as_str() {
-            "wod" => {
-                return Some(Arc::new(RulesetAgent::new(ruleset_wod::WodRuleset::new())));
-            }
-            "shadowrun" => {
-                return Some(Arc::new(RulesetAgent::new(
-                    ruleset_shadowrun::ShadowrunRuleset::new(),
-                )));
-            }
-            _ => {}
-        }
-    }
-    None
+pub fn npc_agent_adapter() -> Option<Arc<dyn mush_npc::AgentGrounding>> {
+    Some(Arc::new(RulesetAgent::new(
+        crate::sheet::PilotRuleset::new(),
+    )))
 }
 
 /// A generic NPC↔ruleset grounding adapter (treaty ruling 6) over any

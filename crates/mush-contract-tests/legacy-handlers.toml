@@ -33,26 +33,13 @@
 # category; a non-baseline entry without a note; a duplicate or out-of-order entry; and a
 # baseline count other than the pinned one (a baseline entry may be retired with its verb,
 # lowering the pin in the same commit; none may be added).
-
-[[handler]]
-name = "+action"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+arete"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+art"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+arts"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
+#
+# 16b cut R-b (2026-09-16) deleted the two character rulesets. Their 53 baseline verbs (the
+# 49 pinned as "wod composition only" / "shadowrun composition only", plus +cast, +heal,
+# +resonance and +spec, which both registered and nothing else did) and the Shadowrun
+# economy layer's five later entries (+fence, +lifestyle, +nuyen, +run, @sr) retired with them;
+# the pin fell from 151 to 98. The one game sheet (tacsim::sheet) registers +sheet, @sheet,
+# +chargen, +stat and +roll, which stay as the "every composition" baseline entries they were.
 
 [[handler]]
 name = "+atlas"
@@ -60,40 +47,10 @@ category = "read-only"
 note = "S1 (14-spatial-implementation-plan 3.1): the atlas views -- the viewer's neighborhood as a text map and a room list, a neighborhood by name, or the region's footprints and corridors (+atlas/region). Presentation over the atlas records, filtered for the viewer (a room the viewer may not enter is absent, not blanked); no durable mutation of any kind."
 
 [[handler]]
-name = "+banality"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+blood"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+bond"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
 name = "+build"
 category = "legacy-post-image"
 family = "worldgen.proposal"
 note = "S3 (14-spatial-implementation-plan 3.4): the building agent's player surface. +build/place reserves a site request through mush-atlas (a bounded whole-document request record, mod:atlas:request:<id>, keyed by an idempotency key over character, neighborhood, kind and footprint hash, so retries converge) and writes the proposal record (mod:worldgen:proposal:<id>, strict wire, a revision an off-loop outcome must match or be dropped); /answer, /feedback and /withdraw rewrite that record; /go on a player's request rides mush-atlas's activation (a site pack applied through mush-content's latch, the site marked hydrated and pending review, one BUILD ticket), and on a staff proposal rides @atlas/pack apply's path plus a post-hoc BUILD ticket for the record; /show and /status are reads. No tool of the off-loop run touches the world (doc 14 4.1): the run is snapshot in, typed outcome out (treaty ruling 3). No authority, no prepared mechanic."
-
-[[handler]]
-name = "+cantrip"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+career"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+cast"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
 name = "+chargen"
@@ -109,16 +66,6 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "+clocks"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "+complexforms"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
-
-[[handler]]
-name = "+condition"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
 
 [[handler]]
 name = "+contact"
@@ -137,34 +84,14 @@ family = "campaign.crew"
 note = "E7 cut 10 (10b 3.10 B7/B8): the player-facing crew call -- +crewcall/list shows the seats the viewer's own audience membership admits and nothing about an operation it does not, and +crewcall/apply is +seat/accept under the name the call publishes. It writes the same bounded whole-document campaign.seat records the +seat verbs do (seat_grant:{op}:{id}, a strict TryFrom wire re-running MAX_SEAT_OFFERS_PER_OPERATION/MAX_SEAT_CHANNELS/MAX_AUDIENCE and a deterministic key) and takes no part in authority or prepared mechanics: accepting seizes NOTHING, no legality check reads a SeatGrant, and the live control authority is cut 5's billet, the narrowed ChannelGrant and K6's lease. Matchmaking standing is a crew-call eligibility input only (R6) and never an in-world principal."
 
 [[handler]]
-name = "+damage"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
-
-[[handler]]
 name = "+dc"
 category = "authoritative"
 note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). A bounded discrete intent naming a section; it is also the declared deterministic fallback every offensive kind reduces to (C30A under K7.0's rule, no PendingDecision)."
 
 [[handler]]
-name = "+disc"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+disciplines"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
 name = "+dock"
 category = "authoritative"
 note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). Names an opaque ContactId; the same byte-identical refusal as +fire."
-
-[[handler]]
-name = "+domitor"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
 name = "+eject"
@@ -182,12 +109,6 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
-name = "+fence"
-category = "legacy-post-image"
-family = "sr:fence"
-note = "E6b: the Shadowrun fence -- vendor registration, quotes and consignment. Bounded whole-document records (sr:fence:{id}, sr:quote:{id}) with strict TryFrom decoding, deterministic contract keys and no authority of their own: every money act rides the economy's offer_contract/accept_contract seams under an E4 authority, and the quote is a projection refused deterministically when stale."
-
-[[handler]]
 name = "+fire"
 category = "authoritative"
 note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). Names an OPAQUE ContactId out of the leak-safe ContactLedgerState; a contact the actor does not hold and one that never existed refuse BYTE-IDENTICALLY (rule 4)."
@@ -199,44 +120,9 @@ family = "sim.control_gen"
 note = "E7 cut 5: take/release foreground control of one billet. Focus itself is world-owned ephemeral memory (D-E7-34) -- no document, no key, no state family. The ONLY write +focus/+focus/release make is the PRE-EXISTING per-unit control generation (cgen:<unit>, sim.control_gen), bumped so a stale channelled intent fails World::channel_grant_is_current; that write is not a new migration target. It takes no part in authority or prepared mechanics; a lease transfer is @station's authoritative control_handoff_request."
 
 [[handler]]
-name = "+frenzy"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+generation"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+gift"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+gifts"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+glamour"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+gnosis"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
 name = "+guest"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "+harm"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
 name = "+heading"
@@ -244,29 +130,9 @@ category = "authoritative"
 note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). A continuous order: it persists until changed as a sim.standing_order post-image written by the tick's own bundle, never by this verb."
 
 [[handler]]
-name = "+heal"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "+health"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
 name = "+home"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "+humanity"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+init"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
 
 [[handler]]
 name = "+intel"
@@ -290,30 +156,9 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
-name = "+karma"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
-
-[[handler]]
 name = "+launch"
 category = "authoritative"
 note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). Names a bay and an opaque ContactId; the same byte-identical refusal as +fire for a contact the actor does not hold."
-
-[[handler]]
-name = "+legacy"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+lifestyle"
-category = "legacy-post-image"
-family = "sr:profile"
-note = "E6a (08f 3.2/3.4, D-E6-3): /set replaces the lifestyle obligation and /pay posts the arrears -- both through the owner-exported mush-economy seams (create_obligation / cancel_obligation / reinstate_obligation / post), never a direct write. The record is the bounded whole-document sr:profile:{obj} with a strict TryFrom wire and a deterministic key; it takes no part in authority or prepared mechanics (the obligation's authority is the economy's)."
-
-[[handler]]
-name = "+magic"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
 
 [[handler]]
 name = "+map"
@@ -349,16 +194,6 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
-name = "+nuyen"
-category = "read-only"
-note = "E6a (08f 3.5): renders the sr.nuyen account balance (or the pre-approval sheet field) under mush_economy::may_view_account. Writes nothing. E7 residue pass 2 (P0c): this stanza was one of the two entries in the class tripwire's KNOWN_CLASS_DRIFT -- it declared read-only while ShadowrunRuleset::register's module-wide classify_commands(LegacyPostImage) published it as a post-image writer, which is the dangerous direction (the allowlist asserting a verb persists nothing while the composition says it does). The stanza was RIGHT and the registration was wrong: nuyen_cmd is a pure render and writes nothing, so +nuyen is now its OWN registration group in ruleset_shadowrun::economy::commands::register, classified ReadOnly before its own reg.command with LegacyPostImage restored immediately after. KNOWN_CLASS_DRIFT is now empty."
-
-[[handler]]
-name = "+obfuscate"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
 name = "+order"
 category = "legacy-post-image"
 family = "propagation.envelope"
@@ -369,11 +204,6 @@ name = "+orders"
 category = "legacy-post-image"
 family = "propagation.envelope"
 note = "E7 cut 7 (10b 3.7, Q4A): the bare verb reads the actor's own traffic and standing order. /ack writes the acknowledgement envelope -- an acknowledgement is ITSELF a delivery, so the spec takes the ceiling class of its switches; a duplicate ack is a HIT that writes nothing."
-
-[[handler]]
-name = "+paradox"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
 name = "+party"
@@ -387,49 +217,9 @@ category = "authoritative"
 note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). A continuous emission-control order: it persists until changed as a sim.standing_order post-image written by the tick's own bundle, never by this verb."
 
 [[handler]]
-name = "+powers"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
-
-[[handler]]
-name = "+prompt"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+quint"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+rage"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+rank"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+realm"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+realms"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
 name = "+recap"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "+renown"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
 name = "+request"
@@ -437,25 +227,9 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
-name = "+resonance"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "+resources"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
 name = "+roll"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "+run"
-category = "legacy-post-image"
-family = "sr:run"
-note = "E6a (08f 3.2/3.4, D-E6-17): /list and /show are reads; the mutating switches write the bounded whole-document sr:run:{id} board projection and move every unit of money through the owner-exported mush-economy contract seams (offer_contract / accept_contract / amend_contract / cancel_contract), never a direct post and never an @contract dispatch. The listing carries no authority: the escrow, the consent, the roster lock and the settlement are the contract's."
 
 [[handler]]
 name = "+scene"
@@ -472,36 +246,6 @@ note = "E7 cut 10 (10b 3.10 B4/B5/B8): proxy seats. /offer, /list, /accept and /
 name = "+sheet"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "+shift"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+spec"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "+spell"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
-
-[[handler]]
-name = "+spells"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
-
-[[handler]]
-name = "+sphere"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+spheres"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
 name = "+stakeout"
@@ -525,11 +269,6 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
-name = "+thread"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, shadowrun composition only)"
-
-[[handler]]
 name = "+thrust"
 category = "authoritative"
 note = "E7 cut 8 (10b 3.8, Q12A, D-E7-16): a SELECTOR onto the tactical ingress, not a mechanic. It resolves the actor's focused station (cut 5), builds one TacticalIntentDoc and stages mush-sim's own tactical_intent action through cut 2's Ctx::submit_authoritative seam -- exactly one submission per command, under a key deterministic over (unit, station, tick, kind), so a repeat this tick is a HIT and a different order on the same channel REPLACES the window slot (S2A latest-order-wins). It writes NO document of its own: the intent joins K's durable ActionWindowRecord (sim/tick_windows, capacity MAX_WINDOW_CAPACITY 256, one slot per (actor, truth_subject)) and is resolved by the kernel-fired domaintick schedule source into ONE deterministic DomainTickCommit per domain per tick with recorded RNG through PrepareCtx::start_resolution. Category authoritative, the ceiling class @station and @prop set. No economy path is reachable from the tick (T2, D-E7-17). A continuous order: it persists until changed as a sim.standing_order post-image written by the tick's own bundle, never by this verb."
@@ -544,16 +283,6 @@ name = "+travel"
 category = "legacy-post-image"
 family = "atlas.journey"
 note = "S2 (14-spatial-implementation-plan 3.2): one CommandSpec, ceiling class. +travel bare and +travel/status are pure reads (what the character knows they can reach from here, and where they have got to); +travel <place>[/<mode>] writes the journey document (mod:atlas:journey:<id>: a bounded whole document, strict wire re-validated at boot, the leg cursor as the idempotency key, WorldIc stamps that a rate change relabels and never re-bases) and the way's transit room document, and moves the traveler into the transit room; +travel/cancel ends it at its last committed node. The journey is advanced by the atlas.travel Coarse tick on the world IC clock with [atlas].dwell_floor_s and [atlas].real_cap_s.<mode> fixed at departure. No authority, no prepared mechanic, no state family: a journey decides where a character is, never what an action may do."
-
-[[handler]]
-name = "+tribe"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
-
-[[handler]]
-name = "+xp"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
 name = "@account"
@@ -590,11 +319,6 @@ note = "baseline pinned at b0e3b52 (server staff commands)"
 name = "@canon"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
-
-[[handler]]
-name = "@career"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
 name = "@channel"
@@ -927,12 +651,6 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
-name = "@sr"
-category = "legacy-post-image"
-family = "sr:profile"
-note = "E6a (08f 3.5, answers 17-18): /economy, /clock and /profile are staff reads; /migrate commit is a one-shot attributed post under the deterministic key sr.migration/{obj} that writes the bounded whole-document sr:profile:{obj}. Idempotent by construction -- a re-run is an AlreadyPosted hit and mints nothing."
-
-[[handler]]
 name = "@sshkey"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (server staff commands)"
@@ -1005,11 +723,6 @@ name = "@wo"
 category = "authoritative"
 family = "industry.workorder"
 note = "E7 cut 4 (10b 3.4, contradiction (iii)): work orders. AUTHORITATIVE typed state -- its state transition gates capacity legality (a Running order holds a slot a competitor cannot take) and its reservations/holds lists index authoritative records, so WorkOrder and ProductionSchedule are prepared-path families, not exempt documents. @wo/draft|submit|cancel|deliver|restamp ride cut 2's B1 ingress seam (submit reserves each material input as a cut-2 inventory reservation, one facility slot as a B1 capacity reservation, all under the work order's deterministic holder key wo/{order}, in one bundle; deliver consumes every reservation, releases the slot, materializes the output lot via cut 2's mint_origin, and writes the industry.workorder.completed marker the fact is answered from -- no fallible step after the first install); quote|show|list are ReadOnly reads (a conservative over-declaration 08j 7 Accept permits). @wo/quote's price and duration are a PURE FUNCTION of the recorded pinned inputs and reserve nothing, so a quote is never an inventory or capacity oracle. The recipe reaches industry by composition (Arc<dyn RecipeAuthority> at the root reading TacsimStore), not by an edge; money stays an E4 Hold and never grows a resource field. The production schedule runs on ClockRef::WorldIc via a Registrar::schedule_source on handoff.rs's shape (D-E7-16's 'cut 8 gets the first production schedule source' corrected). E7 RESIDUE PASS 1 (R1) AND ITS INDEPENDENT VERIFY FOLD (B8; owner decision F10(a)) -- THE MONEY LEG. The class stays AUTHORITATIVE and the ceiling is right, on @op's own argument read the other way round: @op is legacy-post-image because its records are exempt documents and its bond rides the economy's carve-out lane, while @wo owns the K-owned typed family industry.workorder, which the legacy post-image lane explicitly cannot claim -- so economy-carve-out (a declared category with zero stanzas) is not available to it, and 'the handler itself does not implement or persist the mechanic' still holds: the mechanic is the ACTION COORDINATOR's, and the carve-out post is the ECONOMY's. What the handler now does that cut 4's note did not record: cmd_wo's /submit arm calls money::place BEFORE staging the submission (a prepare_authoritative provider has no Ctx and cannot place a hold -- cut 9's check_bond_accounts shape, line for line), posting a durable HoldOp::Place through mush_economy::post on the economy's own carve-out lane, and compensates with settle_engine_reservation if the submission is then refused. TWO deterministic keys, both scoped by the ledger-derived ATTEMPT TERM (verify fold C4/D1 + D5, owner decision F2(a)): industry.wo.hold/{order}/{n} for the placement and industry.wo.settle/{order}/{n} for the settlement, where n counts holds already carrying money::purpose(order). They MOVE TOGETHER: an unscoped hold key was spent for ever by the first compensating release, and scoping the placement alone would let the second attempt's capture meet a spent settle key and ship the goods free. The hold carries HoldPurpose::Reservation { kind: \"industry.workorder\" }, which is in ENGINE_OWNED_RESERVATIONS, so authorize_hold refuses the account's own owner unconditionally and only the engine settles it. The AUTHORITY on 'is this order's money reserved' is money::live_hold, found BY PURPOSE and never by the HoldId denormalized onto the record. The settlement is an arm on mush-industry's EXISTING SWEEP_TAG Coarse tick (MAX_WO_VISITED_PER_FIRE 64 / MAX_WO_SETTLE_PER_FIRE 8), never a transition and never a second Ctx::submit_authoritative -- cut 2's fold C4 still holds, this handler stages exactly one. A Completed order whose payee cannot be resolved is a settlement REFUSAL that keeps the hold live and pages (F3(a)), never a refund of delivered goods; an order holding resources with no live hold is refused on BOTH ingresses, the command arm behind wo_viewable and the offer route through project_offer's server-authored 'unfunded' fixed parameter (D4/B5). The declared class is now CROSS-CHECKED against the class the production composition actually publishes for this verb (legacy_handler_allowlist.rs), so a stanza's category and its registration can no longer drift apart silently -- which is how a refreshed-two-stanzas pass left the one verb whose lane changed untouched."
-
-[[handler]]
-name = "@wod"
-category = "baseline"
-note = "baseline pinned at b0e3b52 (module, wod composition only)"
 
 [[handler]]
 name = "@zone"

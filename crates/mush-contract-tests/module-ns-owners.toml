@@ -24,8 +24,10 @@
 # mush-server, mush-sim, mush-tactics, mush-testkit, mush-weather,
 # mush-worldgen, mushd, ruleset-shadowrun, tacsim, ruleset-wod. Every
 # distinct production (module, namespace) pair those runs produced is below,
-# plus `jobs -> shadowrun`, which the run never reached and which is declared
-# rather than discovered later by a dropped write.
+# plus `jobs -> shadowrun`, which the run never reached and which was declared
+# rather than discovered later by a dropped write. 16b cut R-b deleted both
+# character rulesets; the one game sheet (`tacsim::sheet`, module `pilot`)
+# declares the same two jobs crossings, and its rows replace theirs below.
 #
 # The spatial layer (S1-S5) landed AFTER that run, and mush-atlas and
 # mush-content did not exist when the counter was installed, so the block of
@@ -99,21 +101,13 @@ mush_jobs::open_job / resolve_plain_job.
 """
 
 [[delegation]]
-writer = "wod"
+writer = "pilot"
 ns = "jobs"
-declared_by = "wod"
+declared_by = "pilot"
 reason = """
-ruleset_wod::chargen_cmds and ::xp file approval jobs, and ::roll appends a \
-roll comment, through mush_jobs::open_job / add_comment.
-"""
-
-[[delegation]]
-writer = "shadowrun"
-ns = "jobs"
-declared_by = "shadowrun"
-reason = """
-ruleset_shadowrun::chargen_cmds and ::karma file approval jobs through \
-mush_jobs::open_job, exactly as the WoD ruleset does.
+tacsim::sheet::chargen files the one approval job (`+chargen/submit`) through \
+mush_jobs::open_job, whose write carries the caller's identity (16b cut R-b; \
+the two deleted rulesets declared the same crossing).
 """
 
 [[delegation]]
@@ -128,30 +122,20 @@ economy module's, the code is housing's, the namespace is the jobs module's.
 """
 
 # ---------------------------------------------------------------------------
-# Out of the jobs namespace: a job payload handler is registered by a ruleset
+# Out of the jobs namespace: a job payload handler is registered by the sheet
 # and dispatched by the jobs module, so it runs under the JOBS module's
 # identity and writes its own ruleset's namespace.
 # ---------------------------------------------------------------------------
 
 [[delegation]]
 writer = "jobs"
-ns = "wod"
-declared_by = "wod"
+ns = "pilot"
+declared_by = "pilot"
 reason = """
-`+job/approve` dispatches the payload handlers ruleset_wod registered (chargen \
-approval, XP spend) under the jobs module's Ctx; they write wod-namespace \
-documents.
-"""
-
-[[delegation]]
-writer = "jobs"
-ns = "shadowrun"
-declared_by = "shadowrun"
-reason = """
-The same route as jobs -> wod, for the two handlers ruleset_shadowrun \
-registers (chargen approval, karma spend). The census RUN did not reach it — \
-no test approves a Shadowrun payload job — so it is declared rather than \
-discovered by a dropped write.
+`+job/approve` dispatches the chargen-approval payload handler tacsim::sheet \
+registers (`pilot.chargen`) under the jobs module's Ctx; it stamps the sheet \
+Approved and writes pilot-namespace documents (16b cut R-b; the same route the \
+two deleted rulesets declared).
 """
 
 # ---------------------------------------------------------------------------
