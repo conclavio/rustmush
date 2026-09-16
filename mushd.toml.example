@@ -242,6 +242,18 @@ max_operational_assets = 0         # eligibility threshold over ACCESSIBLE asset
 insurance = "approved_operations"  # approved_operations | none — debt vs write-off, and nothing else
 upkeep_per_period = 0              # the lease's rent obligation, per campaign cadence period
 
+[tacsim.economy]                   # (16b cut R-b) the one game's economy wiring
+# Replaces [wod.economy] and [shadowrun.economy]. `housing` keeps the tenancy
+# title issuer (system:tacsim.housing) registered so @property/create can mint;
+# `market` registers the market's title issuer and composes the market (no
+# catalog sources until the game authors some); `instrument` is the settlement
+# currency the game registers at first boot (doc 11 §2: the credit, "cr"), at
+# scale 2. Like [tacsim] this block is deny_unknown_fields.
+housing = true
+market = false
+instrument = "tacsim.credit"
+reserved_rooms = []                # extra rooms (#N) that may never become property rooms, beside [onboarding]'s two
+
 [onboarding]                       # (M9) the chargen_required gate + start rooms
 # When off (the default), a fresh character plays immediately, exactly as
 # before. When on, a newly created, not-yet-approved character is placed in the

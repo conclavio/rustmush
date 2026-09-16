@@ -41,7 +41,7 @@ fn obj(n: u32) -> ObjId {
     ObjId(n)
 }
 fn housing_principal() -> PrincipalId {
-    PrincipalId::System(SystemPrincipalId::new("wod.housing").expect("a valid system principal"))
+    PrincipalId::System(SystemPrincipalId::new("tacsim.housing").expect("a valid system principal"))
 }
 fn rooms() -> BTreeSet<ObjId> {
     BTreeSet::from([obj(ANCHOR), obj(ROOM_B)])
@@ -1252,7 +1252,7 @@ fn an_omitted_optional_field_loads_as_its_default() {
     );
 
     let json = r#"{"id":1,"name":"x","anchor":100,"rooms":[100],"tier":2,
-                   "landlord":{"System":"wod.housing"},"revision":1}"#;
+                   "landlord":{"System":"tacsim.housing"},"revision":1}"#;
     let p: Property = serde_json::from_str(json).expect("an older property document loads");
     assert_eq!(p.status, PropertyStatus::Vacant);
     assert!(p.features.is_empty() && p.landlord_scope.is_none());
@@ -1420,7 +1420,7 @@ fn vf_a1_removing_a_tenant_keeps_the_home_anchor_until_the_tenancy_ends() {
 
 #[test]
 fn vf_a2_a_persisted_property_cannot_bypass_its_own_invariants() {
-    let landlord = r#""landlord":{"System":"wod.housing"}"#;
+    let landlord = r#""landlord":{"System":"tacsim.housing"}"#;
     // An anchor that is not one of the property's own rooms: a title room outside the
     // property, and a room of a `Let` property the access predicate is never asked
     // about. Refused rather than silently repaired.

@@ -1,5 +1,10 @@
 # E6 implementation plan — the Shadowrun run-and-pay economy
 
+> **Retired 2026-09-16** (owner, README superseded item 6; [16 §11](16-combat-arena.md),
+> [16b cut R-b](16b-combat-implementation-plan.md)). The Shadowrun ruleset this plan built on is
+> deleted; the run-and-pay loop it proved (contracts, outcomes, fences, custody, the neutral
+> market crate) stays as platform and is wired by the one game. Kept as history.
+
 **Status:** Draft 0.3a — 2026-09-04; **E6a is built** (§2.1 step one and its verify fold, §3.7 the
 ruleset half — 2026-09-05). Re-grounded at `ce43714` after the E1–E5 look-back (08g §11
 item 8, DL-02); DL-01 Option A′, DL-10's rolling budget and E2-C16's `InstrumentDisplay` are E6a

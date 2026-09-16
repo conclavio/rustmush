@@ -470,7 +470,7 @@ pub fn submit_support_plan(
 // The story window
 // ---------------------------------------------------------------------------
 
-/// Open the `wod-story` job a new [`TenancyStatus::EvictionPending`] deserves, and
+/// Open the `tacsim-story` job a new [`TenancyStatus::EvictionPending`] deserves, and
 /// record it on the window (08d §4).
 ///
 /// The **opener is explicit** (`GOD`), never the tick's incidental actor: the opener

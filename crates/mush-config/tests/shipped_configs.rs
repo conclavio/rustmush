@@ -46,6 +46,7 @@ const REQUIRED_SECTIONS: &[&str] = &[
     "shadowrun.economy",
     "tacsim",
     "tacsim.recovery",
+    "tacsim.economy",
 ];
 
 fn repo_root() -> PathBuf {

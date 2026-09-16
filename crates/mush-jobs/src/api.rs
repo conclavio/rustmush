@@ -356,7 +356,7 @@ impl std::error::Error for PlainJobError {}
 /// The producing-module counterpart to [`open_job`]. `+job/approve` and `+job/deny`
 /// are how a *person* closes a ticket; this is how the module that raised one closes
 /// it when the thing it was raised about resolved itself. E5's housing is the first
-/// caller: a story window opens a `wod-story` job asking an ST to decide an eviction,
+/// caller: a story window opens a `tacsim-story` job asking an ST to decide an eviction,
 /// and when the tenant's support comes back the question is simply gone — leaving the
 /// job open would put an ST in front of a decision about a home that is fine.
 ///

@@ -23,7 +23,7 @@ mush-core.workspace = true
 mush-atlas.workspace = true
 mush-org.workspace = true
 mush-economy.workspace = true
-# E5b: the story window opens a job in the `wod-story` queue and closes it again
+# E5b: the story window opens a job in the `tacsim-story` queue and closes it again
 # when a tenancy recovers. E5a deliberately had no jobs edge (a story job was a bare
 # `u64`); the module half is where that id has to become a real ticket.
 mush-jobs.workspace = true

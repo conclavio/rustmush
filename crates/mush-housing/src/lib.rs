@@ -52,7 +52,7 @@
 //! records conventional for now (08d §3.5).
 //!
 //! E5b adds exactly one dependency E5a did not have: **`mush-jobs`**, because the
-//! bare `u64` a story window carries has to become a real ticket in the `wod-story`
+//! bare `u64` a story window carries has to become a real ticket in the `tacsim-story`
 //! queue for an ST to answer it.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,

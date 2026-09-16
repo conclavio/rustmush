@@ -9,7 +9,7 @@
 //! everything else up: the `MoveAttempt`/`CarryAttempt` hook ([`crate::hooks`]), the
 //! destroy gate and the `ObjDestroyed` backstop, the `Connected` notice, the
 //! cadence-driven assessment tick ([`crate::tick`]), the exact-mode economy observer
-//! ([`crate::econ`]), the `wod-story` job queue, and the command surface
+//! ([`crate::econ`]), the `tacsim-story` job queue, and the command surface
 //! ([`crate::commands`]).
 //!
 //! ## Contracts (08d §4, and the E5a fold's handoffs in §3.5)
@@ -60,7 +60,7 @@ pub const NS: &str = "housing";
 /// The kv key of the allocator meta document.
 pub const META_KEY: &str = "meta";
 /// The staff/ST job queue a story window opens into (08d §4).
-pub const STORY_QUEUE: &str = "wod-story";
+pub const STORY_QUEUE: &str = "tacsim-story";
 /// How often the assessment tick fires (wall clock). It is only a *latency* bound:
 /// the tick is a **pull**, comparing each tenancy's cadence position against the one
 /// it last assessed, so a fire that finds nothing moved does nothing and a fire that

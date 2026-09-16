@@ -1,5 +1,10 @@
 # E5 implementation plan — World of Darkness housing and background support
 
+> **Retired 2026-09-16** (owner, README superseded item 6; [16 §11](16-combat-arena.md),
+> [16b cut R-b](16b-combat-implementation-plan.md)). The World of Darkness ruleset this plan
+> built on is deleted; the platform pieces it drove (housing, careers, the story window, the
+> title issuer) stay and are wired by the one game. Kept as history.
+
 **Status:** Draft 0.2 — reviewed (three passes: adversarial, code-grounding, design-fit against docs
 08/08a/08c/09 and the owner's answers); every confirmed finding is folded below and itemised in §12.
 **E5a is built** — `crates/mush-housing`, the pure library; read §3.5 "As built" for its signatures,

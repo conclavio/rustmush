@@ -51,7 +51,7 @@ fn boot() -> TestWorld {
 /// [`boot`] with a wiring-frozen reserved-room list — the host's `[onboarding]` start
 /// rooms, which `mush-server` now passes for real (verify fold, H4).
 fn boot_with(reserved: Vec<ObjId>) -> TestWorld {
-    let issuer = SystemPrincipalId::new("wod.housing").expect("valid system principal");
+    let issuer = SystemPrincipalId::new("tacsim.housing").expect("valid system principal");
     TestWorld::with_modules(vec![
         Box::new(mush_org::OrgModule::new().with_capabilities(vocab())),
         Box::new(
@@ -1289,7 +1289,7 @@ fn exact_rig(tw: &mut TestWorld, r: &Rig, funds: i64) -> (TenancyId, u64, u64) {
 fn exact_mode_stands_on_a_real_lease_contract_and_a_real_obligation() {
     let mut tw = boot();
     let mut r = rig(&mut tw);
-    // The rig's property is let by `sys:wod.housing`, which types nothing and cannot
+    // The rig's property is let by `sys:tacsim.housing`, which types nothing and cannot
     // hold a title; an exact lease needs a landlord who can be a party. Rebuild it.
     ok(&mut tw, GOD, "@dig Loft=up2,down2");
     let loft = room_named(&tw, "Loft");
@@ -1698,7 +1698,7 @@ fn creating_a_property_mints_the_anchors_title_to_the_landlord() {
         .and_then(|s| s.snapshot().asset(r.anchor).cloned())
         .expect("the anchor carries no title record");
     assert!(
-        matches!(&asset.title_owner, mush_org::PrincipalId::System(s) if s.as_str() == "wod.housing"),
+        matches!(&asset.title_owner, mush_org::PrincipalId::System(s) if s.as_str() == "tacsim.housing"),
         "title went to {:?}",
         asset.title_owner
     );
@@ -1794,7 +1794,7 @@ fn every_verb_has_help_and_the_module_wires_through_registration_alone() {
             .job_queues()
             .iter()
             .any(|q| q.name == mush_housing::STORY_QUEUE),
-        "the wod-story queue is not registered"
+        "the tacsim-story queue is not registered"
     );
     assert!(
         tw.registry()
@@ -1918,7 +1918,7 @@ fn org_property(
     store(tw).properties().last().expect("property").id
 }
 
-/// The rig's property is let by `sys:wod.housing`, which types nothing and cannot be
+/// The rig's property is let by `sys:tacsim.housing`, which types nothing and cannot be
 /// a contract party. Exact mode needs a landlord who can be one: rebuild it under
 /// Quinn, in a room of its own.
 fn loft(tw: &mut TestWorld, r: &mut Rig) {
@@ -3737,7 +3737,7 @@ fn population(tw: &mut TestWorld, r: &Rig, n: u64) -> Vec<TenancyId> {
     )
     .unwrap_or(0);
     let landlord =
-        mush_org::PrincipalId::System(SystemPrincipalId::new("wod.housing").expect("valid"));
+        mush_org::PrincipalId::System(SystemPrincipalId::new("tacsim.housing").expect("valid"));
     let mut kv = fold_kv(tw);
     let base_p = store(tw).properties().last().map_or(0, |p| p.id.0 + 1);
     let base_t = store(tw).tenancies().last().map_or(0, |t| t.id.0 + 1);
@@ -3939,7 +3939,7 @@ fn lb_dlbk3_an_oversized_pending_notice_is_dropped_on_load_and_a_240_byte_one_ke
 // ======================================================================
 
 /// Housing closes its story job through the plain-job seam, naming its own queue:
-/// the recovered ticket is `Resolved` with the closing note, in `wod-story`.
+/// the recovered ticket is `Resolved` with the closing note, in `tacsim-story`.
 #[test]
 fn lb_dlbk6_housing_resolves_its_story_job_through_the_plain_seam() {
     let mut tw = boot();

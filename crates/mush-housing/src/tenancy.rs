@@ -187,7 +187,7 @@ pub fn period_missed(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError> {
 ///
 /// Recovery from `EvictionPending` closes the window, and the closed window is
 /// **kept**: it moves to [`Tenancy::last_window`] stamped with the period it closed
-/// at. Its `job` is the `wod-story` job E5b resolves "recovered" and its `escalation`
+/// at. Its `job` is the `tacsim-story` job E5b resolves "recovered" and its `escalation`
 /// is the level-2 record E5b acknowledges — a recovery that dropped them left an open
 /// job and an open page pointing at a tenancy that is fine, findable only by reading
 /// the history tail. It is also what the relapse hysteresis in [`delinquent_elapsed`]
@@ -279,7 +279,7 @@ pub fn delinquent_elapsed(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError
     Ok(move_to(t, TenancyStatus::EvictionPending { window }, now))
 }
 
-/// Record the `wod-story` job (and the optional scene) E5b opened for the window.
+/// Record the `tacsim-story` job (and the optional scene) E5b opened for the window.
 ///
 /// Separate from [`delinquent_elapsed`] because the job id does not exist until the
 /// module has actually opened one, and because a scene is started later, when the ST

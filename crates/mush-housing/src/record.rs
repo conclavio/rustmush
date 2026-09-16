@@ -557,7 +557,7 @@ impl SupportPlan {
 pub struct StoryWindow {
     /// The cadence position the window opened at.
     pub opened: i64,
-    /// The `wod-story` job E5b opened for the ST, once it has one.
+    /// The `tacsim-story` job E5b opened for the ST, once it has one.
     #[serde(default)]
     pub job: Option<u64>,
     /// The scene the ST optionally started (opaque — see [`SceneRef`]).
@@ -860,7 +860,7 @@ pub struct Tenancy {
     /// period it closed at (§3.2, [`crate::period_supported`]).
     ///
     /// Recovery used to drop the window and everything in it. Its `job` is the
-    /// `wod-story` job E5b must resolve "recovered" and its `escalation` is the level-2
+    /// `tacsim-story` job E5b must resolve "recovered" and its `escalation` is the level-2
     /// record E5b must acknowledge — losing both left an open job and an open
     /// escalation pointing at a tenancy that is fine. It is also what the relapse
     /// hysteresis reads ([`crate::RELAPSE_WINDOW_PERIODS`]).

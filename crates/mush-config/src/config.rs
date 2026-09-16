@@ -787,6 +787,37 @@ pub struct TacsimCfg {
     pub time: TacsimTimeCfg,
     /// `[tacsim.recovery]` — **E7 residue pass 1, R4**.
     pub recovery: TacsimRecoveryCfg,
+    /// `[tacsim.economy]` — **16b cut R-b**: the single game's economy wiring.
+    pub economy: TacsimEconomyCfg,
+}
+
+/// `[tacsim.economy]` — what the composition root turns on for the one game's
+/// economy (**16b cut R-b**, replacing `[wod.economy]` and `[shadowrun.economy]`).
+///
+/// `housing` keeps the tenancy title issuer (`system:tacsim.housing`) registered so
+/// `@property/create` can mint; `market` registers the market's title issuer and
+/// composes the market (with no catalog sources until the game authors some);
+/// `instrument` is the settlement currency the game registers at first boot (doc
+/// 11 §2: the credit, `cr`), at scale 2; `reserved_rooms` are extra rooms (`#N`)
+/// that may never become property rooms, beside `[onboarding]`'s two.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimEconomyCfg {
+    pub housing: bool,
+    pub market: bool,
+    pub instrument: String,
+    pub reserved_rooms: Vec<u32>,
+}
+
+impl Default for TacsimEconomyCfg {
+    fn default() -> Self {
+        TacsimEconomyCfg {
+            housing: true,
+            market: false,
+            instrument: "tacsim.credit".to_string(),
+            reserved_rooms: Vec::new(),
+        }
+    }
 }
 
 /// `[npc]` — the NPC agent layer's world-task knobs (H2a/H2b). A new
@@ -876,6 +907,7 @@ impl Default for TacsimCfg {
             space_pulse_ms: 6_000,
             time: TacsimTimeCfg::default(),
             recovery: TacsimRecoveryCfg::default(),
+            economy: TacsimEconomyCfg::default(),
         }
     }
 }

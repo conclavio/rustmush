@@ -1,5 +1,9 @@
 # E1–E5 look-back
 
+> **Read with README superseded item 6 (2026-09-16)**: the WoD and Shadowrun rulesets this
+> look-back audits against are deleted by [16b cut R-b](16b-combat-implementation-plan.md); the
+> platform findings stand, the ruleset-specific ones are history.
+
 **Status:** Draft 0.1 — 2026-09-04. The owner's audit of E1 through E5 before E6 (08f) and E7 (10b)
 build on top. Code is grounded at `ba75fc3` (E5c verify fold, "E5 complete"); docs at `d3f2010`,
 which differs only by 08h (Draft 0.2) and its README row. Inputs: ten per-cut claim extractions

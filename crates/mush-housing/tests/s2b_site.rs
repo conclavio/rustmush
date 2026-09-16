@@ -67,7 +67,7 @@ fn packs() -> Vec<String> {
 }
 
 fn boot() -> TestWorld {
-    let issuer = SystemPrincipalId::new("wod.housing").expect("valid system principal");
+    let issuer = SystemPrincipalId::new("tacsim.housing").expect("valid system principal");
     let mut appliers = Appliers::new();
     mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
     let packs = packs()
