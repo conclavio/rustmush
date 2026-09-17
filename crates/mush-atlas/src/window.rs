@@ -1269,18 +1269,17 @@ pub fn standable(cell: Cell) -> bool {
 fn occupied(w: &World, domain: DomainId, surface: &SurfaceComposite) -> BTreeSet<(u16, u16)> {
     mush_sim::participants(w, domain)
         .into_iter()
-        .filter_map(|(_, pose)| {
-            let p = pose_cm(&pose)?;
-            surface.cell_of(p)
-        })
+        .filter_map(|(_, pose)| surface.cell_of(pose_cm(&pose)))
         .collect()
 }
 
-fn pose_cm(pose: &Pose) -> Option<PointCm> {
-    Some(PointCm {
-        x: cm(pose.x).ok()?,
-        y: cm(pose.y).ok()?,
-    })
+/// A pose's position on the surface. The pose is already whole centimetres in
+/// the region frame, so this is a field copy.
+fn pose_cm(pose: &Pose) -> PointCm {
+    PointCm {
+        x: pose.x_cm,
+        y: pose.y_cm,
+    }
 }
 
 /// The pose at the centre of a cell, on the cell's ground (P2).
@@ -1289,12 +1288,7 @@ pub fn pose_at(surface: &SurfaceComposite, x: u16, y: u16) -> Option<Pose> {
     let cell = surface.cells.get(x, y)?;
     let c = surface.grid.centre(x, y);
     let posture = mush_sim::passive_rules_value(serde_json::json!({})).ok()?;
-    Some(Pose::at(
-        metres(c.x),
-        metres(c.y),
-        f64::from(cell.elev_cm) / 100.0,
-        posture,
-    ))
+    Some(Pose::at(c.x, c.y, i32::from(cell.elev_cm), posture))
 }
 
 /// The free cell of `room` a participant enters at: adjacent to the portal it
@@ -1402,8 +1396,8 @@ pub fn resolve_room(w: &World, domain: DomainId, pose: &Pose) -> Option<ObjId> {
     let st = w.module_state::<AtlasState>()?;
     let entry = st.windows.open.get(&domain.0)?;
     let composite = entry.composite.as_ref()?;
-    let p = pose_cm(pose)?;
-    let z_cm = cm(pose.z).ok()?;
+    let p = pose_cm(pose);
+    let z_cm = i64::from(pose.z_cm);
     // The surface: the one whose ground at the pose is nearest its height.
     let surface = composite
         .surfaces
@@ -2011,18 +2005,18 @@ impl Compass {
         Some(Compass { dx, dy })
     }
 
-    /// The bearing, degrees clockwise from north.
+    /// The bearing, millidegrees clockwise from north.
     #[must_use]
-    pub fn facing_deg(self) -> u16 {
+    pub fn heading_mdeg(self) -> u32 {
         match (self.dx.signum(), self.dy.signum()) {
             (0, 1) => 0,
-            (1, 1) => 45,
-            (1, 0) => 90,
-            (1, -1) => 135,
-            (0, -1) => 180,
-            (-1, -1) => 225,
-            (-1, 0) => 270,
-            (-1, 1) => 315,
+            (1, 1) => 45_000,
+            (1, 0) => 90_000,
+            (1, -1) => 135_000,
+            (0, -1) => 180_000,
+            (-1, -1) => 225_000,
+            (-1, 0) => 270_000,
+            (-1, 1) => 315_000,
             _ => 0,
         }
     }
@@ -2074,8 +2068,8 @@ pub struct StepReport {
 
 /// The surface, cell and elevation gap a pose stands at.
 fn locate(composite: &Composite, pose: &Pose) -> Option<(usize, u16, u16)> {
-    let p = pose_cm(pose)?;
-    let z_cm = cm(pose.z).ok()?;
+    let p = pose_cm(pose);
+    let z_cm = i64::from(pose.z_cm);
     composite
         .surfaces
         .iter()
@@ -2327,7 +2321,7 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
                 .ok_or_else(|| "no such surface".to_string())?;
             let mut new_pose =
                 pose_at(surface, walk.at.0, walk.at.1).ok_or_else(|| "no such cell".to_string())?;
-            new_pose.facing_deg = heading.facing_deg();
+            new_pose.heading_mdeg = heading.heading_mdeg();
             new_pose
         };
         mush_sim::place(ctx, actor, domain, pose)?;

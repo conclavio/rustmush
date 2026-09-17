@@ -144,12 +144,15 @@ fn cmd_map(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let frame = crate::frame::frame_for(ctx.w, st, actor, domain);
         let mut lines = vec![crate::window::summary_for(ctx.w, st, entry, actor)];
         let here = ctx.w.get(actor).and_then(|o| o.location);
+        // The pose is integer centimetres and millidegrees; the sentence a
+        // player reads is metres and whole degrees, converted here and nowhere
+        // else.
         lines.push(format!(
             "You stand at ({:.1}, {:.1}, z {:.1}) facing {}°, in {}.",
-            pose.x,
-            pose.y,
-            pose.z,
-            pose.facing_deg,
+            crate::geom::metres(pose.x_cm),
+            crate::geom::metres(pose.y_cm),
+            crate::geom::metres(i64::from(pose.z_cm)),
+            pose.heading_mdeg / 1000,
             here.map_or_else(
                 || "nowhere".to_string(),
                 |r| mush_core::output::display_name(ctx.w, r)

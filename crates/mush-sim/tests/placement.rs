@@ -724,6 +724,49 @@ fn reboot_round_trip_reproduces_state_and_projections() {
     let _ = fx;
 }
 
+/// Cut P: the `@spatial/place` pose JSON names whole centimetres and
+/// millidegrees, a JSON without those two keys is still an opaque posture at the
+/// origin, and a heading past a full turn is refused rather than wrapped.
+#[test]
+fn a_metric_pose_json_names_centimetres_and_millidegrees() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    ok(&mut tw, "@domain/create Field=sim.passive");
+    ok(
+        &mut tw,
+        r#"@spatial/place/domain Atlas=0,{"x_cm":12345,"y_cm":-6789,"z_cm":250,"heading_mdeg":271500}"#,
+    );
+    let SpatialParent::Direct { pose, .. } = state(&tw).parent_of(fx.mech) else {
+        panic!("Atlas did not place directly");
+    };
+    assert_eq!(
+        (pose.x_cm, pose.y_cm, pose.z_cm, pose.heading_mdeg),
+        (12_345, -6_789, 250, 271_500)
+    );
+    // Nothing named `x_cm`/`y_cm`: the whole JSON is the driver's posture and the
+    // pose sits at the region origin.
+    ok(
+        &mut tw,
+        r#"@spatial/place/domain Locust=0,{"x":1.5,"y":2.5}"#,
+    );
+    let SpatialParent::Direct { pose, .. } = state(&tw).parent_of(fx.mech2) else {
+        panic!("Locust did not place directly");
+    };
+    assert_eq!(
+        (pose.x_cm, pose.y_cm, pose.z_cm, pose.heading_mdeg),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(pose.posture.data(), &serde_json::json!({"x":1.5,"y":2.5}));
+    // A full turn is out of range: the command refuses it, naming the unit.
+    let t = say(
+        &mut tw,
+        r#"@spatial/place/domain Leopard=0,{"x_cm":0,"y_cm":0,"heading_mdeg":360000}"#,
+    );
+    assert!(t.contains("millidegrees"), "{t}");
+    assert!(!state(&tw).is_placed(fx.carrier), "{t}");
+    check_invariants(&tw);
+}
+
 #[test]
 fn legacy_nested_passive_values_load_exactly_without_an_eager_rewrite() {
     let mut tw = boot();
@@ -764,14 +807,16 @@ fn legacy_nested_passive_values_load_exactly_without_an_eager_rewrite() {
         authored.get("version").is_none(),
         "new value has no legacy top-level version"
     );
-    carrier_doc["parent"]["pose"] = legacy_passive(serde_json::json!({ "x": 1 }));
+    // Cut P deleted the bare-rules-value pose, so the legacy value under test is
+    // the posture of an integer pose, which is where every stored one now sits.
+    carrier_doc["parent"]["pose"]["posture"] = legacy_passive(serde_json::json!({ "x": 1 }));
 
     let attached_key = format!("placement:{}", fx.mech.0);
     module_doc_mut(&mut kv, &attached_key)["parent"]["local_pose"] =
         legacy_passive(serde_json::json!({ "dx": 2 }));
 
     let unplaced_key = format!("placement:{}", fx.mech2.0);
-    module_doc_mut(&mut kv, &unplaced_key)["unplaced"]["previous"]["pose"] =
+    module_doc_mut(&mut kv, &unplaced_key)["unplaced"]["previous"]["pose"]["posture"] =
         legacy_passive(serde_json::json!({ "x": 3 }));
 
     let space_key = format!("space:{}", fx.hangar.0);

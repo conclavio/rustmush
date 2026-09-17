@@ -59,10 +59,10 @@ pub fn surface_label(surface: &SurfaceRef) -> String {
 /// The surface, cell and elevation gap a pose stands at.
 fn locate(composite: &Composite, pose: &Pose) -> Option<(usize, u32, u32)> {
     let p = crate::geom::PointCm {
-        x: crate::geom::cm(pose.x).ok()?,
-        y: crate::geom::cm(pose.y).ok()?,
+        x: pose.x_cm,
+        y: pose.y_cm,
     };
-    let z_cm = crate::geom::cm(pose.z).ok()?;
+    let z_cm = i64::from(pose.z_cm);
     composite
         .surfaces
         .iter()

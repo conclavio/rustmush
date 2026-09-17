@@ -93,7 +93,7 @@ fn btest_opens_a_window_over_the_pilots_room_and_closes_it_with_the_battle() {
     let t = text(&tw, &done, pilot);
     assert!(t.contains("The map is drawn"), "{t}");
     let (_, pose) = mush_sim::pose_of(tw.world(), pilot).expect("the pilot stands on the map");
-    assert!(pose.x > 312.0 && pose.x < 334.0, "{pose:?}");
+    assert!(pose.x_cm > 31_200 && pose.x_cm < 33_400, "{pose:?}");
     assert_eq!(tw.world().get(pilot).and_then(|o| o.location), Some(coffee));
     // The battle ends: the window closes, the pilot stays where they stand.
     let events = tw.run(pilot, "+btest/stop");

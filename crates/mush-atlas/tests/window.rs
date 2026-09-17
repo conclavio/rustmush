@@ -3,7 +3,7 @@
 //! on it, and reads back whole across a restart. *Purity* (P5): the same pins
 //! and feature states composite byte-identically twice, after a restart, and
 //! after a close and reopen. *Elevation* (P2): a pose in the Production Office
-//! stands at `z = 3.6`; the stair portal climbs `3.6`. *Placement* (P1): entry
+//! stands at `z_cm = 360`; the stair portal climbs `3.6` m. *Placement* (P1): entry
 //! poses are free cells of the room; the resolver puts a pose back in its room.
 
 use std::collections::HashMap;
@@ -327,15 +327,15 @@ fn a_participant_is_placed_on_a_free_cell_and_the_resolver_returns_their_room() 
     .expect("Rae stands on the map");
     let (d, pose) = mush_sim::pose_of(tw.world(), rae).expect("a pose");
     assert_eq!(d, domain);
-    assert!(
-        (pose.z - 0.0).abs() < 1e-9,
+    assert_eq!(
+        pose.z_cm, 0,
         "the coffee shop floor is at the datum: {pose:?}"
     );
     let geo = records.roomgeo.get(&coffee).expect("geometry");
     let shape = geo.footprint.shape().expect("shape");
     let p = mush_atlas::PointCm {
-        x: (pose.x * 100.0).round() as i64,
-        y: (pose.y * 100.0).round() as i64,
+        x: pose.x_cm,
+        y: pose.y_cm,
     };
     assert!(
         shape.contains(p),
@@ -352,7 +352,7 @@ fn a_participant_is_placed_on_a_free_cell_and_the_resolver_returns_their_room() 
     );
     // A pose just off the footprint resolves to the nearest room within reach.
     let mut off = pose.clone();
-    off.x = 313.5; // the coffee shop's west wall is at x = 312..314
+    off.x_cm = 31_350; // the coffee shop's west wall is at x = 312..314 m
     assert_eq!(
         mush_atlas::resolve_room(tw.world(), domain, &off),
         Some(coffee)
@@ -394,17 +394,14 @@ fn the_mezzanine_pose_stands_at_three_point_six_and_the_stair_climbs_it() {
     })
     .expect("staff stand on the mezzanine");
     let (_, pose) = mush_sim::pose_of(tw.world(), staff).expect("a pose");
-    assert!(
-        (pose.z - 3.6).abs() < 1e-9,
-        "P2: the mezzanine is 3.6 m up: {pose:?}"
-    );
+    assert_eq!(pose.z_cm, 360, "P2: the mezzanine is 3.6 m up: {pose:?}");
     assert_eq!(
         mush_atlas::resolve_room(tw.world(), domain, &pose),
         Some(office)
     );
     // The same (x, y) at the datum is the lobby, one floor down.
     let mut down = pose.clone();
-    down.z = 0.0;
+    down.z_cm = 0;
     assert_eq!(
         mush_atlas::resolve_room(tw.world(), domain, &down),
         Some(lobby)
@@ -492,11 +489,11 @@ fn walking_through_exits_places_by_the_portal_re_poses_across_rooms_and_releases
     assert_eq!(location(&tw, rae), Some(coffee));
     let pose = pose_of(&tw, rae).expect("placed on entry");
     assert!(
-        (pose.x - 323.0).abs() < 1.6,
-        "by the door at x 323: {pose:?}"
+        (pose.x_cm - 32_300).abs() < 160,
+        "by the door at x 323 m: {pose:?}"
     );
     assert!(
-        pose.y > 263.0 && pose.y < 266.0,
+        pose.y_cm > 26_300 && pose.y_cm < 26_600,
         "just inside the south wall: {pose:?}"
     );
     assert_eq!(
@@ -508,7 +505,7 @@ fn walking_through_exits_places_by_the_portal_re_poses_across_rooms_and_releases
     assert!(text(&tw, &events, rae).contains("Backlot"));
     assert_eq!(location(&tw, rae), Some(backlot));
     let pose = pose_of(&tw, rae).expect("re-posed");
-    assert!(pose.y >= 270.0, "on the backlot: {pose:?}");
+    assert!(pose.y_cm >= 27_000, "on the backlot: {pose:?}");
     // South-west to the forecourt (covered too), then to Limbo: released.
     tw.run(rae, "forecourt");
     assert_eq!(location(&tw, rae), Some(forecourt));
@@ -536,17 +533,17 @@ fn plus_move_walks_cells_and_walls_counters_and_closed_rooms_stop_it() {
     tw.run(rae, "lobby");
     assert_eq!(location(&tw, rae), Some(lobby));
     let start = pose_of(&tw, rae).expect("placed by the lobby door");
-    assert!(start.y > 236.0, "by the door on the north wall: {start:?}");
+    assert!(
+        start.y_cm > 23_600,
+        "by the door on the north wall: {start:?}"
+    );
     // Two cells south: the pose moves two metres.
     let events = tw.run(rae, "+move south 2");
     let t = text(&tw, &events, rae);
     assert!(t.contains("You move 2 cells south"), "{t}");
     let pose = pose_of(&tw, rae).expect("still placed");
-    assert!(
-        (start.y - pose.y - 2.0).abs() < 1e-6,
-        "{start:?} -> {pose:?}"
-    );
-    assert_eq!(pose.facing_deg, 180);
+    assert_eq!(start.y_cm - pose.y_cm, 200, "{start:?} -> {pose:?}");
+    assert_eq!(pose.heading_mdeg, 180_000);
     assert_eq!(location(&tw, rae), Some(lobby));
     // West until the wall stops the walk short.
     let events = tw.run(rae, "+move west 40");
@@ -555,8 +552,8 @@ fn plus_move_walks_cells_and_walls_counters_and_closed_rooms_stop_it() {
     assert!(!t.contains("You move 40 cells"), "{t}");
     let pose = pose_of(&tw, rae).expect("placed");
     assert!(
-        pose.x > 250.5,
-        "never through the west wall at x 250: {pose:?}"
+        pose.x_cm > 25_050,
+        "never through the west wall at x 250 m: {pose:?}"
     );
     // The reception desk (a counter across y = 222, x 256..270 — cells 14..28 of
     // row 20 on this frame, whose origin is (242, 202)) blocks the way south

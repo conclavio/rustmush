@@ -144,9 +144,10 @@ fn passive_from(json: Option<serde_json::Value>) -> Result<RulesValue, CmdError>
         .map_err(|e| CmdError::msg(format!("Invalid passive rules value: {e}")))
 }
 
-/// The pose a `@spatial/place` JSON names: `{ x, y[, z, facing_deg, posture] }`
-/// is a metric pose (S4) whose posture is the passive rules value over
-/// `posture`; anything else is the passive rules value itself, at the origin.
+/// The pose a `@spatial/place` JSON names: `{ x_cm, y_cm[, z_cm, heading_mdeg,
+/// posture] }`, whole region centimetres and a heading in millidegrees, is a
+/// metric pose (S4) whose posture is the passive rules value over `posture`;
+/// anything else is the passive rules value itself, at the origin.
 fn pose_from(json: Option<serde_json::Value>) -> Result<Pose, CmdError> {
     let json = json.unwrap_or(serde_json::Value::Null);
     let passive = |data: serde_json::Value| {
@@ -155,14 +156,15 @@ fn pose_from(json: Option<serde_json::Value>) -> Result<Pose, CmdError> {
     };
     let metric = json.as_object().and_then(|o| {
         Some((
-            o.get("x")?.as_f64()?,
-            o.get("y")?.as_f64()?,
-            o.get("z")
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(0.0),
-            o.get("facing_deg")
+            o.get("x_cm")?.as_i64()?,
+            o.get("y_cm")?.as_i64()?,
+            o.get("z_cm")
+                .and_then(serde_json::Value::as_i64)
+                .and_then(|n| i32::try_from(n).ok())
+                .unwrap_or(0),
+            o.get("heading_mdeg")
                 .and_then(serde_json::Value::as_u64)
-                .and_then(|n| u16::try_from(n).ok())
+                .and_then(|n| u32::try_from(n).ok())
                 .unwrap_or(0),
             o.get("posture")
                 .cloned()
@@ -170,12 +172,12 @@ fn pose_from(json: Option<serde_json::Value>) -> Result<Pose, CmdError> {
         ))
     });
     match metric {
-        Some((x, y, z, facing_deg, posture)) => {
+        Some((x_cm, y_cm, z_cm, heading_mdeg, posture)) => {
             let pose = Pose {
-                x,
-                y,
-                z,
-                facing_deg,
+                x_cm,
+                y_cm,
+                z_cm,
+                heading_mdeg,
                 posture: passive(posture)?,
             };
             pose.validate().map_err(CmdError::msg)?;
@@ -3328,7 +3330,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             .collect(),
             help: "@spatial <obj>  --  (staff) Placement graph. Shows an object's placement.\n\
                    @spatial/tree <obj>\n\
-                   @spatial/place/domain <obj>=<domain>[,{json pose}]\n\
+                   @spatial/place/domain <obj>=<domain>[,{\"x_cm\":<n>,\"y_cm\":<n>[,\"z_cm\":<n>,\"heading_mdeg\":<n>]}]\n\
                    @spatial/place/interior <obj>=<space>[,<slot>]\n\
                    @spatial/place/attached <obj>=<host>,<mount>[,{json}]\n\
                    @spatial/unplace[/keep] <obj>[=<reason>]\n\

@@ -440,99 +440,97 @@ pub struct DomainRecord {
     pub window: Option<WindowRec>,
 }
 
-/// A metric pose on a domain's surface (doc 14 §2.4, D-14-4): region metres, `z`
-/// per P2 (the surface's height at `(x, y)` plus the declared height above it), a
-/// facing in degrees clockwise from north, and the driver-private posture — the
-/// only opaque part.
+/// A metric pose on a domain's surface (doc 14 §2.4, D-14-4; doc 16 §3.2,
+/// D-16-4): whole region centimetres, `z_cm` per P2 (the surface's height at
+/// `(x_cm, y_cm)` plus the declared height above it), a heading in millidegrees
+/// clockwise from north, and the driver-private posture — the only opaque part.
 ///
-/// The wire form is `{ x, y, z, facing_deg, posture }`; a bare rules value (the
-/// cut-1 opaque pose) still decodes, as the posture of a pose at the origin.
+/// Authoritative state is integer, so nothing here is a float: authored packs
+/// name metres and the atlas converts them at load, and that is the one place
+/// the conversion happens.
+///
+/// The wire form is `{ x_cm, y_cm, z_cm, heading_mdeg, posture }`, where `z_cm`
+/// and `heading_mdeg` default to zero and the heading is normalised into
+/// `0..360_000` as it decodes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(from = "PoseWire")]
 pub struct Pose {
-    /// East, region metres.
-    pub x: f64,
-    /// North, region metres.
-    pub y: f64,
-    /// Height against the region datum, metres.
-    pub z: f64,
-    /// Facing, degrees clockwise from north, `0..360`.
-    pub facing_deg: u16,
+    /// East, region centimetres.
+    pub x_cm: i64,
+    /// North, region centimetres.
+    pub y_cm: i64,
+    /// Height against the region datum, centimetres.
+    pub z_cm: i32,
+    /// Heading, millidegrees clockwise from north, `0..360_000`.
+    pub heading_mdeg: u32,
     /// The driver's posture (opaque).
     pub posture: RulesValue,
 }
 
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum PoseWire {
-    Metric {
-        x: f64,
-        y: f64,
-        z: f64,
-        #[serde(default)]
-        facing_deg: u16,
-        posture: RulesValue,
-    },
-    Legacy(RulesValue),
+struct PoseWire {
+    x_cm: i64,
+    y_cm: i64,
+    #[serde(default)]
+    z_cm: i32,
+    #[serde(default)]
+    heading_mdeg: u32,
+    posture: RulesValue,
 }
 
 impl From<PoseWire> for Pose {
     fn from(wire: PoseWire) -> Pose {
-        match wire {
-            PoseWire::Metric {
-                x,
-                y,
-                z,
-                facing_deg,
-                posture,
-            } => Pose {
-                x,
-                y,
-                z,
-                facing_deg: facing_deg % 360,
-                posture,
-            },
-            PoseWire::Legacy(posture) => Pose::passive(posture),
+        let PoseWire {
+            x_cm,
+            y_cm,
+            z_cm,
+            heading_mdeg,
+            posture,
+        } = wire;
+        Pose {
+            x_cm,
+            y_cm,
+            z_cm,
+            heading_mdeg: heading_mdeg % 360_000,
+            posture,
         }
     }
 }
 
 impl Pose {
-    /// A pose at the origin: the shape every cut-1 placement has.
+    /// A pose at the region origin, facing north: the shape a placement with no
+    /// metric pose of its own takes.
     #[must_use]
     pub fn passive(posture: RulesValue) -> Pose {
         Pose {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            facing_deg: 0,
+            x_cm: 0,
+            y_cm: 0,
+            z_cm: 0,
+            heading_mdeg: 0,
             posture,
         }
     }
 
-    /// A pose at `(x, y, z)` facing north.
+    /// A pose at `(x_cm, y_cm, z_cm)` facing north.
     #[must_use]
-    pub fn at(x: f64, y: f64, z: f64, posture: RulesValue) -> Pose {
+    pub fn at(x_cm: i64, y_cm: i64, z_cm: i32, posture: RulesValue) -> Pose {
         Pose {
-            x,
-            y,
-            z,
-            facing_deg: 0,
+            x_cm,
+            y_cm,
+            z_cm,
+            heading_mdeg: 0,
             posture,
         }
     }
 
-    /// Whether every coordinate is a finite number and the facing is a bearing.
+    /// Whether the heading is a bearing.
     ///
     /// # Errors
     ///
     /// A message naming what is wrong.
     pub fn validate(&self) -> Result<(), String> {
-        if !(self.x.is_finite() && self.y.is_finite() && self.z.is_finite()) {
-            return Err("a pose's coordinates must be finite".to_string());
-        }
-        if self.facing_deg >= 360 {
-            return Err("a pose's facing is 0..360 degrees".to_string());
+        if self.heading_mdeg >= 360_000 {
+            return Err("a pose's heading is 0..360000 millidegrees".to_string());
         }
         Ok(())
     }

@@ -205,13 +205,14 @@ fn upgrade_spatial_parent(value: &mut serde_json::Value) -> Result<(), String> {
     };
     match fields.get("kind").and_then(serde_json::Value::as_str) {
         Some("Direct") => {
-            // S4: the pose is metric with the rules value as its posture; a
-            // cut-1 document carries the bare rules value, which still decodes.
-            if let Some(pose) = fields.get_mut("pose") {
-                match pose.get_mut("posture") {
-                    Some(posture) => upgrade_legacy_passive(posture)?,
-                    None => upgrade_legacy_passive(pose)?,
-                }
+            // S4: the pose is metric with the rules value as its posture. Cut P
+            // deleted the bare-rules-value pose, so a document without a
+            // `posture` is not a pose and does not decode.
+            if let Some(posture) = fields
+                .get_mut("pose")
+                .and_then(|pose| pose.get_mut("posture"))
+            {
+                upgrade_legacy_passive(posture)?;
             }
         }
         Some("Attached") => {
