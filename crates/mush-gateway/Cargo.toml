@@ -62,6 +62,13 @@ mush-contract-tests.workspace = true
 # never links `mush-server` at all, and no release build of any crate here
 # activates the feature.
 mush-server = { workspace = true, features = ["fault-injection"] }
+# 16b cut T.3: the gateway twin of the custody lens (tests/arena_custody.rs) is
+# the one place a SPLIT server's arena has to be made to panic on demand, and the
+# `@arena/fault` switch that does it is behind tacsim's own off-by-default
+# feature. A `[dev-dependencies]` edge exactly like the one above: the gateway
+# binary never links tacsim at all, and no release build of anything here turns
+# the seam on.
+tacsim = { workspace = true, features = ["fault-injection"] }
 mush-testkit.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 reqwest.workspace = true

@@ -42,6 +42,10 @@ use mush_gateway::{GatewayOptions, LaunchedServer, RestartTrigger, ServerLaunche
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
+/// The world's TRANSIENT authoritative refusal: a commit is in flight.
+const COMMIT_PENDING: &str = "please retry in a moment";
+/// How many times a mutating line is re-sent on that refusal.
+const COMMIT_RETRIES: usize = 8;
 
 fn scratch_dir(tag: &str) -> PathBuf {
     // A UNIQUE dir per call (not just per PID+tag): every server launch — across
@@ -334,6 +338,59 @@ impl Term {
         let bytes = format!("{line}\r").into_bytes();
         self.channel.data(&bytes[..]).await.expect("send line");
     }
+
+    /// Run one line and wait for `needle`, **retrying while the world answers
+    /// the transient authoritative refusal**.
+    ///
+    /// A mutating verb rides the authoritative lane, and that lane answers
+    /// `mush_server`'s `RefusalReason::CommitPending` — "the world is committing
+    /// another action; please retry in a moment" — whenever a commit is in
+    /// flight. It is a real answer a real client retries, not a failure, and
+    /// under a loaded `cargo test --workspace` it lands often enough to make a
+    /// one-shot `send_line` + `expect_after` racy.
+    async fn say(&mut self, line: &str, needle: &str) {
+        for _ in 0..COMMIT_RETRIES {
+            let mark = self.mark();
+            self.send_line(line).await;
+            if self
+                .expect_one_of_after(mark, &[needle, COMMIT_PENDING])
+                .await
+                == 0
+            {
+                return;
+            }
+        }
+        panic!("`{line}` was refused as commit-pending {COMMIT_RETRIES} times running");
+    }
+
+    /// Wait for whichever of `needles` arrives first, answering its index.
+    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
+        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        loop {
+            let seen = strip_ansi(&self.seen[mark..]);
+            if let Some(index) = needles.iter().position(|needle| seen.contains(needle)) {
+                return index;
+            }
+            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "timeout waiting for any of {needles:?}; seen: {:?}",
+                        self.seen
+                    )
+                });
+            match msg {
+                Some(ChannelMsg::Data { data }) => {
+                    self.seen.push_str(&String::from_utf8_lossy(&data));
+                }
+                Some(_) => {}
+                None => panic!(
+                    "channel closed waiting for any of {needles:?}; seen: {:?}",
+                    self.seen
+                ),
+            }
+        }
+    }
 }
 
 async fn play_client(addr: std::net::SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
@@ -432,10 +489,11 @@ async fn server_restart_keeps_connections_and_world() {
     god2.expect("Limbo #0").await;
 
     // A mutating command that must survive the restart: dig a room with an exit.
-    let before_dig = god1.mark();
-    god1.send_line("@dig Vault = east;e, west;w").await;
-    god1.expect_after(before_dig, "Vault created with room number")
-        .await;
+    god1.say(
+        "@dig Vault = east;e, west;w",
+        "Vault created with room number",
+    )
+    .await;
 
     // Speech round-trips across the boundary before the restart.
     let before_say = god2.mark();
@@ -505,10 +563,11 @@ async fn restart_mid_scene_resumes_in_current_room() {
     god.expect("Limbo #0").await;
 
     // Build a room, then WALK INTO it — the player is now mid-scene in Vault.
-    let before_dig = god.mark();
-    god.send_line("@dig Vault = east;e, west;w").await;
-    god.expect_after(before_dig, "Vault created with room number")
-        .await;
+    god.say(
+        "@dig Vault = east;e, west;w",
+        "Vault created with room number",
+    )
+    .await;
     let before_move = god.mark();
     god.send_line("east").await;
     god.expect_after(before_move, "Vault").await;
@@ -589,10 +648,11 @@ async fn server_self_exit_auto_restarts_without_dropping_players() {
     god.expect("Limbo #0").await;
 
     // Build something that must survive the auto-restart.
-    let before_dig = god.mark();
-    god.send_line("@dig Vault = east;e, west;w").await;
-    god.expect_after(before_dig, "Vault created with room number")
-        .await;
+    god.say(
+        "@dig Vault = east;e, west;w",
+        "Vault created with room number",
+    )
+    .await;
 
     // Make the server EXIT ON ITS OWN (the crash / auto-restart path, D1a) by
     // firing the first server's crash signal — NOT the RestartTrigger. The
@@ -646,10 +706,11 @@ async fn client_disconnect_during_gap_leaves_survivor_intact() {
     god2.expect("Limbo #0").await;
 
     // Something to prove the world is intact afterward.
-    let before_dig = god1.mark();
-    god1.send_line("@dig Vault = east;e, west;w").await;
-    god1.expect_after(before_dig, "Vault created with room number")
-        .await;
+    god1.say(
+        "@dig Vault = east;e, west;w",
+        "Vault created with room number",
+    )
+    .await;
 
     // RESTART, then immediately drop the SECOND connection — it vanishes during
     // the restart gap, before the re-attach completes.

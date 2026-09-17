@@ -775,6 +775,15 @@ fn active_grant_of(ctx: &Ctx<'_>, who: ObjId) -> Option<SeatGrant> {
 /// fires the declared fallback at a safe boundary; the grant becomes terminal
 /// and its audit row is forgotten.
 fn stand_down(ctx: &mut Ctx<'_>, grant: &SeatGrant, offer: &SeatOffer) -> Result<(), CmdError> {
+    // **16b cut T.3, admission site 5 of 6** (doc 16 §3.1 "Custody"). A seat on a
+    // unit an arena holds is a *cockpit*: the arena authorises every order
+    // against a `(unit, channel)` epoch the world publishes, and a third party
+    // revoking that seat reaches no arena at all — there is no hook for it, and
+    // an arena that never hears about it keeps taking the evicted pilot's queued
+    // orders. So the eviction is refused at the door instead, which is the one
+    // defence the seam's shape allows.
+    mush_sim::deployed::refuse_if_deployed(ctx.w, offer.scope.unit.0)
+        .map_err(|error| CmdError::msg(error.to_string()))?;
     let station = mush_sim::StationId::new(offer.scope.station.as_str()).ok_or_else(no_seat)?;
     mush_sim::request_seat_activation(
         ctx,

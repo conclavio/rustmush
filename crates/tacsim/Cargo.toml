@@ -78,6 +78,22 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[features]
+# 16b cut T.3: the `@arena/fault <match>` switch, which arms cut T.2's hidden
+# panic hook inside a RUNNING match's arena so the two verify lenses can show
+# what doc 16 §3.1 "Failure" promises — a panic inside `step` voids the match and
+# the world keeps serving commands. No legal input can make a pulse panic, so the
+# seam has to exist; what must not exist is a shipped binary carrying it.
+#
+# The gate is the cargo feature, exactly as `mush-server/fault-injection` gates
+# the K8 process cuts (WS01-S11D) — not `cfg(debug_assertions)`, which stops
+# fencing production the moment `[profile.release]` sets `debug-assertions =
+# true`. Off by default; `mushd`'s and `mush-gateway`'s `[dev-dependencies]`
+# edges are the only things in the tree that turn it on, for the two tests that
+# need it, and `crates/mush-contract-tests/tests/feature_matrix_inventory.rs`
+# pins that claim.
+fault-injection = []
+
 [dev-dependencies]
 mush-testkit.workspace = true
 mush-proto.workspace = true

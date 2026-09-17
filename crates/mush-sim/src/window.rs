@@ -266,9 +266,35 @@ pub fn pose_of(w: &World, obj: ObjId) -> Option<(DomainId, Pose)> {
     }
 }
 
-/// Everyone directly placed in `domain`, by id, with their poses.
+/// Everyone directly placed in `domain`, by id, with their poses — **the
+/// world-side roster**.
+///
+/// 16b cut T.3 (doc 16 §3.1 "Custody", §3.6 "World-side exclusion"): a unit an
+/// arena holds is **not** one of them. Its world placement stays exactly where it
+/// was and is deliberately left frozen (so the pilot's channel grants, which
+/// require a placed unit, survive the match), but while the arena is the single
+/// writer for that unit's pose the world's own answer to "who is here" would be a
+/// stale one — and every world-side pulse, map frame and unit listing reads this
+/// function. Excluding it here is what makes doc 16's rule *a deployed unit is
+/// never a participant of a world-side pulse* true by construction rather than by
+/// each caller remembering; the frozen placement alone does **not** imply it,
+/// because a frozen placement is still a placement.
+///
+/// [`raw_participants`] is the unfiltered read, for the two callers that must see
+/// a deployed unit: closing the window (which has to release it) and the custody
+/// check-out itself.
 #[must_use]
 pub fn participants(w: &World, domain: DomainId) -> Vec<(ObjId, Pose)> {
+    raw_participants(w, domain)
+        .into_iter()
+        .filter(|(obj, _)| !crate::deployed::is_deployed(w, *obj))
+        .collect()
+}
+
+/// Everyone directly placed in `domain`, **including** units under an arena's
+/// custody — the placement graph's own answer, before doc 16 §3.6's exclusion.
+#[must_use]
+pub fn raw_participants(w: &World, domain: DomainId) -> Vec<(ObjId, Pose)> {
     let Some(st) = w.module_state::<SpatialState>() else {
         return Vec::new();
     };
@@ -286,17 +312,28 @@ pub fn participants(w: &World, domain: DomainId) -> Vec<(ObjId, Pose)> {
 /// Close a window: release every participant where they stand and retire the
 /// domain. Returns who was released.
 ///
+/// 16b cut T.3: this is one of the two readers that takes the **raw** roster.
+/// A window that still holds a unit under an arena's custody is refused outright
+/// below — retiring the domain out from under a running match would leave the
+/// arena integrating a unit whose world placement no longer exists — but the
+/// release itself must be able to see everything the placement graph holds, not
+/// doc 16 §3.6's projection of it.
+///
 /// # Errors
 ///
-/// A message when the domain is not a live window, or a release is refused.
+/// A message when the domain is not a live window, when it holds a deployed
+/// unit, or when a release is refused.
 pub fn close_window(ctx: &mut Ctx<'_>, domain: DomainId) -> Result<Vec<ObjId>, String> {
     if window_of(ctx.w, domain).is_none() {
         return Err(format!("domain #{domain} has no open window"));
     }
-    let members: Vec<ObjId> = participants(ctx.w, domain)
+    let members: Vec<ObjId> = raw_participants(ctx.w, domain)
         .into_iter()
         .map(|(o, _)| o)
         .collect();
+    for &obj in &members {
+        crate::deployed::refuse_if_deployed(ctx.w, obj).map_err(|error| error.to_string())?;
+    }
     for &obj in &members {
         unplace(ctx, obj, "the window closed")?;
     }

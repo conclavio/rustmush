@@ -290,6 +290,21 @@ to, and proves the boot NAMES it instead of refusing it.
 """
 
 [[site]]
+path = "crates/mush-sim/src/deployed.rs"
+accessor = "World::module_state_insert"
+slot = "DeployedUnits"
+owner = "sim"
+reason = """
+16b cut T.3. The `#[cfg(test)] mod tests` inside the custody index seeds the
+index onto a bare world instead of composing `SimulationModule`, so the one
+shared admission helper can be exercised with nothing else in the world at all
+— which is the point of the case: `refuse_if_deployed` must answer from the
+index and from nothing else. Test-only, and the slot is this module's own; the
+composed path is `Registrar::state` in `SimulationModule::register`, and
+`crates/mush-sim/tests/deployed.rs` drives that one.
+"""
+
+[[site]]
 path = "crates/mush-npc/src/query.rs"
 accessor = "World::module_state_insert"
 slot = "host"

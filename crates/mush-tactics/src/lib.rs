@@ -54,6 +54,13 @@ use mush_proto::RichText;
 use smol_str::SmolStr;
 
 mod contact;
+/// 16b cut T.3: **handing a unit to a simulation authority, and taking it back**
+/// (doc 16 §3.1 "Custody").
+///
+/// The `deployed` marker on a unit's record, the one write that sets it, the one
+/// write that clears it, and the boot pass's view of the markers a restart found
+/// with no live arena behind them.
+pub mod custody;
 pub mod ground;
 pub mod mobility;
 pub mod module;
@@ -75,6 +82,7 @@ pub use sensor::{
     sensor_source_id,
 };
 
+pub use custody::{CheckIn, CustodyError, DeployedMarker};
 pub use mobility::{
     LocomotionId, MediumId, MobilityError, MobilityMode, MobilityModeId, MobilityProfile,
     MobilityRegistry, MobilityTag, MobilityVocabulary, ModeRules, ModeState,

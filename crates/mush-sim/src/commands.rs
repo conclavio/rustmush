@@ -790,8 +790,18 @@ fn spatial_tree(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// 16b cut T.3 (doc 16 §3.1 "Custody"): the `@spatial` admission sites, through
+/// the one shared helper and the one named error. A unit an arena holds has its
+/// world placement frozen by the check-out; these are the two verbs that would
+/// otherwise move it out from under the arena's own integrator.
+fn refuse_deployed(ctx: &Ctx<'_>, obj: ObjId) -> Result<(), CmdError> {
+    crate::deployed::refuse_if_deployed(ctx.w, obj)
+        .map_err(|error| CmdError::msg(error.to_string()))
+}
+
 fn spatial_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    refuse_deployed(ctx, obj)?;
     let rhs = rhs_required(
         ctx,
         "@spatial/place/domain <obj>=<domain>[,{pose}] | /place/interior <obj>=<space>[,<slot>] | /place/attached <obj>=<host>,<mount>[,{pose}]",
@@ -843,6 +853,7 @@ fn spatial_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn spatial_unplace(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    refuse_deployed(ctx, obj)?;
     let reason = ctx
         .args
         .rhs()

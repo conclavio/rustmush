@@ -473,6 +473,11 @@ fn release_expiring_seat(
             .map(|focus| (focus.unit, SmolStr::new(focus.station.as_str())))
     });
     let refused = match target {
+        // **16b cut T.3, admission site 6 of 6** (doc 16 §3.1 "Custody"): the
+        // campaign handoff's own stand-down, refused for the same reason
+        // `@seat/revoke` is — it reaches no arena, and the page below is exactly
+        // the right outcome, because staff ending the match is what frees it.
+        Some((unit, _)) if mush_sim::deployed::is_deployed(ctx.w, unit) => true,
         Some((unit, station)) => match mush_sim::StationId::new(station.as_str()) {
             Some(station) => mush_sim::request_seat_activation(
                 ctx,

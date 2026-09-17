@@ -521,6 +521,25 @@ impl ArenaRegistry {
         self.next_seq = self.next_seq.saturating_add(1);
         self.next_seq
     }
+
+    /// Stamp one order with the epoch this mirror holds and the world's next
+    /// sequence, **without** the focus, grant and lease checks
+    /// [`forward_intent`] makes (16b cut T.3).
+    ///
+    /// The one caller is the staff `@arena/intent` switch, which orders a unit
+    /// *as its own seat* rather than as a pilot sitting in it. The arena still
+    /// authorises at apply against its own table, so the epoch is the whole of
+    /// what makes the order legal there — a staff order under a stale epoch is
+    /// refused by the arena exactly as a pilot's would be.
+    pub fn stamp_intent(&mut self, unit: ObjId, channel: Channel, kind: IntentKind) -> Intent {
+        Intent {
+            unit,
+            channel,
+            epoch: self.epoch_of(unit, channel),
+            kind,
+            seq: self.next_seq(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -930,15 +949,31 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) 
     };
     let mut sent = 0_u64;
     let mut tempo = None;
+    // 16b cut T.3: the arena's `Ended` carries a reason and a digest and no
+    // poses, so the last pose the world saw on this feed is what a check-in
+    // re-places the unit at. Recorded for every frame, whether or not its pilot
+    // is still connected — the pose is a fact about the unit, not about who was
+    // told.
+    let mut poses: Vec<(ObjId, crate::match_::PoseNumbers)> = Vec::new();
     for (pilot, frame) in frames {
+        poses.push((frame.unit, crate::match_::PoseNumbers::of(&frame.pose)));
+        tempo = Some(frame.tempo);
         // A pilot who was destroyed while the pulse ran gets nothing rather than
         // an event addressed to a dead id (treaty ruling 3: re-validate).
         if ctx.w.get(pilot).is_none() {
             continue;
         }
-        tempo = Some(frame.tempo);
         feed.keyframe_to(ctx, Audience::Actor(pilot), frame_json(match_id, &frame));
         sent = sent.saturating_add(1);
+    }
+    if let Some(record) = ctx
+        .w
+        .module_state_mut::<crate::match_::MatchBook>()
+        .and_then(|book| book.get_mut(match_id))
+    {
+        for (unit, pose) in poses {
+            record.last_pose.insert(unit, pose);
+        }
     }
     if let Some(mirror) = ctx
         .w
@@ -998,6 +1033,20 @@ fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
         return;
     };
     let arena_ms = last_event_ms(lines);
+    // 16b cut T.3: the black box is also where a check-in's final pose comes
+    // from when nobody is in the cockpit. `position_summary` names every unit
+    // every `ledger.summary_ms`, so a match with no pilot at all still hands the
+    // world the arena's own numbers.
+    if let Some(poses) = last_position_summary(lines)
+        && let Some(record) = ctx
+            .w
+            .module_state_mut::<crate::match_::MatchBook>()
+            .and_then(|book| book.get_mut(match_id))
+    {
+        for (unit, numbers) in poses {
+            record.last_pose.insert(unit, numbers);
+        }
+    }
     let value = serde_json::json!({
         "chunk": seq,
         "bytes": bytes.len(),
@@ -1076,6 +1125,33 @@ fn lose_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64) {
     );
 }
 
+/// The last `position_summary` in a chunk, as the four integers per unit.
+fn last_position_summary(lines: &str) -> Option<Vec<(ObjId, crate::match_::PoseNumbers)>> {
+    lines
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok())
+        .find_map(|event| match event.kind {
+            crate::arena::ledger::EventKind::PositionSummary { units } => Some(
+                units
+                    .into_iter()
+                    .map(|(unit, x_cm, y_cm, z_cm, heading_mdeg)| {
+                        (
+                            unit,
+                            crate::match_::PoseNumbers {
+                                x_cm,
+                                y_cm,
+                                z_cm,
+                                heading_mdeg,
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+}
+
 /// The highest `t_ms` in a chunk, read from its last parsable line. One parse per
 /// chunk (a chunk is 16 KiB and closes every few seconds), which is what lets
 /// `@arena/status` report arena time without the arena reporting it.
@@ -1135,11 +1211,22 @@ fn on_ended(ctx: &mut Ctx<'_>, match_id: MatchId, end: MatchEnd, digest: [u8; 32
         %digest,
         "arena match ended"
     );
+    // 16b cut T.3: this is where an end becomes a check-in — the units' cells
+    // and final poses back through `apply` and `mush_sim::place`, the markers
+    // cleared, the seats released, the match untracked and the result written,
+    // all in this one re-entry's authoritative step.
+    let checked_in = crate::match_::finish(ctx, match_id, end, digest.clone());
     notify_staff(
         ctx,
         format!(
-            "Arena match {match_id} ended: {:?} at {} ms of arena time. Ledger digest {digest}.",
-            end.reason, end.t_ms
+            "Arena match {match_id} ended: {:?} at {} ms of arena time. Ledger digest {digest}.              {}",
+            end.reason,
+            end.t_ms,
+            if checked_in {
+                "Its units are checked in."
+            } else {
+                "It had no live record; nothing was checked in."
+            }
         ),
     );
 }
@@ -1217,7 +1304,13 @@ fn is_staff(ctx: &Ctx<'_>) -> bool {
         || mush_core::perm::has_role(ctx.w, ctx.actor, mush_core::Role::Royalty)
 }
 
-fn arena_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+/// `@arena/status` — the read (16b cut T.2, extended with cut T.3's lifecycle
+/// state).
+///
+/// # Errors
+///
+/// [`CmdError`] for a non-staff caller.
+pub fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !is_staff(ctx) {
         return Err(CmdError::msg("Permission denied."));
     }
@@ -1246,10 +1339,17 @@ fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
     let unacked = registry.tasks.pending_ledger_acks();
     let mut rows = Vec::new();
     for (match_id, mirror) in registry.tracked().take(STATUS_PAGE) {
-        let state = match mirror.end {
-            Some(end) => format!("{:?}", end.reason),
-            None if live.contains(&match_id) => "running".to_owned(),
-            None => "no task".to_owned(),
+        // 16b cut T.3: the lifecycle state is the match book's, and the arena's
+        // own end reason is what it ended *with*; both are printed, because a
+        // match in `stopping` with no end yet is exactly the state an operator
+        // needs to be able to see.
+        let lifecycle = crate::match_::state_word(ctx.w, match_id);
+        let state = match (lifecycle, mirror.end) {
+            (Some(word), Some(end)) => format!("{word} ({:?})", end.reason),
+            (Some(word), None) => word.to_owned(),
+            (None, Some(end)) => format!("{:?}", end.reason),
+            (None, None) if live.contains(&match_id) => "running".to_owned(),
+            (None, None) => "no task".to_owned(),
         };
         rows.push(format!(
             "match {match_id}: {state}, tempo {}, arena {} ms, lagged {}, chunks {} appended / \
@@ -1291,30 +1391,71 @@ fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
 ///
 /// [`ModError`] if the feed name, the verb or the completion handler is already
 /// taken.
-pub fn register(reg: &mut Registrar<'_>, egress_capacity: usize) -> Result<(), ModError> {
+pub fn register(
+    reg: &mut Registrar<'_>,
+    egress_capacity: usize,
+    arena_cfg: &crate::config::ArenaConfig,
+    match_cfg: &crate::config::MatchConfig,
+) -> Result<(), ModError> {
     let frames = reg.panel_feed(FRAME_FEED)?;
     reg.async_completion(Arc::new(ArenaEgress))?;
     reg.hook(mush_core::HookPoint::Connected, Arc::new(SeatFacts));
     reg.hook(mush_core::HookPoint::Disconnected, Arc::new(SeatFacts));
     reg.state(ArenaRegistry::new(ArenaTasks::new(egress_capacity), frames));
-    // Read-only, and declared before the registration it applies to (K8.5).
-    // Cut T.3 adds `start`, `intent` and `abort` to this verb and re-classifies
-    // it in the same commit as their stanza note.
-    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+    // 16b cut T.3: the match book beside the registry. A second slot rather than
+    // three more fields on the first, because the two have different lifetimes —
+    // a registry row exists only while a task does, and a `MatchRecord` outlives
+    // its task by exactly as long as it takes to write the result.
+    reg.state(crate::match_::MatchBook::new());
+    // **16b cut T.3, WS03-A1.** The custody transitions write the `unit:<obj>`
+    // document, which is `tactics`' namespace, through `mush_tactics::custody`'s
+    // governed `Ctx::persist`. The call is made from inside this module's
+    // authoritative action, so the crossing is real; it is declared here rather
+    // than assumed, and the pinned row is in
+    // `crates/mush-contract-tests/module-ns-owners.toml`.
+    reg.persist_delegation(
+        MODULE,
+        mush_tactics::module::NS,
+        "16b cut T.3 (doc 16 section 3.1 Custody): the arena's custody transitions. Check-out \
+         sets `deployed { match, arena, snapshot }` on each unit's record and check-in clears it, \
+         both through mush_tactics::custody -- the tactics crate's own encoder, its own key and \
+         its own strict envelope. tacsim never spells a tactics key or a tactics document itself.",
+    )?;
+    // **16b cut T.3 re-classification.** Cut T.2 registered this verb ReadOnly,
+    // because `@arena/status` is a read. This cut adds `start`, `intent` and
+    // `abort`: `start` writes a `deployed` marker on every named unit's record
+    // and hands the arena custody, and `abort` ends in a check-in that writes
+    // every one of them again plus one result document. That is an authoritative
+    // lifecycle, so the class moves with the switches, in the same commit as the
+    // stanza note.
+    reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+    let (arena_cfg, match_cfg) = (arena_cfg.clone(), match_cfg.clone());
     reg.command(
         CommandSpec {
             name: "@arena".into(),
             shape: ArgShape::EqPair,
-            switches: ["status"].iter().copied().map(SmolStr::new).collect(),
+            switches: crate::match_::register_switches(),
             help: "@arena/status                       (staff) every match this server is \
-                   running: its tempo, its arena time, how often it has lagged, how many ledger \
-                   chunks have been appended and lost, how many cockpit frames have gone out, \
-                   and how many ledger writes are still waiting for the store to acknowledge \
-                   them. A read: it starts, stops and touches nothing."
+                   running: its lifecycle state, its tempo, its arena time, how often it has \
+                   lagged, how many ledger chunks have been appended and lost, how many cockpit \
+                   frames have gone out, and how many ledger writes are still waiting for the \
+                   store to acknowledge them. A read.\n\
+                   @arena/start <arena>=<red #ids>/<blue #ids>   (staff) check those units out \
+                   and run a match: ONE authoritative action that marks every unit deployed, \
+                   freezes its world placement and hands the arena custody of it.\n\
+                   @arena/intent <unit>=startup | heading <deg> | speed <cms>   (staff) one \
+                   order, as the unit's own seat.\n\
+                   @arena/abort [<match>]              (staff) stop a match; its units check \
+                   back in when the arena answers."
                 .into(),
             ..CommandSpec::default()
         },
-        Arc::new(arena_cmd),
+        Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+            if !is_staff(ctx) {
+                return Err(CmdError::msg("Permission denied."));
+            }
+            crate::match_::arena_command(ctx, &arena_cfg, &match_cfg)
+        }),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     Ok(())

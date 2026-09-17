@@ -20,6 +20,14 @@ pub mod boot;
 pub mod commands;
 pub mod custody;
 pub mod data;
+/// 16b cut T.3: **units a simulation authority holds custody of** (doc 16 §3.1
+/// "Custody").
+///
+/// The world-side index behind the one shared admission helper,
+/// [`deployed::refuse_if_deployed`], and the one named error,
+/// [`deployed::UnitDeployed`]. The durable marker lives on the unit's own
+/// `mush-tactics` record; this is the projection every admission site reads.
+pub mod deployed;
 pub mod domain;
 pub mod driver;
 pub mod focus;
@@ -59,6 +67,7 @@ pub use data::{
     WindowGeometry, WindowOpener, WindowPin, WindowRec, WindowSurface, cgen_key,
     passive_definition_ref, passive_rules_value,
 };
+pub use deployed::{DeployedMark, DeployedUnits, UnitDeployed, refuse_if_deployed};
 pub use domain::{
     ActivationBook, DomainActivation, DomainActivationWire, DomainSummary, DomainSummaryWire,
     DomainWorkflowError, MAX_ACTIVE_DOMAINS, PromotionTrigger, QUIET_BOUNDARY, activation_key,
@@ -91,8 +100,8 @@ pub use station::{MAX_STATION_FALLBACKS, StationFallback, StationFallbacks};
 pub use transition::{Plan, SpatialError, Transition, apply, move_carrier_subtree, plan, run};
 pub use window::{
     MAX_WINDOWS, OpenWindow, arc_between, close_window, metric_between, open_window, participants,
-    place, pose_of, register_room_resolver, register_window_arc, register_window_geometry, unplace,
-    update_window, window_of, windows,
+    place, pose_of, raw_participants, register_room_resolver, register_window_arc,
+    register_window_geometry, unplace, update_window, window_of, windows,
 };
 
 /// Module configuration.
@@ -721,6 +730,11 @@ impl GameModule for SimulationModule {
             handoff::register(reg, control_leases, tick::definition_descriptors()?)?;
         tick::register(reg, tick_definitions)?;
         reg.state(SpatialState::new(self.config.recovery_room));
+        // 16b cut T.3 (doc 16 §3.1 "Custody"): the world-side index of units an
+        // arena holds. Always composed, even with no game layer above — the
+        // admission sites read it unconditionally, and a missing slot would be
+        // an admission site that silently admits.
+        reg.state(deployed::DeployedUnits::new());
         // E7c5 B1: carry the composition-installed account oracle into world
         // state so command handlers consult it synchronously; unwired = fail
         // closed.

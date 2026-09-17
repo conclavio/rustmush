@@ -108,7 +108,13 @@ mush-ruleset.workspace = true
 # ...and re-validates them against the ONE game schema (16b cut R-b). A TEST
 # edge only: `src/` reaches the composition root through `mush_server::modules`,
 # which re-exports `tacsim::composition::*`, and never names this crate.
-tacsim.workspace = true
+tacsim = { workspace = true, features = ["fault-injection"] }
+# 16b cut T.3: the custody lens (tests/arena_custody.rs) composes the production
+# module list with the tactics module re-wired to a one-spec catalog, because
+# `TacticsModule::new()` ships an EMPTY one until cut C authors
+# `content/units/line_tank.json` and `@unit/create` can name no schema at all.
+# A TEST edge: `src/` reaches tactics through `mush_server::modules`.
+mush-tactics.workspace = true
 # Tests inject connection-shaped (transient) store errors and drive raw
 # Redis commands (DEBUG RELOAD) in the gated durability e2e.
 fred.workspace = true

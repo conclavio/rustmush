@@ -109,6 +109,16 @@ pub mod content;
 pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
+/// 16b cut T.3: **the match** — doc 16 §3.8's lifecycle, the persisted match-id
+/// counter, the RAM record of a match while it runs, the two custody transitions
+/// (`Boarding → Running` and the one check-in at `Ended | Aborted | Void`), the
+/// result document of doc 16 §4, and the staff `@arena` switches that drive all
+/// of it until cut K's cockpit exists.
+///
+/// Spelled with the underscore because `match` is a keyword; every name inside
+/// is spelled properly.
+#[path = "match_/mod.rs"]
+pub mod match_;
 pub mod pack;
 pub mod record;
 pub mod seed;
@@ -359,7 +369,12 @@ impl GameModule for TacsimRuleset {
         // same reason the pack verbs are (E5c deviation 1): a disabled layer
         // refuses out loud rather than hiding a verb, and the registry's presence
         // is what lets the host find the shared task table at all.
-        arena_bridge::register(reg, arena_bridge::egress_capacity(&self.cfg.arena))?;
+        arena_bridge::register(
+            reg,
+            arena_bridge::egress_capacity(&self.cfg.arena),
+            &self.cfg.arena,
+            &self.cfg.match_,
+        )?;
         Ok(())
     }
 
@@ -387,7 +402,62 @@ impl GameModule for TacsimRuleset {
         };
         *slot = loaded;
         boot_check_placements(ctx);
+        boot_matches(ctx, &kv);
         boot_reconcile(ctx)
+    }
+}
+
+/// **The match half of the boot pass** (16b cut T.3; T5, doc 16 §3.1 "Boot
+/// reconciliation").
+///
+/// Two jobs, in order:
+///
+/// 1. **Identity.** Adopt the persisted match counter, then raise it past every
+///    result document this world already holds. The second half is what makes a
+///    lost or truncated counter cost nothing: a match id names a durable ledger
+///    log and a durable result, and re-using one would write the second match of
+///    this boot over the second match of the last.
+/// 2. **Custody.** `mush-tactics`' recovery pass has already restored every
+///    `deployed` marker it found and cleared it — that is its own document. What
+///    it cannot do is write the *match's* result, which is this module's, or
+///    release the cockpit seats, which are `mush-sim`'s. So it leaves the markers
+///    for this pass, which releases the seats and writes one `aborted(restart)`
+///    per match id they name (doc 16 §8 "Restart mid-match").
+///
+/// The order is fixed by composition: `mush-tactics` is composed before this
+/// layer, so its `on_world_loaded` has run and its restored list is waiting.
+fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::Value)]) {
+    let mut high_water = 0_u64;
+    for (key, value) in kv {
+        if key.as_str() == match_::SEQ_KEY {
+            high_water = high_water.max(match_::seq_from_document(value));
+        } else if let Some(id) = match_::match_id_of_key(key.as_str()) {
+            high_water = high_water.max(id.0);
+        }
+    }
+    if let Some(book) = ctx.w.module_state_mut::<match_::MatchBook>() {
+        book.adopt_seq(high_water);
+    }
+
+    let restored = mush_tactics::custody::take_boot_restored(ctx.w);
+    if restored.is_empty() {
+        return;
+    }
+    let mut by_match: std::collections::BTreeMap<u64, Vec<mush_core::ObjId>> =
+        std::collections::BTreeMap::new();
+    for (unit, marker) in restored {
+        by_match.entry(marker.match_id()).or_default().push(unit);
+        match_::release_seats_after_restart(ctx, unit);
+    }
+    for (match_id, units) in by_match {
+        tracing::error!(
+            match_id,
+            units = units.len(),
+            "tacsim: match {match_id} was still running when this server last stopped. An OOC \
+             match holds no durable state and never resumes, so its units have been restored \
+             from their check-out snapshots and the match is recorded aborted(restart)."
+        );
+        match_::write_restart_abort(ctx, crate::arena_task::MatchId(match_id), &units);
     }
 }
 

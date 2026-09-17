@@ -1,0 +1,455 @@
+//! **The custody lens, through the split** (16b cut T.3; 16b §7 "Verify
+//! lenses"; doc 16 §3.1 "Custody", §8 "Restart mid-match").
+//!
+//! `crates/mushd/tests/arena_custody.rs` is the in-process half of this lens: it
+//! runs a real match over real SSH and asserts the whole custody round trip. This
+//! is its **split** twin, and it exists because everything cut T.3 added lives on
+//! the *server* half of a two-process deploy — the arena tasks, the match book,
+//! the `deployed` markers, the boot reconciliation — while the SSH front door
+//! lives on the *gateway*. A verb that works in the all-in-one and not across the
+//! boundary would be a verb nobody could use in production.
+//!
+//! # What this twin can assert, and what it cannot
+//!
+//! It drives the **production composition** — `mush_server::serve_with_store`,
+//! exactly as the deployed binary does — so it cannot swap a module in. Until cut
+//! C authors `crates/tacsim/content/units/line_tank.json`, that composition's
+//! `TacticsModule` carries an **empty catalog**, `@unit/create` can name no
+//! schema at all, and no unit exists for a match to take custody of. So the
+//! custody round trip itself is asserted by the `mushd` twin, which composes the
+//! fixture spec, and this file asserts the half that is a property of the *split*:
+//!
+//! * the whole `@arena` lifecycle surface is live across the boundary — the read,
+//!   the refusals, and the fact that each one comes back as itself and not as a
+//!   broken pipe;
+//! * a server restart mid-session leaves the arena surface live, with no match
+//!   running and no custody left behind — doc 16 §8's "restart mid-match" seen
+//!   from the side the gateway can see;
+//! * the custody admission error is the same named sentence here as everywhere
+//!   else.
+//!
+//! When cut C lands, the `@unit/create` lines this file already spells out in its
+//! `TODO_CUT_C` note become real and the two twins say the same thing.
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+use futures::future::BoxFuture;
+use mush_core::GOD;
+use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
+use russh::ChannelMsg;
+use tokio::sync::oneshot;
+
+use mush_config::accounts::hash_password;
+use mush_config::config::Config;
+use mush_gateway::{GatewayOptions, LaunchedServer, RestartTrigger, ServerLauncher, ServerSource};
+
+const STEP_TIMEOUT: Duration = Duration::from_secs(60);
+const GM_PASSWORD: &str = "gm-secret-1";
+/// The world's transient authoritative refusal (`mush_server`'s
+/// `RefusalReason::CommitPending`): a commit is in flight, so try again.
+const COMMIT_PENDING: &str = "please retry in a moment";
+/// How many times a line is re-sent on that refusal before the test gives up.
+const RETRY_BUDGET: usize = 8;
+
+// ---------------------------------------------------------------------------
+// The split rig — `restart_survival.rs`'s, because `crates/mush-gateway/tests`
+// has no shared support module and every file here carries its own.
+// ---------------------------------------------------------------------------
+
+fn scratch_dir(tag: &str) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("mush-arena-{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a scratch dir");
+    dir
+}
+
+fn test_config(tag: &str) -> Config {
+    let mut cfg = Config::default();
+    cfg.store.store = "memory".to_string();
+    cfg.server.data_dir = scratch_dir(tag);
+    cfg.ssh.listen = "127.0.0.1:0".to_string();
+    cfg.ipc.listen = "127.0.0.1:0".to_string();
+    cfg.ipc.exit_on_abandoned_supervision = false;
+    cfg
+}
+
+async fn launch_thread_server(store: Arc<dyn ObjectStore>) -> Result<LaunchedServer, String> {
+    let cfg = test_config("server");
+    let (ipc_tx, ipc_rx) = oneshot::channel();
+    let (exit_tx, exit_rx) = oneshot::channel();
+    std::thread::spawn(move || {
+        let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        let _ = rt.block_on(mush_server::serve_with_store(
+            cfg,
+            Some(ipc_tx),
+            Some(store),
+        ));
+        let _ = exit_tx.send(());
+    });
+    let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
+        .await
+        .map_err(|_| "server ipc bind timed out".to_string())?
+        .map_err(|_| "server dropped its ipc oneshot".to_string())?;
+    Ok(LaunchedServer {
+        endpoint,
+        exited: Box::pin(async move {
+            let _ = exit_rx.await;
+        }),
+    })
+}
+
+/// A server that can be made to drop its IPC boundary on its own — the crash /
+/// auto-restart path (D1a), reached without the `RestartTrigger`. This is the
+/// "kill the server child" of doc 16 §8's restart-mid-match test.
+async fn launch_thread_server_abortable(
+    store: Arc<dyn ObjectStore>,
+    crash: oneshot::Receiver<()>,
+) -> Result<LaunchedServer, String> {
+    let cfg = test_config("server");
+    let (ipc_tx, ipc_rx) = oneshot::channel();
+    let (exit_tx, exit_rx) = oneshot::channel();
+    std::thread::spawn(move || {
+        let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        rt.block_on(async move {
+            tokio::select! {
+                _ = mush_server::serve_with_store(cfg, Some(ipc_tx), Some(store)) => {}
+                _ = crash => {}
+            }
+        });
+        let _ = exit_tx.send(());
+    });
+    let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
+        .await
+        .map_err(|_| "server ipc bind timed out".to_string())?
+        .map_err(|_| "server dropped its ipc oneshot".to_string())?;
+    Ok(LaunchedServer {
+        endpoint,
+        exited: Box::pin(async move {
+            let _ = exit_rx.await;
+        }),
+    })
+}
+
+/// The first boot is crashable; every boot after it is a healthy server.
+struct CrashOnceLauncher {
+    store: Arc<dyn ObjectStore>,
+    launches: AtomicUsize,
+    crash: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl ServerLauncher for CrashOnceLauncher {
+    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
+        let n = self.launches.fetch_add(1, Ordering::SeqCst);
+        let store = Arc::clone(&self.store);
+        if n == 0 {
+            let (crash_tx, crash_rx) = oneshot::channel();
+            if let Ok(mut slot) = self.crash.lock() {
+                *slot = Some(crash_tx);
+            }
+            Box::pin(launch_thread_server_abortable(store, crash_rx))
+        } else {
+            Box::pin(launch_thread_server(store))
+        }
+    }
+}
+
+async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
+    let gw_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    gw_store
+        .create_account(AccountRec {
+            id: None,
+            name: "boss".to_string(),
+            argon2_hash: hash_password(GM_PASSWORD).expect("a hash"),
+            created: 0,
+            characters: vec![CharacterRef {
+                id: GOD,
+                name: "God".to_string(),
+            }],
+            ssh_keys: vec![],
+            discord: None,
+        })
+        .await
+        .expect("the account");
+    gw_store
+}
+
+async fn start_split(launcher: Box<dyn ServerLauncher>) -> (SocketAddr, RestartTrigger) {
+    let gw_store = seeded_gw_store().await;
+    let (ssh_tx, ssh_rx) = oneshot::channel();
+    let (restart_tx, restart_rx) = oneshot::channel::<RestartTrigger>();
+    std::thread::spawn(move || {
+        let Ok(rt) = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        let _ = rt.block_on(mush_gateway::serve(
+            test_config("gateway"),
+            GatewayOptions {
+                source: ServerSource::Restartable(launcher),
+                store: Some(gw_store),
+                ssh_ready: Some(ssh_tx),
+                web_ready: None,
+                restart_ready: Some(restart_tx),
+                siteban_refresh: None,
+            },
+        ));
+    });
+    let ssh_addr = tokio::time::timeout(Duration::from_secs(30), ssh_rx)
+        .await
+        .expect("gateway bound SSH")
+        .expect("ssh addr");
+    let trigger = tokio::time::timeout(Duration::from_secs(30), restart_rx)
+        .await
+        .expect("supervisor handed back a restart trigger")
+        .expect("restart trigger");
+    (ssh_addr, trigger)
+}
+
+struct AcceptAll;
+
+impl russh::client::Handler for AcceptAll {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        _key: &russh::keys::PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for f in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&f) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+struct Term {
+    channel: russh::Channel<russh::client::Msg>,
+    seen: String,
+}
+
+impl Term {
+    fn mark(&self) -> usize {
+        self.seen.len()
+    }
+
+    async fn expect_after(&mut self, mark: usize, needle: &str) {
+        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        while !strip_ansi(&self.seen[mark..]).contains(needle) {
+            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
+                });
+            match msg {
+                Some(ChannelMsg::Data { data }) => {
+                    self.seen.push_str(&String::from_utf8_lossy(&data));
+                }
+                Some(_) => {}
+                None => panic!(
+                    "channel closed waiting for {needle:?}; seen: {:?}",
+                    self.seen
+                ),
+            }
+        }
+    }
+
+    async fn expect(&mut self, needle: &str) {
+        self.expect_after(0, needle).await;
+    }
+
+    async fn send_line(&mut self, line: &str) {
+        let bytes = format!("{line}\r").into_bytes();
+        self.channel.data(&bytes[..]).await.expect("send line");
+    }
+
+    /// Run one line and wait for `needle` on the same span, retrying while the
+    /// world answers the **transient** authoritative refusal.
+    ///
+    /// `@arena`'s switches are on the authoritative lane (they check units out
+    /// and hand an arena custody), and that lane answers "the world is
+    /// committing another action; please retry in a moment" when a commit is in
+    /// flight. That is a real answer a real client retries, not a failure, so a
+    /// test that drives the lane retries it too.
+    ///
+    /// The needle must not appear in the line's own echo, or it would match
+    /// before the world had even seen the command.
+    async fn say(&mut self, line: &str, needle: &str) {
+        assert!(
+            !line.contains(needle),
+            "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
+        );
+        for _ in 0..RETRY_BUDGET {
+            let mark = self.mark();
+            self.send_line(line).await;
+            let which = self
+                .expect_one_of_after(mark, &[needle, COMMIT_PENDING])
+                .await;
+            if which == 0 {
+                return;
+            }
+        }
+        panic!("`{line}` was refused as commit-pending {RETRY_BUDGET} times running");
+    }
+
+    /// Wait for whichever of `needles` arrives first, answering its index.
+    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
+        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        loop {
+            let seen = strip_ansi(&self.seen[mark..]);
+            if let Some(index) = needles.iter().position(|needle| seen.contains(needle)) {
+                return index;
+            }
+            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "timeout waiting for any of {needles:?}; seen: {:?}",
+                        self.seen
+                    )
+                });
+            match msg {
+                Some(ChannelMsg::Data { data }) => {
+                    self.seen.push_str(&String::from_utf8_lossy(&data));
+                }
+                Some(_) => {}
+                None => panic!(
+                    "channel closed waiting for any of {needles:?}; seen: {:?}",
+                    self.seen
+                ),
+            }
+        }
+    }
+}
+
+async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    let auth = handle.authenticate_none("play").await.expect("auth-none");
+    assert!(auth.success(), "play must be accepted with no auth");
+    let channel = handle.channel_open_session().await.expect("open channel");
+    channel
+        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
+        .await
+        .expect("pty");
+    channel.request_shell(true).await.expect("shell");
+    (
+        handle,
+        Term {
+            channel,
+            seen: String::new(),
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// The lens
+// ---------------------------------------------------------------------------
+
+/// The arena lifecycle surface is live across the boundary, and a restart
+/// mid-session leaves it live with nothing in custody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_arena_surface_survives_the_split_and_a_server_restart() {
+    let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let crash: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
+    let (ssh_addr, _trigger) = start_split(Box::new(CrashOnceLauncher {
+        store: Arc::clone(&server_store),
+        launches: AtomicUsize::new(0),
+        crash: Arc::clone(&crash),
+    }))
+    .await;
+
+    let (_handle, mut god) = play_client(ssh_addr).await;
+    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
+    god.expect("Connected as God (account boss, 1 connection).")
+        .await;
+    god.expect("Limbo #0").await;
+
+    // --- (1) the read crosses the boundary -------------------------------
+    god.say("@arena/status", "No match is running.").await;
+
+    // --- (2) so do the lifecycle switches, as themselves ------------------
+    //
+    // Each refusal is the arena's own sentence arriving intact through the IPC
+    // boundary, which is the thing a split can break and an all-in-one cannot.
+    god.say("@arena/start", "Usage:").await;
+    god.say("@arena/abort", "No match is running.").await;
+    god.say("@arena/intent #9999=startup", "not in a running match")
+        .await;
+    // TODO_CUT_C: with `content/units/line_tank.json` registered, this becomes
+    // `@unit/create #3=tacsim.unit.line_tank` and the whole `mushd` round trip
+    // runs here too. Until then the production composition's unit catalog is
+    // empty and the refusal names the missing unit, which is the honest answer.
+    god.say(
+        "@arena/start tacsim.arena.proving_ground=#9998/#9999",
+        "is not a tactical unit",
+    )
+    .await;
+    // And an unknown arena is refused by name rather than by silence.
+    god.say("@arena/start nowhere=#9998/#9999", "no arena definition")
+        .await;
+
+    // --- (3) make the server EXIT ON ITS OWN, mid-session ------------------
+    let before_crash = god.mark();
+    let crash_tx = crash
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+        .expect("the first boot published its crash sender");
+    let _ = crash_tx.send(());
+
+    god.expect_after(before_crash, "restarting").await;
+    god.expect_after(before_crash, "Reconnected").await;
+    god.expect_after(before_crash, "Limbo #0").await;
+
+    // --- (4) the arena surface is live again, with nothing in custody -----
+    //
+    // Doc 16 §8's restart-mid-match, seen from the gateway: the reconciled world
+    // has no match running and no marker left behind, and the lifecycle verbs
+    // answer exactly as they did before the crash.
+    god.say("@arena/status", "No match is running.").await;
+    god.say("@arena/abort", "No match is running.").await;
+    god.say(
+        "@arena/start tacsim.arena.proving_ground=#9998/#9999",
+        "is not a tactical unit",
+    )
+    .await;
+
+    drop(god);
+}

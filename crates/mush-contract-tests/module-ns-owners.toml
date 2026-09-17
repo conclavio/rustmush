@@ -277,3 +277,20 @@ does: `+job/approve` on a BUILD ticket dispatches the payload handler the atlas 
 registered, and a denial its status observer, under the jobs module's identity; \
 both write the atlas's site and request records.
 """
+
+[[delegation]]
+writer = "tacsim"
+ns = "tactics"
+declared_by = "tacsim"
+reason = """
+16b cut T.3 (doc 16 section 3.1 "Custody"). The arena's custody transitions: \
+check-out writes `deployed { match, arena, snapshot }` onto each unit's \
+`unit:<obj>` record and check-in clears it, both through \
+mush_tactics::custody, which is the tactics crate's own encoder, its own key \
+and its own strict envelope. The identity on the write is the tacsim module's \
+because the call is made from inside its authoritative action (`@arena/start` \
+today, cut K's `SIM START` next); the code and the document are the tactics \
+crate's, and tacsim never spells a tactics key itself. The same two functions \
+called from the tactics boot pass write their own namespace and never consult \
+this row.
+"""

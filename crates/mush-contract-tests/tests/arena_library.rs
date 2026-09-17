@@ -194,3 +194,482 @@ fn the_draw_label_set_is_pinned() {
     let encoded: Vec<&'static str> = LABEL_KINDS.to_vec();
     assert_eq!(encoded.len(), 5);
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut T.3 (T6): the custody markers are the only unit writes during a match
+// ---------------------------------------------------------------------------
+
+/// **The third arena gate** (16b §7 T6; doc 16 §3.1 "Custody").
+///
+/// Doc 16 makes the arena the single writer for its units' condition cells while
+/// a match runs, and the world the single writer for everything else. The first
+/// half is defended by the library scan above — the arena cannot reach a store at
+/// all. The second half is a claim about the *world*, and the only way to defend
+/// it is to run a real match and read what the world wrote.
+///
+/// So this composes the placement graph, the tactics module, the game layer and
+/// one pump (standing in for the host's once-per-iteration egress drain), creates
+/// two units, places them, starts a match, drives one, aborts it — and asserts
+/// that across the whole of it each unit's `unit:<obj>` document was written
+/// **exactly twice**: once to set the marker and once to clear it. Not once more,
+/// and the cleared document is byte-identical to the one that existed before the
+/// match.
+mod custody_writes {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use mush_core::module::{GameModule, ModError, Registrar};
+    use mush_core::{
+        ArgShape, BehaviorBinding, BehaviorId, CmdError, CommandSpec, Ctx, DefinitionDescriptor,
+        DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder, GOD, LIMBO,
+        ModuleWrite, ObjId, ObjKind, OwnerId,
+    };
+    use mush_tactics::{
+        CellId, CellSpec, ConditionId, FacetId, FacetSpec, LocomotionId, MediumId, MobilityMode,
+        MobilityModeId, MobilityProfile, MobilityVocabulary, ModeRules, RulesValue, SectionId,
+        SectionSpec, TacticsModule, UnitCatalog, UnitCatalogBuilder, UnitSpec, UnitSpecBody,
+    };
+    use mush_testkit::{TestWorld, text_of};
+    use serde_json::{Value, json};
+    use smol_str::SmolStr;
+    use tacsim::arena_bridge::ArenaRegistry;
+
+    /// The unit schema the fixture authors.
+    const SCHEMA: &str = "tacsim.unit.line_tank";
+    /// The module that provides it. Not `tacsim`: a module's name is its
+    /// namespace and the game layer below already owns that one, so the fixture
+    /// owns its definitions under its own name — which is also what a real
+    /// content pack will do once cut C authors `units/line_tank.json`.
+    const RULES_OWNER: &str = "tacsimrules";
+    /// The arena `@arena/start` names.
+    const ARENA: &str = "tacsim.arena.proving_ground";
+
+    fn dref(builder: &mut DefinitionRegistryBuilder, kind: &str, id: &str) -> DefinitionRef {
+        builder
+            .register(
+                OwnerId::new(RULES_OWNER).expect("a canonical owner"),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new(kind).expect("a canonical kind"),
+                    DefinitionId::new(id).expect("a canonical id"),
+                    1,
+                    json!({}),
+                )
+                .expect("a bounded descriptor"),
+            )
+            .expect("the test registry accepts it")
+    }
+
+    /// One tracked tank with one section, one facet cell and a `tracked` mobility
+    /// mode carrying doc 16 §3.3's five kinematic fields.
+    fn tank_spec() -> UnitSpec {
+        let mut definitions = DefinitionRegistryBuilder::new();
+        let opaque = dref(&mut definitions, "schema", "tacsim.tank.rules");
+        let kinematics = dref(&mut definitions, "schema", "tacsim.tank.kinematics");
+        let vocabulary = MobilityVocabulary::base().freeze();
+        let profile = MobilityProfile::new(
+            vec![MobilityMode::new(
+                MobilityModeId::new("ground.tracked").expect("a mode id"),
+                [MediumId::new("ground").expect("a medium")],
+                LocomotionId::new("tracked").expect("a locomotion"),
+                ModeRules::new(
+                    kinematics,
+                    json!({
+                        "max_speed_cms": 1_500,
+                        "accel_cms2": 400,
+                        "brake_cms2": 600,
+                        "turn_rate_mdeg_s": 45_000,
+                        "reverse_factor_pct": 40,
+                    }),
+                )
+                .expect("a rules blob"),
+            )],
+            MobilityModeId::new("ground.tracked").expect("a mode id"),
+            &vocabulary,
+        )
+        .expect("a one-mode profile");
+        let body = UnitSpecBody {
+            sections: vec![SectionSpec {
+                id: SectionId::new("hull").expect("a section"),
+                condition: ConditionId::new("intact").expect("a condition"),
+                facets: vec![FacetSpec {
+                    id: FacetId::new("front").expect("a facet"),
+                    cells: vec![CellSpec {
+                        id: CellId::new("armor").expect("a cell"),
+                        min: 0,
+                        max: 10,
+                        init: 10,
+                    }],
+                }],
+                slots: Vec::new(),
+                cells: vec![CellSpec {
+                    id: CellId::new("internals").expect("a cell"),
+                    min: 0,
+                    max: 8,
+                    init: 8,
+                }],
+            }],
+            unit_cells: Vec::new(),
+            components: Vec::new(),
+            capabilities: Vec::new(),
+            mobility: Some(profile),
+            rules: RulesValue::new(opaque, json!({})).expect("a rules blob"),
+        };
+        let descriptor = body
+            .descriptor(
+                DefinitionKind::new("unit").expect("a kind"),
+                DefinitionId::new(SCHEMA).expect("an id"),
+                1,
+            )
+            .expect("a bounded descriptor");
+        let definition = definitions
+            .register(OwnerId::new(RULES_OWNER).expect("an owner"), descriptor)
+            .expect("registered");
+        body.with_definition(definition)
+    }
+
+    fn catalog(spec: &UnitSpec) -> UnitCatalog {
+        let vocabulary = MobilityVocabulary::base().freeze();
+        let mut catalog = UnitCatalogBuilder::new();
+        catalog
+            .add(spec.clone(), &vocabulary)
+            .expect("the tank is a valid spec");
+        catalog.freeze()
+    }
+
+    /// The definition provider the tactics module validates against.
+    struct Rules {
+        spec: UnitSpec,
+    }
+
+    impl GameModule for Rules {
+        fn name(&self) -> &'static str {
+            RULES_OWNER
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            let mut definitions: BTreeMap<DefinitionRef, DefinitionDescriptor> = BTreeMap::new();
+            for reference in self.spec.body().definition_references() {
+                let descriptor = DefinitionDescriptor::new(
+                    reference.key().kind.clone(),
+                    reference.key().id.clone(),
+                    reference.version(),
+                    json!({}),
+                )
+                .map_err(|error| ModError::msg(error.to_string()))?;
+                definitions.entry(reference).or_insert(descriptor);
+            }
+            definitions.insert(
+                self.spec.definition.clone(),
+                self.spec
+                    .descriptor()
+                    .map_err(|error| ModError::msg(error.to_string()))?
+                    .as_current(),
+            );
+            // Every owner must carry a semantic validator for each kind it
+            // registers. The fixture's definitions are its own by construction,
+            // so its validator accepts them; the strict shape belongs in the
+            // content decoders cut C writes, not in a gate's fixture.
+            for kind in ["schema", "unit"] {
+                reg.definition_validator(
+                    DefinitionKind::new(kind).map_err(|error| ModError::msg(error.to_string()))?,
+                    |_: &mush_core::DefinitionValidationContext<'_>| Ok(()),
+                )?;
+            }
+            for descriptor in definitions.into_values() {
+                reg.definition(descriptor)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// The host's once-per-iteration egress drain, in two halves.
+    ///
+    /// `mush-server`'s world loop owns the real one: it takes what the arena's
+    /// egress holds, **stages** it, and then re-enters the world once with a
+    /// `WorldCommand::ModuleAsyncDone { module: "tacsim", .. }` so the handler
+    /// runs with a `Ctx` **carrying the tacsim module's identity**. `TestWorld`
+    /// has no loop, so `@pump` does the staging half and [`pump`] below does the
+    /// re-entry — as the real arm, not as a direct call, because the identity is
+    /// load-bearing: the custody write crosses into `tactics`' namespace under a
+    /// declared delegation, and a re-entry under any other module's name is
+    /// refused (WS03-A1). A test that called `drain_egress` from its own module
+    /// would silently lose every check-in write, which is exactly what this
+    /// fixture did before it was written this way.
+    struct Pump {
+        egress: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>>>>,
+    }
+
+    impl GameModule for Pump {
+        fn name(&self) -> &'static str {
+            "arenapump"
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+            let egress = Arc::clone(&self.egress);
+            reg.command(
+                CommandSpec {
+                    name: "@pump".into(),
+                    shape: ArgShape::None,
+                    help: "test: drain the arena egress once, the way the world loop does".into(),
+                    ..CommandSpec::default()
+                },
+                Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                    let Some(tasks) = ctx
+                        .w
+                        .module_state::<ArenaRegistry>()
+                        .map(|registry| registry.tasks().clone())
+                    else {
+                        return Ok(());
+                    };
+                    let Ok(mut slot) = egress.lock() else {
+                        return Err(CmdError::msg("the egress slot is poisoned"));
+                    };
+                    if slot.is_none() {
+                        *slot = tasks.take_egress();
+                    }
+                    if let Some(rx) = slot.as_mut() {
+                        while let Ok(message) = rx.try_recv() {
+                            tasks.stage(message);
+                        }
+                    }
+                    Ok(())
+                }),
+            )?;
+            Ok(())
+        }
+    }
+
+    /// A fast tacsim layer: a 50 ms pulse at every tempo, so a match runs, is
+    /// driven and is aborted inside a second instead of inside thirty.
+    fn tacsim_layer() -> tacsim::TacsimRuleset {
+        let mut cfg = tacsim::TacsimConfig::default();
+        cfg.arena.tempo.quiet_ms = 50;
+        cfg.arena.tempo.alert_ms = 50;
+        cfg.arena.tempo.engaged_ms = 50;
+        tacsim::TacsimRuleset::with_config(cfg)
+    }
+
+    fn texts(events: &[(mush_core::Audience, mush_proto::OutputEvent)]) -> String {
+        events
+            .iter()
+            .map(|(_, event)| text_of(event))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// One host iteration: stage whatever the arena has sent, then re-enter the
+    /// world through the same typed completion the loop uses.
+    fn pump(tw: &mut TestWorld) {
+        run_ok(tw, "@pump");
+        tw.apply(mush_core::WorldCommand::ModuleAsyncDone {
+            module: SmolStr::new(tacsim::arena_bridge::MODULE),
+            actor: GOD,
+            correlation: 0,
+            payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
+        });
+    }
+
+    fn run_ok(tw: &mut TestWorld, line: &str) -> String {
+        let out = texts(&tw.run(GOD, line));
+        assert!(
+            !out.contains("Huh?") && !out.contains("Permission denied"),
+            "`{line}` refused: {out}"
+        );
+        out
+    }
+
+    /// Every `unit:<obj>` write queued since the last drain, in order.
+    fn unit_writes(tw: &mut TestWorld) -> Vec<(ObjId, Value)> {
+        let mut writes = Vec::new();
+        for op in tw.take_module_ops() {
+            if op.ns.as_str() != mush_tactics::module::NS {
+                continue;
+            }
+            if let ModuleWrite::JsonSet { key, value } = op.op
+                && let Some(rest) = key.as_str().strip_prefix("unit:")
+                && let Ok(id) = rest.parse::<u32>()
+            {
+                writes.push((ObjId(id), value));
+            }
+        }
+        writes
+    }
+
+    fn marker_of(document: &Value) -> Option<&Value> {
+        document.get("deployed")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_custody_markers_are_the_only_unit_writes_during_a_match() {
+        let spec = tank_spec();
+        let egress = Arc::new(Mutex::new(None));
+        let mut tw = TestWorld::with_modules(vec![
+            Box::new(mush_sim::SimulationModule::new()),
+            Box::new(Rules { spec: spec.clone() }),
+            Box::new(TacticsModule::with_catalog(catalog(&spec))),
+            Box::new(tacsim_layer()),
+            Box::new(Pump {
+                egress: Arc::clone(&egress),
+            }),
+        ]);
+
+        // --- the world: one domain, two tanks in it --------------------------
+        let field = tw
+            .world_mut()
+            .create(ObjKind::Room, "Proving Ground", GOD, None)
+            .expect("a room");
+        tw.world_mut()
+            .attach_behavior(
+                field,
+                BehaviorId::new("sim.domain").expect("a behavior"),
+                BehaviorBinding {
+                    schema_version: 1,
+                    attached_by: GOD,
+                    attached_at: 0,
+                },
+            )
+            .expect("a room may host a domain");
+        run_ok(&mut tw, &format!("@domain/create #{}=sim.passive", field.0));
+
+        let mut units = Vec::new();
+        for name in ["Red One", "Blue One"] {
+            let obj = tw
+                .world_mut()
+                .create(ObjKind::Thing, name, GOD, Some(LIMBO))
+                .expect("a thing");
+            let created = run_ok(&mut tw, &format!("@unit/create #{}={SCHEMA}", obj.0));
+            assert!(
+                created.contains("is now a tactical unit"),
+                "@unit/create refused: {created}"
+            );
+            tw.world_mut()
+                .attach_behavior(
+                    obj,
+                    BehaviorId::new("sim.participant").expect("a behavior"),
+                    BehaviorBinding {
+                        schema_version: 1,
+                        attached_by: GOD,
+                        attached_at: 0,
+                    },
+                )
+                .expect("a thing may be a participant");
+            let placed = run_ok(&mut tw, &format!("@spatial/place/domain #{}=0", obj.0));
+            assert!(
+                placed.contains("Placed"),
+                "@spatial/place refused: {placed}"
+            );
+            units.push(obj);
+        }
+        let (red, blue) = (units[0], units[1]);
+
+        // The record each unit carries before any match exists. Taken off the
+        // op queue, so it is the exact document the store would hold.
+        let mut before: BTreeMap<ObjId, Value> = BTreeMap::new();
+        for (unit, document) in unit_writes(&mut tw) {
+            before.insert(unit, document);
+        }
+        assert_eq!(before.len(), 2, "both units wrote a record at creation");
+        for document in before.values() {
+            assert!(
+                marker_of(document).is_none(),
+                "a unit nobody deployed carries no marker: {document}"
+            );
+        }
+
+        // --- check-out -------------------------------------------------------
+        let started = run_ok(
+            &mut tw,
+            &format!("@arena/start {ARENA}=#{}/#{}", red.0, blue.0),
+        );
+        assert!(
+            started.contains("is running on"),
+            "the match started: {started}"
+        );
+        let checkout = unit_writes(&mut tw);
+        assert_eq!(
+            checkout.len(),
+            2,
+            "check-out writes each unit's record exactly once: {checkout:?}"
+        );
+        for (unit, document) in &checkout {
+            let Some(marker) = marker_of(document) else {
+                panic!("#{} was checked out with no marker: {document}", unit.0);
+            };
+            assert_eq!(
+                marker.pointer("/mark/arena").and_then(Value::as_str),
+                Some(ARENA),
+                "the marker names its arena: {marker}"
+            );
+            assert!(
+                marker.get("snapshot").is_some(),
+                "and carries the snapshot a void restores: {marker}"
+            );
+            // The ONLY difference from the pre-match record.
+            let mut stripped = document.clone();
+            if let Some(object) = stripped.as_object_mut() {
+                object.remove("deployed");
+            }
+            assert_eq!(
+                Some(&stripped),
+                before.get(unit),
+                "the marker is the only thing the check-out changed"
+            );
+        }
+
+        // --- drive: nothing may write a unit record while the match runs -----
+        run_ok(&mut tw, &format!("@arena/intent #{}=startup", red.0));
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            pump(&mut tw);
+            run_ok(&mut tw, &format!("@arena/intent #{}=heading 90", red.0));
+            run_ok(&mut tw, &format!("@arena/intent #{}=speed 1200", red.0));
+            let during = unit_writes(&mut tw);
+            assert!(
+                during.is_empty(),
+                "a running match wrote a unit record: {during:?}. Doc 16 §3.1 (D-16-1) makes the \
+                 arena the single writer for its units' cells and the world the single writer for \
+                 everything else; the custody markers are the ONLY unit writes a match may cause."
+            );
+        }
+
+        // --- check-in --------------------------------------------------------
+        run_ok(&mut tw, "@arena/abort 1");
+        let mut checkin: Vec<(ObjId, Value)> = Vec::new();
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            pump(&mut tw);
+            checkin.extend(unit_writes(&mut tw));
+            if checkin.len() >= 2 {
+                break;
+            }
+        }
+        assert_eq!(
+            checkin.len(),
+            2,
+            "check-in writes each unit's record exactly once: {checkin:?}"
+        );
+        for (unit, document) in &checkin {
+            assert!(
+                marker_of(document).is_none(),
+                "check-in clears the marker: {document}"
+            );
+            assert_eq!(
+                Some(document),
+                before.get(unit),
+                "a unit nothing happened to comes back byte-identical (doc 16 §7's lens)"
+            );
+        }
+
+        // And nothing is deployed any more, on either side of the seam.
+        assert!(
+            mush_sim::deployed::deployed_units(tw.world()).is_empty(),
+            "the world-side index is empty after check-in"
+        );
+        assert!(
+            mush_tactics::custody::deployed(tw.world()).is_empty(),
+            "and so is the record-side one"
+        );
+    }
+}

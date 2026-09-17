@@ -197,6 +197,17 @@ const ALLOWED: &[Allowed] = &[
                  so `cargo test --workspace` unifies it on and compiles it",
         dev_dep_activated: true,
     },
+    Allowed {
+        package: "tacsim",
+        feature: "fault-injection",
+        reason: "16b cut T.3: the `@arena/fault` switch that arms cut T.2's panic hook \
+                 inside a running match, so the two verify lenses can show that a \
+                 panicking pulse voids its match and the world keeps serving. Turned on \
+                 by `mush-gateway`'s and `mushd`'s `[dev-dependencies]` edges — the same \
+                 shape `mush-server/fault-injection` takes — so `cargo test --workspace` \
+                 unifies it on and compiles it",
+        dev_dep_activated: true,
+    },
 ];
 
 /// The census, pinned. Both halves matter: a feature that appears without a
@@ -215,6 +226,7 @@ const CENSUS: &[&str] = &[
     "mush-sim/testkit",
     "mush-testkit/toy-ruleset",
     "mushd/tls",
+    "tacsim/fault-injection",
 ];
 
 fn allowlisted() -> BTreeSet<String> {
@@ -280,7 +292,7 @@ fn the_scanner_still_finds_the_known_features() {
         .collect();
     assert_eq!(
         (declared.len(), crates.len()),
-        (12, 9),
+        (13, 10),
         "11 toggleable features across 8 crates at the WS24-S4 fold, plus mush-testkit/toy-ruleset \n         (16b cut R-b): {declared:?}"
     );
 }

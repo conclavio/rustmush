@@ -132,6 +132,8 @@ pub struct UnitRecordStatus {
     pub payload_digest: Option<DefinitionDigest>,
     /// Exact dry-run plan for an accepted legacy v1 document.
     pub migration_plan: Option<MigrationPlanSummary>,
+    /// **16b cut T.3**: the custody marker this record carries, if any.
+    pub deployed: Option<crate::custody::DeployedMarker>,
 }
 
 impl UnitRecordStatus {
@@ -155,6 +157,19 @@ pub struct UnitStore {
     pub binding_repair_count: u64,
     /// Bounded diagnostics snapshot exposed through `@stats`.
     pub boot_report: Option<ModuleBootReport>,
+    /// **16b cut T.3**: the units a simulation authority currently holds, by
+    /// object — the RAM half of the `deployed` marker on each record.
+    pub deployed: BTreeMap<ObjId, crate::custody::DeployedMarker>,
+    /// **16b cut T.3 / T5**: the markers the boot pass found with no live arena,
+    /// restored and cleared. Taken once by the game crate's own boot pass, which
+    /// writes their `aborted(restart)` results; see
+    /// [`crate::custody::take_boot_restored`].
+    pub boot_restored: Vec<(ObjId, crate::custody::DeployedMarker)>,
+    /// **16b cut T.3**: the current `record/unit` schema reference, so a custody
+    /// write can encode a document without the module handle the command
+    /// closures capture. `None` until `register` installs it, and a custody
+    /// write refuses rather than guessing.
+    pub record_definition: Option<DefinitionRef>,
 }
 
 impl UnitStore {
@@ -192,6 +207,7 @@ impl UnitStore {
             unit: Some(unit),
             payload_digest: Some(payload_digest),
             migration_plan: None,
+            deployed: None,
         });
         if let Some(report) = &mut self.boot_report {
             report.active = report
@@ -203,6 +219,11 @@ impl UnitStore {
 
     fn update_active(&mut self, unit: TacticalUnit, payload_digest: DefinitionDigest) {
         let object = unit.object();
+        // 16b cut T.3: a re-created lifecycle row keeps whatever custody marker
+        // the store holds for the object. The found branch below leaves
+        // `record.deployed` alone for the same reason — an update of a unit's
+        // cells is not a statement about who holds it.
+        let deployed = self.deployed.get(&object).cloned();
         self.units.insert(object, unit.clone());
         if let Some(record) = self
             .records
@@ -222,11 +243,48 @@ impl UnitStore {
                 unit: Some(unit),
                 payload_digest: Some(payload_digest),
                 migration_plan: None,
+                deployed,
             });
             if let Some(report) = &mut self.boot_report {
                 report.active = report.active.saturating_add(1);
             }
         }
+    }
+
+    /// Install or clear one unit's custody marker, and keep the lifecycle
+    /// index's copy of it in step (16b cut T.3).
+    pub(crate) fn set_deployed(
+        &mut self,
+        object: ObjId,
+        marker: Option<crate::custody::DeployedMarker>,
+        payload_digest: Option<DefinitionDigest>,
+    ) {
+        match &marker {
+            Some(marker) => {
+                self.deployed.insert(object, marker.clone());
+            }
+            None => {
+                self.deployed.remove(&object);
+            }
+        }
+        if let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|record| record.object == Some(object) && record.state == MechanicalState::Active)
+        {
+            record.deployed = marker;
+            if let Some(digest) = payload_digest {
+                record.payload_digest = Some(digest);
+            }
+        }
+    }
+
+    /// Replace one active unit's cells wholesale — the check-in path, where the
+    /// post-state is either an applied plan or the restored check-out snapshot
+    /// (16b cut T.3). [`UnitStore::update_active`] by another name, kept separate
+    /// so the custody lane reads as its own thing.
+    pub(crate) fn replace_active(&mut self, unit: TacticalUnit, payload_digest: DefinitionDigest) {
+        self.update_active(unit, payload_digest);
     }
 
     fn remove_active(&mut self, object: ObjId) -> bool {
@@ -336,6 +394,17 @@ impl TacticsModule {
     }
 }
 
+/// **One active tactical unit, by object** (16b cut T.3).
+///
+/// The read half of [`UnitStore`] as a function, so a caller outside this crate
+/// asks a question instead of reaching into the slot. `None` for an object with
+/// no record, and for one whose record is frozen, migrating or quarantined —
+/// mechanics may not interpret those, and a check-out is mechanics.
+#[must_use]
+pub fn unit_of(w: &World, object: ObjId) -> Option<&TacticalUnit> {
+    w.module_state::<UnitStore>()?.units.get(&object)
+}
+
 /// Who may arm the sensor ingress (E7c7 B3).
 ///
 /// **Staff only.** A player who could arm it could author another actor's
@@ -357,6 +426,18 @@ struct UnitDocumentV2 {
     /// authority that decides whether these bytes may be interpreted.
     record_schema: DefinitionRef,
     unit: TacticalUnit,
+    /// **16b cut T.3** (doc 16 §3.1 "Custody"): set while a simulation authority
+    /// holds this unit, carrying the snapshot a void restores.
+    ///
+    /// Optional and absent-by-default, so a record written before this cut
+    /// decodes unchanged and a record written by it is byte-identical to one
+    /// written before it whenever no match holds the unit — which is what the T6
+    /// gate compares. The `record/unit` **version does not move**: the v2
+    /// descriptor's payload is `{record, record_version, strict}` and names no
+    /// field, so the schema's digest is the same before and after, and there is
+    /// no ladder to carry (16b §0 rule 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deployed: Option<crate::custody::DeployedMarker>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -370,11 +451,20 @@ enum UnitDocumentV2DecodeError {
 
 impl UnitDocumentV2 {
     fn new(record_schema: DefinitionRef, unit: TacticalUnit) -> Self {
+        Self::with_marker(record_schema, unit, None)
+    }
+
+    fn with_marker(
+        record_schema: DefinitionRef,
+        unit: TacticalUnit,
+        deployed: Option<crate::custody::DeployedMarker>,
+    ) -> Self {
         Self {
             record: SmolStr::new_static(UNIT_RECORD_NAME),
             record_version: UNIT_RECORD_VERSION,
             record_schema,
             unit,
+            deployed,
         }
     }
 
@@ -389,7 +479,17 @@ impl UnitDocumentV2 {
             .as_object()
             .ok_or(UnitDocumentV2DecodeError::Invalid("unit_v2_malformed"))?;
         const FIELDS: [&str; 4] = ["record", "record_version", "record_schema", "unit"];
-        if object.len() != FIELDS.len() || FIELDS.iter().any(|field| !object.contains_key(*field)) {
+        // 16b cut T.3: `deployed` is the one OPTIONAL member, so the strict
+        // field test admits four names plus that one and nothing else — the
+        // envelope stays closed, and a record with a fifth field nobody declared
+        // is still malformed.
+        const OPTIONAL: [&str; 1] = ["deployed"];
+        let known = |field: &str| FIELDS.contains(&field) || OPTIONAL.contains(&field);
+        if object.len() < FIELDS.len()
+            || object.len() > FIELDS.len() + OPTIONAL.len()
+            || FIELDS.iter().any(|field| !object.contains_key(*field))
+            || object.keys().any(|field| !known(field.as_str()))
+        {
             return Err(UnitDocumentV2DecodeError::Invalid("unit_v2_malformed"));
         }
         if object.get("record").and_then(serde_json::Value::as_str) != Some(UNIT_RECORD_NAME)
@@ -427,7 +527,14 @@ impl UnitDocumentV2 {
                 .ok_or(UnitDocumentV2DecodeError::Invalid("unit_v2_malformed"))?,
         )
         .map_err(|_| UnitDocumentV2DecodeError::Invalid("unit_v2_malformed"))?;
-        Ok(Self::new(record_schema, unit))
+        let deployed: Option<crate::custody::DeployedMarker> = match object.get("deployed") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => Some(
+                serde_json::from_value(value.clone())
+                    .map_err(|_| UnitDocumentV2DecodeError::Invalid("unit_v2_malformed"))?,
+            ),
+        };
+        Ok(Self::with_marker(record_schema, unit, deployed))
     }
 }
 
@@ -776,7 +883,6 @@ impl GameModule for TacticsModule {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
-        reg.state(UnitStore::default());
 
         let stance = reg.state_family(
             StateFamilyDescriptor::new(
@@ -1001,6 +1107,16 @@ impl GameModule for TacticsModule {
         ))?;
         self.legacy_record_definition = Some(v1);
         self.current_record_definition = Some(v2.clone());
+        // 16b cut T.3: the custody lane encodes a unit document from a `Ctx`
+        // alone, with none of the closures the verbs capture, so the schema it
+        // encodes against lives on the slot. `Registrar::state` is a queue, so
+        // the slot is declared HERE — the first moment the reference exists —
+        // rather than at the top of `register`. A custody write on a composition
+        // that never reached this line refuses rather than guessing a schema.
+        reg.state(UnitStore {
+            record_definition: Some(v2.clone()),
+            ..UnitStore::default()
+        });
         reg.recovery_reporter(Arc::new(TacticsRecoveryReporter))?;
 
         let mut spec = BehaviorSpec::new(BehaviorId::new(UNIT_BEHAVIOR).unwrap())
@@ -1094,11 +1210,21 @@ impl GameModule for TacticsModule {
 fn unit_key(obj: ObjId) -> SmolStr {
     SmolStr::new(format!("unit:{}", obj.0))
 }
-fn encode_unit_document(
+/// Encode one unit's authoritative document, with or without its 16b cut T.3
+/// custody marker.
+///
+/// Every shipped caller passes `None`: a deployed unit refuses `@unit/create`,
+/// `@unit/damage`, `@unit/remove`, the destroy gate, the detach gate and the
+/// asset scrub at their own admission sites, so the only writer that can see a
+/// marker is [`crate::custody`] itself, and it names the marker explicitly in
+/// both directions.
+pub(crate) fn encode_unit_document(
     record_schema: &DefinitionRef,
     unit: &TacticalUnit,
+    deployed: Option<&crate::custody::DeployedMarker>,
 ) -> Result<(serde_json::Value, DefinitionDigest), String> {
-    let document = UnitDocumentV2::new(record_schema.clone(), unit.clone());
+    let document =
+        UnitDocumentV2::with_marker(record_schema.clone(), unit.clone(), deployed.cloned());
     let value = serde_json::to_value(document).map_err(|error| error.to_string())?;
     let digest = DefinitionDigest::for_canonical_value_with_limit(
         "mush-tactics.unit.authoritative.v1",
@@ -1116,6 +1242,27 @@ fn persist_encoded_unit(out: &mut Outbox, object: ObjId, value: serde_json::Valu
             value,
         },
     }));
+}
+
+/// Queue one unit document through the **governed** write path (16b cut T.3).
+///
+/// [`persist_encoded_unit`] above defers straight onto the outbox, which is safe
+/// for this crate's own verbs (they stamp `NS` by construction) but is invisible
+/// to WS03-A1's namespace check. A custody write is different: it is made from
+/// inside the *game* crate's authoritative action, so `ctx.module` is `tacsim`
+/// and the namespace is `tactics` — a real crossing, and the one spelling that
+/// governs a crossing is [`Ctx::persist`]. The delegation is declared by the
+/// game crate (`Registrar::persist_delegation("tacsim", "tactics")`) and pinned
+/// in `crates/mush-contract-tests/module-ns-owners.toml`; the same call from
+/// this crate's own boot pass matches its own namespace and never consults it.
+pub(crate) fn persist_unit_document(ctx: &mut Ctx<'_>, object: ObjId, value: serde_json::Value) {
+    ctx.persist(ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op: ModuleWrite::JsonSet {
+            key: unit_key(object),
+            value,
+        },
+    });
 }
 fn persist_unit_del(out: &mut Outbox, obj: ObjId) {
     persist_key_del(out, unit_key(obj));
@@ -1211,7 +1358,7 @@ fn on_obj_destroyed(
         scrub_component_assets(&store.units, now, &|a| a == obj)
     };
     for unit in repaired {
-        match encode_unit_document(current_record_definition, &unit) {
+        match encode_unit_document(current_record_definition, &unit, None) {
             Ok((document, digest)) => {
                 tracing::warn!(unit = %unit.object(), dead = %obj, "tactics: component asset pointer scrubbed (object destroyed)");
                 persist_encoded_unit(ctx.out, unit.object(), document);
@@ -1296,6 +1443,8 @@ fn scrub_component_assets(
 struct TacticsDestroyGate;
 impl DestroyGate for TacticsDestroyGate {
     fn check(&self, w: &World, reg: &Registry, _actor: ObjId, obj: ObjId) -> Result<(), String> {
+        // 16b cut T.3 (doc 16 §3.1 "Custody"), admission site 1 of 6.
+        mush_sim::deployed::refuse_if_deployed(w, obj).map_err(|error| error.to_string())?;
         let Some(store) = w.module_state::<UnitStore>() else {
             return Ok(());
         };
@@ -1343,6 +1492,12 @@ impl DetachGate for TacticsDetachGate {
         obj: ObjId,
         behavior: &BehaviorId,
     ) -> Result<(), String> {
+        // 16b cut T.3, admission site 2 of 6: a deployed unit's behaviour is its
+        // cockpit's channel grants, and detaching it mid-match would take the
+        // seat out from under a pilot the arena is still integrating.
+        if behavior.as_str() == UNIT_BEHAVIOR {
+            mush_sim::deployed::refuse_if_deployed(w, obj).map_err(|error| error.to_string())?;
+        }
         if behavior.as_str() == UNIT_BEHAVIOR
             && w.module_state::<UnitStore>().is_some_and(|store| {
                 store.units.contains_key(&obj)
@@ -1393,6 +1548,11 @@ struct PendingRecord {
     key_object: Option<ObjId>,
     payload_digest: Option<DefinitionDigest>,
     unit: Option<TacticalUnit>,
+    /// 16b cut T.3: the `deployed` marker the document carried, if any. A marker
+    /// discovered at boot has no live arena behind it by construction (an OOC
+    /// match holds no durable state and never resumes, D-16-3), so `boot_units`
+    /// treats every one of them as a void.
+    deployed: Option<crate::custody::DeployedMarker>,
     origin: Option<RecordOrigin>,
     failure: Option<RecordFailure>,
     binding_repair: Option<UnitBindingRepair>,
@@ -1504,6 +1664,7 @@ fn decode_pending_record(
                 key_object,
                 payload_digest: None,
                 unit: None,
+                deployed: None,
                 origin: None,
                 failure: Some(failure),
                 binding_repair: None,
@@ -1521,6 +1682,7 @@ fn decode_pending_record(
                 key_object,
                 payload_digest,
                 unit: Some(document.unit),
+                deployed: document.deployed,
                 origin: Some(RecordOrigin::Current),
                 failure: None,
                 binding_repair: None,
@@ -1530,6 +1692,7 @@ fn decode_pending_record(
                 key_object,
                 payload_digest,
                 unit: None,
+                deployed: None,
                 origin: None,
                 failure: Some(record_failure(
                     FailedState::Quarantined,
@@ -1546,6 +1709,7 @@ fn decode_pending_record(
                 key_object,
                 payload_digest,
                 unit: None,
+                deployed: None,
                 origin: None,
                 failure: Some(record_failure(
                     FailedState::Frozen,
@@ -1577,6 +1741,7 @@ fn decode_pending_record(
             key_object,
             payload_digest,
             unit: None,
+            deployed: None,
             origin: None,
             failure: Some(record_failure(
                 FailedState::Quarantined,
@@ -1599,6 +1764,7 @@ fn decode_pending_record(
                 key_object,
                 payload_digest,
                 unit: None,
+                deployed: None,
                 origin: None,
                 failure: Some(record_failure(
                     FailedState::Frozen,
@@ -1618,6 +1784,7 @@ fn decode_pending_record(
                 key_object,
                 payload_digest,
                 unit: None,
+                deployed: None,
                 origin: None,
                 failure: Some(record_failure(
                     FailedState::Quarantined,
@@ -1639,6 +1806,7 @@ fn decode_pending_record(
                 key_object,
                 payload_digest,
                 unit: None,
+                deployed: None,
                 origin: None,
                 failure: Some(record_failure(
                     FailedState::Quarantined,
@@ -1664,6 +1832,7 @@ fn decode_pending_record(
                 key_object,
                 payload_digest,
                 unit: None,
+                deployed: None,
                 origin: None,
                 failure: Some(record_failure(
                     FailedState::Quarantined,
@@ -1685,6 +1854,7 @@ fn decode_pending_record(
             key_object,
             payload_digest,
             unit: None,
+            deployed: None,
             origin: None,
             failure: Some(record_failure(
                 FailedState::Quarantined,
@@ -1699,6 +1869,9 @@ fn decode_pending_record(
         key_object,
         payload_digest,
         unit: Some(decoded.unit),
+        // A legacy v1 document predates custody entirely: it cannot carry a
+        // marker, and the migration does not invent one.
+        deployed: None,
         origin: Some(RecordOrigin::Legacy(Box::new(plan.summary()))),
         failure: None,
         binding_repair: None,
@@ -2079,7 +2252,12 @@ fn boot_units(
     // then mechanically hold every intact dependent record for that owner.
     fan_out_owner_freezes(ctx.reg, &mut pending)?;
 
-    let mut store = UnitStore::default();
+    let mut store = UnitStore {
+        record_definition: Some(current_record_definition.clone()),
+        ..UnitStore::default()
+    };
+    // The custody markers this boot found with no live arena behind them.
+    let mut restored: Vec<(ObjId, crate::custody::DeployedMarker)> = Vec::new();
     for record in pending {
         if let Some(repair) = record.binding_repair.clone() {
             store.push_binding_repair(repair, &mut report);
@@ -2127,9 +2305,35 @@ fn boot_units(
         if let Some(plan) = &migration_plan {
             report.push_migration_plan(plan.clone());
         }
+        // **16b T5, boot reconciliation** (doc 16 §3.1 "Boot reconciliation";
+        // 16b §7 T5). An OOC match holds no durable state and never resumes
+        // (D-16-3), so a `deployed` marker read off the store is by construction
+        // a marker with no live arena: the match it names died with the process.
+        // Every one of them is therefore a void — restore the snapshot, clear
+        // the marker, and hand the game crate what it needs to release the seats
+        // and write the `aborted(restart)` result.
+        let mut record = record;
+        let mut restored_marker = None;
+        if state == MechanicalState::Active
+            && let Some(marker) = record.deployed.take()
+        {
+            record.unit = Some(marker.snapshot.clone());
+            restored_marker = Some(marker);
+        }
+        let deployed = None;
         if state == MechanicalState::Active {
-            let unit = record.unit.clone().expect("active record has decoded unit");
-            store.units.insert(unit.object(), unit);
+            let Some(unit) = record.unit.clone() else {
+                // Unreachable on a tree that compiles: `Active` is only reached
+                // through a decoded unit. A skip is the fail-closed answer and
+                // keeps this pass off the panic budget.
+                tracing::error!(key = %record.key, "tactics: an active unit record decoded to nothing at boot; skipped");
+                continue;
+            };
+            let object = unit.object();
+            if let Some(marker) = restored_marker {
+                restored.push((object, marker));
+            }
+            store.units.insert(object, unit);
         }
         store.records.push(UnitRecordStatus {
             key: record.key,
@@ -2139,6 +2343,7 @@ fn boot_units(
             unit: record.unit,
             payload_digest: record.payload_digest,
             migration_plan,
+            deployed,
         });
     }
 
@@ -2187,7 +2392,7 @@ fn boot_units(
         })
     };
     for unit in repaired {
-        match encode_unit_document(current_record_definition, &unit) {
+        match encode_unit_document(current_record_definition, &unit, None) {
             Ok((document, digest)) => {
                 tracing::warn!(unit = %unit.object(), "tactics: component asset pointer(s) to a missing object scrubbed at boot");
                 persist_encoded_unit(ctx.out, unit.object(), document);
@@ -2198,10 +2403,39 @@ fn boot_units(
             }
         }
     }
+    // The restored records are written back as documents with no marker, so a
+    // second restart finds nothing to reconcile. One write per unit, on this
+    // crate's own namespace.
+    let mut reconciled: Vec<(ObjId, serde_json::Value)> = Vec::new();
+    for (object, marker) in &restored {
+        match encode_unit_document(current_record_definition, &marker.snapshot, None) {
+            Ok((document, digest)) => {
+                tracing::warn!(
+                    unit = %object,
+                    match_id = marker.match_id(),
+                    arena = %marker.mark.arena,
+                    "tactics: a unit was still checked out to an arena at boot; the match cannot \
+                     resume, so the check-out snapshot is restored and the marker cleared"
+                );
+                store.update_active(marker.snapshot.clone(), digest);
+                reconciled.push((*object, document));
+            }
+            Err(error) => tracing::error!(
+                unit = %object,
+                %error,
+                "tactics: a deployed unit's restored snapshot would not encode at boot; the \
+                 marker is left on the record for a staff repair"
+            ),
+        }
+    }
+    store.boot_restored = restored;
     store.boot_report = Some(report);
 
     if let Some(slot) = ctx.w.module_state_mut::<UnitStore>() {
         *slot = store;
+    }
+    for (object, document) in reconciled {
+        persist_unit_document(ctx, object, document);
     }
     Ok(())
 }
@@ -2282,6 +2516,13 @@ fn first_unit_dependency_freeze(
     }
     Ok(None)
 }
+/// 16b cut T.3 (doc 16 §3.1 "Custody"): this crate's two command-side admission
+/// sites, through the one shared helper and the one named error.
+fn refuse_deployed(ctx: &Ctx<'_>, obj: ObjId) -> Result<(), CmdError> {
+    mush_sim::deployed::refuse_if_deployed(ctx.w, obj)
+        .map_err(|error| CmdError::msg(error.to_string()))
+}
+
 fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
     let actor = ctx.actor;
     ctx.out.sys_to_actor(actor, "tactics", msg.into());
@@ -2415,7 +2656,7 @@ fn unit_create(
     // Validate/encode before touching either the behavior binding or RAM. A
     // newly authored unit must always be acceptable to the next boot.
     let (document, payload_digest) =
-        encode_unit_document(current_record_definition, &u).map_err(CmdError::msg)?;
+        encode_unit_document(current_record_definition, &u, None).map_err(CmdError::msg)?;
     ctx.w
         .attach_behavior(
             obj,
@@ -2527,6 +2768,9 @@ fn unit_damage(
     ctx: &mut Ctx<'_>,
 ) -> Result<(), CmdError> {
     let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    // 16b cut T.3, admission site 3 of 6: while a match holds the unit, the
+    // arena is the single writer for its condition cells (D-16-1).
+    refuse_deployed(ctx, obj)?;
     let json = rhs_required(ctx, "@unit/damage <obj>={json UnitMutationPlan}")?;
     let plan: UnitMutationPlan = serde_json::from_str(json.trim())
         .map_err(|e| CmdError::msg(format!("bad plan JSON: {e}")))?;
@@ -2563,7 +2807,7 @@ fn unit_damage(
     let vitals_frame =
         view::UnitView::of(ctx.w, obj, &view::UnitSource::Active(&post), now).vitals_value();
     let (document, payload_digest) =
-        encode_unit_document(current_record_definition, &post).map_err(CmdError::msg)?;
+        encode_unit_document(current_record_definition, &post, None).map_err(CmdError::msg)?;
     persist_encoded_unit(ctx.out, obj, document);
     ctx.w
         .module_state_mut::<UnitStore>()
@@ -2650,6 +2894,8 @@ fn unit_remove(
     ctx: &mut Ctx<'_>,
 ) -> Result<(), CmdError> {
     let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    // 16b cut T.3, admission site 4 of 6.
+    refuse_deployed(ctx, obj)?;
     let unit = ctx
         .w
         .module_state::<UnitStore>()
