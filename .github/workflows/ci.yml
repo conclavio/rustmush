@@ -292,6 +292,38 @@ jobs:
       - name: Scale harness
         run: cargo test --release -p mush-contract-tests --test scale_harness -- --ignored --test-threads=1 --nocapture
 
+  # 16b cut H (§5, H3): the TacSim scale harness — doc 16 §1's A2 acceptance.
+  # It composes the production composition root in a memory-store test world,
+  # generates a relief from TACSIM_SEED, applies it through the atlas's pack
+  # route, places the units on a domain window and times the ground pulse. Every
+  # test is `#[ignore]`; this job is the only thing that runs them, on demand or
+  # weekly, never on push, and no Redis is involved. Report-only per D-H-8 and
+  # D-16-19 — read the `harness_*:` lines in the log, or the uploaded
+  # `harness.json`. Run it locally with TACSIM_ASSERT=1 to assert the
+  # thresholds, and size it with TACSIM_UNITS / TACSIM_FIGHTING /
+  # TACSIM_WEAPONS / TACSIM_PULSES / TACSIM_SEED.
+  tacsim-harness:
+    name: 16b cut H TacSim harness
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+      - name: TacSim harness
+        env:
+          TACSIM_JSON: harness.json
+        run: cargo test --release -p tacsim --test harness -- --ignored --test-threads=1 --nocapture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tacsim-harness-report
+          path: harness.json
+          if-no-files-found: error
+
   definition-wire-fixtures:
     name: K8 definition and wire fixtures
     runs-on: ubuntu-latest

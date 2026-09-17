@@ -1,0 +1,991 @@
+//! **Cut H — the TacSim scale harness** (16b §5, H1–H4; doc 16 §1 "A2" and §11;
+//! `11-h-implementation-plan.md` §3.3 and D-H-8).
+//!
+//! What this is. One `#[ignore]` measurement, run by the CI `tacsim-harness` job
+//! on `workflow_dispatch` and the weekly schedule (report-only, `--release`,
+//! `--nocapture`, `harness.json` kept as an artifact) and locally by hand. It
+//! composes the **production** composition root — the same calls
+//! `mush_server::boot::game_modules` makes, read out of
+//! `tacsim::composition`, so the game crate takes no edge on the host — inside a
+//! `mush_testkit::TestWorld` over the in-memory world, generates a relief
+//! deterministically from `TACSIM_SEED`, applies it through the atlas's own pack
+//! route, opens a domain window over it through the existing `@atlas/window`
+//! lane, places `TACSIM_UNITS` objects on the window with
+//! `@spatial/place/domain`, connects `TACSIM_FIGHTING` fake sessions as
+//! observers, and then drives `TACSIM_PULSES` fires of
+//! `mush_sim::tick::PULSE_TICK_TAG` through `TestWorld::fire_due`, timing each
+//! one and counting the output events it fans out.
+//!
+//! H2: before cut A exists there is nothing else to measure — the numbers below
+//! are the **baseline** for the world-side lane as it stands, which is what cut
+//! A's `Arena::step` is compared against.
+//!
+//! Knobs, all optional, `tacsim::config::HarnessConfig::default()` (16b §9) being
+//! the baseline: `TACSIM_UNITS`, `TACSIM_FIGHTING`, `TACSIM_WEAPONS` (parsed and
+//! reported, unused until cut W), `TACSIM_PULSES`, `TACSIM_SEED`, `TACSIM_JSON`
+//! (the report path, default `target/harness.json`) and `TACSIM_ASSERT=1`, which
+//! turns the four thresholds into assertions. The default is **report-only**
+//! (D-H-8, D-16-19): a shared runner's speed is not a threshold.
+//!
+//! What it must not do (16b §9's `H` row): touch `mush-sim` or `mush-atlas` — a
+//! harness that needs a new API in the thing it measures is measuring its own
+//! change — assert by default, or run on push.
+
+use std::collections::BTreeMap;
+use std::time::Instant;
+
+use mush_atlas::{AtlasConfig, AtlasState, PackSource, TerrainClass};
+use mush_core::{
+    Audience, Effect, Effects, GOD, GameModule, Inbound, ObjId, ObjKind, Outbox, WorldCommand,
+};
+use mush_proto::OutputEvent;
+use mush_sim::DomainId;
+use mush_testkit::TestWorld;
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+
+// Every test here carries
+// `#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch /
+// weekly)"]`. `ci_gated_test_inventory` finds the job that owns them by the verbatim
+// `-p tacsim --test harness` in `.github/workflows/ci.yml`.
+
+// ---------------------------------------------------------------------------
+// Knobs
+// ---------------------------------------------------------------------------
+
+/// The world facts one run was driven at, and the four thresholds.
+struct Knobs {
+    units: u32,
+    fighting: u32,
+    /// Parsed and reported; no cut produces a weapon yet (cut W).
+    weapons: u32,
+    pulses: u32,
+    seed: u64,
+    json: String,
+    assert: bool,
+    engaged_p99_ms: u32,
+    max_traces_per_pulse: u32,
+    max_path_queries_per_pulse: u32,
+    max_ledger_bytes: u64,
+}
+
+fn env_u64(name: &str, fallback: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(fallback)
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn env_u32(name: &str, fallback: u32) -> u32 {
+    env_u64(name, u64::from(fallback)).min(u64::from(u32::MAX)) as u32
+}
+
+impl Knobs {
+    fn from_env() -> Knobs {
+        let cfg = tacsim::config::HarnessConfig::default();
+        Knobs {
+            units: env_u32("TACSIM_UNITS", cfg.units),
+            fighting: env_u32("TACSIM_FIGHTING", cfg.fighting),
+            weapons: env_u32("TACSIM_WEAPONS", cfg.weapons),
+            pulses: env_u32("TACSIM_PULSES", DEFAULT_PULSES),
+            seed: env_u64("TACSIM_SEED", DEFAULT_SEED),
+            json: std::env::var("TACSIM_JSON")
+                .unwrap_or_else(|_| "target/harness.json".to_string()),
+            assert: std::env::var("TACSIM_ASSERT").is_ok_and(|v| v.trim() == "1"),
+            engaged_p99_ms: cfg.engaged_p99_ms,
+            max_traces_per_pulse: cfg.max_traces_per_pulse,
+            max_path_queries_per_pulse: cfg.max_path_queries_per_pulse,
+            max_ledger_bytes: cfg.max_ledger_bytes,
+        }
+    }
+}
+
+/// 16b §5 H1: sixty pulses is a minute of ground cadence at the default period.
+const DEFAULT_PULSES: u32 = 60;
+
+/// The fixed seed, so a run with no environment at all is reproducible.
+const DEFAULT_SEED: u64 = 2_350;
+
+// ---------------------------------------------------------------------------
+// The relief
+// ---------------------------------------------------------------------------
+
+/// The arena's side in cells: 256 at `[tacsim].ground_cell_cm` is D-16-5's
+/// 2.56 km arena, and exactly `mush_atlas::MAX_TILE_SIDE` and
+/// `DEFAULT_WINDOW_MAX_CELLS`.
+const SIDE: u16 = 256;
+
+/// `[tacsim].ground_cell_cm`. A const because the pack JSON is built with it;
+/// the measurement asserts it still equals `mush_config`'s own default, so an
+/// operator-facing change to that key cannot leave this reading a stale number.
+const CELL_CM: u16 = 1_000;
+
+/// One heightfield entry's side. A `heightfield` entry carries its samples in
+/// its own `def`, and `mush_content`'s `MAX_ENTRY_BYTES` is 64 KiB, so a 256 by
+/// 256 le16 field (175 KB of base64) does not fit in one entry — the def's own
+/// documentation says "a field wider than a tile is several entries". Four
+/// 128 by 128 quadrants are about 43 KB of base64 each and tile the arena
+/// exactly.
+const QUAD: u16 = 128;
+
+/// Where the region's own metric frame starts, metres. Offset off the shipped
+/// lot (`region.limbo`, 0..400 m) so the bbox form of `@atlas/window open`
+/// cannot collect a lot room as an anchor and refuse the window for spanning
+/// two regions.
+const ORIGIN_M: i64 = 10_000;
+
+/// How far elevation is quantised, centimetres. The relief is smooth and the
+/// cell grid is run-length encoded (`mush_atlas::Cells::encode`, eight bytes a
+/// run, `MAX_TILE_DOC_BYTES` 512 KiB), so quantising to whole metres is what
+/// keeps the runs long enough for a 256-cell row to encode.
+const ELEV_STEP_CM: i32 = 100;
+
+/// A seeded smooth elevation field over the arena, in whole centimetres against
+/// the region datum.
+///
+/// Four summed sinusoids with seeded phases and one seeded tilt: reproducible
+/// from `TACSIM_SEED` alone, no table, no file, and bounded well inside the
+/// `i16` a cell's `elev_cm` is.
+struct Relief {
+    /// Row-major, `SIDE * SIDE`, southern row first.
+    elev_cm: Vec<i32>,
+}
+
+impl Relief {
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_lossless
+    )]
+    fn generate(seed: u64) -> Relief {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        // Four waves: two long, two short. Amplitudes in centimetres.
+        let waves: Vec<(f64, f64, f64, f64)> = (0..4)
+            .map(|n| {
+                let periods = [3.0_f64, 5.0, 9.0, 17.0];
+                let amps = [900.0_f64, 520.0, 260.0, 120.0];
+                let p = periods.get(n).copied().unwrap_or(7.0);
+                let a = amps.get(n).copied().unwrap_or(100.0);
+                (
+                    p,
+                    a,
+                    rng.random_range(0.0..std::f64::consts::TAU),
+                    rng.random_range(0.0..std::f64::consts::TAU),
+                )
+            })
+            .collect();
+        let tilt_x = rng.random_range(-4.0_f64..4.0);
+        let tilt_y = rng.random_range(-4.0_f64..4.0);
+        let side = f64::from(SIDE);
+        let mut elev_cm = Vec::with_capacity(usize::from(SIDE) * usize::from(SIDE));
+        for y in 0..SIDE {
+            for x in 0..SIDE {
+                let u = f64::from(x) / side;
+                let v = f64::from(y) / side;
+                let mut h = tilt_x * f64::from(x) + tilt_y * f64::from(y);
+                for (period, amp, px, py) in &waves {
+                    h += amp
+                        * (std::f64::consts::TAU * period * u + px).sin()
+                        * (std::f64::consts::TAU * period * v + py).cos();
+                }
+                // Quantise, then clamp well inside `i16` so no sample is refused.
+                let q = (h / f64::from(ELEV_STEP_CM)).round() as i64 * i64::from(ELEV_STEP_CM);
+                elev_cm.push(q.clamp(-20_000, 20_000) as i32);
+            }
+        }
+        Relief { elev_cm }
+    }
+
+    fn at(&self, x: u16, y: u16) -> i32 {
+        self.elev_cm
+            .get(usize::from(y) * usize::from(SIDE) + usize::from(x))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// One quadrant's samples as base64 over little-endian signed 16-bit
+    /// centimetres, southern row first — `HeightfieldEncoding::Le16`.
+    fn quadrant_le16(&self, qx: u16, qy: u16) -> String {
+        let mut bytes = Vec::with_capacity(usize::from(QUAD) * usize::from(QUAD) * 2);
+        for y in 0..QUAD {
+            for x in 0..QUAD {
+                let v = self.at(qx * QUAD + x, qy * QUAD + y);
+                let v = i16::try_from(v).unwrap_or(0);
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        mush_atlas::cells::base64_encode(&bytes)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The packs
+// ---------------------------------------------------------------------------
+
+/// The digest placeholder a freshly authored pack carries until
+/// [`sign`] replaces it with the digest `mush_content` computes.
+const UNSIGNED: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The region pack's id.
+const REGION_PACK: &str = "harness.arena_region";
+/// The neighborhood pack's id: one anchor room, so the window has an anchor.
+const AREA_PACK: &str = "harness.arena_area";
+/// The region entry's id, which every other entry names.
+const REGION_ENTRY: &str = "region.arena";
+
+/// Compute a pack's own digest and stamp it into its manifest, exactly as the
+/// authoring half of `mush_content::load_pack` does (`parse_pack` then
+/// `computed_digest`). `verify_sources` at boot then verifies it like any
+/// operator pack.
+fn sign(json: &str) -> String {
+    let parsed = mush_content::parse_pack(json).expect("the authored pack parses");
+    let digest = parsed.computed_digest().expect("the pack digests");
+    json.replace(UNSIGNED, &digest.to_hex())
+}
+
+/// The region pack: one surface region whose background recipe is the arena's
+/// ground cover, and four `heightfield` entries carrying the seeded relief.
+///
+/// **The one thing the pack route cannot express.** Cell *classes* come from the
+/// region's `background` recipe — a seeded hash of `(region, surface, lattice
+/// square)` into the mix — because no pack entry paints an authored
+/// `TerrainClass`: `heightfield` imports elevation only and takes each cell's
+/// class from the background, and `feature` entries paint `Wall`, `Platform` and
+/// a destroyed feature's `Rubble`/`Door` and nothing else. So the roads, the
+/// woods and the water below are deterministic *patches* at
+/// `relief_period_cm`, not two continuous roads and a river with one ford. That
+/// shape needs an authored class grid in `mush-atlas`, which this cut may not
+/// add.
+fn region_pack(relief: &Relief, seed: u64) -> String {
+    let lo = ORIGIN_M;
+    let hi = ORIGIN_M + i64::from(SIDE) * i64::from(CELL_CM) / 100;
+    let mut entries = String::new();
+    entries.push_str(&format!(
+        r#""{REGION_ENTRY}":{{"kind":"region","def":{{
+      "name":"The Arena",
+      "kind":"surface","body":"luna",
+      "extent":[[{lo},{lo}],[{hi},{hi}]],
+      "datum_m":0.0,
+      "background":{{
+        "surface":"ground",
+        "mix":[["grass",22],["woods_light",16],["woods_heavy",9],["road",6],["rubble",4]],
+        "relief_cm":300,
+        "relief_period_cm":3000,
+        "water_cm":-170,
+        "seed":{seed}
+      }},
+      "ground_resolution_cm":{CELL_CM}
+    }}}},"#
+    ));
+    entries.push_str(&format!(
+        r#""locality.arena":{{"kind":"locality","def":{{
+      "region":"{REGION_ENTRY}","name":"The Arena Floor","kind":"lot",
+      "footprint":[[{lo},{lo}],[{hi},{lo}],[{hi},{hi}],[{lo},{hi}]]
+    }}}}"#
+    ));
+    for qy in 0..(SIDE / QUAD) {
+        for qx in 0..(SIDE / QUAD) {
+            let ox = ORIGIN_M + i64::from(qx) * i64::from(QUAD) * i64::from(CELL_CM) / 100;
+            let oy = ORIGIN_M + i64::from(qy) * i64::from(QUAD) * i64::from(CELL_CM) / 100;
+            let data = relief.quadrant_le16(qx, qy);
+            entries.push_str(&format!(
+                r#","heightfield.q{qx}_{qy}":{{"kind":"heightfield","def":{{
+      "region":"{REGION_ENTRY}","origin":[{ox},{oy}],
+      "resolution_cm":{CELL_CM},"cols":{QUAD},"rows":{QUAD},
+      "encoding":"le16","data":"{data}","scale_cm":1,"datum_cm":0
+    }}}}"#
+            ));
+        }
+    }
+    let json = format!(
+        r#"{{"manifest":{{"id":"{REGION_PACK}","version":1,"kind":"region",
+   "digest":"{UNSIGNED}","requires":[]}},
+   "entries":{{{entries}}}}}"#
+    );
+    sign(&json)
+}
+
+/// The neighborhood pack: the smallest thing that gives the arena an anchor
+/// room, because `mush_atlas::window::open` frames a window from the anchor
+/// room's neighborhood's region.
+///
+/// The room's footprint is a disc rather than a rectangle on purpose: the
+/// validator's `topology.isolated` rule refuses a room with no exit unless its
+/// footprint is an `anchor` — "a landing" — which is exactly what a muster
+/// point reached by being placed on the window is.
+fn area_pack(region_digest: &str) -> String {
+    // A 60 m square in the arena's south-west corner.
+    let a = ORIGIN_M + 20;
+    let b = ORIGIN_M + 80;
+    let (cx, cy) = (a + 25, a + 25);
+    let json = format!(
+        r#"{{"manifest":{{"id":"{AREA_PACK}","version":1,"kind":"neighborhood",
+   "digest":"{UNSIGNED}",
+   "requires":[{{"id":"{REGION_PACK}","version":1,"digest":"{region_digest}"}}]}},
+ "entries":{{
+  "neighborhood.arena":{{"kind":"neighborhood","def":{{
+    "region":"{REGION_ENTRY}","locality":"locality.arena",
+    "name":"Arena Muster","setting":"ooc","representation":"authored",
+    "footprint":[[{a},{a}],[{b},{a}],[{b},{b}],[{a},{b}]],
+    "room_budget":{{"target":1,"maximum":2}},
+    "hydration":{{"enabled":false,"max_player_sites":0}},
+    "resolution_cm":{CELL_CM}
+  }}}},
+  "room.muster":{{"kind":"room","def":{{
+    "name":"Arena Muster Point","surface":"ground",
+    "footprint":{{"anchor":{{"point":[{cx},{cy}],"radius_m":15.0}}}},
+    "desc":"A graded square of regolith with a painted muster grid.",
+    "kind":"outdoor"
+  }}}}
+ }}}}"#
+    );
+    sign(&json)
+}
+
+// ---------------------------------------------------------------------------
+// The world
+// ---------------------------------------------------------------------------
+
+/// The **production** roster, assembled with exactly the calls
+/// `mush_server::boot::game_modules` makes (`crates/mush-server/src/boot.rs`),
+/// read out of `tacsim::composition` so this crate takes no edge on the host.
+/// The LLM service is built from `LlmConfig::default()`, whose kill switch is
+/// engaged and which has no provider at all — doc 16 §2's W7, "the harness runs
+/// with the LLM disabled".
+fn production_roster(atlas: AtlasConfig) -> Vec<Box<dyn GameModule>> {
+    use tacsim::composition as comp;
+
+    let llm = std::sync::Arc::new(
+        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
+            .expect("a disabled LLM service composes"),
+    );
+    let tacsim_cfg = tacsim::fixture::config();
+    let onboarding = mush_core::OnboardingConfig::default();
+    let game = tacsim::GameEconomyConfig::default();
+    let mut mods = comp::server_modules_with(
+        mush_weather::WeatherConfig::default(),
+        mush_economy::EconomyConfig::default(),
+        atlas,
+        &onboarding,
+        &game,
+        comp::recovery_policy(&tacsim_cfg.recovery),
+    );
+    mods.push(comp::worldgen_module_with(
+        std::sync::Arc::clone(&llm),
+        mush_worldgen::WorldgenConfig::default(),
+    ));
+    mods.push(comp::npc_module_with(
+        comp::npc_agent_adapter(),
+        &mush_config::config::NpcCfg::default(),
+    ));
+    mods.extend(comp::ruleset_modules(&onboarding, &game));
+    mods.push(comp::tacsim_module(tacsim_cfg));
+    // `[game].starter_area` off: the harness's own region is the content under
+    // test, and the shipped lot would only add rooms the window must not anchor
+    // on. The module itself is composed exactly as production composes it.
+    mods.push(comp::content_module(false).expect("the content module composes"));
+    mods
+}
+
+/// One command, with the effects it deferred (`Effect::ModuleAsync` for the
+/// atlas's off-loop composite).
+fn step(
+    tw: &mut TestWorld,
+    actor: ObjId,
+    line: &str,
+) -> (Vec<(Audience, OutputEvent)>, Vec<Effect>) {
+    tw.run_with_effects(actor, line)
+}
+
+fn said(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
+    tw.seen_by(events, who).join("\n")
+}
+
+/// Run every deferred atlas composite off-loop and re-enter it, exactly as the
+/// world task does (`mush_atlas::run_async` then `WorldCommand::ModuleAsyncDone`).
+fn finish_composites(tw: &mut TestWorld, actor: ObjId, effects: &[Effect]) {
+    let jobs: Vec<(u64, String)> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::ModuleAsync {
+                module,
+                correlation,
+                payload,
+                ..
+            } if module.as_str() == mush_atlas::NS => Some((*correlation, payload.clone())),
+            _ => None,
+        })
+        .collect();
+    for (correlation, payload) in jobs {
+        let outcome = mush_atlas::run_async(&payload);
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        tw.engine_mut().step(
+            Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                module: mush_atlas::NS.into(),
+                actor,
+                correlation,
+                payload: outcome,
+            }),
+            &mut out,
+            &mut fx,
+        );
+    }
+}
+
+/// Apply one shelved pack through the atlas's own staff route: plan it, read the
+/// fingerprint the plan printed, apply that fingerprint.
+fn apply_pack(tw: &mut TestWorld, id: &str) {
+    let (events, effects) = step(tw, GOD, &format!("@atlas/pack plan {id}"));
+    let text = said(tw, &events, GOD);
+    finish_composites(tw, GOD, &effects);
+    let fingerprint = text
+        .split_whitespace()
+        .skip_while(|w| *w != "fingerprint")
+        .nth(1)
+        .map(|w| w.trim_end_matches('—').trim().to_string())
+        .unwrap_or_else(|| panic!("no fingerprint in the plan for {id}:\n{text}"));
+    let (events, effects) = step(tw, GOD, &format!("@atlas/pack apply {fingerprint}"));
+    let text = said(tw, &events, GOD);
+    assert!(text.contains("Applied"), "{id} did not apply:\n{text}");
+    assert!(
+        !text.contains("STOPPED PART WAY"),
+        "{id} stopped part way:\n{text}"
+    );
+    finish_composites(tw, GOD, &effects);
+}
+
+/// Give `obj` the behavior a directly placed object must carry
+/// (`mush_sim::custody`'s `sim.participant`), through the generic staff verb.
+fn participant(tw: &mut TestWorld, obj: ObjId) {
+    let (events, _) = step(
+        tw,
+        GOD,
+        &format!("@behavior/add #{}=sim.participant", obj.0),
+    );
+    let text = said(tw, &events, GOD);
+    assert!(
+        !text.to_ascii_lowercase().contains("usage:"),
+        "@behavior/add refused #{}: {text}",
+        obj.0
+    );
+}
+
+/// Classes a ground unit may stand on. `Void` and `Wall` are not surfaces,
+/// `Water`/`WaterDeep` and `Door` are not somewhere a scatter should drop a
+/// tank.
+fn standable(class: TerrainClass) -> bool {
+    matches!(
+        class,
+        TerrainClass::Paved
+            | TerrainClass::Ground
+            | TerrainClass::Grass
+            | TerrainClass::Floor
+            | TerrainClass::Rubble
+            | TerrainClass::Road
+            | TerrainClass::Sand
+            | TerrainClass::Rock
+            | TerrainClass::Platform
+            | TerrainClass::WoodsLight
+            | TerrainClass::WoodsHeavy
+            | TerrainClass::Ice
+            | TerrainClass::Regolith
+    )
+}
+
+/// Where `TACSIM_JSON` lands. `cargo test` runs an integration test with the
+/// **package** directory as its working directory, so a relative report path is
+/// resolved against the workspace root instead — the same two-levels-up walk
+/// from `CARGO_MANIFEST_DIR` the contract gates use. Without this, `harness.json`
+/// would land in `crates/tacsim/` and the CI job's artifact step would find
+/// nothing at the workspace root it uploads from.
+fn report_path(given: &str) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(given);
+    if path.is_absolute() {
+        return path;
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|root| root.join(&path))
+        .unwrap_or(path)
+}
+
+/// Resident memory, kibibytes, where the platform exposes it. `/proc/self/status`
+/// on Linux; **absent** everywhere else, never faked (16b §9's `H` row).
+fn resident_kib() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmRSS:"))
+        .and_then(|rest| rest.split_whitespace().next()?.parse::<u64>().ok())
+}
+
+// ---------------------------------------------------------------------------
+// Quantiles
+// ---------------------------------------------------------------------------
+
+/// The `q`-th per-mille quantile of an already-sorted slice, nearest-rank.
+fn quantile(sorted: &[f64], per_mille: u32) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let last = sorted.len() - 1;
+    let rank = (usize::try_from(per_mille).unwrap_or(0) * last) / 1_000;
+    sorted.get(rank.min(last)).copied().unwrap_or(0.0)
+}
+
+/// One tempo's timings. Before cut A there is one tempo, `current`, at the
+/// ground cadence.
+struct Tempo {
+    name: &'static str,
+    period_ms: u32,
+    ms: Vec<f64>,
+}
+
+impl Tempo {
+    fn stats(&self) -> (f64, f64, f64, f64) {
+        let mut sorted = self.ms.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        (
+            quantile(&sorted, 500),
+            quantile(&sorted, 950),
+            quantile(&sorted, 990),
+            sorted.last().copied().unwrap_or(0.0),
+        )
+    }
+}
+
+fn num(v: f64) -> serde_json::Value {
+    serde_json::Number::from_f64((v * 1_000.0).round() / 1_000.0)
+        .map(serde_json::Value::Number)
+        .unwrap_or(serde_json::Value::Null)
+}
+
+// ---------------------------------------------------------------------------
+// The measurement
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[allow(clippy::too_many_lines)]
+fn tacsim_harness_reports_the_ground_pulse_baseline() {
+    let knobs = Knobs::from_env();
+    assert_eq!(
+        CELL_CM,
+        mush_config::config::TacsimCfg::default().ground_cell_cm,
+        "the harness's cell size is no longer `[tacsim].ground_cell_cm`"
+    );
+    let rss_start_kib = resident_kib();
+    let started = Instant::now();
+
+    // ---- the relief, through the atlas's own pack route ----
+    let relief = Relief::generate(knobs.seed);
+    let region_json = region_pack(&relief, knobs.seed);
+    let region_digest = mush_content::load_pack(&region_json)
+        .expect("the region pack verifies")
+        .manifest()
+        .digest()
+        .to_hex();
+    let area_json = area_pack(&region_digest);
+    let atlas = AtlasConfig {
+        // The `[atlas].pack_paths` route: the host reads the bytes, the module
+        // shelves them. Nothing is written to disk.
+        packs: vec![
+            PackSource {
+                name: format!("<harness {REGION_PACK}>"),
+                bytes: region_json,
+            },
+            PackSource {
+                name: format!("<harness {AREA_PACK}>"),
+                bytes: area_json,
+            },
+        ],
+        ..AtlasConfig::default()
+    };
+    let generate_ms = started.elapsed().as_secs_f64() * 1_000.0;
+
+    let boot_at = Instant::now();
+    let mut tw = TestWorld::with_modules(production_roster(atlas));
+    tw.set_now(1_700_000_000);
+    let boot_ms = boot_at.elapsed().as_secs_f64() * 1_000.0;
+
+    let apply_at = Instant::now();
+    apply_pack(&mut tw, REGION_PACK);
+    apply_pack(&mut tw, AREA_PACK);
+    let apply_ms = apply_at.elapsed().as_secs_f64() * 1_000.0;
+
+    // ---- the window, through the existing `@atlas/window` lane ----
+    let lo = ORIGIN_M;
+    let hi = ORIGIN_M + i64::from(SIDE) * i64::from(CELL_CM) / 100;
+    let open_at = Instant::now();
+    let (events, effects) = step(
+        &mut tw,
+        GOD,
+        &format!("@atlas/window open {lo},{lo},{hi},{hi}={CELL_CM}"),
+    );
+    let text = said(&tw, &events, GOD);
+    assert!(
+        text.contains("opens; its map is being drawn"),
+        "the window did not open:\n{text}"
+    );
+    finish_composites(&mut tw, GOD, &effects);
+    let open_ms = open_at.elapsed().as_secs_f64() * 1_000.0;
+
+    let domain = {
+        let st = tw
+            .world()
+            .module_state::<AtlasState>()
+            .expect("the atlas state");
+        st.windows
+            .open
+            .keys()
+            .max()
+            .copied()
+            .map(DomainId)
+            .expect("a window entry")
+    };
+
+    // ---- the cells the scatter may use, read back off the composite ----
+    let (grid_w, grid_h, cells, class_counts) = {
+        let st = tw
+            .world()
+            .module_state::<AtlasState>()
+            .expect("the atlas state");
+        let entry = st
+            .windows
+            .open
+            .get(&domain.0)
+            .expect("the window is still open");
+        let composite = entry
+            .composite
+            .as_ref()
+            .expect("the composite landed before the scatter");
+        let surface = composite
+            .surfaces
+            .first()
+            .expect("the ground surface composited");
+        let mut open_cells: Vec<(u16, u16, i32)> = Vec::new();
+        let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        for (x, y, cell) in surface.cells.iter() {
+            *counts.entry(cell.class.label()).or_default() += 1;
+            if standable(cell.class) {
+                open_cells.push((x, y, i32::from(cell.elev_cm)));
+            }
+        }
+        (surface.grid.width, surface.grid.height, open_cells, counts)
+    };
+    assert_eq!(
+        (grid_w, grid_h),
+        (SIDE, SIDE),
+        "the window did not frame one 256 by 256 grid"
+    );
+    assert!(
+        !cells.is_empty(),
+        "the relief left no cell a unit could stand on"
+    );
+
+    // ---- the units ----
+    let mut rng = ChaCha8Rng::seed_from_u64(knobs.seed ^ 0x5ca1e);
+    let origin_cm = ORIGIN_M * 100;
+    let place_at = Instant::now();
+    let mut placed = 0_u32;
+    let mut refused: Vec<String> = Vec::new();
+    for n in 0..knobs.units {
+        let name = format!("harness-unit-{n}");
+        let obj = tw
+            .world_mut()
+            .create(ObjKind::Thing, &name, GOD, Some(mush_core::LIMBO))
+            .expect("a unit object is created");
+        participant(&mut tw, obj);
+        let pick = rng.random_range(0..cells.len());
+        let (cx, cy, elev_cm) = cells.get(pick).copied().unwrap_or((0, 0, 0));
+        let x_cm = origin_cm + i64::from(cx) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2;
+        let y_cm = origin_cm + i64::from(cy) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2;
+        let heading = rng.random_range(0..360_u32) * 1_000;
+        let (events, _) = step(
+            &mut tw,
+            GOD,
+            &format!(
+                "@spatial/place/domain #{}={},{{\"x_cm\":{x_cm},\"y_cm\":{y_cm},\"z_cm\":{elev_cm},\"heading_mdeg\":{heading}}}",
+                obj.0, domain.0
+            ),
+        );
+        let text = said(&tw, &events, GOD);
+        if text.contains("Placed ") {
+            placed += 1;
+        } else if refused.len() < 3 {
+            refused.push(text);
+        }
+    }
+    let place_ms = place_at.elapsed().as_secs_f64() * 1_000.0;
+    assert!(
+        refused.is_empty(),
+        "a placement was refused: {}",
+        refused.join(" | ")
+    );
+
+    // ---- the fake sessions ----
+    let mut sessions = 0_u32;
+    let mut placed_sessions = 0_u32;
+    for n in 0..knobs.fighting {
+        let who = tw.spawn_player(&format!("HarnessPilot{n}"));
+        participant(&mut tw, who);
+        sessions += 1;
+        let pick = rng.random_range(0..cells.len());
+        let (cx, cy, elev_cm) = cells.get(pick).copied().unwrap_or((0, 0, 0));
+        let x_cm = origin_cm + i64::from(cx) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2;
+        let y_cm = origin_cm + i64::from(cy) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2;
+        let (events, _) = step(
+            &mut tw,
+            GOD,
+            &format!(
+                "@spatial/place/domain #{}={},{{\"x_cm\":{x_cm},\"y_cm\":{y_cm},\"z_cm\":{elev_cm}}}",
+                who.0, domain.0
+            ),
+        );
+        if said(&tw, &events, GOD).contains("Placed ") {
+            placed_sessions += 1;
+        }
+    }
+
+    // ---- tactical cadence ----
+    //
+    // The world-side pulse only *decides* cadence (`mush_sim::tick::
+    // plan_maintenance`): it promotes, arms or stands a domain down and moves
+    // nothing. Asking for promotion is what makes it take its working branch
+    // rather than its no-op one, so the request is made and its answer reported.
+    // At the harness's 300 units it is refused — `MAX_UNITS_PER_DOMAIN` is 64 —
+    // and the pulse then re-measures the cap and pages on every fire, which is
+    // itself part of the baseline.
+    let (events, _) = step(&mut tw, GOD, &format!("@domain/promote {}", domain.0));
+    let promotion = said(&tw, &events, GOD).replace('\n', " | ");
+
+    // ---- the pulses ----
+    let period_ms = i64::from(tacsim::config::DEFAULT_GROUND_PULSE_MS);
+    let mut tempo = Tempo {
+        name: "current",
+        period_ms: tacsim::config::DEFAULT_GROUND_PULSE_MS,
+        ms: Vec::with_capacity(usize::try_from(knobs.pulses).unwrap_or(0)),
+    };
+    let mut events_per_pulse: Vec<f64> = Vec::new();
+    let mut now_ms = 1_700_000_000_i64 * 1_000;
+    for _ in 0..knobs.pulses {
+        now_ms += period_ms;
+        let at = Instant::now();
+        let out = tw.fire_due(now_ms);
+        tempo.ms.push(at.elapsed().as_secs_f64() * 1_000.0);
+        #[allow(clippy::cast_precision_loss)]
+        events_per_pulse.push(out.len() as f64);
+    }
+
+    // What the sixty fires actually left the domain in, read back through the
+    // staff lane. At 300 units this says `passive`: `MAX_UNITS_PER_DOMAIN` is 64,
+    // so the pulse re-measures the cap and refuses on every fire instead of
+    // applying the promotion — the baseline fact cut A is measured against.
+    let (events, _) = step(&mut tw, GOD, &format!("@domain/status {}", domain.0));
+    let status = said(&tw, &events, GOD).replace('\n', " | ");
+
+    // **The control.** `TestWorld::fire_due` fires every scheduled entry due at
+    // that instant, not the domain pulse alone: the journey tick, the weather,
+    // the economy and faction clocks and the rest of the coarse roster all land
+    // on the same second. Closing the window retires the domain and releases its
+    // participants, so the same number of fires with nothing placed anywhere
+    // measures what the rest of the roster costs — and the difference is the
+    // domain pass's own share. Without this number the tempo above cannot be read.
+    let (events, effects) = step(&mut tw, GOD, &format!("@atlas/window close {}", domain.0));
+    let closed = said(&tw, &events, GOD).replace('\n', " | ");
+    finish_composites(&mut tw, GOD, &effects);
+    let mut control_ms: Vec<f64> = Vec::with_capacity(usize::try_from(knobs.pulses).unwrap_or(0));
+    for _ in 0..knobs.pulses {
+        now_ms += period_ms;
+        let at = Instant::now();
+        let _ = tw.fire_due(now_ms);
+        control_ms.push(at.elapsed().as_secs_f64() * 1_000.0);
+    }
+    let control = Tempo {
+        name: "no_domain_control",
+        period_ms: tacsim::config::DEFAULT_GROUND_PULSE_MS,
+        ms: control_ms,
+    };
+    let (c50, c95, c99, cmax) = control.stats();
+
+    let rss_end_kib = resident_kib();
+    let (p50, p95, p99, max) = tempo.stats();
+    #[allow(clippy::cast_precision_loss)]
+    let events_mean = if events_per_pulse.is_empty() {
+        0.0
+    } else {
+        events_per_pulse.iter().sum::<f64>() / events_per_pulse.len() as f64
+    };
+    let events_max = events_per_pulse
+        .iter()
+        .copied()
+        .fold(0.0_f64, |a, b| if b > a { b } else { a });
+
+    // No cut produces any of these yet; they are reported as zero so the shape
+    // of the report does not change when one starts to.
+    let traces_per_pulse = 0_u64;
+    let cell_probes_per_pulse = 0_u64;
+    let path_queries_per_pulse = 0_u64;
+    let share_ops_per_pulse = 0_u64;
+    let ledger_bytes = 0_u64;
+
+    // ---- the report ----
+    println!(
+        "harness_world: units={placed}/{} fighting={sessions} placed_sessions={placed_sessions} weapons={} (parsed, unused until cut W)",
+        knobs.units, knobs.weapons
+    );
+    println!(
+        "harness_relief: side={SIDE} cell_cm={CELL_CM} arena_m={} quadrants={} seed={} elev_step_cm={ELEV_STEP_CM}",
+        i64::from(SIDE) * i64::from(CELL_CM) / 100,
+        (SIDE / QUAD) * (SIDE / QUAD),
+        knobs.seed
+    );
+    let classes = class_counts
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!("harness_classes: {classes}");
+    println!("harness_promotion: {promotion}");
+    println!(
+        "harness_domain_after: unit_cap={} {status}",
+        mush_sim::tick::MAX_UNITS_PER_DOMAIN
+    );
+    println!(
+        "harness_orders: none — `+heading`/`+thrust` need a seat holding the `movement` control channel and stage an authoritative action, and cut T retires them (D-16-20); this is the static pulse"
+    );
+    println!(
+        "harness_setup_ms: generate={generate_ms:.1} boot={boot_ms:.1} pack_apply={apply_ms:.1} window_open={open_ms:.1} place={place_ms:.1}"
+    );
+    println!(
+        "harness_tempo_{}: period_ms={} pulses={} p50={p50:.3} p95={p95:.3} p99={p99:.3} max={max:.3}",
+        tempo.name,
+        tempo.period_ms,
+        tempo.ms.len()
+    );
+    println!(
+        "harness_control_{}: period_ms={} pulses={} p50={c50:.3} p95={c95:.3} p99={c99:.3} max={cmax:.3} ({closed})",
+        control.name,
+        control.period_ms,
+        control.ms.len()
+    );
+    println!("harness_events: per_pulse_mean={events_mean:.2} per_pulse_max={events_max:.0}");
+    println!(
+        "harness_memory: vmrss_start_kib={} vmrss_end_kib={}",
+        rss_start_kib.map_or("absent".to_string(), |k| k.to_string()),
+        rss_end_kib.map_or("absent".to_string(), |k| k.to_string())
+    );
+    println!(
+        "harness_counters: traces_per_pulse={traces_per_pulse} cell_probes_per_pulse={cell_probes_per_pulse} path_queries_per_pulse={path_queries_per_pulse} share_ops_per_pulse={share_ops_per_pulse} ledger_bytes={ledger_bytes} (no cut produces these yet)"
+    );
+    println!(
+        "harness_thresholds: assert={} engaged_p99_ms={} max_traces_per_pulse={} max_path_queries_per_pulse={} max_ledger_bytes={}",
+        knobs.assert,
+        knobs.engaged_p99_ms,
+        knobs.max_traces_per_pulse,
+        knobs.max_path_queries_per_pulse,
+        knobs.max_ledger_bytes
+    );
+
+    let report = serde_json::json!({
+        "world": {
+            "units_requested": knobs.units,
+            "units_placed": placed,
+            "fighting": sessions,
+            "sessions_placed": placed_sessions,
+            "weapons": knobs.weapons,
+            "cell_cm": CELL_CM,
+            "pulse_ms": tempo.period_ms,
+            "pulses": tempo.ms.len(),
+            "seed": knobs.seed,
+            "side_cells": SIDE,
+            "arena_m": i64::from(SIDE) * i64::from(CELL_CM) / 100,
+        },
+        "classes": class_counts,
+        "promotion": promotion,
+        "domain_after_pulses": status,
+        "domain_unit_cap": mush_sim::tick::MAX_UNITS_PER_DOMAIN,
+        "orders": serde_json::Value::Null,
+        "setup_ms": {
+            "generate": num(generate_ms),
+            "boot": num(boot_ms),
+            "pack_apply": num(apply_ms),
+            "window_open": num(open_ms),
+            "place": num(place_ms),
+        },
+        "tempos": [{
+            "name": tempo.name,
+            "period_ms": tempo.period_ms,
+            "pulses": tempo.ms.len(),
+            "p50_ms": num(p50),
+            "p95_ms": num(p95),
+            "p99_ms": num(p99),
+            "max_ms": num(max),
+        }],
+        "control": {
+            "name": control.name,
+            "what": "the same fires with the window closed and nothing placed: what the rest of the coarse tick roster costs",
+            "closed": closed,
+            "pulses": control.ms.len(),
+            "p50_ms": num(c50),
+            "p95_ms": num(c95),
+            "p99_ms": num(c99),
+            "max_ms": num(cmax),
+        },
+        "events": { "per_pulse_mean": num(events_mean), "per_pulse_max": events_max },
+        "memory": { "vmrss_start_kib": rss_start_kib, "vmrss_end_kib": rss_end_kib },
+        "counters": {
+            "traces_per_pulse": traces_per_pulse,
+            "cell_probes_per_pulse": cell_probes_per_pulse,
+            "path_queries_per_pulse": path_queries_per_pulse,
+            "share_operations_per_pulse": share_ops_per_pulse,
+            "ledger_bytes_streamed": ledger_bytes,
+            "note": "no cut produces these yet; cuts A, S and W do",
+        },
+        "thresholds": {
+            "assert": knobs.assert,
+            "engaged_p99_ms": knobs.engaged_p99_ms,
+            "max_traces_per_pulse": knobs.max_traces_per_pulse,
+            "max_path_queries_per_pulse": knobs.max_path_queries_per_pulse,
+            "max_ledger_bytes": knobs.max_ledger_bytes,
+        },
+    });
+    let path = report_path(&knobs.json);
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir).expect("the report directory is writable");
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&report).expect("the report encodes"),
+    )
+    .expect("the report is written");
+    println!("harness_json: {}", path.display());
+
+    if knobs.assert {
+        assert!(
+            p99 <= f64::from(knobs.engaged_p99_ms),
+            "per-pulse p99 {p99:.3} ms is past harness.engaged_p99_ms {}",
+            knobs.engaged_p99_ms
+        );
+        assert!(
+            traces_per_pulse <= u64::from(knobs.max_traces_per_pulse),
+            "traces per pulse {traces_per_pulse} is past harness.max_traces_per_pulse {}",
+            knobs.max_traces_per_pulse
+        );
+        assert!(
+            path_queries_per_pulse <= u64::from(knobs.max_path_queries_per_pulse),
+            "path queries per pulse {path_queries_per_pulse} is past harness.max_path_queries_per_pulse {}",
+            knobs.max_path_queries_per_pulse
+        );
+        assert!(
+            ledger_bytes <= knobs.max_ledger_bytes,
+            "ledger bytes {ledger_bytes} is past harness.max_ledger_bytes {}",
+            knobs.max_ledger_bytes
+        );
+    }
+}
