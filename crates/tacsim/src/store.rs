@@ -165,6 +165,15 @@ pub struct TacsimStore {
     pub(crate) missing: BTreeMap<(CanonicalId, u32), BTreeSet<CanonicalId>>,
     /// The highest published version per pack, floored on every parsed key.
     pub(crate) watermark: BTreeMap<CanonicalId, u32>,
+    /// **16b cut K.1** — `tacsim:arena:{entry}`: what each arena's applier made,
+    /// slot id to object.
+    ///
+    /// Persisted, unlike `loaded` and `definitions` beside it, because it is
+    /// **not** a function of the pack files: eight tanks are authored inside one
+    /// arena entry, so the content latch — one entry, one object — remembers only
+    /// the muster room, and which object is slot `red_3` is a fact about *this*
+    /// world that only the apply that made it knows.
+    pub(crate) arena_rosters: BTreeMap<CanonicalId, crate::match_::ArenaRoster>,
     /// **16b cut C.2** — the decoded, checked and bound game definitions
     /// ([`crate::definitions::Catalog`]), re-derived from `loaded` whenever the
     /// packs are installed.
@@ -578,6 +587,23 @@ impl TacsimStore {
         &self.definitions
     }
 
+    /// **16b cut K.1** — one arena's roster: the object behind every authored
+    /// unit slot.
+    #[must_use]
+    pub fn arena_roster(&self, arena: &CanonicalId) -> Option<&crate::match_::ArenaRoster> {
+        self.arena_rosters.get(arena)
+    }
+
+    /// Install one arena's roster in RAM — the applier's half of the write, so
+    /// the boot that applies a pack can resolve its slots without a reboot.
+    pub(crate) fn put_arena_roster(
+        &mut self,
+        arena: CanonicalId,
+        roster: crate::match_::ArenaRoster,
+    ) {
+        self.arena_rosters.insert(arena, roster);
+    }
+
     /// The allocator document's body.
     #[must_use]
     pub(crate) fn meta_doc(&self) -> serde_json::Value {
@@ -898,6 +924,21 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_pin_row(&mut store, key, &subject, value);
+        } else if let Some(arena) = crate::match_::roster_id_of_key(key) {
+            // 16b cut K.1. A roster that will not parse costs the slot ids of
+            // one arena and nothing else: the objects stand, the pack stands,
+            // and the next apply of that arena rewrites the row. So it is
+            // skipped loudly, like every other body in this loader.
+            match crate::match_::roster_from_document(&arena, value) {
+                Some(roster) => {
+                    store.arena_rosters.insert(arena, roster);
+                }
+                None => tracing::warn!(
+                    %key,
+                    "tacsim: an arena roster is unreadable; that arena's unit slots cannot be \
+                     resolved until it is applied again"
+                ),
+            }
         } else if key == META_KEY {
             load_meta(&mut store, value);
         }

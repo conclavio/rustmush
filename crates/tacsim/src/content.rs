@@ -482,6 +482,11 @@ impl ArenaApplier {
             .into_iter()
             .filter_map(|(obj, _)| ctx.w.get(obj).map(|object| (object.name.to_string(), obj)))
             .collect();
+        // 16b cut K.1: what this apply made, slot id to object. The name match
+        // below is what makes a **re-apply** idempotent; this is what makes a
+        // running match's slot identity survive a rename, and it is written
+        // once, at the end, out of the ids the pack itself fixes.
+        let mut roster: Vec<(CanonicalId, ObjId)> = Vec::with_capacity(def.tanks.len());
         for tank in &def.tanks {
             let spec = {
                 let slot = ctx
@@ -517,7 +522,9 @@ impl ArenaApplier {
                     .map_err(|e| format!("{id}: {e}"))?,
             };
             mush_sim::place(ctx, object, domain, pose).map_err(|e| format!("{id}: {e}"))?;
+            roster.push((tank.id.clone(), object));
         }
+        crate::match_::record_roster(ctx, id, room, &roster);
         Ok(Some(room))
     }
 }

@@ -439,6 +439,12 @@ impl GameModule for TacsimRuleset {
             &self.cfg.arena,
             &self.cfg.match_,
         )?;
+        // 16b cut K.1: the lobby — `SIM`, the gate that keeps it inside the
+        // three rooms C.1 authored, and the coarse tick that closes boarding.
+        // Registered unconditionally beside the rest, for the same reason: a
+        // disabled layer refuses out loud rather than hiding a verb, and the
+        // centre is content, not configuration.
+        match_::sim::register(reg)?;
         Ok(())
     }
 

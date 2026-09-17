@@ -42,10 +42,11 @@ use crate::arena_task::{ArenaMsg, MatchId};
 
 use super::{MatchBook, Side, allocate_id};
 
-/// The switches cut T.3 adds to `@arena`, in help order.
+/// The switches cut T.3 adds to `@arena`, in help order (16b cut K.1 adds
+/// `reset`).
 #[must_use]
 pub fn register_switches() -> Vec<SmolStr> {
-    let mut switches: Vec<SmolStr> = ["status", "start", "intent", "abort"]
+    let mut switches: Vec<SmolStr> = ["status", "start", "intent", "abort", "reset"]
         .iter()
         .copied()
         .map(SmolStr::new)
@@ -117,6 +118,18 @@ pub fn start(
             units: parse_units(blue)?,
         },
     ];
+    // **16b cut K.1.** The shortcut runs through the same machine the lobby
+    // does, which here means one thing: a centre that is already holding a match
+    // is not something a staff shortcut walks into. A *terminal* centre is,
+    // because the shortcut is what an operator reaches for when the lobby is not
+    // in play at all, and refusing until somebody reset it would be a chore with
+    // no safety in it. Checked before anything is minted or written.
+    if super::lobby::centre(ctx.w).is_some_and(super::Centre::is_busy) {
+        return Err(CmdError::msg(
+            "The simulator centre is holding a match; `@arena/abort` it, or `@arena/reset` the \
+             centre, before starting another.",
+        ));
+    }
     let match_id = allocate_id(ctx).map_err(CmdError::msg)?;
     // The record exists in `Boarding` before the trigger fires, so the state
     // machine is walked rather than jumped: cut K's `SIM START` lands on exactly
@@ -124,6 +137,9 @@ pub fn start(
     let arena = SmolStr::new(&definition);
     super::start(ctx, match_id, &arena, &sides, arena_cfg, match_cfg)
         .map_err(|error| CmdError::msg(error.to_string()))?;
+    // It ran: the centre now says so, so `SIM STATUS` in the lobby and
+    // `@arena/status` at a staff console are one answer and not two.
+    super::lobby::adopt(ctx, match_id);
     let actor = ctx.actor;
     let units: usize = sides.iter().map(|side| side.units.len()).sum();
     ctx.out.sys_to_actor(
@@ -227,6 +243,43 @@ pub fn abort(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         actor,
         crate::arena_bridge::NOTICE_CATEGORY,
         format!("Match {match_id} is stopping; its units check back in when it does."),
+    );
+    Ok(())
+}
+
+/// `@arena/reset` — **16b cut K.1**: return the simulator centre to `Idle`.
+///
+/// Doc 16 §3.8 asks for a reset that is *idempotent and re-runnable by staff*,
+/// and this is it. An ordinary end already released the seats, leases, focus and
+/// pods in the check-in; what the centre keeps afterwards is the **terminal
+/// row** — the match id and how it went — so an operator can see what happened
+/// before the next crew walks in. This clears it, and clears anything a failure
+/// left behind with it.
+///
+/// A centre that is still holding a live match is refused rather than cleared:
+/// the units are checked out and only the check-in can bring them back, which is
+/// `@arena/abort`'s job.
+///
+/// # Errors
+///
+/// A message when a match is still running.
+pub fn reset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if super::lobby::centre(ctx.w).is_some_and(super::Centre::is_busy) {
+        return Err(CmdError::msg(
+            "That centre is holding a match; `@arena/abort` it first — its units are checked out \
+             and only the check-in gives them back.",
+        ));
+    }
+    let changed = super::lobby::reset(ctx);
+    let actor = ctx.actor;
+    ctx.out.sys_to_actor(
+        actor,
+        crate::arena_bridge::NOTICE_CATEGORY,
+        if changed {
+            "The simulator centre is reset; its slots and pods are free."
+        } else {
+            "The simulator centre is already idle; nothing changed."
+        },
     );
     Ok(())
 }
@@ -417,6 +470,8 @@ pub fn arena_command(
         intent(ctx)
     } else if ctx.switches.has("abort") {
         abort(ctx)
+    } else if ctx.switches.has("reset") {
+        reset(ctx)
     } else if cfg!(any(test, feature = "fault-injection")) && ctx.switches.has("fault") {
         #[cfg(any(test, feature = "fault-injection"))]
         {

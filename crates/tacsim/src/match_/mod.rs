@@ -49,17 +49,33 @@
 //! both read. There is no second lane and no second writer.
 
 mod arena_def;
+pub mod centre;
+pub mod lobby;
 mod record;
+pub mod sim;
 mod verbs;
 
 pub use arena_def::{
     ARENA_CELL_CM, ARENA_CELLS, PROVING_GROUND, STAND_IN, definition_for, stock_definition,
     tracked_rules,
 };
+pub(crate) use centre::record_roster;
+pub use centre::{
+    ArenaRoster, BLUE_ROOM_ENTRY, CENTRE_ARENA, CENTRE_PACK, CentreRoom, LOBBY_ENTRY, POD_ENTRIES,
+    PODS_PER_SIDE, RED_ROOM_ENTRY, ROSTER_PREFIX, centre_object, centre_rooms, pod_object,
+    pod_slot, room_role, roster_from_document, roster_id_of_key, roster_key, slot_id, slot_object,
+    tank_for_slot, tank_of, where_in_centre,
+};
+pub use lobby::{
+    Centre, OUTSIDE_CENTRE, SimError, Slot, abort as sim_abort, board_deadline,
+    centre as centre_of, claim, leave, pilot_of, pod_of, reset as reset_centre, slot_seated,
+    slot_vacated, slots_per_side, start as sim_start, status_lines,
+};
 pub use record::{
     MatchOutcome, MatchRecord, MatchState, PoseNumbers, TeamRoster, UnitOutcome, UnitResult,
     match_id_of_key, result_key, write_restart_abort,
 };
+pub use sim::{SIM_VERB, Selector, SimGate, sim_command};
 pub use verbs::{ArenaVerbError, arena_command, register_switches, state_word};
 
 use std::collections::BTreeMap;
@@ -100,6 +116,13 @@ pub struct MatchBook {
     loaded: bool,
     /// Every match this server is tracking, by id.
     matches: BTreeMap<MatchId, MatchRecord>,
+    /// **16b cut K.1** — the simulator centre: the lobby's slots, its pods and
+    /// where it is in doc 16 §3.8's machine.
+    ///
+    /// One per server, on this slot rather than one of its own, because a centre
+    /// and a match record are two halves of one story: the centre names the
+    /// match it is holding and a check-in has to release both in one action.
+    centre: lobby::Centre,
 }
 
 impl MatchBook {
@@ -172,6 +195,17 @@ impl MatchBook {
         if let Some(stale) = stale {
             self.matches.remove(&stale);
         }
+    }
+
+    /// **The simulator centre** (16b cut K.1).
+    #[must_use]
+    pub fn centre(&self) -> &lobby::Centre {
+        &self.centre
+    }
+
+    /// The centre, mutably — the lobby's own transitions and nothing else.
+    pub(crate) fn centre_mut(&mut self) -> &mut lobby::Centre {
+        &mut self.centre
     }
 
     /// Which match holds `unit`, as the book knows it (the registry's binding is
@@ -723,6 +757,10 @@ pub fn finish(ctx: &mut Ctx<'_>, match_id: MatchId, end: MatchEnd, ledger_digest
         record.ledger_digest.clone_from(&ledger_digest);
     }
     record::write_result(ctx, match_id, outcome, end, &ledger_digest, &results);
+    // 16b cut K.1: and the lobby's own half of the release — the pods and the
+    // slots — in this same authoritative action, with the centre left in its
+    // terminal state carrying the outcome until somebody resets it.
+    lobby::on_match_finished(ctx, match_id, outcome);
     true
 }
 

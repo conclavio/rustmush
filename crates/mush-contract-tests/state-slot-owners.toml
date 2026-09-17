@@ -212,6 +212,31 @@ owner = "sim"
 reason = "E7 cut 11: wires the sim's account oracle for a propagation case."
 
 [[site]]
+path = "crates/tacsim/tests/match_lifecycle.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut K.1: a simulator slot belongs to an ACCOUNT, not to a character (doc 16
+section 3.8), and an unmapped character is refused fail-closed. The oracle is
+boot-hydrated by the host from the store, which a `TestWorld` has none of, so
+this harness installs the same map `mush_server::boot` installs — the one row
+that makes every claim in the file a claim about accounts.
+"""
+
+[[site]]
+path = "crates/mushd/tests/sim_lobby.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut K.1's SSH lens, performing the same post-composition wiring
+`mush_server::boot` performs: `mushd`'s test rigs build the engine by hand
+rather than through the boot root, so the hydrated character-to-account map has
+to be installed here or every `SIM TEAM` in the file refuses.
+"""
+
+[[site]]
 path = "crates/mush-propagation/tests/e7c11.rs"
 accessor = "World::module_state_mut"
 slot = "FocusState"

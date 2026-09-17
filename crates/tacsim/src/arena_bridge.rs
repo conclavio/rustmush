@@ -1314,7 +1314,12 @@ pub fn status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !is_staff(ctx) {
         return Err(CmdError::msg("Permission denied."));
     }
-    let rows = status_rows(ctx);
+    // 16b cut K.1: the simulator centre first, when there is one to see — the
+    // same lines `SIM STATUS` renders in the lobby, so staff and pilots read one
+    // state and not two. A centre nobody has touched adds nothing, so a quiet
+    // server still answers with its one line.
+    let mut rows = crate::match_::lobby::staff_status_rows(ctx.w);
+    rows.extend(status_rows(ctx));
     let actor = ctx.actor;
     if rows.is_empty() {
         ctx.out.sys_to_actor(actor, "arena", "No match is running.");
@@ -1446,7 +1451,10 @@ pub fn register(
                    @arena/intent <unit>=startup | heading <deg> | speed <cms>   (staff) one \
                    order, as the unit's own seat.\n\
                    @arena/abort [<match>]              (staff) stop a match; its units check \
-                   back in when the arena answers."
+                   back in when the arena answers.\n\
+                   @arena/reset                        (staff) return the simulator centre to \
+                   idle, releasing any slot or pod a finished or failed match left behind. \
+                   Idempotent; refused while a match is still checked out."
                 .into(),
             ..CommandSpec::default()
         },
