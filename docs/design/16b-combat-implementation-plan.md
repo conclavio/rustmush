@@ -8,7 +8,9 @@ the dependencies allow. Sizes are approximate lines of production code plus test
 
 ## 0. Build discipline
 
-1. Every cut ends with the workspace green: `cargo test --workspace`, the contract gates blessed in the
+1. Every cut ends with the workspace green: `cargo test --workspace --exclude mush-bot` plus
+   `cargo test -p mush-bot` (the bot's exact-decimal JSON feature must not unify into the engine's test
+   binaries), the contract gates blessed in the
    same commit that moves them (panic budget, state-slot owners, legacy-handler baseline, restriction
    lints census, module-namespace owners), all-target Clippy, and the story test and harness once they
    exist.

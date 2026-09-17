@@ -39,8 +39,14 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Build
         run: cargo build --workspace --all-targets
+      # The bot crate is excluded from the workspace test run and tested on its own:
+      # its serde_json `arbitrary_precision` feature would otherwise unify into every
+      # engine test binary and break untagged number decoding (the worldgen proposal
+      # path). See crates/mush-bot/Cargo.toml.
       - name: Test
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --workspace --exclude mush-bot --no-fail-fast
+      - name: Test the bot on its own feature set
+        run: cargo test -p mush-bot
       # 16b cut R-b: the testkit's toy ruleset is a test-only feature the host crates'
       # dev-dependencies enable; naming it here is what lets the feature census (the
       # `feature_matrix_inventory` gate) see that a job compiles it.

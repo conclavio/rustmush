@@ -13,6 +13,13 @@ russh.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 serde.workspace = true
+# The bot keeps provider costs and trace payloads as exact decimal text (eighteen
+# decimals, thirty-digit integers), which needs serde_json's arbitrary precision.
+# Cargo unifies features per invocation, so this feature must never be built into
+# the engine's test binaries: under it, untagged and flattened number decoding
+# fails and the worldgen proposal path reads that as a server restart. That is why
+# the workspace test run is `cargo test --workspace --exclude mush-bot` and this
+# crate's tests run as `cargo test -p mush-bot` on their own (see .github/workflows/ci.yml).
 serde_json = { workspace = true, features = ["arbitrary_precision"] }
 sha2.workspace = true
 toml.workspace = true
