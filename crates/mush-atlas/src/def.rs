@@ -17,6 +17,7 @@ use crate::record::{
     Access, BackgroundRecipe, ConnectionKind, ConnectionStatus, Direction, FeatureKind, Footprint,
     RecordKey, Records, RegionKind, Representation, RoomKind, Visibility,
 };
+use crate::terrain::TerrainClass;
 
 /// The reserved endpoint word for Limbo `#0`.
 pub const LIMBO_REF: &str = "limbo";
@@ -522,6 +523,12 @@ pub struct ItemDef {
     /// Object flags: `enter_ok`, `opaque`, `sticky`, `safe`.
     #[serde(default)]
     pub flags: Vec<String>,
+    /// **C0 (doc 16 §3.7)** — the item is an *interior space*: a Thing a
+    /// character can be placed inside with `@spatial/place/interior`, which is
+    /// what a simulator pod is. The applier attaches `sim.interior` and defines
+    /// the unanchored interior-space record; both are idempotent on re-apply.
+    #[serde(default)]
+    pub interior: bool,
 }
 
 /// A `hook` entry.
@@ -740,8 +747,10 @@ pub const MAX_HEIGHTFIELD_SCALE_CM: i32 = 10_000;
 
 /// **S7 (doc 14 §3.5)** — an imported ground relief: a grid of elevations over a
 /// rectangle of a region, rasterized to one ground tile at the entry's own
-/// resolution. The tile's class is the region's background at each cell; only
-/// the elevation is imported. A field wider than a tile is several entries.
+/// resolution. The tile's class is the region's background at each cell unless
+/// the entry authors one in [`classes`](HeightfieldDef::classes); only the
+/// elevation and the class are imported. A field wider than a tile is several
+/// entries.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HeightfieldDef {
@@ -766,6 +775,21 @@ pub struct HeightfieldDef {
     /// Added to every sample: the field's own datum against the region's, centimetres.
     #[serde(default)]
     pub datum_cm: i32,
+    /// **C.1 (16b §8 cut C; doc 16 §3.2 "Terrain")** — the authored per-cell
+    /// terrain classes over the same `cols × rows` grid as `data`, run-length
+    /// coded exactly the way a tile's cells are on disk
+    /// ([`Cells::encode`](crate::cells::Cells::encode)) with a class code as the
+    /// only payload: base64 over `[cols u16][rows u16]` and then `[count
+    /// u16][class u8]` per run, all little-endian, the southern row first.
+    ///
+    /// Code `0` ([`TerrainClass::Void`](crate::terrain::TerrainClass::Void)) is
+    /// the **not authored** cell: the region's background recipe keeps that one,
+    /// so a field that paints a road over open ground is two or three runs a
+    /// row and a field that authors nothing is one run. `None` — no `classes`
+    /// key at all — leaves the whole rectangle to the recipe, which is what
+    /// every field written before this cut does.
+    #[serde(default)]
+    pub classes: Option<String>,
 }
 
 fn default_scale_cm() -> i32 {
@@ -860,4 +884,72 @@ impl HeightfieldDef {
         }
         Ok(out)
     }
+
+    /// The authored classes as one entry per cell, `rows × cols` of them, the
+    /// southern row first: `Some(class)` where the grid authors one and `None`
+    /// where it leaves the cell to the region's background recipe. `Ok(None)`
+    /// when the entry authors no grid at all.
+    ///
+    /// # Errors
+    ///
+    /// A message naming what is wrong: data that is not base64, a shape that
+    /// disagrees with `cols × rows`, an unknown class code, or runs that do not
+    /// cover the grid exactly.
+    pub fn class_grid(&self) -> Result<Option<Vec<Option<TerrainClass>>>, String> {
+        let Some(text) = self.classes.as_deref() else {
+            return Ok(None);
+        };
+        self.check_shape()?;
+        let bytes = crate::cells::base64_decode(text.trim())
+            .ok_or_else(|| "heightfield classes is not base64".to_string())?;
+        let mut cursor = bytes.as_slice();
+        let width = take_u16(&mut cursor)?;
+        let height = take_u16(&mut cursor)?;
+        if width != self.cols || height != self.rows {
+            return Err(format!(
+                "the classes grid is {width}×{height}; the field's data is {}×{}",
+                self.cols, self.rows
+            ));
+        }
+        let expected = usize::from(self.cols) * usize::from(self.rows);
+        let mut out: Vec<Option<TerrainClass>> = Vec::with_capacity(expected);
+        let mut run = 0_usize;
+        while !cursor.is_empty() {
+            let count = usize::from(take_u16(&mut cursor)?);
+            let code = take_u8(&mut cursor)?;
+            let class = TerrainClass::from_code(code).ok_or_else(|| {
+                format!("heightfield classes run {run} names unknown terrain class code {code}")
+            })?;
+            if count == 0 || out.len().saturating_add(count) > expected {
+                return Err(format!(
+                    "heightfield classes run {run} runs past the {}×{} grid",
+                    self.cols, self.rows
+                ));
+            }
+            let cell = (class != TerrainClass::Void).then_some(class);
+            out.extend(std::iter::repeat_n(cell, count));
+            run = run.saturating_add(1);
+        }
+        if out.len() != expected {
+            return Err(format!(
+                "the classes grid covers {} of {expected} cells",
+                out.len()
+            ));
+        }
+        Ok(Some(out))
+    }
+}
+
+fn take_u8(cursor: &mut &[u8]) -> Result<u8, String> {
+    let (first, rest) = cursor
+        .split_first()
+        .ok_or_else(|| "the classes grid is truncated".to_string())?;
+    *cursor = rest;
+    Ok(*first)
+}
+
+fn take_u16(cursor: &mut &[u8]) -> Result<u16, String> {
+    let lo = take_u8(cursor)?;
+    let hi = take_u8(cursor)?;
+    Ok(u16::from_le_bytes([lo, hi]))
 }

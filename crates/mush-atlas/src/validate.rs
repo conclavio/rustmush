@@ -1038,11 +1038,13 @@ impl Run<'_> {
                         self.decoded.localities.insert(id.clone(), d);
                     }),
                 // S7: the grid's shape and every sample, so a bad field is refused
-                // at plan and never half-imported.
+                // at plan and never half-imported. C.1: and the authored class
+                // grid's shape and every code beside them.
                 "heightfield" => entry
                     .decode::<crate::def::HeightfieldDef>()
                     .map_err(|e| e.to_string())
-                    .and_then(|d| d.samples().map(|_| ())),
+                    .and_then(|d| d.samples().map(|_| d))
+                    .and_then(|d| d.class_grid().map(|_| ())),
                 "checkpoint" => entry
                     .decode::<CheckpointDef>()
                     .map_err(|e| e.to_string())

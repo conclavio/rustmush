@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.ooc_area",
-    "version": 3,
+    "version": 4,
     "kind": "neighborhood",
-    "digest": "74344b62840ef94920f8959ba8354ee4e2064b436a8084c4792f2fe1c667539d",
+    "digest": "12277cdd84b9d2ca0aae1a0727d46f63e80b08868db7522f1a88f67cc97f6abe",
     "requires": [
       {
         "id": "region.limbo",
@@ -12,10 +12,10 @@
     ]
   },
   "brief": {
-    "prose": "The OOC Area: a hall by the south gate where newcomers arrive from Limbo, three short tutorial rooms (moving, talking, building), a lounge with the notice board, and the bus stop outside where the studio tour departs. Public, no secrets, one player-built games room allowed.",
+    "prose": "The OOC Area: a hall by the south gate where newcomers arrive from Limbo, three short tutorial rooms (moving, talking, building), a lounge with the notice board, the simulator centre in the annexe east of the hall (a lobby with the team selector, and a red and a blue room of four pods each), and the bus stop outside where the studio tour departs. Public, no secrets, one player-built games room allowed.",
     "origin": "Most of the cast's names and a few of their lines are an homage to a 2004 film about a high school (doc 06 §15): the quotations are short, nothing else is imported, and the setting is a film lot that never names it.",
     "answers": {
-      "q.public_role": "arrival and tutorial",
+      "q.public_role": "arrival, tutorial and the simulator centre",
       "q.secrets": "none",
       "q.hydration": "one player-built games room"
     }
@@ -49,7 +49,7 @@
         ],
         "room_budget": {
           "target": 6,
-          "maximum": 7
+          "maximum": 11
         },
         "hydration": {
           "enabled": true,
@@ -140,9 +140,9 @@
             ]
           ]
         },
-        "desc": "A bright hall with a scuffed floor and a hand-lettered sign: WELCOME TO THE LOT. Arrows point to the tutorial rooms east and the lounge south; a docent waits by the door. This is out of character: nothing said here is part of the story.",
+        "desc": "A bright hall with a scuffed floor and a hand-lettered sign: WELCOME TO THE LOT. Arrows point to the tutorial rooms east, the lounge south, and the simulator annexe at the end of the east corridor; a docent waits by the door. This is out of character: nothing said here is part of the story.",
         "details": {
-          "sign": "WELCOME TO THE LOT. Tutorial: east. Lounge: south. The bus: through the lounge and out. Type 'help getting-started' any time."
+          "sign": "WELCOME TO THE LOT. Tutorial: east. Lounge: south. Simulator: SIM, down the east corridor. The bus: through the lounge and out. Type 'help getting-started' any time."
         }
       }
     },
@@ -309,6 +309,88 @@
         ]
       }
     },
+    "room.simulator_lobby": {
+      "kind": "room",
+      "def": {
+        "name": "Simulator Lobby",
+        "surface": "ground",
+        "kind": "indoor",
+        "footprint": {
+          "rect": [
+            [
+              118,
+              60
+            ],
+            [
+              138,
+              90
+            ]
+          ]
+        },
+        "desc": "A prefab annexe reached by the corridor east out of the Welcome Hall: a counter, a rack of headsets nobody has issued yet, and two doors painted RED to the north and BLUE to the south. The selector on the counter picks a side. Still out of character — a match in the pods is practice, not the story.",
+        "flags": [
+          "sheltered"
+        ],
+        "details": {
+          "counter": "Laminated, scratched, and empty but for the selector and a mug of pens.",
+          "headsets": "Two dozen of them on pegs, still in their wrappers. Nobody has needed one yet."
+        }
+      }
+    },
+    "room.sim_red": {
+      "kind": "room",
+      "def": {
+        "name": "Red Room",
+        "surface": "ground",
+        "kind": "indoor",
+        "footprint": {
+          "rect": [
+            [
+              118,
+              90
+            ],
+            [
+              138,
+              108
+            ]
+          ]
+        },
+        "desc": "Four pods in a row under a red stripe painted along the wall, hatches open on empty seats. The lobby is back south.",
+        "flags": [
+          "sheltered"
+        ],
+        "details": {
+          "stripe": "Red, hand-painted, and a little crooked. The Blue Room's is no better."
+        }
+      }
+    },
+    "room.sim_blue": {
+      "kind": "room",
+      "def": {
+        "name": "Blue Room",
+        "surface": "ground",
+        "kind": "indoor",
+        "footprint": {
+          "rect": [
+            [
+              118,
+              32
+            ],
+            [
+              138,
+              60
+            ]
+          ]
+        },
+        "desc": "Four pods under a blue stripe, hatches open on empty seats — the Red Room's mirror, down to the crooked paint. The lobby is back north.",
+        "flags": [
+          "sheltered"
+        ],
+        "details": {
+          "stripe": "Blue, hand-painted, and crooked in the other direction."
+        }
+      }
+    },
     "exit.limbo_welcome": {
       "kind": "exit",
       "def": {
@@ -438,6 +520,53 @@
         }
       }
     },
+    "exit.hall_simulator_lobby": {
+      "kind": "exit",
+      "def": {
+        "from": "room.welcome_hall",
+        "to": "room.simulator_lobby",
+        "names": [
+          "Simulator Lobby <SIM>;sim;simulator",
+          "Welcome Hall <W>;w;hall;west"
+        ],
+        "portal": {
+          "mode": "door",
+          "at": [
+            117,
+            75,
+            0
+          ]
+        }
+      }
+    },
+    "exit.simulator_lobby_red": {
+      "kind": "exit",
+      "def": {
+        "from": "room.simulator_lobby",
+        "to": "room.sim_red",
+        "names": [
+          "Red Room <R>;r;red;north;n",
+          "Simulator Lobby <SIM>;sim;lobby;south;s"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
+    "exit.simulator_lobby_blue": {
+      "kind": "exit",
+      "def": {
+        "from": "room.simulator_lobby",
+        "to": "room.sim_blue",
+        "names": [
+          "Blue Room <B>;b;blue;south;s",
+          "Simulator Lobby <SIM>;sim;lobby;north;n"
+        ],
+        "portal": {
+          "mode": "door"
+        }
+      }
+    },
     "item.pamphlet": {
       "kind": "item",
       "def": {
@@ -473,6 +602,117 @@
           "enter_ok",
           "sticky"
         ]
+      }
+    },
+    "item.simulator_selector": {
+      "kind": "item",
+      "def": {
+        "name": "Simulator Selector",
+        "room": "room.simulator_lobby",
+        "desc": "A console bolted to the lobby counter: two lit buttons, RED and BLUE, and a small screen reading STANDING BY. When the simulator opens, 'SIM TEAM red' or 'SIM TEAM blue' will claim a slot on that side and 'SIM STATUS' will say who holds one. The verbs are not built yet, so for now the screen is the whole of it.",
+        "details": {
+          "screen": "STANDING BY -- no match scheduled. SIM TEAM red|blue claims a slot when the verbs land; SIM LEAVE gives one back.",
+          "buttons": "Both lit, neither wired. Pressing one does nothing but click."
+        },
+        "flags": [
+          "sticky"
+        ]
+      }
+    },
+    "item.red_pod_1": {
+      "kind": "item",
+      "def": {
+        "name": "Red Pod 1",
+        "room": "room.sim_red",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and RED 1 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "details": {
+          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+        },
+        "interior": true
+      }
+    },
+    "item.red_pod_2": {
+      "kind": "item",
+      "def": {
+        "name": "Red Pod 2",
+        "room": "room.sim_red",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and RED 2 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "details": {
+          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+        },
+        "interior": true
+      }
+    },
+    "item.red_pod_3": {
+      "kind": "item",
+      "def": {
+        "name": "Red Pod 3",
+        "room": "room.sim_red",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and RED 3 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "details": {
+          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+        },
+        "interior": true
+      }
+    },
+    "item.red_pod_4": {
+      "kind": "item",
+      "def": {
+        "name": "Red Pod 4",
+        "room": "room.sim_red",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and RED 4 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "details": {
+          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+        },
+        "interior": true
+      }
+    },
+    "item.blue_pod_1": {
+      "kind": "item",
+      "def": {
+        "name": "Blue Pod 1",
+        "room": "room.sim_blue",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and BLUE 1 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "details": {
+          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+        },
+        "interior": true
+      }
+    },
+    "item.blue_pod_2": {
+      "kind": "item",
+      "def": {
+        "name": "Blue Pod 2",
+        "room": "room.sim_blue",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and BLUE 2 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "details": {
+          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+        },
+        "interior": true
+      }
+    },
+    "item.blue_pod_3": {
+      "kind": "item",
+      "def": {
+        "name": "Blue Pod 3",
+        "room": "room.sim_blue",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and BLUE 3 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "details": {
+          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+        },
+        "interior": true
+      }
+    },
+    "item.blue_pod_4": {
+      "kind": "item",
+      "def": {
+        "name": "Blue Pod 4",
+        "room": "room.sim_blue",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and BLUE 4 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "details": {
+          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+        },
+        "interior": true
       }
     },
     "npc.sharon": {

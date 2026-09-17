@@ -5,10 +5,10 @@
 //! | pack | what |
 //! |---|---|
 //! | `region.limbo` | the lot: the region, its locality, the tour connection and checkpoints, the shared lore |
-//! | `neighborhood.ooc_area` | the OOC hall, three tutorial rooms, the lounge, the bus stop, the bus, Sharon and Aaron |
+//! | `neighborhood.ooc_area` | the OOC hall, three tutorial rooms, the lounge, the simulator centre (lobby, red room, blue room and their eight pods), the bus stop, the bus, Sharon and Aaron |
 //! | `neighborhood.staff_lobby` | the forecourt, the lobby building, the shop, the backlot, the coffee shop, the writers' room, and the cast |
 //!
-//! Fourteen lot rooms, the bus interior, and Limbo. No LLM is involved in making any
+//! Seventeen lot rooms, the bus interior, and Limbo. No LLM is involved in making any
 //! of it (P9): the packs are static bytes, and applying them is a pure function of the
 //! bytes and the world.
 
@@ -40,7 +40,10 @@ pub const SOURCES: [(&str, &str); 3] = [
 ];
 
 /// How many rooms the two neighborhoods hold, not counting the bus or Limbo.
-pub const LOT_ROOMS: usize = 14;
+///
+/// 16b cut C.1 added three: the simulator lobby, the red room and the blue room,
+/// off the Welcome Hall.
+pub const LOT_ROOMS: usize = 17;
 
 /// The starter packs, loaded and digest-verified, in apply order.
 ///

@@ -299,3 +299,178 @@ fn an_imported_relief_outranks_the_regions_own_ground_at_the_same_resolution() {
     assert_eq!(ground.cells.get(0, 0).map(|c| c.elev_cm), Some(0));
     assert_eq!(ground.cells.get(7, 7).map(|c| c.elev_cm), Some(0));
 }
+
+// ---------------------------------------------------------------------------
+// C.1 (16b §8 cut C; doc 16 §3.2 "Terrain"): the authored class grid
+// ---------------------------------------------------------------------------
+
+/// The `classes` companion's on-disk form, which is the tile cell RLE with a
+/// class code as its only payload: base64 over `[cols u16][rows u16]` and then
+/// `[count u16][class u8]` per run, all little-endian, the southern row first.
+/// Code 0 (`void`) means "the region's recipe keeps this cell".
+fn encode_classes(cols: u16, rows: u16, codes: &[u8]) -> String {
+    assert_eq!(codes.len(), usize::from(cols) * usize::from(rows));
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&cols.to_le_bytes());
+    bytes.extend_from_slice(&rows.to_le_bytes());
+    let mut run: Option<(u8, u16)> = None;
+    let flush = |bytes: &mut Vec<u8>, run: Option<(u8, u16)>| {
+        if let Some((code, n)) = run {
+            bytes.extend_from_slice(&n.to_le_bytes());
+            bytes.push(code);
+        }
+    };
+    for code in codes {
+        match run {
+            Some((prev, n)) if prev == *code && n < u16::MAX => run = Some((prev, n + 1)),
+            other => {
+                flush(&mut bytes, other);
+                run = Some((*code, 1));
+            }
+        }
+    }
+    flush(&mut bytes, run);
+    base64_encode(&bytes)
+}
+
+/// An 8×8 field at 10 m, flat, whose `extra` is merged into the entry's def.
+fn field8(extra: Value) -> Value {
+    let flat = (0..8)
+        .map(|_| "0 0 0 0 0 0 0 0".to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut def = json!({
+        "region": "region", "origin": [100, 100], "resolution_cm": 1000,
+        "cols": 8, "rows": 8, "encoding": "text", "data": flat
+    });
+    if let (Some(d), Some(more)) = (def.as_object_mut(), extra.as_object()) {
+        for (k, v) in more {
+            d.insert(k.clone(), v.clone());
+        }
+    }
+    json!({ "field": { "kind": "heightfield", "def": def } })
+}
+
+/// A two-class 8×8 grid: a road along the southern two rows, a pond in the
+/// south-west, and `void` — no authored class — everywhere else.
+fn two_class_codes() -> Vec<u8> {
+    let road = mush_atlas::terrain::TerrainClass::Road.code();
+    let water = mush_atlas::terrain::TerrainClass::Water.code();
+    let mut codes = vec![0_u8; 64];
+    for x in 0..8usize {
+        codes[x] = road;
+        codes[8 + x] = road;
+    }
+    for y in 2..4usize {
+        for x in 0..4usize {
+            codes[y * 8 + x] = water;
+        }
+    }
+    codes
+}
+
+#[test]
+fn an_authored_class_grid_lands_per_cell_and_the_recipe_keeps_the_rest() {
+    use mush_atlas::terrain::TerrainClass;
+
+    let codes = two_class_codes();
+    let authored = boot(&region_pack(field8(
+        json!({ "classes": encode_classes(8, 8, &codes) }),
+    )));
+    let recipe_only = boot(&region_pack(field8(json!({}))));
+    let tile = |tw: &TestWorld| {
+        atlas(tw)
+            .records
+            .tiles
+            .get(&field_tile_key())
+            .expect("the imported tile")
+            .clone()
+    };
+    let with = tile(&authored);
+    let without = tile(&recipe_only);
+    assert_eq!((with.cells.width(), with.cells.height()), (8, 8));
+
+    let mut painted = 0_usize;
+    let mut kept = 0_usize;
+    for y in 0..8_u16 {
+        for x in 0..8_u16 {
+            let at = usize::from(y) * 8 + usize::from(x);
+            let mine = with.cells.get(x, y).expect("a cell");
+            let theirs = without.cells.get(x, y).expect("a cell");
+            assert_eq!(mine.elev_cm, theirs.elev_cm, "the relief is untouched");
+            match TerrainClass::from_code(codes[at]) {
+                Some(TerrainClass::Void) | None => {
+                    assert_eq!(
+                        mine.class, theirs.class,
+                        "({x},{y}) is not authored, so the recipe keeps it"
+                    );
+                    kept += 1;
+                }
+                Some(class) => {
+                    assert_eq!(mine.class, class, "({x},{y}) is authored");
+                    painted += 1;
+                }
+            }
+        }
+    }
+    assert_eq!((painted, kept), (24, 40));
+    // And the two authored classes really are both there, and are not what the
+    // recipe would have said.
+    assert_eq!(
+        with.cells.get(0, 0).map(|c| c.class),
+        Some(TerrainClass::Road)
+    );
+    assert_eq!(
+        with.cells.get(0, 2).map(|c| c.class),
+        Some(TerrainClass::Water)
+    );
+    assert!(
+        without
+            .cells
+            .iter()
+            .all(|(_, _, c)| c.class != TerrainClass::Road && c.class != TerrainClass::Water),
+        "the recipe paints neither road nor water here"
+    );
+}
+
+#[test]
+fn a_class_grid_of_the_wrong_shape_or_an_unknown_code_is_refused_naming_the_entry() {
+    let anomaly_of = |pack: &str| -> String {
+        let tw = boot(pack);
+        assert!(
+            !atlas(&tw).records.tiles.contains_key(&field_tile_key()),
+            "a refused field imports nothing"
+        );
+        tw.world()
+            .module_state::<ContentState>()
+            .expect("content")
+            .latches
+            .applied(&cid("region.relief"))
+            .expect("latched")
+            .anomaly()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // The grid declares 4×8 where the samples are 8×8.
+    let mut codes = two_class_codes();
+    codes.truncate(32);
+    let wrong = anomaly_of(&region_pack(field8(
+        json!({ "classes": encode_classes(4, 8, &codes) }),
+    )));
+    assert!(
+        wrong.contains("field") && wrong.contains("4×8") && wrong.contains("8×8"),
+        "the anomaly names the entry and both shapes: {wrong}"
+    );
+
+    // A code no class owns.
+    let mut codes = two_class_codes();
+    codes[0] = 200;
+    let unknown = anomaly_of(&region_pack(field8(
+        json!({ "classes": encode_classes(8, 8, &codes) }),
+    )));
+    assert!(
+        unknown.contains("field") && unknown.contains("200"),
+        "the anomaly names the entry and the code: {unknown}"
+    );
+}

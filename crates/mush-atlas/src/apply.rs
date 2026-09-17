@@ -29,7 +29,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use mush_content::{Appliers, EntryApplier, Pack, PackError, RawEntry};
-use mush_core::{Attr, CanonicalId, Ctx, Flags, GOD, LIMBO, ObjId, ObjKind, WorldEvent};
+use mush_core::{
+    Attr, BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorId, CanonicalId, Ctx, Flags, GOD, LIMBO,
+    ObjId, ObjKind, WorldEvent,
+};
 
 use crate::background::background;
 use crate::cells::{Cell, Cells};
@@ -430,7 +433,9 @@ fn create_entry(
             Ok(None)
         }
         "heightfield" => {
-            // S7 (doc 14 §3.5): the relief is imported; the class stays the region's.
+            // S7 (doc 14 §3.5): the relief is imported. The class stays the
+            // region's recipe except where C.1's `classes` grid authors one
+            // (16b §8 cut C; doc 16 §3.2 "Terrain").
             let def: HeightfieldDef = decode(id, entry)?;
             let region_key = Resolver::new(pack, placed, &state.records)
                 .record(&def.region, "region")
@@ -442,6 +447,7 @@ fn create_entry(
                 .cloned()
                 .ok_or_else(|| format!("{id}: region {region_key} is not applied yet"))?;
             let samples = def.samples().map_err(|e| format!("{id}: {e}"))?;
+            let authored = def.class_grid().map_err(|e| format!("{id}: {e}"))?;
             let origin = def
                 .origin
                 .to_cm()
@@ -473,17 +479,36 @@ fn create_entry(
                     let ground = background(&region, &SurfaceRef::Ground, c.x, c.y);
                     let at = usize::from(y) * usize::from(def.cols) + usize::from(x);
                     let elev_cm = samples.get(at).copied().unwrap_or(0);
+                    // The authored class where the grid paints one; the recipe's
+                    // background everywhere else, cell by cell.
+                    let class = authored
+                        .as_ref()
+                        .and_then(|g| g.get(at).copied().flatten())
+                        .unwrap_or(ground.class);
                     cells.set(
                         x,
                         y,
                         Cell {
-                            class: ground.class,
+                            class,
                             elev_cm,
                             cover: 0,
                             room: 0,
                         },
                     );
                 }
+            }
+            // The document ceiling. The rasterizer coarsens its way under it
+            // (`raster::rasterize`); an imported field has an authored
+            // resolution nobody may change, so the only honest answer is a
+            // refusal that names the entry — and C.1's authored classes are the
+            // first thing that can drive the run count up on purpose.
+            let encoded = cells.encode().len();
+            if encoded > crate::cells::MAX_TILE_DOC_BYTES {
+                return Err(format!(
+                    "{id}: the tile encodes to {encoded} bytes, past the {} byte ceiling; \
+                     author fewer class runs or split the field",
+                    crate::cells::MAX_TILE_DOC_BYTES
+                ));
             }
             let previous = drop_tiles_of(ctx, state, &key);
             let tkey = tile_key(&key, 0)?;
@@ -1200,7 +1225,55 @@ fn create_item(
         all_flags,
     )
     .map_err(|e| format!("{id}: {e}"))?;
+    if def.interior {
+        make_interior(ctx, thing).map_err(|e| format!("{id}: {e}"))?;
+    }
     Ok(thing)
+}
+
+/// **C0 (16b §8 cut C; doc 16 §3.7)** — make `thing` an *interior space*, which
+/// is exactly the two facts `@spatial/place/interior <obj>=<space>` looks for
+/// (`mush_sim::transition::resolve_parent`): the `sim.interior` behaviour on the
+/// object, and an interior-space record in the simulation's state. Both are
+/// idempotent — the behaviour is attached only when absent, and the `Space`
+/// transition keeps an existing record's compartments and rooms — so a re-apply
+/// of the pack leaves a pod that already holds a pilot exactly as it was.
+///
+/// The atlas already drives the simulation this way at
+/// [`window::place_in_room`](crate::window::place_in_room)
+/// (`mush_sim::place` attaches `sim.participant` and runs one transition), so
+/// this is the same in-family reach and not a new crate edge. It is guarded
+/// rather than fallible on the simulation's absence: an atlas composed without
+/// `mush-sim` (the crate's own `lot.rs` roster) still applies the pack, and the
+/// pod is a plain Thing until a simulation is there to hold the record.
+fn make_interior(ctx: &mut Ctx<'_>, thing: ObjId) -> Result<(), String> {
+    let behavior = BehaviorId::new("sim.interior").map_err(|e| e.to_string())?;
+    if !ctx.w.has_behavior(thing, &behavior) {
+        let binding = BehaviorBinding {
+            schema_version: BINDING_SCHEMA_VERSION,
+            attached_by: ctx.actor,
+            attached_at: ctx.w.now(),
+        };
+        ctx.w
+            .attach_behavior(thing, behavior, binding)
+            .map_err(|e| e.to_string())?;
+    }
+    if ctx.w.module_state::<mush_sim::SpatialState>().is_none() {
+        tracing::warn!(
+            obj = thing.0,
+            "an interior item applied on a world with no simulation: the behaviour is on, \
+             the interior-space record waits for `@spatial/space`"
+        );
+        return Ok(());
+    }
+    mush_sim::run(
+        ctx,
+        &mush_sim::Transition::Space {
+            space: thing,
+            anchor: mush_sim::SpaceAnchor::Unanchored,
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Create one exit object `spec` (`"Name <A>;a;alias"`) from `src` to `dest`.
