@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::arena::clock::Tempo;
-use crate::arena::state::EndReason;
+use crate::arena::state::{ContactId, EndReason, Team};
 use crate::config::LedgerConfig;
 
 /// One chunk of the streamed ledger, in bytes (doc 16 §3.1: *`Ledger` chunks
@@ -47,12 +47,22 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 /// Cut A fills [`EventKind::MatchStarted`], [`EventKind::Tempo`],
 /// [`EventKind::Startup`], [`EventKind::PositionSummary`],
 /// [`EventKind::Blocked`], [`EventKind::Lagged`], [`EventKind::MatchEnded`],
-/// [`EventKind::Aborted`] and [`EventKind::Void`]. The rest are the kinds doc 16
-/// §4 names and later cuts give fields to; they are declared here, now, so that
-/// the kind vocabulary is fixed in one reviewed diff and a later cut adds fields
-/// rather than a new event stream. **They still serialise**: an internally tagged
-/// unit variant is `{"kind":"detected"}`, which is a valid, if uninformative,
+/// [`EventKind::Aborted`] and [`EventKind::Void`]; **16b cut S.1** fills
+/// [`EventKind::Detected`], [`EventKind::Classified`] and [`EventKind::Lost`],
+/// which is what A.1's three placeholders were reserved for. The rest are the
+/// kinds doc 16 §4 names and later cuts give fields to; they are declared here so
+/// that the kind vocabulary is fixed in one reviewed diff and a later cut adds
+/// fields rather than a new event stream. **They still serialise**: an internally
+/// tagged unit variant is `{"kind":"locked"}`, which is a valid, if uninformative,
 /// line.
+///
+/// **The `kind` word of every variant is stable.** Cut S.1 gave three of them
+/// fields, which adds keys to those three objects and changes neither the tag nor
+/// any other kind's encoding, so every consumer keyed on `kind` still matches and
+/// every kind cut A actually wrote is byte-identical. The three it did *not* write
+/// are the three that changed: nothing in cut A could schedule a sensor pass, so no
+/// ledger anywhere holds a field-less `{"kind":"detected"}` line for the new shape
+/// to fail to read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
@@ -88,12 +98,47 @@ pub enum EventKind {
         /// The refused row.
         y: u16,
     },
-    /// A viewer began holding a contact (cut S).
-    Detected,
-    /// A viewer told a contact apart (cut S).
-    Classified,
-    /// A viewer lost a contact (cut S).
-    Lost,
+    /// **A viewer began holding a contact** (16b cut S.1; doc 16 §3.6 step 4).
+    ///
+    /// The contact id is the arena's own opaque identity
+    /// ([`crate::arena::state::ContactId`], sixteen base-16 digits on the wire),
+    /// and `target` is the object it is held on. Both are in the *record* and
+    /// neither ever reaches the viewer who holds it: doc 16 §3.6 lets a pilot
+    /// name the id and nothing else. The ledger is the black box, not a view.
+    Detected {
+        /// The platform that now holds it.
+        viewer: ObjId,
+        /// The opaque contact id.
+        contact: ContactId,
+        /// What is held.
+        target: ObjId,
+    },
+    /// **A viewer told a contact apart** (16b cut S.1; doc 16 §3.6 step 4, W5).
+    ///
+    /// Carries the `classify:<observer>:<target>:<pass_seq>` draw and its value in
+    /// [`LedgerEvent::draw`] when the classification was the viewer's own pass; a
+    /// classification that arrived over the comms mesh (step 5) carries none,
+    /// because no draw was made for it — the sharer's pass already recorded one.
+    Classified {
+        /// The platform.
+        viewer: ObjId,
+        /// The opaque contact id.
+        contact: ContactId,
+        /// What is held.
+        target: ObjId,
+        /// The side it was resolved to.
+        team: Team,
+    },
+    /// **A viewer lost a contact** (16b cut S.1; doc 16 §3.6 step 4's TTL:
+    /// `sensors.pass_ms × sensors.lost_after_passes` without a refresh).
+    Lost {
+        /// The platform.
+        viewer: ObjId,
+        /// The opaque contact id it held it under.
+        contact: ContactId,
+        /// What it was holding.
+        target: ObjId,
+    },
     /// A platform locked a contact (cut S).
     Locked,
     /// A shot was accepted (cut W).
@@ -137,9 +182,9 @@ impl EventKind {
             EventKind::Startup { .. } => "startup",
             EventKind::PositionSummary { .. } => "position_summary",
             EventKind::Blocked { .. } => "blocked",
-            EventKind::Detected => "detected",
-            EventKind::Classified => "classified",
-            EventKind::Lost => "lost",
+            EventKind::Detected { .. } => "detected",
+            EventKind::Classified { .. } => "classified",
+            EventKind::Lost { .. } => "lost",
             EventKind::Locked => "locked",
             EventKind::Fired => "fired",
             EventKind::Impact => "impact",
@@ -510,9 +555,22 @@ mod tests {
                 x: 3,
                 y: 7,
             },
-            EventKind::Detected,
-            EventKind::Classified,
-            EventKind::Lost,
+            EventKind::Detected {
+                viewer: ObjId(4),
+                contact: ContactId(0x0123_4567_89ab_cdef),
+                target: ObjId(9),
+            },
+            EventKind::Classified {
+                viewer: ObjId(4),
+                contact: ContactId(0x0123_4567_89ab_cdef),
+                target: ObjId(9),
+                team: Team::Blue,
+            },
+            EventKind::Lost {
+                viewer: ObjId(4),
+                contact: ContactId(0x0123_4567_89ab_cdef),
+                target: ObjId(9),
+            },
             EventKind::Locked,
             EventKind::Fired,
             EventKind::Impact,

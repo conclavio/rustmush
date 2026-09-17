@@ -194,10 +194,12 @@ pub const NO_LOCK: &str = "No lock: LOCK a contact first.";
 /// **The one byte-identical refusal for any contact id the platform does not
 /// hold** (doc 16 §3.6: *unresolvable, unowned or expired* are one answer).
 ///
-/// Until cut S a platform holds nothing, so every id gets it — which is exactly
-/// the shape the rule wants, and the reason it is a constant and not a sentence
-/// built per case.
-pub const NO_SUCH_CONTACT: &str = "No such contact.";
+/// **16b cut S.1 moved the string** to [`crate::arena::state::NO_SUCH_CONTACT`],
+/// beside `ShadowContacts::resolve` — the only lookup a pilot's id goes through —
+/// and re-exports it here under K.2's name. There is exactly one of this sentence
+/// in the tree, so the three cases cannot drift into three answers, and every
+/// caller that had this path keeps it.
+pub use crate::arena::state::NO_SUCH_CONTACT;
 
 /// Why a cockpit verb refused. Every variant is the line the pilot sees.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -339,10 +341,13 @@ fn require_power(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
 
 /// **The contacts the platform holds**, as the frame carries them.
 ///
-/// Cut S fills this: its sensor pass mints the ids and mirrors them into the
-/// arena's frame, and this is the world-side read of that field. Until then a
-/// platform holds nothing — which is why `LOCK` answers [`NO_SUCH_CONTACT`] for
-/// every id and `CONTACTS` says so out loud.
+/// **16b cut S.1 filled the arena side**: the sensor pass mints the ids and mirrors
+/// them into [`Frame::contacts`] as `crate::arena::perception::FrameContact` rows,
+/// so the data is now there on every frame a held platform is sent. Reading it —
+/// the range band, the degrees, the line `CONTACTS` prints and the `LOCK` that
+/// resolves through it — is **cut S.2's**, which is why this still answers empty:
+/// until it does, `LOCK` answers [`NO_SUCH_CONTACT`] for every id and `CONTACTS`
+/// says so out loud, exactly as K.2 shipped it.
 #[must_use]
 pub fn frame_contacts(_frame: &Frame) -> Vec<ContactRow> {
     Vec::new()

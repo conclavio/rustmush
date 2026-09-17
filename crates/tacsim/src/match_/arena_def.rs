@@ -14,15 +14,26 @@
 //! * [`tracked_rules`] — the `tracked` mode's kinematics, read out of the M32
 //!   unit's opaque [`ModeRules`] by the game crate, which is the only layer
 //!   allowed to interpret them (doc 16 §3.3).
+//! * [`sensor_profile`] and [`weapon_summaries`] (**16b cut S.1**) — what a unit
+//!   sees with and shoots with, read out of the loaded catalog's authored
+//!   `UnitSpec` at check-out. The arena decodes no content and holds no registry
+//!   (D-16-1, D-16-3), so the seam carries the decoded rows: cut S needs the
+//!   sensor's every field and the weapons' longest `max_range_cm` (which is what
+//!   `tempo.alert_range_cm` derives from, 16b §9), and cut W needs the rest of
+//!   each weapon row — so the whole of both crosses once, here.
 //!
 //! [`ModeRules`]: mush_tactics::ModeRules
 
+use mush_core::CanonicalId;
 use mush_sim::data::Pose;
 use smol_str::SmolStr;
 
+use crate::arena::perception::{SensorProfile, SignatureFactor};
 use crate::arena::state::{
-    ArenaDefinition, ArenaTerrain, EntryZone, Team, TerrainCell, TrackedRules,
+    ArenaDefinition, ArenaTerrain, EntryZone, Team, TerrainCell, TrackedRules, WeaponSummary,
 };
+use crate::definitions::Catalog;
+use crate::definitions::unit::ComponentRole;
 
 /// The arena window's side, in cells. 256 cells at 10 m is 2.56 km (D-16-16).
 pub const ARENA_CELLS: u16 = 256;
@@ -270,6 +281,129 @@ pub fn tracked_rules(unit: &mush_tactics::TacticalUnit) -> TrackedRules {
         rules.reverse_factor_pct = u8::try_from(value.min(100)).unwrap_or(100);
     }
     rules
+}
+
+/// **The authored spec behind one M32 unit**, if the loaded catalog holds it.
+///
+/// A [`mush_tactics::TacticalUnit`] carries its schema as a `DefinitionRef`, and
+/// the catalog keys its specs by the pack entry id that minted that reference, so
+/// the two meet at the definition id. A unit created outside the content — the
+/// fixtures of the contract gates, a hand-made rig — matches nothing and gets
+/// `None`, which is what makes the two readers below total.
+fn spec_of<'a>(
+    catalog: &'a Catalog,
+    unit: &mush_tactics::TacticalUnit,
+) -> Option<&'a crate::definitions::UnitSpec> {
+    let wanted = unit.schema().key().id.as_str();
+    catalog
+        .specs
+        .iter()
+        .find(|(id, _)| id.as_str() == wanted)
+        .map(|(_, spec)| spec)
+}
+
+/// One entry of the catalog, by its id as a string.
+fn entry<'a, T>(table: &'a std::collections::BTreeMap<CanonicalId, T>, id: &str) -> Option<&'a T> {
+    table
+        .iter()
+        .find(|(key, _)| key.as_str() == id)
+        .map(|(_, value)| value)
+}
+
+/// **How high a unit's eye sits**, centimetres (16b cut S.1; doc 16 §3.2 "Line of
+/// sight"), off the authored spec; zero when nothing authored it, which
+/// `Arena::new` reads as
+/// [`crate::arena::state::DEFAULT_SENSOR_HEIGHT_CM`].
+#[must_use]
+pub fn sensor_height_cm(catalog: &Catalog, unit: &mush_tactics::TacticalUnit) -> u32 {
+    spec_of(catalog, unit).map_or(0, |spec| spec.sensor_height_cm)
+}
+
+/// **What a unit sees with** (16b cut S.1; doc 16 §3.6), decoded for the arena.
+///
+/// The unit's **first** `sensor` component, in the spec's component order, and the
+/// `sensor` definition it names. One sensor is what doc 16 §3.3's stock tank has
+/// (`visual_sensor`); a unit that declares several is read as seeing with the
+/// first, and the ECM and ECCM extensions of §9 are where a second one earns its
+/// own rule rather than a silent `max`.
+///
+/// `None` — no spec, no sensor component, or a definition the catalog does not
+/// hold — runs no sensor pass at all, which is a unit that cannot see.
+#[must_use]
+pub fn sensor_profile(
+    catalog: &Catalog,
+    unit: &mush_tactics::TacticalUnit,
+) -> Option<SensorProfile> {
+    let spec = spec_of(catalog, unit)?;
+    let named = spec
+        .components
+        .iter()
+        .find_map(|component| match &component.role {
+            ComponentRole::Sensor { sensor } => Some(sensor),
+            _ => None,
+        })?;
+    let def = entry(&catalog.sensors, named.as_str())?;
+    Some(SensorProfile {
+        max_range_cells: def.max_range_cells,
+        max_attenuation: def.max_attenuation,
+        classify_after_ms: def.classify_after_ms,
+        sees_wrecks: def.sees_wrecks,
+        share_range_cells: def.share_range_cells,
+        signature: def
+            .signature
+            .iter()
+            .map(|row| SignatureFactor {
+                class: row.class,
+                moving_permille: row.moving_permille,
+                stopped_permille: row.stopped_permille,
+            })
+            .collect(),
+    })
+}
+
+/// **What a unit shoots with** (16b cut S.1 carries it, cut W reads it; doc 16
+/// §3.5 "Weapon definition"), in the spec's component order.
+///
+/// One row per `weapon` component whose definition the catalog holds; a component
+/// naming a weapon nothing authored is skipped rather than refusing the match,
+/// because the catalog already refused that reference at load (doc 16 §4: *every
+/// definition validates its references*) and a second refusal here would only ever
+/// fire on a hand-made rig.
+///
+/// `max_range_cm` is the **outermost** band's edge: the bands are authored nearest
+/// first, and the one number the arena reads off this row is the longest reach in
+/// the match (16b §9's derived `tempo.alert_range_cm`).
+#[must_use]
+pub fn weapon_summaries(
+    catalog: &Catalog,
+    unit: &mush_tactics::TacticalUnit,
+) -> Vec<WeaponSummary> {
+    let Some(spec) = spec_of(catalog, unit) else {
+        return Vec::new();
+    };
+    let mut out: Vec<WeaponSummary> = Vec::new();
+    for component in &spec.components {
+        let ComponentRole::Weapon { weapon, .. } = &component.role else {
+            continue;
+        };
+        let Some(def) = entry(&catalog.weapons, weapon.as_str()) else {
+            continue;
+        };
+        out.push(WeaponSummary {
+            id: SmolStr::new(component.id.as_str()),
+            max_range_cm: def
+                .bands
+                .iter()
+                .map(|band| band.max_range_cm)
+                .max()
+                .unwrap_or(0),
+            cycle_ms: def.cycle_ms,
+            ammunition: SmolStr::new(def.ammunition.as_str()),
+            burst_rounds: def.burst_rounds,
+            muzzle_speed_cms: def.muzzle_speed_cms,
+        });
+    }
+    out
 }
 
 /// The locomotion id doc 16 §3.3's mode rules belong to.

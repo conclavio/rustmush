@@ -345,7 +345,7 @@ const DIGESTS: [(&str, &str); 9] = [
     ),
     (
         "tacsim.pack.visual_mk1",
-        "967a8bc6fef2219da14a4b3b80571aad63d8717bf147528229e4f0b3d5d834e3",
+        "78776cb2738a1c210cd55f9a2aba94b42eaf1754750195772eab66f58c65d32e",
     ),
     (
         "tacsim.pack.line_tank",

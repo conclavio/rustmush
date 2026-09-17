@@ -3,7 +3,7 @@
     "id": "tacsim.pack.visual_mk1",
     "version": 1,
     "kind": "rules_definition",
-    "digest": "967a8bc6fef2219da14a4b3b80571aad63d8717bf147528229e4f0b3d5d834e3",
+    "digest": "78776cb2738a1c210cd55f9a2aba94b42eaf1754750195772eab66f58c65d32e",
     "requires": []
   },
   "entries": {
@@ -15,9 +15,18 @@
         "max_attenuation": 40,
         "classify_after_ms": 3000,
         "sees_wrecks": false,
+        "share_range_cells": 30,
+        "signature": [
+          { "class": "road", "moving_permille": 1000, "stopped_permille": 1000 },
+          { "class": "ground", "moving_permille": 1000, "stopped_permille": 900 },
+          { "class": "grass", "moving_permille": 1000, "stopped_permille": 800 },
+          { "class": "rubble", "moving_permille": 950, "stopped_permille": 700 },
+          { "class": "woods_light", "moving_permille": 900, "stopped_permille": 650 },
+          { "class": "woods_heavy", "moving_permille": 800, "stopped_permille": 500 }
+        ],
         "emission": null,
         "jamming": null,
-        "note": "max_range_cells 60 and classify_after_ms 3,000 are 16b section 9's own constants, moved to content as that table says. max_attenuation 40 is cut C's, and it is picked off the atlas's own opacity table rather than out of the air: light woods attenuate 25 and heavy woods 60, so 40 is exactly the line that lets a tank see through one belt of light woods and not through a canopy. sees_wrecks is false, which is what makes doc 16 section 3.3's 'a wreck is an obstacle and a contact, never a target' start as an obstacle only."
+        "note": "max_range_cells 60, classify_after_ms 3,000 and share_range_cells 30 are 16b section 9's own constants, moved to content as that table says. max_attenuation 40 is cut C's, picked off the atlas's own opacity table rather than out of the air: light woods attenuate 25 and heavy woods 60, so 40 is the line that lets a tank see through one belt of light woods and not through a canopy. sees_wrecks false is what makes doc 16 section 3.3's 'an obstacle and a contact, never a target' start as an obstacle only. THE SIGNATURE TABLE (cut S.1) scales the reach per mille by the ground the target stands on, moving against stopped: moving on a road is 1000 and hides nothing, stopped in heavy woods is 500 and is seen at half the reach, and the rows between are that one axis -- bare ground 900, grass 800, rubble 700, light woods 650, stopped. A class the table does not name is 1000/1000, so this is the list of grounds that conceal and not a list every class must appear in; open water is deliberately absent."
       }
     }
   }

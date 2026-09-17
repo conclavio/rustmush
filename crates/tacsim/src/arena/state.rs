@@ -26,8 +26,9 @@ use crate::arena::clock::Clock;
 use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{EventKind, Ledger};
+use crate::arena::perception::SensorProfile;
 use crate::arena::step::FrameSlots;
-use crate::config::{ArenaConfig, MatchConfig};
+use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 
 /// The digest domain of [`ArenaDefinition::digest`]. Length-prefixed fields
 /// follow it, so a definition's digest can never collide with another contract's
@@ -194,6 +195,24 @@ impl ArenaTerrain {
     #[must_use]
     pub fn cells(&self) -> &[TerrainCell] {
         &self.cells
+    }
+}
+
+/// **The arena's window is a cell grid the atlas trace can walk** (16b cut S.1;
+/// doc 16 §3.2 "Line of sight").
+///
+/// This one impl is the whole of how perception traces without a window. Doc 16
+/// §3.2 says line of sight *is* the atlas trace, and doc 16 §3.1 (D-16-1, D-16-3)
+/// says the arena holds no store, no records and no window — a
+/// `mush_atlas::SurfaceComposite` would drag a `SurfaceRef`, a room table and a
+/// `FeatureOverlay` in, all of them record types the contract gate exists to keep
+/// out. `mush_atlas::CellGrid` is the trace's *terrain* seam and nothing more: one
+/// cell's class and its elevation. So the arena keeps its own grid, the atlas keeps
+/// its one line walk, and `mush_atlas::trace_cells` is that walk over this.
+impl mush_atlas::CellGrid for ArenaTerrain {
+    fn cell_at(&self, x: u16, y: u16) -> Option<(TerrainClass, i32)> {
+        let cell = self.get(x, y)?;
+        Some((cell.class, i32::from(cell.elev_cm)))
     }
 }
 
@@ -434,6 +453,34 @@ impl Power {
 // The seam message
 // ---------------------------------------------------------------------------
 
+/// How high a unit's eye sits when nothing says otherwise, centimetres (doc 16
+/// §3.2 "Line of sight": *`sensor_height_cm` (new field; 150 by default)*).
+pub const DEFAULT_SENSOR_HEIGHT_CM: u32 = 150;
+
+/// **One weapon, as the check-out hands it over** (16b cut S.1; doc 16 §3.5
+/// "Weapon definition").
+///
+/// Cut S needs exactly one number off it — the longest `max_range_cm` in the
+/// match, which is what `tempo.alert_range_cm` is derived from when the key is
+/// zero (16b §9) — and cut W needs all of them, so the whole row crosses the seam
+/// once at check-out rather than twice. Every field is an integer (D-16-4) and the
+/// arena interprets none of them except `max_range_cm`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeaponSummary {
+    /// The component id the pilot names in `FIRE <weapon>`.
+    pub id: SmolStr,
+    /// The outermost range band's edge, centimetres.
+    pub max_range_cm: u32,
+    /// The cycle, milliseconds (floor 1,000, W14).
+    pub cycle_ms: u32,
+    /// The ammunition family it fires.
+    pub ammunition: SmolStr,
+    /// Rounds per pull.
+    pub burst_rounds: u32,
+    /// Muzzle speed, cm/s; zero exactly for a beam.
+    pub muzzle_speed_cms: u32,
+}
+
 /// One unit as it is handed over at check-out (doc 16 §3.1 "Custody").
 #[derive(Clone, Debug)]
 pub struct CustodyUnit {
@@ -445,6 +492,14 @@ pub struct CustodyUnit {
     pub pose: Pose,
     /// Its decoded `tracked` rules.
     pub mobility: TrackedRules,
+    /// **How high its eye sits**, centimetres (doc 16 §3.2; 16b cut S.1). Zero is
+    /// read as [`DEFAULT_SENSOR_HEIGHT_CM`].
+    pub sensor_height_cm: u32,
+    /// **What it sees with** (16b cut S.1; doc 16 §3.6). `None` runs no sensor
+    /// pass at all.
+    pub sensor: Option<SensorProfile>,
+    /// **What it shoots with** (16b cut S.1 carries it; cut W reads it).
+    pub weapons: Vec<WeaponSummary>,
     /// M32 unit truth, carried opaque: cut A applies no plan to it (D-16-6).
     pub unit: TacticalUnit,
 }
@@ -504,6 +559,13 @@ pub struct UnitState {
     pub mobility: TrackedRules,
     /// What damage has taken from its motion.
     pub limits: MotionLimits,
+    /// How high its eye sits, centimetres (doc 16 §3.2 "Line of sight").
+    pub sensor_height_cm: u32,
+    /// What it sees with (doc 16 §3.6); `None` runs no pass.
+    pub sensor: Option<SensorProfile>,
+    /// What it shoots with. **Carried by cut S.1, read by cut W** — except for
+    /// the longest `max_range_cm`, which `tempo.alert_range_cm` derives from.
+    pub weapons: Vec<WeaponSummary>,
     /// M32 unit truth, carried opaque.
     pub unit: TacticalUnit,
     /// Per-weapon ready time in arena milliseconds. **Empty until cut W**, which
@@ -556,6 +618,37 @@ pub enum Classification {
     },
 }
 
+impl Classification {
+    /// The wire word.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Classification::Unknown => "unknown",
+            Classification::Classified { .. } => "classified",
+        }
+    }
+
+    /// The side this viewer has resolved, if it has.
+    #[must_use]
+    pub const fn team(&self) -> Option<Team> {
+        match self {
+            Classification::Unknown => None,
+            Classification::Classified { team } => Some(*team),
+        }
+    }
+
+    /// The byte [`crate::arena::hash::state_hash`] folds in: `0` unknown, `1`
+    /// classified red, `2` classified blue.
+    #[must_use]
+    pub const fn code(&self) -> u8 {
+        match self {
+            Classification::Unknown => 0,
+            Classification::Classified { team: Team::Red } => 1,
+            Classification::Classified { team: Team::Blue } => 2,
+        }
+    }
+}
+
 /// One contact a viewer platform holds (doc 16 §3.6's contact lifecycle as
 /// vocabulary, in RAM).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -570,12 +663,22 @@ pub struct ShadowContact {
     pub last_seen_ms: i64,
 }
 
+/// **The one byte-identical refusal for a contact id a platform does not hold**
+/// (doc 16 §3.6: *unresolvable, unowned or expired* are one answer, and it is the
+/// same answer a nonexistent unit gets).
+///
+/// It lives here, beside [`ShadowContacts::resolve`] — the only lookup a pilot's
+/// id ever goes through — so that the rule and its sentence cannot be separated.
+/// `crate::match_::cockpit` re-exports it under K.2's name, so the line a pilot
+/// reads exists exactly once in the tree.
+pub const NO_SUCH_CONTACT: &str = "No such contact.";
+
 /// **The per-viewer shadow contact store** (doc 16 §3.6): viewer platform to its
 /// contacts, contact id to what it holds.
 ///
-/// Cut A defines it and never fills it; cut S's sensor pass does. It is a
-/// `BTreeMap` of `BTreeMap` rather than a hash map so that iteration order is
-/// the state hash's order and a replay cannot diverge on it.
+/// Cut A defined it and cut S.1's sensor pass fills it. It is a `BTreeMap` of
+/// `BTreeMap` rather than a hash map so that iteration order is the state hash's
+/// order and a replay cannot diverge on it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ShadowContacts {
     by_viewer: BTreeMap<ObjId, BTreeMap<ContactId, ShadowContact>>,
@@ -611,6 +714,21 @@ impl ShadowContacts {
         self.by_viewer.get_mut(&viewer)?.get_mut(&id)
     }
 
+    /// **The one lookup a pilot's named id goes through** (16b cut S.1; doc 16
+    /// §3.6's existence-hiding rule).
+    ///
+    /// Byte for byte the same as [`ShadowContacts::get`] and deliberately a
+    /// different name: every surface that resolves an id a *pilot typed* calls
+    /// this, and the rule that goes with it is that its `None` becomes
+    /// [`NO_SUCH_CONTACT`] and never a sentence about which of the three reasons
+    /// applied. An id that was never minted, one minted for another platform and
+    /// one this platform has let expire are one answer, so an unauthorised viewer
+    /// cannot learn that a unit exists by naming it.
+    #[must_use]
+    pub fn resolve(&self, viewer: ObjId, id: ContactId) -> Option<&ShadowContact> {
+        self.get(viewer, id)
+    }
+
     /// The id `viewer` already holds `target` under, if any — so a refresh does
     /// not mint a second id for one target.
     #[must_use]
@@ -625,6 +743,16 @@ impl ShadowContacts {
     /// Everything `viewer` holds, in contact-id order.
     pub fn of(&self, viewer: ObjId) -> impl Iterator<Item = (&ContactId, &ShadowContact)> {
         self.by_viewer.get(&viewer).into_iter().flatten()
+    }
+
+    /// **Every contact every viewer holds**, viewer object number ascending then
+    /// contact id ascending — the two `BTreeMap`s' own order, which is why
+    /// [`crate::arena::hash::state_hash`] can fold the store without a sort.
+    pub fn all(&self) -> impl Iterator<Item = (ObjId, ContactId, &ShadowContact)> {
+        self.by_viewer.iter().flat_map(|(viewer, held)| {
+            held.iter()
+                .map(move |(id, contact)| (*viewer, *id, contact))
+        })
     }
 
     /// Drop one contact, answering what was dropped.
@@ -1124,6 +1252,19 @@ pub struct Arena {
     pub arena_cfg: ArenaConfig,
     /// The frozen `[tacsim.match]` block.
     pub match_cfg: MatchConfig,
+    /// The frozen `[tacsim.sensors]` block (16b cut S.1).
+    pub sensors_cfg: SensorsConfig,
+    /// **The held-contact range that raises `Alert`**, centimetres, *resolved*
+    /// (doc 16 §3.1's tempo table; 16b §9: `tempo.alert_range_cm` is *2 × max
+    /// weapon range*).
+    ///
+    /// A configured zero means derived, and [`Arena::new`] derives it once at
+    /// check-out from the units it was handed — twice the longest weapon
+    /// `max_range_cm` of any unit in the match. It is resolved here rather than
+    /// read from the configuration on every pulse so that a match's `Alert`
+    /// threshold cannot change under it, exactly as the two configuration blocks
+    /// are cloned in for the same reason.
+    pub alert_range_cm: u32,
 }
 
 impl Arena {
@@ -1154,6 +1295,7 @@ impl Arena {
         custody: CustodyOut,
         arena_cfg: &ArenaConfig,
         match_cfg: &MatchConfig,
+        sensors_cfg: &SensorsConfig,
     ) -> Result<Arena, ArenaError> {
         let CustodyOut {
             definition,
@@ -1189,6 +1331,13 @@ impl Arena {
                 power: Power::Off,
                 mobility: unit.mobility,
                 limits: MotionLimits::default(),
+                sensor_height_cm: if unit.sensor_height_cm == 0 {
+                    DEFAULT_SENSOR_HEIGHT_CM
+                } else {
+                    unit.sensor_height_cm
+                },
+                sensor: unit.sensor,
+                weapons: unit.weapons,
                 unit: unit.unit,
                 ready_at_ms: BTreeMap::new(),
                 lock: None,
@@ -1262,6 +1411,21 @@ impl Arena {
         }
         let mut index = SpatialIndex::new(&definition.terrain);
         index.rebuild(&definition.terrain, &states);
+        // 16b §9: `tempo.alert_range_cm` is *2 × max weapon range*, and the
+        // configured `0` is what asks for that. Derived once, here, from the units
+        // this match was handed; a match whose units carry no weapon derives `0`
+        // and never raises `Alert` on a held contact, which is the honest answer.
+        let alert_range_cm = if arena_cfg.tempo.alert_range_cm == 0 {
+            states
+                .iter()
+                .flat_map(|state| state.weapons.iter())
+                .map(|weapon| weapon.max_range_cm)
+                .max()
+                .unwrap_or(0)
+                .saturating_mul(2)
+        } else {
+            arena_cfg.tempo.alert_range_cm
+        };
         let mut arena = Arena {
             definition,
             units: states,
@@ -1281,7 +1445,14 @@ impl Arena {
             ended: None,
             arena_cfg: arena_cfg.clone(),
             match_cfg: match_cfg.clone(),
+            sensors_cfg: sensors_cfg.clone(),
+            alert_range_cm,
         };
+        // Doc 16 §3.6: one pass per unit per `sensors.pass_ms`, staggered by unit
+        // id. Scheduled after the arena is built because the stagger reads the
+        // sorted unit vector, and before the opening hash because the hash folds
+        // the schedule's length.
+        arena.schedule_first_passes();
         let opening = crate::arena::hash::state_hash(&arena);
         // A ledger that refuses its own first event is a black box that will not
         // record anything; the match still opens, and cut A.2's step reads
@@ -1494,6 +1665,7 @@ mod tests {
             ),
             &ArenaConfig::default(),
             &MatchConfig::default(),
+            &SensorsConfig::default(),
         );
         assert!(matches!(
             off,
@@ -1510,6 +1682,7 @@ mod tests {
             ),
             &ArenaConfig::default(),
             &MatchConfig::default(),
+            &SensorsConfig::default(),
         );
         assert!(matches!(
             twice,
@@ -1528,6 +1701,7 @@ mod tests {
             ),
             &ArenaConfig::default(),
             &MatchConfig::default(),
+            &SensorsConfig::default(),
         );
         assert!(matches!(
             stray,
@@ -1538,6 +1712,7 @@ mod tests {
             custody(Vec::new(), Vec::new()),
             &ArenaConfig::default(),
             &MatchConfig::default(),
+            &SensorsConfig::default(),
         );
         assert!(matches!(nothing, Err(ArenaError::NoUnits)));
     }
@@ -1558,6 +1733,7 @@ mod tests {
             ),
             &ArenaConfig::default(),
             &MatchConfig::default(),
+            &SensorsConfig::default(),
         );
         assert!(
             matches!(
@@ -1583,6 +1759,7 @@ mod tests {
             ),
             &ArenaConfig::default(),
             &MatchConfig::default(),
+            &SensorsConfig::default(),
         );
         assert!(apart.is_ok(), "{apart:?}");
     }
@@ -1612,6 +1789,7 @@ mod tests {
             ),
             &ArenaConfig::default(),
             &MatchConfig::default(),
+            &SensorsConfig::default(),
         )
         .expect("two tanks and two seats");
         for channel in Channel::ALL {

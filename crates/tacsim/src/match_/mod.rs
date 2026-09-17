@@ -94,7 +94,7 @@ use smol_str::SmolStr;
 use crate::arena::state::{CustodyOut, CustodyUnit, EndReason, MatchEnd, Pilot, StopReason, Team};
 use crate::arena_bridge::{ArenaRegistry, OpenMatchError, match_log_id};
 use crate::arena_task::MatchId;
-use crate::config::{ArenaConfig, MatchConfig};
+use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 
 /// The persisted key of the match counter, inside the tacsim namespace.
 pub const SEQ_KEY: &str = "tacsim:match:seq";
@@ -370,6 +370,7 @@ pub fn start(
     sides: &[Side],
     arena_cfg: &ArenaConfig,
     match_cfg: &MatchConfig,
+    sensors_cfg: &SensorsConfig,
 ) -> Result<MatchId, StartError> {
     // 16b cut C.2: the authored arena when a loaded pack declares one, and the
     // stand-in window of T.3 otherwise.
@@ -412,6 +413,17 @@ pub fn start(
     let mut pilots: Vec<Pilot> = Vec::new();
     let mut rosters: Vec<TeamRoster> = Vec::new();
     let mut taken: Vec<(u16, u16)> = Vec::new();
+    // 16b cut S.1: the loaded content, read once for the whole check-out. The arena
+    // decodes nothing and holds no registry (D-16-1), so every unit's sensor row,
+    // weapon rows and eye height are decoded here and carried across the seam. A
+    // world with no content loaded gets an empty catalog, and every unit then goes
+    // over with no sensor and no weapon — which runs a match with no perception,
+    // exactly as cut A's did.
+    let catalog = ctx
+        .w
+        .module_state::<crate::store::TacsimStore>()
+        .map(|slot| slot.definitions().clone())
+        .unwrap_or_default();
     for side in sides {
         let mut roster = TeamRoster {
             team: side.team,
@@ -430,6 +442,9 @@ pub fn start(
                 team: side.team,
                 pose,
                 mobility: tracked_rules(&cells),
+                sensor_height_cm: arena_def::sensor_height_cm(&catalog, &cells),
+                sensor: arena_def::sensor_profile(&catalog, &cells),
+                weapons: arena_def::weapon_summaries(&catalog, &cells),
                 unit: cells,
             });
             for (pilot, station) in seated_pilots(ctx, *unit) {
@@ -509,7 +524,7 @@ pub fn start(
         seed,
     };
     if let Err(error) =
-        crate::arena_bridge::open_match(ctx, match_id, custody, arena_cfg, match_cfg)
+        crate::arena_bridge::open_match(ctx, match_id, custody, arena_cfg, match_cfg, sensors_cfg)
     {
         roll_back(ctx, match_id, &checked_out);
         return Err(StartError::Open(error));

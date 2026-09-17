@@ -61,7 +61,7 @@ use crate::arena::intents::{Control, Intent};
 use crate::arena::ledger::LedgerChunk;
 use crate::arena::state::{Arena, ArenaError, CustodyOut, EndReason, MatchEnd, StopReason};
 use crate::arena::step::{Frame, StepOutput};
-use crate::config::{ArenaConfig, MatchConfig};
+use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 
 /// **One match's identity**, allocated by the world half.
 ///
@@ -222,10 +222,11 @@ pub fn spawn_arena(
     custody: CustodyOut,
     arena_cfg: &ArenaConfig,
     match_cfg: &MatchConfig,
+    sensors_cfg: &SensorsConfig,
     egress: mpsc::Sender<ArenaOut>,
 ) -> Result<(ArenaHandle, JoinHandle<()>), ArenaError> {
     let units = custody.units.len();
-    let arena = Arena::new(custody, arena_cfg, match_cfg)?;
+    let arena = Arena::new(custody, arena_cfg, match_cfg, sensors_cfg)?;
     let bound = usize::try_from(arena_cfg.intents.max_pending_per_unit)
         .unwrap_or(usize::MAX)
         .saturating_mul(units)

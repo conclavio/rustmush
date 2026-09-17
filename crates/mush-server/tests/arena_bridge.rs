@@ -215,6 +215,9 @@ fn custody() -> CustodyOut {
                 turn_rate_mdeg_s: 30_000,
                 reverse_factor_pct: 40,
             },
+            sensor_height_cm: 150,
+            sensor: None,
+            weapons: Vec::new(),
             unit: tactical_unit(UNIT),
         }],
         pilots: vec![Pilot {
@@ -281,6 +284,7 @@ impl GameModule for ArenaStarter {
                     custody(),
                     &arena_cfg(),
                     &MatchConfig::default(),
+                    &tacsim::config::SensorsConfig::default(),
                 )
                 .map_err(|error| CmdError::msg(error.to_string()))
             }),

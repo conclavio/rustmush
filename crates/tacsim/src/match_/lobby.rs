@@ -50,7 +50,7 @@ use smol_str::SmolStr;
 use crate::arena::state::{StopReason, Team};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
-use crate::config::{ArenaConfig, MatchConfig};
+use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 use crate::match_::centre::{self, CENTRE_ARENA, CentreRoom, PODS_PER_SIDE};
 use crate::match_::{MatchBook, MatchOutcome, MatchState, Side};
 
@@ -229,9 +229,9 @@ pub fn centre(w: &World) -> Option<&Centre> {
 /// The configured `[tacsim.arena]` and `[tacsim.match]` blocks, which every
 /// transition past `Selection` needs and which cut K.2's `BOARD` does not carry.
 #[must_use]
-fn configs(w: &World) -> Option<(ArenaConfig, MatchConfig)> {
+fn configs(w: &World) -> Option<(ArenaConfig, MatchConfig, SensorsConfig)> {
     let cfg = w.module_state::<crate::TacsimStore>()?.config();
-    Some((cfg.arena.clone(), cfg.match_.clone()))
+    Some((cfg.arena.clone(), cfg.match_.clone(), cfg.sensors.clone()))
 }
 
 /// How many slots one side of **this** centre takes: the configured cap, held
@@ -305,7 +305,7 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
     let actor = ctx.actor;
     in_centre(ctx.w, actor)?;
     let account = account_of(ctx.w, actor)?;
-    let (_, match_cfg) = configs(ctx.w).ok_or(SimError::Unavailable)?;
+    let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
     let cap = slots_per_side(&match_cfg);
     let index = {
         let book = ctx
@@ -480,7 +480,7 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         Err(_) if staff => None,
         Err(error) => return Err(error),
     };
-    let (_, match_cfg) = configs(ctx.w).ok_or(SimError::Unavailable)?;
+    let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
 
     // Every refusal before the first write, and before an id is minted.
     {
@@ -644,7 +644,7 @@ pub fn slot_vacated(ctx: &mut Ctx<'_>, match_id: MatchId, pilot: ObjId) -> Resul
 /// Fire the check-out with whatever is seated (doc 16 §3.8's
 /// `Boarding → Running`).
 fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
-    let (arena_cfg, match_cfg) = configs(ctx.w).ok_or(SimError::Unavailable)?;
+    let (arena_cfg, match_cfg, sensors_cfg) = configs(ctx.w).ok_or(SimError::Unavailable)?;
     let arena = centre(ctx.w)
         .map(|centre| centre.arena.clone())
         .filter(|arena| !arena.is_empty())
@@ -667,7 +667,15 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
             sides.push(Side { team, units });
         }
     }
-    match crate::match_::start(ctx, match_id, &arena, &sides, &arena_cfg, &match_cfg) {
+    match crate::match_::start(
+        ctx,
+        match_id,
+        &arena,
+        &sides,
+        &arena_cfg,
+        &match_cfg,
+        &sensors_cfg,
+    ) {
         Ok(_) => {
             if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
                 let centre = book.centre_mut();

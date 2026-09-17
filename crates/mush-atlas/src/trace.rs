@@ -14,6 +14,18 @@
 //! false) does not. Light woods attenuate ([`Opacity::Partial`]) and a line
 //! whose attenuation reaches a hundred is blocked. The endpoints never block
 //! their own line; the target cell's class gives the cover the trace reports.
+//!
+//! # Two grids, one walk (16b cut S.1)
+//!
+//! A [`SurfaceComposite`] is a *window's* view of the world: a surface
+//! reference, a room table and a feature overlay on top of the cells. The
+//! combat arena (doc 16 §3.1, D-16-1/D-16-3) may hold none of those — it is a
+//! library with no store, no window and no records — but it does hold a cell
+//! grid of its own, and doc 16 §3.6 needs exactly the terrain half of this
+//! walk over it. So the walk reads its ground through [`CellGrid`], which is
+//! *one cell's class and elevation and nothing else*;
+//! [`SurfaceComposite`] implements it, and [`trace_cells`] is the same
+//! algorithm with an empty feature overlay. There is no second line walk.
 
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
@@ -21,7 +33,44 @@ use serde::{Deserialize, Serialize};
 use crate::physics::{Cover, Opacity, WALL_HEIGHT_CM, obstacle_height_cm, props};
 use crate::record::{FeatureState, RecordKey};
 use crate::terrain::TerrainClass;
-use crate::window::SurfaceComposite;
+use crate::window::{FeatureOverlay, SurfaceComposite};
+
+/// **A plain cell grid a trace can walk** (16b cut S.1).
+///
+/// The whole of what the terrain half of a line walk reads: a cell's ground
+/// class and its elevation above the datum, in centimetres, or `None` off the
+/// grid. Everything else a [`SurfaceComposite`] carries — the surface
+/// reference, the room table, the feature overlay — is a *window's*, and a
+/// caller that has cells but no window (the combat arena) implements this and
+/// gets the same walk.
+pub trait CellGrid {
+    /// The class and elevation of `(x, y)`, or `None` off the grid.
+    fn cell_at(&self, x: u16, y: u16) -> Option<(TerrainClass, i32)>;
+}
+
+impl CellGrid for SurfaceComposite {
+    fn cell_at(&self, x: u16, y: u16) -> Option<(TerrainClass, i32)> {
+        let cell = self.cells.get(x, y)?;
+        Some((cell.class, i32::from(cell.elev_cm)))
+    }
+}
+
+/// What a line walk over a plain [`CellGrid`] found (16b cut S.1).
+///
+/// [`Sight`] is the answer; the other three are what the caller's own budget is
+/// measured in — doc 16 §2 W4 bounds *traces and cell probes per pulse*, and a
+/// bound nobody can count is not a bound.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CellTrace {
+    /// Clear, attenuated or blocked.
+    pub sight: Sight,
+    /// Attenuation gathered along the line, percent.
+    pub attenuation: u32,
+    /// Cells read, hit or miss.
+    pub visited: u32,
+    /// The range, in cells (Chebyshev) — never a distance (doc 16 §3.2).
+    pub range_cells: u32,
+}
 
 /// A standing person's eye above the ground, centimetres.
 pub const EYE_HEIGHT_CM: i32 = 150;
@@ -244,7 +293,8 @@ fn line_height(z_from: i32, z_to: i32, i: usize, n: usize, flight: Flight) -> i3
 }
 
 struct Walk<'a> {
-    surface: &'a SurfaceComposite,
+    grid: &'a dyn CellGrid,
+    features: &'a [FeatureOverlay],
     units: &'a [(ObjId, (u16, u16))],
 }
 
@@ -259,12 +309,11 @@ struct Read {
 
 impl Walk<'_> {
     fn read(&self, at: (u16, u16), line_cm: i32) -> Option<Read> {
-        let cell = self.surface.cells.get(at.0, at.1)?;
-        let elev_cm = i32::from(cell.elev_cm);
+        let (class, elev_cm) = self.grid.cell_at(at.0, at.1)?;
         let band = line_cm - elev_cm;
         let mut feature_blocking = None;
         let mut features = Vec::new();
-        for f in &self.surface.features {
+        for f in self.features {
             if !f.cells.contains(&at) {
                 continue;
             }
@@ -285,7 +334,7 @@ impl Walk<'_> {
             .map(|(id, _)| *id)
             .collect();
         Some(Read {
-            class: cell.class,
+            class,
             elev_cm,
             feature_blocking,
             features,
@@ -298,7 +347,8 @@ impl Walk<'_> {
 /// whether opaque classes and attenuation block (sight, fire, beams) or only
 /// the ground and walls' tops do (an arc).
 fn walk(
-    surface: &SurfaceComposite,
+    grid: &dyn CellGrid,
+    features: &[FeatureOverlay],
     units: &[(ObjId, (u16, u16))],
     from: Eye,
     to: Eye,
@@ -307,16 +357,18 @@ fn walk(
 ) -> Trace {
     let cells = line_cells(from.cell, to.cell);
     let n = cells.len().saturating_sub(1);
-    let w = Walk { surface, units };
-    let z_from = surface
-        .cells
-        .get(from.cell.0, from.cell.1)
-        .map_or(0, |c| i32::from(c.elev_cm))
+    let w = Walk {
+        grid,
+        features,
+        units,
+    };
+    let z_from = grid
+        .cell_at(from.cell.0, from.cell.1)
+        .map_or(0, |(_, elev_cm)| elev_cm)
         + from.height_cm;
-    let z_to = surface
-        .cells
-        .get(to.cell.0, to.cell.1)
-        .map_or(0, |c| i32::from(c.elev_cm))
+    let z_to = grid
+        .cell_at(to.cell.0, to.cell.1)
+        .map_or(0, |(_, elev_cm)| elev_cm)
         + to.height_cm;
     let mut profile = Vec::with_capacity(cells.len());
     let mut line_cm = Vec::with_capacity(cells.len());
@@ -420,13 +472,50 @@ fn walk(
 /// Line of sight from `a` to `b` (doc 14 §5.2).
 #[must_use]
 pub fn line_of_sight(surface: &SurfaceComposite, a: Eye, b: Eye) -> Sight {
-    let t = walk(surface, &[], a, b, Flight::Straight, true);
-    match t.stop {
-        Some((_, b)) => Sight::BlockedBy(b),
+    let t = walk(
+        surface,
+        &surface.features,
+        &[],
+        a,
+        b,
+        Flight::Straight,
+        true,
+    );
+    sight_of(&t)
+}
+
+/// A trace's answer as a [`Sight`]: the first blocker, else the attenuation it
+/// gathered, else clear. Written once so [`line_of_sight`] and [`trace_cells`]
+/// cannot read one walk two ways.
+fn sight_of(t: &Trace) -> Sight {
+    match &t.stop {
+        Some((_, blocker)) => Sight::BlockedBy(blocker.clone()),
         None if t.attenuation > 0 => {
             Sight::Partial(u8::try_from(t.attenuation.min(99)).unwrap_or(99))
         }
         None => Sight::Clear,
+    }
+}
+
+/// **Line of sight over a plain cell grid** (16b cut S.1; doc 16 §3.2 "Line of
+/// sight", §3.6 step 2).
+///
+/// [`line_of_sight`] with no feature overlay and no units on the line: the same
+/// [`walk`], the same opacity, attenuation and elevation rules, over a grid that
+/// is only classes and elevations. It is what the combat arena's perception pass
+/// traces with, because the arena holds a cell grid and may hold no window and no
+/// records at all (doc 16 §3.1, D-16-1/D-16-3).
+///
+/// The counters come back with the answer: doc 16 §2 W4 bounds *traces and cell
+/// probes per pulse*, and `visited` is that probe count for one trace.
+#[must_use]
+pub fn trace_cells(grid: &dyn CellGrid, a: Eye, b: Eye) -> CellTrace {
+    let t = walk(grid, &[], &[], a, b, Flight::Straight, true);
+    CellTrace {
+        sight: sight_of(&t),
+        attenuation: t.attenuation,
+        visited: t.visited,
+        range_cells: t.range_cells,
     }
 }
 
@@ -439,7 +528,15 @@ pub fn direct_fire_path(
     from: Eye,
     to: Eye,
 ) -> Trace {
-    walk(surface, units, from, to, Flight::Straight, true)
+    walk(
+        surface,
+        &surface.features,
+        units,
+        from,
+        to,
+        Flight::Straight,
+        true,
+    )
 }
 
 /// An indirect-fire trace: an arc `apex_cm` above the straight line at its
@@ -455,6 +552,7 @@ pub fn indirect_fire_path(
 ) -> Trace {
     walk(
         surface,
+        &surface.features,
         units,
         from,
         to,
@@ -478,14 +576,30 @@ pub fn beam_path(
         cell: to.cell,
         height_cm: to.height_cm,
     };
-    walk(surface, units, from, level, Flight::Straight, true)
+    walk(
+        surface,
+        &surface.features,
+        units,
+        from,
+        level,
+        Flight::Straight,
+        true,
+    )
 }
 
 /// Hearing from `a` to `b`: distance, walls, sight-blocking features and
 /// heavy woods attenuate; a vacuum carries nothing.
 #[must_use]
 pub fn hearing(surface: &SurfaceComposite, a: Eye, b: Eye) -> Hearing {
-    let t = walk(surface, &[], a, b, Flight::Straight, false);
+    let t = walk(
+        surface,
+        &surface.features,
+        &[],
+        a,
+        b,
+        Flight::Straight,
+        false,
+    );
     let mut attenuation = t.range_cells.saturating_mul(HEARING_PER_CELL);
     let mut silent = false;
     let mut visited = 0u32;
@@ -774,5 +888,132 @@ mod tests {
         let json = serde_json::to_string(&first).expect("json");
         let back: Trace = serde_json::from_str(&json).expect("trace");
         assert_eq!(back, first);
+    }
+
+    /// A grid that is nothing but classes and elevations — what the combat arena
+    /// has, and the shape [`CellGrid`] exists for.
+    struct PlainGrid {
+        width: u16,
+        height: u16,
+        cells: Vec<(TerrainClass, i32)>,
+    }
+
+    impl PlainGrid {
+        /// The same ground a [`SurfaceComposite`] holds, with its surface
+        /// reference, room table and feature overlay dropped.
+        fn of(s: &SurfaceComposite) -> PlainGrid {
+            let (width, height) = (s.cells.width(), s.cells.height());
+            let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+            for y in 0..height {
+                for x in 0..width {
+                    cells.push(s.cell_at(x, y).unwrap_or((TerrainClass::Void, 0)));
+                }
+            }
+            PlainGrid {
+                width,
+                height,
+                cells,
+            }
+        }
+    }
+
+    impl CellGrid for PlainGrid {
+        fn cell_at(&self, x: u16, y: u16) -> Option<(TerrainClass, i32)> {
+            if x >= self.width || y >= self.height {
+                return None;
+            }
+            self.cells
+                .get(usize::from(y) * usize::from(self.width) + usize::from(x))
+                .copied()
+        }
+    }
+
+    /// **16b cut S.1: `trace_cells` is `line_of_sight`, over cells alone.**
+    ///
+    /// The combat arena traces with [`trace_cells`] because it may hold no window
+    /// and no records (doc 16 §3.1, D-16-1/D-16-3). That is only safe while the two
+    /// are the *same* walk, so every terrain rule the walk has — an opaque class, a
+    /// rise above the line, attenuation that reaches a hundred, the edge, the
+    /// endpoints never blocking their own line — is asserted to give one answer
+    /// through both doors, on a feature-free surface and on the plain grid taken
+    /// off it.
+    #[test]
+    fn trace_cells_answers_what_line_of_sight_answers_over_the_same_ground() {
+        let mut s = surface(12, 12, TerrainClass::Ground);
+        set(&mut s, 6, 6, TerrainClass::Wall, 0);
+        set(&mut s, 3, 8, TerrainClass::Ground, 120);
+        set(&mut s, 4, 4, TerrainClass::WoodsLight, 0);
+        set(&mut s, 5, 5, TerrainClass::WoodsHeavy, 0);
+        set(&mut s, 8, 2, TerrainClass::WoodsLight, 0);
+        set(&mut s, 9, 1, TerrainClass::WoodsLight, 0);
+        let grid = PlainGrid::of(&s);
+        let mut compared = 0_usize;
+        let mut clear = 0_usize;
+        let mut partial = 0_usize;
+        let mut blocked = 0_usize;
+        for height_cm in [EYE_HEIGHT_CM, 400] {
+            for ax in 0..12_u16 {
+                for by in 0..12_u16 {
+                    let a = Eye {
+                        cell: (ax, 11),
+                        height_cm,
+                    };
+                    let b = Eye {
+                        cell: (11, by),
+                        height_cm: EYE_HEIGHT_CM,
+                    };
+                    let through_window = line_of_sight(&s, a, b);
+                    let through_cells = trace_cells(&grid, a, b);
+                    assert_eq!(
+                        through_cells.sight, through_window,
+                        "the two doors disagree from ({ax}, 11) at {height_cm} cm to (11, {by})"
+                    );
+                    match through_window {
+                        Sight::Clear => clear += 1,
+                        Sight::Partial(_) => partial += 1,
+                        Sight::BlockedBy(_) => blocked += 1,
+                    }
+                    compared += 1;
+                }
+            }
+        }
+        assert_eq!(compared, 288);
+        assert!(clear > 0 && blocked > 0, "{clear}/{partial}/{blocked}");
+
+        // The sweep's geometry does not guarantee every answer, so each of the
+        // three is also produced deliberately, on one row, through both doors.
+        let a = Eye::standing((0, 0));
+        let b = Eye::standing((9, 0));
+        for (paint, want) in [
+            (Vec::new(), Sight::Clear),
+            (vec![(4_u16, TerrainClass::WoodsLight)], Sight::Partial(25)),
+            (
+                vec![(3, TerrainClass::WoodsLight), (4, TerrainClass::WoodsHeavy)],
+                Sight::Partial(85),
+            ),
+            (
+                vec![(5, TerrainClass::Wall)],
+                Sight::BlockedBy(Blocker::Terrain {
+                    at: (5, 0),
+                    class: TerrainClass::Wall,
+                }),
+            ),
+        ] {
+            let mut row = surface(10, 1, TerrainClass::Ground);
+            for (x, class) in paint {
+                set(&mut row, x, 0, class, 0);
+            }
+            let plain = PlainGrid::of(&row);
+            assert_eq!(line_of_sight(&row, a, b), want);
+            assert_eq!(trace_cells(&plain, a, b).sight, want);
+        }
+        // The counters are the trace's own, and a line off the grid is the edge.
+        let across = trace_cells(&grid, Eye::standing((0, 0)), Eye::standing((11, 0)));
+        assert_eq!(across.visited, 12);
+        assert_eq!(across.range_cells, 11);
+        assert_eq!(
+            trace_cells(&grid, Eye::standing((0, 0)), Eye::standing((30, 0))).sight,
+            Sight::BlockedBy(Blocker::Edge)
+        );
     }
 }

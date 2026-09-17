@@ -332,6 +332,13 @@ pub struct SensorsConfig {
     /// in `mush_server::config_ext::tacsim_config`, where a negative, `NaN` or
     /// absurd factor is a hard boot error naming that key.
     pub max_signature_factor_permille: u32,
+    /// **Passes a contact may go unrefreshed before it is lost** (16b cut S.1;
+    /// doc 16 §3.6 step 4's TTL). The time-to-live is
+    /// `pass_ms × lost_after_passes`, so the loss band is stated in *passes* and
+    /// follows the cadence rather than drifting from it when `pass_ms` moves.
+    /// Zero is read as one: a contact lost the instant it is not refreshed is a
+    /// contact nothing can hold.
+    pub lost_after_passes: u32,
 }
 
 impl Default for SensorsConfig {
@@ -340,6 +347,7 @@ impl Default for SensorsConfig {
             pass_ms: 1_000,
             // 1.5 × 1000.
             max_signature_factor_permille: 1_500,
+            lost_after_passes: 3,
         }
     }
 }
@@ -373,6 +381,17 @@ pub struct HarnessConfig {
     pub max_traces_per_pulse: u32,
     /// The most path queries one pulse may make.
     pub max_path_queries_per_pulse: u32,
+    /// **The most contact-share operations one pulse may make** (16b cut S.1;
+    /// doc 16 §2 W6, §3.6 step 5: *share operations bounded per pulse*). One
+    /// operation is one `(sharer, teammate)` pair considered — its range test and
+    /// its line of sight — so the bound is on the fan-out of the comms mesh and
+    /// not on how many contacts a pair happens to carry.
+    ///
+    /// Like every other key in this block it is a **threshold the harness
+    /// asserts**, never a throttle the arena applies: an engine that stopped
+    /// sharing halfway through a pulse would make the outcome a function of the
+    /// tempo, which is exactly what D-16-2 forbids.
+    pub max_share_ops_per_pulse: u32,
     /// The most bytes the streamed ledger may reach over the harness's hour of
     /// arena time (64 MiB) — the proof that memory stays flat because the ledger
     /// leaves.
@@ -388,6 +407,7 @@ impl Default for HarnessConfig {
             engaged_p99_ms: 25,
             max_traces_per_pulse: 4_000,
             max_path_queries_per_pulse: 64,
+            max_share_ops_per_pulse: 256,
             // 64 MiB.
             max_ledger_bytes: 67_108_864,
         }

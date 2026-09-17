@@ -208,7 +208,110 @@ fn every_shipped_definition_loads_validates_and_binds() {
         assert!(sensor.emission.is_none() && sensor.jamming.is_none());
         assert_eq!(sensor.max_range_cells, 60, "16b §9's constant, as content");
         assert_eq!(sensor.classify_after_ms, 3_000);
+        // **16b cut S.1**: the comms reach and the signature table, as authored.
+        assert_eq!(sensor.share_range_cells, 30, "16b §9's comms reach");
+        let rows: BTreeMap<&str, (u32, u32)> = sensor
+            .signature
+            .iter()
+            .map(|row| {
+                (
+                    row.class.label(),
+                    (row.moving_permille, row.stopped_permille),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows.len(),
+            sensor.signature.len(),
+            "the signature table names a ground twice"
+        );
+        // Doc 16 §3.6 step 3's own sentence, as two rows: *a stopped tank in heavy
+        // woods has a lower factor than one moving on a road*.
+        assert_eq!(rows.get("road").copied(), Some((1_000, 1_000)));
+        assert_eq!(rows.get("woods_heavy").copied(), Some((800, 500)));
+        for (class, (moving, stopped)) in &rows {
+            assert!(
+                *moving <= 1_000 && *stopped <= 1_000,
+                "{class} lengthens the sensor's range"
+            );
+            assert!(
+                stopped <= moving,
+                "{class} hides a tank better when it is moving"
+            );
+        }
+        // Open water is deliberately absent, so it reads as a target that hides
+        // nothing — the rule the table's own note states.
+        assert!(!rows.contains_key("water"));
     }
+}
+
+/// **16b cut S.1**: the two new bounds on a sensor row, refused by name.
+#[test]
+fn a_sensor_row_refuses_an_impossible_signature_and_an_absurd_comms_reach() {
+    let sensor = || tacsim::definitions::SensorDef {
+        label: "test sight".to_owned(),
+        max_range_cells: 60,
+        max_attenuation: 40,
+        classify_after_ms: 3_000,
+        sees_wrecks: false,
+        share_range_cells: 30,
+        signature: Vec::new(),
+        emission: None,
+        jamming: None,
+        note: String::new(),
+    };
+    let row = |class, moving, stopped| tacsim::definitions::sensor::SignatureRow {
+        class,
+        moving_permille: moving,
+        stopped_permille: stopped,
+    };
+    sensor().check("ok").expect("the base row is valid");
+
+    // A factor above 1,000 would *lengthen* the range, which is
+    // `[tacsim.sensors].max_signature_factor`'s job and not content's.
+    let wild = tacsim::definitions::SensorDef {
+        signature: vec![row(mush_atlas::TerrainClass::Road, 1_001, 500)],
+        ..sensor()
+    };
+    let refused = wild
+        .check("wild")
+        .expect_err("a factor past 1,000 is refused");
+    assert!(
+        refused.to_string().contains("road") && refused.to_string().contains("1001"),
+        "{refused}"
+    );
+
+    // One ground is one row.
+    let twice = tacsim::definitions::SensorDef {
+        signature: vec![
+            row(mush_atlas::TerrainClass::Road, 1_000, 900),
+            row(mush_atlas::TerrainClass::Road, 800, 700),
+        ],
+        ..sensor()
+    };
+    let refused = twice
+        .check("twice")
+        .expect_err("a repeated ground is refused");
+    assert!(refused.to_string().contains("twice"), "{refused}");
+
+    // And a comms reach past the window itself is a share to nobody.
+    let far = tacsim::definitions::SensorDef {
+        share_range_cells: tacsim::definitions::sensor::MAX_SHARE_RANGE_CELLS + 1,
+        ..sensor()
+    };
+    let refused = far.check("far").expect_err("an absurd reach is refused");
+    assert!(
+        refused.to_string().contains("share_range_cells"),
+        "{refused}"
+    );
+
+    // Zero shares nothing, and that is legal: a unit with no datalink.
+    tacsim::definitions::SensorDef {
+        share_range_cells: 0,
+        ..sensor()
+    }
+    .check("mute")
+    .expect("a mute sensor is a valid sensor");
 }
 
 #[test]

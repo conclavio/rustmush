@@ -37,7 +37,7 @@ use tacsim::arena::state::{
     Pilot, StopReason, Team, TerrainCell, TrackedRules,
 };
 use tacsim::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId, spawn_arena};
-use tacsim::config::{ArenaConfig, MatchConfig};
+use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
 use tokio::sync::mpsc;
 
 /// Every seed this file arms an arena with, and which proof owns it. The two
@@ -168,6 +168,9 @@ fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
             turn_rate_mdeg_s: 30_000,
             reverse_factor_pct: 40,
         },
+        sensor_height_cm: 150,
+        sensor: None,
+        weapons: Vec::new(),
         unit: tactical_unit(id),
     }
 }
@@ -224,6 +227,7 @@ fn start(seed: u64, arena_cfg: &ArenaConfig) -> (ArenaHandle, mpsc::Receiver<Are
         custody(seed),
         arena_cfg,
         &MatchConfig::default(),
+        &SensorsConfig::default(),
         egress_tx,
     )
     .expect("the test check-out is accepted");
@@ -422,8 +426,13 @@ async fn a_panic_in_step_voids_the_match_and_publishes_nothing_from_that_pulse()
     let arena_cfg = fast_arena();
     // Arm by seed: a throwaway arena over the same custody, whose only purpose is
     // to hold the seed the hook keys on.
-    let mut armed = Arena::new(custody(seed), &arena_cfg, &MatchConfig::default())
-        .expect("the arming arena is accepted");
+    let mut armed = Arena::new(
+        custody(seed),
+        &arena_cfg,
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the arming arena is accepted");
     armed.panic_on_next_step_for_tests();
     drop(armed);
 
@@ -467,8 +476,13 @@ async fn a_pulse_past_the_stall_bound_voids_the_match() {
     let seed = SEEDS[2].0;
     let mut arena_cfg = fast_arena();
     arena_cfg.tempo.stall_ms = 30;
-    let mut armed = Arena::new(custody(seed), &arena_cfg, &MatchConfig::default())
-        .expect("the arming arena is accepted");
+    let mut armed = Arena::new(
+        custody(seed),
+        &arena_cfg,
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the arming arena is accepted");
     armed.stall_next_step_for_tests(Duration::from_millis(200));
     drop(armed);
 

@@ -636,6 +636,7 @@ pub fn open_match(
     custody: crate::arena::state::CustodyOut,
     arena_cfg: &crate::config::ArenaConfig,
     match_cfg: &crate::config::MatchConfig,
+    sensors_cfg: &crate::config::SensorsConfig,
 ) -> Result<(), OpenMatchError> {
     let tasks = ctx
         .w
@@ -660,8 +661,15 @@ pub fn open_match(
     // world keeps its own immutable copy rather than reaching across the seam or
     // rebuilding it from the atlas per look.
     let ground = Arc::new(custody.definition.clone());
-    let (handle, join) =
-        crate::arena_task::spawn_arena(&runtime, match_id, custody, arena_cfg, match_cfg, egress)?;
+    let (handle, join) = crate::arena_task::spawn_arena(
+        &runtime,
+        match_id,
+        custody,
+        arena_cfg,
+        match_cfg,
+        sensors_cfg,
+        egress,
+    )?;
     if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
         // Cannot happen (the id was checked above), and if it did, the old task
         // is stopped rather than leaked.
@@ -1497,6 +1505,7 @@ pub fn register(
     egress_capacity: usize,
     arena_cfg: &crate::config::ArenaConfig,
     match_cfg: &crate::config::MatchConfig,
+    sensors_cfg: &crate::config::SensorsConfig,
 ) -> Result<(), ModError> {
     let frames = reg.panel_feed(FRAME_FEED)?;
     reg.async_completion(Arc::new(ArenaEgress))?;
@@ -1533,7 +1542,8 @@ pub fn register(
     // lifecycle, so the class moves with the switches, in the same commit as the
     // stanza note.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
-    let (arena_cfg, match_cfg) = (arena_cfg.clone(), match_cfg.clone());
+    let (arena_cfg, match_cfg, sensors_cfg) =
+        (arena_cfg.clone(), match_cfg.clone(), sensors_cfg.clone());
     reg.command(
         CommandSpec {
             name: "@arena".into(),
@@ -1561,7 +1571,7 @@ pub fn register(
             if !is_staff(ctx) {
                 return Err(CmdError::msg("Permission denied."));
             }
-            crate::match_::arena_command(ctx, &arena_cfg, &match_cfg)
+            crate::match_::arena_command(ctx, &arena_cfg, &match_cfg, &sensors_cfg)
         }),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);

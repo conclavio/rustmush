@@ -94,6 +94,7 @@ pub fn start(
     ctx: &mut Ctx<'_>,
     arena_cfg: &crate::config::ArenaConfig,
     match_cfg: &crate::config::MatchConfig,
+    sensors_cfg: &crate::config::SensorsConfig,
 ) -> Result<(), CmdError> {
     const USAGE: &str = "@arena/start <definition>=<red #ids>/<blue #ids>";
     let definition = ctx.args.lhs().trim().to_owned();
@@ -135,8 +136,16 @@ pub fn start(
     // machine is walked rather than jumped: cut K's `SIM START` lands on exactly
     // this call with exactly this predecessor state.
     let arena = SmolStr::new(&definition);
-    super::start(ctx, match_id, &arena, &sides, arena_cfg, match_cfg)
-        .map_err(|error| CmdError::msg(error.to_string()))?;
+    super::start(
+        ctx,
+        match_id,
+        &arena,
+        &sides,
+        arena_cfg,
+        match_cfg,
+        sensors_cfg,
+    )
+    .map_err(|error| CmdError::msg(error.to_string()))?;
     // It ran: the centre now says so, so `SIM STATUS` in the lobby and
     // `@arena/status` at a staff console are one answer and not two.
     super::lobby::adopt(ctx, match_id);
@@ -377,6 +386,9 @@ fn arm_panic_for_seed(
                 team: Team::Red,
                 pose: mush_sim::data::Pose::at(500, 500, 0, posture),
                 mobility: TrackedRules::default(),
+                sensor_height_cm: 0,
+                sensor: None,
+                weapons: Vec::new(),
                 unit: cells,
             }],
             pilots: Vec::new(),
@@ -384,6 +396,7 @@ fn arm_panic_for_seed(
         },
         &crate::config::ArenaConfig::default(),
         &crate::config::MatchConfig::default(),
+        &crate::config::SensorsConfig::default(),
     )
     .map_err(|error| error.to_string())?;
     arena.panic_on_next_step_for_tests();
@@ -463,9 +476,10 @@ pub fn arena_command(
     ctx: &mut Ctx<'_>,
     arena_cfg: &crate::config::ArenaConfig,
     match_cfg: &crate::config::MatchConfig,
+    sensors_cfg: &crate::config::SensorsConfig,
 ) -> Result<(), CmdError> {
     if ctx.switches.has("start") {
-        start(ctx, arena_cfg, match_cfg)
+        start(ctx, arena_cfg, match_cfg, sensors_cfg)
     } else if ctx.switches.has("intent") {
         intent(ctx)
     } else if ctx.switches.has("abort") {

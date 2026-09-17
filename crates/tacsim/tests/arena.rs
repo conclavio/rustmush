@@ -54,7 +54,7 @@ use tacsim::arena::state::{
     Pilot, Power, StopReason, Team, TerrainCell, TrackedRules,
 };
 use tacsim::arena::step::StepOutput;
-use tacsim::config::{ArenaConfig, MatchConfig};
+use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -195,6 +195,9 @@ fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
             turn_rate_mdeg_s: 30_000,
             reverse_factor_pct: 40,
         },
+        sensor_height_cm: 150,
+        sensor: None,
+        weapons: Vec::new(),
         unit: tactical_unit(id),
     }
 }
@@ -220,6 +223,7 @@ fn arena_of(units: Vec<CustodyUnit>, match_cfg: &MatchConfig) -> Arena {
         },
         &ArenaConfig::default(),
         match_cfg,
+        &SensorsConfig::default(),
     )
     .expect("the test arena")
 }
@@ -968,4 +972,193 @@ fn the_window_edge_stops_a_unit_with_one_notice() {
         .map(|(pilot, frame)| (*pilot, frame.blocked))
         .collect();
     assert_eq!(last.get(&ObjId(1_000)), Some(&true));
+}
+
+// ---------------------------------------------------------------------------
+// (h) rate independence, with perception in the pulse (16b cut S.1)
+// ---------------------------------------------------------------------------
+
+/// **The shipped sensor's numbers with a five-cell reach** (16b cut S.1).
+///
+/// Everything else is `content/sensors/visual_mk1.json`'s; the reach is short so
+/// that a 64-cell window has an *outside*, which is what a scripted approach needs
+/// in order to produce a `lost` at all.
+fn short_sight() -> tacsim::arena::perception::SensorProfile {
+    use mush_atlas::TerrainClass as C;
+    use tacsim::arena::perception::{SensorProfile, SignatureFactor};
+    let row = |class: C, moving: u32, stopped: u32| SignatureFactor {
+        class,
+        moving_permille: moving,
+        stopped_permille: stopped,
+    };
+    SensorProfile {
+        max_range_cells: 5,
+        max_attenuation: 40,
+        classify_after_ms: 3_000,
+        sees_wrecks: false,
+        // No mesh: two units and one team each, so there is nobody to share with,
+        // and leaving it on would only add traces the property is not about.
+        share_range_cells: 0,
+        signature: vec![row(C::Ground, 1_000, 900), row(C::WoodsHeavy, 800, 500)],
+    }
+}
+
+/// A tank that sees, and a weapon row so `tempo.alert_range_cm` is derived rather
+/// than zero (16b §9).
+fn watcher(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+    CustodyUnit {
+        sensor: Some(short_sight()),
+        weapons: vec![tacsim::arena::state::WeaponSummary {
+            id: SmolStr::new("cannon"),
+            max_range_cm: 250_000,
+            cycle_ms: 4_000,
+            ammunition: SmolStr::new("tacsim.ammunition.he_105"),
+            burst_rounds: 1,
+            muzzle_speed_cms: 145_000,
+        }],
+        ..tank(id, team, pose)
+    }
+}
+
+/// **The scripted approach**: start up, close on the parked tank, hold, then back
+/// away out of the sensor's reach.
+///
+/// Every beat is at a multiple of 5,000 ms, so it lands at the same arena time at
+/// all three cadences — the same rule the approach in [`script`] follows. The
+/// reverse leg is what produces the `lost`: `reverse_factor_pct` is 40, so backing
+/// away at 400 cm/s takes the tank from one cell out to past five in about
+/// 12 seconds, and the TTL (three passes) turns that into one loss.
+fn approach() -> Vec<Beat> {
+    vec![
+        Beat {
+            t_ms: 0,
+            controls: Vec::new(),
+            intents: vec![intent(MOVER, IntentKind::Startup, 1)],
+        },
+        Beat {
+            t_ms: 10_000,
+            controls: Vec::new(),
+            intents: vec![
+                intent(MOVER, IntentKind::Heading { mdeg: 0 }, 2),
+                intent(MOVER, IntentKind::Speed { cms: 1_000 }, 3),
+            ],
+        },
+        Beat {
+            t_ms: 35_000,
+            controls: Vec::new(),
+            intents: vec![intent(MOVER, IntentKind::Speed { cms: -400 }, 4)],
+        },
+    ]
+}
+
+#[test]
+fn one_scripted_approach_at_three_cadences_is_one_detect_classify_lose_sequence() {
+    // The property doc 16 §3.1 states, with cut S.1's due events inside the pulse:
+    // the sensor pass is applied at *its own* arena timestamp against the positions
+    // the substep boundary committed, so the cadence cannot move a detection, a
+    // classification or a loss by one pass.
+    //
+    // The mover starts twelve cells south of the parked tank with five cells of
+    // sight, drives in, and backs out again. The parked tank sees too, so every
+    // transition happens twice — once per observer — which is exactly what a
+    // per-observer store has to get right.
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = arena_of(
+            vec![
+                watcher(MOVER, Team::Red, centre(5, 5)),
+                watcher(PARKED, Team::Blue, centre(5, 17)),
+            ],
+            &MatchConfig::default(),
+        );
+        // Both passes are scheduled at `id % pass_ms`, so at 4 ms and 9 ms.
+        assert_eq!(
+            arena
+                .due
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    tacsim::arena::state::DueKind::SensorPass { .. }
+                ))
+                .count(),
+            2
+        );
+        let run = replay(&mut arena, cadence, 60_000, &approach(), &quiet);
+        assert_eq!(
+            arena.now_ms, 60_000,
+            "cadence {cadence} ran to a different time"
+        );
+        runs.push((cadence, run));
+    }
+
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+
+    // The run is worth comparing: every one of the three transitions happened, on
+    // both sides, in that order.
+    assert_eq!(first.count("detected"), 2, "{:?}", first.kinds());
+    assert_eq!(first.count("classified"), 2, "{:?}", first.kinds());
+    assert_eq!(first.count("lost"), 2, "{:?}", first.kinds());
+    // `Replay::kinds` answers each event's serialised body, so the lifecycle is
+    // picked out by the `kind` field's value inside it.
+    let perception: Vec<&'static str> = first
+        .kinds()
+        .into_iter()
+        .filter_map(|encoded| {
+            ["detected", "classified", "lost"]
+                .into_iter()
+                .find(|word| encoded.contains(&format!("\"kind\":\"{word}\"")))
+        })
+        .collect();
+    assert_eq!(
+        perception,
+        vec![
+            "detected",
+            "detected",
+            "classified",
+            "classified",
+            "lost",
+            "lost"
+        ],
+        "the lifecycle is out of order: {:?}",
+        first.kinds()
+    );
+    // And every classification carries the pinned draw label.
+    let drawn: Vec<&Option<(String, u64)>> = first
+        .events
+        .iter()
+        .filter(|(_, kind, _, _)| kind.contains("classified"))
+        .map(|(_, _, draw, _)| draw)
+        .collect();
+    assert_eq!(drawn.len(), 2);
+    for draw in drawn {
+        let (label, _) = draw
+            .clone()
+            .unwrap_or_else(|| panic!("a classification carries its draw"));
+        assert!(label.starts_with("classify:"), "{label}");
+    }
+
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events,
+            first.events,
+            "the event list differs at {cadence} ms: {:?} against {:?}",
+            run.kinds(),
+            first.kinds()
+        );
+        assert_eq!(
+            run.hashes,
+            first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms ({} against {})",
+            run.hashes.len(),
+            first.hashes.len()
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the final state differs at {cadence} ms"
+        );
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
 }

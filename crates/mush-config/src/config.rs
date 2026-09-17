@@ -78,6 +78,7 @@
 //! | `[tacsim.match].max_slots_per_side` | `12` | pilot slots one side may claim (doc 16 §1's 12 v 12) |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.5` | the ceiling on a target's signature factor; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism) |
+//! | `[tacsim.sensors].lost_after_passes` | `3` | **16b cut S.1** (doc 16 §3.6): passes a contact may go unrefreshed before it is lost; the TTL is `pass_ms × lost_after_passes` |
 //! | `[tacsim.resolution].paths` | `[]` | **16b cut G** (doc 16 §4): the resolution tables (hit curve, error terms, `p_min`, `p_max`); parsed and **inert** until cut W reads them |
 //! | `[tacsim.harness].units` | `300` | **16b cut G** (doc 16 §1 A2): units the scale harness places and moves |
 //! | `[tacsim.harness].fighting` | `24` | how many of those are fighting |
@@ -85,6 +86,7 @@
 //! | `[tacsim.harness].engaged_p99_ms` | `25` | the per-pulse p99 ceiling in `Engaged` tempo |
 //! | `[tacsim.harness].max_traces_per_pulse` | `4000` | line-of-sight traces one pulse may make |
 //! | `[tacsim.harness].max_path_queries_per_pulse` | `64` | path queries one pulse may make |
+//! | `[tacsim.harness].max_share_ops_per_pulse` | `256` | **16b cut S.1** (doc 16 §2 W6): contact-share operations one pulse may make — one `(sharer, teammate)` pair each |
 //! | `[tacsim.harness].max_ledger_bytes` | `67108864` | 64 MiB the streamed ledger must stay under over an hour of arena time |
 //! | `[game].starter_area` | `true` | S1: apply the shipped starter area (the lot, the OOC Area, the Staff Lobby) at a world's first boot; static content, no LLM call; never re-applied |
 //! | `[atlas].tile_max_cells` | `65536` | S1: the most cells one map tile holds; a larger footprint rasterizes coarser |
@@ -1083,6 +1085,11 @@ pub struct TacsimSensorsCfg {
     /// and hands the engine a `u32`; that conversion **is** a read, so a negative,
     /// `NaN` or absurd factor is a hard boot error naming this key.
     pub max_signature_factor: f64,
+    /// **Passes a contact may go unrefreshed before it is lost** (16b cut S.1;
+    /// doc 16 §3.6 step 4). The time-to-live is `pass_ms × lost_after_passes`, so
+    /// the band is stated in passes and follows the cadence rather than drifting
+    /// from it when `pass_ms` moves. Zero is read as one.
+    pub lost_after_passes: u32,
 }
 
 impl Default for TacsimSensorsCfg {
@@ -1090,6 +1097,7 @@ impl Default for TacsimSensorsCfg {
         TacsimSensorsCfg {
             pass_ms: 1_000,
             max_signature_factor: 1.5,
+            lost_after_passes: 3,
         }
     }
 }
@@ -1132,6 +1140,13 @@ pub struct TacsimHarnessCfg {
     pub max_traces_per_pulse: u32,
     /// The most path queries one pulse may make.
     pub max_path_queries_per_pulse: u32,
+    /// **The most contact-share operations one pulse may make** (16b cut S.1;
+    /// doc 16 §2 W6, §3.6 step 5). One operation is one `(sharer, teammate)` pair
+    /// considered — its range test and its line of sight — so the bound is on the
+    /// fan-out of the comms mesh, not on how many contacts a pair carries. Like
+    /// every key here it is a threshold the harness asserts and never a throttle
+    /// the arena applies.
+    pub max_share_ops_per_pulse: u32,
     /// The most bytes the streamed ledger may reach over the harness's hour of
     /// arena time (64 MiB) — the proof that resident memory stays flat because
     /// the ledger leaves.
@@ -1147,6 +1162,7 @@ impl Default for TacsimHarnessCfg {
             engaged_p99_ms: 25,
             max_traces_per_pulse: 4_000,
             max_path_queries_per_pulse: 64,
+            max_share_ops_per_pulse: 256,
             // 64 MiB.
             max_ledger_bytes: 67_108_864,
         }
@@ -2155,6 +2171,7 @@ scene_turn_dedline_secs = 30
             (cfg.tacsim.sensors.max_signature_factor - 1.5).abs() < f64::EPSILON,
             "[tacsim.sensors].max_signature_factor is 1.5"
         );
+        assert_eq!(cfg.tacsim.sensors.lost_after_passes, 3);
 
         assert!(
             cfg.tacsim.resolution.paths.is_empty(),
@@ -2165,8 +2182,12 @@ scene_turn_dedline_secs = 30
         assert_eq!((h.units, h.fighting, h.weapons), (300, 24, 150));
         assert_eq!(h.engaged_p99_ms, 25);
         assert_eq!(
-            (h.max_traces_per_pulse, h.max_path_queries_per_pulse),
-            (4_000, 64)
+            (
+                h.max_traces_per_pulse,
+                h.max_path_queries_per_pulse,
+                h.max_share_ops_per_pulse
+            ),
+            (4_000, 64, 256)
         );
         assert_eq!(h.max_ledger_bytes, 67_108_864, "64 MiB");
     }
@@ -2202,6 +2223,7 @@ scene_turn_dedline_secs = 30
              [tacsim.sensors]\n\
              pass_ms = 750\n\
              max_signature_factor = 2.25\n\
+             lost_after_passes = 5\n\
              [tacsim.resolution]\n\
              paths = [\"content/resolution.json\"]\n\
              [tacsim.harness]\n\
@@ -2211,6 +2233,7 @@ scene_turn_dedline_secs = 30
              engaged_p99_ms = 50\n\
              max_traces_per_pulse = 100\n\
              max_path_queries_per_pulse = 8\n\
+             max_share_ops_per_pulse = 12\n\
              max_ledger_bytes = 2048\n",
         )
         .expect("the written-out blocks parse");
@@ -2254,6 +2277,7 @@ scene_turn_dedline_secs = 30
 
         assert_eq!(cfg.tacsim.sensors.pass_ms, 750);
         assert!((cfg.tacsim.sensors.max_signature_factor - 2.25).abs() < f64::EPSILON);
+        assert_eq!(cfg.tacsim.sensors.lost_after_passes, 5);
         assert_eq!(
             cfg.tacsim.resolution.paths,
             vec!["content/resolution.json".to_string()]
@@ -2268,8 +2292,9 @@ scene_turn_dedline_secs = 30
                 h.engaged_p99_ms,
                 h.max_traces_per_pulse,
                 h.max_path_queries_per_pulse,
+                h.max_share_ops_per_pulse,
             ),
-            (10, 4, 6, 50, 100, 8)
+            (10, 4, 6, 50, 100, 8, 12)
         );
         assert_eq!(h.max_ledger_bytes, 2_048);
     }

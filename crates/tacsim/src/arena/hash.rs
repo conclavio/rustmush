@@ -52,10 +52,25 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    7. the power byte (`0` off, `1` starting, `2` online);
 ///    8. the four limit bytes: `slow_pct`; `no_turn_toward` (`0` none, `1` left,
 ///       `2` right); `motion_disabled` (`0`/`1`); `wreck` (`0`/`1`).
-/// 2. The tempo byte (`0` quiet, `1` alert, `2` engaged).
-/// 3. `now_ms`, `i64`.
-/// 4. The due-event count, `u64`.
-/// 5. The ledger's event sequence, `u64`.
+/// 2. **The shadow contact store** (16b cut S.1), in its own iteration order —
+///    viewer object number ascending, then contact id ascending, which is what
+///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
+///    `u64`, the target's `u32`, the class byte (`0` unknown, `1` classified red,
+///    `2` classified blue), `first_seen_ms` and `last_seen_ms` as `i64`.
+/// 3. The tempo byte (`0` quiet, `1` alert, `2` engaged).
+/// 4. `now_ms`, `i64`.
+/// 5. The due-event count, `u64`.
+/// 6. The ledger's event sequence, `u64`.
+///
+/// **Why the contacts are in it** (16b cut S.1). Doc 16 §3.1 makes the arena the
+/// single writer for *unit poses, unit condition cells, contacts, orders,
+/// scheduled impacts, the match ledger*, and the hash exists to catch a tempo that
+/// changed an outcome. Detection, classification and loss are journalled, so the
+/// ledger sequence already moves with each of them — but a contact's `last_seen_ms`
+/// advances on every refresh with no event at all, and a replay that refreshed a
+/// contact one pass earlier would otherwise compare equal. The store is folded in
+/// its map order, which is deterministic by construction, so there is no iteration
+/// order for a replay to diverge on.
 ///
 /// **What is deliberately absent.** The *ordered* desired heading and speed are
 /// not folded in: they are an input, and a pulse at one tempo may have applied a
@@ -88,6 +103,14 @@ pub fn state_hash(arena: &Arena) -> u64 {
                 u8::from(unit.limits.wreck),
             ],
         );
+    }
+    for (viewer, id, held) in arena.contacts.all() {
+        hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &id.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &held.target.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &[held.class.code()]);
+        hash = fnv1a64_update(hash, &held.first_seen_ms.to_le_bytes());
+        hash = fnv1a64_update(hash, &held.last_seen_ms.to_le_bytes());
     }
     hash = fnv1a64_update(hash, &[arena.clock.tempo().code()]);
     hash = fnv1a64_update(hash, &arena.now_ms.to_le_bytes());

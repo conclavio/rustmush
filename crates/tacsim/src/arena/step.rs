@@ -51,12 +51,14 @@ use mush_sim::data::Pose;
 
 use crate::arena::clock::{Tempo, TempoSignals, substep_ms, substeps};
 use crate::arena::hash::state_hash;
+use crate::arena::index::range_cm;
 use crate::arena::intents::{
     Control, Intent, IntentKind, IntentOutcome, apply_control, apply_intent, drain_pending,
     resolve_startup,
 };
 use crate::arena::ledger::{EventKind, LedgerChunk};
 use crate::arena::motion::integrate;
+use crate::arena::perception::{FrameContact, Notice, PerceptionCounters, bearing_mdeg};
 use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, Power, StopReason};
 
 /// **One pilot's latest-wins view** (doc 16 §3.1's `Frames`).
@@ -86,11 +88,25 @@ pub struct Frame {
     pub blocked: bool,
     /// The arena's tempo, so a cockpit can say how often it is being told things.
     pub tempo: Tempo,
+    /// **What the platform holds** (16b cut S.1; doc 16 §3.6 "What a pilot sees"),
+    /// in contact-id order — the same order [`crate::arena::state::ShadowContacts`]
+    /// iterates in, so two pulses that hold the same set produce the same list.
+    ///
+    /// It is the platform's contacts and not the observer's: doc 16 §3.7 puts the
+    /// station on the tank, so two pilots in one tank see one scope. Cut S.2
+    /// renders it; nothing about an undetected unit is in it, which is the whole
+    /// observer rule on this surface.
+    pub contacts: Vec<FrameContact>,
 }
 
 impl Frame {
     /// Whether this frame says the same thing as `other`: the unit, the four pose
-    /// integers, the speed, the power, the block and the tempo.
+    /// integers, the speed, the power, the block, the tempo and the contact list.
+    ///
+    /// The contacts are compared **in full**, age included, because a contact's age
+    /// is one of the columns `CONTACTS` prints; a pilot parked beside a held target
+    /// therefore gets a frame per pulse, which is the price of the age column being
+    /// live rather than a lie.
     #[must_use]
     pub fn same_as(&self, other: &Frame) -> bool {
         self.unit == other.unit
@@ -102,6 +118,7 @@ impl Frame {
             && self.power == other.power
             && self.blocked == other.blocked
             && self.tempo == other.tempo
+            && self.contacts == other.contacts
     }
 }
 
@@ -129,6 +146,10 @@ pub struct StepOutput {
     /// How many substeps phase 3 ran. Zero on the opening pulse, which only
     /// establishes the wall reference.
     pub substeps: u32,
+    /// **What perception cost this pulse** (16b cut S.1; doc 16 §2 W4 and W6). The
+    /// harness asserts `harness.max_traces_per_pulse` and
+    /// `harness.max_share_ops_per_pulse` against it.
+    pub perception: PerceptionCounters,
 }
 
 // ---------------------------------------------------------------------------
@@ -240,9 +261,11 @@ impl Arena {
                 lagged: false,
                 ended: Some(ended),
                 substeps: 0,
+                perception: PerceptionCounters::default(),
             };
         }
         self.substep_hashes.clear();
+        let mut perception = PerceptionCounters::default();
 
         // ---- phase 1: authority, and the world's `Stop` ----
         //
@@ -272,7 +295,7 @@ impl Arena {
         let ran = u32::try_from(pieces.len()).unwrap_or(u32::MAX);
         let mut ledger_full = false;
         for piece in pieces {
-            ledger_full |= self.substep(piece);
+            ledger_full |= self.substep(piece, &mut perception);
         }
 
         // ---- phase 4: the queued discrete actions ----
@@ -300,8 +323,14 @@ impl Arena {
         }
 
         // ---- phase 5: the pulse's own record ----
+        //
+        // Doc 16 §3.1's `Alert` row: *any unit holds a contact (classified or not)
+        // whose Euclidean range is under `tempo.alert_range_cm`*. It is evaluated
+        // here, after phase 3 minted and expired this pulse's contacts, so the
+        // tempo answers to the contacts the pulse ended with.
         let signals = TempoSignals {
             fire_intent_queued,
+            contact_within_alert_range: self.contact_within_alert_range(),
             ..TempoSignals::quiet()
         };
         let changed = self
@@ -372,6 +401,7 @@ impl Arena {
             lagged: self.clock.lagged() || self.ledger.lagged(),
             ended,
             substeps: ran,
+            perception,
         }
     }
 
@@ -383,8 +413,8 @@ impl Arena {
     /// applied. The events (a) and (c) produced are appended **last**, in that
     /// order — the `blocked` notices in unit-id order, then the due events in
     /// `(t_ms, seq)` order — against one hash taken at the substep's end.
-    fn substep(&mut self, dt_ms: u32) -> bool {
-        let mut notices: Vec<(i64, EventKind)> = Vec::new();
+    fn substep(&mut self, dt_ms: u32, perception: &mut PerceptionCounters) -> bool {
+        let mut notices: Vec<Notice> = Vec::new();
 
         // ---- (a) motion ----
         {
@@ -415,7 +445,7 @@ impl Arena {
                 if let Some((x, y)) = outcome.blocked_at
                     && !was_blocked
                 {
-                    notices.push((0, EventKind::Blocked { unit: id, x, y }));
+                    notices.push((0, EventKind::Blocked { unit: id, x, y }, None));
                 }
             }
         }
@@ -457,20 +487,53 @@ impl Arena {
                             EventKind::PositionSummary {
                                 units: self.position_summary(),
                             },
+                            None,
                         ));
                     }
                     let cadence = i64::from(self.ledger.summary_ms().max(1));
                     self.due
                         .schedule(event.t_ms.saturating_add(cadence), DueKind::PositionSummary);
                 }
+                // **16b cut S.1** (doc 16 §3.6): one unit's pass, applied at the
+                // event's own timestamp against the positions this substep
+                // committed. The next pass is scheduled from **this one's
+                // timestamp** and not from `now_ms`, exactly as the position
+                // summary above is, so the cadence is a function of arena time
+                // alone and cannot drift with the substep boundary the pass
+                // happened to land on.
+                //
+                // A pass that leaves the unit holding anything classified schedules
+                // a `Share` at the *same* timestamp: the heap orders
+                // `(t_ms, seq, kind)` and the share is inserted with a later
+                // sequence, so it is applied after the pass, in this same substep,
+                // and the mesh never lags a pulse behind the tracks it carries. It
+                // schedules nothing itself, so the loop terminates.
+                DueKind::SensorPass { unit, pass_seq } => {
+                    let shared =
+                        self.sensor_pass(unit, pass_seq, event.t_ms, perception, &mut notices);
+                    if shared {
+                        self.due.schedule(event.t_ms, DueKind::Share { unit });
+                    }
+                    if self.unit(unit).is_some_and(|state| state.sensor.is_some()) {
+                        let cadence = i64::from(self.sensors_cfg.pass_ms.max(1));
+                        self.due.schedule(
+                            event.t_ms.saturating_add(cadence),
+                            DueKind::SensorPass {
+                                unit,
+                                pass_seq: pass_seq.saturating_add(1),
+                            },
+                        );
+                    }
+                }
+                // **16b cut S.1** (doc 16 §3.6 step 5, W6).
+                DueKind::Share { unit } => {
+                    self.share_pass(unit, event.t_ms, perception, &mut notices);
+                }
                 // Cut W schedules and applies the shot's flight time and the
-                // weapon's cycle; cut S the sensor pass and the contact share.
-                // Nothing in cut A schedules one, so nothing here can fire — the
-                // arms exist so the later cut adds a body rather than a shape.
-                DueKind::Impact { .. }
-                | DueKind::WeaponReady { .. }
-                | DueKind::SensorPass { .. }
-                | DueKind::Share { .. } => {}
+                // weapon's cycle. Nothing before it schedules one, so nothing here
+                // can fire — the arms exist so the later cut adds a body rather
+                // than a shape.
+                DueKind::Impact { .. } | DueKind::WeaponReady { .. } => {}
             }
         }
 
@@ -478,8 +541,8 @@ impl Arena {
         let hash = state_hash(self);
         self.substep_hashes.push(hash);
         let mut refused = false;
-        for (t_ms, kind) in notices {
-            refused |= !self.journal(t_ms, kind, hash);
+        for (t_ms, kind, draw) in notices {
+            refused |= !self.journal_drawn(t_ms, kind, draw, hash);
         }
         refused
     }
@@ -518,6 +581,7 @@ impl Arena {
             lagged: self.clock.lagged() || self.ledger.lagged(),
             ended: Some(ended),
             substeps: 0,
+            perception: PerceptionCounters::default(),
         }
     }
 
@@ -527,6 +591,18 @@ impl Arena {
     /// black box out of tape is not a reason to lose the pulse in progress.
     fn journal(&mut self, t_ms: i64, kind: EventKind, hash: u64) -> bool {
         self.ledger.append(t_ms, kind, None, hash).is_ok()
+    }
+
+    /// The same, with the draw doc 16 §4 asks an event to carry *where one
+    /// occurred* — cut S.1's `classified` is the first event that has one.
+    fn journal_drawn(
+        &mut self,
+        t_ms: i64,
+        kind: EventKind,
+        draw: Option<(String, u64)>,
+        hash: u64,
+    ) -> bool {
+        self.ledger.append(t_ms, kind, draw, hash).is_ok()
     }
 
     /// One frame per pilot whose view changed, in pilot-id order (doc 16 §3.1's
@@ -550,6 +626,7 @@ impl Arena {
                     power: unit.power,
                     blocked: unit.blocked,
                     tempo,
+                    contacts: self.frame_contacts(unit.id),
                 },
             ));
         }
@@ -566,6 +643,35 @@ impl Arena {
             }
         }
         changed
+    }
+
+    /// **What one platform holds, as its pilots' frame carries it** (16b cut S.1;
+    /// doc 16 §3.6 "What a pilot sees"), in contact-id order.
+    ///
+    /// Bearing and range are taken from the **target's current pose**, which is
+    /// what a live sensor track is: the contact was refreshed within the last
+    /// `sensors.pass_ms` or it would not be here, and doc 16 §3.6's observer rule is
+    /// about *undetected* units — nothing here exists for a unit the platform does
+    /// not hold. A contact whose target has left the match is dropped rather than
+    /// reported at a stale bearing.
+    #[must_use]
+    pub fn frame_contacts(&self, platform: ObjId) -> Vec<FrameContact> {
+        let Some(from) = self.unit(platform) else {
+            return Vec::new();
+        };
+        self.contacts
+            .of(platform)
+            .filter_map(|(id, held)| {
+                let target = self.unit(held.target)?;
+                Some(FrameContact {
+                    id: *id,
+                    class: held.class,
+                    bearing_mdeg: bearing_mdeg(&from.pose, &target.pose),
+                    range_cm: range_cm(&from.pose, &target.pose),
+                    age_ms: self.now_ms.saturating_sub(held.first_seen_ms),
+                })
+            })
+            .collect()
     }
 
     /// When the task should step again, in wall milliseconds: the earlier of the
@@ -738,6 +844,7 @@ mod tests {
                 max_duration_ms: 3_000,
                 ..MatchConfig::default()
             },
+            &crate::config::SensorsConfig::default(),
         )
         .expect("a three-second match");
         let mut journal = Log::default();
@@ -846,6 +953,89 @@ mod tests {
         assert_eq!(summaries, vec![5_000, 10_000, 15_000, 20_000]);
         // The next one is scheduled, always.
         assert_eq!(arena.due.next_t_ms(), Some(25_000));
+    }
+
+    /// **16b cut S.1, the pulse end to end**: the sensor pass is due in phase
+    /// 3(c), the contact it mints reaches the pilot's frame, the tempo answers to
+    /// it, and the counters say what it cost.
+    #[test]
+    fn a_sensor_pass_runs_in_the_pulse_and_its_contact_reaches_the_frame_and_the_tempo() {
+        use crate::arena::test_support::scout;
+        const B: ObjId = ObjId(9);
+        // Two tanks that see and shoot, four cells apart on the 8 by 8 window. The
+        // shipped cannon reaches 2,500 m, so the derived `tempo.alert_range_cm` is
+        // 5,000 m and a contact 40 m away is well inside it.
+        let mut arena = crate::arena::test_support::arena_at_epoch(
+            vec![
+                scout(A, Team::Red, pose(500, 500)),
+                scout(B, Team::Blue, pose(4_500, 500)),
+            ],
+            1,
+        );
+        assert_eq!(arena.alert_range_cm, 500_000, "twice the cannon's reach");
+        // The opening pulse establishes the wall reference and integrates nothing,
+        // so no pass has run yet.
+        let out = arena.step(0, &[], &[]);
+        assert_eq!(out.perception.passes, 0);
+        assert!(arena.contacts.is_empty());
+        // One second of arena time: both staggered passes (at 4 ms and 9 ms) run,
+        // each holds the other, and the tempo rises to `Alert`.
+        let out = arena.step(1_000, &[], &[]);
+        assert_eq!(out.perception.passes, 2, "{:?}", out.perception);
+        assert_eq!(out.perception.detected, 2);
+        assert_eq!(out.perception.traces, 2);
+        assert!(out.perception.cell_probes >= 8);
+        assert_eq!(out.tempo, Tempo::Alert);
+        assert_eq!(arena.contacts.len(), 2);
+        // The pilot of A is told about B, at the right bearing and range, and about
+        // nothing else.
+        let frame = out
+            .frames
+            .iter()
+            .find(|(pilot, _)| *pilot == ObjId(1000))
+            .map(|(_, frame)| frame)
+            .unwrap_or_else(|| panic!("A's pilot was sent a frame: {:?}", out.frames));
+        assert_eq!(frame.contacts.len(), 1);
+        let contact = frame
+            .contacts
+            .first()
+            .copied()
+            .unwrap_or_else(|| panic!("one contact"));
+        assert_eq!(contact.class, crate::arena::state::Classification::Unknown);
+        assert_eq!(contact.bearing_mdeg, 90_000, "B is due east of A");
+        assert_eq!(contact.range_cm, 4_000);
+        // And it is the id `draw_contact_id` mints for the pair, so a pilot's
+        // `LOCK` resolves through `ShadowContacts::resolve`.
+        assert_eq!(
+            contact.id,
+            crate::arena::rng::draw_contact_id(arena.seed, A, B)
+        );
+        assert!(arena.contacts.resolve(A, contact.id).is_some());
+        assert!(
+            arena.contacts.resolve(B, contact.id).is_none(),
+            "an id minted for A is not B's"
+        );
+        // Three more seconds carry both past `classify_after_ms`, and the classify
+        // draw is in the ledger against the label doc 16 §3.5 pins.
+        let mut journal = Log::default();
+        let mut wall = 1_000_i64;
+        for _ in 0..4 {
+            wall += 1_000;
+            journal.absorb(&arena.step(wall, &[], &[]));
+        }
+        let log = journal.events(&mut arena);
+        let classified: Vec<&LedgerEvent> = log
+            .iter()
+            .filter(|event| event.kind.as_str() == "classified")
+            .collect();
+        assert_eq!(classified.len(), 2, "{:?}", log);
+        for event in classified {
+            let (label, _) = event
+                .draw
+                .clone()
+                .unwrap_or_else(|| panic!("a classification carries its draw: {event:?}"));
+            assert!(label.starts_with("classify:"), "{label}");
+        }
     }
 
     #[test]

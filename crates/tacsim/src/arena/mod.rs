@@ -50,10 +50,27 @@
 //! ordered event list and one per-substep hash sequence, crossing an impassable
 //! band and an occupied cell.
 //!
-//! What is still not here, and whose it is: `LOCK` is cut S's and `FIRE` is cut
-//! W's (phase 4 refuses both), the sensor pass and the contact share are cut S's,
-//! the impact and the weapon cycle are cut W's, and the task, the inbox, the
-//! egress, the timer and the unwind boundary are cut T's.
+//! # Cut S.1: the sensor pass and the shadow contact store
+//!
+//! [`perception`] is doc 16 §3.6's five steps as a [`state::DueKind::SensorPass`]
+//! per unit every `sensors.pass_ms`, staggered by unit id, plus the
+//! [`state::DueKind::Share`] the comms mesh fans out on. It fills the store A.1
+//! declared ([`state::ShadowContacts`]), the three ledger kinds A.1 reserved
+//! ([`ledger::EventKind::Detected`], [`ledger::EventKind::Classified`],
+//! [`ledger::EventKind::Lost`]), the `contact_within_alert_range` signal A.1's
+//! clock left `false`, and [`step::Frame::contacts`], which cut S.2 renders.
+//!
+//! Its one dependency outside this tree is `mush_atlas::trace_cells` — the atlas's
+//! own line walk over a plain cell grid, which [`state::ArenaTerrain`] implements
+//! (`mush_atlas::CellGrid`). That is a *trace* type and carries no window, no
+//! record and no store, so the no-I/O gate still holds; the alternative,
+//! `mush_atlas::SurfaceComposite`, would have brought a surface reference, a room
+//! table and a feature overlay with it.
+//!
+//! What is still not here, and whose it is: `LOCK`'s body is cut S.2's and `FIRE`
+//! is cut W's (phase 4 refuses both), the impact and the weapon cycle are cut W's,
+//! and the task, the inbox, the egress, the timer and the unwind boundary are cut
+//! T's.
 
 pub mod clock;
 pub mod hash;
@@ -61,6 +78,7 @@ pub mod index;
 pub mod intents;
 pub mod ledger;
 pub mod motion;
+pub mod perception;
 pub mod rng;
 pub mod state;
 pub mod step;
@@ -74,12 +92,16 @@ pub use intents::{
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 pub use motion::{MotionOutcome, cos_fx, integrate, sin_fx};
+pub use perception::{
+    FULL_SIGNATURE_PERMILLE, FrameContact, PerceptionCounters, SensorProfile, SignatureFactor,
+    bearing_mdeg, contact_refusal, sees,
+};
 pub use rng::{DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_permille};
 pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, Classification, ContactId,
-    CustodyOut, CustodyUnit, DueEvent, DueHeap, DueKind, EndReason, EntryZone, EpochTable,
-    MatchEnd, MotionLimits, Pilot, Power, ShadowContact, ShadowContacts, Side, StopReason, Team,
-    TerrainCell, TrackedRules, UnitState,
+    CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, DueEvent, DueHeap, DueKind, EndReason,
+    EntryZone, EpochTable, MatchEnd, MotionLimits, NO_SUCH_CONTACT, Pilot, Power, ShadowContact,
+    ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules, UnitState, WeaponSummary,
 };
 pub use step::{Frame, FrameSlots, StepOutput};
 
@@ -103,11 +125,12 @@ pub(crate) mod test_support {
     };
     use smol_str::SmolStr;
 
+    use crate::arena::perception::{SensorProfile, SignatureFactor};
     use crate::arena::state::{
         Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, Pilot, Team,
-        TerrainCell, TrackedRules,
+        TerrainCell, TrackedRules, WeaponSummary,
     };
-    use crate::config::{ArenaConfig, MatchConfig};
+    use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 
     /// The window every unit test lays down: 8 by 8 cells of 1,000 cm, all
     /// passable ground at cost 100.
@@ -211,7 +234,8 @@ pub(crate) mod test_support {
     }
 
     /// A stock tank: 1,000 cm/s forward, 40% in reverse, 200/400 cm/s²,
-    /// 30 degrees a second.
+    /// 30 degrees a second. **No sensor and no weapon**, which is cut A's arena
+    /// exactly: it runs no pass and derives an `Alert` range of zero.
     pub(crate) fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         CustodyUnit {
             id,
@@ -224,7 +248,77 @@ pub(crate) mod test_support {
                 turn_rate_mdeg_s: 30_000,
                 reverse_factor_pct: 40,
             },
+            sensor_height_cm: 150,
+            sensor: None,
+            weapons: Vec::new(),
             unit: tactical_unit(id),
+        }
+    }
+
+    /// **The shipped sensor's numbers**, as the arena carries them
+    /// (`content/sensors/visual_mk1.json`).
+    pub(crate) fn visual() -> SensorProfile {
+        SensorProfile {
+            max_range_cells: 60,
+            max_attenuation: 40,
+            classify_after_ms: 3_000,
+            sees_wrecks: false,
+            share_range_cells: 30,
+            signature: vec![
+                SignatureFactor {
+                    class: mush_atlas::TerrainClass::Road,
+                    moving_permille: 1_000,
+                    stopped_permille: 1_000,
+                },
+                SignatureFactor {
+                    class: mush_atlas::TerrainClass::Ground,
+                    moving_permille: 1_000,
+                    stopped_permille: 900,
+                },
+                SignatureFactor {
+                    class: mush_atlas::TerrainClass::Grass,
+                    moving_permille: 1_000,
+                    stopped_permille: 800,
+                },
+                SignatureFactor {
+                    class: mush_atlas::TerrainClass::Rubble,
+                    moving_permille: 950,
+                    stopped_permille: 700,
+                },
+                SignatureFactor {
+                    class: mush_atlas::TerrainClass::WoodsLight,
+                    moving_permille: 900,
+                    stopped_permille: 650,
+                },
+                SignatureFactor {
+                    class: mush_atlas::TerrainClass::WoodsHeavy,
+                    moving_permille: 800,
+                    stopped_permille: 500,
+                },
+            ],
+        }
+    }
+
+    /// The shipped cannon's one number the arena reads: 2,500 m of reach, which
+    /// makes the derived `tempo.alert_range_cm` 5,000 m.
+    pub(crate) fn cannon() -> WeaponSummary {
+        WeaponSummary {
+            id: SmolStr::new("cannon"),
+            max_range_cm: 250_000,
+            cycle_ms: 4_000,
+            ammunition: SmolStr::new("tacsim.ammunition.he_105"),
+            burst_rounds: 1,
+            muzzle_speed_cms: 145_000,
+        }
+    }
+
+    /// A tank that sees and shoots: [`tank`] with the shipped sensor and the
+    /// shipped cannon.
+    pub(crate) fn scout(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+        CustodyUnit {
+            sensor: Some(visual()),
+            weapons: vec![cannon()],
+            ..tank(id, team, pose)
         }
     }
 
@@ -244,11 +338,47 @@ pub(crate) mod test_support {
             custody(units, Vec::new()),
             &ArenaConfig::default(),
             &MatchConfig::default(),
+            &SensorsConfig::default(),
         )
         .expect("the test arena")
     }
 
-    /// An arena of `units` whose every channel is at epoch `epoch`.
+    /// The same, over a window with `paint`ed cells — the shape a perception test
+    /// wants, because the property under test is *which ground the target stands
+    /// on*.
+    pub(crate) fn arena_painted(
+        units: Vec<CustodyUnit>,
+        paint: &[(u16, u16, TerrainCell)],
+    ) -> Arena {
+        let mut cells = vec![ground(); usize::from(TEST_WIDTH) * usize::from(TEST_HEIGHT)];
+        for (x, y, cell) in paint {
+            if let Some(slot) =
+                cells.get_mut(usize::from(*y) * usize::from(TEST_WIDTH) + usize::from(*x))
+            {
+                *slot = *cell;
+            }
+        }
+        let definition = ArenaDefinition {
+            terrain: ArenaTerrain::new(TEST_WIDTH, TEST_HEIGHT, 1_000, cells)
+                .expect("the painted window"),
+            ..definition()
+        };
+        Arena::new(
+            CustodyOut {
+                definition,
+                units,
+                pilots: Vec::new(),
+                seed: 2_350,
+            },
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+        .expect("the painted test arena")
+    }
+
+    /// An arena of `units` whose every channel is at epoch `epoch`, with one
+    /// seated pilot per unit (`#1000`, `#1001`, … in unit order).
     pub(crate) fn arena_at_epoch(units: Vec<CustodyUnit>, epoch: u64) -> Arena {
         let pilots = units
             .iter()
@@ -264,6 +394,7 @@ pub(crate) mod test_support {
             custody(units, pilots),
             &ArenaConfig::default(),
             &MatchConfig::default(),
+            &SensorsConfig::default(),
         )
         .expect("the test arena")
     }

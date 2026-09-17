@@ -265,6 +265,7 @@ pass_ms = 1000                     # arena ms between one unit's passes, stagger
 # integer (centimetres, millidegrees, milliseconds, per-mille probabilities), so
 # the host converts this ONCE, at boot, into per mille -- 1.5 becomes 1500.
 max_signature_factor = 1.5         # the ceiling on a target's signature factor, which also bounds the candidate cull radius
+lost_after_passes = 3              # (16b cut S.1) passes a contact may go unrefreshed before it is lost: the TTL is pass_ms x this
 
 [tacsim.resolution]                # (16b cut G) where the hit-resolution tables live
 # The hit curve, the error terms, p_min and p_max: the per-mille no-dice
@@ -282,6 +283,7 @@ weapons = 150                      # weapons on their cadences
 engaged_p99_ms = 25                # the per-pulse p99 ceiling, ms, in Engaged tempo
 max_traces_per_pulse = 4000        # line-of-sight traces one pulse may make (perception has no cross-observer cache)
 max_path_queries_per_pulse = 64    # path queries one pulse may make
+max_share_ops_per_pulse = 256      # (16b cut S.1) contact-share operations one pulse may make: one (sharer, teammate) pair each
 max_ledger_bytes = 67108864        # 64 MiB the streamed ledger must stay under over an hour of arena time
 
 [onboarding]                       # (M9) the chargen_required gate + start rooms

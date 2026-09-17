@@ -314,6 +314,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             max_signature_factor_permille: signature_factor_permille(
                 cfg.sensors.max_signature_factor,
             )?,
+            lost_after_passes: cfg.sensors.lost_after_passes,
         },
         resolution: tacsim::config::ResolutionConfig {
             paths: cfg
@@ -330,6 +331,7 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             engaged_p99_ms: cfg.harness.engaged_p99_ms,
             max_traces_per_pulse: cfg.harness.max_traces_per_pulse,
             max_path_queries_per_pulse: cfg.harness.max_path_queries_per_pulse,
+            max_share_ops_per_pulse: cfg.harness.max_share_ops_per_pulse,
             max_ledger_bytes: cfg.harness.max_ledger_bytes,
         },
     };
@@ -891,6 +893,7 @@ mod tests {
              [tacsim.sensors]\n\
              pass_ms = 750\n\
              max_signature_factor = 2.25\n\
+             lost_after_passes = 5\n\
              [tacsim.resolution]\n\
              paths = [\"  content/resolution.json  \"]\n\
              [tacsim.harness]\n\
@@ -900,6 +903,7 @@ mod tests {
              engaged_p99_ms = 50\n\
              max_traces_per_pulse = 100\n\
              max_path_queries_per_pulse = 8\n\
+             max_share_ops_per_pulse = 12\n\
              max_ledger_bytes = 2048\n",
         );
         let typed = tacsim_config(&cfg).expect("the blocks map");
@@ -942,6 +946,7 @@ mod tests {
             tacsim::config::SensorsConfig {
                 pass_ms: 750,
                 max_signature_factor_permille: 2_250,
+                lost_after_passes: 5,
             }
         );
         assert_eq!(
@@ -958,6 +963,7 @@ mod tests {
                 engaged_p99_ms: 50,
                 max_traces_per_pulse: 100,
                 max_path_queries_per_pulse: 8,
+                max_share_ops_per_pulse: 12,
                 max_ledger_bytes: 2_048,
             }
         );

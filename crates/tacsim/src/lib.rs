@@ -438,6 +438,7 @@ impl GameModule for TacsimRuleset {
             arena_bridge::egress_capacity(&self.cfg.arena),
             &self.cfg.arena,
             &self.cfg.match_,
+            &self.cfg.sensors,
         )?;
         // 16b cut K.1: the lobby — `SIM`, the gate that keeps it inside the
         // three rooms C.1 authored, and the coarse tick that closes boarding.
