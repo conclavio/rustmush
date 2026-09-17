@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "resources": [
+    {
+      "id": "tacsim.metals",
+      "family": "metals",
+      "code": "MET",
+      "label": "Metals",
+      "scale": 0,
+      "note": "Doc 10 S4A, raw. The corridor's ore, before the one refinery at Phobos."
+    },
+    {
+      "id": "tacsim.volatiles",
+      "family": "volatiles",
+      "code": "VOL",
+      "label": "Volatiles",
+      "scale": 0,
+      "note": "Doc 10 S4A, raw. Water and its gases: what Occator extracts at Ceres and what the Dry Decade was about."
+    },
+    {
+      "id": "tacsim.carbon_feedstock",
+      "family": "carbon_feedstock",
+      "code": "CAR",
+      "label": "Carbon feedstock",
+      "scale": 0,
+      "note": "Doc 10 S4A, raw. The Venus Aerostat Compact's export, and the input to composites."
+    },
+    {
+      "id": "tacsim.strategic_elements",
+      "family": "strategic_elements",
+      "code": "STR",
+      "label": "Strategic elements",
+      "scale": 0,
+      "note": "Doc 10 S4A, raw. The scarce end of the periodic table; Vesta and Pallas."
+    },
+    {
+      "id": "tacsim.structural_alloys",
+      "family": "structural_alloys",
+      "code": "ALY",
+      "label": "Structural alloys",
+      "scale": 0,
+      "note": "Doc 10 S4A, refined. The output of alloy_smelt@1, the corridor fixture's one recipe."
+    },
+    {
+      "id": "tacsim.composites",
+      "family": "composites",
+      "code": "CMP",
+      "label": "Composites",
+      "scale": 0,
+      "note": "Doc 10 S4A, refined."
+    },
+    {
+      "id": "tacsim.electronics",
+      "family": "electronics",
+      "code": "ELE",
+      "label": "Electronics",
+      "scale": 0,
+      "note": "Doc 10 S4A, refined. Compute is scarce (doc 11, the Interval), and this is the family that says so."
+    },
+    {
+      "id": "tacsim.propellant",
+      "family": "propellant",
+      "code": "PRP",
+      "label": "Propellant",
+      "scale": 0,
+      "note": "Doc 10 S4A, refined. Settles per journey or sortie."
+    },
+    {
+      "id": "tacsim.industrial_parts",
+      "family": "industrial_parts",
+      "code": "PRT",
+      "label": "Industrial parts",
+      "scale": 0,
+      "note": "Doc 10 S4A, operational. Maintenance and spares aggregate per operational period."
+    },
+    {
+      "id": "tacsim.munitions",
+      "family": "munitions",
+      "code": "MUN",
+      "label": "Munitions",
+      "scale": 0,
+      "note": "Doc 10 S4A, operational. Economic at magazine, rack and lot scale; a weapon tracks its own shots internally, which is what the line_tank's ammo cell is. Nothing in cut C consumes a unit of it."
+    }
+  ]
+}

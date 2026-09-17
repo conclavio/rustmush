@@ -60,11 +60,17 @@ fn vf_g4_the_unit_store_writer_census_is_pinned() {
         sites,
         vec![
             "boot_units".to_owned(),
+            // 16b cut C.2: `@unit/create`'s body became the public
+            // `create_unit`, so a caller with no command line — the arena
+            // pack's applier, making doc 16 §3.3's eight stock tanks at a
+            // first boot — goes through the *same* writer rather than a second
+            // one. The site moved out of `unit_create` and the census did not
+            // grow: still four production writers beyond boot.
+            "create_unit".to_owned(),
             // The `WorldEvent::ObjDestroyed` hook: `hold_active` / `remove_active`
             // / `update_active`, with `&mut Ctx` and NO `ActionTxn`.
             "on_obj_destroyed".to_owned(),
             // §4.1's "three legacy commands".
-            "unit_create".to_owned(),
             "unit_damage".to_owned(),
             "unit_remove".to_owned(),
         ],

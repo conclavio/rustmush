@@ -12,12 +12,11 @@
 //! # What this twin can assert, and what it cannot
 //!
 //! It drives the **production composition** — `mush_server::serve_with_store`,
-//! exactly as the deployed binary does — so it cannot swap a module in. Until cut
-//! C authors `crates/tacsim/content/units/line_tank.json`, that composition's
-//! `TacticsModule` carries an **empty catalog**, `@unit/create` can name no
-//! schema at all, and no unit exists for a match to take custody of. So the
-//! custody round trip itself is asserted by the `mushd` twin, which composes the
-//! fixture spec, and this file asserts the half that is a property of the *split*:
+//! exactly as the deployed binary does — so it cannot swap a module in. 16b cut
+//! C.2 is what made that enough: the composition now carries doc 16 §3.3's stock
+//! tank in its unit catalog and puts the arena's ground and its eight tanks in
+//! the world at a first boot, so this file runs the **whole round trip** on the
+//! units the content made, beside the half that is a property of the *split*:
 //!
 //! * the whole `@arena` lifecycle surface is live across the boundary — the read,
 //!   the refusals, and the fact that each one comes back as itself and not as a
@@ -28,8 +27,10 @@
 //! * the custody admission error is the same named sentence here as everywhere
 //!   else.
 //!
-//! When cut C lands, the `@unit/create` lines this file already spells out in its
-//! `TODO_CUT_C` note become real and the two twins say the same thing.
+//! What stays the `mushd` twin's is everything that is a claim about the
+//! **store**: the byte-identical record around an idle unit, the driven unit's
+//! final placement, the injected panic, the restart reconciliation's result
+//! document. This file can see only what the gateway can see.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -77,6 +78,11 @@ fn test_config(tag: &str) -> Config {
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
     cfg.ipc.exit_on_abandoned_supervision = false;
+    // 16b cut C.2: the layer on, which is what puts the game's own boot packs
+    // in the content module — the proving ground's ground and its eight stock
+    // tanks. It is the one knob this file sets beyond the split rig's own,
+    // because without it there is no arena for a match to be fought on.
+    cfg.tacsim.enabled = true;
     cfg
 }
 
@@ -327,6 +333,16 @@ impl Term {
     }
 
     /// Wait for whichever of `needles` arrives first, answering its index.
+    /// Run one line, wait for `needle`, and hand back everything the world said
+    /// since — the one place this lens has to *read* an answer rather than
+    /// assert on it, because the arena's eight tanks are made by a content pack
+    /// and their dbrefs are the pack's to choose (16b cut C.2).
+    async fn ask(&mut self, line: &str, needle: &str) -> String {
+        let mark = self.mark();
+        self.say(line, needle).await;
+        strip_ansi(&self.seen[mark..])
+    }
+
     async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
         let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
         loop {
@@ -378,6 +394,18 @@ async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Ter
     )
 }
 
+/// The dbref `@find` printed beside `name`, as `<name>(#N)`.
+fn dbref_of(listing: &str, name: &str) -> u32 {
+    listing
+        .lines()
+        .find_map(|line| {
+            let rest = line.split_once(name)?.1;
+            let inside = rest.split_once("(#")?.1;
+            inside.split(')').next()?.trim().parse::<u32>().ok()
+        })
+        .unwrap_or_else(|| panic!("no dbref for {name:?} in:\n{listing}"))
+}
+
 // ---------------------------------------------------------------------------
 // The lens
 // ---------------------------------------------------------------------------
@@ -412,10 +440,6 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
     god.say("@arena/abort", "No match is running.").await;
     god.say("@arena/intent #9999=startup", "not in a running match")
         .await;
-    // TODO_CUT_C: with `content/units/line_tank.json` registered, this becomes
-    // `@unit/create #3=tacsim.unit.line_tank` and the whole `mushd` round trip
-    // runs here too. Until then the production composition's unit catalog is
-    // empty and the refusal names the missing unit, which is the honest answer.
     god.say(
         "@arena/start tacsim.arena.proving_ground=#9998/#9999",
         "is not a tactical unit",
@@ -424,6 +448,43 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
     // And an unknown arena is refused by name rather than by silence.
     god.say("@arena/start nowhere=#9998/#9999", "no arena definition")
         .await;
+
+    // --- (2b) the whole round trip, on the units the content made ---------
+    //
+    // 16b cut C.2 put doc 16 §3.3's eight stock tanks in the world at a first
+    // boot, so the split twin no longer has to invent a unit to have a match:
+    // it finds two of the arena's own and fights on the ground the same pack
+    // authored. This is the half the `mushd` twin proves about the *store*,
+    // proved here about the **boundary** — every one of these lines is a
+    // command the gateway forwards and an answer it carries back.
+    let red = dbref_of(
+        &god.ask("@find Red Tank 1", "END OF LIST").await,
+        "Red Tank 1",
+    );
+    let blue = dbref_of(
+        &god.ask("@find Blue Tank 1", "END OF LIST").await,
+        "Blue Tank 1",
+    );
+    god.say(
+        &format!("@arena/start tacsim.arena.proving_ground=#{red}/#{blue}"),
+        "is running on",
+    )
+    .await;
+    god.say("@arena/status", "running, tempo").await;
+    god.say(&format!("@arena/intent #{red}=startup"), "Ordered")
+        .await;
+    // And an admission site refuses while the arena holds it — the custody
+    // error, crossing the boundary as itself.
+    god.say(
+        &format!("@spatial/unplace #{red}"),
+        "deployed in arena match",
+    )
+    .await;
+    god.say("@arena/abort", "is stopping").await;
+    // The end itself is an *unsolicited* line the arena task pushes back through
+    // the boundary when the check-in lands, which is the last thing a split can
+    // break: an answer nobody asked for.
+    god.expect("Its units are checked in.").await;
 
     // --- (3) make the server EXIT ON ITS OWN, mid-session ------------------
     let before_crash = god.mark();

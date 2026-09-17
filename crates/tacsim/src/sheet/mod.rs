@@ -326,7 +326,9 @@ impl GameModule for PilotRuleset {
         // exactly where the WoD ruleset registered `wod.usd`. This module is composed
         // after the economy module, so its store is loaded by the time this runs; a
         // refusal is logged, not fatal (`@instrument/register` is the repair path).
-        crate::economy::ensure_instrument(ctx, &self.economy);
+        // 16b cut C.2 (C4): and the ten commodity families of doc 10 S4A beside
+        // it, on the same rule, from `content/resources.json`.
+        crate::economy::ensure_instruments(ctx, &self.economy);
         Ok(())
     }
 }

@@ -106,6 +106,14 @@ pub mod commands;
 pub mod composition;
 pub mod config;
 pub mod content;
+/// 16b cut C.2 (C1, C3, C4): **the game's typed definitions and the content it
+/// ships** (doc 16 §3.3, §3.5, §3.6, §4, §7).
+///
+/// Six new [`pack::PackEntry`] kinds with strict decoders, the one function that
+/// binds an authored unit to M32's own instantiation shape and mints every
+/// `DefinitionRef` the C1 registry will carry, the arena's window built from the
+/// atlas's records, and the nine content files compiled in beside them.
+pub mod definitions;
 pub mod economy;
 pub mod ephemeris;
 pub mod fixture;
@@ -330,6 +338,37 @@ impl TacsimRuleset {
     pub fn config(&self) -> &TacsimConfig {
         &self.cfg
     }
+
+    /// The verified packs, or the message naming the failing file as a
+    /// composition refusal (16b cut C.2).
+    fn loaded_packs(&self) -> Result<Vec<LoadedPack>, ModError> {
+        match &self.loaded {
+            Ok(packs) => Ok(packs.clone()),
+            Err(detail) => Err(ModError::msg(detail.clone())),
+        }
+    }
+}
+
+/// **The game's definitions, bound from the shipped content alone** (16b cut
+/// C.2).
+///
+/// What the composition root hands `TacticsModule::with_catalog` so
+/// `@unit/create <obj>=tacsim.unit.line_tank` resolves in production. It is the
+/// *built-in* content and not `[tacsim].pack_paths`' because
+/// `composition::server_modules_with` is not handed the `[tacsim]` block —
+/// the tactics module is composed several arguments before the layer that owns
+/// it — and because the built-in content is the game's, which is the catalog
+/// `@unit/create` is for. An operator pack's unit definitions still register in
+/// the C1 registry (this module's `register` binds every loaded pack); what they
+/// do not do is reach the staff verb's catalog. When cut K needs them to, the
+/// argument goes down the composition root and this function takes it.
+///
+/// # Errors
+///
+/// A message naming the entry when the shipped content does not bind — a build
+/// error, since `crates/tacsim/tests/content.rs` pins it.
+pub fn builtin_definitions() -> Result<definitions::Catalog, String> {
+    definitions::Catalog::build_game(&[], NS).map_err(|error| error.to_string())
 }
 
 impl Default for TacsimRuleset {
@@ -363,6 +402,31 @@ impl GameModule for TacsimRuleset {
         slot.install_packs(packs);
         reg.state(slot);
         commands::register(reg)?;
+        // 16b cut C.2 (C1): the game's definitions, through the C1 registry.
+        // One validator per kind first — `Registrar::definition` admits nothing
+        // whose kind has none — then the descriptors in dependency order.
+        // Unconditional, like everything else this module registers: a
+        // definition is a fact about the shipped content, not about whether an
+        // operator turned the layer on, and `@unit/create` must be able to name
+        // the stock tank on any composition that carries this crate.
+        let catalog = definitions::Catalog::build_game(&self.loaded_packs()?, NS)
+            .map_err(|error| ModError::msg(error.to_string()))?;
+        for kind in definitions::KINDS {
+            let of_kind: Vec<_> = catalog
+                .descriptors
+                .iter()
+                .filter(|descriptor| descriptor.kind().as_str() == kind)
+                .cloned()
+                .collect();
+            reg.definition_validator(
+                mush_core::mechanics::DefinitionKind::new(kind)
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                definitions::exact_validator(of_kind),
+            )?;
+        }
+        for descriptor in &catalog.descriptors {
+            reg.definition(descriptor.clone())?;
+        }
         // 16b cut T.2: the arena's world side — the `tacsim.frame` feed, the
         // egress re-entry handler, the two seat facts the kernel publishes, the
         // `ArenaRegistry` slot and `@arena`. Registered unconditionally, for the

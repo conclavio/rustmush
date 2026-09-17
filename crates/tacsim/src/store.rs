@@ -165,6 +165,16 @@ pub struct TacsimStore {
     pub(crate) missing: BTreeMap<(CanonicalId, u32), BTreeSet<CanonicalId>>,
     /// The highest published version per pack, floored on every parsed key.
     pub(crate) watermark: BTreeMap<CanonicalId, u32>,
+    /// **16b cut C.2** — the decoded, checked and bound game definitions
+    /// ([`crate::definitions::Catalog`]), re-derived from `loaded` whenever the
+    /// packs are installed.
+    ///
+    /// It lives here rather than in a slot of its own because the arena pack's
+    /// applier runs under the **content** module's `Ctx` and reaches this crate
+    /// only by type; one slot the whole layer already owns is one place for it
+    /// to look. Like `loaded` it is **not persisted**: it is a pure function of
+    /// the pack files, and a world remembers a pack by its ledger row.
+    pub(crate) definitions: std::sync::Arc<crate::definitions::Catalog>,
 }
 
 impl TacsimStore {
@@ -541,6 +551,18 @@ impl TacsimStore {
     /// Install the packs the host read and this module verified.
     pub(crate) fn install_packs(&mut self, packs: Vec<LoadedPack>) {
         self.loaded.clear();
+        // 16b cut C.2: bind before installing, so the slot never holds packs
+        // whose definitions did not resolve. A refusal here is already a boot
+        // refusal (`TacsimRuleset::register` binds the same packs and returns
+        // it), so this arm is the honest degradation rather than a second
+        // policy: the packs are there and the definitions are empty.
+        match crate::definitions::Catalog::build_game(&packs, crate::NS) {
+            Ok(catalog) => self.definitions = std::sync::Arc::new(catalog),
+            Err(error) => {
+                tracing::error!(%error, "tacsim: the loaded packs' definitions did not bind");
+                self.definitions = std::sync::Arc::default();
+            }
+        }
         for loaded in packs {
             let key = (
                 loaded.pack.manifest().id().clone(),
@@ -548,6 +570,12 @@ impl TacsimStore {
             );
             self.loaded.insert(key, loaded);
         }
+    }
+
+    /// **16b cut C.2** — the bound game definitions.
+    #[must_use]
+    pub fn definitions(&self) -> &crate::definitions::Catalog {
+        &self.definitions
     }
 
     /// The allocator document's body.

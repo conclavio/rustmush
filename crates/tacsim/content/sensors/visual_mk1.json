@@ -1,0 +1,24 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.visual_mk1",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "967a8bc6fef2219da14a4b3b80571aad63d8717bf147528229e4f0b3d5d834e3",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.sensor.visual_mk1": {
+      "kind": "sensor",
+      "def": {
+        "label": "Mk1 visual sight",
+        "max_range_cells": 60,
+        "max_attenuation": 40,
+        "classify_after_ms": 3000,
+        "sees_wrecks": false,
+        "emission": null,
+        "jamming": null,
+        "note": "max_range_cells 60 and classify_after_ms 3,000 are 16b section 9's own constants, moved to content as that table says. max_attenuation 40 is cut C's, and it is picked off the atlas's own opacity table rather than out of the air: light woods attenuate 25 and heavy woods 60, so 40 is exactly the line that lets a tank see through one belt of light woods and not through a canopy. sees_wrecks is false, which is what makes doc 16 section 3.3's 'a wreck is an obstacle and a contact, never a target' start as an obstacle only."
+      }
+    }
+  }
+}

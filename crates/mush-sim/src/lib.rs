@@ -99,9 +99,9 @@ pub use seat::{
 pub use station::{MAX_STATION_FALLBACKS, StationFallback, StationFallbacks};
 pub use transition::{Plan, SpatialError, Transition, apply, move_carrier_subtree, plan, run};
 pub use window::{
-    MAX_WINDOWS, OpenWindow, arc_between, close_window, metric_between, open_window, participants,
-    place, pose_of, raw_participants, register_room_resolver, register_window_arc,
-    register_window_geometry, unplace, update_window, window_of, windows,
+    MAX_WINDOWS, OpenWindow, arc_between, close_window, metric_between, open_passive_domain,
+    open_window, participants, place, pose_of, raw_participants, register_room_resolver,
+    register_window_arc, register_window_geometry, unplace, update_window, window_of, windows,
 };
 
 /// Module configuration.

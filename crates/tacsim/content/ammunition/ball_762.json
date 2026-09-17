@@ -1,0 +1,21 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.ball_762",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "59f3da8fbc7d0f656c8b9b94bd06106fa9e071b52109cebc101af0f087697bab",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.ammunition.ball_762": {
+      "kind": "ammunition",
+      "def": {
+        "label": "7.62 mm ball",
+        "damage": 3,
+        "penetration_class": "ball",
+        "count_per_load": 2000,
+        "note": "Cut C's number. 3 damage is deliberately below anything that threatens the line_tank's 120 cm track facets in one burst: a ten-round burst that all hits is 30, so the coaxial is an anti-infantry and anti-drone weapon that wears a track down over a whole match rather than a second cannon. 2,000 rounds is the belt."
+      }
+    }
+  }
+}

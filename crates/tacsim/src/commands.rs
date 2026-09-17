@@ -735,6 +735,48 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
                 def.period_mdays as f64 / 1_000.0,
                 def.phase_mdeg as f64 / 1_000.0
             ),
+            // 16b cut C.2: doc 16 §4's six. Each renders the shape a reviewer
+            // checks a version bump against, and nothing a listing should not
+            // carry — these are rules definitions, so there is no fog to keep.
+            PackEntry::Unit(def) => format!(
+                "{} — {} sections, {} components, {} cm/s",
+                def.label,
+                def.sections.len(),
+                def.components.len(),
+                def.mobility.tracked.max_speed_cms
+            ),
+            PackEntry::Weapon(def) => format!(
+                "{} — {}, {} cm at {} ms, {}",
+                def.label,
+                def.delivery.as_str(),
+                def.max_range_cm(),
+                def.cycle_ms,
+                def.ammunition
+            ),
+            PackEntry::Ammunition(def) => format!(
+                "{} — {} damage, {} per load",
+                def.label, def.damage, def.count_per_load
+            ),
+            PackEntry::Sensor(def) => format!(
+                "{} — {} cells, classifies after {} ms",
+                def.label, def.max_range_cells, def.classify_after_ms
+            ),
+            PackEntry::Resolution(def) => format!(
+                "{} — {} curve points, clamped {}‰ to {}‰",
+                def.label,
+                def.hit_curve.len(),
+                def.p_min,
+                def.p_max
+            ),
+            PackEntry::Arena(def) => format!(
+                "{} — {}×{} at {} cm, {} units, {} waypoints",
+                def.label,
+                def.cols,
+                def.rows,
+                def.cell_cm,
+                def.tanks.len(),
+                def.waypoints.nodes.len()
+            ),
         };
         rows.push(format!("  {entry_id} ({}) {detail}", entry.label()));
     }

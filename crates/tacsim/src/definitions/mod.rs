@@ -1,0 +1,645 @@
+//! **The game's typed definitions** (16b cut C.2, C1; doc 16 §4 "Content
+//! packs", §7 "The game crate"; D-16-13).
+//!
+//! Six new [`crate::pack::PackEntry`] kinds — `unit`, `weapon`, `ammunition`,
+//! `sensor`, `resolution`, `arena` — decoded strictly (`deny_unknown_fields`,
+//! integers only: centimetres, millidegrees, milliseconds, cm/s, per-mille),
+//! bounded on load, and registered at composition through the C1 registry as
+//! [`DefinitionDescriptor`]s with exact [`DefinitionRef`]s.
+//!
+//! # Three things happen in one place, on purpose
+//!
+//! [`Catalog::build`] decodes the entries, checks every reference among them,
+//! and mints every definition reference. It is one function because the three
+//! have to agree: the `mush_tactics::UnitCatalog` the composition root hands
+//! `TacticsModule` and the descriptors the module hands `Registrar::definition`
+//! must carry **the same** `DefinitionRef` values, and the only way to be sure
+//! of that without a second lane is for one function to produce both. The refs
+//! come out of a scratch [`DefinitionRegistryBuilder`] stamped with the module's
+//! own owner id, and a definition's digest is a pure function of
+//! `(owner, kind, id, version, payload, references)`, so the scratch registry's
+//! answer *is* the real registry's answer.
+//!
+//! # An entry id is a definition id
+//!
+//! The pack-local entry id and the registry's `DefinitionId` are the same
+//! string, so `@unit/create #3=tacsim.unit.line_tank` names the entry a reviewer
+//! reads in the file. A definition's **version** is its pack's version, which is
+//! what makes "a changed definition is a new version" true by the pack ledger's
+//! own rule rather than by a second version field nobody would bump: a pack
+//! re-signed in place under one version already refuses the boot
+//! ([`crate::boot_reconcile`]).
+//!
+//! Across the loaded packs an id of these six kinds is **unique**. Two packs
+//! that declare one are refused naming both, rather than one silently shadowing
+//! the other or both registering and leaving `@unit/create`'s "current" lookup
+//! ambiguous.
+
+pub mod ammunition;
+pub mod arena;
+pub mod content;
+pub mod resolution;
+pub mod resources;
+pub mod sensor;
+pub mod unit;
+pub mod weapon;
+
+use std::collections::BTreeMap;
+
+use mush_core::CanonicalId;
+use mush_core::mechanics::{
+    DefinitionDescriptor, DefinitionRef, DefinitionRegistryBuilder, DefinitionValidationContext,
+    OwnerId,
+};
+use mush_tactics::{MobilityVocabulary, UnitCatalog, UnitCatalogBuilder};
+
+use crate::config::LoadedPack;
+use crate::pack::PackEntry;
+
+pub use ammunition::AmmunitionDef;
+pub use arena::{ArenaBuildError, ArenaDef, from_pack};
+pub use resolution::ResolutionDef;
+pub use resources::ResourceTable;
+pub use sensor::SensorDef;
+pub use unit::{UnitBinding, UnitSpec, to_tactical_unit, tracked_rules};
+pub use weapon::WeaponDef;
+
+/// The most bytes a human-facing label inside a definition may occupy — the
+/// pack format's own bound, restated so a definition entry is held to it too.
+pub const MAX_LABEL_BYTES: usize = crate::pack::MAX_LABEL_BYTES;
+
+/// The most bytes one `note` may occupy. A note explains a number to the next
+/// author; it is not documentation, and a pack is not a wiki.
+pub const MAX_NOTE_BYTES: usize = 1_024;
+
+/// The most other definitions one may name. `MechanicsLimits` has its own,
+/// larger bound; this is the authoring one, so a refusal names the entry rather
+/// than the registry.
+pub const MAX_ENTRY_REFERENCES: usize = 32;
+
+/// The definition kinds this crate registers, in dependency order.
+///
+/// `schema` and `component` are M32's vocabulary (`mush_tactics`'
+/// `validate_spec_definition_kinds` fixes them), and the other six are doc 16
+/// §4's content kinds. Every one needs exactly one owner-side validator, which
+/// is why the list is a constant rather than six literals.
+pub const KINDS: [&str; 8] = [
+    "schema",
+    "ammunition",
+    "weapon",
+    "sensor",
+    "resolution",
+    "component",
+    "unit",
+    "arena",
+];
+
+/// The six kinds a TacSim pack may carry (the other two are minted, never
+/// authored).
+pub const CONTENT_KINDS: [&str; 6] = [
+    "unit",
+    "weapon",
+    "ammunition",
+    "sensor",
+    "resolution",
+    "arena",
+];
+
+/// Why a definition refused.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum DefinitionError {
+    /// A value or a shape the entry may not carry.
+    #[error("{entry}: {detail}")]
+    Value {
+        /// The entry that refused.
+        entry: String,
+        /// What is wrong.
+        detail: String,
+    },
+    /// An entry names something no loaded pack declares.
+    #[error("{entry}: names {kind} `{id}`, which no loaded pack declares")]
+    Reference {
+        /// The entry that names it.
+        entry: String,
+        /// What kind of thing it named.
+        kind: String,
+        /// The id it named.
+        id: String,
+    },
+    /// Two packs declare one entry id of a definition kind.
+    #[error("{entry}: declared by {first} and by {second}; a definition id names one definition")]
+    Duplicate {
+        /// The entry id.
+        entry: String,
+        /// The first pack.
+        first: String,
+        /// The second.
+        second: String,
+    },
+}
+
+impl DefinitionError {
+    /// A value refusal.
+    pub(crate) fn value(entry: &str, detail: impl Into<String>) -> DefinitionError {
+        DefinitionError::Value {
+            entry: entry.to_string(),
+            detail: detail.into(),
+        }
+    }
+
+    /// A dangling reference.
+    pub(crate) fn reference(entry: &str, kind: &str, id: &str) -> DefinitionError {
+        DefinitionError::Reference {
+            entry: entry.to_string(),
+            kind: kind.to_string(),
+            id: id.to_string(),
+        }
+    }
+}
+
+/// A label's bound.
+pub(crate) fn check_label(entry: &str, label: &str) -> Result<(), DefinitionError> {
+    if label.is_empty() || label.len() > MAX_LABEL_BYTES {
+        return Err(DefinitionError::value(
+            entry,
+            format!(
+                "a label is 1 to {MAX_LABEL_BYTES} bytes; {} is not",
+                label.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A note's bound.
+pub(crate) fn check_note(entry: &str, note: &str) -> Result<(), DefinitionError> {
+    if note.len() > MAX_NOTE_BYTES {
+        return Err(DefinitionError::value(
+            entry,
+            format!(
+                "a note is at most {MAX_NOTE_BYTES} bytes; {} is not",
+                note.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// One decoded entry with the pack it came from and the version that pack
+/// stamps on it.
+#[derive(Clone, Debug)]
+struct Sourced<T> {
+    pack: CanonicalId,
+    version: u32,
+    def: T,
+}
+
+/// **The game's definitions, decoded, checked and bound** (16b cut C.2).
+///
+/// Everything the composition root, the module and the arena pack's applier
+/// need, produced once so none of them can hold a different answer.
+#[derive(Clone, Debug, Default)]
+pub struct Catalog {
+    /// The descriptors, in dependency order: register them in this order.
+    pub descriptors: Vec<DefinitionDescriptor>,
+    /// The `mush-tactics` catalog, which is what `@unit/create` resolves a bare
+    /// schema id through.
+    pub units: UnitCatalog,
+    /// Each unit entry's binding, by entry id — the applier's way to a
+    /// `TacticalUnit` without re-deriving anything.
+    pub bindings: BTreeMap<CanonicalId, UnitBinding>,
+    /// The authored unit specs, by entry id.
+    pub specs: BTreeMap<CanonicalId, UnitSpec>,
+    /// The arenas, by entry id.
+    pub arenas: BTreeMap<CanonicalId, ArenaDef>,
+    /// The weapons, by entry id.
+    pub weapons: BTreeMap<CanonicalId, WeaponDef>,
+    /// The ammunition, by entry id.
+    pub ammunition: BTreeMap<CanonicalId, AmmunitionDef>,
+    /// The sensors, by entry id.
+    pub sensors: BTreeMap<CanonicalId, SensorDef>,
+    /// The resolution tables, by entry id.
+    pub resolutions: BTreeMap<CanonicalId, ResolutionDef>,
+    /// Every minted reference, by entry id — the exact identity a persisted
+    /// unit and a result record point at.
+    pub references: BTreeMap<CanonicalId, DefinitionRef>,
+}
+
+impl Catalog {
+    /// **Decode, check and bind every definition in `packs`.**
+    ///
+    /// # Errors
+    ///
+    /// [`DefinitionError`] naming the entry: a bound, a dangling reference among
+    /// the loaded packs, or one id declared by two packs.
+    pub fn build(packs: &[LoadedPack], owner: &str) -> Result<Catalog, DefinitionError> {
+        let owner = OwnerId::new(owner)
+            .map_err(|error| DefinitionError::value("tacsim", error.to_string()))?;
+        let mut ammunition: BTreeMap<CanonicalId, Sourced<AmmunitionDef>> = BTreeMap::new();
+        let mut weapons: BTreeMap<CanonicalId, Sourced<WeaponDef>> = BTreeMap::new();
+        let mut sensors: BTreeMap<CanonicalId, Sourced<SensorDef>> = BTreeMap::new();
+        let mut resolutions: BTreeMap<CanonicalId, Sourced<ResolutionDef>> = BTreeMap::new();
+        let mut units: BTreeMap<CanonicalId, Sourced<UnitSpec>> = BTreeMap::new();
+        let mut arenas: BTreeMap<CanonicalId, Sourced<ArenaDef>> = BTreeMap::new();
+
+        // (1) Collect, refusing a duplicate id across packs and re-running each
+        // entry's own bounds. `PackEntry::check` already ran at load; running it
+        // again here costs nothing and makes this function total over any pack
+        // set a caller assembles.
+        for loaded in packs {
+            let pack = loaded.pack.manifest().id().clone();
+            let version = loaded.pack.manifest().version();
+            for (id, entry) in loaded.pack.entries() {
+                let name = id.as_str();
+                match entry {
+                    PackEntry::Ammunition(def) => {
+                        def.check(name)?;
+                        insert(&mut ammunition, id, &pack, version, def.clone())?;
+                    }
+                    PackEntry::Weapon(def) => {
+                        def.check(name)?;
+                        insert(&mut weapons, id, &pack, version, def.clone())?;
+                    }
+                    PackEntry::Sensor(def) => {
+                        def.check(name)?;
+                        insert(&mut sensors, id, &pack, version, def.clone())?;
+                    }
+                    PackEntry::Resolution(def) => {
+                        def.check(name)?;
+                        insert(&mut resolutions, id, &pack, version, def.clone())?;
+                    }
+                    PackEntry::Unit(def) => {
+                        def.check(name)?;
+                        insert(&mut units, id, &pack, version, def.clone())?;
+                    }
+                    PackEntry::Arena(def) => {
+                        def.check(name)?;
+                        insert(&mut arenas, id, &pack, version, def.clone())?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // (2) Every reference among them, at load (doc 16 §4: *every definition
+        // … validates its references*). The arena's atlas records are the one
+        // reference that cannot be checked here and is checked at apply instead.
+        for (id, sourced) in &weapons {
+            if !ammunition.contains_key(&sourced.def.ammunition) {
+                return Err(DefinitionError::reference(
+                    id.as_str(),
+                    "ammunition",
+                    sourced.def.ammunition.as_str(),
+                ));
+            }
+        }
+        for (id, sourced) in &units {
+            for weapon in sourced.def.weapons() {
+                if !weapons.contains_key(weapon) {
+                    return Err(DefinitionError::reference(
+                        id.as_str(),
+                        "weapon",
+                        weapon.as_str(),
+                    ));
+                }
+            }
+            for sensor in sourced.def.sensors() {
+                if !sensors.contains_key(sensor) {
+                    return Err(DefinitionError::reference(
+                        id.as_str(),
+                        "sensor",
+                        sensor.as_str(),
+                    ));
+                }
+            }
+        }
+        for (id, sourced) in &arenas {
+            for tank in &sourced.def.tanks {
+                if !units.contains_key(&tank.unit) {
+                    return Err(DefinitionError::reference(
+                        id.as_str(),
+                        "unit",
+                        tank.unit.as_str(),
+                    ));
+                }
+            }
+        }
+
+        // (3) Mint, in dependency order.
+        let mut scratch = DefinitionRegistryBuilder::new();
+        let mut minter = Minter {
+            scratch: &mut scratch,
+            owner: &owner,
+        };
+        let mut out = Catalog::default();
+        let mut schemas: BTreeMap<&'static str, DefinitionRef> = BTreeMap::new();
+        for (id, payload) in schema_payloads() {
+            let descriptor = unit::descriptor("schema", id, 1, payload, Vec::new())
+                .map_err(|error| DefinitionError::value(id, error))?;
+            let reference = unit::register(&mut minter, descriptor.clone(), id)?;
+            out.descriptors.push(descriptor);
+            schemas.insert(id, reference);
+        }
+        for (id, sourced) in &ammunition {
+            let payload = serde_json::to_value(&sourced.def)
+                .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
+            out.mint(
+                &mut minter,
+                "ammunition",
+                id,
+                sourced.version,
+                payload,
+                Vec::new(),
+            )?;
+            out.ammunition.insert(id.clone(), sourced.def.clone());
+        }
+        for (id, sourced) in &weapons {
+            let reference = out
+                .references
+                .get(&sourced.def.ammunition)
+                .cloned()
+                .ok_or_else(|| {
+                    DefinitionError::reference(
+                        id.as_str(),
+                        "ammunition",
+                        sourced.def.ammunition.as_str(),
+                    )
+                })?;
+            let payload = serde_json::to_value(&sourced.def)
+                .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
+            out.mint(
+                &mut minter,
+                "weapon",
+                id,
+                sourced.version,
+                payload,
+                vec![reference],
+            )?;
+            out.weapons.insert(id.clone(), sourced.def.clone());
+        }
+        for (id, sourced) in &sensors {
+            let payload = serde_json::to_value(&sourced.def)
+                .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
+            out.mint(
+                &mut minter,
+                "sensor",
+                id,
+                sourced.version,
+                payload,
+                Vec::new(),
+            )?;
+            out.sensors.insert(id.clone(), sourced.def.clone());
+        }
+        for (id, sourced) in &resolutions {
+            let payload = serde_json::to_value(&sourced.def)
+                .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
+            out.mint(
+                &mut minter,
+                "resolution",
+                id,
+                sourced.version,
+                payload,
+                Vec::new(),
+            )?;
+            out.resolutions.insert(id.clone(), sourced.def.clone());
+        }
+        let weapon_defs: BTreeMap<CanonicalId, WeaponDef> = out.weapons.clone();
+        let ammunition_defs: BTreeMap<CanonicalId, AmmunitionDef> = out.ammunition.clone();
+        let sensor_defs: BTreeMap<CanonicalId, SensorDef> = out.sensors.clone();
+        // Every reference minted so far: the ammunition, the weapons, the
+        // sensors and the resolution tables. A unit's binding looks its weapon
+        // and sensor rows up in it by id, and the two lookups share one map
+        // because an id is unique across the kinds by construction.
+        let minted = out.references.clone();
+        let vocabulary = MobilityVocabulary::base().freeze();
+        let mut catalog = UnitCatalogBuilder::new();
+        for (id, sourced) in &units {
+            let binding = unit::bind(
+                &mut minter,
+                id,
+                sourced.version,
+                &sourced.def,
+                unit::UnitContext {
+                    ammunition: &ammunition_defs,
+                    weapons: &weapon_defs,
+                    sensors: &sensor_defs,
+                    weapon_refs: &minted,
+                    sensor_refs: &minted,
+                    schemas: &schemas,
+                },
+            )?;
+            out.references
+                .insert(id.clone(), binding.spec.definition.clone());
+            out.descriptors.extend(binding.descriptors.iter().cloned());
+            catalog
+                .add(binding.spec.clone(), &vocabulary)
+                .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
+            out.bindings.insert(id.clone(), binding);
+            out.specs.insert(id.clone(), sourced.def.clone());
+        }
+        out.units = catalog.freeze();
+        for (id, sourced) in &arenas {
+            let mut references: Vec<DefinitionRef> = Vec::new();
+            for tank in &sourced.def.tanks {
+                let reference = out.references.get(&tank.unit).cloned().ok_or_else(|| {
+                    DefinitionError::reference(id.as_str(), "unit", tank.unit.as_str())
+                })?;
+                if !references.contains(&reference) {
+                    references.push(reference);
+                }
+            }
+            let payload = serde_json::to_value(&sourced.def)
+                .map_err(|error| DefinitionError::value(id.as_str(), error.to_string()))?;
+            out.mint(
+                &mut minter,
+                "arena",
+                id,
+                sourced.version,
+                payload,
+                references,
+            )?;
+            out.arenas.insert(id.clone(), sourced.def.clone());
+        }
+        Ok(out)
+    }
+
+    /// **The game's definitions: the content compiled into this binary, plus
+    /// whatever `[tacsim].pack_paths` added** (16b cut C.2).
+    ///
+    /// The one function every consumer calls, so the composition root's unit
+    /// catalog, the module's registry descriptors and the arena applier's
+    /// bindings are three readings of one answer. An operator pack that carries
+    /// a `(id, version)` the shipped content already declares is **skipped**
+    /// here rather than refused: with the layer on it is the very same file
+    /// through the other route, `verify_sources` already refused a *different*
+    /// file under a shipped name, and the digest is what makes those two
+    /// statements the same one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Catalog::build`], plus a shipped pack that does not verify — a
+    /// build error, since `crates/tacsim/tests/content.rs` pins it.
+    pub fn build_game(operator: &[LoadedPack], owner: &str) -> Result<Catalog, DefinitionError> {
+        let mut packs: Vec<LoadedPack> = Vec::new();
+        for source in content::sources() {
+            let pack = crate::pack::load_pack(&source.bytes)
+                .map_err(|error| DefinitionError::value(&source.name, error.to_string()))?;
+            packs.push(LoadedPack {
+                source: source.name,
+                pack,
+            });
+        }
+        let shipped: Vec<(CanonicalId, u32)> = packs
+            .iter()
+            .map(|loaded| {
+                (
+                    loaded.pack.manifest().id().clone(),
+                    loaded.pack.manifest().version(),
+                )
+            })
+            .collect();
+        for loaded in operator {
+            let key = (
+                loaded.pack.manifest().id().clone(),
+                loaded.pack.manifest().version(),
+            );
+            if shipped.contains(&key) {
+                continue;
+            }
+            packs.push(loaded.clone());
+        }
+        Catalog::build(&packs, owner)
+    }
+
+    fn mint(
+        &mut self,
+        minter: &mut Minter<'_>,
+        kind: &str,
+        id: &CanonicalId,
+        version: u32,
+        payload: serde_json::Value,
+        references: Vec<DefinitionRef>,
+    ) -> Result<(), DefinitionError> {
+        let name = id.as_str();
+        // Every content definition is its key's current version: one id names
+        // one definition across the loaded packs (see this module's header), so
+        // there is never a second candidate for the registry to choose between.
+        let descriptor = unit::descriptor(kind, name, version, payload, references)
+            .map_err(|error| DefinitionError::value(name, error))?
+            .as_current();
+        let reference = unit::register(minter, descriptor.clone(), name)?;
+        self.descriptors.push(descriptor);
+        self.references.insert(id.clone(), reference);
+        Ok(())
+    }
+}
+
+/// The scratch registry a definition's exact reference is computed in, and the
+/// owner it is stamped with — the pair every mint needs and neither half of
+/// which means anything alone.
+/// Public because [`unit::bind`] takes one and is part of this module's
+/// surface; its two fields are the crate's, and nothing outside constructs one.
+pub struct Minter<'a> {
+    pub(crate) scratch: &'a mut DefinitionRegistryBuilder,
+    pub(crate) owner: &'a OwnerId,
+}
+
+/// The three `schema` definitions the unit binding needs, with payloads that
+/// say what each opaque blob carries. They are minted rather than authored: a
+/// schema is the *shape* of a rules value, which is code's, not content's.
+fn schema_payloads() -> Vec<(&'static str, serde_json::Value)> {
+    vec![
+        (
+            unit::UNIT_RULES_SCHEMA,
+            serde_json::json!({
+                "carries": [
+                    "facets", "silhouettes", "sensor_height_cm",
+                    "consequences", "components", "mobility"
+                ],
+                "read_by": "tacsim"
+            }),
+        ),
+        (
+            unit::TRACKED_RULES_SCHEMA,
+            serde_json::json!({
+                "carries": [
+                    "max_speed_cms", "accel_cms2", "brake_cms2",
+                    "turn_rate_mdeg_s", "reverse_factor_pct"
+                ],
+                "read_by": "tacsim"
+            }),
+        ),
+        (
+            unit::POWER_RULES_SCHEMA,
+            serde_json::json!({ "carries": ["states", "state"], "read_by": "tacsim" }),
+        ),
+    ]
+}
+
+/// Insert one entry, refusing an id two packs both declare.
+fn insert<T>(
+    into: &mut BTreeMap<CanonicalId, Sourced<T>>,
+    id: &CanonicalId,
+    pack: &CanonicalId,
+    version: u32,
+    def: T,
+) -> Result<(), DefinitionError> {
+    if let Some(existing) = into.get(id) {
+        return Err(DefinitionError::Duplicate {
+            entry: id.to_string(),
+            first: format!("{}@{}", existing.pack, existing.version),
+            second: format!("{pack}@{version}"),
+        });
+    }
+    into.insert(
+        id.clone(),
+        Sourced {
+            pack: pack.clone(),
+            version,
+            def,
+        },
+    );
+    Ok(())
+}
+
+/// **The one validator per kind** (doc 16 §4: *every definition is registered
+/// through the C1 registry with an exact `DefinitionRef`*).
+///
+/// `Registrar::definition` admits nothing whose kind has no owner-side
+/// validator, and this is that validator: the frozen registry's entry must be
+/// byte-identical to the descriptor this crate built, references and current
+/// flag included. A definition that reached the registry by any other route,
+/// or a payload that drifted between building the catalog and registering it,
+/// fails composition rather than being discovered at the first `@unit/create`.
+pub fn exact_validator(
+    descriptors: Vec<DefinitionDescriptor>,
+) -> impl Fn(&DefinitionValidationContext<'_>) -> Result<(), String> + Send + Sync + 'static {
+    let expected: BTreeMap<(String, u32), DefinitionDescriptor> = descriptors
+        .into_iter()
+        .map(|descriptor| {
+            (
+                (descriptor.id().as_str().to_string(), descriptor.version()),
+                descriptor,
+            )
+        })
+        .collect();
+    move |context: &DefinitionValidationContext<'_>| {
+        let entry = context.definition();
+        let key = (
+            entry.reference().key().id.as_str().to_string(),
+            entry.reference().version(),
+        );
+        let Some(descriptor) = expected.get(&key) else {
+            return Err("unknown definition id or version for the tacsim content packs".into());
+        };
+        let mut references = descriptor.references().to_vec();
+        references.sort();
+        if entry.payload() != descriptor.payload()
+            || entry.references() != references
+            || entry.is_current() != descriptor.is_current()
+        {
+            return Err("definition does not match its typed tacsim descriptor".into());
+        }
+        Ok(())
+    }
+}

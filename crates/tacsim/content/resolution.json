@@ -1,0 +1,36 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.resolution",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "aa298a115be0a5a242b907a5acf7007274e44170c02483600819523253ad331e",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.resolution.stock": {
+      "kind": "resolution",
+      "def": {
+        "label": "Stock direct-fire resolution",
+        "hit_curve": [
+          [0, 0],
+          [250, 50],
+          [500, 150],
+          [1000, 350],
+          [2000, 600],
+          [4000, 820],
+          [8000, 940],
+          [16000, 980]
+        ],
+        "error_terms": {
+          "shooter_speed": 1000,
+          "target_lateral_speed": 800,
+          "gunnery": 1000,
+          "sensor_condition": 500
+        },
+        "p_min": 10,
+        "p_max": 950,
+        "note": "Cut C's table. x is doc 16 section 3.5 step 3's angular_size_mrad * 1000 / error_mrad, so x = 1000 is a target exactly as wide as the error cone and the curve puts that at 350 per mille. The stock tank's 350 cm front at 1 km is 3.5 mrad against a 3 mrad cone at rest, x = 1166, about 40 per cent; the same shot at 2 km is 1.75 mrad against 6 mrad, x = 291, about 6 per cent. p_min 10 keeps a hopeless shot from being an arithmetic certainty of a miss (a lucky round exists) and p_max 950 keeps a point-blank shot from being a certainty of a hit. The four weights are per-mille multipliers cut W applies to its own measured terms; gunnery is 1000 because every stock rating is 1 through the PilotProfile seam."
+      }
+    }
+  }
+}

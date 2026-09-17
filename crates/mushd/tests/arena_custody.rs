@@ -10,41 +10,41 @@
 //! the whole stack over **real SSH**, the way `onboarding_e2e.rs` does, and reads
 //! the **store** for what landed.
 //!
-//! # The one fixture, and why it is here rather than in content
+//! # No fixture (16b cut C.2)
 //!
-//! Cut C authors `crates/tacsim/content/units/line_tank.json` and registers it
-//! through the C1 definition registry; until it does, the production
-//! `TacticsModule` composes with an **empty** catalog and `@unit/create` can name
-//! no schema at all. So this test composes the production module list and swaps
-//! the tactics module for one carrying a single spec — doc 16 §3.3's stock tank,
-//! cut down to one section and one tracked mobility mode — supplied by a
-//! test-local definition provider beside it. Everything else in the list is the
-//! production article, in production order.
+//! This file used to compose a test-local unit spec and a test-local definition
+//! provider, because until cut C the production `TacticsModule` carried an
+//! **empty** catalog and `@unit/create` could name no schema at all. Cut C ships
+//! `crates/tacsim/content/units/line_tank.json`, registers it through the C1
+//! registry and hands the catalog to the production tactics module, so the two
+//! fixture modules are gone and the list here is the production article in
+//! production order, with `[tacsim].enabled` on so the game's own boot packs
+//! apply the arena's ground.
 //!
-//! When cut C lands, the two fixture modules go and the `@unit/create` lines name
-//! the real schema; nothing else in this file changes.
+//! The two tanks this lens drives are still **its own** objects (`#3` and `#4`,
+//! created before the world task spawns, so their ids are stable) rather than
+//! the arena pack's eight: what is under test is custody of a unit the lens can
+//! read in the store before and after, and naming a pack-made object would put
+//! the applier's own bookkeeping between the assertion and the property.
+//!
+//! One number moved with the real schema. The fixture's tank did 50 m/s at
+//! 100 m/s²; doc 16 §3.3's does 15 m/s at 1 m/s², so the drive below is ten
+//! seconds of arena time for three cells where it used to be three seconds for
+//! ten. The property is the same one — the driven unit comes back where the
+//! *arena* left it — and it is the shipped tank that decides how far that is.
 
 mod support;
 
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mush_core::module::{GameModule, ModError, Registrar};
-use mush_core::{
-    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
-    Engine, GOD, ObjId, ObjKind, OwnerId,
-};
+use mush_core::module::GameModule;
+use mush_core::{Engine, GOD, ObjId, ObjKind};
 use mush_llm::{LlmProvider, LlmService, MockProvider};
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
-use mush_tactics::{
-    CellId, CellSpec, ConditionId, FacetId, FacetSpec, LocomotionId, MediumId, MobilityMode,
-    MobilityModeId, MobilityProfile, MobilityVocabulary, ModeRules, RulesValue, SectionId,
-    SectionSpec, TacticsModule, UnitCatalog, UnitCatalogBuilder, UnitSpec, UnitSpecBody,
-};
 use mushd::accounts::{Accounts, hash_password};
 use mushd::ipguard::IpGuard;
 use mushd::modules;
@@ -52,7 +52,7 @@ use mushd::persist::load_or_seed_world;
 use mushd::ssh_bridge::{SshBridge, SshListener, start_listener};
 use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::world_task::{self, PersistHandles, ServerDeps};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use support::{Term, play_client, scratch_dir};
 
@@ -62,10 +62,8 @@ const GM_PASSWORD: &str = "gm-secret-1";
 const COMMIT_PENDING: &str = "please retry in a moment";
 /// How many times a line is re-sent on that refusal before the test gives up.
 const RETRY_BUDGET: usize = 8;
-/// The unit schema the fixture authors (cut C's `units/line_tank.json`).
+/// The shipped unit schema (16b cut C.2's `content/units/line_tank.json`).
 const SCHEMA: &str = "tacsim.unit.line_tank";
-/// The module that owns it. Not `tacsim`: a module's name is its namespace.
-const RULES_OWNER: &str = "tacsimrules";
 /// The arena `@arena/start` names.
 const ARENA: &str = "tacsim.arena.proving_ground";
 /// The domain host room, created before the world task spawns.
@@ -75,147 +73,6 @@ const RED: ObjId = ObjId(3);
 const BLUE: ObjId = ObjId(4);
 /// One arena cell, centimetres (doc 16 §3.2).
 const CELL_CM: i64 = 1_000;
-
-// ---------------------------------------------------------------------------
-// The fixture: one tracked tank
-// ---------------------------------------------------------------------------
-
-fn dref(builder: &mut DefinitionRegistryBuilder, kind: &str, id: &str) -> DefinitionRef {
-    builder
-        .register(
-            OwnerId::new(RULES_OWNER).expect("a canonical owner"),
-            DefinitionDescriptor::new(
-                DefinitionKind::new(kind).expect("a canonical kind"),
-                DefinitionId::new(id).expect("a canonical id"),
-                1,
-                json!({}),
-            )
-            .expect("a bounded descriptor"),
-        )
-        .expect("the test registry accepts it")
-}
-
-/// Doc 16 §3.3's stock tank, cut to one section and one `tracked` mode — and
-/// deliberately **fast** (50 m/s, 100 m/s² away), so a lens that has to watch it
-/// cross ten cells finishes in two seconds instead of twenty. The kinematics are
-/// the fixture's; the five field names are doc 16 §3.3's.
-fn tank_spec() -> UnitSpec {
-    let mut definitions = DefinitionRegistryBuilder::new();
-    let opaque = dref(&mut definitions, "schema", "tacsim.tank.rules");
-    let kinematics = dref(&mut definitions, "schema", "tacsim.tank.kinematics");
-    let vocabulary = MobilityVocabulary::base().freeze();
-    let profile = MobilityProfile::new(
-        vec![MobilityMode::new(
-            MobilityModeId::new("ground.tracked").expect("a mode id"),
-            [MediumId::new("ground").expect("a medium")],
-            LocomotionId::new("tracked").expect("a locomotion"),
-            ModeRules::new(
-                kinematics,
-                json!({
-                    "max_speed_cms": 5_000,
-                    "accel_cms2": 10_000,
-                    "brake_cms2": 10_000,
-                    "turn_rate_mdeg_s": 180_000,
-                    "reverse_factor_pct": 40,
-                }),
-            )
-            .expect("a rules blob"),
-        )],
-        MobilityModeId::new("ground.tracked").expect("a mode id"),
-        &vocabulary,
-    )
-    .expect("a one-mode profile");
-    let body = UnitSpecBody {
-        sections: vec![SectionSpec {
-            id: SectionId::new("hull").expect("a section"),
-            condition: ConditionId::new("intact").expect("a condition"),
-            facets: vec![FacetSpec {
-                id: FacetId::new("front").expect("a facet"),
-                cells: vec![CellSpec {
-                    id: CellId::new("armor").expect("a cell"),
-                    min: 0,
-                    max: 10,
-                    init: 10,
-                }],
-            }],
-            slots: Vec::new(),
-            cells: vec![CellSpec {
-                id: CellId::new("internals").expect("a cell"),
-                min: 0,
-                max: 8,
-                init: 8,
-            }],
-        }],
-        unit_cells: Vec::new(),
-        components: Vec::new(),
-        capabilities: Vec::new(),
-        mobility: Some(profile),
-        rules: RulesValue::new(opaque, json!({})).expect("a rules blob"),
-    };
-    let descriptor = body
-        .descriptor(
-            DefinitionKind::new("unit").expect("a kind"),
-            DefinitionId::new(SCHEMA).expect("an id"),
-            1,
-        )
-        .expect("a bounded descriptor");
-    let definition = definitions
-        .register(OwnerId::new(RULES_OWNER).expect("an owner"), descriptor)
-        .expect("registered");
-    body.with_definition(definition)
-}
-
-fn catalog(spec: &UnitSpec) -> UnitCatalog {
-    let vocabulary = MobilityVocabulary::base().freeze();
-    let mut catalog = UnitCatalogBuilder::new();
-    catalog
-        .add(spec.clone(), &vocabulary)
-        .expect("the tank is a valid spec");
-    catalog.freeze()
-}
-
-/// The definition provider the tactics module validates the spec against — cut
-/// C's content pack, as one module.
-struct Rules {
-    spec: UnitSpec,
-}
-
-impl GameModule for Rules {
-    fn name(&self) -> &'static str {
-        RULES_OWNER
-    }
-
-    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
-        let mut definitions: BTreeMap<DefinitionRef, DefinitionDescriptor> = BTreeMap::new();
-        for reference in self.spec.body().definition_references() {
-            let descriptor = DefinitionDescriptor::new(
-                reference.key().kind.clone(),
-                reference.key().id.clone(),
-                reference.version(),
-                json!({}),
-            )
-            .map_err(|error| ModError::msg(error.to_string()))?;
-            definitions.entry(reference).or_insert(descriptor);
-        }
-        definitions.insert(
-            self.spec.definition.clone(),
-            self.spec
-                .descriptor()
-                .map_err(|error| ModError::msg(error.to_string()))?
-                .as_current(),
-        );
-        for kind in ["schema", "unit"] {
-            reg.definition_validator(
-                DefinitionKind::new(kind).map_err(|error| ModError::msg(error.to_string()))?,
-                |_: &mush_core::DefinitionValidationContext<'_>| Ok(()),
-            )?;
-        }
-        for descriptor in definitions.into_values() {
-            reg.definition(descriptor)?;
-        }
-        Ok(())
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The rig
@@ -250,25 +107,21 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     cfg
 }
 
-/// The production module list with the tactics module re-wired to the fixture
-/// catalog, and the fixture's definition provider inserted immediately before
-/// it (module order is boot order).
+/// The production module list, in production order (16b cut C.2: there is no
+/// fixture module in it any more — see this file's header).
 fn module_list(
     onboarding: &mush_core::OnboardingConfig,
     llm: &Arc<LlmService>,
 ) -> Vec<Box<dyn GameModule>> {
-    let spec = tank_spec();
     let mut mods = modules::server_modules();
-    let at = mods
-        .iter()
-        .position(|module| module.name() == "tactics")
-        .expect("the production list composes the tactics module");
-    mods[at] = Box::new(TacticsModule::with_catalog(catalog(&spec)));
-    mods.insert(at, Box::new(Rules { spec }));
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config()));
+    // 16b cut C.2: the content module last, with `[game].starter_area` off and
+    // the game's own boot packs on — the arena's ground has to be in this
+    // world's atlas records before `@arena/start` can build its window.
+    mods.push(modules::content_module_with(false, true).expect("the content module composes"));
     mods
 }
 
@@ -567,7 +420,7 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     )
     .await;
 
-    // --- drive ten cells east --------------------------------------------
+    // --- drive east, at the shipped tank's own pace ------------------------
     say(
         &mut term,
         &format!("@arena/intent #{}=startup", RED.0),
@@ -587,7 +440,12 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
         "Ordered",
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(3_000)).await;
+    // Ten seconds of arena time. The order is above the tank's ceiling on
+    // purpose — the arena caps it at `max_speed_cms` — so what is being timed is
+    // doc 16 §3.4's acceleration and nothing else: 100 cm/s² for ten seconds is
+    // 1,000 cm/s and fifty metres, which is five cells, and the assertion below
+    // asks for three.
+    tokio::time::sleep(Duration::from_millis(10_000)).await;
 
     // --- check-in --------------------------------------------------------
     say(&mut term, "@arena/abort", "is stopping").await;
@@ -617,7 +475,7 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
         "and it never moved"
     );
 
-    // (2) The driven unit's world placement is where the arena left it: ten
+    // (2) The driven unit's world placement is where the arena left it: several
     //     cells east of where it started, on the heading it was ordered onto.
     //     The pose the world writes is the arena's own last frame (cut T.3's
     //     `CustodyIn` seam), so this is a statement about the arena's number,
@@ -625,10 +483,10 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     let after = placement(&server.store, RED).await.expect("still placed");
     let travelled = pose_x_cm(&after) - start_x;
     assert!(
-        travelled >= 10 * CELL_CM,
-        "the driven unit came back {travelled} cm east of where it went out; ten cells is \
+        travelled >= 3 * CELL_CM,
+        "the driven unit came back {travelled} cm east of where it went out; three cells is \
          {} cm (placement: {after})",
-        10 * CELL_CM
+        3 * CELL_CM
     );
     assert_eq!(
         pose_heading(&after),

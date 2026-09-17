@@ -227,8 +227,14 @@ pub fn server_modules_with(
         // root, exactly as `IndustryModule::with_recipes` and
         // `SimulationModule::with_accounts` do, and **`mush-tactics` gains no
         // `mush-propagation` edge**: the trait is `mush-core`'s.
+        // 16b cut C.2 (C1/C3): the catalog is the game's shipped content — the
+        // stock tank of doc 16 §3.3 — so `@unit/create <obj>=tacsim.unit.line_tank`
+        // resolves in production and the arena pack's applier and this verb make
+        // the same unit from the same spec. The module composed with an empty
+        // catalog until this cut and every `@unit/create` refused for want of a
+        // schema.
         Box::new(
-            mush_tactics::TacticsModule::new()
+            mush_tactics::TacticsModule::with_catalog(tactics_catalog())
                 .with_sensor_policy(Arc::new(mush_propagation::PropagationSensorPolicy)),
         ),
         // E7 cut 7 (10b §3.7): the propagation layer itself. It composes AFTER
@@ -653,6 +659,23 @@ pub fn tacsim_module(cfg: crate::TacsimConfig) -> Box<dyn GameModule> {
     Box::new(crate::TacsimRuleset::with_config(cfg))
 }
 
+/// **The game's unit catalog** (16b cut C.2), built from the content compiled
+/// into this crate.
+///
+/// The shipped content is digest-pinned by `crates/tacsim/tests/content.rs`, so
+/// this cannot fail on a tree that passed them; an empty catalog is the honest
+/// degradation if it ever did, and `@unit/create` then refuses by name exactly
+/// as it did before this cut.
+fn tactics_catalog() -> mush_tactics::UnitCatalog {
+    match crate::builtin_definitions() {
+        Ok(catalog) => catalog.units,
+        Err(error) => {
+            tracing::error!(%error, "tacsim: the shipped unit content did not bind");
+            mush_tactics::UnitCatalog::default()
+        }
+    }
+}
+
 /// The **atlas** (S1, 14-spatial-implementation-plan §3.1): the spatial records, the
 /// rasterizer, the `+atlas` views and `@atlas/pack`, with `[atlas]`'s limits and the
 /// operator's packs, and the shipped starter packs on the shelf whatever
@@ -691,16 +714,51 @@ pub fn atlas_module(cfg: mush_atlas::AtlasConfig) -> Box<dyn GameModule> {
 /// A kind two owners both claimed (a programming error at composition), or the
 /// shipped packs failing to load (they are digest-pinned; see [`atlas_module`]).
 pub fn content_module(starter_area: bool) -> Result<Box<dyn GameModule>, String> {
+    content_module_with(starter_area, false)
+}
+
+/// [`content_module`] with the game's own boot packs (**16b cut C.2, C3**).
+///
+/// `game_content` is `[tacsim].enabled`: `true` appends the two packs that
+/// instantiate the proving ground — the atlas region carrying its ground, then
+/// the arena entry whose applier makes the muster room, its domain and the eight
+/// stock tanks — **after** the lot's three, since the latch applies boot packs in
+/// order and the arena's own `requires` is empty by design (it names atlas
+/// records, and the latch resolves `requires` against content latches only, so
+/// an atlas dependency expressed there would be unsatisfiable from the tacsim
+/// side; the applier checks the records instead and refuses naming the entry).
+///
+/// They are boot packs and not a shelf entry because doc 16 §3.3's tanks are
+/// *persistent objects created once by the centre's content* — first-boot
+/// instantiation is exactly what `mush_content`'s latch is, and it is what makes
+/// "a second boot creates no ninth" a property of the latch rather than of the
+/// applier's own bookkeeping.
+///
+/// # Errors
+///
+/// As [`content_module`], plus a shipped game pack that does not verify (they
+/// are digest-pinned in `crates/tacsim/tests/content.rs`).
+pub fn content_module_with(
+    starter_area: bool,
+    game_content: bool,
+) -> Result<Box<dyn GameModule>, String> {
     let mut appliers = mush_content::Appliers::new();
     mush_atlas::register_appliers(&mut appliers).map_err(|e| format!("atlas appliers: {e}"))?;
     mush_npc::content::register_appliers(&mut appliers)
         .map_err(|e| format!("npc appliers: {e}"))?;
     // S9.1: a TacSim campaign-seed pack's places and routes are the atlas's
     // sites and connections, applied through the content latch like any pack.
+    // 16b cut C.2 adds the `arena` kind to the same registration.
     crate::register_appliers(&mut appliers).map_err(|e| format!("tacsim appliers: {e}"))?;
     let mut module = mush_content::ContentModule::new().with_appliers(appliers);
+    let mut packs = Vec::new();
     if starter_area {
-        let packs = mush_atlas::starter::packs().map_err(|e| format!("starter packs: {e}"))?;
+        packs.extend(mush_atlas::starter::packs().map_err(|e| format!("starter packs: {e}"))?);
+    }
+    if game_content {
+        packs.extend(crate::definitions::content::boot_packs()?);
+    }
+    if !packs.is_empty() {
         module = module.with_boot_packs(packs);
     }
     Ok(Box::new(module))

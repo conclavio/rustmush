@@ -1,0 +1,102 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.proving_ground",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "4a479adb817b217aa17f64e71c6631ea27c427f5c833feb1b5e7139bc3a6c6f6",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.arena.proving_ground": {
+      "kind": "arena",
+      "def": {
+        "label": "The Proving Ground",
+        "pack": "tacsim.proving_ground",
+        "region": "region.proving_ground",
+        "tiles": ["field.q0_0", "field.q1_0", "field.q0_1", "field.q1_1"],
+        "origin_m": [20000, 20000],
+        "cols": 256,
+        "rows": 256,
+        "cell_cm": 1000,
+        "entry_zones": [
+          { "team": "red", "x0": 0, "y0": 0, "x1": 15, "y1": 255 },
+          { "team": "blue", "x0": 240, "y0": 0, "x1": 255, "y1": 255 }
+        ],
+        "key_spots": [
+          { "name": "The Ford", "x": 64, "y": 97 },
+          { "name": "The Crossroads", "x": 129, "y": 97 },
+          { "name": "North Barn", "x": 106, "y": 194 },
+          { "name": "East Compound", "x": 208, "y": 148 }
+        ],
+        "waypoints": {
+          "nodes": [
+            { "id": "ew_008", "x": 8, "y": 97 },
+            { "id": "ew_032", "x": 32, "y": 97 },
+            { "id": "ew_056", "x": 56, "y": 97 },
+            { "id": "ew_064", "x": 64, "y": 97 },
+            { "id": "ew_080", "x": 80, "y": 97 },
+            { "id": "ew_104", "x": 104, "y": 97 },
+            { "id": "xroads", "x": 129, "y": 97 },
+            { "id": "ew_152", "x": 152, "y": 97 },
+            { "id": "ew_176", "x": 176, "y": 97 },
+            { "id": "ew_200", "x": 200, "y": 97 },
+            { "id": "ew_224", "x": 224, "y": 97 },
+            { "id": "ew_248", "x": 248, "y": 97 },
+            { "id": "ns_008", "x": 129, "y": 8 },
+            { "id": "ns_032", "x": 129, "y": 32 },
+            { "id": "ns_056", "x": 129, "y": 56 },
+            { "id": "ns_080", "x": 129, "y": 80 },
+            { "id": "ns_120", "x": 129, "y": 120 },
+            { "id": "ns_144", "x": 129, "y": 144 },
+            { "id": "ns_168", "x": 129, "y": 168 },
+            { "id": "ns_192", "x": 129, "y": 192 },
+            { "id": "ns_216", "x": 129, "y": 216 },
+            { "id": "ns_248", "x": 129, "y": 248 },
+            { "id": "barn", "x": 106, "y": 194 },
+            { "id": "compound", "x": 208, "y": 148 },
+            { "id": "muster_red", "x": 6, "y": 124 },
+            { "id": "muster_blue", "x": 249, "y": 124 }
+          ],
+          "edges": [
+            ["ew_008", "ew_032"],
+            ["ew_032", "ew_056"],
+            ["ew_056", "ew_064"],
+            ["ew_064", "ew_080"],
+            ["ew_080", "ew_104"],
+            ["ew_104", "xroads"],
+            ["xroads", "ew_152"],
+            ["ew_152", "ew_176"],
+            ["ew_176", "ew_200"],
+            ["ew_200", "ew_224"],
+            ["ew_224", "ew_248"],
+            ["ns_008", "ns_032"],
+            ["ns_032", "ns_056"],
+            ["ns_056", "ns_080"],
+            ["ns_080", "xroads"],
+            ["xroads", "ns_120"],
+            ["ns_120", "ns_144"],
+            ["ns_144", "ns_168"],
+            ["ns_168", "ns_192"],
+            ["ns_192", "ns_216"],
+            ["ns_216", "ns_248"],
+            ["ns_192", "barn"],
+            ["ew_200", "compound"],
+            ["ew_008", "muster_red"],
+            ["ew_248", "muster_blue"]
+          ]
+        },
+        "tanks": [
+          { "id": "red_1", "name": "Red Tank 1", "team": "red", "x": 6, "y": 118, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_2", "name": "Red Tank 2", "team": "red", "x": 6, "y": 122, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_3", "name": "Red Tank 3", "team": "red", "x": 6, "y": 126, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_4", "name": "Red Tank 4", "team": "red", "x": 6, "y": 130, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_1", "name": "Blue Tank 1", "team": "blue", "x": 249, "y": 118, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_2", "name": "Blue Tank 2", "team": "blue", "x": 249, "y": 122, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_3", "name": "Blue Tank 3", "team": "blue", "x": 249, "y": 126, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_4", "name": "Blue Tank 4", "team": "blue", "x": 249, "y": 130, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" }
+        ],
+        "note": "D-16-5 fixes the window: 256 by 256 cells at 1,000 cm, 2.56 km square. Everything else is cut C's. The region is offset to 20,000 m so the arena's own frame cannot touch the shipped lot's (region.limbo, 0 to 400 m) or the harness's (10,000 m). The entry zones are sixteen cells deep on each short side, which is 160 m of ground behind a tank at its start and about eleven seconds of reverse at 1,500 cm/s and 50 per cent. The four key spots are the four places the ground actually decides something: the ford across the river, the crossroads where the two roads meet, and the two built compounds. The waypoint graph is the two roads and four spurs, which is the smallest graph on which cut N's Patrol state can produce a route that is not a straight line."
+      }
+    }
+  }
+}

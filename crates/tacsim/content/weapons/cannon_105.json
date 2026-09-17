@@ -1,0 +1,43 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.cannon_105",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "87aec3ba2c8cf8aeefc50212c6f76762ca667d04785c3bb3dd3acf930dedf7d9",
+    "requires": [
+      {
+        "id": "tacsim.pack.he_105",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.weapon.cannon_105": {
+      "kind": "weapon",
+      "def": {
+        "label": "105 mm cannon",
+        "delivery": "direct",
+        "mount": {
+          "section": "turret",
+          "facet": "front"
+        },
+        "bands": [
+          {
+            "max_range_cm": 150000,
+            "dispersion_mrad": 3
+          },
+          {
+            "max_range_cm": 300000,
+            "dispersion_mrad": 6
+          }
+        ],
+        "cycle_ms": 6000,
+        "ammunition": "tacsim.ammunition.he_105",
+        "burst_rounds": 1,
+        "muzzle_speed_cms": 100000,
+        "heat_per_shot": 0,
+        "note": "Cut C's numbers around doc 16's one fixed figure, the 1,000 ms cycle floor (W14). 300,000 cm is 3 km, which is longer than the 2.56 km arena's diagonal is wide, so range is never the thing that ends an engagement on this map; the inner band at 1.5 km is where the dispersion halves. 100,000 cm/s is 1 km/s, so a shot across the whole arena is in flight for about 2.5 s and the target really can leave the predicted cell. 6,000 ms is twelve Engaged pulses between rounds."
+      }
+    }
+  }
+}

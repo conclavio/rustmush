@@ -1,15 +1,16 @@
 //! **Where a match is fought, and how fast a tank is** (16b cut T.3; doc 16 §3.2
 //! "Space", §3.3 "Mobility mode rules", §4 "Content packs").
 //!
-//! Two functions the check-out needs and nothing else has yet:
+//! Two functions the check-out needs:
 //!
-//! * [`stock_definition`] — the arena a match names. Cut C authors
-//!   `content/arenas/proving_ground.json` with real tiles, entry zones, key spots
-//!   and a waypoint graph, and this function becomes a registry lookup. Until
-//!   then it builds the **same window** (2.56 km at 10 m cells, D-16-16) out of
-//!   uniform ground, so the geometry, the pose arithmetic, the index and the
-//!   custody round trip are all exercised at production size rather than at a
-//!   toy one.
+//! * [`definition_for`] — the arena a match names. **16b cut C.2** made it a
+//!   content lookup: a `@arena/start` that names an authored arena gets
+//!   `crates/tacsim/content/arenas/proving_ground.json`'s real ground, built
+//!   over this world's atlas records by
+//!   [`crate::definitions::from_pack`]. [`stock_definition`] is what is left of
+//!   T.3's stand-in — the **same window** (2.56 km at 10 m cells, D-16-16) out of
+//!   uniform ground — and it answers only where no pack does, which is a world
+//!   the content has not been applied to and the unit tests of this crate.
 //! * [`tracked_rules`] — the `tracked` mode's kinematics, read out of the M32
 //!   unit's opaque [`ModeRules`] by the game crate, which is the only layer
 //!   allowed to interpret them (doc 16 §3.3).
@@ -32,27 +33,41 @@ pub const ARENA_CELL_CM: u16 = 1_000;
 /// How deep, in cells, each side's entry zone is.
 const ENTRY_DEPTH: u16 = 8;
 
-/// The arena definition every match this cut runs is fought on.
+/// **The engine's own stand-in window** — 2.56 km of uniform ground at 10 m
+/// cells, and no content at all (16b cut T.3; re-named by C.2).
 ///
-/// `id` is the definition the match named. Exactly one id resolves today — the
-/// proving ground — and everything else answers `None`, so a typo is a refusal
-/// naming the id rather than a match on a window nobody authored.
+/// It answers for two ids and no others:
+///
+/// * [`STAND_IN`], always. A world with no atlas composed and no content applied
+///   has no terrain to build an arena out of, and this is what such a world
+///   gets: the production geometry — the same side, the same cell, the same two
+///   entry zones — with nothing authored in it. Every rig that needs a window to
+///   exercise the pose arithmetic, the index, the motion or the custody round
+///   trip names this one, and no pack may declare it.
+/// * [`PROVING_GROUND`], as a **fallback**. If the shipped content did not bind,
+///   a match on the game's own arena still gets a window of the right shape
+///   rather than a refusal about a pack.
+///
+/// Everything else answers `None`, so a typo is a refusal naming the id rather
+/// than a match on a window nobody authored.
 #[must_use]
 pub fn stock_definition(id: &SmolStr) -> Option<ArenaDefinition> {
-    if id.as_str() != PROVING_GROUND && id.as_str() != "proving_ground" {
+    if id.as_str() != PROVING_GROUND && id.as_str() != STAND_IN {
         return None;
     }
     let ground = TerrainCell {
         class: mush_atlas::TerrainClass::Ground,
-        // Flat, because cut T.3 is testing custody and not terrain: every
-        // interesting tile is cut C's, and a relief this cut invented would be a
-        // second authored arena nobody reviewed.
+        // Flat, because a stand-in is geometry and not terrain: every
+        // interesting tile is the content pack's, and a relief invented here
+        // would be a second authored arena nobody reviewed.
         elev_cm: 0,
         move_cost: 100,
     };
     let terrain = ArenaTerrain::uniform(ARENA_CELLS, ARENA_CELLS, ARENA_CELL_CM, ground).ok()?;
     Some(ArenaDefinition {
-        id: SmolStr::new_static(PROVING_GROUND),
+        // The id asked for, so a result record names the arena the match was
+        // started on and never a different one.
+        id: id.clone(),
         terrain,
         entry_zones: vec![
             EntryZone {
@@ -73,8 +88,54 @@ pub fn stock_definition(id: &SmolStr) -> Option<ArenaDefinition> {
     })
 }
 
-/// The one arena definition id this cut resolves.
+/// The one arena definition this crate's content ships
+/// (`content/arenas/proving_ground.json`).
 pub const PROVING_GROUND: &str = "tacsim.arena.proving_ground";
+
+/// The engine's stand-in window (see [`stock_definition`]). No pack declares it,
+/// so no content can shadow it and no rig that names it can be broken by a
+/// content edit.
+pub const STAND_IN: &str = "tacsim.arena.stand_in";
+
+/// **The arena `id` names, over this world** (16b cut C.2).
+///
+/// The authored one when a loaded pack declares it and this world's atlas holds
+/// its ground; otherwise [`stock_definition`]'s uniform window, for the same id.
+/// The fallback is not a second lane — it is what a world that has not applied
+/// the content pack has, and it answers with the same geometry so a refusal
+/// names the arena and never the terrain.
+///
+/// A pack arena whose atlas records are *missing* is a refusal, not a fallback:
+/// silently substituting flat ground for an authored map would make a match a
+/// different match, and doc 16 §4's whole point is that a result record names
+/// the arena digest it was fought on.
+///
+/// # Errors
+///
+/// A message naming the arena when a loaded pack declares it and its ground
+/// could not be built.
+pub fn definition_for(
+    w: &mush_core::World,
+    id: &SmolStr,
+) -> Result<Option<ArenaDefinition>, String> {
+    let Some(def) = w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|slot| {
+            mush_core::CanonicalId::new(id.as_str())
+                .ok()
+                .and_then(|entry| slot.definitions().arenas.get(&entry).cloned())
+        })
+    else {
+        return Ok(stock_definition(id));
+    };
+    let records = w
+        .module_state::<mush_atlas::AtlasState>()
+        .map(|state| &state.records)
+        .ok_or_else(|| format!("{id}: the atlas is not composed on this world"))?;
+    crate::definitions::from_pack(id.as_str(), &def, records)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
 
 /// **Where a unit stands when the match opens.**
 ///
@@ -161,9 +222,10 @@ pub fn opening_pose(
 /// The mode taken is the unit's **effective** mode when its locomotion is
 /// `tracked`, else the first `tracked` mode the profile declares. A unit with no
 /// mobility profile, no tracked mode, or a rules blob missing a field gets the
-/// **stock tank's** values for what is missing — 15 m/s, 2 m/s² away, 4 m/s²
-/// back, 30°/s, 40 % in reverse — which are the numbers doc 16 §3.3's
-/// `line_tank` carries and cut C's `units/line_tank.json` will author. A unit that
+/// **stock tank's** values for what is missing — 15 m/s, 1 m/s² away, 2 m/s²
+/// back, 30°/s, 50 % in reverse — which are the numbers
+/// `content/units/line_tank.json` authors (16b cut C.2), so the fallback and the
+/// shipped tank cannot disagree. A unit that
 /// simply cannot move is a different thing and says so: the profile declares no
 /// tracked mode *and* the caller wanted one, so the defaults still let the arena
 /// open, and the unit's own consequences (a destroyed engine, a wreck) are what
@@ -213,13 +275,15 @@ pub fn tracked_rules(unit: &mush_tactics::TacticalUnit) -> TrackedRules {
 /// The locomotion id doc 16 §3.3's mode rules belong to.
 const TRACKED: &str = "tracked";
 
-/// Doc 16 §3.3's stock tank, as the documented fallback.
+/// Doc 16 §3.3's stock tank, as the documented fallback — the five numbers
+/// `content/units/line_tank.json` authors, pinned equal to it by
+/// `crates/tacsim/tests/definitions.rs`.
 const STOCK_TRACKED: TrackedRules = TrackedRules {
     max_speed_cms: 1_500,
-    accel_cms2: 200,
-    brake_cms2: 400,
+    accel_cms2: 100,
+    brake_cms2: 200,
     turn_rate_mdeg_s: 30_000,
-    reverse_factor_pct: 40,
+    reverse_factor_pct: 50,
 };
 
 /// One unsigned field of an opaque rules blob, when it is there and fits.

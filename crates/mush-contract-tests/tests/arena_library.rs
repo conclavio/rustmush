@@ -240,10 +240,15 @@ mod custody_writes {
     /// The module that provides it. Not `tacsim`: a module's name is its
     /// namespace and the game layer below already owns that one, so the fixture
     /// owns its definitions under its own name — which is also what a real
-    /// content pack will do once cut C authors `units/line_tank.json`.
+    /// content pack does. (16b cut C.2 ships the real one; this gate keeps its
+    /// own so it composes no atlas and no content — see `ARENA` below.)
     const RULES_OWNER: &str = "tacsimrules";
     /// The arena `@arena/start` names.
-    const ARENA: &str = "tacsim.arena.proving_ground";
+    // 16b cut C.2: the **stand-in** window, not the shipped arena. This gate
+    // composes no atlas and applies no content — it is about unit writes, not
+    // about terrain — and `tacsim.arena.stand_in` is the id that exists for
+    // exactly that: production geometry with nothing authored in it.
+    const ARENA: &str = tacsim::match_::STAND_IN;
 
     fn dref(builder: &mut DefinitionRegistryBuilder, kind: &str, id: &str) -> DefinitionRef {
         builder

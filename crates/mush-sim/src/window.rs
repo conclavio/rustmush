@@ -175,6 +175,73 @@ pub fn open_window(ctx: &mut Ctx<'_>, open: OpenWindow) -> Result<DomainId, Stri
     Ok(rec.id)
 }
 
+/// **Open a passive domain on `host`, presenting in `presentation`** — the body
+/// of `@domain/create <host>=sim.passive`, callable without a command line
+/// (16b cut C.2).
+///
+/// A passive domain is a metric frame with no window composite and no clock: an
+/// object placed in it has a [`Pose`] and therefore a position, which is all the
+/// arena's check-out needs of a world placement. Cut C's proving-ground applier
+/// opens one on the room it makes, so the eight stock tanks are *placed* objects
+/// on a fresh world and `@arena/start` has something to take custody of.
+///
+/// The host gains `sim.domain` if it lacks it, exactly as [`open_window`] does.
+///
+/// # Errors
+///
+/// A message when the host is gone or going, the host already has a domain,
+/// [`MAX_WINDOWS`] are open, the presentation object is not a live room, or the
+/// allocator is spent.
+pub fn open_passive_domain(
+    ctx: &mut Ctx<'_>,
+    host: ObjId,
+    presentation: ObjId,
+) -> Result<DomainId, String> {
+    {
+        let st = state(ctx.w)?;
+        if let Some(d) = st.domain_of_host(host) {
+            return Err(format!("that host already has domain #{}", d.id));
+        }
+        if windows(ctx.w).count() >= MAX_WINDOWS {
+            return Err(format!("{MAX_WINDOWS} windows are open already"));
+        }
+    }
+    if ctx
+        .w
+        .get(host)
+        .is_none_or(|o| o.flags.contains(mush_core::Flags::GOING))
+    {
+        return Err("no such host".to_string());
+    }
+    let live_room = ctx.w.get(presentation).is_some_and(|o| {
+        o.kind == mush_core::ObjKind::Room && !o.flags.contains(mush_core::Flags::GOING)
+    });
+    if !live_room {
+        return Err("a domain presents in a live room".to_string());
+    }
+    attach(ctx, host, "sim.domain")?;
+    let (rec, next) = {
+        let s = state_mut(ctx.w)?;
+        let id = s.alloc_domain_id().map_err(|e| e.to_string())?;
+        let rec = DomainRecord {
+            id,
+            host,
+            driver: passive_definition_ref(),
+            status: DomainStatus::Active,
+            clock: DomainClock::Passive,
+            presentation_location: presentation,
+            revision: 1,
+            window: None,
+        };
+        s.domains.insert(id, rec.clone());
+        s.derived = rebuild(s);
+        (rec, s.next_domain_id)
+    };
+    persist_domain(ctx.out, &rec);
+    persist_meta(ctx.out, next);
+    Ok(rec.id)
+}
+
 /// Replace a window's frame (a re-composite, growth): the domain's revision
 /// moves with it.
 ///

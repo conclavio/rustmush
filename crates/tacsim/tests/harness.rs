@@ -247,16 +247,19 @@ fn sign(json: &str) -> String {
 /// The region pack: one surface region whose background recipe is the arena's
 /// ground cover, and four `heightfield` entries carrying the seeded relief.
 ///
-/// **The one thing the pack route cannot express.** Cell *classes* come from the
-/// region's `background` recipe — a seeded hash of `(region, surface, lattice
-/// square)` into the mix — because no pack entry paints an authored
-/// `TerrainClass`: `heightfield` imports elevation only and takes each cell's
-/// class from the background, and `feature` entries paint `Wall`, `Platform` and
-/// a destroyed feature's `Rubble`/`Door` and nothing else. So the roads, the
-/// woods and the water below are deterministic *patches* at
-/// `relief_period_cm`, not two continuous roads and a river with one ford. That
-/// shape needs an authored class grid in `mush-atlas`, which this cut may not
-/// add.
+/// **Why the classes here are patches and not a map.** Cell *classes* come from
+/// the region's `background` recipe — a seeded hash of `(region, surface,
+/// lattice square)` into the mix — so the roads, the woods and the water below
+/// are deterministic *patches* at `relief_period_cm` rather than two continuous
+/// roads and a river with one ford.
+///
+/// Cut H recorded that as a gap in the pack route; 16b cut C.1 closed it
+/// (`HeightfieldDef::classes`, a run-length-coded grid of authored
+/// `TerrainClass` codes) and cut C.2 uses it for the shipped proving ground.
+/// This relief stays a *recipe* on purpose: it is the harness's **generated**
+/// terrain, reproducible from `TACSIM_SEED` alone and comparable across runs,
+/// and its whole job is to be a cost measurement rather than a map anybody
+/// fights on. The authored one lives in `crates/tacsim/content/atlas/`.
 fn region_pack(relief: &Relief, seed: u64) -> String {
     let lo = ORIGIN_M;
     let hi = ORIGIN_M + i64::from(SIDE) * i64::from(CELL_CM) / 100;

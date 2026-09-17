@@ -1,0 +1,21 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.he_105",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "c377ca63e4385d29ed4ce63c78fcd1c9e626e1944da4c2aca819c09b6acb67e2",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.ammunition.he_105": {
+      "kind": "ammunition",
+      "def": {
+        "label": "105 mm HE",
+        "damage": 120,
+        "penetration_class": "he",
+        "count_per_load": 40,
+        "note": "Doc 16 fixes no ammunition number, so these are cut C's. 120 damage is chosen against the line_tank's own armour: it takes four rounds through the 400 cm front hull facet and one more through its 200 internals, three through a 250 side, and two through the 150 rear. 40 rounds is a real tank's ready plus stowed load and gives a match of about four minutes of aimed fire at a 6,000 ms cycle."
+      }
+    }
+  }
+}

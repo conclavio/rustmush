@@ -43,17 +43,30 @@ pub const SITE_HALF_GM: f64 = 0.5;
 /// The mode word a corridor carries: what travels it.
 pub const CORRIDOR_MODE: &str = "spacecraft";
 
-/// The kinds a campaign-seed pack carries that make no object of their own.
-const DEFINITION_KINDS: [&str; 6] = [
+/// The kinds a pack carries that make no object of their own.
+///
+/// 16b cut C.2 added the five rules kinds of doc 16 §4 (the sixth, `arena`,
+/// makes objects and has [`ArenaApplier`]). They are here so a pack of them can
+/// reach the content latch at all — `mush_content::apply` refuses a kind no
+/// applier owns — even though the shipped ones never do: they are verified and
+/// registered by [`crate::verify_sources`], and there is no world state in a
+/// weapon.
+const DEFINITION_KINDS: [&str; 11] = [
     "commodity",
     "recipe",
     "deposit",
     "facility",
     "formation",
     "body",
+    "unit",
+    "weapon",
+    "ammunition",
+    "sensor",
+    "resolution",
 ];
 
-/// Register this crate's appliers: places, routes, and the definition kinds.
+/// Register this crate's appliers: places, routes, arenas, and the definition
+/// kinds.
 ///
 /// # Errors
 ///
@@ -61,6 +74,7 @@ const DEFINITION_KINDS: [&str; 6] = [
 pub fn register_appliers(appliers: &mut Appliers) -> Result<(), PackError> {
     appliers.register(crate::NS, Arc::new(PlaceApplier))?;
     appliers.register(crate::NS, Arc::new(RouteApplier))?;
+    appliers.register(crate::NS, Arc::new(ArenaApplier))?;
     appliers.register(crate::NS, Arc::new(DefinitionApplier))
 }
 
@@ -393,6 +407,187 @@ impl EntryApplier for RouteApplier {
 }
 
 /// The definition kinds: read from the pack by the store, no object made.
+/// **An `arena`: the ground it is fought on, checked, and the stock units that
+/// live on it** (16b cut C.2, C3; doc 16 §3.3 "The stock tanks are persistent
+/// objects", §4).
+///
+/// What it makes, once, on the boot that first applies the pack:
+///
+/// 1. one **Room** — the arena's muster, which is the host and the presentation
+///    of the domain below. It is a plain world room and not an atlas one on
+///    purpose: the atlas records this arena names are its *ground*, read at
+///    `@arena/start`, and a room that exists only to host a domain is not a
+///    place anybody walks to;
+/// 2. one **passive domain** on it, through `mush_sim::open_passive_domain`, so
+///    the units in it have poses;
+/// 3. the **eight tanks** of doc 16 §3.3, each a Thing with a `TacticalUnit`
+///    record built from the arena's own `unit` schema through
+///    `mush_tactics::create_unit` — the function behind `@unit/create` — placed
+///    at the cell the pack authors.
+///
+/// The atlas references are checked **here**, at apply, which is the one place
+/// they can be: a pack verifies with no world, and an atlas record exists only
+/// once the pack that makes it has been applied. A missing region or tile
+/// refuses naming the entry and makes nothing.
+///
+/// Re-applying a later version reuses the room and the domain and matches each
+/// tank by its authored name, so a second boot creates no ninth; the latch
+/// itself is what makes a second boot of the *same* version not re-enter at all.
+struct ArenaApplier;
+
+impl ArenaApplier {
+    fn put(
+        ctx: &mut Ctx<'_>,
+        id: &CanonicalId,
+        entry: &RawEntry,
+        existing: Option<ObjId>,
+    ) -> Result<Option<ObjId>, String> {
+        let def: crate::definitions::ArenaDef = entry.decode().map_err(|e| format!("{id}: {e}"))?;
+        def.check(id.as_str()).map_err(|e| e.to_string())?;
+        // (1) The ground. `from_pack` is the reader `@arena/start` uses, so an
+        // arena that applies is an arena that starts.
+        {
+            let records = ctx
+                .w
+                .module_state::<mush_atlas::AtlasState>()
+                .map(|state| state.records.clone())
+                .ok_or_else(|| format!("{id}: the atlas is not composed on this world"))?;
+            crate::definitions::from_pack(id.as_str(), &def, &records)
+                .map_err(|error| error.to_string())?;
+        }
+        // (2) The muster room and its domain.
+        let owner = ctx.actor;
+        let room = match existing.filter(|room| ctx.w.get(*room).is_some()) {
+            Some(room) => room,
+            None => ctx
+                .w
+                .create(ObjKind::Room, &def.label, owner, None)
+                .map_err(|e| format!("{id}: {e}"))?,
+        };
+        let standing_domain = ctx
+            .w
+            .module_state::<mush_sim::data::SpatialState>()
+            .and_then(|state| state.domain_of_host(room))
+            .map(|record| record.id);
+        let domain = match standing_domain {
+            Some(domain) => domain,
+            None => {
+                mush_sim::open_passive_domain(ctx, room, room).map_err(|e| format!("{id}: {e}"))?
+            }
+        };
+        // (3) The units. The binding is the module's, built once from the loaded
+        // packs, so the `DefinitionRef`s these units carry are the ones the
+        // frozen registry holds.
+        let standing: BTreeMap<String, ObjId> = mush_sim::raw_participants(ctx.w, domain)
+            .into_iter()
+            .filter_map(|(obj, _)| ctx.w.get(obj).map(|object| (object.name.to_string(), obj)))
+            .collect();
+        for tank in &def.tanks {
+            let spec = {
+                let slot = ctx
+                    .w
+                    .module_state::<TacsimStore>()
+                    .ok_or_else(|| format!("{id}: the TacSim layer is not composed"))?;
+                slot.definitions()
+                    .bindings
+                    .get(&tank.unit)
+                    .map(|binding| binding.spec.clone())
+                    .ok_or_else(|| format!("{id}: no unit schema `{}` is loaded", tank.unit))?
+            };
+            let object = match standing.get(&tank.name) {
+                Some(object) => *object,
+                None => {
+                    let object = ctx
+                        .w
+                        .create(ObjKind::Thing, &tank.name, owner, Some(room))
+                        .map_err(|e| format!("{id}: {e}"))?;
+                    mush_tactics::module::create_unit(ctx, object, &spec)
+                        .map_err(|e| format!("{id}: {}: {e}", tank.id))?;
+                    object
+                }
+            };
+            let half = i64::from(def.cell_cm / 2);
+            let cell = i64::from(def.cell_cm);
+            let pose = mush_sim::data::Pose {
+                x_cm: i64::from(tank.x) * cell + half,
+                y_cm: i64::from(tank.y) * cell + half,
+                z_cm: 0,
+                heading_mdeg: tank.heading_mdeg,
+                posture: mush_sim::data::passive_rules_value(serde_json::json!({}))
+                    .map_err(|e| format!("{id}: {e}"))?,
+            };
+            mush_sim::place(ctx, object, domain, pose).map_err(|e| format!("{id}: {e}"))?;
+        }
+        Ok(Some(room))
+    }
+}
+
+impl EntryApplier for ArenaApplier {
+    fn kinds(&self) -> Vec<CanonicalId> {
+        kind("arena").into_iter().collect()
+    }
+
+    fn phase(&self) -> u8 {
+        // After every atlas kind (the region is 0 and the heightfield 1, but a
+        // pack of its own applies first) and after the places of `PlaceApplier`,
+        // before the inert definitions.
+        11
+    }
+
+    fn create(
+        &self,
+        ctx: &mut Ctx<'_>,
+        _pack: &Pack,
+        id: &CanonicalId,
+        entry: &RawEntry,
+        _placed: &BTreeMap<CanonicalId, ObjId>,
+    ) -> Result<Option<ObjId>, String> {
+        ArenaApplier::put(ctx, id, entry, None)
+    }
+
+    fn update(
+        &self,
+        ctx: &mut Ctx<'_>,
+        _pack: &Pack,
+        id: &CanonicalId,
+        entry: &RawEntry,
+        existing: Option<ObjId>,
+        _placed: &BTreeMap<CanonicalId, ObjId>,
+    ) -> Result<Option<ObjId>, String> {
+        ArenaApplier::put(ctx, id, entry, existing)
+    }
+
+    fn retire_check(
+        &self,
+        _ctx: &Ctx<'_>,
+        _pack: &CanonicalId,
+        _id: &CanonicalId,
+        _existing: Option<ObjId>,
+        _placed: &BTreeMap<CanonicalId, ObjId>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn retire(
+        &self,
+        _ctx: &mut Ctx<'_>,
+        pack: &CanonicalId,
+        id: &CanonicalId,
+        existing: Option<ObjId>,
+    ) -> Result<(), String> {
+        // The arena's room, its domain and its tanks **stand**. They are
+        // persistent objects (doc 16 §3.3) that a match takes custody of, a
+        // player may be standing in one, and doc 16's own rule is that no object
+        // is created or destroyed per match; retiring the definition that
+        // described them is not a statement that they should cease to exist.
+        tracing::info!(
+            %pack, %id, room = existing.map(|room| room.0),
+            "tacsim: an arena definition retired; its muster, domain and units stand"
+        );
+        Ok(())
+    }
+}
+
 struct DefinitionApplier;
 
 impl EntryApplier for DefinitionApplier {

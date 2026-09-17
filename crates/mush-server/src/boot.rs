@@ -327,7 +327,8 @@ pub fn game_modules(
     mods.extend(modules::ruleset_modules(&onboarding, &game));
     // E7 cut 1: the TacSim layer, **after** the character ruleset. Its config was
     // read above, before the module list, for `[tacsim.recovery]`'s sake.
-    if tacsim.enabled {
+    let tacsim_enabled = tacsim.enabled;
+    if tacsim_enabled {
         tracing::info!(
             packs = tacsim.packs.len(),
             seeds = tacsim.seeds.len(),
@@ -342,7 +343,13 @@ pub fn game_modules(
     if config.game.starter_area {
         tracing::info!("starter area on: the lot applies at a first boot");
     }
-    mods.push(modules::content_module(config.game.starter_area)?);
+    // 16b cut C.2 (C3): with the layer on, the game's own two boot packs ride
+    // beside the lot's — the proving ground's ground, then the arena whose
+    // applier makes its muster, its domain and the eight stock tanks.
+    mods.push(modules::content_module_with(
+        config.game.starter_area,
+        tacsim_enabled,
+    )?);
     Ok(mods)
 }
 

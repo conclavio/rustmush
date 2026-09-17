@@ -215,6 +215,19 @@ pub enum PackEntry {
     /// like a commodity (the sky is not instantiated), allowed in a seed pack too so
     /// the corridor can carry the sky its places stand under.
     Body(BodyDef),
+    /// **16b cut C.2 (C1)** — one unit schema (doc 16 §3.3's `line_tank`).
+    Unit(crate::definitions::UnitSpec),
+    /// **16b cut C.2 (C1)** — one weapon (doc 16 §3.5).
+    Weapon(crate::definitions::WeaponDef),
+    /// **16b cut C.2 (C1)** — one ammunition family (doc 16 §3.5).
+    Ammunition(crate::definitions::AmmunitionDef),
+    /// **16b cut C.2 (C1)** — one sensor (doc 16 §3.6).
+    Sensor(crate::definitions::SensorDef),
+    /// **16b cut C.2 (C1)** — one resolution table (doc 16 §3.5, D-16-8).
+    Resolution(crate::definitions::ResolutionDef),
+    /// **16b cut C.2 (C3)** — one arena: the window, its zones, its waypoints
+    /// and the stock units its applier makes (doc 16 §3.2, §4).
+    Arena(crate::definitions::ArenaDef),
 }
 
 impl PackEntry {
@@ -230,10 +243,22 @@ impl PackEntry {
             PackEntry::Facility(_) => "facility",
             PackEntry::Formation(_) => "formation",
             PackEntry::Body(_) => "body",
+            PackEntry::Unit(_) => "unit",
+            PackEntry::Weapon(_) => "weapon",
+            PackEntry::Ammunition(_) => "ammunition",
+            PackEntry::Sensor(_) => "sensor",
+            PackEntry::Resolution(_) => "resolution",
+            PackEntry::Arena(_) => "arena",
         }
     }
 
     /// Whether this entry instantiates a world object when a seed pack applies.
+    /// **16b cut C.2** — an `arena` entry instantiates the eight stock tanks and
+    /// the room their domain is hosted on, but it is **not** counted here: the
+    /// seed-object cap is [`MAX_SEED_OBJECTS`] against a *one entry, one object*
+    /// rule the latch's `placed` map enforces, and an arena's tanks are found by
+    /// their authored slot ids rather than by that map. The bound that holds
+    /// them is [`crate::definitions::arena::MAX_ARENA_UNITS`], on the entry.
     #[must_use]
     pub fn seeds_an_object(&self) -> bool {
         matches!(self, PackEntry::Location(_))
@@ -246,6 +271,16 @@ impl PackEntry {
         match self {
             // S7: a body's bounds are the wire's (`BodyDef::from_authored`).
             PackEntry::Body(_) => {}
+            // 16b cut C.2: each of the six content kinds re-runs its own bounds,
+            // which is where every number doc 16 fixes is asserted. The entry id
+            // is not in scope here, so the label carries the refusal and
+            // `RulesPack::from_content` names the entry around it.
+            PackEntry::Unit(def) => def.check(&def.label).map_err(definition_error)?,
+            PackEntry::Weapon(def) => def.check(&def.label).map_err(definition_error)?,
+            PackEntry::Ammunition(def) => def.check(&def.label).map_err(definition_error)?,
+            PackEntry::Sensor(def) => def.check(&def.label).map_err(definition_error)?,
+            PackEntry::Resolution(def) => def.check(&def.label).map_err(definition_error)?,
+            PackEntry::Arena(def) => def.check(&def.label).map_err(definition_error)?,
             PackEntry::Commodity(def) => {
                 if too_long(&def.label) {
                     return Err(PackError::LabelTooLong {
@@ -838,7 +873,9 @@ fn is_unbanded(value: &u8) -> bool {
 
 /// The entry kinds this crate decodes; any other kind in a pack is another
 /// module's, applied through the content module (S9.1).
-pub const OWNED_KINDS: [&str; 8] = [
+///
+/// 16b cut C.2 added the six of doc 16 §4 to E7 cut 1's eight.
+pub const OWNED_KINDS: [&str; 14] = [
     "commodity",
     "recipe",
     "route",
@@ -847,7 +884,20 @@ pub const OWNED_KINDS: [&str; 8] = [
     "facility",
     "formation",
     "body",
+    "unit",
+    "weapon",
+    "ammunition",
+    "sensor",
+    "resolution",
+    "arena",
 ];
+
+/// One definition refusal as a pack refusal (16b cut C.2).
+fn definition_error(error: crate::definitions::DefinitionError) -> PackError {
+    PackError::DefinitionRefused {
+        detail: error.to_string(),
+    }
+}
 
 /// A loaded, digest-verified pack.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1056,6 +1106,13 @@ impl RulesPack {
             // Q6A's whole distinction is that one is re-pinned and diffed while
             // re-running the other would duplicate a mine, so an entry on the wrong
             // side of it is refused rather than quietly ignored.
+            //
+            // 16b cut C.2 puts the six new kinds on the same axis. A unit, a
+            // weapon, its ammunition, a sensor and a resolution table are rules
+            // that are re-pinned and diffed; an `arena` **instantiates** — its
+            // applier makes the room, the domain and the eight stock tanks of
+            // doc 16 §3.3, and re-running it would duplicate them exactly as
+            // re-running a mine would — so it belongs on the seed side.
             let misplaced = matches!(
                 (manifest.kind(), entry),
                 (
@@ -1064,9 +1121,16 @@ impl RulesPack {
                         | PackEntry::Route(_)
                         | PackEntry::Deposit(_)
                         | PackEntry::Facility(_)
+                        | PackEntry::Arena(_)
                 ) | (
                     PackKind::CampaignSeed,
-                    PackEntry::Commodity(_) | PackEntry::Recipe(_)
+                    PackEntry::Commodity(_)
+                        | PackEntry::Recipe(_)
+                        | PackEntry::Unit(_)
+                        | PackEntry::Weapon(_)
+                        | PackEntry::Ammunition(_)
+                        | PackEntry::Sensor(_)
+                        | PackEntry::Resolution(_)
                 )
             );
             if misplaced {
@@ -1476,6 +1540,13 @@ pub enum PackError {
     NotATacsimPack {
         /// The kind.
         kind: String,
+    },
+    /// **16b cut C.2** — one of doc 16 §4's six definition kinds refused its own
+    /// bounds. The detail names the entry's label and the field.
+    #[error("{detail}")]
+    DefinitionRefused {
+        /// The definition's own refusal.
+        detail: String,
     },
     /// A dependency present at the right version but with **other content**.
     #[error(

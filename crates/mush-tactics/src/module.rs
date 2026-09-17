@@ -56,7 +56,8 @@ use serde_json::json;
 use smol_str::SmolStr;
 
 use crate::unit::{
-    self, TacticalUnit, UnitCatalog, UnitMutationOp, UnitMutationPlan, decode_legacy_unit_v1,
+    self, TacticalUnit, UnitCatalog, UnitMutationOp, UnitMutationPlan, UnitSpec,
+    decode_legacy_unit_v1,
 };
 use crate::view;
 
@@ -2614,6 +2615,73 @@ fn unit_ineligible(ctx: &Ctx<'_>, obj: ObjId) -> Option<String> {
         })
 }
 
+/// **Make `obj` a tactical unit from `spec`** — the body of `@unit/create`,
+/// callable without a command line (16b cut C.2).
+///
+/// Everything `@unit/create` does to the world: the eligibility refusal, the
+/// exact-definition checks (every reference the spec names, plus the record
+/// schema, present at its exact digest under an owner that is not frozen), the
+/// instantiation, the encode-before-you-mutate rule, the behaviour binding, the
+/// document and the lifecycle row. What it deliberately does **not** do is the
+/// two things that are a *command*'s: the panel fan-out and the sentence. A
+/// caller that has a viewer does those after it; a content applier at boot has
+/// neither.
+///
+/// The record schema is read from [`UnitStore::record_definition`], which
+/// `register` installs, for the same reason [`crate::custody`] reads it there:
+/// a caller outside this crate has no handle on the module.
+///
+/// # Errors
+///
+/// A message naming what refused. Nothing is written on any of them.
+pub fn create_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<TacticalUnit, String> {
+    if let Some(why) = unit_ineligible(ctx, obj) {
+        return Err(why);
+    }
+    let record_definition = ctx
+        .w
+        .module_state::<UnitStore>()
+        .and_then(|store| store.record_definition.clone())
+        .ok_or_else(|| "the tactics record schema is not installed".to_string())?;
+    let definitions = ctx
+        .reg
+        .definitions()
+        .ok_or_else(|| "the mechanics definition registry is not ready".to_string())?;
+    let mut references = spec.body().definition_references();
+    references.push(spec.definition.clone());
+    references.push(record_definition.clone());
+    require_definition_owners_ready(ctx.reg, &references).map_err(|error| error.to_string())?;
+    for reference in &references {
+        definitions
+            .get_exact(reference)
+            .map_err(|error| format!("unit schema dependency is unavailable: {error}"))?;
+    }
+    let now = ctx.w.now();
+    let mut u = TacticalUnit::from_spec(spec, obj).map_err(|e| e.to_string())?;
+    u.settle_mobility(now);
+    // Validate/encode before touching either the behavior binding or RAM. A
+    // newly authored unit must always be acceptable to the next boot.
+    let (document, payload_digest) = encode_unit_document(&record_definition, &u, None)?;
+    let behavior = BehaviorId::new(UNIT_BEHAVIOR).map_err(|e| format!("cannot mark unit: {e}"))?;
+    ctx.w
+        .attach_behavior(
+            obj,
+            behavior,
+            BehaviorBinding {
+                schema_version: UNIT_BINDING_VERSION,
+                attached_by: ctx.actor,
+                attached_at: now,
+            },
+        )
+        .map_err(|e| format!("cannot mark unit: {e}"))?;
+    persist_encoded_unit(ctx.out, obj, document);
+    let created = u.clone();
+    if let Some(store) = ctx.w.module_state_mut::<UnitStore>() {
+        store.install_active(u, payload_digest);
+    }
+    Ok(created)
+}
+
 fn unit_create(
     catalog: &UnitCatalog,
     feed: &PanelFeedHandle,
@@ -2623,59 +2691,38 @@ fn unit_create(
 ) -> Result<(), CmdError> {
     let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
     let def_id = rhs_required(ctx, "@unit/create <obj>=<schema-id>")?;
-    if let Some(why) = unit_ineligible(ctx, obj) {
-        return Err(CmdError::msg(why));
+    let spec = {
+        let definitions = ctx
+            .reg
+            .definitions()
+            .ok_or_else(|| CmdError::msg("The mechanics definition registry is not ready."))?;
+        catalog
+            .get_current(def_id.trim(), definitions)
+            .ok_or_else(|| {
+                CmdError::msg(format!(
+                    "No unambiguous current unit schema `{}` is available.",
+                    def_id.trim()
+                ))
+            })?
+            .clone()
+    };
+    // The record schema the closure carries and the one the store holds are the
+    // same value installed by the same `register`; naming it here keeps the
+    // command's own check honest if that ever stops being true.
+    if ctx
+        .w
+        .module_state::<UnitStore>()
+        .and_then(|store| store.record_definition.clone())
+        .as_ref()
+        != Some(current_record_definition)
+    {
+        return Err(CmdError::msg("The tactics record schema is not installed."));
     }
-    let definitions = ctx
-        .reg
-        .definitions()
-        .ok_or_else(|| CmdError::msg("The mechanics definition registry is not ready."))?;
-    let spec = catalog
-        .get_current(def_id.trim(), definitions)
-        .ok_or_else(|| {
-            CmdError::msg(format!(
-                "No unambiguous current unit schema `{}` is available.",
-                def_id.trim()
-            ))
-        })?;
-    let mut references = spec.body().definition_references();
-    references.push(spec.definition.clone());
-    references.push(current_record_definition.clone());
-    require_definition_owners_ready(ctx.reg, &references)?;
-    for reference in &references {
-        definitions.get_exact(reference).map_err(|error| {
-            CmdError::msg(format!("Unit schema dependency is unavailable: {error}"))
-        })?;
-    }
-    definitions
-        .get_exact(&spec.definition)
-        .map_err(|error| CmdError::msg(format!("Unit schema is unavailable: {error}")))?;
+    let u = create_unit(ctx, obj, &spec).map_err(CmdError::msg)?;
     let now = ctx.w.now();
-    let mut u = TacticalUnit::from_spec(spec, obj).map_err(|e| CmdError::msg(e.to_string()))?;
-    u.settle_mobility(now);
-    // Validate/encode before touching either the behavior binding or RAM. A
-    // newly authored unit must always be acceptable to the next boot.
-    let (document, payload_digest) =
-        encode_unit_document(current_record_definition, &u, None).map_err(CmdError::msg)?;
-    ctx.w
-        .attach_behavior(
-            obj,
-            BehaviorId::new(UNIT_BEHAVIOR).unwrap(),
-            BehaviorBinding {
-                schema_version: UNIT_BINDING_VERSION,
-                attached_by: ctx.actor,
-                attached_at: now,
-            },
-        )
-        .map_err(|e| CmdError::msg(format!("cannot mark unit: {e}")))?;
     let frame = project(ctx.w, &u, ctx.actor, now);
     let vitals_frame =
         view::UnitView::of(ctx.w, obj, &view::UnitSource::Active(&u), now).vitals_value();
-    persist_encoded_unit(ctx.out, obj, document);
-    ctx.w
-        .module_state_mut::<UnitStore>()
-        .expect("unit store")
-        .install_active(u, payload_digest);
     // Interface plan I8 (verify fold): the revision-0 keyframe and vitals
     // frame reach the actor and every connected viewer already stationed on
     // the object (seats survive a remove/create), so a recreated unit resets

@@ -52,14 +52,7 @@ impl Default for GameEconomyConfig {
 /// repair path.
 pub fn ensure_instrument(ctx: &mut Ctx<'_>, cfg: &GameEconomyConfig) -> Option<InstrumentId> {
     let id = InstrumentId::new(cfg.instrument.as_str())?;
-    let known = ctx
-        .w
-        .module_state::<EconomyStore>()
-        .is_some_and(|s| s.snapshot().instrument(&id).is_some());
-    if known {
-        return Some(id);
-    }
-    if let Err(error) = mush_economy::register_instrument(
+    create_only(
         ctx,
         InstrumentDef {
             id: id.clone(),
@@ -79,8 +72,51 @@ pub fn ensure_instrument(ctx: &mut Ctx<'_>, cfg: &GameEconomyConfig) -> Option<I
             }),
             revision: 1,
         },
+    )
+}
+
+/// **The settlement currency and the ten commodity families** (16b cut C.2, C4;
+/// doc 10 S4A, doc 16 §4).
+///
+/// The same create-only rule, one row at a time: an instrument that exists is
+/// left exactly as it is, and a row that will not register is logged and skipped
+/// rather than failing the boot. The commodities come from
+/// `crates/tacsim/content/resources.json`, which is the authored list and the
+/// only place the ten ids and their codes are written down.
+///
+/// Returns the currency's id, so the one caller that needs it still has it.
+pub fn ensure_instruments(ctx: &mut Ctx<'_>, cfg: &GameEconomyConfig) -> Option<InstrumentId> {
+    let credit = ensure_instrument(ctx, cfg);
+    match crate::definitions::ResourceTable::load(
+        "tacsim/content/resources.json",
+        crate::definitions::content::RESOURCES_JSON,
     ) {
-        tracing::warn!(instrument = %cfg.instrument, %error, "tacsim.economy: the settlement currency was not registered");
+        Ok(table) => {
+            for def in table.instruments() {
+                create_only(ctx, def);
+            }
+        }
+        Err(error) => tracing::error!(
+            %error,
+            "tacsim.economy: the shipped resource table did not decode; no commodity family \
+             was registered"
+        ),
+    }
+    credit
+}
+
+/// Register one instrument if this world has none by that id.
+fn create_only(ctx: &mut Ctx<'_>, def: InstrumentDef) -> Option<InstrumentId> {
+    let id = def.id.clone();
+    let known = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|s| s.snapshot().instrument(&id).is_some());
+    if known {
+        return Some(id);
+    }
+    if let Err(error) = mush_economy::register_instrument(ctx, def) {
+        tracing::warn!(instrument = %id, %error, "tacsim.economy: an instrument was not registered");
         return None;
     }
     Some(id)

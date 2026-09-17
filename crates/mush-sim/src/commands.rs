@@ -7,12 +7,12 @@ use mush_core::output::display_name;
 use std::collections::BTreeSet;
 
 use crate::data::{
-    CapacitySpec, DomainClock, DomainId, DomainRecord, DomainStatus, HostAssignments, HostMounts,
-    HostStations, MountId, MountSpec, PASSIVE_DRIVER, Pose, RECOVERY_LOG, RulesValue, SlotId,
-    SpaceAnchor, SpatialCounterError, SpatialParent, SpatialState, StationAssignment, StationId,
-    StationSpec, checked_domain_revision, checked_placement_revision, passive_rules_value,
-    persist_assignments, persist_control_gen, persist_del, persist_domain, persist_meta,
-    persist_mounts, persist_space, persist_stations, space_key,
+    CapacitySpec, DomainId, DomainStatus, HostAssignments, HostMounts, HostStations, MountId,
+    MountSpec, PASSIVE_DRIVER, Pose, RECOVERY_LOG, RulesValue, SlotId, SpaceAnchor,
+    SpatialCounterError, SpatialParent, SpatialState, StationAssignment, StationId, StationSpec,
+    checked_domain_revision, checked_placement_revision, passive_rules_value, persist_assignments,
+    persist_control_gen, persist_del, persist_domain, persist_mounts, persist_space,
+    persist_stations, space_key,
 };
 use crate::domain::{
     self, ActivationBook, DomainSummary, MAX_ACTIVE_DOMAINS, PromotionTrigger, QUIET_BOUNDARY,
@@ -354,30 +354,17 @@ fn domain_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         );
         return Ok(());
     }
-    let (rec, next) = {
-        let s = st_mut(ctx);
-        let id = s.alloc_domain_id().map_err(counter_err)?;
-        let rec = DomainRecord {
-            id,
-            host,
-            driver: crate::data::passive_definition_ref(),
-            status: DomainStatus::Active,
-            clock: DomainClock::Passive,
-            presentation_location: presentation,
-            revision: 1,
-            window: None,
-        };
-        s.domains.insert(id, rec.clone());
-        s.derived = crate::graph::rebuild(s);
-        (rec, s.next_domain_id)
-    };
-    persist_domain(ctx.out, &rec);
-    persist_meta(ctx.out, next);
+    // 16b cut C.2: one implementation of "a passive domain exists on this host",
+    // in the library beside `open_window`, so the proving-ground applier and this
+    // verb cannot disagree about what a passive domain record is. The staff-facing
+    // refusals above are the verb's; the record is the library's.
+    let id = crate::window::open_passive_domain(ctx, host, presentation)
+        .map_err(|error| CmdError::msg(format!("Cannot create the domain: {error}.")))?;
     info(
         ctx,
         format!(
             "Created domain #{} on {} (presents in {}).",
-            rec.id,
+            id,
             display_name(ctx.w, host),
             display_name(ctx.w, presentation)
         ),

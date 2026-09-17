@@ -1,0 +1,43 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.mg_coax",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "d5a24fd7275500b239367b1da521c13a67ec8b767b800a8f9c7cf3797437766c",
+    "requires": [
+      {
+        "id": "tacsim.pack.ball_762",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.weapon.mg_coax": {
+      "kind": "weapon",
+      "def": {
+        "label": "coaxial machine gun",
+        "delivery": "direct",
+        "mount": {
+          "section": "turret",
+          "facet": "front"
+        },
+        "bands": [
+          {
+            "max_range_cm": 60000,
+            "dispersion_mrad": 8
+          },
+          {
+            "max_range_cm": 120000,
+            "dispersion_mrad": 16
+          }
+        ],
+        "cycle_ms": 1000,
+        "ammunition": "tacsim.ammunition.ball_762",
+        "burst_rounds": 10,
+        "muzzle_speed_cms": 85000,
+        "heat_per_shot": 0,
+        "note": "Cut C's numbers. At the W14 floor exactly, so the shipped content proves the floor is reachable and not merely asserted. 1.2 km is inside visual detection at 60 cells (600 m) plus signature, so the coaxial is a weapon for a contact you have already classified. Ten rounds a pull against a 2,000-round belt is 200 bursts."
+      }
+    }
+  }
+}

@@ -52,7 +52,10 @@ mod arena_def;
 mod record;
 mod verbs;
 
-pub use arena_def::{ARENA_CELL_CM, ARENA_CELLS, stock_definition, tracked_rules};
+pub use arena_def::{
+    ARENA_CELL_CM, ARENA_CELLS, PROVING_GROUND, STAND_IN, definition_for, stock_definition,
+    tracked_rules,
+};
 pub use record::{
     MatchOutcome, MatchRecord, MatchState, PoseNumbers, TeamRoster, UnitOutcome, UnitResult,
     match_id_of_key, result_key, write_restart_abort,
@@ -274,6 +277,10 @@ pub enum StartError {
     /// The arena definition is unknown.
     #[error("there is no arena definition called `{0}`")]
     NoArena(SmolStr),
+    /// **16b cut C.2** — the arena is authored, and its ground could not be
+    /// built over this world's atlas records.
+    #[error("{0}")]
+    NoGround(String),
     /// The window has no room for that many units in a side's entry zone.
     #[error("the {0} entry zone has no free cell for every unit on that side")]
     NoEntryCell(&'static str),
@@ -322,7 +329,11 @@ pub fn start(
     arena_cfg: &ArenaConfig,
     match_cfg: &MatchConfig,
 ) -> Result<MatchId, StartError> {
-    let definition = stock_definition(arena).ok_or_else(|| StartError::NoArena(arena.clone()))?;
+    // 16b cut C.2: the authored arena when a loaded pack declares one, and the
+    // stand-in window of T.3 otherwise.
+    let definition = arena_def::definition_for(ctx.w, arena)
+        .map_err(StartError::NoGround)?
+        .ok_or_else(|| StartError::NoArena(arena.clone()))?;
 
     // (1) Every refusal, before the first write.
     let mut seen: Vec<ObjId> = Vec::new();
