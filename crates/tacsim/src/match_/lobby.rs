@@ -820,6 +820,9 @@ pub fn reset(ctx: &mut Ctx<'_>) -> bool {
     if idle {
         return false;
     }
+    // 16b cut K.2: and the repair half of the same thing — a centre an earlier
+    // failure left with somebody aboard has its hatches opened here.
+    crate::match_::cockpit::disembark_all(ctx);
     release(ctx, MatchState::Idle, None);
     if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
         *book.centre_mut() = Centre::default();
@@ -844,6 +847,9 @@ pub(crate) fn on_match_finished(ctx: &mut Ctx<'_>, match_id: MatchId, outcome: M
         MatchOutcome::Void => MatchState::Void,
         _ => MatchState::Ended,
     };
+    // 16b cut K.2: the pods have bodies in them now, and "released" has to mean
+    // the hatches as well as the rows.
+    crate::match_::cockpit::disembark_all(ctx);
     release(ctx, state, Some(outcome));
     announce(
         ctx,
@@ -975,18 +981,30 @@ fn arena_ms(w: &World, match_id: MatchId) -> Option<i64> {
 // Output
 // ---------------------------------------------------------------------------
 
-/// Say one line in all three of the centre's rooms.
+/// Say one line everywhere in the centre: its three rooms **and its eight
+/// pods**.
 ///
 /// The centre is three rooms and one conversation: a pilot in the red room has
 /// to hear that blue started, and a pilot in the lobby has to hear that boarding
 /// closed. Nothing else in the world hears any of it.
+///
+/// **16b cut K.2 added the pods.** A room fan-out reaches whoever is *located*
+/// in that room, and `BOARD` puts the body inside the pod — so the moment the
+/// cut that seats pilots landed, the pilots were the one audience the centre
+/// could not reach, and "Match 1 is running. Good hunting." was said to an empty
+/// lobby. A pod is where a pilot is, so a pod is one of the places the centre
+/// speaks.
 fn announce(ctx: &mut Ctx<'_>, text: String) {
     let Some(rooms) = centre::centre_rooms(ctx.w) else {
         let actor = ctx.actor;
         ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, text);
         return;
     };
-    for room in rooms {
+    let pods: Vec<ObjId> = centre::POD_ENTRIES
+        .iter()
+        .filter_map(|(team, index, _)| centre::pod_object(ctx.w, *team, *index))
+        .collect();
+    for room in rooms.into_iter().chain(pods) {
         ctx.out.to_room(
             room,
             Vec::new(),

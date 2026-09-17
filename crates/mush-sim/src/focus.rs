@@ -413,10 +413,11 @@ macro_rules! proxy_acts {
         /// The split was six/three, then four/five after the cut 11 independent
         /// verify fold gave abandonment a station-lane face in `+eject`. **16b
         /// cut T retired `+eject` with the rest of the combat lane (D-16-20)**,
-        /// so abandonment has only its economy face again and refuses by
-        /// inertness; a station-lane abandonment verb that comes back must flip
-        /// the flag below and add its `seat_restriction` site in the same
-        /// change, which `vf_b8`'s census enforces.
+        /// so abandonment had only its economy face for one cut and refused by
+        /// inertness; **16b cut K.2 brought the station-lane face back as
+        /// `EXIT`** (climbing out of a simulator pod), so the split is five/four
+        /// again and the guard site is in `tacsim`'s cockpit — which is what
+        /// `vf_b8`'s census records.
         #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
         pub enum ProxyAct {
             $( $(#[$meta])* $variant, )+
@@ -453,9 +454,12 @@ proxy_acts! {
     /// Moving title in an asset (E4b2 `@claim/transfer`, a market sale).
     AssetTransfer => "asset transfer", false;
     /// Abandoning an asset (`AssetLifecycle::Abandoned`). Its station-lane face
-    /// `+eject` was retired with the combat lane (16b cut T, D-16-20), so this
-    /// is inert again: `@asset/abandon` is keyed on `ctx.actor`.
-    Abandonment => "abandonment", false;
+    /// `+eject` was retired with the combat lane (16b cut T, D-16-20), and **16b
+    /// cut K.2 gave it a new one**: `EXIT` climbs out of a simulator pod, which
+    /// releases the seat, the lease and the focus and leaves the tank idling in
+    /// a live match. That is abandonment of the asset a proxy seat was lent, so
+    /// the flag is back on and `EXIT` carries the guard site.
+    Abandonment => "abandonment", true;
     /// Destroying the unit or its cargo deliberately.
     Scuttling => "scuttling", false;
     /// Re-declaring a station's fallback controller (`@station/fallback`).

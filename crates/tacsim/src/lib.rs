@@ -445,6 +445,10 @@ impl GameModule for TacsimRuleset {
         // disabled layer refuses out loud rather than hiding a verb, and the
         // centre is content, not configuration.
         match_::sim::register(reg)?;
+        // 16b cut K.2: the cockpit — `BOARD`, `EXIT`, doc 16 §3.7's nine
+        // selectors and the gate that makes all eleven contextual. Beside the
+        // lobby and for the same reason.
+        match_::cockpit::register(reg)?;
         Ok(())
     }
 

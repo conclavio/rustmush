@@ -258,7 +258,9 @@ fn disconnect(tw: &mut TestWorld, who: ObjId) {
         &mut engine.world,
         &mut out,
         who,
-        false,
+        // 16b cut K.2: the dispatcher's `connected: bool` became a word, so that
+        // linkdead onset and revival could be published too.
+        mush_core::ConnTransition::Disconnected,
         DETACHED,
     );
     mush_core::module::emit_world_event(

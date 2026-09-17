@@ -391,6 +391,26 @@ pub struct MatchMirror {
     pub end: Option<MatchEnd>,
 }
 
+/// **The last frame one pilot was sent** (16b cut K.2, K3).
+///
+/// The cockpit's read verbs — `VIEW`, `CONTACTS`, `WEAPONSTATUS`, `STATUS` —
+/// render doc 16 §5's frame, and the arena is the only thing that knows any of
+/// it. The arena's own [`crate::arena::state::Arena::last_frames`] is inside the
+/// task, which a verb cannot reach, so the world keeps the copy it just sent: one
+/// row per **pilot**, latest-wins, dropped with the match.
+///
+/// It is a mirror and never authority. A verb that refused because the mirror is
+/// empty is refusing because the arena has not spoken yet, which is the honest
+/// answer and the fail-closed one — an unpowered tank is what a pilot who has
+/// just boarded has.
+#[derive(Clone, Debug)]
+pub struct CockpitFrame {
+    /// The match the frame came from.
+    pub match_id: MatchId,
+    /// The arena's own frame.
+    pub frame: Frame,
+}
+
 /// **The world's registry of running matches** — the tacsim module's own state
 /// slot, world-task-only.
 #[derive(Clone)]
@@ -409,6 +429,14 @@ pub struct ArenaRegistry {
     /// Which match and unit a pilot is seated on (cut T.3's check-out binds it).
     pilots: BTreeMap<ObjId, (MatchId, ObjId)>,
     matches: BTreeMap<MatchId, MatchMirror>,
+    /// **16b cut K.2**: the last frame each pilot was sent (see
+    /// [`CockpitFrame`]).
+    last_frames: BTreeMap<ObjId, CockpitFrame>,
+    /// **16b cut K.2**: the ground each running match is fought over, so `VIEW`
+    /// can draw the window without re-deriving a 65,536-cell arena from the
+    /// atlas on every look. One `Arc` per match, taken at check-out and dropped
+    /// with the match.
+    arenas: BTreeMap<MatchId, Arc<crate::arena::state::ArenaDefinition>>,
 }
 
 impl ArenaRegistry {
@@ -424,6 +452,8 @@ impl ArenaRegistry {
             units: BTreeMap::new(),
             pilots: BTreeMap::new(),
             matches: BTreeMap::new(),
+            last_frames: BTreeMap::new(),
+            arenas: BTreeMap::new(),
         }
     }
 
@@ -456,7 +486,23 @@ impl ArenaRegistry {
         self.units.retain(|_, held| *held != match_id);
         self.pilots.retain(|_, (held, _)| *held != match_id);
         self.epochs.retain(|(unit, _), _| !units.contains(unit));
+        // 16b cut K.2: the cockpit's two mirrors go with the match. A frame left
+        // behind would be the first thing the *next* match's pilot read.
+        self.last_frames.retain(|_, held| held.match_id != match_id);
+        self.arenas.remove(&match_id);
         self.matches.remove(&match_id)
+    }
+
+    /// **The last frame that pilot was sent** (16b cut K.2, K3).
+    #[must_use]
+    pub fn last_frame(&self, pilot: ObjId) -> Option<&CockpitFrame> {
+        self.last_frames.get(&pilot)
+    }
+
+    /// The ground one running match is fought over (16b cut K.2, K3).
+    #[must_use]
+    pub fn arena_of(&self, match_id: MatchId) -> Option<&crate::arena::state::ArenaDefinition> {
+        self.arenas.get(&match_id).map(Arc::as_ref)
     }
 
     /// One match's mirror.
@@ -609,6 +655,11 @@ pub fn open_match(
         .iter()
         .map(|pilot| (pilot.pilot, pilot.unit, pilot.station.clone(), pilot.epoch))
         .collect();
+    // 16b cut K.2: one clone of the ground, for `VIEW`. The definition is moved
+    // into the task below and the arena is its single owner from then on, so the
+    // world keeps its own immutable copy rather than reaching across the seam or
+    // rebuilding it from the atlas per look.
+    let ground = Arc::new(custody.definition.clone());
     let (handle, join) =
         crate::arena_task::spawn_arena(&runtime, match_id, custody, arena_cfg, match_cfg, egress)?;
     if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
@@ -621,6 +672,7 @@ pub fn open_match(
         return Err(OpenMatchError::Unavailable);
     };
     registry.track(match_id);
+    registry.arenas.insert(match_id, ground);
     for unit in units {
         registry.bind_unit(unit, match_id);
     }
@@ -882,13 +934,13 @@ pub fn send_stop(
         .map_err(|_| ControlRefusal::Gone)
 }
 
-/// Release every channel of one pilot's unit, at the state the world now knows.
+/// Put every channel of one pilot's unit at the state the world now knows.
 ///
-/// The one place the three lifecycle facts this cut can observe turn into
-/// `Control`s. Cut K owns `BOARD` and `EXIT` (it calls [`send_control`]
-/// directly, on the same world task, right beside `request_seat_activation`),
-/// and cut K4 owns linkdead onset and revival, for which the kernel has no hook
-/// at all yet.
+/// The one place the lifecycle facts the kernel publishes turn into `Control`s —
+/// four of them since cut K.2 taught the kernel to publish linkdead onset and
+/// revival (see [`SeatFacts`]). `BOARD` and `EXIT` are cut K.2's verbs and call
+/// [`send_control`] directly, on the same world task, right beside
+/// `request_seat_activation`.
 fn control_all_channels(ctx: &mut Ctx<'_>, unit: ObjId, state: ControlState) {
     for channel in Channel::ALL {
         if let Err(error) = send_control(ctx, unit, channel, state) {
@@ -963,7 +1015,20 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) 
         if ctx.w.get(pilot).is_none() {
             continue;
         }
-        feed.keyframe_to(ctx, Audience::Actor(pilot), frame_json(match_id, &frame));
+        // 16b cut K.2: the world's copy first, so a cockpit verb typed in the
+        // same batch reads the frame the pilot was just sent, and then the frame
+        // itself — doc 16 §5's keyframe, which cut K.2 filled out.
+        let payload = crate::match_::cockpit::status_frame(ctx, match_id, &frame);
+        if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+            registry.last_frames.insert(
+                pilot,
+                CockpitFrame {
+                    match_id,
+                    frame: frame.clone(),
+                },
+            );
+        }
+        feed.keyframe_to(ctx, Audience::Actor(pilot), payload);
         sent = sent.saturating_add(1);
     }
     if let Some(record) = ctx
@@ -985,24 +1050,6 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) 
             mirror.tempo = tempo;
         }
     }
-}
-
-/// One frame, as the panel payload. Cut K replaces this with the real cockpit
-/// keyframe of doc 16 §5; the shape is deliberately the arena's [`Frame`] and
-/// nothing more, so the seam is visible rather than invented.
-fn frame_json(match_id: MatchId, frame: &Frame) -> serde_json::Value {
-    serde_json::json!({
-        "match": match_id.0,
-        "unit": frame.unit.0,
-        "x_cm": frame.pose.x_cm,
-        "y_cm": frame.pose.y_cm,
-        "z_cm": frame.pose.z_cm,
-        "heading_mdeg": frame.pose.heading_mdeg,
-        "speed_cms": frame.speed_cms,
-        "power": frame.power.as_str(),
-        "blocked": frame.blocked,
-        "tempo": frame.tempo.as_str(),
-    })
 }
 
 /// The ledger log id one match streams into: `log:match.<id>` is
@@ -1259,35 +1306,84 @@ fn notify_staff(ctx: &mut Ctx<'_>, text: String) {
 // The seat facts this cut can observe
 // ---------------------------------------------------------------------------
 
-/// A full disconnect releases the seat (`mush-sim`'s own `Disconnected` hook
-/// does the release); a reconnect makes it live again.
+/// **The four seat lifecycle facts the kernel publishes** (16b cut T.2, widened
+/// by cut K.2's K4).
 ///
-/// These are the only two seat lifecycle facts the kernel publishes. Linkdead
-/// **onset** and **revival within the grace** have no hook at all — the engine
-/// announces them to the room and fires nothing — and they are cut K4's by 16b
-/// §8's own allocation. `EXIT`, `SIM ABORT` and `BOARD` are cut K's verbs, which
-/// call [`send_control`] directly beside `request_seat_activation`; lease
-/// revocation by a third party cannot happen to a deployed unit at all, because
-/// cut T.3's admission-site refusals refuse it.
+/// Cut T.2 could observe two — a full disconnect (`mush-sim`'s own
+/// `Disconnected` hook does the seat release; this tells the arena) and a
+/// reconnect — and recorded that linkdead **onset** and **revival inside the
+/// grace** had no hook at all. Cut K.2 added them to the kernel:
+/// [`mush_core::HookPoint::Linkdead`] at the engine's own link-dead announce,
+/// and [`mush_core::EventHook::revived`] over `Connected`'s registrations. So
+/// doc 16 §3.8's "Disconnects" paragraph is now four lines of code:
+///
+/// | fact | what the arena is told | what the tank does |
+/// |---|---|---|
+/// | linkdead onset | `Control { Linkdead }` | keeps its continuous orders, fires nothing |
+/// | revival in the grace | `Control { Live }`, new epoch | takes orders again at the next pulse |
+/// | the grace expires | `Control { Released }` | zeroes its desired speed and idles |
+/// | a clean connect | `Control { Live }` | (a seat that was never released) |
+///
+/// Every one of them goes out as an **epoch raise**, so the arena purges whatever
+/// that seat had queued: a pilot whose line drops mid-burst does not fire the
+/// shot they had queued a moment before, and a pilot who comes back does not
+/// inherit one.
+///
+/// `EXIT`, `SIM ABORT` and `BOARD` are cut K's verbs, which call
+/// [`send_control`] directly beside `request_seat_activation`; lease revocation
+/// by a third party cannot happen to a deployed unit at all, because cut T.3's
+/// admission-site refusals refuse it.
 struct SeatFacts;
+
+impl SeatFacts {
+    /// The unit one actor is seated on, as the registry knows it.
+    fn seated_unit(ctx: &Ctx<'_>, actor: ObjId) -> Option<ObjId> {
+        ctx.w
+            .module_state::<ArenaRegistry>()
+            .and_then(|registry| registry.seat_of_pilot(actor))
+            .map(|(_match_id, unit)| unit)
+    }
+}
 
 impl mush_core::EventHook for SeatFacts {
     fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
-        if let Some((_match_id, unit)) = ctx
-            .w
-            .module_state::<ArenaRegistry>()
-            .and_then(|registry| registry.seat_of_pilot(actor))
-        {
+        if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
             control_all_channels(ctx, unit, ControlState::Live);
         }
     }
 
+    /// **16b cut K.2 (K4)**: the pilot's line came back inside the grace. The
+    /// seat is reclaimed with a **new epoch** — `send_control` raises the
+    /// world's mirror and the arena raises its table at its next pulse's phase
+    /// 1, which is doc 16 §3.8's "at a pulse boundary" exactly — so nothing
+    /// queued under the dead line survives the reclaim.
+    fn revived(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
+            control_all_channels(ctx, unit, ControlState::Live);
+            // And the pilot is told, because the one thing they cannot see from
+            // inside a pod is what happened while they were not there: the tank
+            // held the last heading and speed they gave it and fired nothing.
+            // It is also the only line that distinguishes a reclaim from an
+            // ordinary reconnect, which is what makes the grace observable at
+            // all.
+            let line = format!(
+                "You are back at your station on {}; it held your orders and fired nothing.",
+                mush_core::output::display_name(ctx.w, unit)
+            );
+            ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+        }
+    }
+
+    /// **16b cut K.2 (K4)**: the pilot's line dropped and the grace is running.
+    /// Not a release: the tank keeps steering and stops shooting.
+    fn linkdead(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
+            control_all_channels(ctx, unit, ControlState::Linkdead);
+        }
+    }
+
     fn disconnected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
-        if let Some((_match_id, unit)) = ctx
-            .w
-            .module_state::<ArenaRegistry>()
-            .and_then(|registry| registry.seat_of_pilot(actor))
-        {
+        if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
             control_all_channels(ctx, unit, ControlState::Released);
         }
     }
@@ -1405,6 +1501,9 @@ pub fn register(
     let frames = reg.panel_feed(FRAME_FEED)?;
     reg.async_completion(Arc::new(ArenaEgress))?;
     reg.hook(mush_core::HookPoint::Connected, Arc::new(SeatFacts));
+    // 16b cut K.2 (K4): the kernel's new point, and the revival that rides
+    // `Connected`'s registrations above on `EventHook::revived`.
+    reg.hook(mush_core::HookPoint::Linkdead, Arc::new(SeatFacts));
     reg.hook(mush_core::HookPoint::Disconnected, Arc::new(SeatFacts));
     reg.state(ArenaRegistry::new(ArenaTasks::new(egress_capacity), frames));
     // 16b cut T.3: the match book beside the registry. A second slot rather than

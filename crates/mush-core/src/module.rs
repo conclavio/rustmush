@@ -437,7 +437,25 @@ pub enum HookPoint {
     /// to a game with no concealment ruleset). See [`can_perceive`].
     Perceive,
     /// An actor's session became live (first connection attached).
+    ///
+    /// **16b cut K.2 (K4).** A *revival* inside the session layer's linkdead
+    /// grace fires this same point's registrations, but on
+    /// [`EventHook::revived`] rather than [`EventHook::connected`] — see
+    /// [`ConnTransition`] for why the flag selects a second method instead of
+    /// widening `connected`.
     Connected,
+    /// An actor's last connection dropped **uncleanly** and the session layer
+    /// has not given it up yet: the character stays in the room, still
+    /// `connected` for `WHO`, until the grace expires (doc 07 D1).
+    ///
+    /// **16b cut K.2 (K4).** The kernel announced this to the room and told no
+    /// module about it, so a subsystem holding live authority on an actor's
+    /// behalf — the arena's cockpit seat — could not tell a dropped line from a
+    /// pilot who had gone quiet. A hook here is *not* a disconnect: the seat is
+    /// kept and the tank fires nothing (doc 16 §3.8 "Disconnects"), and
+    /// [`Disconnected`](HookPoint::Disconnected) is still what fires when the
+    /// grace runs out.
+    Linkdead,
     /// An actor's session fully ended (clean quit or linkdead grace
     /// expiry).
     Disconnected,
@@ -634,6 +652,23 @@ pub trait EventHook: Send + Sync {
 
     /// An actor connected (session became live).
     fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {}
+
+    /// An actor's session became live **again**, inside the session layer's
+    /// linkdead grace (16b cut K.2, K4). Fires on
+    /// [`HookPoint::Connected`]'s registrations, and defaults to nothing.
+    ///
+    /// The default is the whole of the compatibility argument: before this cut a
+    /// revival fired no hook at all, so every module that implements
+    /// [`connected`](EventHook::connected) and not this keeps its behaviour
+    /// exactly — a reconnecting player is not sent their mail count, their
+    /// channel notices or their weather line a second time. A module that holds
+    /// authority across the gap (the arena's cockpit seat) overrides it.
+    fn revived(&self, ctx: &mut Ctx<'_>, actor: ObjId) {}
+
+    /// An actor's last connection dropped uncleanly and the grace is running
+    /// (16b cut K.2, K4). The actor is still `connected` world-side; see
+    /// [`HookPoint::Linkdead`].
+    fn linkdead(&self, ctx: &mut Ctx<'_>, actor: ObjId) {}
 
     /// An actor fully disconnected.
     fn disconnected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {}
@@ -4326,21 +4361,57 @@ pub fn apply_store_read_completion(
     handler.on_read(&mut ctx, correlation, result);
 }
 
-/// Fire the `Connected` / `Disconnected` hooks for an actor.
+/// Which session transition [`fire_conn_hook`] is dispatching (16b cut K.2, K4).
+///
+/// Cut K.2 needed two facts the kernel had but never published: the **onset** of
+/// a linkdead gap, and a **revival** inside the grace. The dispatcher's old
+/// `connected: bool` could not carry either, so the flag became this word, and
+/// `from_linkdead` at the engine's own connect site is what picks
+/// [`Revived`](ConnTransition::Revived) over
+/// [`Connected`](ConnTransition::Connected).
+///
+/// Revival deliberately rides [`HookPoint::Connected`]'s **registrations** on a
+/// second trait method rather than a `HookPoint` of its own: nine modules hook
+/// `Connected` today (mail, comsys, the economy inbox, housing, weather, the
+/// game sheet, the arena and two test rigs), and firing their `connected` on
+/// every reconnect would hand each of them a behaviour change this cut has no
+/// business making. [`EventHook::revived`] defaults to nothing, so they are
+/// byte-identical and the one module that cares overrides it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ConnTransition {
+    /// A session became live (the world-side connect transition).
+    Connected,
+    /// A session became live again inside the linkdead grace.
+    Revived,
+    /// The last connection dropped uncleanly; the grace is running.
+    Linkdead,
+    /// The session ended (a clean quit, or the grace expiring).
+    Disconnected,
+}
+
+impl ConnTransition {
+    /// The point whose registrations this transition dispatches over.
+    #[must_use]
+    pub const fn point(self) -> HookPoint {
+        match self {
+            // A revival is a connect to everyone who registered for one.
+            ConnTransition::Connected | ConnTransition::Revived => HookPoint::Connected,
+            ConnTransition::Linkdead => HookPoint::Linkdead,
+            ConnTransition::Disconnected => HookPoint::Disconnected,
+        }
+    }
+}
+
+/// Fire the session-transition hooks for an actor (see [`ConnTransition`]).
 pub fn fire_conn_hook(
     reg: &Registry,
     w: &mut World,
     out: &mut Outbox,
     actor: ObjId,
-    connected: bool,
+    transition: ConnTransition,
     lens: crate::action_state::TypedStateLens<'_>,
 ) {
-    let point = if connected {
-        HookPoint::Connected
-    } else {
-        HookPoint::Disconnected
-    };
-    let hooks: Vec<HookReg> = reg.hooks(point).to_vec();
+    let hooks: Vec<HookReg> = reg.hooks(transition.point()).to_vec();
     for h in hooks {
         let typed_state =
             crate::action_state::ModuleActionState::for_module(lens, Some(h.module.as_str()));
@@ -4354,10 +4425,11 @@ pub fn fire_conn_hook(
             module: Some(h.module.clone()),
             typed_state,
         };
-        if connected {
-            h.hook.connected(&mut ctx, actor);
-        } else {
-            h.hook.disconnected(&mut ctx, actor);
+        match transition {
+            ConnTransition::Connected => h.hook.connected(&mut ctx, actor),
+            ConnTransition::Revived => h.hook.revived(&mut ctx, actor),
+            ConnTransition::Linkdead => h.hook.linkdead(&mut ctx, actor),
+            ConnTransition::Disconnected => h.hook.disconnected(&mut ctx, actor),
         }
     }
 }

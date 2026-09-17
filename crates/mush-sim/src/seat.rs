@@ -698,6 +698,18 @@ fn submit_seat_handoff(ctx: &mut Ctx<'_>, npc: ObjId, unit: ObjId, station: &Sta
     let Some(action) = crate::handoff::request_action_ref(ctx.reg) else {
         return false;
     };
+    // **16b cut K.2.** A K6 lease is per CHANNEL, and
+    // `handoff::station_channel` declines to project an offer for a station
+    // whose set is not exactly one — so a multi-channel station (doc 16 §3.7's
+    // three-channel cockpit is the first production one) has no lease to ask
+    // for. Staging the request anyway put a submission on the world loop that
+    // could only be refused, and the refusal reached the player as "That did not
+    // go through. Nothing changed." **after** a seat that had in fact been
+    // taken. There is nothing to stage, so nothing is staged, and
+    // `SeatTicket::staged` says so.
+    if crate::handoff::station_channel(crate::commands::st(ctx), unit, station).is_none() {
+        return false;
+    }
     // The 08g §10 C12 census stays at NINE: this is `station.rs`'s own
     // `actor_grant_epoch` — `mush-sim`'s single `command_subjects_of` read for a
     // handoff subject revision — called a second time, not a tenth consumer.

@@ -50,6 +50,9 @@
 
 mod arena_def;
 pub mod centre;
+/// 16b cut K.2: **the cockpit** — `BOARD`, `EXIT`, doc 16 §3.7's nine selectors,
+/// the gate that makes them contextual, and doc 16 §5's frame.
+pub mod cockpit;
 pub mod lobby;
 mod record;
 pub mod sim;
@@ -65,6 +68,11 @@ pub use centre::{
     PODS_PER_SIDE, RED_ROOM_ENTRY, ROSTER_PREFIX, centre_object, centre_rooms, pod_object,
     pod_slot, room_role, roster_from_document, roster_id_of_key, roster_key, slot_id, slot_object,
     tank_for_slot, tank_of, where_in_centre,
+};
+pub use cockpit::{
+    BOARD_VERB, COCKPIT_VERBS, CockpitError, CockpitGate, EXIT_VERB, NO_LOCK, NO_SUCH_CONTACT,
+    NOT_IN_A_POD, OUTSIDE_COCKPIT, OUTSIDE_TEAM_ROOM, POWER_NOT_ONLINE, STATION,
+    board as cockpit_board, exit as cockpit_exit, flying,
 };
 pub use lobby::{
     Centre, OUTSIDE_CENTRE, SimError, Slot, abort as sim_abort, board_deadline,
@@ -825,6 +833,19 @@ fn release_seat(ctx: &mut Ctx<'_>, unit: ObjId) {
                 station = station.as_str(),
                 %error,
                 "tacsim: a cockpit seat did not stand down at check-in"
+            );
+        }
+        // **16b cut K.2.** A stand-down clears the narrowing and keeps the
+        // billet, which is right for an NPC's own station and wrong for a pod
+        // lent for one match: the billet IS the loan, and one left behind is the
+        // next pilot's `StationHeld`. Doc 16 §3.8's "seats … released
+        // atomically" is this line as much as the one above it.
+        if let Err(error) = mush_sim::vacate_station(ctx, unit, &station, actor) {
+            tracing::error!(
+                %unit,
+                station = station.as_str(),
+                %error,
+                "tacsim: a cockpit billet could not be given back at check-in"
             );
         }
     }

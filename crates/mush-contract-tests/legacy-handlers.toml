@@ -705,6 +705,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
 
 [[handler]]
+name = "board"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.3 Stations are on the tank, section 3.7 Boarding; 16b section 8 cut K, K2). BOARD is the verb that fills cut K.1's named Boarding -> Running trigger. Contextual in one of the centre's two team rooms for the character that holds that side's slot; the tacsim module's CockpitGate refuses it anywhere else in one line (\"Boarding is through one of the simulator's team rooms.\"). In one authoritative action it declares the `cockpit` station on the pod's TANK through mush_sim::declare_station (a stations:<host> post-image on the sim lane, idempotent -- the same pod always flies the same tank, so a re-board rewrites nothing), places the character inside the pod through mush_sim::place_interior (a placement record on the same lane), activates the seat through mush_sim::request_seat_activation, which is the ONE path in the tree that writes a billet, narrows its channel set to helm/sensors/fire, claims the account's single foreground focus and asks K6 for the control lease, and reports the seat to tacsim::match_::slot_seated. When that was the last seat the match was waiting for, cut T.3's whole check-out runs inside this same command: the deployed markers, the frozen placements and the CustodyOut. Every refusal is taken before the first write, and a seat that refuses after the body is in the pod takes the body back out."
+
+[[handler]]
 name = "clist"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
@@ -718,6 +723,11 @@ note = "baseline pinned at b0e3b52 (module, every composition)"
 name = "comtitle"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "contacts"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.6 What a pilot sees, section 5; 16b section 8 cut K, K3). One of the nine cockpit selectors, and one of the four that only read: it renders the last `tacsim.frame` keyframe the arena sent this pilot (the world keeps one row per pilot on the ArenaRegistry, dropped with the match) and re-emits it on the same feed, so the ANSI renderer, the TUI and the web draw one structure. Contextual on a focused station of a deployed unit, refused elsewhere in one line by the tacsim module's CockpitGate. No document, no world mutation, no intent: it is a read of a mirror the arena wrote."
 
 [[handler]]
 name = "delcom"
@@ -740,6 +750,16 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
 
 [[handler]]
+name = "exit"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.7, section 3.8; 16b section 8 cut K, K2). EXIT is BOARD reversed, and the order is the safety argument: Control{Released} to the arena FIRST (which raises the epoch and purges whatever that seat had queued -- the reason a pilot who types FIRE and EXIT in one burst fires nothing), then the seat itself through the same mush_sim::request_seat_activation seam (Release: the narrowing cleared, the focus relinquished, the station's declared fallback fired), then the body out of the pod and back into the team room, then -- while the centre is still Boarding -- tacsim::match_::slot_vacated, so the trigger stops counting a pod nobody is in. It carries ProxyAct::Abandonment's station-lane guard site (mush_sim::seat_restriction): a driver lent somebody else's crew member may not climb out and leave the unit idling. Contextual inside a pod; the CockpitGate refuses it anywhere else in one line (\"You are not in a pod.\")."
+
+[[handler]]
+name = "fire"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.7 Verbs; 16b section 8 cut K, K3). One of the nine cockpit selectors: contextual while the actor is focused on a station of a unit an arena holds custody of, and refused anywhere else in one line (\"You are not at the station of a deployed unit.\") by the tacsim module's CockpitGate. It writes NOTHING: it stages at most one arena Intent through arena_bridge::forward_intent, which stamps the world's epoch mirror and offers the order to the match's bounded inbox -- no document, no world mutation, no prepared mechanic. The arena authorises again at apply against its own epoch table, so an order that outlives its seat is refused there. The category is `authoritative` with the rest of the cockpit rather than `read-only`, because the eleven verbs are one subsystem on one lane and BOARD and EXIT, which carry the writes, cannot be anything else."
+
+[[handler]]
 name = "get"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
@@ -755,6 +775,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
 
 [[handler]]
+name = "heading"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.7 Verbs; 16b section 8 cut K, K3). One of the nine cockpit selectors: contextual while the actor is focused on a station of a unit an arena holds custody of, and refused anywhere else in one line (\"You are not at the station of a deployed unit.\") by the tacsim module's CockpitGate. It writes NOTHING: it stages at most one arena Intent through arena_bridge::forward_intent, which stamps the world's epoch mirror and offers the order to the match's bounded inbox -- no document, no world mutation, no prepared mechanic. The arena authorises again at apply against its own epoch table, so an order that outlives its seat is refused there. The category is `authoritative` with the rest of the cockpit rather than `read-only`, because the eleven verbs are one subsystem on one lane and BOARD and EXIT, which carry the writes, cannot be anything else."
+
+[[handler]]
 name = "help"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
@@ -768,6 +793,11 @@ note = "baseline pinned at b0e3b52 (core/engine registry)"
 name = "inventory"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
+
+[[handler]]
+name = "lock"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.7 Verbs; 16b section 8 cut K, K3). One of the nine cockpit selectors: contextual while the actor is focused on a station of a unit an arena holds custody of, and refused anywhere else in one line (\"You are not at the station of a deployed unit.\") by the tacsim module's CockpitGate. It writes NOTHING: it stages at most one arena Intent through arena_bridge::forward_intent, which stamps the world's epoch mirror and offers the order to the match's bounded inbox -- no document, no world mutation, no prepared mechanic. The arena authorises again at apply against its own epoch table, so an order that outlives its seat is refused there. The category is `authoritative` with the rest of the cockpit rather than `read-only`, because the eleven verbs are one subsystem on one lane and BOARD and EXIT, which carry the writes, cannot be anything else."
 
 [[handler]]
 name = "look"
@@ -800,6 +830,21 @@ category = "authoritative"
 note = "16b cut K.1 (doc 16 section 3.7 Verbs, section 3.8 Lifecycle; 16b section 8 cut K, K1). SIM is ONE player verb -- the simulator lobby's whole surface -- with five selectors, each of which may be spelled as a leading word (doc 16's SIM STATUS) or as a switch (SIM/STATUS); both resolve to the same selector on the way in, so there is one code path and not two spellings. /team red|blue claims one pilot slot, keyed by the immutable AccountId (doc 10 R3: an unmapped character fails CLOSED and is refused) and recording the character beside it, at most one per account and at most as many a side as the centre has pods; /leave releases it, and the last release returns the centre to Idle. /start is the one that mints: a side's first claimant or staff, with at least one pilot a side, allocates a match id through the same persisted tacsim:match:seq counter @arena/start uses, locks pod n of a team room to slot n of that side and arms the boarding deadline. It writes no unit record and takes no custody; the CHECK-OUT is fired later, by the named Boarding -> Running trigger, which runs cut T.3's match_::start unchanged -- the same one authoritative action, the same deployed { match, arena, snapshot } marker per unit through mush_tactics::custody under the already-declared tacsim -> tactics persist delegation, the same frozen placements. The trigger fires when every claimed slot is seated (cut K.2's BOARD reports a seat through match_::slot_seated) or when match.board_timeout_ms elapses on the module's own coarse world tick, with unseated slots dropped and an empty side aborting. /abort, by any pilot holding a slot or by staff, releases slots and pods from Selection and Boarding (there is no custody before Running) and from Running sends Stop{Abort}, whose check-in is cut T.3's and is driven by the arena's own Ended message, not by this verb. /status is a pure read of the centre. The verb is registered GLOBALLY and a CommandGate refuses it in one line -- \"The simulator is through the lobby.\" -- anywhere but the three rooms C.1 authored in the atlas-owned OOC pack, resolved through the content latch by entry id (room.simulator_lobby, room.sim_red, room.sim_blue) and never by name; there is no staff exemption, because the gate is about the room and not about the power. The centre itself is RAM on the tacsim module's own MatchBook slot (D-16-3: an OOC match holds no durable state and never resumes), so a restart leaves an idle centre; the only documents this verb can queue are the match counter and, at the trigger, cut T.3's."
 
 [[handler]]
+name = "speed"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.7 Verbs; 16b section 8 cut K, K3). One of the nine cockpit selectors: contextual while the actor is focused on a station of a unit an arena holds custody of, and refused anywhere else in one line (\"You are not at the station of a deployed unit.\") by the tacsim module's CockpitGate. It writes NOTHING: it stages at most one arena Intent through arena_bridge::forward_intent, which stamps the world's epoch mirror and offers the order to the match's bounded inbox -- no document, no world mutation, no prepared mechanic. The arena authorises again at apply against its own epoch table, so an order that outlives its seat is refused there. The category is `authoritative` with the rest of the cockpit rather than `read-only`, because the eleven verbs are one subsystem on one lane and BOARD and EXIT, which carry the writes, cannot be anything else."
+
+[[handler]]
+name = "startup"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.7 Verbs; 16b section 8 cut K, K3). One of the nine cockpit selectors: contextual while the actor is focused on a station of a unit an arena holds custody of, and refused anywhere else in one line (\"You are not at the station of a deployed unit.\") by the tacsim module's CockpitGate. It writes NOTHING: it stages at most one arena Intent through arena_bridge::forward_intent, which stamps the world's epoch mirror and offers the order to the match's bounded inbox -- no document, no world mutation, no prepared mechanic. The arena authorises again at apply against its own epoch table, so an order that outlives its seat is refused there. The category is `authoritative` with the rest of the cockpit rather than `read-only`, because the eleven verbs are one subsystem on one lane and BOARD and EXIT, which carry the writes, cannot be anything else."
+
+[[handler]]
+name = "status"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.6 What a pilot sees, section 5; 16b section 8 cut K, K3). One of the nine cockpit selectors, and one of the four that only read: it renders the last `tacsim.frame` keyframe the arena sent this pilot (the world keeps one row per pilot on the ArenaRegistry, dropped with the match) and re-emits it on the same feed, so the ANSI renderer, the TUI and the web draw one structure. Contextual on a focused station of a deployed unit, refused elsewhere in one line by the tacsim module's CockpitGate. No document, no world mutation, no intent: it is a read of a mirror the arena wrote."
+
+[[handler]]
 name = "think"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (core/engine registry)"
@@ -813,6 +858,16 @@ note = "baseline pinned at b0e3b52 (core/engine registry)"
 name = "use"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"
+
+[[handler]]
+name = "view"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.6 What a pilot sees, section 5; 16b section 8 cut K, K3). One of the nine cockpit selectors, and one of the four that only read: it renders the last `tacsim.frame` keyframe the arena sent this pilot (the world keeps one row per pilot on the ArenaRegistry, dropped with the match) and re-emits it on the same feed, so the ANSI renderer, the TUI and the web draw one structure. Contextual on a focused station of a deployed unit, refused elsewhere in one line by the tacsim module's CockpitGate. No document, no world mutation, no intent: it is a read of a mirror the arena wrote."
+
+[[handler]]
+name = "weaponstatus"
+category = "authoritative"
+note = "16b cut K.2 (doc 16 section 3.6 What a pilot sees, section 5; 16b section 8 cut K, K3). One of the nine cockpit selectors, and one of the four that only read: it renders the last `tacsim.frame` keyframe the arena sent this pilot (the world keeps one row per pilot on the ArenaRegistry, dropped with the match) and re-emits it on the same feed, so the ANSI renderer, the TUI and the web draw one structure. Contextual on a focused station of a deployed unit, refused elsewhere in one line by the tacsim module's CockpitGate. No document, no world mutation, no intent: it is a read of a mirror the arena wrote."
 
 [[handler]]
 name = "whisper"

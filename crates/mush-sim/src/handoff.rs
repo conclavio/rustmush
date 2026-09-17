@@ -100,7 +100,15 @@ fn handoff_schedule_id(owner: &OwnerId, lease: &ControlLeaseKey) -> Result<Sched
 /// The single control channel a station grants, or `None` when the station is
 /// absent or grants a set that is not exactly one channel. Cut 5 leases are
 /// per-channel; a multi-channel station is not offered through the command path.
-fn station_channel(spatial: &SpatialState, unit: ObjId, station: &StationId) -> Option<ChannelId> {
+///
+/// **16b cut K.2** made it `pub(crate)`: `seat.rs` asks the same question before
+/// staging a seat's lease request, so a station this declines to offer for is
+/// one nothing tries to request.
+pub(crate) fn station_channel(
+    spatial: &SpatialState,
+    unit: ObjId,
+    station: &StationId,
+) -> Option<ChannelId> {
     let spec = spatial.stations.get(&unit)?.stations.get(station)?;
     if spec.channels.len() != 1 {
         return None;

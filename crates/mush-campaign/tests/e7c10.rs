@@ -1403,7 +1403,16 @@ fn e7c10_k6_an_llm_driven_seat_is_k7_gated_and_cut_ten_mints_no_decision() {
         &format!("+seat/activate {}/{}", op.0, seat.0),
     );
     let staged = drain(&mut tw);
-    assert!(!staged.is_empty(), "activation staged the seat's request");
+    // **16b cut K.2.** This fixture's station grants TWO channels
+    // (`movement+fire`), and a K6 lease is per channel: `handoff::station_channel`
+    // has always declined to project an offer for a station whose set is not
+    // exactly one, so the request this activation used to stage could only ever
+    // be refused — and on a real server that refusal reached the player as "That
+    // did not go through. Nothing changed." after a seat that had in fact been
+    // taken. `seat.rs` now asks the same question before staging, so a
+    // multi-channel station stages nothing. What this test is about is unchanged
+    // and is asserted below: whatever IS staged carries a deterministic key, and
+    // no `PendingDecision` is minted on any of it.
     for submit in &staged {
         assert!(
             submit.key.as_str().starts_with("seat.activate/")
@@ -2825,8 +2834,12 @@ fn vf_b14_a_second_activate_before_the_tick_is_a_no_op() {
         &format!("+seat/activate {}/{}", op.0, seat.0),
     );
     let epoch = epoch_of(&tw, fx.ace, fx.atlas, "pilot").expect("a grant");
-    let staged = drain(&mut tw).len();
-    assert!(staged > 0);
+    // 16b cut K.2: this fixture's station is two-channel and a K6 lease is per
+    // channel, so the activation stages nothing to request (see
+    // `e7c10_k6_an_llm_driven_seat_is_k7_gated_and_cut_ten_mints_no_decision`).
+    // The window this test is about is the one below it: the grant is `Dormant`
+    // until the tick, and a second activate inside it must change nothing.
+    drain(&mut tw);
     // No fire between: the grant is still `Dormant`, which is the whole window.
     assert_eq!(grant_state(&tw, op, seat), Some(GrantState::Dormant));
     ok(

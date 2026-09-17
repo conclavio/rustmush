@@ -304,6 +304,40 @@ pub fn place(ctx: &mut Ctx<'_>, obj: ObjId, domain: DomainId, pose: Pose) -> Res
     .map_err(|e| e.to_string())
 }
 
+/// **Place `obj` inside the interior space `space`** — one planned transition,
+/// the projection onto the space included, the `sim.participant` behaviour
+/// attached if it is missing (16b cut K.2, K2; doc 16 §3.7 "Boarding").
+///
+/// The interior twin of [`place`], and it exists for the same reason: the two
+/// facts a placement needs — the behaviour and the transition — are this crate's,
+/// and a caller outside it that spelled them itself would be a second placement
+/// path. `@spatial/place/interior` is this write behind a staff verb with an
+/// argument parser.
+///
+/// `slot` names a compartment the space **declares** (`@spatial/slot`); `None`
+/// puts the object in the space itself, which is what a one-seat pod is.
+///
+/// # Errors
+///
+/// The behaviour's refusal, or the transition's — no such space, not an interior
+/// space, no such compartment, a full one, or a cycle.
+pub fn place_interior(
+    ctx: &mut Ctx<'_>,
+    obj: ObjId,
+    space: ObjId,
+    slot: Option<crate::data::SlotId>,
+) -> Result<(), String> {
+    attach(ctx, obj, "sim.participant")?;
+    run(
+        ctx,
+        &Transition::Place {
+            obj,
+            parent: SpatialParent::Interior { space, slot },
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// Release `obj` from its window, leaving it in the room it resolved to.
 ///
 /// # Errors

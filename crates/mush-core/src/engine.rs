@@ -3313,15 +3313,31 @@ impl Engine {
                     " has connected."
                 };
                 announce_room(&self.world, actor, suffix, out);
-                // Hooks/observers fire on the world-side transition only — a
-                // link-dead revival never "connected" twice.
+                // **16b cut K.2 (K4).** A revival is published too, and as its
+                // own word: `ConnTransition::Revived` rides this same point's
+                // registrations on `EventHook::revived`, which defaults to
+                // nothing, so no module that only implements `connected` is
+                // told twice and the one holding authority across the gap (the
+                // arena's cockpit seat) reclaims it. The `WorldEvent` and the
+                // `connected` half stay exactly as they were: on the world-side
+                // transition only.
+                if was_connected && from_linkdead {
+                    module::fire_conn_hook(
+                        &self.registry,
+                        &mut self.world,
+                        out,
+                        actor,
+                        module::ConnTransition::Revived,
+                        crate::action_state::TypedStateLens::Live(&self.action_state),
+                    );
+                }
                 if !was_connected {
                     module::fire_conn_hook(
                         &self.registry,
                         &mut self.world,
                         out,
                         actor,
-                        true,
+                        module::ConnTransition::Connected,
                         crate::action_state::TypedStateLens::Live(&self.action_state),
                     );
                     module::emit_world_event(
@@ -3404,7 +3420,7 @@ impl Engine {
                     &mut self.world,
                     out,
                     actor,
-                    false,
+                    module::ConnTransition::Disconnected,
                     crate::action_state::TypedStateLens::Live(&self.action_state),
                 );
                 module::emit_world_event(
@@ -3418,6 +3434,20 @@ impl Engine {
                 // The character stays in the room (and connected, for WHO)
                 // — linkdead until the session layer sends SessionGone.
                 announce_room(&self.world, actor, " has gone link-dead.", out);
+                // **16b cut K.2 (K4).** And the modules holding authority on
+                // that actor's behalf are told, which the kernel never did: an
+                // arena's cockpit seat keeps its continuous orders and fires
+                // nothing for the length of the grace (doc 16 §3.8). It is not a
+                // disconnect — `set_connected` is deliberately untouched here —
+                // so it fires its own point and nothing else.
+                module::fire_conn_hook(
+                    &self.registry,
+                    &mut self.world,
+                    out,
+                    actor,
+                    module::ConnTransition::Linkdead,
+                    crate::action_state::TypedStateLens::Live(&self.action_state),
+                );
             }
         }
     }
@@ -3444,7 +3474,7 @@ impl Engine {
                 &mut self.world,
                 out,
                 actor,
-                false,
+                module::ConnTransition::Disconnected,
                 crate::action_state::TypedStateLens::Live(&self.action_state),
             );
             module::emit_world_event(

@@ -225,6 +225,18 @@ that makes every claim in the file a claim about accounts.
 """
 
 [[site]]
+path = "crates/tacsim/tests/cockpit.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut K.2, for the same reason one row above: `BOARD` seats a pilot through
+`mush_sim::request_seat_activation`, which consumes the ACCOUNT's one foreground
+focus and fails closed on an unmapped character, so a cockpit test with no
+oracle would prove nothing but that the oracle is unwired.
+"""
+
+[[site]]
 path = "crates/mushd/tests/sim_lobby.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"
@@ -234,6 +246,17 @@ reason = """
 `mush_server::boot` performs: `mushd`'s test rigs build the engine by hand
 rather than through the boot root, so the hydrated character-to-account map has
 to be installed here or every `SIM TEAM` in the file refuses.
+"""
+
+[[site]]
+path = "crates/mushd/tests/sim_cockpit.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut K.2's SSH lens, performing the same post-composition wiring its lobby
+twin one row above performs, and needing it twice over: a slot belongs to an
+account and so does the focus the cockpit seat takes.
 """
 
 [[site]]
@@ -390,5 +413,6 @@ above.
 #
 # So WS03-S14's refusal, now live, broke nothing that runs today. This list must
 # stay EMPTY: a pair here is a write that is REFUSED rather than excused, and the
-# test says so. What the refusal does not reach is the 25 `[[site]]` rows above,
-# every one of which goes around `Ctx` through `World::module_state_mut`.
+# test says so. What the refusal does not reach is the 29 `[[site]]` rows above
+# that go around `Ctx` through `World::module_state_mut` (the count had drifted
+# from the census's own 25 to 27 before 16b cut K.2 added the cockpit's two).

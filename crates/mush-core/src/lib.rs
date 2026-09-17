@@ -277,8 +277,8 @@ pub use mechanics::{
 };
 pub use module::{
     AMBIENT_IC_TIME_KEY, AbilityCall, AsyncCompletion, BOOT_MANIFEST_FORMAT, BOOT_MANIFEST_KEY,
-    BootManifest, ContextOutcome, DiscordInteraction, DiscordInteractionHandler, EventHook,
-    GameModule, HookPoint, HookReadContext, InputContext, InterfaceAbility,
+    BootManifest, ConnTransition, ContextOutcome, DiscordInteraction, DiscordInteractionHandler,
+    EventHook, GameModule, HookPoint, HookReadContext, InputContext, InterfaceAbility,
     InterfaceAbilityProvider, InterfaceError, InterfaceReply, JobQueueSpec, MAX_AMBIENT_BYTES,
     MAX_AMBIENT_KEYS, MAX_INTERFACE_REPLY_BYTES, MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES,
     MAX_STORE_READ_BYTES, MAX_STORE_READ_KEYS, Migration, ModError, ModuleBootData, ModuleCtx,

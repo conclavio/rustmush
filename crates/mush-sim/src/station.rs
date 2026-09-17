@@ -25,10 +25,11 @@
 //! with an existing LLM decision reuses that decision's record/idempotency key"
 //! clause is a `#[ignore]` K7 pin (§4.0c C).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{
-    CmdError, Ctx, IdempotencyKeyText, ModuleOp, ModuleWrite, ObjId, PerceivedRef, match_object,
+    ChannelId, CmdError, Ctx, Flags, IdempotencyKeyText, ModuleOp, ModuleWrite, ObjId,
+    PerceivedRef, match_object,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -36,7 +37,196 @@ use smol_str::SmolStr;
 
 use crate::NS;
 use crate::commands::{focused_station, holds_billet, info, is_admin, rhs_required, st};
-use crate::data::StationId;
+use crate::data::{
+    HostStations, MAX_GRANTED_CHANNELS, MAX_SEATS_PER_UNIT, SpatialState, StationId, StationSpec,
+};
+
+// ---------------------------------------------------------------------------
+// 16b cut K.2: the station-topology seam
+// ---------------------------------------------------------------------------
+
+/// Why [`declare_station`] refused. Rendered by the caller, so a refusal a
+/// viewer may not distinguish stays byte-identical there.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum StationTopologyError {
+    /// No such live host.
+    #[error("no such unit")]
+    NoSuchUnit,
+    /// The set is empty, or over [`MAX_GRANTED_CHANNELS`].
+    #[error("a station grants 1 to {MAX_GRANTED_CHANNELS} channels")]
+    Channels,
+    /// The host already carries [`MAX_SEATS_PER_UNIT`] stations.
+    #[error("that unit already carries as many stations as it may")]
+    Full,
+    /// The role label is empty.
+    #[error("a station needs a role")]
+    NoRole,
+    /// The host's control-generation counter is exhausted (E5a S2: arithmetic
+    /// overflow **pages**, never stalls).
+    #[error("control generation exhausted")]
+    CounterExhausted,
+    /// The simulation is not composed.
+    #[error("the simulation is not available")]
+    Unavailable,
+}
+
+/// **Declare one control station on a unit** (16b cut K.2, K2; doc 16 §3.3
+/// "Stations are on the tank").
+///
+/// One of the three mechanical seams 16b cut K.2 added to this crate
+/// ([`vacate_station`] and [`crate::place_interior`] are the others; the seat
+/// seam's own "exactly two `pub fn`s" fence is `seat.rs`'s and is untouched),
+/// and the *why* is doc 16's own sentence: a
+/// simulator pod's station record lives on the **tank**, so the `helm`,
+/// `sensors` and `fire` grants have the tank as their subject and the pod is
+/// only where the body sits. The game crate owns that pairing — which pod flies
+/// which tank is the centre's content, not the simulation's — and everything
+/// mechanical about the station is this crate's: the `stations:<host>` document,
+/// the control-generation bump that makes a redefinition visible to every queued
+/// intent, and the crew grant re-derived from it. `@spatial/station` is the same
+/// write behind a staff verb with an argument parser; this is that write without
+/// the parser, so no caller outside this crate has to spell a `HostStations`
+/// record or find the persistence.
+///
+/// **Idempotent**: a station that already carries exactly this role, channel set,
+/// priority and console space is left alone and answers `Ok(false)` — no
+/// document, no epoch bump, so a pilot boarding the same pod twice does not
+/// invalidate their own grant.
+///
+/// Every fallible check runs before the first mutation.
+///
+/// # Errors
+///
+/// [`StationTopologyError`], naming the subject and nothing about who may see
+/// it.
+pub fn declare_station(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    station: &StationId,
+    role: &str,
+    channels: &BTreeSet<ChannelId>,
+    space: Option<ObjId>,
+    priority: u16,
+) -> Result<bool, StationTopologyError> {
+    if role.trim().is_empty() {
+        return Err(StationTopologyError::NoRole);
+    }
+    if channels.is_empty() || channels.len() > MAX_GRANTED_CHANNELS {
+        return Err(StationTopologyError::Channels);
+    }
+    if ctx
+        .w
+        .get(unit)
+        .is_none_or(|object| object.flags.contains(Flags::GOING))
+    {
+        return Err(StationTopologyError::NoSuchUnit);
+    }
+    let policy = crate::data::passive_rules_value(serde_json::json!({}))
+        .map_err(|_| StationTopologyError::Unavailable)?;
+    let spec = StationSpec {
+        role: SmolStr::new(role),
+        channels: channels.clone(),
+        priority,
+        space,
+        policy,
+    };
+    {
+        let held = st(ctx).stations.get(&unit);
+        if held.and_then(|hs| hs.stations.get(station)) == Some(&spec) {
+            return Ok(false);
+        }
+        if held.is_some_and(|hs| {
+            !hs.stations.contains_key(station) && hs.stations.len() >= MAX_SEATS_PER_UNIT
+        }) {
+            return Err(StationTopologyError::Full);
+        }
+    }
+    let generation = st(ctx)
+        .next_control_generation(unit)
+        .map_err(|_| StationTopologyError::CounterExhausted)?;
+    // ---- apply: no fallible work past here ----
+    let record = {
+        let Some(state) = ctx.w.module_state_mut::<SpatialState>() else {
+            return Err(StationTopologyError::Unavailable);
+        };
+        let host = state.stations.entry(unit).or_insert_with(|| HostStations {
+            host: unit,
+            stations: BTreeMap::new(),
+        });
+        host.stations.insert(station.clone(), spec);
+        let record = host.clone();
+        state.apply_control_generation(unit, generation);
+        record
+    };
+    crate::data::persist_stations(ctx.out, &record);
+    crate::data::persist_control_gen(ctx.out, unit, generation);
+    // A redefined station changes what its holder may do, so whoever crews it
+    // gets their grant re-derived — the same republish `@spatial/station` does.
+    crate::links::refresh_unit_actors(ctx.w, unit);
+    Ok(true)
+}
+
+/// **Give one station's billet back** (16b cut K.2, K2; doc 16 §3.8: *seats,
+/// leases, focus and pods released atomically*).
+///
+/// `request_seat_activation(Release | Revoke)` stands a **driver** down and
+/// deliberately leaves the billet where it is: in cut 10's story the seat is an
+/// NPC's own station and standing down is what returns it to AI control. A
+/// simulator cockpit is the other story — the pod is lent for one match, the
+/// billet is the loan, and a billet left behind is the next pilot's
+/// [`crate::SeatError::StationHeld`]. So this is the give-back, and it is
+/// `@spatial/unassign`'s exact write without the staff verb around it: the seat
+/// removed, the `assignment:<unit>` document rewritten, the control generation
+/// bumped (so every intent queued under the old grant fails
+/// `World::channel_grant_is_current`) and the former holder's links re-derived.
+///
+/// Answers whether anything was held. Idempotent, so a second `EXIT` or a
+/// check-in after one costs nothing.
+///
+/// # Errors
+///
+/// [`StationTopologyError::CounterExhausted`] or
+/// [`StationTopologyError::Unavailable`]; a station nobody holds is `Ok(false)`,
+/// not an error.
+pub fn vacate_station(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    station: &StationId,
+    actor: ObjId,
+) -> Result<bool, StationTopologyError> {
+    let held = st(ctx)
+        .assignments
+        .get(&unit)
+        .and_then(|host| host.seats.get(station))
+        .is_some_and(|seat| seat.actor == actor);
+    if !held {
+        return Ok(false);
+    }
+    let generation = st(ctx)
+        .next_control_generation(unit)
+        .map_err(|_| StationTopologyError::CounterExhausted)?;
+    // ---- apply: no fallible work past here ----
+    let record = {
+        let Some(state) = ctx.w.module_state_mut::<SpatialState>() else {
+            return Err(StationTopologyError::Unavailable);
+        };
+        let Some(host) = state.assignments.get_mut(&unit) else {
+            return Err(StationTopologyError::Unavailable);
+        };
+        host.seats.remove(station);
+        let record = host.clone();
+        if record.seats.is_empty() {
+            state.assignments.remove(&unit);
+        }
+        state.derived = crate::graph::rebuild(state);
+        state.apply_control_generation(unit, generation);
+        record
+    };
+    crate::data::persist_assignments(ctx.out, &record);
+    crate::data::persist_control_gen(ctx.out, unit, generation);
+    crate::links::refresh_actor_links(ctx.w, actor);
+    Ok(true)
+}
 
 /// Byte-identical for an unknown/unviewable unit AND for a station the actor
 /// does not hold a billet on (B1): a refusal must reveal nothing about which

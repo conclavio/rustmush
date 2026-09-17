@@ -348,18 +348,24 @@ fn e7c11_b0_a10_activating_over_a_lease_the_npc_holds_keeps_control_on_the_seat(
 /// same act is available to the owner. The arms are enumerated by name in the
 /// table so a tenth act cannot be added silently.
 ///
-/// **Six** of the nine refuse by **inertness** — they are economy, org and staff
+/// **Five** of the nine refuse by **inertness** — they are economy, org and staff
 /// verbs keyed on `ctx.actor`, which the ingress deliberately never rewrites, so
 /// the driver's refusal is **byte-identical before and after** activation (that
 /// equality is the assertion, not merely that both refuse). The remaining
-/// **three** ride the station lane the ingress opens and are refused by
+/// **four** ride the station lane the ingress opens and are refused by
 /// `mush_sim::seat_restriction` itself, naming the act and the exit.
 ///
 /// The split was six/three, then four/five after cut 11's independent verify
 /// fold (D2) gave abandonment a station-lane face in `+eject` beside its economy
 /// face `@asset/abandon`. 16b cut T retired `+eject` with the rest of the combat
-/// lane (D-16-20), so abandonment is back to its economy face alone and the
-/// split is six/three again.
+/// lane (D-16-20) and the split went back to six/three; **16b cut K.2 gave
+/// abandonment a new station-lane face, `EXIT`** — climbing out of a simulator
+/// pod, which releases the seat and leaves the unit idling in a live match — so
+/// it is five/four again. `EXIT`'s own arm is exercised in `tacsim`
+/// (`crates/tacsim/tests/cockpit.rs` and `crates/mushd/tests/sim_cockpit.rs`),
+/// which is where the verb and its pod live; here the vocabulary's shape is what
+/// is pinned. Abandonment keeps its economy face in the inert table below, and
+/// that face is still inert: `@asset/abandon` is keyed on `ctx.actor`.
 #[test]
 fn e7c11_b0_t11_all_nine_acts_refuse_from_the_proxy_and_the_owner_still_acts() {
     let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
@@ -367,10 +373,12 @@ fn e7c11_b0_t11_all_nine_acts_refuse_from_the_proxy_and_the_owner_still_acts() {
     let op = operation(&mut tw, &fx);
     arm_offer_keys(&mut tw);
 
-    // (1) asset transfer, (2) abandonment, (3) scuttling, (5) loadout/crew,
-    // (6) organization spending, (7) surrender of an unrelated asset — the six
-    // INERT arms, measured before the seat exists. `@asset/abandon` is
-    // abandonment's only face again now that `+eject` is retired (16b cut T).
+    // (1) asset transfer, (2) abandonment's ECONOMY face, (3) scuttling,
+    // (5) loadout/crew, (6) organization spending, (7) surrender of an unrelated
+    // asset — the inert arms, measured before the seat exists. Abandonment is in
+    // both halves since 16b cut K.2: `@asset/abandon` is keyed on `ctx.actor`
+    // and is inert here, and `EXIT` is the station-lane face the guard refuses,
+    // in `tacsim`.
     let inert: Vec<(&str, String)> = vec![
         (
             "asset_transfer",
@@ -416,8 +424,10 @@ fn e7c11_b0_t11_all_nine_acts_refuse_from_the_proxy_and_the_owner_still_acts() {
     }
 
     // (4) a fallback change, (8) departure from the operation, (9) assumption of
-    // another station — the three GUARDED arms, refused by `seat_restriction`
-    // with the act and the exit named.
+    // another station — three of the four GUARDED arms, refused by
+    // `seat_restriction` with the act and the exit named. The fourth,
+    // (2) abandonment through `EXIT`, is `tacsim`'s verb on `tacsim`'s pod and
+    // is exercised there.
     for (act, line) in [
         (
             mush_sim::ProxyAct::FallbackChange,
@@ -475,8 +485,9 @@ fn e7c11_b0_t11_all_nine_acts_refuse_from_the_proxy_and_the_owner_still_acts() {
             .iter()
             .filter(|a| a.is_guarded())
             .count(),
-        3,
-        "exactly three acts ride the station lane the ingress opens; 16b cut T retired `+eject`, abandonment's only station-lane face"
+        4,
+        "exactly four acts ride the station lane the ingress opens; 16b cut K.2 gave abandonment \
+         a station-lane face again in the arena's `EXIT`"
     );
 }
 
@@ -1023,8 +1034,10 @@ fn vf_b7_the_ingress_grant_reads_are_counted_where_they_actually_live() {
 /// the tripwire: a verb added to the lane without a decision fails here rather
 /// than defaulting to unguarded.
 ///
-/// 16b cut T (D-16-20) retired the eight combat verbs, so the table is the focus
-/// pair, the two read-only renders and the station/journey administration.
+/// 16b cut T (D-16-20) retired the eight combat verbs; **16b cut K.2 put eleven
+/// back** — the arena's cockpit — so the table is the focus pair, the read-only
+/// renders, the station/journey administration, and the cockpit's own ten
+/// (`BOARD` is not on the lane: it is what puts somebody on it).
 #[test]
 fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
     /// Guarded, and by which act — or reached and permitted, or inert.
@@ -1033,13 +1046,15 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
         Guarded(mush_sim::ProxyAct),
         /// A read-only render: it resolves through the ingress and writes
         /// nothing, so there is no act to guard.
-        ///
-        /// The `Discretion` arm — reached from the seat and deliberately
-        /// permitted — went with the eight combat verbs (16b cut T, D-16-20) and
-        /// comes back with the arena's cockpit verbs (16b cut K).
         ReadOnly,
+        /// **Reached from the seat and deliberately permitted** — the tactical
+        /// discretion a seat IS (doc 10 §19 T11). It went with the eight combat
+        /// verbs (16b cut T, D-16-20) and came back with the arena's cockpit
+        /// (16b cut K.2): steering and shooting the unit you were lent is the
+        /// whole of what a seat confers.
+        Discretion,
     }
-    use Disposition::{Guarded, ReadOnly};
+    use Disposition::{Discretion, Guarded, ReadOnly};
 
     let table: Vec<(&str, Disposition)> = vec![
         // The focus pair: both arms of `cmd_focus`'s switch.
@@ -1051,6 +1066,23 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
         // Read-only surfaces: they render through the ingress and write nothing.
         ("+stations", ReadOnly),
         ("@station/show", ReadOnly),
+        // **16b cut K.2, the arena's cockpit.** Five stage one arena intent each
+        // through the seat's own channel grant, and four render the last frame;
+        // none of them writes a document, and every one of them is exactly the
+        // tactical discretion the seat was lent. `EXIT` is the one that is not:
+        // climbing out leaves the unit idling in a live match, which is T11's
+        // "abandonment" word for word, so it carries the guard site — in
+        // `tacsim`, which is why it is absent from the mush-sim census below.
+        ("STARTUP", Discretion),
+        ("HEADING", Discretion),
+        ("SPEED", Discretion),
+        ("LOCK", Discretion),
+        ("FIRE", Discretion),
+        ("VIEW", Discretion),
+        ("CONTACTS", Discretion),
+        ("WEAPONSTATUS", Discretion),
+        ("STATUS", Discretion),
+        ("EXIT", Guarded(mush_sim::ProxyAct::Abandonment)),
         // The station and journey administration.
         (
             "@station/fallback",
@@ -1090,24 +1122,27 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
                     named.push(*act);
                 }
             }
-            ReadOnly => permitted += 1,
+            ReadOnly | Discretion => permitted += 1,
         }
     }
-    assert_eq!(permitted, 2, "two station-lane verbs are not guarded");
+    assert_eq!(
+        permitted, 11,
+        "eleven station-lane verbs are reached and permitted: two renders and the cockpit's nine"
+    );
     for act in mush_sim::ProxyAct::ALL.iter().filter(|a| a.is_guarded()) {
         assert!(
             named.contains(act),
             "{act:?} is guarded but no station-lane verb in the table carries it"
         );
     }
-    assert_eq!(named.len(), 3, "three guarded acts ride the station lane");
+    assert_eq!(named.len(), 4, "four guarded acts ride the station lane");
     assert_eq!(
         mush_sim::ProxyAct::ALL
             .iter()
             .filter(|a| !a.is_guarded())
             .count(),
-        6,
-        "six refuse by inertness"
+        5,
+        "five refuse by inertness"
     );
 
     // (2) The source census the table stands for: the guard's call sites, by
@@ -1124,6 +1159,9 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
         "mush-sim/src/tick.rs",
         "mush-sim/src/seat.rs",
         "mush-propagation/src/commands.rs",
+        // 16b cut K.2: the guard travelled out of `mush-sim` for the first time,
+        // because the verb that carries it did — `EXIT` is the arena's.
+        "tacsim/src/match_/cockpit.rs",
     ] {
         let text = std::fs::read_to_string(crates_dir.join(rel)).expect("a source file");
         let boundary = text.find("#[cfg(test)]").unwrap_or(text.len());
@@ -1151,6 +1189,9 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
             ("mush-sim/src/tick.rs".to_owned(), 0),
             ("mush-sim/src/seat.rs".to_owned(), 0),
             ("mush-propagation/src/commands.rs".to_owned(), 0),
+            // `EXIT` (16b cut K.2): `ProxyAct::Abandonment`'s station-lane face,
+            // back after one cut without one.
+            ("tacsim/src/match_/cockpit.rs".to_owned(), 1),
         ],
         "the guard's call sites, by file — a new station-lane verb must join the \
          table above and this census in the same commit"
