@@ -251,13 +251,6 @@ owner = "canon"
 reason = "E4c: seeds canon records the bridge case asserts on."
 
 [[site]]
-path = "crates/mush-sim/tests/pulse_contracts/mod.rs"
-accessor = "World::module_state_mut"
-slot = "ContactLedgerState"
-owner = "tactics"
-reason = "The pulse-contract harness seeds the tactics contact ledger a sim pulse then updates."
-
-[[site]]
 path = "crates/mush-sim/tests/e7c6.rs"
 accessor = "World::module_state_mut"
 slot = "ScenesState"

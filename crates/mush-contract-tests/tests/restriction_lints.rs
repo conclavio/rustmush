@@ -142,7 +142,14 @@ const MEASURED: [(&str, [u32; 6]); 43] = [
     ("mush-script", [0, 1, 0, 0, 0, 0]),
     ("mush-server", [0, 29, 6, 1, 11, 0]),
     ("mush-session", [0, 0, 0, 0, 0, 0]),
-    ("mush-sim", [6, 42, 7, 0, 0, 0]),
+    // 16b cut T (T.1, D-16-20): re-measured with this file's own header command
+    // at the commit that retired the combat lane. `expect_used` 36 -> 35 is this
+    // cut's (the deleted `combat.rs` and the deleted `tactical_intent` provider);
+    // `unwrap_used` 6 -> 3, `expect_used` 42 -> 36 and `indexing_slicing` 7 -> 5
+    // were drift the row had already accumulated over the earlier 16b cuts and
+    // are folded in here rather than left wrong. No count crossed zero, so the
+    // per-lint tally below does not move.
+    ("mush-sim", [3, 35, 5, 0, 0, 0]),
     ("mush-store", [18, 283, 15, 1, 1, 2]),
     ("mush-tactics", [3, 49, 1, 0, 2, 0]),
     ("mush-testkit", [0, 5, 0, 1, 0, 0]),

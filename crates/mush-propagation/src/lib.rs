@@ -117,8 +117,9 @@ pub const DELIVERY_TICK_TAG: &str = "propagation.delivery";
 /// (staff) was the ONLY producer of a contact anywhere in the tree —
 /// `SensorPolicy::due` has exactly one caller, `SensorScheduleAdapter::re_derived`,
 /// which runs only for a `SensorJob` that is already armed — so on a running
-/// server no contact ever formed, `+fire` had nothing to name, and the tactical
-/// surface could not be reached end to end even before A2. This tick walks the
+/// server no contact ever formed, nothing on the tactical surface had a contact
+/// to name, and it could not be reached end to end even before A2. This tick
+/// walks the
 /// **promoted** domains and runs cut 7's landed `detection_pass` per domain,
 /// arming through the tactics-owned ingress exactly as `@prop/pass` does. It
 /// adds no crate edge (`mush-propagation -> mush-sim` already exists) and it

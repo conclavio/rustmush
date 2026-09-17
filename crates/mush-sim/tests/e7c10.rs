@@ -449,12 +449,17 @@ fn e7c10_p1_desired_links_is_still_the_only_production_channelgrant_writer() {
     );
 }
 
-/// The C12 **consumer** census, re-run by file: still **nine** production files
-/// read a `ChannelGrant`, and cut 10 adds no tenth. `mush-sim/src/seat.rs`
-/// deliberately calls `station.rs`'s own `actor_grant_epoch` rather than opening
-/// a second `command_subjects_of` read of its own.
+/// The C12 **consumer** census, re-run by file: **seven** production files read a
+/// `ChannelGrant`, and cut 10 adds none. `mush-sim/src/seat.rs` deliberately
+/// calls `station.rs`'s own `actor_grant_epoch` rather than opening a second
+/// `command_subjects_of` read of its own.
+///
+/// It was nine until 16b cut T (T0, D-16-20) retired the combat lane:
+/// `mush-sim/src/combat.rs` is deleted and `mush-sim/src/tick.rs`'s apply-time
+/// witness went with the `tactical_intent` staging, so neither reads a grant any
+/// more. A consumer that comes back joins this list in the same change.
 #[test]
-fn e7c10_p2_the_c12_consumer_census_is_still_nine() {
+fn e7c10_p2_the_c12_consumer_census_is_still_seven() {
     let needles = [
         "command_subjects_of(",
         ".channel_grant(",
@@ -486,14 +491,12 @@ fn e7c10_p2_the_c12_consumer_census_is_still_nine() {
             "mush-core/src/action.rs",
             "mush-core/src/behavior.rs",
             "mush-core/src/engine.rs",
-            "mush-sim/src/combat.rs",
             "mush-sim/src/commands.rs",
             "mush-sim/src/handoff.rs",
             "mush-sim/src/station.rs",
-            "mush-sim/src/tick.rs",
             "mush-tactics/src/status.rs",
         ],
-        "the C12 consumer census must stay at nine files"
+        "the C12 consumer census must stay at seven files"
     );
     // And cut 10's own workflow crate consumes it through no site at all: it
     // reaches the control surface only through the two `mush-sim` seams.

@@ -7,8 +7,9 @@
 //! in the tree — `SensorScheduleAdapter::re_derived`, which runs only for a
 //! `SensorJob` that is **already armed**. Nothing armed automatically, so
 //! `@prop/pass` (staff) was the only producer of a contact anywhere: on a
-//! running server no contact formed, `+fire` had nothing to name, and the whole
-//! tactical surface was unreachable end to end *even before* A2.
+//! running server no contact formed, nothing on the tactical surface had a
+//! contact to name, and the whole surface was unreachable end to end *even
+//! before* A2.
 //!
 //! These rows drive the real world tick and assert the observable outcome: a
 //! contact **forms in a promoted domain with no staff action at all**.

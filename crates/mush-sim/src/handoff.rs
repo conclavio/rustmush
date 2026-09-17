@@ -1108,7 +1108,6 @@ pub(crate) fn register(
         exact_definition_validator(&[
             descriptors.outcome.clone(),
             tick.tick_outcome.clone(),
-            tick.intent_outcome.clone(),
             tick.arm_outcome.clone(),
         ]),
     )?;
@@ -1119,16 +1118,13 @@ pub(crate) fn register(
             descriptors.cancel.clone(),
             descriptors.apply.clone(),
             tick.tick_action.clone(),
-            tick.intent_action.clone(),
             tick.arm_action.clone(),
         ]),
     )?;
     let tick_definitions = crate::tick::TickDefinitions {
         tick_outcome: reg.definition(tick.tick_outcome)?,
-        intent_outcome: reg.definition(tick.intent_outcome)?,
         arm_outcome: reg.definition(tick.arm_outcome)?,
         tick_action: reg.definition(tick.tick_action)?,
-        intent_action: reg.definition(tick.intent_action)?,
         arm_action: reg.definition(tick.arm_action)?,
     };
     let outcome = reg.definition(descriptors.outcome)?;

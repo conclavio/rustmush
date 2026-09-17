@@ -24,7 +24,6 @@ use mush_core::{
     OfferSubmission, PrincipalId, RequestUid, ScopedIdempotencyKey, SeatAudit,
 };
 use mush_testkit::TestWorld;
-use serde_json::Value;
 
 mod common;
 use common::*;
@@ -37,9 +36,9 @@ fn arm_offer_keys(tw: &mut TestWorld) {
         .set_offer_keys(OfferKeyRing::new(OfferSecret::new(2, [2; 32]).unwrap(), []).unwrap());
 }
 
-/// Promote and apply the scene's domain so it PULSES: `combat::resolve_seat`
-/// refuses a passive domain outright, so without this no tactical verb of either
-/// a proxy or an owner can resolve and the ingress would be untestable.
+/// Promote and apply the scene's domain so it PULSES: the campaign tick promotes
+/// a seat's grant to `Active { epoch }` only on a pulsing domain, so without this
+/// `vf_d1b`'s hazard is unreachable and the K6 lease never lands.
 fn pulse(tw: &mut TestWorld, fx: &Fx) {
     ok(tw, GOD, &format!("@domain/promote #{}=contact", fx.field.0));
     ok(tw, GOD, &format!("@domain/tick #{}", fx.field.0));
@@ -107,10 +106,10 @@ fn single_channel_unit(tw: &mut TestWorld, fx: &Fx, op: OperationId, name: &str)
 /// `resolve_and_stage_offer` do — and stage it, returning the transaction ops.
 ///
 /// This is the "through the ingress" harness cut 8's verify made binding: the
-/// offer is *projected for the submitting actor*, and it is
-/// `TacticalIntentProvider::project_offer` -> `combat::resolve_seat` -> the B0
-/// ingress that decides whether one projects at all. A proxy driver whose
-/// ingress is missing gets `Ok(None)` here and the whole path dead-ends.
+/// offer is *projected for the submitting actor*, so a provider that refuses to
+/// project for that actor dead-ends the whole path here with `Ok(None)`. The
+/// tactical half of the harness went with the retired combat lane (16b cut T,
+/// D-16-20); what drives it now is the seat's own `control_handoff_request`.
 fn drive_submit(
     tw: &mut TestWorld,
     submit: &mush_core::AuthoritativeSubmit,
@@ -217,213 +216,9 @@ fn apply_due_handoff(tw: &mut TestWorld, token: u8) -> bool {
     true
 }
 
-/// The tick-window post-image the transaction carries, if any.
-fn window_post_image(ops: &[ModuleOp]) -> Option<Value> {
-    ops.iter().find_map(|op| match &op.op {
-        ModuleWrite::JsonSet { key, value } if key.contains("/tick_windows/") => {
-            value.get("value").cloned()
-        }
-        _ => None,
-    })
-}
-
-/// Take the single staged submit a tactical verb queued (and assert there is
-/// exactly one).
-fn staged_one(tw: &mut TestWorld) -> mush_core::AuthoritativeSubmit {
-    let staged = drain(tw);
-    assert_eq!(staged.len(), 1, "exactly one authoritative submit staged");
-    staged.into_iter().next().expect("one submit")
-}
-
 // ===========================================================================
 // B0 — the driving ingress, through the real command -> offer -> window path
 // ===========================================================================
-
-/// **B0-1. A proxy driver actually steers**, all the way into the tick's frozen
-/// intent set — the act cut 10 could not perform at all.
-///
-/// The observable is not the record the verb wrote: it is that the engine
-/// PROJECTS the tactical action for the human's own submit (which only
-/// `resolve_seat` -> `driving_actor` can make true), that the resolved
-/// transaction carries a `tick_windows` post-image, and that the intent inside
-/// it names the **NPC's unit and station** — never the driver's character.
-#[test]
-fn e7c11_b0_a_proxy_drives_the_npc_through_command_offer_ingress_and_window() {
-    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
-    pulse(&mut tw, &fx);
-    let op = operation(&mut tw, &fx);
-    arm_offer_keys(&mut tw);
-    seat_up(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
-    // The seat is real and narrowed: the NPC publishes exactly `movement`.
-    assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot"), vec!["movement"]);
-    // …and the driver still holds no grant of their own. Authority stays on the
-    // NPC's own `ChannelGrant` (T16); the ingress widens nothing.
-    assert!(
-        granted(&tw, fx.driver, fx.atlas, "pilot").is_empty(),
-        "the ingress must not publish a grant to the driver"
-    );
-    let said = ok(&mut tw, fx.driver, "+heading 1,2,3");
-    assert!(said.contains("submitted into tick"), "{said}");
-    let submit = staged_one(&mut tw);
-    assert_eq!(
-        submit.actor, fx.driver,
-        "the human's own submit slot is used"
-    );
-    let ops = drive_submit(&mut tw, &submit, 9)
-        .expect("the tactical offer projects for the proxy driver and resolves");
-    let window = window_post_image(&ops).expect("the intent joined this tick's window");
-    let encoded = serde_json::to_string(&window).expect("the window encodes");
-    assert!(
-        encoded.contains(&format!("\"unit\":{}", fx.atlas.0)),
-        "the window's intent names the NPC's unit: {encoded}"
-    );
-    assert!(
-        encoded.contains("\"station\":\"pilot\""),
-        "the window's intent names the NPC's station: {encoded}"
-    );
-}
-
-/// **B0-2. The ingress fails closed.** A player with no seat, a player whose
-/// account the oracle does not map, and a bystander all get the identical
-/// pre-cut-11 refusal — `driving_actor` is the identity for them, so nothing
-/// about the tactical lane changed for anybody but a live proxy driver.
-#[test]
-fn e7c11_b0_an_actor_with_no_seat_is_refused_exactly_as_before() {
-    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
-    pulse(&mut tw, &fx);
-    let unseated = err(&mut tw, fx.driver, "+heading 1,2,3");
-    assert!(
-        unseated.contains("You hold no focused station"),
-        "{unseated}"
-    );
-    let stranger = err(&mut tw, fx.bystander, "+heading 1,2,3");
-    assert_eq!(
-        unseated, stranger,
-        "byte-identical for every unseated actor"
-    );
-    // And an actor the oracle does not map at all (no account row) is refused
-    // the same way: `proxy_drive_of` answers `None` on an unknown, never a
-    // default.
-    let ghost = tw.spawn_player("Ghost");
-    tw.world_mut().move_to(ghost, fx.field).unwrap();
-    let unmapped = err(&mut tw, ghost, "+heading 1,2,3");
-    assert_eq!(unmapped, unseated, "an unmapped account fails closed");
-}
-
-/// **B0-3. The seat narrows the DRIVER exactly**, on the real command path.
-///
-/// A `fire`-only seat cannot steer and a `movement`-only seat cannot shoot, and
-/// the refusal names the channel and the station rather than leaking that the
-/// station has a wider set. This is what cut 10 could only demonstrate as
-/// *inertness* (`vf_a11`): now the driver genuinely holds the seat and is
-/// refused for narrowness.
-#[test]
-fn e7c11_b0_the_granted_set_narrows_the_driver_on_the_real_command_path() {
-    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
-    pulse(&mut tw, &fx);
-    let op = operation(&mut tw, &fx);
-    arm_offer_keys(&mut tw);
-    // A `fire`-only seat: the station grants `movement+fire`, so this is a
-    // genuine narrowing rather than an absent capability.
-    seat_up(&mut tw, &fx, op, fx.atlas, fx.ace, "fire");
-    assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot"), vec!["fire"]);
-    let refused = err(&mut tw, fx.driver, "+heading 1,2,3");
-    assert!(
-        refused.contains("does not grant the movement channel"),
-        "{refused}"
-    );
-    // The same verb on a `movement` seat succeeds — same driver, same NPC, same
-    // station, different granted set.
-    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
-    pulse(&mut tw, &fx);
-    let op = operation(&mut tw, &fx);
-    arm_offer_keys(&mut tw);
-    seat_up(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
-    ok(&mut tw, fx.driver, "+heading 1,2,3");
-}
-
-/// **B0-4. The tick's apply-time witness accepts the proxy's intent, and
-/// refuses it the moment the seat goes back.**
-///
-/// `DomainTickScheduleAdapter::plan` re-checks every accepted intent's focus and
-/// grant. The intent's `actor` is the human; without the ingress at that site
-/// the re-check would refuse every proxy order at apply even though the offer
-/// admitted it at submit — the exact submit/apply disagreement the pinned seat
-/// exists to remove. The observable is the standing order the tick would set.
-#[test]
-fn e7c11_b0_the_tick_witness_accepts_a_proxy_intent_and_refuses_it_after_leave() {
-    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
-    pulse(&mut tw, &fx);
-    let op = operation(&mut tw, &fx);
-    arm_offer_keys(&mut tw);
-    seat_up(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
-    ok(&mut tw, fx.driver, "+thrust 40");
-    let submit = staged_one(&mut tw);
-    assert!(
-        drive_submit(&mut tw, &submit, 11).is_some(),
-        "the proxy's intent reaches the window"
-    );
-    // Give the seat back: the NPC's grant epoch bumps and the focus is gone, so
-    // the same driver's next order finds no seat at all.
-    ok(&mut tw, fx.driver, "+seat/leave");
-    drain(&mut tw);
-    let after = err(&mut tw, fx.driver, "+thrust 40");
-    assert!(after.contains("You hold no focused station"), "{after}");
-}
-
-/// **B0-5. A second proxy never evicts a live human driver — who keeps
-/// driving.** Cut 10's `vf_a3` proved the refusal; with the ingress it can prove
-/// the thing that actually matters: after the refusal the first driver's next
-/// order still resolves through the whole path.
-#[test]
-fn e7c11_b0_a_second_proxy_never_evicts_a_live_driver_who_keeps_driving() {
-    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
-    pulse(&mut tw, &fx);
-    let op = operation(&mut tw, &fx);
-    arm_offer_keys(&mut tw);
-    seat_up(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
-    ok(&mut tw, fx.driver, "+heading 1,2,3");
-    let _ = drain(&mut tw);
-    // A SECOND account offered the same NPC's station.
-    let rival = tw.spawn_player("Rival");
-    tw.world_mut().move_to(rival, fx.field).unwrap();
-    if let Ok(mut map) = fx.oracle.0.lock() {
-        map.insert(
-            rival,
-            mush_core::AccountId::mint("RivalAcct", 9).expect("an account"),
-        );
-    }
-    let second = ok(
-        &mut tw,
-        fx.commander,
-        &format!(
-            "+seat/offer {}/#{}/pilot=#{},movement,to:#{}",
-            op.0, fx.atlas.0, fx.ace.0, rival.0
-        ),
-    );
-    let id = mush_campaign::CampaignStore::seat_offers(camp(&tw))
-        .map(|o| o.id)
-        .max_by_key(|id| id.0)
-        .expect("the second offer");
-    assert!(!second.is_empty());
-    ok(&mut tw, rival, &format!("+seat/accept {}/{}", op.0, id.0));
-    err(&mut tw, rival, &format!("+seat/activate {}/{}", op.0, id.0));
-    drain(&mut tw);
-    // The live human is untouched and still drives.
-    assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot"), vec!["movement"]);
-    ok(&mut tw, fx.driver, "+heading 3,2,1");
-    let submit = staged_one(&mut tw);
-    assert!(
-        drive_submit(&mut tw, &submit, 13).is_some(),
-        "the incumbent's order still reaches the window after the rival is refused"
-    );
-    // …and the rival drives nothing.
-    let rival_refused = err(&mut tw, rival, "+heading 1,1,1");
-    assert!(
-        rival_refused.contains("You hold no focused station"),
-        "{rival_refused}"
-    );
-}
 
 /// **B0-6. A10's proxy arm in `handoff.rs` is exercised.** Cut 10's fold fixed
 /// the branch and recorded honestly that it had **no test**: reproducing it
@@ -542,7 +337,7 @@ fn e7c11_b0_a10_activating_over_a_lease_the_npc_holds_keeps_control_on_the_seat(
     );
     // The driver drives, which is the whole point of the arm.
     assert_eq!(granted(&tw, watch, scout, "pilot"), vec!["movement"]);
-    ok(&mut tw, fx.driver, "+heading 1,2,3");
+    assert_eq!(mush_sim::driving_actor(tw.world(), fx.driver), watch);
 }
 
 // ===========================================================================
@@ -553,19 +348,18 @@ fn e7c11_b0_a10_activating_over_a_lease_the_npc_holds_keeps_control_on_the_seat(
 /// same act is available to the owner. The arms are enumerated by name in the
 /// table so a tenth act cannot be added silently.
 ///
-/// **Five** of the nine refuse by **inertness** — they are economy, org and
-/// staff verbs keyed on `ctx.actor`, which the ingress deliberately never
-/// rewrites, so the driver's refusal is **byte-identical before and after**
-/// activation (that equality is the assertion, not merely that both refuse). The
-/// remaining **four** ride the station lane the ingress opens and are refused by
+/// **Six** of the nine refuse by **inertness** — they are economy, org and staff
+/// verbs keyed on `ctx.actor`, which the ingress deliberately never rewrites, so
+/// the driver's refusal is **byte-identical before and after** activation (that
+/// equality is the assertion, not merely that both refuse). The remaining
+/// **three** ride the station lane the ingress opens and are refused by
 /// `mush_sim::seat_restriction` itself, naming the act and the exit.
 ///
-/// The split was six/three until the independent verify fold (D2): abandonment
-/// has an economy face (`@asset/abandon`, inert, still measured below) **and** a
-/// station-lane face (`+eject`, whose required channel is `movement` and whose
-/// boundary fact is `tactics.unit_abandoned`), and the station-lane face rode
-/// `combat::resolve_seat` unguarded. Measuring only `@asset/abandon` proved the
-/// wrong arm.
+/// The split was six/three, then four/five after cut 11's independent verify
+/// fold (D2) gave abandonment a station-lane face in `+eject` beside its economy
+/// face `@asset/abandon`. 16b cut T retired `+eject` with the rest of the combat
+/// lane (D-16-20), so abandonment is back to its economy face alone and the
+/// split is six/three again.
 #[test]
 fn e7c11_b0_t11_all_nine_acts_refuse_from_the_proxy_and_the_owner_still_acts() {
     let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
@@ -573,12 +367,10 @@ fn e7c11_b0_t11_all_nine_acts_refuse_from_the_proxy_and_the_owner_still_acts() {
     let op = operation(&mut tw, &fx);
     arm_offer_keys(&mut tw);
 
-    // (1) asset transfer, (3) scuttling, (5) loadout/crew, (6) organization
-    // spending, (7) surrender of an unrelated asset — the five INERT arms,
-    // measured before the seat exists. `@asset/abandon` rides with them: it is
-    // abandonment's ECONOMY face, keyed on `ctx.actor` like the other five, and
-    // its inertness is still worth measuring — but it is not the arm the ingress
-    // opens, and cut 11 measured only this one (fold D2).
+    // (1) asset transfer, (2) abandonment, (3) scuttling, (5) loadout/crew,
+    // (6) organization spending, (7) surrender of an unrelated asset — the six
+    // INERT arms, measured before the seat exists. `@asset/abandon` is
+    // abandonment's only face again now that `+eject` is retired (16b cut T).
     let inert: Vec<(&str, String)> = vec![
         (
             "asset_transfer",
@@ -609,9 +401,11 @@ fn e7c11_b0_t11_all_nine_acts_refuse_from_the_proxy_and_the_owner_still_acts() {
 
     seat_up(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
     // The driver is genuinely driving — otherwise the nine refusals below prove
-    // nothing at all (cut 10's `vf_a11`).
-    ok(&mut tw, fx.driver, "+heading 1,2,3");
-    drain(&mut tw);
+    // nothing at all (cut 10's `vf_a11`). The station-lane verb that used to
+    // demonstrate it went with the combat lane (16b cut T), so the ingress's own
+    // resolution is the observable: the driver's acts resolve as the NPC.
+    assert_eq!(mush_sim::driving_actor(tw.world(), fx.driver), fx.ace);
+    assert_eq!(granted(&tw, fx.ace, fx.atlas, "pilot"), vec!["movement"]);
 
     for ((name, line), was) in inert.iter().zip(before) {
         let now = err(&mut tw, fx.driver, line);
@@ -621,11 +415,10 @@ fn e7c11_b0_t11_all_nine_acts_refuse_from_the_proxy_and_the_owner_still_acts() {
         );
     }
 
-    // (2) abandonment on the station lane, (4) a fallback change, (8) departure
-    // from the operation, (9) assumption of another station — the four GUARDED
-    // arms, refused by `seat_restriction` with the act and the exit named.
+    // (4) a fallback change, (8) departure from the operation, (9) assumption of
+    // another station — the three GUARDED arms, refused by `seat_restriction`
+    // with the act and the exit named.
     for (act, line) in [
-        (mush_sim::ProxyAct::Abandonment, "+eject".to_string()),
         (
             mush_sim::ProxyAct::FallbackChange,
             format!("@station/fallback #{}/pilot=#{}", fx.atlas.0, fx.duce.0),
@@ -674,16 +467,6 @@ fn e7c11_b0_t11_all_nine_acts_refuse_from_the_proxy_and_the_owner_still_acts() {
         "the guard is gone and the ordinary billet refusal is back: {unguarded}"
     );
 
-    // …and `+eject` is no longer guarded for the same person: with the seat
-    // given back the driver gets the ordinary "no focused station" refusal, not
-    // the act's. The guard narrowed the SEAT, never the person.
-    let ejected = err(&mut tw, fx.driver, "+eject");
-    assert!(
-        ejected.contains("You hold no focused station"),
-        "the guard is gone and the ordinary refusal is back: {ejected}"
-    );
-    assert!(!ejected.contains(mush_sim::ProxyAct::Abandonment.token()));
-
     // The vocabulary is closed and every arm above is covered.
     assert_eq!(mush_sim::ProxyAct::ALL.len(), 9);
     assert_eq!(mush_sim::ProxyAct::COUNT, 9);
@@ -692,8 +475,8 @@ fn e7c11_b0_t11_all_nine_acts_refuse_from_the_proxy_and_the_owner_still_acts() {
             .iter()
             .filter(|a| a.is_guarded())
             .count(),
-        4,
-        "exactly four acts ride the station lane the ingress opens (fold D2:          `+eject` is the fourth)"
+        3,
+        "exactly three acts ride the station lane the ingress opens; 16b cut T retired `+eject`, abandonment's only station-lane face"
     );
 }
 
@@ -833,9 +616,6 @@ fn vf_d1a_focus_release_from_a_seat_is_refused_and_the_seat_gives_back_whole() {
         .module_state::<mush_sim::FocusState>()
         .and_then(|state| state.focus_of_actor(fx.ace).map(|f| f.acquired_at.at))
         .expect("the seat is live");
-    ok(&mut tw, fx.driver, "+heading 1,2,3");
-    drain(&mut tw);
-
     // The guard: the act is named, and so is the exit.
     let refused = err(&mut tw, fx.driver, "+focus/release");
     assert!(
@@ -932,44 +712,6 @@ fn vf_d1b_a_released_active_seat_is_never_stranded_behind_staff() {
         Some(mush_campaign::GrantState::Revoked)
     ));
     assert!(mush_sim::proxy_drive_of(tw.world(), fx.driver).is_none());
-}
-
-/// **D2. `+eject` from a proxy seat reaches no window at all.**
-///
-/// The refusal itself is asserted in the nine-acts table; this pins the
-/// mechanical half — a `movement`-only seat could otherwise put the NPC's hull
-/// into `tactics.unit_abandoned` through the real command → offer → ingress →
-/// window path, and the guard must stop it before a submit is ever staged.
-#[test]
-fn vf_d2_eject_from_a_proxy_seat_stages_no_submit_and_reaches_no_window() {
-    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
-    pulse(&mut tw, &fx);
-    let op = operation(&mut tw, &fx);
-    arm_offer_keys(&mut tw);
-    seat_up(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
-    // The seat is genuinely drivable on the very channel `+eject` rides.
-    ok(&mut tw, fx.driver, "+heading 1,2,3");
-    drain(&mut tw);
-    let refused = err(&mut tw, fx.driver, "+eject");
-    assert!(
-        refused.contains(mush_sim::ProxyAct::Abandonment.token())
-            && refused.contains("+seat/leave"),
-        "{refused}"
-    );
-    assert!(
-        drain(&mut tw).is_empty(),
-        "a guarded verb stages no authoritative submit"
-    );
-    assert_eq!(
-        mush_sim::tick::boundary_kind(mush_sim::tick::IntentKind::Eject),
-        "tactics.unit_abandoned",
-        "the act this guard covers is an abandonment by the tick's own facet"
-    );
-    assert_eq!(
-        mush_sim::tick::IntentKind::Eject.required_channel(),
-        "movement",
-        "…on the channel the NARROWEST steering seat grants"
-    );
 }
 
 /// **D5 / F6. Taking a second seat gives the first one back through the one
@@ -1091,13 +833,6 @@ fn vf_b4_an_alt_of_the_drivers_account_drives_nothing_and_is_guarded_by_nothing(
             "{act:?} must not narrow a character who took no seat"
         );
     }
-    let steered = err(&mut tw, alt, "+heading 9,9,9");
-    assert!(
-        steered.contains("You hold no focused station"),
-        "the alt gets the ORDINARY refusal, not the seat's: {steered}"
-    );
-    assert!(drain(&mut tw).is_empty());
-
     // (b) the account's one focus slot is still occupied by the live seat, so
     // the alt's `+focus` is refused — naming the slot, never a T11 act — and the
     // seat survives untouched (this is D1's harm through a second door).
@@ -1212,10 +947,14 @@ fn vf_b5_the_proxy_focus_claim_is_fenced_and_a_real_seat_narrows() {
 ///
 /// `e7c11_b0_the_ingress_reaches_no_channel_grant_api` scans only `focus.rs`,
 /// which contained zero of its four needles before the cut — so it passed
-/// byte-identically on the pre-cut tree and proved nothing. The ingress's real
-/// grant reads are in `combat.rs` (`resolve_seat`) and `tick.rs` (the apply-time
-/// witness); this pins their COUNT rather than their absence, and pins that
-/// `focus.rs` names the ingress it is supposed to carry.
+/// byte-identically on the pre-cut tree and proved nothing. This pins the COUNT
+/// of the grant reads in every file the ingress runs through rather than their
+/// absence, and pins that `focus.rs` names the ingress it is supposed to carry.
+///
+/// The two reads the tactical lane carried — `combat.rs`'s `resolve_seat` and
+/// `tick.rs`'s apply-time witness — went with it (16b cut T, D-16-20), so both
+/// files leave the census: `combat.rs` does not exist and `tick.rs` reaches no
+/// grant API at all.
 #[test]
 fn vf_b7_the_ingress_grant_reads_are_counted_where_they_actually_live() {
     let crates_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1241,10 +980,9 @@ fn vf_b7_the_ingress_grant_reads_are_counted_where_they_actually_live() {
             "the ingress itself must reach no grant API: {needle}"
         );
     }
-    // The five files the ingress actually runs through, and the grant reads they
-    // carry. A sixth reader breaks this.
+    // The four files the ingress actually runs through, and the grant reads they
+    // carry. A fifth reader breaks this.
     let counts: Vec<(&str, usize)> = [
-        "mush-sim/src/combat.rs",
         "mush-sim/src/tick.rs",
         "mush-sim/src/commands.rs",
         "mush-sim/src/station.rs",
@@ -1267,8 +1005,7 @@ fn vf_b7_the_ingress_grant_reads_are_counted_where_they_actually_live() {
     assert_eq!(
         counts,
         vec![
-            ("mush-sim/src/combat.rs", 1),
-            ("mush-sim/src/tick.rs", 1),
+            ("mush-sim/src/tick.rs", 0),
             ("mush-sim/src/commands.rs", 1),
             ("mush-sim/src/station.rs", 1),
             ("mush-propagation/src/commands.rs", 0),
@@ -1285,31 +1022,26 @@ fn vf_b7_the_ingress_grant_reads_are_counted_where_they_actually_live() {
 /// (`+focus/release`, `+eject`) were exactly that hazard realized. This table is
 /// the tripwire: a verb added to the lane without a decision fails here rather
 /// than defaulting to unguarded.
+///
+/// 16b cut T (D-16-20) retired the eight combat verbs, so the table is the focus
+/// pair, the two read-only renders and the station/journey administration.
 #[test]
 fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
     /// Guarded, and by which act — or reached and permitted, or inert.
     enum Disposition {
         /// Refused by `seat_restriction` with this act.
         Guarded(mush_sim::ProxyAct),
-        /// Reached from the seat and deliberately permitted: ordinary tactical
-        /// discretion, which is precisely what T11 grants.
-        Discretion,
         /// A read-only render: it resolves through the ingress and writes
         /// nothing, so there is no act to guard.
+        ///
+        /// The `Discretion` arm — reached from the seat and deliberately
+        /// permitted — went with the eight combat verbs (16b cut T, D-16-20) and
+        /// comes back with the arena's cockpit verbs (16b cut K).
         ReadOnly,
     }
-    use Disposition::{Discretion, Guarded, ReadOnly};
+    use Disposition::{Guarded, ReadOnly};
 
     let table: Vec<(&str, Disposition)> = vec![
-        // The eight combat verbs, all through `combat::resolve_seat`.
-        ("+fire", Discretion),
-        ("+launch", Discretion),
-        ("+heading", Discretion),
-        ("+thrust", Discretion),
-        ("+posture", Discretion),
-        ("+dc", Discretion),
-        ("+dock", Discretion),
-        ("+eject", Guarded(mush_sim::ProxyAct::Abandonment)),
         // The focus pair: both arms of `cmd_focus`'s switch.
         ("+focus", Guarded(mush_sim::ProxyAct::StationAssumption)),
         (
@@ -1358,24 +1090,24 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
                     named.push(*act);
                 }
             }
-            Discretion | ReadOnly => permitted += 1,
+            ReadOnly => permitted += 1,
         }
     }
-    assert_eq!(permitted, 9, "nine station-lane verbs are not guarded");
+    assert_eq!(permitted, 2, "two station-lane verbs are not guarded");
     for act in mush_sim::ProxyAct::ALL.iter().filter(|a| a.is_guarded()) {
         assert!(
             named.contains(act),
             "{act:?} is guarded but no station-lane verb in the table carries it"
         );
     }
-    assert_eq!(named.len(), 4, "four guarded acts ride the station lane");
+    assert_eq!(named.len(), 3, "three guarded acts ride the station lane");
     assert_eq!(
         mush_sim::ProxyAct::ALL
             .iter()
             .filter(|a| !a.is_guarded())
             .count(),
-        5,
-        "five refuse by inertness"
+        6,
+        "six refuse by inertness"
     );
 
     // (2) The source census the table stands for: the guard's call sites, by
@@ -1388,7 +1120,6 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
     let mut sites: Vec<(String, usize)> = Vec::new();
     for rel in [
         "mush-sim/src/commands.rs",
-        "mush-sim/src/combat.rs",
         "mush-sim/src/station.rs",
         "mush-sim/src/tick.rs",
         "mush-sim/src/seat.rs",
@@ -1412,15 +1143,12 @@ fn vf_b8_every_station_lane_verb_has_a_recorded_proxy_disposition() {
             // account-slot precondition (`account_proxy_seat`) is a separate
             // predicate and not counted here.
             ("mush-sim/src/commands.rs".to_owned(), 4),
-            // `+eject`.
-            ("mush-sim/src/combat.rs".to_owned(), 1),
             // `@station/fallback`.
             ("mush-sim/src/station.rs".to_owned(), 1),
-            // Tick-time rechecks (commit b8ec25c, "close pulse authority"):
-            // the `can_abandon` recheck at tick.rs:1718 and the apply-time
-            // authority recheck at tick.rs:3016. Both re-ask an act already
-            // gated on the command lane; neither is a new station-lane verb.
-            ("mush-sim/src/tick.rs".to_owned(), 2),
+            // The two tick-time rechecks of `+eject`'s abandonment went with the
+            // retired combat lane (16b cut T, D-16-20), which took `combat.rs`
+            // out of this census entirely.
+            ("mush-sim/src/tick.rs".to_owned(), 0),
             ("mush-sim/src/seat.rs".to_owned(), 0),
             ("mush-propagation/src/commands.rs".to_owned(), 0),
         ],

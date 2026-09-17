@@ -541,13 +541,13 @@ fn e7c8_c1_replay_is_bounded_and_reads_identically_for_absent_and_nonexistent() 
 // ======================================================================
 
 /// **No economy entry point is reachable from the tick.** A source-level probe:
-/// neither the pulse driver nor the tactical command surface names
-/// `mush_economy` at all, so a settlement inside a pulse is not merely
-/// forbidden by convention — it is unwritable (the 08j seam-1 argument, applied
-/// to E's own half).
+/// the pulse driver does not name `mush_economy` at all, so a settlement inside
+/// a pulse is not merely forbidden by convention — it is unwritable (the 08j
+/// seam-1 argument, applied to E's own half). `src/combat.rs` left the probe
+/// with the retired combat lane (16b cut T, D-16-20).
 #[test]
 fn e7c8_x1_no_economy_entry_point_is_named_anywhere_on_the_tick_path() {
-    for file in ["src/tick.rs", "src/combat.rs"] {
+    for file in ["src/tick.rs"] {
         let source = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file}: {e}"));
         for forbidden in [
             "mush_economy",
@@ -573,7 +573,7 @@ fn e7c8_x1_no_economy_entry_point_is_named_anywhere_on_the_tick_path() {
 /// this path is the kernel's, inside `scheduled_action_ingress`.
 #[test]
 fn e7c8_p1_the_tick_builds_no_invocation_of_its_own() {
-    for file in ["src/tick.rs", "src/combat.rs"] {
+    for file in ["src/tick.rs"] {
         let source = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file}: {e}"));
         for forbidden in [
             "ActionInvocation::new",
@@ -611,8 +611,10 @@ fn e7c8_p1_the_tick_builds_no_invocation_of_its_own() {
     }
 }
 
-/// The tactical vocabulary is exhaustive and **an unknown intent kind refuses,
-/// it is not skipped**: every token round-trips, and anything else is `None`.
+/// The intent vocabulary the commit records is exhaustive and **an unknown token
+/// refuses rather than defaulting**: every kind round-trips through its token,
+/// and anything else is `None`. The vocabulary outlived the retired verb lane
+/// because `IntentRef` and `UnitDelta` carry it (16b cut T).
 #[test]
 fn e7c8_p1_an_unknown_intent_kind_refuses_rather_than_being_skipped() {
     use mush_sim::tick::IntentKind;
@@ -640,43 +642,6 @@ fn e7c8_p1_an_unknown_intent_kind_refuses_rather_than_being_skipped() {
 // ======================================================================
 // P — ingress and wiring, through the observable command surface
 // ======================================================================
-
-/// A combat verb from an actor with **no focused station** refuses, and the
-/// refusal names the command that would fix it. Every one of the eight verbs is
-/// covered — the guard is proven on every arm that can cross it.
-#[test]
-fn e7c8_p2_every_combat_verb_refuses_an_unfocused_actor_and_names_the_fix() {
-    let (mut tw, _first, _second) = scene();
-    for line in [
-        "+heading 1,0,0",
-        "+thrust 5",
-        "+posture 2",
-        "+fire 00112233445566778899aabbccddeeff",
-        "+launch bay1=00112233445566778899aabbccddeeff",
-        "+dc bridge",
-        "+dock 00112233445566778899aabbccddeeff",
-        "+eject",
-    ] {
-        let refusal = err(&mut tw, line);
-        assert!(
-            refusal.contains("+focus") || refusal.contains("no such contact"),
-            "{line:?} refused without naming the fix: {refusal}"
-        );
-    }
-}
-
-/// `+fire` naming a contact the actor does not hold and `+fire` naming one that
-/// never existed produce the **byte-identical** refusal — the verb never reveals
-/// which (§4 rule 4, cut 7's `NO_SUCH_CONTACT`).
-#[test]
-fn e7c8_p2_a_contact_you_do_not_hold_and_one_that_never_existed_refuse_identically() {
-    let (mut tw, _first, _second) = scene();
-    let unheld = err(&mut tw, "+fire 00112233445566778899aabbccddeeff");
-    let absent = err(&mut tw, "+fire ffeeddccbbaa99887766554433221100");
-    // Both are refused before the seat check can distinguish them, and the two
-    // refusals are byte-identical.
-    assert_eq!(unheld, absent);
-}
 
 /// The pulse's schedule source id is **disjoint** from every other source and
 /// tick tag on the tree — one source per family per owner (10b §3.8 OPEN 1).
@@ -773,12 +738,12 @@ fn e7c8_p3_applying_twice_is_a_hit_that_changes_nothing() {
 // Names `vf_<lens><n>_…`; every one asserts the OBSERVABLE outcome.
 
 use mush_core::{
-    CanonicalId, ChannelId, CommitToken, IdempotencyKey, IdempotencyScope, OfferExecutionContext,
+    CanonicalId, CommitToken, IdempotencyKey, IdempotencyScope, OfferExecutionContext,
     OfferKeyRing, OfferSecret, OfferSubmission, PrincipalId, RequestUid, ScopedIdempotencyKey,
 };
 use mush_sim::tick::{
     DeltaOutcome, MAX_RETAINED_TICK_COMMITS as RING, OrderChannel, TickCommitKey, TickHandles,
-    encode_tick, intent_action_ref,
+    encode_tick,
 };
 use serde_json::{Value, json};
 
@@ -806,16 +771,6 @@ fn run_ok(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
     let text = texts(&events);
     assert!(!has_error(&events), "{line:?} refused: {text}");
     text
-}
-
-fn run_err(tw: &mut TestWorld, who: ObjId, line: &str) -> String {
-    let events = tw.run(who, line);
-    assert!(
-        has_error(&events),
-        "{line:?} should have been refused: {}",
-        texts(&events)
-    );
-    texts(&events)
 }
 
 fn fold_scene() -> (TestWorld, Fold) {
@@ -1034,110 +989,17 @@ fn issue(tw: &mut TestWorld, who: ObjId, line: &str, token: u8) -> Result<(), St
 
 // ---- lens A — authority ------------------------------------------------
 
-/// **A2 (HIGH).** Every one of the eight combat verbs resolves through the REAL
-/// offer path and joins the tick's window. Before this fold the offer declared
-/// `observed_at` as `ProjectedParameterKind::Text` while the verb submitted
-/// `serde_json::to_value(&ClockStamp)` — an object — so offer resolution refused
-/// every verb with `InvalidParameters` **before any provider ran** and no intent
-/// had ever reached a window through the command path.
+/// **A1 (HIGH).** The pulse's one player-reachable action is staff-gated: the
+/// `domain_pulse_arm` action projects no offer to a bystander, to a billet
+/// holder, or to a focused crew member. It is declared `"internal": false`, so
+/// `vf_a14`'s internal probe does not cover it and this does.
+///
+/// The `tactical_intent` half of this probe went with the retired combat lane
+/// (16b cut T, D-16-20).
 #[test]
-fn vf_a2a_every_combat_verb_resolves_through_the_real_offer_path_and_joins_a_window() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.ops, &format!("+focus #{}/ops", fx.atlas.0));
-    let tick = current_tick(&tw);
-    // `ops` grants movement+sensors, so it can issue every kind on those two
-    // channels; the fire-channel verbs are covered by `vf_a6a`.
-    let mut token = 40_u8;
-    for line in [
-        "+heading 1,0,0",
-        "+thrust 5",
-        "+posture 2",
-        "+eject",
-        "+dock 00112233445566778899aabbccddeeff",
-    ] {
-        token += 1;
-        let outcome = issue(&mut tw, fx.ops, line, token);
-        // `+dock` names a contact the actor does not hold, so it refuses at the
-        // verb with the byte-identical no-such-contact line — never at offer
-        // resolution.
-        if line.starts_with("+dock") {
-            let refusal = outcome.expect_err("an unheld contact refuses at the verb");
-            assert!(refusal.contains("no such contact"), "{refusal}");
-            continue;
-        }
-        outcome.unwrap_or_else(|error| panic!("{line:?} did not reach the window: {error}"));
-    }
-    let record = window_record(&tw, tick).expect("the tick's window exists");
-    assert_eq!(
-        record.intents().len(),
-        4,
-        "four issuable verbs must be four intents in the window, not zero"
-    );
-}
-
-/// **A2, the construction half.** The offer's public schema is exactly one
-/// `intent` text parameter, and the seat — `(unit, station, channels, epoch,
-/// priority, domain, tick, generation)` — is a FIXED parameter the caller can
-/// neither supply nor override. A client key colliding with a fixed one is
-/// `InvalidParameters` in `merge_parameters`, so the gate is structural.
-#[test]
-fn vf_a2b_the_offer_schema_and_the_verbs_submission_agree_by_construction() {
+fn vf_a1a_the_staff_gated_pulse_arm_is_projected_to_nobody() {
     let (mut tw, fx) = fold_scene();
     run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    run_ok(&mut tw, fx.pilot, "+heading 1,0,0");
-    let submit = *tw
-        .engine_mut()
-        .take_authoritative_submit()
-        .expect("the verb staged a submission");
-    let parameters = submit
-        .parameters
-        .as_object()
-        .expect("parameters are an object");
-    assert_eq!(
-        parameters.keys().collect::<Vec<_>>(),
-        vec!["intent"],
-        "the verb sends exactly the offer's one public parameter"
-    );
-    assert!(
-        parameters["intent"].is_string(),
-        "the one public parameter is Text, and the verb sends a string"
-    );
-    assert!(
-        !parameters.contains_key("observed_at"),
-        "observed_at is no longer a public parameter at all"
-    );
-    // The declared schema itself: one required Text parameter named `intent`.
-    let action = intent_action_ref(tw.registry()).expect("the ingress is composed");
-    let engine = tw.engine();
-    let query = engine
-        .legal_action_query(
-            PrincipalId::Object { id: fx.pilot },
-            fx.pilot,
-            mush_core::PerceivedRef::SelfActor,
-        )
-        .expect("a query");
-    let offers = engine.project_legal_actions(&query).expect("projection");
-    let projected = offers
-        .projected_for_action(&action)
-        .expect("a focused pilot is offered the ingress");
-    let declared: Vec<String> = projected
-        .parameters()
-        .parameters()
-        .iter()
-        .map(|parameter| parameter.id.as_str().to_owned())
-        .collect();
-    assert_eq!(declared, vec!["intent".to_owned()]);
-}
-
-/// **A1 (HIGH).** The ingress is not projected to an unbilleted bystander, and
-/// the staff-gated arm action is the control: before this fold `tactical_intent`
-/// reached EVERY actor whose truth subject was itself, with
-/// `fixed_parameters: json!({})` and both parameters free.
-#[test]
-fn vf_a1a_the_intent_offer_is_not_projected_to_an_unbilleted_bystander() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    let action = intent_action_ref(tw.registry()).expect("the ingress is composed");
     let arm = tw
         .registry()
         .definitions()
@@ -1152,10 +1014,10 @@ fn vf_a1a_the_intent_offer_is_not_projected_to_an_unbilleted_bystander() {
         })
         .expect("the arm action is composed");
     let engine = tw.engine();
-    for (who, offered, label) in [
-        (fx.bystander, false, "an unbilleted bystander"),
-        (fx.gunner, false, "a billet holder who has not focused"),
-        (fx.pilot, true, "the focused pilot"),
+    for (who, label) in [
+        (fx.bystander, "an unbilleted bystander"),
+        (fx.gunner, "a billet holder who has not focused"),
+        (fx.pilot, "the focused pilot"),
     ] {
         let query = engine
             .legal_action_query(
@@ -1165,356 +1027,11 @@ fn vf_a1a_the_intent_offer_is_not_projected_to_an_unbilleted_bystander() {
             )
             .expect("a query");
         let offers = engine.project_legal_actions(&query).expect("projection");
-        assert_eq!(
-            offers.projected_for_action(&action).is_some(),
-            offered,
-            "{label} was offered the tactical ingress: {offered}"
-        );
-        // The control: the arm action IS staff-gated for every one of them.
         assert!(
             offers.projected_for_action(&arm).is_none(),
             "{label} was offered the staff-gated pulse arm"
         );
     }
-}
-
-/// **A1/A3/A4 (HIGH), the provider half.** A hand-built invocation naming a unit
-/// the actor does not hold, a forged clock generation, or a phantom unit is
-/// refused `Unauthorized` in `prepare_authoritative` — it never spends a durable
-/// window slot, never claims a future window at a forged generation and never
-/// reaches the commit's `accepted` list.
-#[test]
-fn vf_a1b_an_invocation_naming_a_unit_station_epoch_or_generation_it_does_not_hold_refuses_unauthorized()
- {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    let action = intent_action_ref(tw.registry()).expect("the ingress is composed");
-    let tick = current_tick(&tw);
-    let clock_generation = generation(&tw);
-    let real_seat = json!({
-        "unit": fx.atlas,
-        "station": "pilot",
-        "channels": ["movement"],
-        "epoch": grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot"),
-        "priority": 10,
-        "domain": 0,
-        "tick": tick,
-        "generation": clock_generation,
-    });
-    let base = |unit: ObjId, station: &str, epoch: u64, priority: u16, domain: u64, tick: i64| {
-        json!({
-            "domain": domain,
-            "tick": tick,
-            "unit": unit,
-            "station": station,
-            "epoch": epoch,
-            "priority": priority,
-            "channel": "movement",
-            "kind": "heading",
-            "value": { "kind": "vector", "x": 1, "y": 0, "z": 0 },
-        })
-    };
-    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
-    // Each forgery names ONE thing the seat does not carry.
-    for (label, doc) in [
-        (
-            "a phantom unit",
-            base(ObjId(999_999), "pilot", epoch, 10, 0, tick),
-        ),
-        (
-            "a station it does not hold",
-            base(fx.atlas, "gunner", epoch, 10, 0, tick),
-        ),
-        (
-            "a forged epoch",
-            base(fx.atlas, "pilot", epoch + 7, 10, 0, tick),
-        ),
-        (
-            "a forged priority",
-            base(fx.atlas, "pilot", epoch, 65_000, 0, tick),
-        ),
-        (
-            "a foreign domain",
-            base(fx.atlas, "pilot", epoch, 10, 4_242, tick),
-        ),
-    ] {
-        let invocation = forged(&action, fx.pilot, &real_seat, &doc, 70);
-        let refused = tw
-            .engine_mut()
-            .prepare_registered_authoritative_action(
-                &action,
-                &invocation,
-                CommitToken::from_bytes([70; 16]),
-            )
-            .err()
-            .unwrap_or_else(|| panic!("{label} was ACCEPTED"));
-        assert!(
-            format!("{refused:?}").contains("Unauthorized"),
-            "{label} refused with the wrong code: {refused:?}"
-        );
-    }
-    // A forged TICK is `Stale`, not `Unauthorized`: the pulse simply moved on,
-    // and a later fire recovers.
-    let invocation = forged(
-        &action,
-        fx.pilot,
-        &real_seat,
-        &base(fx.atlas, "pilot", epoch, 10, 0, tick + 9_000),
-        71,
-    );
-    let refused = tw
-        .engine_mut()
-        .prepare_registered_authoritative_action(
-            &action,
-            &invocation,
-            CommitToken::from_bytes([71; 16]),
-        )
-        .expect_err("a forged tick is refused");
-    assert!(
-        format!("{refused:?}").contains("Stale"),
-        "a moved tick must be Stale, not a freeze: {refused:?}"
-    );
-    // And nothing was written: the far-future window does not exist.
-    assert!(
-        window_record(&tw, tick + 9_000).is_none(),
-        "a forgery claimed a future window"
-    );
-}
-
-/// **A3 (HIGH), the observable half.** A forged clock generation can no longer
-/// poison a real tick's window: the generation is part of the window identity,
-/// so a forgery at generation 999 addresses a DIFFERENT record, and the
-/// legitimate order for that same tick number is accepted and resolves against
-/// the real generation's window. (The bystander is also offered no ingress at
-/// all — `vf_a1a` — so through the only reachable path the forgery cannot even
-/// be staged; a prepared provider has no `&World` and can never re-derive a
-/// seat, which is §4.0f (c7)'s load-bearing kernel fact.)
-#[test]
-fn vf_a3_a_forged_generation_addresses_its_own_window_and_the_real_order_still_resolves() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    let tick = current_tick(&tw);
-    let real = generation(&tw);
-    let action = intent_action_ref(tw.registry()).expect("the ingress is composed");
-    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
-    let forged_seat = json!({
-        "unit": fx.atlas,
-        "station": "pilot",
-        "channels": ["movement"],
-        "epoch": epoch,
-        "priority": 10,
-        "domain": 0,
-        "tick": tick,
-        "generation": 999_u64,
-    });
-    let doc = json!({
-        "domain": 0,
-        "tick": tick,
-        "unit": fx.atlas,
-        "station": "pilot",
-        "epoch": epoch,
-        "priority": 10,
-        "channel": "movement",
-        "kind": "heading",
-        "value": { "kind": "vector", "x": 9, "y": 9, "z": 9 },
-    });
-    let invocation = forged(&action, fx.bystander, &forged_seat, &doc, 80);
-    if let Ok((prepared, _)) = tw.engine_mut().prepare_registered_authoritative_action(
-        &action,
-        &invocation,
-        CommitToken::from_bytes([80; 16]),
-    ) {
-        // Install it, so the forgery is as real as it can possibly get.
-        let (_ops, installation) = prepared.into_parts();
-        tw.engine_mut()
-            .install_prepared_action(installation)
-            .expect("the fixture installs");
-    }
-    // Whatever the forgery reached, it is NOT the real generation's window.
-    let owner = mush_core::OwnerId::new("sim").unwrap();
-    assert_ne!(
-        tick_window_id(&owner, DomainId(0), 999, tick),
-        tick_window_id(&owner, DomainId(0), real, tick),
-        "two generations of one tick number must not share a window"
-    );
-    // The legitimate order for the SAME tick is accepted and resolves.
-    issue(&mut tw, fx.pilot, "+heading 1,0,0", 81).expect("the real order joins the window");
-    let record = window_record(&tw, tick).expect("the real window exists");
-    assert_eq!(record.intents().len(), 1);
-    assert_eq!(record.window().generation(), real);
-    let stored: Value = serde_json::from_str(
-        record.intents()[0].invocation().parameters()["intent"]
-            .as_str()
-            .expect("text"),
-    )
-    .expect("decodes");
-    assert_eq!(
-        stored["value"]["x"],
-        json!(1),
-        "the legitimate order, not the forgery, is what the tick will resolve"
-    );
-}
-
-/// **A4 (HIGH).** One actor takes one slot **per kind**, however many units it
-/// names — the seat pins the unit — and an intent whose witness has moved is
-/// recorded as a REFUSAL, never in the commit's `accepted` list.
-#[test]
-fn vf_a4a_one_actor_takes_one_slot_per_kind_and_an_unwitnessed_intent_is_never_accepted() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.ops, &format!("+focus #{}/ops", fx.atlas.0));
-    let tick = current_tick(&tw);
-    issue(&mut tw, fx.ops, "+heading 1,0,0", 90).expect("heading joins");
-    issue(&mut tw, fx.ops, "+thrust 5", 91).expect("thrust joins");
-    issue(&mut tw, fx.ops, "+heading 2,0,0", 92).expect("the second heading replaces");
-    let record = window_record(&tw, tick).expect("the window exists");
-    assert_eq!(
-        record.intents().len(),
-        2,
-        "one actor holds one slot per KIND: two kinds, two slots, and the second \
-         heading replaced the first"
-    );
-    let units: std::collections::BTreeSet<mush_core::SubjectKey> = record
-        .intents()
-        .iter()
-        .map(|intent| intent.truth_subject().clone())
-        .collect();
-    assert_eq!(units.len(), 2, "the two slots are distinct");
-}
-
-/// **A5 (HIGH).** A crewmate focusing their own seat no longer voids every other
-/// station's orders: the epoch the verb pins is the actor's OWN published grant
-/// epoch, which is exactly the one the apply witness compares.
-#[test]
-fn vf_a5a_a_crewmates_focus_leaves_every_other_stations_orders_witnessable() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    let tick = current_tick(&tw);
-    issue(&mut tw, fx.pilot, "+heading 1,0,0", 100).expect("the pilot's first order joins");
-    // The gunner focuses their own seat. This bumps the unit-wide control
-    // generation and republishes only the GUNNER's links.
-    run_ok(
-        &mut tw,
-        fx.gunner,
-        &format!("+focus #{}/gunner", fx.atlas.0),
-    );
-    // The pilot's next order still pins an epoch the witness accepts.
-    issue(&mut tw, fx.pilot, "+heading 3,0,0", 101)
-        .expect("the pilot's order after a crewmate's focus must still be witnessable");
-    let record = window_record(&tw, tick).expect("the window exists");
-    let pinned = record
-        .intents()
-        .iter()
-        .find(|intent| intent.invocation().actor() == fx.pilot)
-        .expect("the pilot's intent is in the window");
-    let doc: Value = serde_json::from_str(
-        pinned.invocation().parameters()["intent"]
-            .as_str()
-            .expect("the intent is text"),
-    )
-    .expect("the document decodes");
-    let epoch = doc["epoch"].as_u64().expect("an epoch");
-    assert!(
-        tw.world().channel_grant_is_current(
-            fx.pilot,
-            fx.atlas,
-            "sim",
-            "pilot",
-            epoch,
-            &ChannelId::new("movement").unwrap(),
-        ),
-        "the pilot's pinned epoch failed the very witness the tick applies"
-    );
-}
-
-/// **A6 (HIGH).** A station's channel set constrains its verbs. Every one of the
-/// eight verbs — `+heading`, `+thrust`, `+posture`, `+fire`, `+launch`, `+dc`,
-/// `+dock`, `+eject` — refuses a station that does not grant the channel it
-/// rides, and names the channel in the refusal.
-#[test]
-fn vf_a6a_heading_thrust_posture_fire_launch_dc_dock_eject_each_refuse_a_station_without_their_channel()
- {
-    let (mut tw, fx) = fold_scene();
-    // The gunner grants `fire` only.
-    run_ok(
-        &mut tw,
-        fx.gunner,
-        &format!("+focus #{}/gunner", fx.atlas.0),
-    );
-    for (line, channel) in [
-        ("+heading 1,0,0", "movement"),
-        ("+thrust 5", "movement"),
-        ("+posture 2", "sensors"),
-        ("+dc bridge", "damage_control"),
-        ("+eject", "movement"),
-    ] {
-        let refusal = run_err(&mut tw, fx.gunner, line);
-        assert!(
-            refusal.contains(channel),
-            "{line:?} did not name the {channel} channel it needs: {refusal}"
-        );
-    }
-    // The pilot grants `movement` only, so the fire-channel verbs refuse there.
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    for line in [
-        "+fire 00112233445566778899aabbccddeeff",
-        "+launch bay1=00112233445566778899aabbccddeeff",
-    ] {
-        // The contact check runs first and hides existence, so the refusal is
-        // the byte-identical no-such-contact line; what matters is that neither
-        // verb ever reaches the window on a station that grants no fire channel.
-        let refusal = run_err(&mut tw, fx.pilot, line);
-        assert!(
-            refusal.contains("no such contact") || refusal.contains("fire"),
-            "{line:?}: {refusal}"
-        );
-        assert!(
-            tw.engine_mut().take_authoritative_submit().is_none(),
-            "{line:?} staged a submission from a station with no fire channel"
-        );
-    }
-}
-
-/// **A6, the second failure mode.** A station granting TWO channels can issue on
-/// both — cut 8's `(spec.channels.len() == 1)` meant it could issue nothing at
-/// all.
-#[test]
-fn vf_a6b_a_station_granting_two_channels_can_issue_on_both() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.ops, &format!("+focus #{}/ops", fx.atlas.0));
-    let tick = current_tick(&tw);
-    issue(&mut tw, fx.ops, "+heading 1,0,0", 110).expect("the movement channel issues");
-    issue(&mut tw, fx.ops, "+posture 2", 111).expect("the sensors channel issues");
-    let record = window_record(&tw, tick).expect("the window exists");
-    assert_eq!(record.intents().len(), 2);
-}
-
-/// **A7 (MEDIUM).** The apply-time authority is a focus, not merely a billet: an
-/// intent whose focus was released before the tick planned is refused with its
-/// reason rather than resolved.
-#[test]
-fn vf_a7a_an_intent_whose_focus_was_released_before_the_tick_is_refused() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    issue(&mut tw, fx.pilot, "+heading 1,0,0", 120).expect("joins");
-    // The focus goes away; the BILLET does not.
-    run_ok(&mut tw, fx.pilot, "+focus/release");
-    assert!(
-        tw.world()
-            .channel_grant(fx.pilot, fx.atlas, "sim", "pilot")
-            .is_some(),
-        "the billet survives a release, which is why the billet alone is not authority"
-    );
-    assert!(
-        mush_sim::FocusState::default()
-            .focus_of_actor(fx.pilot)
-            .is_none()
-            || tw
-                .world()
-                .module_state::<mush_sim::FocusState>()
-                .and_then(|state| state.focus_of_actor(fx.pilot))
-                .is_none(),
-        "the focus was released"
-    );
 }
 
 // ---- lens B — bounds, measurement and disclosure ------------------------
@@ -1633,22 +1150,6 @@ fn vf_b9_a_space_domain_pulses_at_the_space_cadence_and_a_ground_one_at_the_grou
     );
 }
 
-/// **B10 (LOW).** The documented band is enforced at the verb, and an
-/// out-of-band order stages nothing at all.
-#[test]
-fn vf_b10a_thrust_and_heading_out_of_band_refuse_at_the_verb_and_stage_nothing() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    for line in ["+thrust 5000", "+thrust -5000", "+heading 5000,0,0"] {
-        let refusal = run_err(&mut tw, fx.pilot, line);
-        assert!(refusal.contains("-1000..=1000"), "{line:?}: {refusal}");
-        assert!(
-            tw.engine_mut().take_authoritative_submit().is_none(),
-            "{line:?} consumed the actor's one submit slot"
-        );
-    }
-}
-
 // ---- lens T — the tick --------------------------------------------------
 
 /// **T3 (HIGH).** Both promoted domains are armed within the queue's drain, and
@@ -1705,74 +1206,28 @@ fn vf_t3a_both_promoted_domains_are_armed_and_a_demote_beside_a_live_one_still_d
     );
 }
 
-/// **T9 (MEDIUM).** A heading and a shot in one tick are two intents; a second
-/// heading in one tick replaces the first and only the newest survives.
+/// **T12 (MEDIUM).** An intent the tick cannot resolve is a REFUSAL with its
+/// reason, not a silent drop, and the refusal is visible in the commit's deltas
+/// where `@domain/replay` counts it.
+///
+/// 16b cut T (D-16-20) retired the placeholder resolution, so the reason the
+/// production arm now records is `tick::NO_RESOLVER` rather than the fact-budget
+/// line — the invariant is the one that survived, not the arm.
 #[test]
-fn vf_t9a_a_heading_and_another_kind_in_one_tick_are_two_intents_and_a_second_heading_replaces() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.ops, &format!("+focus #{}/ops", fx.atlas.0));
-    let tick = current_tick(&tw);
-    issue(&mut tw, fx.ops, "+heading 1,0,0", 130).expect("joins");
-    issue(&mut tw, fx.ops, "+posture 1", 131).expect("joins");
-    assert_eq!(
-        window_record(&tw, tick).expect("window").intents().len(),
-        2,
-        "two kinds are two slots"
-    );
-    issue(&mut tw, fx.ops, "+heading 7,0,0", 132).expect("replaces");
-    let record = window_record(&tw, tick).expect("window");
-    assert_eq!(record.intents().len(), 2, "the second heading replaced");
-    let headings: Vec<Value> = record
-        .intents()
-        .iter()
-        .filter_map(|intent| {
-            serde_json::from_str::<Value>(intent.invocation().parameters()["intent"].as_str()?).ok()
-        })
-        .filter(|doc| doc["kind"] == "heading")
-        .collect();
-    assert_eq!(headings.len(), 1);
-    assert_eq!(
-        headings[0]["value"]["x"],
-        json!(7),
-        "the newest order stands"
-    );
-}
-
-/// **T11 (MEDIUM).** An open tick window appears in the kernel's own key-rotation
-/// reference set, so a rotation cannot prune material an unresolved tick still
-/// needs.
-#[test]
-fn vf_t11a_an_open_tick_window_appears_in_the_rotation_reference_set() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    issue(&mut tw, fx.pilot, "+heading 1,0,0", 140).expect("joins");
-    let references = tw.engine().resolution_key_rotation_references();
-    assert!(
-        !references.is_empty(),
-        "an open tick window must pin its resolution secret version; the kernel's \
-         own rotation guard was switched off for this lane"
-    );
-    let record = window_record(&tw, current_tick(&tw)).expect("window");
-    assert!(record.window().resolution_secret_version().is_some());
-}
-
-/// **T12 (MEDIUM).** The fact budget is a REFUSAL with its reason, not a silent
-/// truncation, and the refusal is visible in the commit's deltas.
-#[test]
-fn vf_t12a_the_fact_budget_is_recorded_as_a_refusal_never_truncated_silently() {
-    // The delta vocabulary carries the refusal, and `@domain/replay` counts it.
+fn vf_t12a_an_unresolvable_intent_is_recorded_as_a_refusal_never_dropped_silently() {
+    // The recorded reason is the production constant, not a literal a test made
+    // up, so a change to the wording moves this with it.
     let refused = DeltaOutcome::Refused {
-        reason: "boundary fact budget exhausted".to_owned(),
+        reason: mush_sim::tick::NO_RESOLVER.to_owned(),
     };
     assert!(matches!(refused, DeltaOutcome::Refused { .. }));
-    // And an unclassifiable intent's delta names no kind, so two of them from
-    // one actor are no longer byte-identical to a borrowed `Eject` (correction
-    // 17).
+    // And an unresolvable intent's delta names no kind, so two of them from one
+    // actor are not byte-identical to a borrowed `Eject` (correction 17).
     let unknown = mush_sim::tick::UnitDelta {
         unit: ObjId(1),
         kind: None,
         outcome: DeltaOutcome::Refused {
-            reason: "unknown intent kind".to_owned(),
+            reason: mush_sim::tick::NO_RESOLVER.to_owned(),
         },
     };
     assert!(unknown.kind.is_none());
@@ -1814,54 +1269,6 @@ fn vf_a14_every_definition_declaring_internal_projects_no_offer_for_any_actor() 
             );
         }
     }
-}
-
-/// **A8 (MEDIUM).** Two co-holders of one unit's control channel are settled by
-/// the station's published `ChannelGrant.priority`, not by whose dbref is
-/// larger. `ops` (priority 20) settles after `pilot` (priority 10) on the shared
-/// `movement` channel, so the commander's order is the one the tick writes —
-/// and it would be so even if the pilot's dbref were the larger of the two.
-#[test]
-fn vf_a8_the_commanders_order_settles_last_over_the_ratings_regardless_of_dbref() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    let tick = current_tick(&tw);
-    issue(&mut tw, fx.pilot, "+heading 1,0,0", 160).expect("the pilot's order joins");
-    run_ok(&mut tw, fx.ops, &format!("+focus #{}/ops", fx.atlas.0));
-    issue(&mut tw, fx.ops, "+heading 2,0,0", 161).expect("the commander's order joins");
-    let record = window_record(&tw, tick).expect("the window exists");
-    assert_eq!(record.intents().len(), 2, "two crew, two slots on one unit");
-    // The window resolves in `WindowOrderKey` order, and the key now carries the
-    // station's published priority as its last component — so the commander
-    // settles LAST and therefore writes the standing order.
-    let mut ordered: Vec<(Vec<i64>, ObjId)> = record
-        .intents()
-        .iter()
-        .map(|intent| {
-            (
-                intent.order().as_slice().to_vec(),
-                intent.invocation().actor(),
-            )
-        })
-        .collect();
-    ordered.sort_by(|left, right| left.0.cmp(&right.0));
-    assert_eq!(
-        ordered.last().expect("a last intent").1,
-        fx.ops,
-        "the higher-priority station must settle LAST and therefore win; \
-         pilot=#{} ops=#{}",
-        fx.pilot.0,
-        fx.ops.0
-    );
-    assert_eq!(
-        ordered[0].0.len(),
-        3,
-        "the order key is [kind rank, unit, priority]"
-    );
-    assert!(
-        ordered[0].0[2] < ordered[1].0[2],
-        "the order key carries the station priority, not the dbref"
-    );
 }
 
 /// **A9 (MEDIUM).** The standing-order book has a lifecycle. A demote clears the
@@ -1909,37 +1316,6 @@ fn vf_a9a_a_disarm_clears_its_domains_order_rows_and_the_reaper_bounds_the_rest(
     const { assert!(mush_sim::tick::MAX_REAP_PER_FIRE == 64) };
 }
 
-/// **T4 (HIGH), the observable half.** A re-promoted domain accepts orders at a
-/// reused tick number: the window identity carries the generation, so the new
-/// generation's order lands in its own record instead of refusing `Integrity`
-/// against the previous generation's leftovers.
-#[test]
-fn vf_t4b_a_re_promoted_domain_accepts_orders_at_a_reused_tick_number() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    let first_generation = generation(&tw);
-    let tick = current_tick(&tw);
-    issue(&mut tw, fx.pilot, "+heading 1,0,0", 170).expect("the first generation's order joins");
-    // Stand down and promote again: `apply_pulse` re-anchors `started_at`, so
-    // the tick counter restarts and the SAME tick numbers come round again.
-    ok(&mut tw, &format!("@domain/demote #{}", fx.field.0));
-    advance(&mut tw, 1_100);
-    drain_submits(&mut tw);
-    ok(&mut tw, &format!("@domain/promote #{}=player", fx.field.0));
-    ok(&mut tw, &format!("@domain/tick #{}", fx.field.0));
-    drain_submits(&mut tw);
-    let second_generation = generation(&tw);
-    assert!(second_generation > first_generation);
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    let reused = current_tick(&tw);
-    issue(&mut tw, fx.pilot, "+heading 4,0,0", 171)
-        .expect("the new generation's order must be ACCEPTED, not refused Integrity");
-    let record = window_record(&tw, reused).expect("the new generation's window exists");
-    assert_eq!(record.window().generation(), second_generation);
-    assert_eq!(record.intents().len(), 1);
-    let _ = tick;
-}
-
 /// **B3 (HIGH), the observable half.** `@domain/replay` still lists tick 0 after
 /// the ring has turned, and reads byte-identically for a domain that never
 /// ticked and one that never existed.
@@ -1951,86 +1327,6 @@ fn vf_b3b_replay_reads_identically_for_absent_and_nonexistent_and_bounds_its_wal
     assert_eq!(nonexistent, never_ticked);
     // The walk is bounded by the ring, and the ring is a real number.
     const { assert!(RING == 64) };
-}
-
-/// **T8 (MEDIUM).** An intent for a tick that has moved on refuses with the
-/// player-actionable `Stale` line rather than being accepted into a spent window
-/// and silently lost. The consumed window is now RETAINED for one tick (asserted
-/// end to end by `world_task.rs`'s `vf_t8b_*`), so the kernel's own duplicate
-/// fence still stands: deleting it made absence mean "open a fresh one".
-#[test]
-fn vf_t8a_an_intent_whose_tick_has_moved_refuses_stale_and_spends_no_window_slot() {
-    let (mut tw, fx) = fold_scene();
-    run_ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
-    let tick = current_tick(&tw);
-    let action = intent_action_ref(tw.registry()).expect("the ingress is composed");
-    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
-    let seat = json!({
-        "unit": fx.atlas,
-        "station": "pilot",
-        "channels": ["movement"],
-        "epoch": epoch,
-        "priority": 10,
-        "domain": 0,
-        "tick": tick,
-        "generation": generation(&tw),
-    });
-    // The document names the tick the player read a moment ago; the seat has
-    // moved on. That is the routine race between a 250 ms driver poll and a 2 s
-    // pulse, and it must be a refusal the player can act on.
-    let doc = json!({
-        "domain": 0,
-        "tick": tick - 1,
-        "unit": fx.atlas,
-        "station": "pilot",
-        "epoch": epoch,
-        "priority": 10,
-        "channel": "movement",
-        "kind": "heading",
-        "value": { "kind": "vector", "x": 1, "y": 0, "z": 0 },
-    });
-    let invocation = forged(&action, fx.pilot, &seat, &doc, 190);
-    let refused = tw
-        .engine_mut()
-        .prepare_registered_authoritative_action(
-            &action,
-            &invocation,
-            CommitToken::from_bytes([190; 16]),
-        )
-        .expect_err("a stale tick must refuse");
-    let text = format!("{refused:?}");
-    assert!(text.contains("Stale"), "{text}");
-    assert!(text.contains("re-issue the order"), "{text}");
-    // And nothing was spent: the previous tick's window was never opened.
-    assert!(window_record(&tw, tick - 1).is_none());
-}
-
-/// **A11 (MEDIUM).** The declared immediate fallback is recorded honestly as
-/// **not built**: neither `fallback_order` nor `fallback_key` has a caller
-/// anywhere outside their own tests, and the module says so.
-#[test]
-fn vf_a11a_the_declared_fallback_is_recorded_as_not_built_and_its_safety_claim_is_withdrawn() {
-    let source = std::fs::read_to_string("src/combat.rs").expect("combat.rs");
-    assert!(
-        source.contains("NOT BUILT"),
-        "the fallback must be recorded as unbuilt rather than described as live"
-    );
-    assert!(
-        source.contains("false and is withdrawn"),
-        "the idempotency-collision safety claim must be withdrawn in place"
-    );
-    // The functions still exist and are still deterministic, so wiring them
-    // later is a composition change and not a redesign.
-    for kind in mush_sim::tick::IntentKind::all() {
-        let fallen = mush_sim::combat::fallback_order(kind);
-        assert!(!matches!(
-            fallen,
-            mush_sim::tick::IntentKind::Fire
-                | mush_sim::tick::IntentKind::Launch
-                | mush_sim::tick::IntentKind::Dock
-                | mush_sim::tick::IntentKind::Eject
-        ));
-    }
 }
 
 /// **T5 (HIGH).** No refusal that only ONE domain depends on is an `Integrity`
@@ -2048,14 +1344,13 @@ fn vf_t5b_no_tick_refusal_a_single_domain_depends_on_is_a_non_retryable_integrit
         source.contains("fn stale(message: &'static str) -> ActionError"),
         "the tick lane must have a Stale classification at all"
     );
+    // The three arms that outlived the retired combat lane (16b cut T,
+    // D-16-20); the three `submit_intent` arms and the standing-order arm left
+    // with the `tactical_intent` provider and the placeholder resolution.
     for arm in [
         "stale(\"this tick's window would not close\")",
         "stale(\"this tick's window would not order\")",
         "stale(\"this tick's window would not consume\")",
-        "stale(\"that standing order is unconstructible\")",
-        "stale(\"that tick has already advanced; re-issue the order\")",
-        "stale(\"that tick has already closed; re-issue the order\")",
-        "stale(\"that domain's pulse has been re-promoted; re-issue the order\")",
     ] {
         assert!(
             source.contains(arm),
@@ -2156,46 +1451,4 @@ fn apply_arm(tw: &mut TestWorld, submit: &mush_core::AuthoritativeSubmit) {
             .install_prepared_action(installation)
             .expect("the fixture installs");
     }
-}
-
-fn grant_epoch_of(tw: &TestWorld, actor: ObjId, unit: ObjId, station: &str) -> u64 {
-    tw.world()
-        .channel_grant(actor, unit, "sim", station)
-        .map(|grant| grant.epoch)
-        .expect("a published grant")
-}
-
-/// A hand-built invocation carrying an arbitrary `seat` and `intent`. The whole
-/// point of D1(a) is that the kernel would never mint this pairing; the provider
-/// must refuse it structurally rather than trusting the offer path.
-fn forged(
-    action: &mush_core::DefinitionRef,
-    actor: ObjId,
-    seat: &Value,
-    doc: &Value,
-    token: u8,
-) -> mush_core::ActionInvocation {
-    let principal = PrincipalId::Object { id: actor };
-    mush_core::ActionInvocation::new(mush_core::ActionInvocationDraft {
-        request: RequestUid::from_bytes([token; 16]),
-        principal: principal.clone(),
-        actor,
-        offered_action: mush_core::ActionOfferId(mush_core::CanonicalHash::from_bytes([9; 32])),
-        subject: mush_core::PerceivedRef::SelfActor,
-        targets: Vec::new(),
-        parameters: json!({
-            "seat": seat,
-            "intent": serde_json::to_string(doc).expect("a document"),
-        }),
-        idempotency: ScopedIdempotencyKey::new(
-            IdempotencyScope {
-                principal,
-                owner: action.key().owner.clone(),
-                namespace: CanonicalId::new(action.key().id.as_str()).unwrap(),
-            },
-            1,
-            IdempotencyKey::Request(RequestUid::from_bytes([token; 16])),
-        ),
-    })
-    .expect("a well-formed invocation")
 }

@@ -363,38 +363,15 @@ fn e7c11_b0_the_ingress_is_inert_without_a_live_seat() {
 // ===========================================================================
 // ---- E7 cut 11 independent verify fold ----
 //
-// The picture-and-order half. Owner decisions taken: F3=(a) (`held_contact`
-// reads the same holder set the render does, for a proxy driver AND an ordinary
-// crew member) and F5=(a) (a live seat suppresses the staff short-circuit).
+// The picture-and-order half. Owner decision taken: F5=(a) (a live seat
+// suppresses the staff short-circuit). F3(a)'s half — `held_contact` reading the
+// same holder set the render does — went with the retired combat lane (16b cut
+// T, D-16-20), which took `+fire` and the only two positive contact-naming
+// proofs in the tree with it.
 // This crate has no `mush-campaign` edge and must not gain one, so the seat is
 // still seeded through `FocusState`'s `testkit`-fenced shim; the seat's own
 // end-to-end path stays in `crates/mush-campaign/tests/e7c11.rs`.
 // ===========================================================================
-
-/// A unit station that grants the `fire` channel, plus the NPC billeted on it —
-/// the shared scene's `pilot` grants `movement` only, and `+fire` rides `fire`.
-fn gunner_station(tw: &mut TestWorld, fx: &Fx, who: ObjId) {
-    run(
-        tw,
-        GOD,
-        &format!(
-            "@spatial/station #{}=gunner,gunner,channels:fire",
-            fx.atlas.0
-        ),
-    );
-    run(
-        tw,
-        GOD,
-        &format!("@spatial/assign #{}=gunner,#{}", fx.atlas.0, who.0),
-    );
-}
-
-/// Promote the scene's domain so `combat::resolve_seat` can resolve at all: a
-/// passive domain refuses every tactical verb outright, well before the seat.
-fn pulse(tw: &mut TestWorld, fx: &Fx) {
-    run(tw, GOD, &format!("@domain/promote #{}=contact", fx.orbit.0));
-    run(tw, GOD, &format!("@domain/tick #{}", fx.orbit.0));
-}
 
 /// The proxy seat, on a named station of the hull.
 fn take_proxy_seat_on(tw: &mut TestWorld, fx: &Fx, station: &str) {
@@ -416,116 +393,6 @@ fn take_proxy_seat_on(tw: &mut TestWorld, fx: &Fx, station: &str) {
         .expect("the focus slot")
         .claim_for_test(focus);
     assert!(released.is_empty());
-}
-
-/// **D3(a) / F3. A driver may name the contact the seat just showed them.**
-///
-/// A contact belongs to a **platform**: `ObserverRef::principal()` is
-/// unconditionally `PrincipalId::Object { id: self.platform() }`, so every
-/// `ContactLedgerRow.holder` on the real ledger is a hull. `viewable_holders`
-/// answers `[npc, unit]` and is right; cut 11's `held_contact` accepted only the
-/// NPC, so `+fire` refused every contact `+contacts` had just printed with a
-/// refusal byte-identical to one for a contact that never existed. This is the
-/// tree's first POSITIVE `+fire`: every other `+fire` in the tree asserts a
-/// refusal, which is exactly why ingress site 2 shipped inert.
-#[test]
-fn vf_d3a_a_driver_may_name_the_contact_the_seat_just_showed_them() {
-    let (mut tw, fx) = scene();
-    gunner_station(&mut tw, &fx, fx.ace);
-    pulse(&mut tw, &fx);
-    let rows = vec![ledger_row(&tw, fx.atlas, [0x11; 16])];
-    install_ledger(&mut tw, rows);
-    take_proxy_seat_on(&mut tw, &fx, "gunner");
-
-    let seen = run(&mut tw, fx.driver, "+contacts");
-    assert!(
-        seen.contains("11111111"),
-        "the seat exposes the hull's picture: {seen}"
-    );
-    let absent = run(&mut tw, fx.driver, "+fire ffeeddccbbaa99887766554433221100");
-    assert!(
-        absent.contains(mush_sim::tick::no_such_contact()),
-        "{absent}"
-    );
-    let fired = run(&mut tw, fx.driver, "+fire 11111111111111111111111111111111");
-    assert_ne!(
-        fired, absent,
-        "a contact the driver was just shown must not be indistinguishable from \
-         one that never existed"
-    );
-    assert!(
-        fired.contains("submitted into tick"),
-        "the order goes all the way into the tick: {fired}"
-    );
-}
-
-/// **D3(b) / F3. An ordinary crew member may name their own hull's contact.**
-///
-/// The same divergence held for every billet-holder in the game, with no seat
-/// anywhere: `held_contact` matched `PrincipalId::Object { id: actor }` and the
-/// ledger holds hulls. So `held_contact`'s success arm was dead for the WHOLE
-/// crew, and the fix is not proxy-only.
-#[test]
-fn vf_d3b_an_ordinary_crew_member_may_name_their_own_hulls_contact() {
-    let (mut tw, fx) = scene();
-    gunner_station(&mut tw, &fx, fx.neighbour);
-    pulse(&mut tw, &fx);
-    let rows = vec![ledger_row(&tw, fx.atlas, [0x11; 16])];
-    install_ledger(&mut tw, rows);
-    // No seat anywhere in this test: `driving_actor` is the identity.
-    assert_eq!(
-        mush_sim::driving_actor(tw.world(), fx.neighbour),
-        fx.neighbour
-    );
-
-    let seen = run(&mut tw, fx.neighbour, "+contacts");
-    assert!(
-        seen.contains("11111111"),
-        "their own hull's picture is theirs to read: {seen}"
-    );
-    let absent = run(
-        &mut tw,
-        fx.neighbour,
-        "+fire ffeeddccbbaa99887766554433221100",
-    );
-    assert!(
-        absent.contains(mush_sim::tick::no_such_contact()),
-        "{absent}"
-    );
-    let fired = run(
-        &mut tw,
-        fx.neighbour,
-        "+fire 11111111111111111111111111111111",
-    );
-    assert_ne!(
-        fired, absent,
-        "the crew member's own hull's contact is nameable"
-    );
-    // Past `held_contact`, the refusal is the station one — a DIFFERENT line —
-    // because this crew member holds no foreground focus yet.
-    assert!(
-        fired.contains("You hold no focused station"),
-        "the next gate is the seat, not the contact: {fired}"
-    );
-
-    // …and a row held by a hull they are NOT billeted on stays invisible and
-    // unnameable, byte-identically to one that never existed.
-    let rows = vec![
-        ledger_row(&tw, fx.atlas, [0x11; 16]),
-        ledger_row(&tw, fx.target, [0x44; 16]),
-    ];
-    install_ledger(&mut tw, rows);
-    let seen = run(&mut tw, fx.neighbour, "+contacts");
-    assert!(!seen.contains("44444444"), "{seen}");
-    assert_eq!(
-        run(
-            &mut tw,
-            fx.neighbour,
-            "+fire 44444444444444444444444444444444"
-        ),
-        absent,
-        "somebody else's hull's contact is hidden exactly as a nonexistent one is"
-    );
 }
 
 /// **D7 / F5. A staff driver is narrowed by the seat like anyone else.**

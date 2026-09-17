@@ -17,7 +17,6 @@
 #![deny(clippy::panic, clippy::unreachable, clippy::panic_in_result_fn)]
 
 pub mod boot;
-pub mod combat;
 pub mod commands;
 pub mod custody;
 pub mod data;

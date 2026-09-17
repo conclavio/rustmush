@@ -223,7 +223,7 @@ pub(crate) fn viewable_holders_of(w: &World, actor: ObjId) -> Vec<PrincipalId> {
     // unit the NPC is billeted on, which is the "not a control channel but
     // reachable through a station" act T11 names. Cut 10's own refutation of
     // K12 ("a proxy driver today perceives nothing of the unit") is what this
-    // closes; without it `+fire <contact>` has no contact to name.
+    // closes; without it a driver's `+contacts` renders nothing of the hull.
     if let Some(drive) = mush_sim::proxy_drive_of(w, actor) {
         let mut holders = vec![
             PrincipalId::Object { id: drive.npc },

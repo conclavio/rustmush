@@ -1624,12 +1624,9 @@ pub(crate) fn focused_station(ctx: &Ctx<'_>, actor: ObjId) -> Option<(ObjId, Sta
     focused_station_of(ctx.w, actor)
 }
 
-/// The same predicate, over a bare `&World`.
-///
-/// **E7 cut 8 independent verify fold:** `TacticalIntentProvider::project_offer`
-/// has an `&Engine` and no `Ctx`, and `DomainTickScheduleAdapter::plan` needs
-/// the same answer to run A7's focus companion beside the grant witness. There
-/// is still exactly ONE focus predicate; `focused_station` delegates to it.
+/// The same predicate, over a bare `&World`, for a caller that holds an
+/// `&Engine` or a `&World` and no `Ctx`. There is still exactly ONE focus
+/// predicate; `focused_station` delegates to it.
 #[must_use]
 pub(crate) fn focused_station_of(
     world: &mush_core::World,
@@ -3464,12 +3461,6 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::station::cmd_station),
     )?;
-    // E7c8 B6: the eight tactical verbs join the SAME authoritative group —
-    // every one of them stages `tactical_intent` through cut 2's seam, which is
-    // the ceiling class `@station` and `@prop` already set. K8.5's rule is
-    // "classify before the first `reg.command` of the group", and this is inside
-    // the group `@station` opened.
-    crate::combat::register(reg)?;
     reg.classify_commands(CommandCompatibility::LegacyPostImage);
     Ok(())
 }

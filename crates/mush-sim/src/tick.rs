@@ -1,17 +1,27 @@
 //! # The minimal deterministic pulse driver — E7 cut 8 (10b §3.8)
 //!
 //! One promoted domain, one `ClockRef::DomainTick` scalar, one frozen
-//! `ActionWindowRecord` of accepted intents per tick, and **one deterministic
-//! domain-tick commit per domain per tick** with recorded RNG.
+//! `ActionWindowRecord` per tick, and **one deterministic domain-tick commit
+//! per domain per tick** with recorded RNG.
+//!
+//! ## The retired combat lane (16b cut T, D-16-20)
+//!
+//! The `tactical_intent` submit action, its document, its provider and the
+//! placeholder resolution that consumed staged intents were **retired with cut
+//! T**: combat is the arena's (`crates/tacsim/src/arena/`), which is the single
+//! writer for its own facts while a match runs. What is left here is the
+//! world-side pulse the non-combat domains use — journeys, placement, the
+//! windows and the passive driver — so nothing submits into the tick window
+//! today and the commit records an empty resolution.
 //!
 //! ## What this module builds, and what it only drives
 //!
 //! Cut 8 **defines**: [`DomainClock::Pulse`](crate::data::DomainClock::Pulse)
 //! (in `data.rs`), the production [`SimDomainClockProvider`], the
-//! [`StandingOrder`] family, the [`DomainTickCommit`] family, the
-//! `tactical_intent` submit action, the `domain_tick` resolution action, the
-//! `domaintick` schedule source, and the boundary facts that leave the bundle
-//! through one `mush-tactics`-owned durable outbox adapter.
+//! [`StandingOrder`] family, the [`DomainTickCommit`] family, the `domain_tick`
+//! resolution action, the `domaintick` schedule source, and the boundary facts
+//! that leave the bundle through one `mush-tactics`-owned durable outbox
+//! adapter.
 //!
 //! Cut 8 **drives, and never re-implements**: K's `ClockProviderRegistry`,
 //! `Registrar::domain_clock_provider`, `ClockRef::DomainTick`,
@@ -55,17 +65,16 @@ use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionPresentation, ActionProvider,
     ActionStateError, ActionTxn, ActionWindow, ActionWindowDraft, ActionWindowGuardValidator,
     ActionWindowId, ActionWindowRecord, ActionWindowStateCodec, AuthorityGuardKind, CanonicalHash,
-    CanonicalId, ClockProviderContext, ClockProviderFailure, ClockRef, ClockStamp, ContactId,
+    CanonicalId, ClockProviderContext, ClockProviderFailure, ClockRef, ClockStamp,
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DurableOutboxIntent,
     DurableSchedule, DurableScheduleDraft, DurableScheduleStateCodec, Engine, LegalActionQuery,
     ModError, ObjId, OwnerId, PerceivedRef, ProjectedParameter, ProjectedParameterKind,
     ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid,
     ResolvedActionInvocation, RevisionSet, RulesValue, ScheduleActionAdapter, ScheduleActionDraft,
     ScheduleAdvance, ScheduleCatchUpOrder, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
-    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode,
-    WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy, World,
-    action_window_state_family_descriptor, canonical_json_bytes_with_limit,
-    durable_schedule_state_family_descriptor,
+    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowMode,
+    WindowRestartPolicy, WindowTimeoutPolicy, action_window_state_family_descriptor,
+    canonical_json_bytes_with_limit, durable_schedule_state_family_descriptor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -81,8 +90,6 @@ use crate::data::{DomainClock, DomainId, DomainRecord, DomainStatus, SpatialStat
 pub const SCHEDULE_SOURCE: &str = "domaintick";
 /// The resolution action fired by the schedule source.
 pub const TICK_ACTION_ID: &str = "domain_tick";
-/// The submit action every tactical intent enters through.
-pub const INTENT_ACTION_ID: &str = "tactical_intent";
 /// The action that arms or disarms one domain's durable pulse cursor.
 pub const ARM_ACTION_ID: &str = "domain_pulse_arm";
 /// The arm action's outcome definition.
@@ -96,8 +103,6 @@ pub const PULSE_TICK_SECS: u64 = 1;
 pub const MAX_DOMAINS_PER_PULSE_FIRE: usize = 32;
 /// The tick's outcome definition.
 pub const TICK_OUTCOME_ID: &str = "domain_ticked";
-/// The submit action's outcome definition.
-pub const INTENT_OUTCOME_ID: &str = "tactical_intent_accepted";
 
 /// The per-domain intent window family (K's `ActionWindowRecord`).
 pub const WINDOW_FAMILY: &str = "tick_windows";
@@ -634,151 +639,6 @@ impl IntentKind {
         }
     }
 }
-
-/// Untrusted parameters shared by command and structured ingress. The provider
-/// compares station coordinates with its fixed offer seat; the kernel issues
-/// selected contact witnesses, and the tick rechecks both before resolution.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TacticalIntentDoc {
-    /// The domain the unit is in.
-    pub domain: u64,
-    /// The tick the intent is submitted into.
-    pub tick: i64,
-    /// The commanded unit.
-    pub unit: ObjId,
-    /// The station the actor is focused on.
-    pub station: String,
-    /// The unit's control-lease/grant epoch, pinned at submit.
-    pub epoch: u64,
-    /// The channel the station grants. It **must** be
-    /// [`IntentKind::required_channel`] for `kind`, and the pinned seat must
-    /// carry it (fold A6).
-    pub channel: String,
-    /// The seat's own `ChannelGrant::priority` — the arbitration K5a publishes
-    /// and which nothing consulted before this fold (A8). A higher priority
-    /// settles LAST on a shared `(unit, channel)` order key and therefore wins,
-    /// instead of the winner being whichever crewman has the larger dbref.
-    #[serde(default)]
-    pub priority: u16,
-    /// What is intended.
-    pub kind: IntentKind,
-    /// The continuous value, for a continuous kind.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<OrderValue>,
-    /// The opaque contact a discrete kind targets.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contact: Option<ContactId>,
-    /// The observed contact generation. Required for targeted intents; a loss
-    /// and reacquisition may never authorize an intent from the old picture.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contact_generation: Option<u64>,
-    /// The bay or section a discrete kind names.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slot: Option<String>,
-}
-
-impl TacticalIntentDoc {
-    /// Structural coherence: a continuous kind carries a matching value, a
-    /// discrete one does not.
-    ///
-    /// # Errors
-    ///
-    /// [`TickRecordError::ChannelValueMismatch`] when the two disagree, or
-    /// [`TickRecordError::TooLarge`] when a free-text field is unbounded (fold
-    /// B10: `slot`, `station` and `channel` are canonical ids on the write side
-    /// and the whole invocation is retained inside the window post-image, so an
-    /// unbounded one is a stored record that could never have been written).
-    pub fn validate(&self) -> Result<(), TickRecordError> {
-        let targeted = matches!(
-            self.kind,
-            IntentKind::Fire | IntentKind::Launch | IntentKind::Dock
-        );
-        if targeted != self.contact.is_some()
-            || targeted
-                != self
-                    .contact_generation
-                    .is_some_and(|generation| generation > 0)
-            || (!targeted && self.contact_generation.is_some())
-        {
-            return Err(TickRecordError::ChannelValueMismatch);
-        }
-        if self.station.is_empty()
-            || self.station.len() > MAX_STATION_TOKEN_BYTES
-            || self.channel.is_empty()
-            || self.channel.len() > MAX_STATION_TOKEN_BYTES
-            || self
-                .slot
-                .as_ref()
-                .is_some_and(|slot| slot.is_empty() || slot.len() > MAX_SLOT_TOKEN_BYTES)
-        {
-            return Err(TickRecordError::TooLarge);
-        }
-        // The channel a kind rides is the map's, never the caller's choice.
-        if self.channel != self.kind.required_channel() {
-            return Err(TickRecordError::ChannelValueMismatch);
-        }
-        match (self.kind.channel(), &self.value) {
-            (Some(channel), Some(value)) => {
-                value.validate()?;
-                if value.fits(channel) {
-                    Ok(())
-                } else {
-                    Err(TickRecordError::ChannelValueMismatch)
-                }
-            }
-            (None, None) => Ok(()),
-            _ => Err(TickRecordError::ChannelValueMismatch),
-        }
-    }
-}
-
-/// **The pinned tactical seat** (E7c8 fold D1(a), A1/A2/A3/A4/A5/A7).
-///
-/// The whole seat is a **fixed offer parameter**: `project_offer` — the one
-/// place on this lane with an `&Engine` — resolves the querying actor's focused
-/// station, its published `ChannelGrant` and its domain's live pulse, and emits
-/// them under `fixed_parameters`. `merge_parameters` refuses a client key that
-/// collides with a fixed one, so a caller cannot supply, override or forge any
-/// of it; `prepare_authoritative` then requires every corresponding field of the
-/// decoded [`TacticalIntentDoc`] to equal the seat and refuses `Unauthorized`
-/// otherwise. That makes the gate **structural** rather than compositional, in
-/// the exact shape [`PulseArmProvider`]'s `armed_by` already had.
-///
-/// It also removes `observed_at` from the public schema entirely: the stamp is
-/// derived from `(domain, generation, tick)` here, which is what closes the
-/// declared-`Text`/submitted-object mismatch that made the whole ingress inert.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SeatDoc {
-    /// The unit the focused station commands.
-    pub unit: ObjId,
-    /// The focused station.
-    pub station: String,
-    /// Every channel that station's **published grant** carries. A kind is
-    /// issuable exactly when this set contains its
-    /// [`IntentKind::required_channel`], which is what drops cut 8's
-    /// `channels.len() == 1` restriction (fold A6).
-    pub channels: Vec<String>,
-    /// The epoch of the actor's own published grant — **not** the unit-wide
-    /// `control_gen` the verb used to pin, which is what silently voided every
-    /// other station's orders after any crewmate's `+focus` (fold A5).
-    pub epoch: u64,
-    /// The grant's arbitration priority (fold A8).
-    pub priority: u16,
-    /// The domain the unit is in.
-    pub domain: u64,
-    /// The tick the seat was resolved in.
-    pub tick: i64,
-    /// The domain clock generation the seat was resolved on.
-    pub generation: u64,
-}
-
-/// The most bytes a station or channel token may carry inside an intent.
-pub const MAX_STATION_TOKEN_BYTES: usize = 64;
-/// The most bytes a bay, section or dock token may carry (`combat::slot_token`'s
-/// own bound, re-run on the wire).
-pub const MAX_SLOT_TOKEN_BYTES: usize = 32;
 
 // ----------------------------------------------------------------------
 // B4 — the commit record
@@ -1425,19 +1285,6 @@ pub(crate) fn tick_outcome_descriptor() -> Result<DefinitionDescriptor, ModError
     .as_current())
 }
 
-/// The submit outcome descriptor.
-pub(crate) fn intent_outcome_descriptor() -> Result<DefinitionDescriptor, ModError> {
-    Ok(descriptor(
-        "outcome",
-        INTENT_OUTCOME_ID,
-        json!({
-            "fields": { "tick": "i64", "replaced": "bool" },
-            "contains_truth_subject": false
-        }),
-    )?
-    .as_current())
-}
-
 /// The tick action descriptor.
 pub(crate) fn tick_action_descriptor(
     outcome: &DefinitionRef,
@@ -1450,25 +1297,6 @@ pub(crate) fn tick_action_descriptor(
             "subject": "self_actor",
             "targets": 0,
             "state_family": COMMIT_FAMILY,
-            "writes_economy": false
-        }),
-    )?
-    .with_references(vec![outcome.clone()])
-    .as_current())
-}
-
-/// The submit action descriptor.
-pub(crate) fn intent_action_descriptor(
-    outcome: &DefinitionRef,
-) -> Result<DefinitionDescriptor, ModError> {
-    Ok(descriptor(
-        "action",
-        INTENT_ACTION_ID,
-        json!({
-            "internal": false,
-            "subject": "self_actor",
-            "targets": 0,
-            "state_family": WINDOW_FAMILY,
             "writes_economy": false
         }),
     )?
@@ -1547,454 +1375,13 @@ fn state_error(_error: &ActionStateError) -> ActionError {
     )
 }
 
-/// The one refusal a viewer may not distinguish: naming a contact the actor does
-/// not hold is byte-identical to naming one that never existed (§4 rule 4).
-const NO_SUCH_CONTACT: &str = "You hold no such contact.";
-
-// ----------------------------------------------------------------------
-// B3 — the submit provider
-// ----------------------------------------------------------------------
-
-/// The one ingress every tactical intent takes.
+/// The recorded reason a world-side pulse gives an intent it cannot resolve.
 ///
-/// **It opens the window lazily and submits into it.** `checked_submit` accepts
-/// one intent per `(actor, truth_subject)` slot and a resubmission **replaces**
-/// it, which is S2A's latest-order-wins for free; a 257th distinct slot refuses
-/// on `MAX_WINDOW_CAPACITY`.
-#[derive(Clone)]
-struct TacticalIntentProvider {
-    action: DefinitionRef,
-    outcome: DefinitionRef,
-    families: TickFamilies,
-}
-
-/// S9.3: the refusal a fire intent gets when the window's line of fire is
-/// blocked. It names nothing about what blocks it.
-pub const NO_LINE: &str = "no line";
-
-/// S9.3: the subject a contact witness names, when the kernel answers the
-/// request with one and the subject is an object. Read here and kept nowhere:
-/// the tick's records carry the opaque contact, never this.
-fn contact_subject(engine: &Engine, request: &mush_core::AuthorityWitnessRequest) -> Option<ObjId> {
-    match engine.authority_witness(request) {
-        Ok(Some(witness)) => match witness.truth_subject() {
-            Some(mush_core::SubjectKey::Object { id }) => Some(*id),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// S9.3 (14a's deferral, doc 14 §5): whether the window `from` and `target`
-/// share answers a shot between them. `Fire` needs the standing line clear;
-/// `Launch` — an indirect shot — needs the line or the arc. Two units on no
-/// shared window, or a world with no geometry registered, are not gated: the
-/// atlas answers `None` and the intent stands as it did before S9.
-///
-/// # Errors
-///
-/// [`NO_LINE`], and nothing about what blocks it.
-pub fn line_of_fire_gate(
-    w: &World,
-    kind: IntentKind,
-    from: ObjId,
-    target: ObjId,
-) -> Result<(), &'static str> {
-    let Some(metric) = crate::window::metric_between(w, from, target) else {
-        return Ok(());
-    };
-    let clear = match kind {
-        IntentKind::Fire => !metric.occluded,
-        IntentKind::Launch => {
-            !metric.occluded || crate::window::arc_between(w, from, target).unwrap_or(false)
-        }
-        _ => true,
-    };
-    if clear { Ok(()) } else { Err(NO_LINE) }
-}
-
-impl TacticalIntentProvider {
-    /// Select an audience through current crew/proxy policy, then ask tactics
-    /// for its exact generation witness. No contact projection grants authority.
-    fn contact_request(
-        engine: &Engine,
-        invocation: &ActionInvocation,
-    ) -> Result<Option<mush_core::AuthorityWitnessRequest>, ActionError> {
-        let doc = Self::document(invocation)?;
-        let Some(id) = doc.contact else {
-            return Ok(None);
-        };
-        let generation = doc
-            .contact_generation
-            .ok_or_else(|| stale(NO_SUCH_CONTACT))?;
-        for principal in crate::combat::contact_holders(&engine.world, invocation.actor()) {
-            let request = mush_core::AuthorityWitnessRequest::Contact {
-                provider: OwnerId::new("tactics").expect("static owner"),
-                principal,
-                id,
-                generation,
-            };
-            if matches!(engine.authority_witness(&request), Ok(Some(_))) {
-                return Ok(Some(request));
-            }
-        }
-        Err(stale(NO_SUCH_CONTACT))
-    }
-
-    fn document(invocation: &ActionInvocation) -> Result<TacticalIntentDoc, ActionError> {
-        let raw = invocation
-            .parameters()
-            .get("intent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                err(
-                    ActionErrorCode::InvalidRequest,
-                    "a tactical intent carries one `intent` document",
-                )
-            })?;
-        let doc: TacticalIntentDoc = serde_json::from_str(raw).map_err(|_| {
-            err(
-                ActionErrorCode::InvalidRequest,
-                "that tactical intent will not decode",
-            )
-        })?;
-        doc.validate().map_err(|_| {
-            err(
-                ActionErrorCode::InvalidRequest,
-                "that tactical intent's value does not match its kind",
-            )
-        })?;
-        Ok(doc)
-    }
-
-    /// The **fixed** seat the offer pinned. Its absence is `Unauthorized`, not
-    /// a decode failure: a submission that did not come through a projected
-    /// offer for this exact actor cannot have one.
-    fn seat(invocation: &ActionInvocation) -> Result<SeatDoc, ActionError> {
-        let value = invocation
-            .parameters()
-            .get("seat")
-            .cloned()
-            .ok_or_else(|| {
-                err(
-                    ActionErrorCode::Unauthorized,
-                    "a tactical intent must come through a projected offer for a focused station",
-                )
-            })?;
-        serde_json::from_value(value).map_err(|_| {
-            err(
-                ActionErrorCode::Unauthorized,
-                "that tactical seat will not decode",
-            )
-        })
-    }
-
-    /// The stamp, **derived from the pinned seat** — never accepted from the
-    /// caller (fold D1(a)/A2/A3).
-    fn observed_at(owner: &OwnerId, seat: &SeatDoc) -> Result<ClockStamp, ActionError> {
-        let clock = pulse_clock(owner, DomainId(seat.domain), seat.generation)
-            .ok_or_else(|| integrity("that domain's pulse clock is unconstructible"))?;
-        Ok(ClockStamp {
-            clock,
-            at: seat.tick,
-        })
-    }
-
-    /// The per-`(unit, kind)` window slot (fold D2(a)/T9).
-    ///
-    /// `WindowIntentSlot` is `{actor, truth_subject}`. With the unit as the
-    /// subject, one actor's `+heading` and `+fire` in one tick were **one** slot
-    /// and the second silently `Replaced`d the first, against §3.8's explicit
-    /// promise; scoping the subject by kind makes latest-order-wins apply per
-    /// control channel, which is what S2A's continuous/discrete split needs.
-    fn slot_subject(
-        owner: &OwnerId,
-        unit: ObjId,
-        kind: IntentKind,
-    ) -> Result<SubjectKey, ActionError> {
-        Ok(SubjectKey::Scoped {
-            owner: owner.clone(),
-            class: CanonicalId::new("tactical_order")
-                .map_err(|_| integrity("the tactical slot class is invalid"))?,
-            id: mush_core::IdempotencyKeyText::parse_canonical(format!(
-                "{}.{}",
-                unit.0,
-                kind.token()
-            ))
-            .map_err(|_| integrity("that intent's slot identity is unconstructible"))?,
-        })
-    }
-}
-
-impl ActionProvider for TacticalIntentProvider {
-    fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
-        if invocation.subject() != &PerceivedRef::SelfActor || !invocation.targets().is_empty() {
-            return Err(err(
-                ActionErrorCode::InvalidRequest,
-                "a tactical intent acts on self and names its contact opaquely",
-            ));
-        }
-        Self::document(invocation).map(|_| ())
-    }
-
-    fn project_offer(
-        &self,
-        action: &DefinitionRef,
-        query: &LegalActionQuery,
-        engine: &Engine,
-    ) -> Result<Option<ProviderOfferDraft>, ActionError> {
-        let SubjectKey::Object { id: subject } = query.truth_subject() else {
-            return Ok(None);
-        };
-        if action != &self.action
-            || query.actor() != *subject
-            || query.projected_subject() != &PerceivedRef::SelfActor
-        {
-            return Ok(None);
-        }
-        // **The gate is the seat** (fold D1(a)/A1). `project_offer` is the one
-        // place that projects the seat, so it resolves the querying
-        // actor's focused station, its published grant and its domain's live
-        // pulse HERE — and returns `Ok(None)` when there is none, so the offer
-        // no longer reaches every actor in the world.
-        let Some(seat) = crate::combat::resolve_seat(&engine.world, query.actor()).ok() else {
-            return Ok(None);
-        };
-        let can_abandon = crate::focus::seat_restriction(
-            &engine.world,
-            query.actor(),
-            crate::focus::ProxyAct::Abandonment,
-        )
-        .is_ok();
-        // **One offer per action kind, never one per target** (08i answer 11):
-        // the whole tactical vocabulary is a single offer whose `intent` document
-        // names the kind. Targeted documents carry an opaque contact and
-        // generation; resolution asks the contact owner for that one witness.
-        // There is no per-station `ProjectionScopeId` or full contact snapshot.
-        let definitions = engine
-            .registry
-            .definitions()
-            .ok_or_else(|| integrity("the tactical definition registry is unavailable"))?;
-        let mut guards = engine
-            .registry
-            .server_guard_set_builder(RevisionSet::default())
-            .map_err(|_| integrity("the tactical guard registry is unavailable"))?;
-        guards
-            .add_definition(action.clone(), definitions)
-            .map_err(|_| integrity("the tactical definition guard is unavailable"))?;
-        Ok(Some(ProviderOfferDraft {
-            // `merge_parameters` refuses a client key that collides with a fixed
-            // one, so the seat is unforgeable rather than merely conventional.
-            fixed_parameters: json!({ "seat": seat, "can_abandon": can_abandon }),
-            parameters: ProjectedParameterSchema::new(vec![ProjectedParameter {
-                id: CanonicalId::new("intent")
-                    .map_err(|_| integrity("the tactical parameter id is invalid"))?,
-                required: true,
-                kind: ProjectedParameterKind::Text {
-                    maximum_bytes: mush_core::MAX_PROJECTED_ACTION_TEXT_BYTES,
-                },
-            }])
-            .map_err(|_| integrity("the tactical parameter schema is invalid"))?,
-            targets: ProjectedTargetSchema::None,
-            required_channels: Vec::new(),
-            expires: None,
-            presentation: ActionPresentation::new(
-                "tactical_intent",
-                "submit a tactical intent",
-                "join this tick's frozen intent set",
-            )
-            .map_err(|_| integrity("the tactical presentation is invalid"))?,
-            guards: guards
-                .finish()
-                .map_err(|_| integrity("the tactical offer guards are invalid"))?,
-        }))
-    }
-
-    fn resolved_authority_witnesses(
-        &self,
-        resolved: &mush_core::ResolvedActionInvocation,
-        engine: &Engine,
-    ) -> Result<Vec<mush_core::AuthorityWitnessRequest>, ActionError> {
-        let invocation = resolved.invocation();
-        Ok(Self::contact_request(engine, invocation)?
-            .into_iter()
-            .collect())
-    }
-
-    fn prepare_invocation(
-        &self,
-        _invocation: &ActionInvocation,
-        _txn: &mut ActionTxn<'_>,
-    ) -> Result<(), ActionError> {
-        Err(err(
-            ActionErrorCode::Unavailable,
-            "a tactical intent requires the authoritative action coordinator",
-        ))
-    }
-
-    fn prepare_authoritative(
-        &self,
-        invocation: &ActionInvocation,
-        txn: &mut ActionTxn<'_>,
-    ) -> Result<mush_core::AuthoritativeActionOutput, ActionError> {
-        self.submit_intent(invocation, txn, None)
-    }
-
-    fn prepare_authoritative_with_context(
-        &self,
-        invocation: &ActionInvocation,
-        txn: &mut ActionTxn<'_>,
-        context: &mut mush_core::PrepareCtx<'_>,
-    ) -> Result<mush_core::AuthoritativeActionOutput, ActionError> {
-        // **T11:** a window this ingress opens lazily pins the live root-secret
-        // version, so it appears in `Engine::resolution_key_rotation_references`
-        // and a rotation cannot prune material an unresolved tick still needs.
-        // `None` stays valid for a deployment with no resolution key ring.
-        let version = context.current_resolution_secret_version().ok();
-        self.submit_intent(invocation, txn, version)
-    }
-}
-
-impl TacticalIntentProvider {
-    /// The one submit path. **Every field the caller names is compared to the
-    /// pinned seat** (fold D1(a)) before a durable window slot is spent, which
-    /// is what makes A1/A3/A4/A5/A6/A7 unrepresentable rather than merely
-    /// unlikely.
-    fn submit_intent(
-        &self,
-        invocation: &ActionInvocation,
-        txn: &mut ActionTxn<'_>,
-        secret_version: Option<u32>,
-    ) -> Result<mush_core::AuthoritativeActionOutput, ActionError> {
-        self.validate_invocation(invocation)?;
-        let doc = Self::document(invocation)?;
-        let seat = Self::seat(invocation)?;
-        if doc.kind == IntentKind::Eject
-            && invocation
-                .parameters()
-                .get("can_abandon")
-                .and_then(Value::as_bool)
-                != Some(true)
-        {
-            return Err(err(
-                ActionErrorCode::Unauthorized,
-                "that seat does not permit abandonment",
-            ));
-        }
-        let owner = self.families.windows.owner().clone();
-        // The seat is the authority. A mismatch on identity is `Unauthorized`;
-        // a mismatch on the tick alone is `Stale`, because the pulse simply
-        // moved on between the verb and the resolution.
-        if doc.unit != seat.unit
-            || doc.station != seat.station
-            || doc.epoch != seat.epoch
-            || doc.priority != seat.priority
-            || doc.domain != seat.domain
-        {
-            return Err(err(
-                ActionErrorCode::Unauthorized,
-                "that order names a seat you do not hold",
-            ));
-        }
-        if doc.channel != doc.kind.required_channel() || !seat.channels.contains(&doc.channel) {
-            return Err(err(
-                ActionErrorCode::Unauthorized,
-                "your station does not grant the control channel that order rides",
-            ));
-        }
-        if doc.tick != seat.tick {
-            return Err(stale("that tick has already advanced; re-issue the order"));
-        }
-        let now = Self::observed_at(&owner, &seat)?;
-        let domain = DomainId(seat.domain);
-        let generation = seat.generation;
-        let window_id = tick_window_id(&owner, domain, generation, seat.tick)
-            .ok_or_else(|| integrity("that domain's window identity is unconstructible"))?;
-        let existing = txn
-            .get(&self.families.windows, &window_id)
-            .map_err(|error| state_error(&error))?
-            .cloned();
-        let record = match existing {
-            Some(record) => record,
-            None => ActionWindowRecord::open(
-                open_window(window_id, &now.clock, seat.tick, generation, secret_version)
-                    .map_err(|_| integrity("that tick's window is unconstructible"))?,
-            ),
-        };
-        let intent = WindowIntent::new(
-            window_id,
-            generation,
-            Self::slot_subject(&owner, doc.unit, doc.kind)?,
-            Vec::new(),
-            self.action.clone(),
-            invocation.clone(),
-            // **A8:** the station's own grant priority settles the tie, so a
-            // junior crewman can no longer overwrite the commander purely
-            // because their dbref is larger. A higher priority sorts LAST and
-            // therefore writes the order last.
-            WindowOrderKey::new(vec![
-                doc.kind.order_rank(),
-                doc.unit.0 as i64,
-                i64::from(doc.priority),
-            ])
-            .map_err(|_| integrity("that intent's order key is invalid"))?,
-        )
-        .map_err(|_| integrity("that intent will not join a window"))?;
-        let transition = record
-            .checked_submit(record.revision(), &now, intent)
-            .map_err(|error| match error {
-                mush_core::ActionWindowError::CapacityReached { .. } => err(
-                    ActionErrorCode::BoundsExceeded,
-                    "this tick's intent window is full; the next tick opens a fresh one",
-                ),
-                // **WS03-S3:** the same "full" answer for the byte budget and
-                // the durable operation history. The window keeps enough room
-                // to close and consume, so the tick still resolves; what the
-                // player has to do is wait for the next one.
-                mush_core::ActionWindowError::RecordBytes { .. }
-                | mush_core::ActionWindowError::InputOperationLimit
-                | mush_core::ActionWindowError::ReceiptLimit => err(
-                    ActionErrorCode::BoundsExceeded,
-                    "this tick's intent window reached its durable bound; the next tick opens a \
-                     fresh one",
-                ),
-                // **T8:** the tick now RETAINS the consumed window for one tick,
-                // so an intent that raced the driver against the pulse lands
-                // here — a refusal the player can act on — instead of being
-                // accepted into a spent window and silently lost.
-                mush_core::ActionWindowError::OutsideWindow
-                | mush_core::ActionWindowError::NotOpen { .. } => {
-                    stale("that tick has already closed; re-issue the order")
-                }
-                mush_core::ActionWindowError::IntentWindowMismatch => {
-                    stale("that domain's pulse has been re-promoted; re-issue the order")
-                }
-                _ => integrity("that intent could not be admitted"),
-            })?;
-        let replaced = matches!(
-            transition.receipt().result(),
-            mush_core::WindowMutationResult::Replaced { .. }
-        );
-        let updated = transition.into_record();
-        if txn
-            .get(&self.families.windows, &window_id)
-            .map_err(|error| state_error(&error))?
-            .is_some()
-        {
-            txn.replace(&self.families.windows, &window_id, updated)
-        } else {
-            txn.insert(&self.families.windows, &window_id, updated)
-        }
-        .map_err(|error| state_error(&error))?;
-        let outcome = RulesValue::new(
-            self.outcome.clone(),
-            json!({ "tick": seat.tick, "replaced": replaced }),
-        )
-        .map_err(|_| integrity("the tactical outcome is invalid"))?;
-        Ok(mush_core::AuthoritativeActionOutput::new(outcome)
-            .with_eligible_witnesses(vec![invocation.principal().clone()]))
-    }
-}
+/// With the combat lane retired (16b cut T, D-16-20) no submit action writes
+/// into a tick window at all, so this is unreachable in the shipped tree. It
+/// exists because the alternative — dropping an intent the window froze — is the
+/// fail-open shape the pulse was built to refuse.
+pub const NO_RESOLVER: &str = "no resolver for that intent on this lane";
 
 /// One tick's collection interval: `[tick, tick + 1)` on the domain's own clock.
 ///
@@ -2050,14 +1437,6 @@ struct TickPlan {
     tick: i64,
     observed_at: ClockStamp,
     window: ActionWindowId,
-    /// The intents whose station/channel/epoch witness was still current when
-    /// the adapter planned this fire (cut 5's rule: pinned at submit, re-checked
-    /// against `World::channel_grant_is_current` at apply). Every accepted
-    /// intent NOT in this list is **refused with a reason**, never skipped.
-    current: Vec<RequestUid>,
-    /// S9.3: the fire intents whose line of fire the window refused at plan
-    /// time — refused at commit with `no line`, never accepted.
-    no_line: Vec<RequestUid>,
     /// Commit keys that have fallen out of the retention ring, **named by a
     /// bounded scan** rather than guessed arithmetically (fold D5(a)/B3). Also
     /// carries every commit of a superseded generation.
@@ -2093,19 +1472,6 @@ impl DomainTickProvider {
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
             .ok_or_else(|| integrity("a domain tick names its window"))?;
-        let current: Vec<RequestUid> = parameters
-            .get("current")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
-            .ok_or_else(|| integrity("a domain tick names its revalidated set"))?;
-        let no_line: Vec<RequestUid> = parameters
-            .get("no_line")
-            .cloned()
-            .map_or_else(
-                || Some(Vec::new()),
-                |value| serde_json::from_value(value).ok(),
-            )
-            .ok_or_else(|| integrity("a domain tick names its refused-line set"))?;
         let reap_commits: Vec<TickCommitKey> = parameters
             .get("reap_commits")
             .cloned()
@@ -2152,8 +1518,6 @@ impl DomainTickProvider {
             tick,
             observed_at,
             window,
-            current,
-            no_line,
             reap_commits,
             reap_windows,
             reap_orders,
@@ -2240,7 +1604,7 @@ impl ActionProvider for DomainTickProvider {
         // stamps across two `ClockRef::DomainTick` generations and fails
         // `ClockMismatch`, which used to take the whole world down with it.
         let record = record.filter(|record| record.window().clock() == &plan.observed_at.clock);
-        let (accepted_docs, consumed) = match record {
+        let (unresolved, consumed) = match record {
             Some(record) => {
                 let closed = if record.phase() == mush_core::ActionWindowPhase::Open {
                     record
@@ -2257,12 +1621,10 @@ impl ActionProvider for DomainTickProvider {
                 let ordered = closed
                     .resolution_order()
                     .map_err(|_| stale("this tick's window would not order"))?;
-                let mut docs = Vec::with_capacity(ordered.len());
-                for intent in ordered {
-                    let request = intent.invocation().request();
-                    let doc = TacticalIntentProvider::document(intent.invocation()).ok();
-                    docs.push((request, intent.invocation().actor(), doc));
-                }
+                let unresolved: Vec<ObjId> = ordered
+                    .iter()
+                    .map(|intent| intent.invocation().actor())
+                    .collect();
                 let consumed = closed
                     .checked_consume(
                         closed.revision(),
@@ -2272,7 +1634,7 @@ impl ActionProvider for DomainTickProvider {
                     )
                     .map_err(|_| stale("this tick's window would not consume"))?
                     .into_record();
-                (docs, Some(consumed))
+                (unresolved, Some(consumed))
             }
             None => (Vec::new(), None),
         };
@@ -2280,11 +1642,11 @@ impl ActionProvider for DomainTickProvider {
         // ---- recorded RNG (K3.1a): one stream, never re-drawn on replay ----
         let rng_domain = CanonicalId::new("sim.domain_tick")
             .map_err(|_| integrity("the tick's rng domain is invalid"))?;
-        // **The RNG root identifies the tick's INPUTS** (fold T7): the intent
-        // values, the contact and slot each names, and `plan.current` — the
-        // revalidated witness set that decides which intents refuse. Hashing
-        // only `(request, actor, kind)` left the whole decision surface outside
-        // the root.
+        // **The RNG root identifies the tick's INPUTS** (fold T7). With the
+        // combat lane retired (16b cut T, D-16-20) the only input left is the
+        // window's own identity and whatever it froze, so the root is exactly
+        // that — never a constant, because two ticks of one domain must not
+        // share a stream.
         let inputs_hash = CanonicalHash::for_canonical_value(
             "sim.domain_tick_inputs.v1",
             1,
@@ -2292,20 +1654,7 @@ impl ActionProvider for DomainTickProvider {
                 "domain": plan.domain,
                 "tick": plan.tick,
                 "window": plan.window,
-                "current": plan.current,
-                "accepted": accepted_docs
-                    .iter()
-                    .map(|(request, actor, doc)| json!({
-                        "request": request,
-                        "actor": actor,
-                        "kind": doc.as_ref().map(|doc| doc.kind),
-                        "unit": doc.as_ref().map(|doc| doc.unit),
-                        "value": doc.as_ref().and_then(|doc| doc.value.clone()),
-                        "contact": doc.as_ref().and_then(|doc| doc.contact),
-                        "contact_generation": doc.as_ref().and_then(|doc| doc.contact_generation),
-                        "slot": doc.as_ref().and_then(|doc| doc.slot.clone()),
-                    }))
-                    .collect::<Vec<_>>(),
+                "unresolved": unresolved,
             }),
             MAX_TICK_COMMIT_BYTES,
         )
@@ -2317,7 +1666,7 @@ impl ActionProvider for DomainTickProvider {
             .as_ref()
             .and_then(|record| record.window().resolution_secret_version())
             .or_else(|| context.current_resolution_secret_version().ok());
-        let mut rng = match secret_version {
+        let rng = match secret_version {
             Some(version) => context.start_resolution_at(version, &rng_domain, inputs_hash),
             None => context.start_resolution(&rng_domain, inputs_hash),
         }
@@ -2329,148 +1678,33 @@ impl ActionProvider for DomainTickProvider {
         })?;
 
         // ---- resolution ----
-        let mut accepted = Vec::with_capacity(accepted_docs.len());
-        let mut deltas = Vec::with_capacity(accepted_docs.len());
-        let mut facts: Vec<BoundaryFact> = Vec::new();
-        let mut draws: Vec<u32> = Vec::new();
-        let mut orders: BTreeMap<StandingOrderKey, StandingOrder> = BTreeMap::new();
-        let mut facts_refused = 0_usize;
+        //
+        // **The placeholder resolution is retired** (16b cut T, T0/D-16-20).
+        // Combat is the arena's (`crates/tacsim/src/arena/`), which is the
+        // single writer for its own facts while a match runs; this pulse is the
+        // world-side one the non-combat domains share, and nothing submits into
+        // its window today. So the commit records an empty resolution — and an
+        // intent that nevertheless reaches the window is **refused with its
+        // reason**, never silently dropped, which is the one invariant the
+        // retired arm carried (10b §3.8, review addition).
+        let accepted: Vec<IntentRef> = Vec::new();
+        let facts: Vec<BoundaryFact> = Vec::new();
+        let draws: Vec<u32> = Vec::new();
+        let facts_refused = 0_usize;
         let generation = match &plan.observed_at.clock {
             ClockRef::DomainTick { generation, .. } => *generation,
             _ => return Err(integrity("a domain tick fires on a domain tick clock")),
         };
-        for (request, actor, doc) in accepted_docs {
-            let Some(doc) = doc else {
-                // An intent this build cannot classify REFUSES; it is never
-                // dropped silently (10b §3.8, review addition).
-                deltas.push(UnitDelta {
-                    unit: actor,
-                    kind: None,
-                    outcome: DeltaOutcome::Refused {
-                        reason: "unknown intent kind".to_owned(),
-                    },
-                });
-                continue;
-            };
-            // **A4:** the witness check runs BEFORE the accept, so a refused
-            // intent is recorded as a refusal and never as an accepted one —
-            // the durable commit `@domain/replay` reads no longer attributes
-            // orders against stations nobody holds.
-            // S9.3: the window refused the line of fire at plan time — the
-            // refusal names nothing about what blocks it (a refusal is not an
-            // oracle), and the intent is never accepted.
-            if plan.no_line.contains(&request) {
-                deltas.push(UnitDelta {
-                    unit: doc.unit,
-                    kind: Some(doc.kind),
-                    outcome: DeltaOutcome::Refused {
-                        reason: NO_LINE.to_owned(),
-                    },
-                });
-                continue;
-            }
-            if !plan.current.contains(&request) {
-                deltas.push(UnitDelta {
-                    unit: doc.unit,
-                    kind: Some(doc.kind),
-                    outcome: DeltaOutcome::Refused {
-                        reason: "stale tactical authority".to_owned(),
-                    },
-                });
-                continue;
-            }
-            accepted.push(IntentRef {
-                actor,
-                unit: doc.unit,
-                kind: doc.kind,
-                request,
-            });
-            match (doc.kind.channel(), doc.value.clone()) {
-                (Some(channel), Some(value)) => {
-                    let key = StandingOrderKey {
-                        unit: doc.unit,
-                        channel,
-                    };
-                    let prior = txn
-                        .get(&self.families.orders, &key)
-                        .map_err(|error| state_error(&error))?
-                        .map(StandingOrder::revision)
-                        .unwrap_or(0);
-                    let revision = prior.checked_add(1).ok_or_else(|| {
-                        err(
-                            ActionErrorCode::BoundsExceeded,
-                            "that unit has exhausted its standing-order revisions",
-                        )
-                    })?;
-                    let order = StandingOrder::new(
-                        doc.unit,
-                        channel,
-                        value.clone(),
-                        plan.observed_at.clone(),
-                        actor,
-                        revision,
-                    )
-                    .map_err(|_| stale("that standing order is unconstructible"))?;
-                    orders.insert(key, order);
-                    deltas.push(UnitDelta {
-                        unit: doc.unit,
-                        kind: Some(doc.kind),
-                        // **T7:** the post-image travels with the delta, so a
-                        // replay that writes a different value fails the hash.
-                        outcome: DeltaOutcome::OrderSet {
-                            channel,
-                            value: Some(value),
-                            revision,
-                        },
-                    });
-                }
-                _ => {
-                    let label = CanonicalId::new(doc.kind.token())
-                        .map_err(|_| integrity("that intent kind has no rng label"))?;
-                    let draw = rng
-                        .draw_u32(&label)
-                        .map_err(|_| integrity("the tick's resolution stream is exhausted"))?;
-                    draws.push(draw);
-                    let effective = draw % 2 == 0;
-                    if effective && facts.len() >= MAX_BOUNDARY_FACTS_PER_TICK {
-                        // **T12:** a fact past the budget is a REFUSAL with its
-                        // reason, never a silent truncation inside the loop —
-                        // which is also what makes `DomainTickCommit::new`'s own
-                        // `TooManyFacts` check reachable rather than dead.
-                        facts_refused = facts_refused.saturating_add(1);
-                        deltas.push(UnitDelta {
-                            unit: doc.unit,
-                            kind: Some(doc.kind),
-                            outcome: DeltaOutcome::Refused {
-                                reason: "boundary fact budget exhausted".to_owned(),
-                            },
-                        });
-                        continue;
-                    }
-                    deltas.push(UnitDelta {
-                        unit: doc.unit,
-                        kind: Some(doc.kind),
-                        outcome: DeltaOutcome::Resolved { draw, effective },
-                    });
-                    if effective {
-                        let ordinal = u16::try_from(facts.len())
-                            .map_err(|_| integrity("too many boundary facts for one tick"))?;
-                        facts.push(BoundaryFact {
-                            kind: boundary_kind(doc.kind).to_owned(),
-                            domain: plan.domain.0,
-                            generation,
-                            tick: plan.tick,
-                            unit: doc.unit,
-                            ordinal,
-                            // **D6(b):** cut 8's resolution is a placeholder with
-                            // no unit post-image behind it. The flag says so on
-                            // the wire, so cut 9 must opt in rather than settle.
-                            provisional: true,
-                        });
-                    }
-                }
-            }
-        }
+        let deltas: Vec<UnitDelta> = unresolved
+            .into_iter()
+            .map(|actor| UnitDelta {
+                unit: actor,
+                kind: None,
+                outcome: DeltaOutcome::Refused {
+                    reason: NO_RESOLVER.to_owned(),
+                },
+            })
+            .collect();
 
         // ---- the one commit ----
         let clock = plan.observed_at.clock.clone();
@@ -2495,20 +1729,6 @@ impl ActionProvider for DomainTickProvider {
         let key = commit.key();
         let accepted_count = accepted.len();
 
-        let orders_written: std::collections::BTreeSet<StandingOrderKey> =
-            orders.keys().copied().collect();
-        for (order_key, order) in orders {
-            if txn
-                .get(&self.families.orders, &order_key)
-                .map_err(|error| state_error(&error))?
-                .is_some()
-            {
-                txn.replace(&self.families.orders, &order_key, order)
-            } else {
-                txn.insert(&self.families.orders, &order_key, order)
-            }
-            .map_err(|error| state_error(&error))?;
-        }
         if let Some(consumed) = consumed {
             // **T8/D5(a):** the spent window is RETAINED for one tick, not
             // deleted. Deleting it destroyed the kernel's own duplicate fence:
@@ -2565,9 +1785,6 @@ impl ActionProvider for DomainTickProvider {
             }
         }
         for order_key in &plan.reap_orders {
-            if orders_written.contains(order_key) {
-                continue;
-            }
             if txn
                 .get(&self.families.orders, order_key)
                 .map_err(|error| state_error(&error))?
@@ -3006,9 +2223,12 @@ pub fn pulse_arm_is_permitted(world: &mush_core::World, actor: ObjId) -> bool {
 
 /// The firing half. `plan` re-derives the candidate from stored state and
 /// **refuses a stale one rather than acting on it** (`handoff.rs`'s rule), then
-/// re-checks every accepted intent's station witness against
-/// `World::channel_grant_is_current` — the one place in the tick lane that has
-/// a `&World` at all.
+/// names the retention sets by a bounded scan of the real families — the one
+/// place in the tick lane that has an `&Engine` at all.
+///
+/// Cut 8's per-intent station re-check went with the combat lane (16b cut T,
+/// D-16-20): no submit action writes into a tick window any more, so there is no
+/// witness to re-run here.
 #[derive(Clone)]
 struct DomainTickScheduleAdapter {
     families: TickFamilies,
@@ -3062,81 +2282,6 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
             .map(|record| record.host)
             .ok_or_else(|| err(ActionErrorCode::Stale, "that domain is gone"))?;
 
-        // Re-check every accepted intent's pinned station witness. A grant that
-        // has since moved leaves the intent in the frozen set and REFUSES it in
-        // the commit, so the tick still resolves and the refusal is recorded.
-        //
-        // **A7:** the grant is a BILLET; cut 5's rule is a FOCUS. The companion
-        // check closes the submit-to-apply window that the pinned seat closes at
-        // submit, so an order whose focus was released before the tick fires is
-        // refused with its reason rather than resolved.
-        let mut still_current: Vec<RequestUid> = Vec::new();
-        let mut no_line: Vec<RequestUid> = Vec::new();
-        if let Ok(Some(record)) = engine.action_state().get(&self.families.windows, &window) {
-            for intent in record.intents() {
-                let Ok(doc) = TacticalIntentProvider::document(intent.invocation()) else {
-                    continue;
-                };
-                let Some(channel) = mush_core::ChannelId::new(&doc.channel) else {
-                    continue;
-                };
-                // **E7c11 B0 (the proxy DRIVING ingress).** The window intent's
-                // `actor` is the account's character — the human who typed the
-                // verb — and for a proxy driver that character holds neither the
-                // focus nor the grant. The witness is re-checked against the
-                // DRIVEN actor, the same resolution `combat::resolve_seat` made
-                // at submit, so the pair cannot disagree; for everybody else
-                // `driving_actor` is the identity and this is byte-unchanged.
-                let actor = crate::focus::driving_actor(&engine.world, intent.invocation().actor());
-                let focused = crate::commands::focused_station_of(&engine.world, actor)
-                    .is_some_and(|(unit, station)| {
-                        unit == doc.unit && station.as_str() == doc.station
-                    });
-                let contact = TacticalIntentProvider::contact_request(engine, intent.invocation());
-                if focused
-                    && contact.is_ok()
-                    && (doc.kind != IntentKind::Eject
-                        || crate::focus::seat_restriction(
-                            &engine.world,
-                            intent.invocation().actor(),
-                            crate::focus::ProxyAct::Abandonment,
-                        )
-                        .is_ok())
-                    && engine.world.channel_grant_is_current(
-                        actor,
-                        doc.unit,
-                        NS,
-                        &doc.station,
-                        doc.epoch,
-                        &channel,
-                    )
-                {
-                    // S9.3: a targeted fire intent is gated on the window's line
-                    // of fire here, where the contact guard's witness holds the
-                    // target's subject and nothing leaves this scope but a verdict.
-                    let blocked = matches!(doc.kind, IntentKind::Fire | IntentKind::Launch)
-                        && contact
-                            .as_ref()
-                            .ok()
-                            .and_then(|request| request.as_ref())
-                            .and_then(|request| contact_subject(engine, request))
-                            .is_some_and(|target| {
-                                line_of_fire_gate(&engine.world, doc.kind, doc.unit, target)
-                                    .is_err()
-                            });
-                    if blocked {
-                        no_line.push(intent.invocation().request());
-                    } else {
-                        still_current.push(intent.invocation().request());
-                    }
-                }
-            }
-        }
-        still_current.sort();
-        still_current.dedup();
-        no_line.sort();
-        no_line.dedup();
-
         // **The bounded reap sets** (fold D5(a)/B3/A9). The tick provider has an
         // `ActionTxn` and no scan, so the one place on this lane that CAN read
         // the families names what falls out of the ring — from the real records,
@@ -3166,8 +2311,6 @@ impl ScheduleActionAdapter for DomainTickScheduleAdapter {
                 "tick": tick,
                 "observed_at": advance.observed_at(),
                 "window": window,
-                "current": still_current,
-                "no_line": no_line,
                 "reap_commits": reap_commits,
                 "reap_windows": reap_windows,
                 "reap_orders": reap_orders,
@@ -3367,19 +2510,6 @@ pub fn arm_action_ref(reg: &mush_core::Registry) -> Option<DefinitionRef> {
             owner: OwnerId::new(NS).ok()?,
             kind: DefinitionKind::new("action").ok()?,
             id: DefinitionId::new(ARM_ACTION_ID).ok()?,
-        })
-        .cloned()
-}
-
-/// The `tactical_intent` action, by the same string lookup — this is how
-/// `mush-tactics`' combat verbs reach the window without a `mush-sim` edge.
-#[must_use]
-pub fn intent_action_ref(reg: &mush_core::Registry) -> Option<DefinitionRef> {
-    reg.definitions()?
-        .current(&mush_core::DefinitionKey {
-            owner: OwnerId::new(NS).ok()?,
-            kind: DefinitionKind::new("action").ok()?,
-            id: DefinitionId::new(INTENT_ACTION_ID).ok()?,
         })
         .cloned()
 }
@@ -4159,7 +3289,7 @@ pub fn measure_tick_bundle(units: usize) -> Option<TickBundleMeasurement> {
 // registration
 // ----------------------------------------------------------------------
 
-/// The four definition descriptors the pulse contributes.
+/// The definition descriptors the pulse contributes.
 ///
 /// `mush-sim` may register **one** `definition_validator` per kind, and
 /// `handoff.rs` already owns the `"action"`/`"outcome"` ones — so the pulse
@@ -4167,37 +3297,29 @@ pub fn measure_tick_bundle(units: usize) -> Option<TickBundleMeasurement> {
 /// exactly as cut 7's sensor ingress does inside `mush-tactics`.
 pub(crate) struct TickDescriptors {
     pub(crate) tick_outcome: DefinitionDescriptor,
-    pub(crate) intent_outcome: DefinitionDescriptor,
     pub(crate) arm_outcome: DefinitionDescriptor,
     pub(crate) tick_action: DefinitionDescriptor,
-    pub(crate) intent_action: DefinitionDescriptor,
     pub(crate) arm_action: DefinitionDescriptor,
 }
 
 /// The registered form of [`TickDescriptors`].
 pub(crate) struct TickDefinitions {
     pub(crate) tick_outcome: DefinitionRef,
-    pub(crate) intent_outcome: DefinitionRef,
     pub(crate) arm_outcome: DefinitionRef,
     pub(crate) tick_action: DefinitionRef,
-    pub(crate) intent_action: DefinitionRef,
     pub(crate) arm_action: DefinitionRef,
 }
 
 /// Build the pulse's descriptors, in registration order.
 pub(crate) fn definition_descriptors() -> Result<TickDescriptors, ModError> {
     let tick_outcome = tick_outcome_descriptor()?;
-    let intent_outcome = intent_outcome_descriptor()?;
     let arm_outcome = arm_outcome_descriptor()?;
     let tick_action = tick_action_descriptor(&definition_ref_of(&tick_outcome)?)?;
-    let intent_action = intent_action_descriptor(&definition_ref_of(&intent_outcome)?)?;
     let arm_action = arm_action_descriptor(&definition_ref_of(&arm_outcome)?)?;
     Ok(TickDescriptors {
         tick_outcome,
-        intent_outcome,
         arm_outcome,
         tick_action,
-        intent_action,
         arm_action,
     })
 }
@@ -4216,6 +3338,9 @@ fn definition_ref_of(descriptor: &DefinitionDescriptor) -> Result<DefinitionRef,
 
 /// Register the pulse: five typed families, the window guard validator, the one
 /// domain clock provider, two action providers and **one** schedule source.
+///
+/// The `tactical_intent` submit provider left with the combat lane (16b cut T,
+/// D-16-20); what remains is the arm and the tick.
 ///
 /// Called from `SimulationModule::register`, under **this** owner, because the
 /// kernel owner fence requires the source's schedule family and fired action to
@@ -4346,14 +3471,6 @@ pub(crate) fn register(
     });
 
     reg.action_provider(
-        definitions.intent_action.clone(),
-        TacticalIntentProvider {
-            action: definitions.intent_action.clone(),
-            outcome: definitions.intent_outcome,
-            families: families.clone(),
-        },
-    )?;
-    reg.action_provider(
         definitions.arm_action.clone(),
         PulseArmProvider {
             action: definitions.arm_action,
@@ -4410,13 +3527,6 @@ pub fn pulse_cursor(
         max_catch_up: 1,
     })
     .map_err(|error| error.to_string())
-}
-
-/// The byte-identical refusal a viewer receives for a contact they do not hold
-/// and for one that never existed (§4 rule 4).
-#[must_use]
-pub const fn no_such_contact() -> &'static str {
-    NO_SUCH_CONTACT
 }
 
 /// **The promotion capacity gate (hazard axis 2).** A domain of `units` units

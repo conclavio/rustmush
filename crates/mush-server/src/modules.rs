@@ -1652,10 +1652,12 @@ mod tests {
             // A ROW in this loop, not a new stanza: `PINNED_BASELINE` is
             // untouched.
             //
-            // E7 cut 8 (B6): the eight tactical verbs join `@station`'s
-            // authoritative group — every one stages `tactical_intent` through
-            // cut 2's seam, which is the ceiling criterion cut 5 set and cut 7
-            // reused for `@prop`.
+            // 16b cut T (T0, D-16-20): the eight tactical verbs
+            // (`+fire +launch +heading +thrust +posture +dc +dock +eject`) and
+            // the `tactical_intent` action they staged are RETIRED — combat is
+            // the arena's. Their rows leave this loop with their stanzas;
+            // `PINNED_BASELINE` does not move, because all eight were
+            // `authoritative` and never baseline.
             //
             // E7 cut 8 independent verify fold (B1): `@domain` publishes
             // `Authoritative`. Its cut-6 note here — "the durable cursor is
@@ -1672,14 +1674,6 @@ mod tests {
                 ("@station", mush_core::CommandCompatibility::Authoritative),
                 ("@journey", mush_core::CommandCompatibility::LegacyPostImage),
                 ("@domain", mush_core::CommandCompatibility::Authoritative),
-                ("+fire", mush_core::CommandCompatibility::Authoritative),
-                ("+launch", mush_core::CommandCompatibility::Authoritative),
-                ("+heading", mush_core::CommandCompatibility::Authoritative),
-                ("+thrust", mush_core::CommandCompatibility::Authoritative),
-                ("+posture", mush_core::CommandCompatibility::Authoritative),
-                ("+dc", mush_core::CommandCompatibility::Authoritative),
-                ("+dock", mush_core::CommandCompatibility::Authoritative),
-                ("+eject", mush_core::CommandCompatibility::Authoritative),
             ] {
                 assert!(
                     registrations.iter().any(|(spec, owner, published)| {

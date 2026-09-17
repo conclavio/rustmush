@@ -992,10 +992,12 @@ mod tests {
     #[test]
     fn a_mutating_run_or_a_reserved_letter_fails_the_probe() {
         let mut screens = builtin_screens();
+        // Any mutating verb will do; this one is real, so the fixture cannot
+        // outlive the verb it names the way `+fire a` did (16b cut T, D-16-20).
         screens[0].keys.push(KeyBinding {
             key: 'f',
-            label: "fire",
-            action: KeyAction::Run("+fire a"),
+            label: "focus",
+            action: KeyAction::Run("+focus #1/pilot"),
         });
         let err = validate_screens(&screens).unwrap_err();
         assert!(err.contains("not a read-only verb"), "{err}");

@@ -224,9 +224,9 @@ impl FocusState {
     /// focus already installed.
     ///
     /// **E7c11 fold F4 (B5): fenced.** Cut 11 made `ActiveFocus { proxy: true }`
-    /// an authority root — `combat::resolve_seat`, `combat::held_contact`, the
-    /// tick's apply-time witness, `viewable_holders`, `may_address` and
-    /// `cmd_order` all read it — while `World::module_state_mut::<T>()` is
+    /// an authority root — the station lane's seat resolution, `viewable_holders`,
+    /// `may_address` and `cmd_order` all read it — while
+    /// `World::module_state_mut::<T>()` is
     /// generic and not owner-scoped, so an unconditional `pub fn` let any
     /// composed crate install a proxy focus that drove **wider than a real
     /// seat**: the station's full channel set, no offer, no acceptance, no
@@ -403,18 +403,20 @@ macro_rules! proxy_acts {
         /// > unrelated assets, departure from the authorized operation, or
         /// > assumption of another station." — doc 10 §19 T11
         ///
-        /// **Five** of the nine are refused by *inertness*: they are economy,
+        /// **Six** of the nine are refused by *inertness*: they are economy,
         /// org and staff verbs keyed on `ctx.actor`, which the ingress
         /// deliberately never rewrites, so a driver's own authority over them is
-        /// byte-identical before and after activation. The remaining **four**
+        /// byte-identical before and after activation. The remaining **three**
         /// ride the station lane the ingress opens, and [`seat_restriction`]
         /// refuses them explicitly.
         ///
-        /// The split was six/three until the independent verify fold: `+eject`
-        /// is `IntentKind::Eject`, whose required channel is `movement` and
-        /// whose boundary fact is `tactics.unit_abandoned`, so it rides
-        /// `combat::resolve_seat` — the ingress's own site 1 — and abandonment
-        /// does **not** refuse by inertness.
+        /// The split was six/three, then four/five after the cut 11 independent
+        /// verify fold gave abandonment a station-lane face in `+eject`. **16b
+        /// cut T retired `+eject` with the rest of the combat lane (D-16-20)**,
+        /// so abandonment has only its economy face again and refuses by
+        /// inertness; a station-lane abandonment verb that comes back must flip
+        /// the flag below and add its `seat_restriction` site in the same
+        /// change, which `vf_b8`'s census enforces.
         #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
         pub enum ProxyAct {
             $( $(#[$meta])* $variant, )+
@@ -437,7 +439,7 @@ macro_rules! proxy_acts {
             }
 
             /// Whether this act is refused by [`seat_restriction`] itself rather
-            /// than by the driver's own (unchanged) authority. The four are
+            /// than by the driver's own (unchanged) authority. The three are
             /// exactly the acts that ride the station lane B0's ingress opens.
             #[must_use]
             pub const fn is_guarded(self) -> bool {
@@ -450,9 +452,10 @@ macro_rules! proxy_acts {
 proxy_acts! {
     /// Moving title in an asset (E4b2 `@claim/transfer`, a market sale).
     AssetTransfer => "asset transfer", false;
-    /// Abandoning an asset (`AssetLifecycle::Abandoned`) — and, on the station
-    /// lane, `+eject`, whose boundary fact is `tactics.unit_abandoned`.
-    Abandonment => "abandonment", true;
+    /// Abandoning an asset (`AssetLifecycle::Abandoned`). Its station-lane face
+    /// `+eject` was retired with the combat lane (16b cut T, D-16-20), so this
+    /// is inert again: `@asset/abandon` is keyed on `ctx.actor`.
+    Abandonment => "abandonment", false;
     /// Destroying the unit or its cargo deliberately.
     Scuttling => "scuttling", false;
     /// Re-declaring a station's fallback controller (`@station/fallback`).
