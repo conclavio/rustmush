@@ -63,6 +63,10 @@ rand.workspace = true
 rand_chacha.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# 16b cut A.1: the arena definition's identity and the match ledger's digest
+# (doc 16 §4 "The result record": the ledger's digest and log id go on the
+# result, not the ledger).
+sha2.workspace = true
 smol_str.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

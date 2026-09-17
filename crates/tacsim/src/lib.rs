@@ -73,6 +73,15 @@
     clippy::panic_in_result_fn
 )]
 
+/// 16b cut A: **the combat arena's core library** (doc 16 §3.1–§3.4, §4, §8).
+///
+/// A library with no input and no output: `arena::Arena` holds a match's state
+/// and the modules beside it hold its clock, its inputs, its randomness, its
+/// state hash and its streaming ledger. Cut T's arena task is the thin wrapper
+/// that owns one; a contract gate
+/// (`crates/mush-contract-tests/tests/arena_library.rs`) asserts that nothing
+/// under `arena/` can reach persistence, a runtime, an output sink or the world.
+pub mod arena;
 pub mod commands;
 pub mod composition;
 pub mod config;
