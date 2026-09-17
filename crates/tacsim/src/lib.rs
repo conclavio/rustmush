@@ -84,6 +84,24 @@
 /// (`crates/mush-contract-tests/tests/arena_library.rs`) asserts that nothing
 /// under `arena/` can reach persistence, a runtime, an output sink or the world.
 pub mod arena;
+/// 16b cut T.2: **the world's half of the arena seam** (doc 16 §3.1 "The seam is
+/// seven messages", §3.7, §4, §5).
+///
+/// The registry of running matches, the three routing functions the cockpit verbs
+/// call ([`arena_bridge::forward_intent`], [`arena_bridge::send_control`],
+/// [`arena_bridge::send_stop`]), and the handling of everything the arena sends
+/// back: frames as keyframes on the `tacsim.frame` feed, chunks appended to
+/// `log:match.<id>` on the world's own writer lane, the lag notice and the end.
+pub mod arena_bridge;
+/// 16b cut T.2: **one running match, as a task** (doc 16 §3.1 "The arena core is
+/// a library", "Failure").
+///
+/// The thin wrapper around an [`arena::Arena`]: a bounded inbox, a bounded
+/// egress, a timer driven by `next_due_ms`, a watchdog at `tempo.stall_ms`, the
+/// unwind boundary and a stop signal. It is the one place in the crate where the
+/// arena meets a runtime, and it sits *beside* [`arena`] rather than inside it so
+/// that directory's no-I/O gate can stay strict.
+pub mod arena_task;
 pub mod commands;
 pub mod composition;
 pub mod config;
@@ -335,6 +353,13 @@ impl GameModule for TacsimRuleset {
         slot.install_packs(packs);
         reg.state(slot);
         commands::register(reg)?;
+        // 16b cut T.2: the arena's world side — the `tacsim.frame` feed, the
+        // egress re-entry handler, the two seat facts the kernel publishes, the
+        // `ArenaRegistry` slot and `@arena`. Registered unconditionally, for the
+        // same reason the pack verbs are (E5c deviation 1): a disabled layer
+        // refuses out loud rather than hiding a verb, and the registry's presence
+        // is what lets the host find the shared task table at all.
+        arena_bridge::register(reg, arena_bridge::egress_capacity(&self.cfg.arena))?;
         Ok(())
     }
 

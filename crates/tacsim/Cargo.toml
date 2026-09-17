@@ -69,6 +69,13 @@ serde_json.workspace = true
 sha2.workspace = true
 smol_str.workspace = true
 thiserror.workspace = true
+# 16b cut T.2: the arena TASK (`arena_task.rs`) — one tokio task per running
+# match, its bounded inbox and egress, its timer and its stop signal. The arena
+# LIBRARY (`src/arena/`) never touches it: the gate in
+# `crates/mush-contract-tests/tests/arena_library.rs` refuses the word `tokio` in
+# every file under that directory, which is the whole reason the task lives one
+# level up.
+tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

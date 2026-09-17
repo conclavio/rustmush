@@ -255,6 +255,11 @@ category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition) S6 (14-spatial-implementation-plan 3.7): /set gains the interfaces field (the providers an NPC fronts) and /audit reads the interface-ability audit ring (npc, asker, ability); both Builder+, neither a new command."
 
 [[handler]]
+name = "@arena"
+category = "read-only"
+note = "16b cut T.2 (doc 16 section 3.1, section 5; 16b section 7 T1/T4): @arena/status, staff (SIM_ADMIN or Royalty) -- every match this server is running, with its tempo, its arena time, how often it has lagged, how many ledger chunks have been appended and lost, and how many cockpit frames have gone out. It renders the tacsim module's own ArenaRegistry state slot and the shared table of live tasks, both RAM-only: no document, no post, no submission, no message to any arena. Cut T.3 adds the lifecycle switches (start, intent, abort), which do write, and re-classifies this stanza in the same commit as their note. The match ledger itself is not written by this verb: the world task appends each arena chunk to log:match.<id> in tacsim's own namespace from the arena-egress re-entry, on the ordinary module-op lane mush-scenes and mush-canon already append their ledgers on."
+
+[[handler]]
 name = "@asset"
 category = "baseline"
 note = "baseline pinned at b0e3b52 (module, every composition)"

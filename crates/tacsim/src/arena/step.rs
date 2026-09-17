@@ -44,6 +44,7 @@
 //! substep instead of only at the end.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use mush_core::ObjId;
 use mush_sim::data::Pose;
@@ -130,7 +131,88 @@ pub struct StepOutput {
     pub substeps: u32,
 }
 
+// ---------------------------------------------------------------------------
+// The two hidden fault-injection hooks (16b cut T.2)
+// ---------------------------------------------------------------------------
+//
+// Cut T's task owes two properties the library cannot be asked to demonstrate on
+// its own: *a panic inside `step` ends the match `Void` and nothing the faulted
+// pulse produced leaves*, and *a pulse past `tempo.stall_ms` is voided by the
+// watchdog* (doc 16 §3.1 "Failure"). Both need a `step` that misbehaves on
+// demand, and neither can be produced by any legal input — which is exactly why
+// they are hooks and not test fixtures.
+//
+// They are armed **by seed**, not by a flag on the arena: [`Arena`] is
+// `state.rs`' and cut T is not allowed to add a field to it, and a plain global
+// flag would be armed by one async test and consumed by another running
+// beside it in the same binary. The arming method takes `&mut self` and reads
+// `self.seed`, so a test can only ever arm the arena it is holding, and two
+// tests with two seeds cannot collide. A seed of `0` disarms (and no test uses
+// it).
+//
+// `std::panic::resume_unwind` rather than `panic!`: this crate's root denies
+// `clippy::panic` (which also refuses `panic_any`) and
+// `panic_budget/tacsim.txt` counts the `panic!` spelling, and both exist to stop
+// *accidental* panic surface. A `#[doc(hidden)]` hook whose whole job is to
+// unwind, reachable only from the test that armed it by seed, is not that — and
+// silencing the lint would move the pinned restriction-lint census instead,
+// which is strictly worse than one named call in one place. `resume_unwind`
+// raises exactly the unwind `catch_unwind` catches, with exactly the payload
+// given, and skips the panic hook — so a test that expects the fault does not
+// print a backtrace for it either.
+
+/// The seed of the arena whose next [`Arena::step`] must panic; `0` for none.
+static PANIC_SEED: AtomicU64 = AtomicU64::new(0);
+/// The seed of the arena whose next [`Arena::step`] must stall; `0` for none.
+static STALL_SEED: AtomicU64 = AtomicU64::new(0);
+/// How long that stall lasts, milliseconds.
+static STALL_MS: AtomicU64 = AtomicU64::new(0);
+
 impl Arena {
+    /// **Test hook:** make the next [`Arena::step`] of *this* arena panic,
+    /// once.
+    ///
+    /// Nothing in the shipped lane calls it. See this module's
+    /// fault-injection note for why it is armed by seed.
+    #[doc(hidden)]
+    pub fn panic_on_next_step_for_tests(&mut self) {
+        PANIC_SEED.store(self.seed, Ordering::SeqCst);
+    }
+
+    /// **Test hook:** make the next [`Arena::step`] of *this* arena block for
+    /// `how_long` before doing its work, once — a pulse the task's watchdog
+    /// must void.
+    ///
+    /// It blocks the calling thread, because that is what a stalled pulse does:
+    /// the arena has no preemption, and the watchdog reads the clock *after*
+    /// `step` returns.
+    #[doc(hidden)]
+    pub fn stall_next_step_for_tests(&mut self, how_long: std::time::Duration) {
+        STALL_MS.store(
+            u64::try_from(how_long.as_millis()).unwrap_or(u64::MAX),
+            Ordering::SeqCst,
+        );
+        STALL_SEED.store(self.seed, Ordering::SeqCst);
+    }
+
+    /// Consume whichever fault this arena's seed is armed with. A no-op — one
+    /// relaxed load of each of two atomics — on every arena nobody armed, which
+    /// is every arena in the shipped lane.
+    fn injected_fault(&self) {
+        if self.seed != 0 && PANIC_SEED.load(Ordering::SeqCst) == self.seed {
+            PANIC_SEED.store(0, Ordering::SeqCst);
+            std::panic::resume_unwind(Box::new(
+                "arena step panicked (panic_on_next_step_for_tests)",
+            ));
+        }
+        if self.seed != 0 && STALL_SEED.load(Ordering::SeqCst) == self.seed {
+            STALL_SEED.store(0, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(
+                STALL_MS.swap(0, Ordering::SeqCst),
+            ));
+        }
+    }
+
     /// **One pulse** — doc 16 §3.1's five phases, in order.
     ///
     /// `wall_now_ms` is the caller's monotonic wall reading; arena time advances by
@@ -148,6 +230,7 @@ impl Arena {
         controls: &[Control],
         intents: &[Intent],
     ) -> StepOutput {
+        self.injected_fault();
         if let Some(ended) = self.ended {
             return StepOutput {
                 ledger_chunks: Vec::new(),

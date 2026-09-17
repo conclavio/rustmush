@@ -1,0 +1,1334 @@
+//! **The world's half of the arena seam** (16b cut T.2, T3 in part and T4;
+//! doc 16 §3.1 "The seam is seven messages", §3.7, §4 "Ledger events", §5).
+//!
+//! The arena is an authority and the world task is an authority, and they share
+//! no state and no lock (D-16-1). What they share is four messages each way, and
+//! this module is everything on the world's side of them: the registry of running
+//! matches, the routing functions the cockpit verbs call, and the handling of the
+//! four messages that come back.
+//!
+//! # Where each piece lives, and why it is split in two
+//!
+//! [`ArenaTasks`] is a **shared handle** — an `Arc` over the table of live tasks,
+//! the egress channel and two small queues. It is shared because the two halves
+//! that need it do not run in the same place: matches are started and driven from
+//! the **world task** (inside a [`Ctx`], where every authority check lives), and
+//! the tasks are joined by the **process's shutdown tail**, which is outside the
+//! world loop entirely (`PersistHandles`). A table that only the world task could
+//! see would leave the shutdown tail nothing to join.
+//!
+//! [`ArenaRegistry`] is the module state slot, and everything on it is
+//! world-task-only: the ledger the chunks are appended to, the epoch mirror
+//! intents are stamped from, the world's intent sequence, the panel feed the
+//! frames go out on, and one mirror row per match for `@arena/status`. Nothing
+//! here is behind a lock, because nothing else ever reads it.
+//!
+//! # How the egress re-enters the world
+//!
+//! The arena's egress is one bounded `mpsc` the world loop drains without
+//! blocking. Handling a message needs a [`Ctx`] — a keyframe is queued on the
+//! outbox, a chunk is persisted through the module's own namespace — and the one
+//! mechanism in the tree for "run module code with a `Ctx` from the loop" is the
+//! typed async re-entry [`Effect::ModuleAsync`] /
+//! `WorldCommand::ModuleAsyncDone` already uses. So the host does exactly that
+//! and no second mechanism: it drains the receiver into [`ArenaTasks`]'s staging
+//! queue and steps the world once with a
+//! `ModuleAsyncDone { module: "tacsim", .. }`, whose registered
+//! [`AsyncCompletion`] is [`ArenaEgress`] below. The messages themselves never go
+//! through a serialization: they are moved, not encoded, which is why the staging
+//! queue exists at all. Both ends of it run on the world task, so the lock is
+//! uncontended.
+//!
+//! # The ledger, and what "ack-gated" means here
+//!
+//! Each arena chunk becomes **one** [`mush_core::Ledger`] entry in
+//! `log:match.<id>`, carrying the chunk's exact bytes as text. Exact, because
+//! doc 16 §4 puts the *arena's* ledger digest on the result record: a reader that
+//! concatenates the `lines` fields in chunk order re-derives it byte for byte,
+//! which it could not do if the world re-encoded the events.
+//!
+//! The acknowledgement is the E0 durable-commit high-water and nothing new. The
+//! handler records `(match, upto_chunk_seq)` unstamped; the host stamps it with
+//! the serial the next batch will take, and sends [`ArenaMsg::LedgerAck`] once
+//! the writer has published a high-water at or past it. A batch that is dropped
+//! or refused therefore never acknowledges, the arena's egress backs up, and the
+//! match is voided past `ledger.max_unflushed_chunks` — which is doc 16 §3.1's
+//! rule reached by the only path that could reach it honestly.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use mush_core::module::{AsyncCompletion, ModError, Registrar};
+use mush_core::{
+    ArgShape, Audience, ChannelId, CmdError, CommandSpec, Ctx, Ledger, ObjId, PanelFeedHandle,
+};
+use smol_str::SmolStr;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+use crate::arena::clock::Tempo;
+use crate::arena::intents::{Control, ControlState, Intent, IntentKind};
+use crate::arena::ledger::LedgerEvent;
+use crate::arena::state::{Channel, MatchEnd, StopReason};
+use crate::arena::step::Frame;
+use crate::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId};
+use crate::store::{NS, push_op};
+
+/// The panel feed cockpit frames go out on (doc 16 §5). Cut K builds the real
+/// cockpit on it; this cut publishes the [`Frame`] the arena library produces.
+pub const FRAME_FEED: &str = "tacsim.frame";
+
+/// The notice category every arena notice carries.
+pub const NOTICE_CATEGORY: &str = "arena";
+
+/// The payload the arena-egress re-entry carries. It is a token and not the
+/// messages: the messages are moved through [`ArenaTasks::take_staged`].
+pub const EGRESS_PAYLOAD: &str = "{\"arena\":\"egress\"}";
+
+/// How many egress messages one re-entry handles. A bound on the world loop's
+/// per-iteration cost, not on the arena: whatever is left is handled by the next
+/// drain, and the receiver is what holds it meanwhile.
+pub const MAX_EGRESS_PER_DRAIN: usize = 256;
+
+/// How deep the staging queue between the host's drain and the handler may get.
+/// Both ends run on the world task one after the other, so it is normally
+/// `MAX_EGRESS_PER_DRAIN` at most; the bound is what keeps a wedged handler from
+/// growing the process.
+pub const MAX_STAGED: usize = 4_096;
+
+/// How many matches `@arena/status` renders.
+pub const STATUS_PAGE: usize = 32;
+
+/// How long the shutdown tail waits for one arena task to join.
+pub const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+// ---------------------------------------------------------------------------
+// The shared table
+// ---------------------------------------------------------------------------
+
+/// One live match, as the shared table holds it.
+struct Live {
+    handle: ArenaHandle,
+    join: JoinHandle<()>,
+}
+
+/// One ledger write waiting to be acknowledged to its arena.
+struct PendingAck {
+    match_id: MatchId,
+    upto_chunk_seq: u64,
+    /// The writer serial the batch carrying it will take; `0` until the host
+    /// stamps it.
+    serial: u64,
+}
+
+/// What [`ArenaTasks`] holds behind its lock.
+struct Tasks {
+    /// Cloned into every [`crate::arena_task::spawn_arena`].
+    egress_tx: mpsc::Sender<ArenaOut>,
+    /// Taken **once**, by the world loop, at its first iteration.
+    egress_rx: Option<mpsc::Receiver<ArenaOut>>,
+    live: BTreeMap<MatchId, Live>,
+    staged: VecDeque<ArenaOut>,
+    acks: Vec<PendingAck>,
+}
+
+/// **The table of live arena tasks**, shared by the world task (which starts and
+/// drives them) and the process's shutdown tail (which joins them).
+///
+/// Cheap to clone: it is one `Arc`. The lock is only ever taken by the world task
+/// and, once, by the shutdown tail, so it is uncontended by construction — and it
+/// is never held across an `await`.
+#[derive(Clone)]
+pub struct ArenaTasks(Arc<Mutex<Tasks>>);
+
+impl std::fmt::Debug for ArenaTasks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ArenaTasks({} live)", self.live_ids().len())
+    }
+}
+
+impl ArenaTasks {
+    /// A table with a fresh egress of `capacity` messages.
+    #[must_use]
+    pub fn new(capacity: usize) -> ArenaTasks {
+        let (egress_tx, egress_rx) = mpsc::channel(capacity.max(1));
+        ArenaTasks(Arc::new(Mutex::new(Tasks {
+            egress_tx,
+            egress_rx: Some(egress_rx),
+            live: BTreeMap::new(),
+            staged: VecDeque::new(),
+            acks: Vec::new(),
+        })))
+    }
+
+    /// The egress receiver, once. `None` on every later call — the world loop is
+    /// its one owner, and a second caller would silently split the stream.
+    #[must_use]
+    pub fn take_egress(&self) -> Option<mpsc::Receiver<ArenaOut>> {
+        self.0.lock().ok()?.egress_rx.take()
+    }
+
+    /// The egress sender every match's task publishes on.
+    #[must_use]
+    pub fn egress_sender(&self) -> Option<mpsc::Sender<ArenaOut>> {
+        Some(self.0.lock().ok()?.egress_tx.clone())
+    }
+
+    /// Record one started match. A second insert under the same id replaces the
+    /// first and hands it back so the caller can stop and join it rather than
+    /// leaking a task.
+    pub fn insert(
+        &self,
+        match_id: MatchId,
+        handle: ArenaHandle,
+        join: JoinHandle<()>,
+    ) -> Option<(ArenaHandle, JoinHandle<()>)> {
+        let mut tasks = self.0.lock().ok()?;
+        tasks
+            .live
+            .insert(match_id, Live { handle, join })
+            .map(|old| (old.handle, old.join))
+    }
+
+    /// Forget one match, handing back its handle and join.
+    pub fn remove(&self, match_id: MatchId) -> Option<(ArenaHandle, JoinHandle<()>)> {
+        let mut tasks = self.0.lock().ok()?;
+        tasks
+            .live
+            .remove(&match_id)
+            .map(|live| (live.handle, live.join))
+    }
+
+    /// Every live match, in id order.
+    #[must_use]
+    pub fn live_ids(&self) -> Vec<MatchId> {
+        self.0
+            .lock()
+            .ok()
+            .map(|tasks| tasks.live.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether that match's task is still accepting messages.
+    #[must_use]
+    pub fn is_live(&self, match_id: MatchId) -> bool {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|tasks| tasks.live.get(&match_id).map(|live| live.handle.is_live()))
+            .unwrap_or(false)
+    }
+
+    /// Offer one message to that match's task without waiting. `Err(msg)` hands
+    /// the message back: no such match, a full inbox, or a task that has ended.
+    pub fn offer(&self, match_id: MatchId, msg: ArenaMsg) -> Result<(), ArenaMsg> {
+        let Ok(tasks) = self.0.lock() else {
+            return Err(msg);
+        };
+        match tasks.live.get(&match_id) {
+            Some(live) => live.handle.offer(msg),
+            None => Err(msg),
+        }
+    }
+
+    /// Park one drained egress message for the handler. `false` when the staging
+    /// queue is full, which is a message the world could not handle and which its
+    /// sender therefore never has acknowledged.
+    pub fn stage(&self, message: ArenaOut) -> bool {
+        let Ok(mut tasks) = self.0.lock() else {
+            return false;
+        };
+        if tasks.staged.len() >= MAX_STAGED {
+            return false;
+        }
+        tasks.staged.push_back(message);
+        true
+    }
+
+    /// Take up to `max` parked messages, oldest first.
+    #[must_use]
+    pub fn take_staged(&self, max: usize) -> Vec<ArenaOut> {
+        let Ok(mut tasks) = self.0.lock() else {
+            return Vec::new();
+        };
+        let take = max.min(tasks.staged.len());
+        tasks.staged.drain(..take).collect()
+    }
+
+    /// How many ledger writes are still waiting to be acknowledged to their
+    /// arena. Zero once every queued chunk has both reached a batch and been
+    /// committed — the observable half of the ack round trip.
+    #[must_use]
+    pub fn pending_ledger_acks(&self) -> usize {
+        self.0.lock().ok().map_or(0, |tasks| tasks.acks.len())
+    }
+
+    /// Whether anything is parked.
+    #[must_use]
+    pub fn has_staged(&self) -> bool {
+        self.0
+            .lock()
+            .ok()
+            .is_some_and(|tasks| !tasks.staged.is_empty())
+    }
+
+    /// Record that a chunk write has been queued and is waiting for a serial.
+    pub fn note_ledger_write(&self, match_id: MatchId, upto_chunk_seq: u64) {
+        if let Ok(mut tasks) = self.0.lock() {
+            tasks.acks.push(PendingAck {
+                match_id,
+                upto_chunk_seq,
+                serial: 0,
+            });
+        }
+    }
+
+    /// Stamp every unstamped write with the serial its batch will take.
+    pub fn stamp_ledger_writes(&self, serial: u64) {
+        if let Ok(mut tasks) = self.0.lock() {
+            for ack in &mut tasks.acks {
+                if ack.serial == 0 {
+                    ack.serial = serial;
+                }
+            }
+        }
+    }
+
+    /// Acknowledge every stamped write the writer has committed, coalesced to one
+    /// message per match at its highest chunk sequence.
+    ///
+    /// An unstamped write is left alone: it has not reached a batch yet. A write
+    /// whose serial the writer never publishes is never acknowledged, which is
+    /// the fail-closed half of doc 16 §3.1's bounded egress.
+    pub fn ack_ledger_upto(&self, high_water: u64) {
+        let ready: BTreeMap<MatchId, u64> = {
+            let Ok(mut tasks) = self.0.lock() else {
+                return;
+            };
+            let mut ready: BTreeMap<MatchId, u64> = BTreeMap::new();
+            tasks.acks.retain(|ack| {
+                if ack.serial == 0 || ack.serial > high_water {
+                    return true;
+                }
+                let entry = ready.entry(ack.match_id).or_default();
+                *entry = (*entry).max(ack.upto_chunk_seq);
+                false
+            });
+            ready
+        };
+        for (match_id, upto_chunk_seq) in ready {
+            let _ = self.offer(match_id, ArenaMsg::LedgerAck { upto_chunk_seq });
+        }
+    }
+
+    /// Ask every live task to end now, with no result — the shutdown tail's one
+    /// lever.
+    pub fn signal_stop_all(&self) {
+        if let Ok(tasks) = self.0.lock() {
+            for live in tasks.live.values() {
+                live.handle.signal_stop();
+            }
+        }
+    }
+
+    /// **The shutdown tail** (16b T1): set every stop signal, then join every
+    /// task under one bound each.
+    ///
+    /// The lock is taken, drained and released *before* the first await: a
+    /// `std::sync::Mutex` guard may not cross one, and a shutdown that deadlocked
+    /// on this table would be worse than one that lost a match nobody can finish.
+    pub async fn shutdown(&self, timeout: Duration) {
+        self.signal_stop_all();
+        let joins: Vec<(MatchId, JoinHandle<()>)> = {
+            let Ok(mut tasks) = self.0.lock() else {
+                return;
+            };
+            std::mem::take(&mut tasks.live)
+                .into_iter()
+                .map(|(match_id, live)| (match_id, live.join))
+                .collect()
+        };
+        for (match_id, join) in joins {
+            match tokio::time::timeout(timeout, join).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::error!(
+                    %match_id,
+                    %error,
+                    "an arena task did not end cleanly; its match is lost"
+                ),
+                Err(_) => tracing::error!(
+                    %match_id,
+                    bound_s = timeout.as_secs(),
+                    "an arena task did not join within its bound; shutting down without it"
+                ),
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The module state slot
+// ---------------------------------------------------------------------------
+
+/// What the world remembers about one match, for `@arena/status` and for cut
+/// T.3's check-in.
+#[derive(Clone, Debug, Default)]
+pub struct MatchMirror {
+    /// The tempo the last frame reported.
+    pub tempo: Tempo,
+    /// The highest arena timestamp any ledger event has carried.
+    pub arena_ms: i64,
+    /// How many `lagged` notices the arena has sent.
+    pub lagged: u64,
+    /// Chunks appended to `log:match.<id>`.
+    pub chunks_appended: u64,
+    /// Chunks the ledger refused (a black box that lost tape).
+    pub chunks_lost: u64,
+    /// Frames delivered to a pilot.
+    pub frames_sent: u64,
+    /// Set once, when the arena reports the end.
+    pub end: Option<MatchEnd>,
+}
+
+/// **The world's registry of running matches** — the tacsim module's own state
+/// slot, world-task-only.
+#[derive(Clone)]
+pub struct ArenaRegistry {
+    tasks: ArenaTasks,
+    frames: PanelFeedHandle,
+    /// The match ledgers. One log per match, `match.<id>`.
+    ledger: Ledger,
+    /// The world's copy of each arena's `(unit, channel)` epoch table.
+    epochs: BTreeMap<(ObjId, Channel), u64>,
+    /// The world's monotonic intent sequence, so a queue's order is the pilot's
+    /// order and not the inbox's.
+    next_seq: u64,
+    /// Which match holds a unit (cut T.3's check-out binds it).
+    units: BTreeMap<ObjId, MatchId>,
+    /// Which match and unit a pilot is seated on (cut T.3's check-out binds it).
+    pilots: BTreeMap<ObjId, (MatchId, ObjId)>,
+    matches: BTreeMap<MatchId, MatchMirror>,
+}
+
+impl ArenaRegistry {
+    /// A registry over `tasks`, publishing frames on `frames`.
+    #[must_use]
+    pub fn new(tasks: ArenaTasks, frames: PanelFeedHandle) -> ArenaRegistry {
+        ArenaRegistry {
+            tasks,
+            frames,
+            ledger: Ledger::new(),
+            epochs: BTreeMap::new(),
+            next_seq: 0,
+            units: BTreeMap::new(),
+            pilots: BTreeMap::new(),
+            matches: BTreeMap::new(),
+        }
+    }
+
+    /// The shared table of live tasks.
+    #[must_use]
+    pub fn tasks(&self) -> &ArenaTasks {
+        &self.tasks
+    }
+
+    /// Start tracking a match. Cut T.3's check-out calls it with the same units,
+    /// pilots and epochs it puts in the `CustodyOut`.
+    pub fn track(&mut self, match_id: MatchId) {
+        self.matches.entry(match_id).or_default();
+    }
+
+    /// Stop tracking a match, handing back its mirror. Cut T.3's check-in calls
+    /// it once the units are back.
+    ///
+    /// The match's units, pilots and epoch rows go with it: an epoch left behind
+    /// would be the opening epoch of the *next* match that checked the same unit
+    /// out, and an intent stamped from it would authorise against a table that
+    /// starts again at whatever the new `CustodyOut` said.
+    pub fn untrack(&mut self, match_id: MatchId) -> Option<MatchMirror> {
+        let units: Vec<ObjId> = self
+            .units
+            .iter()
+            .filter(|(_, held)| **held == match_id)
+            .map(|(unit, _)| *unit)
+            .collect();
+        self.units.retain(|_, held| *held != match_id);
+        self.pilots.retain(|_, (held, _)| *held != match_id);
+        self.epochs.retain(|(unit, _), _| !units.contains(unit));
+        self.matches.remove(&match_id)
+    }
+
+    /// One match's mirror.
+    #[must_use]
+    pub fn mirror(&self, match_id: MatchId) -> Option<&MatchMirror> {
+        self.matches.get(&match_id)
+    }
+
+    /// Every tracked match, in id order.
+    pub fn tracked(&self) -> impl Iterator<Item = (MatchId, &MatchMirror)> {
+        self.matches.iter().map(|(id, mirror)| (*id, mirror))
+    }
+
+    /// Bind a unit to the match that holds it (cut T.3's check-out).
+    pub fn bind_unit(&mut self, unit: ObjId, match_id: MatchId) {
+        self.units.insert(unit, match_id);
+    }
+
+    /// Which match holds that unit.
+    #[must_use]
+    pub fn match_of_unit(&self, unit: ObjId) -> Option<MatchId> {
+        self.units.get(&unit).copied()
+    }
+
+    /// Bind a pilot to the match and unit it is seated on (cut T.3's
+    /// check-out). It is what lets a disconnect reach the arena even after the
+    /// seat itself has been released.
+    pub fn bind_pilot(&mut self, pilot: ObjId, match_id: MatchId, unit: ObjId) {
+        self.pilots.insert(pilot, (match_id, unit));
+    }
+
+    /// Which match and unit that pilot is seated on.
+    #[must_use]
+    pub fn seat_of_pilot(&self, pilot: ObjId) -> Option<(MatchId, ObjId)> {
+        self.pilots.get(&pilot).copied()
+    }
+
+    /// Publish one `(unit, channel)` epoch into the mirror — cut T.3 seeds it at
+    /// check-out with the epochs it hands the arena in `CustodyOut::pilots`.
+    /// Never lowers, for the same reason the arena's own table never does.
+    pub fn set_epoch(&mut self, unit: ObjId, channel: Channel, epoch: u64) {
+        let slot = self.epochs.entry((unit, channel)).or_default();
+        *slot = (*slot).max(epoch);
+    }
+
+    /// The epoch the arena's table holds for `(unit, channel)`, as far as the
+    /// world knows.
+    #[must_use]
+    pub fn epoch_of(&self, unit: ObjId, channel: Channel) -> u64 {
+        self.epochs.get(&(unit, channel)).copied().unwrap_or(0)
+    }
+
+    /// Raise `(unit, channel)` and answer the new epoch.
+    fn bump_epoch(&mut self, unit: ObjId, channel: Channel) -> u64 {
+        let slot = self.epochs.entry((unit, channel)).or_default();
+        *slot = slot.saturating_add(1);
+        *slot
+    }
+
+    /// The next intent sequence.
+    fn next_seq(&mut self) -> u64 {
+        self.next_seq = self.next_seq.saturating_add(1);
+        self.next_seq
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Opening a match
+// ---------------------------------------------------------------------------
+
+/// Why a match could not be opened.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum OpenMatchError {
+    /// The tacsim layer did not compose.
+    #[error("the arena is not available on this server")]
+    Unavailable,
+    /// There is no async runtime to spawn the task on — the caller is not on the
+    /// world task.
+    #[error("the arena can only be started from the world task")]
+    NoRuntime,
+    /// A match with that id is already running.
+    #[error("match {0} is already running")]
+    Duplicate(MatchId),
+    /// The check-out itself was refused.
+    #[error("that check-out is not a match: {0}")]
+    Arena(#[from] crate::arena::state::ArenaError),
+}
+
+/// **Start one match and register it** (16b T1, the world side).
+///
+/// The authoritative half of a check-out — the `deployed { arena, snapshot }`
+/// marker, the admission-site refusals, the frozen world placement — is cut
+/// T.3's, and this is the seam T.3 wraps: everything that has to happen *around*
+/// the task, in one place, so the lifecycle owner has one call and not six.
+///
+/// In order: the task is spawned (so a refused check-out leaves nothing
+/// registered), it is inserted into the shared table, the match is tracked, every
+/// unit is bound to it, and every seated pilot's station raises the world's epoch
+/// mirror **by the same rule the arena's own constructor uses** — a station named
+/// `helm`, `sensors` or `fire` raises that one channel, and any other station
+/// name raises all three (the cockpit seat of doc 16 §3.7). The mirror and the
+/// arena's table therefore agree from the first pulse, which is what lets
+/// [`forward_intent`] stamp an epoch the arena will authorise.
+///
+/// # Errors
+///
+/// [`OpenMatchError`]: no registry, no runtime, a duplicate id, or whatever
+/// `Arena::new` refused.
+pub fn open_match(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    custody: crate::arena::state::CustodyOut,
+    arena_cfg: &crate::config::ArenaConfig,
+    match_cfg: &crate::config::MatchConfig,
+) -> Result<(), OpenMatchError> {
+    let tasks = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.tasks.clone())
+        .ok_or(OpenMatchError::Unavailable)?;
+    if tasks.live_ids().contains(&match_id) {
+        return Err(OpenMatchError::Duplicate(match_id));
+    }
+    let egress = tasks.egress_sender().ok_or(OpenMatchError::Unavailable)?;
+    let runtime = tokio::runtime::Handle::try_current().map_err(|_| OpenMatchError::NoRuntime)?;
+    // Read what the registry has to remember before the message is moved into the
+    // task.
+    let units: Vec<ObjId> = custody.units.iter().map(|unit| unit.id).collect();
+    let pilots: Vec<(ObjId, ObjId, SmolStr, u64)> = custody
+        .pilots
+        .iter()
+        .map(|pilot| (pilot.pilot, pilot.unit, pilot.station.clone(), pilot.epoch))
+        .collect();
+    let (handle, join) =
+        crate::arena_task::spawn_arena(&runtime, match_id, custody, arena_cfg, match_cfg, egress)?;
+    if let Some((old, old_join)) = tasks.insert(match_id, handle, join) {
+        // Cannot happen (the id was checked above), and if it did, the old task
+        // is stopped rather than leaked.
+        old.signal_stop();
+        old_join.abort();
+    }
+    let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() else {
+        return Err(OpenMatchError::Unavailable);
+    };
+    registry.track(match_id);
+    for unit in units {
+        registry.bind_unit(unit, match_id);
+    }
+    for (pilot, unit, station, epoch) in pilots {
+        registry.bind_pilot(pilot, match_id, unit);
+        match Channel::parse(&station) {
+            Some(channel) => registry.set_epoch(unit, channel, epoch),
+            None => {
+                for channel in Channel::ALL {
+                    registry.set_epoch(unit, channel, epoch);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Routing: the three functions cut K's verbs and cut T.3's lifecycle call
+// ---------------------------------------------------------------------------
+
+/// Why the world refused to forward an order — one named word each, so the
+/// cockpit never says "no" (doc 16 §3.7).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum IntentRefusal {
+    /// That unit is not in a running match.
+    #[error("that unit is not in a running match")]
+    NoMatch,
+    /// The actor is not focused on a station of that unit.
+    #[error("you are not at a station of that unit")]
+    NotFocused,
+    /// The actor holds no live station grant on that unit.
+    #[error("you hold no station on that unit")]
+    NoStation,
+    /// The station's grant does not carry the channel the order needs.
+    #[error("your station does not carry the {channel} channel")]
+    Channel {
+        /// The channel the order needed.
+        channel: SmolStr,
+    },
+    /// Somebody else holds that channel's control lease.
+    #[error("another operator holds the {channel} channel")]
+    LeaseHeld {
+        /// The channel the order needed.
+        channel: SmolStr,
+    },
+    /// The control-lease mirror is incomplete, so the answer is unknown and the
+    /// order fails closed.
+    #[error("that unit's control state is not known yet")]
+    LeaseUnknown,
+    /// The arena's inbox is full: the pilot is ordering faster than the arena
+    /// runs.
+    #[error("that unit already has as many orders queued as it may")]
+    Busy,
+    /// The match ended between the verb and this call.
+    #[error("that match has ended")]
+    Gone,
+    /// The tacsim layer did not compose.
+    #[error("the arena is not available on this server")]
+    Unavailable,
+}
+
+/// Why the world could not deliver an authority or lifecycle message.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ControlRefusal {
+    /// No such running match.
+    #[error("that unit is not in a running match")]
+    NoMatch,
+    /// The arena's inbox is full or its task has ended.
+    #[error("that match is not accepting messages")]
+    Gone,
+    /// The tacsim layer did not compose.
+    #[error("the arena is not available on this server")]
+    Unavailable,
+}
+
+/// **Forward one order to the arena that holds `unit`** (16b T3).
+///
+/// Every check doc 16 §3.1 asks for at the world, in the order that makes each
+/// next one meaningful:
+///
+/// 1. the unit is in a running match;
+/// 2. `actor` — or the NPC it is driving by proxy — is **focused** on a station
+///    of that unit (`mush_sim::focus`);
+/// 3. that station's live channel grant carries the channel the order requires
+///    (the F3 rule: a gunner's grant is not a driver's);
+/// 4. the channel's control lease is either vacant or held by that same
+///    principal, and the lease mirror is complete — an unknown answer refuses;
+/// 5. the order is stamped with the epoch the world published to the arena and
+///    with the world's next sequence, and offered to the inbox without waiting.
+///
+/// The arena authorises again **at apply**, against its own table, because the
+/// world's answer was true when the order was typed and an order sits in a queue.
+///
+/// # Errors
+///
+/// One [`IntentRefusal`] word. Nothing is sent when anything refuses.
+pub fn forward_intent(
+    ctx: &mut Ctx<'_>,
+    actor: ObjId,
+    unit: ObjId,
+    kind: IntentKind,
+) -> Result<(), IntentRefusal> {
+    let channel = kind.channel_required();
+    let Some(channel_id) = ChannelId::new(channel.as_str()) else {
+        // `Channel::as_str` is three canonical lowercase words; this cannot fail
+        // on a tree that compiles, and a refusal is the fail-closed answer if it
+        // ever did.
+        return Err(IntentRefusal::Channel {
+            channel: SmolStr::new(channel.as_str()),
+        });
+    };
+
+    let match_id = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .ok_or(IntentRefusal::Unavailable)?
+        .match_of_unit(unit)
+        .ok_or(IntentRefusal::NoMatch)?;
+
+    // (2) Focus. A proxy seat's focus is keyed on the NPC being driven, so the
+    // driving actor is the subject of every check below.
+    let driver = mush_sim::focus::driving_actor(ctx.w, actor);
+    let station = ctx
+        .w
+        .module_state::<mush_sim::focus::FocusState>()
+        .and_then(|focus| focus.focus_of_actor(driver))
+        .filter(|focus| focus.unit == unit)
+        .map(|focus| focus.station.clone())
+        .ok_or(IntentRefusal::NotFocused)?;
+
+    // (3) The live grant. Read rather than revalidated against a remembered
+    // epoch: this is the issue point, so the grant in force now is the authority.
+    let carries = ctx
+        .w
+        .command_subjects_of(driver)
+        .iter()
+        .find(|grant| grant.subject == unit && grant.station.as_str() == station.as_str())
+        .ok_or(IntentRefusal::NoStation)?
+        .channels
+        .contains(&channel_id);
+    if !carries {
+        return Err(IntentRefusal::Channel {
+            channel: SmolStr::new(channel.as_str()),
+        });
+    }
+
+    // (4) The F3 control lease. The mirror is a 1 Hz projection, so an absent row
+    // means "vacant" only when the mirror is complete — otherwise the honest
+    // answer is "not known", and an order on an unknown authority is refused.
+    if !ctx
+        .w
+        .module_state::<mush_sim::ControlLeaseView>()
+        .is_some_and(mush_sim::ControlLeaseView::is_complete)
+    {
+        return Err(IntentRefusal::LeaseUnknown);
+    }
+    let seated = mush_core::PrincipalId::Object { id: driver };
+    if let Some(holder) = mush_sim::channel_lease_holder(ctx.w, unit, &channel_id)
+        && holder != seated
+    {
+        return Err(IntentRefusal::LeaseHeld {
+            channel: SmolStr::new(channel.as_str()),
+        });
+    }
+
+    // (5) The stamp, and the offer.
+    let (intent, tasks) = {
+        let registry = ctx
+            .w
+            .module_state_mut::<ArenaRegistry>()
+            .ok_or(IntentRefusal::Unavailable)?;
+        let intent = Intent {
+            unit,
+            channel,
+            epoch: registry.epoch_of(unit, channel),
+            kind,
+            seq: registry.next_seq(),
+        };
+        (intent, registry.tasks.clone())
+    };
+    match tasks.offer(match_id, ArenaMsg::Intent(intent)) {
+        Ok(()) => Ok(()),
+        Err(_) if tasks.is_live(match_id) => Err(IntentRefusal::Busy),
+        Err(_) => Err(IntentRefusal::Gone),
+    }
+}
+
+/// **Publish one authority change to the arena** (doc 16 §3.1's `Control`).
+///
+/// The world raises its own mirror for `(unit, channel)` and sends the new
+/// epoch; the arena raises its table and **purges every queued intent below it**,
+/// which is what makes a pilot who types `FIRE` then `EXIT` in one burst fire
+/// nothing.
+///
+/// The mirror is raised **before** the offer and stays raised if the offer
+/// fails: a world that could not tell the arena about a seat change must not go
+/// on stamping orders with the old epoch. The arena then refuses everything on
+/// that channel, which is the fail-closed direction.
+///
+/// # Errors
+///
+/// [`ControlRefusal`]: no such match, or a task that will not take it.
+pub fn send_control(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    channel: Channel,
+    state: ControlState,
+) -> Result<(), ControlRefusal> {
+    let (match_id, control, tasks) = {
+        let registry = ctx
+            .w
+            .module_state_mut::<ArenaRegistry>()
+            .ok_or(ControlRefusal::Unavailable)?;
+        let match_id = registry
+            .match_of_unit(unit)
+            .ok_or(ControlRefusal::NoMatch)?;
+        let epoch = registry.bump_epoch(unit, channel);
+        (
+            match_id,
+            Control {
+                unit,
+                channel,
+                epoch,
+                state,
+            },
+            registry.tasks.clone(),
+        )
+    };
+    tasks
+        .offer(match_id, ArenaMsg::Control(control))
+        .map_err(|_| ControlRefusal::Gone)
+}
+
+/// **Ask one match to stop** (doc 16 §3.1's `Stop`).
+///
+/// Honoured at the next pulse's phase 1, never mid-substep, so an abort takes
+/// effect within one period of the arena's current tempo.
+///
+/// # Errors
+///
+/// [`ControlRefusal`]: no such match, or a task that will not take it.
+pub fn send_stop(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    reason: StopReason,
+) -> Result<(), ControlRefusal> {
+    let tasks = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .ok_or(ControlRefusal::Unavailable)?
+        .tasks
+        .clone();
+    if !tasks.live_ids().contains(&match_id) {
+        return Err(ControlRefusal::NoMatch);
+    }
+    tasks
+        .offer(match_id, ArenaMsg::Stop(reason))
+        .map_err(|_| ControlRefusal::Gone)
+}
+
+/// Release every channel of one pilot's unit, at the state the world now knows.
+///
+/// The one place the three lifecycle facts this cut can observe turn into
+/// `Control`s. Cut K owns `BOARD` and `EXIT` (it calls [`send_control`]
+/// directly, on the same world task, right beside `request_seat_activation`),
+/// and cut K4 owns linkdead onset and revival, for which the kernel has no hook
+/// at all yet.
+fn control_all_channels(ctx: &mut Ctx<'_>, unit: ObjId, state: ControlState) {
+    for channel in Channel::ALL {
+        if let Err(error) = send_control(ctx, unit, channel, state) {
+            tracing::debug!(%unit, channel = channel.as_str(), %error, "arena control not delivered");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The egress: the four messages that come back
+// ---------------------------------------------------------------------------
+
+/// The registered [`AsyncCompletion`] the host's arena-egress wake re-enters
+/// through. The payload is a token ([`EGRESS_PAYLOAD`]); the messages themselves
+/// are taken from the staging queue.
+pub struct ArenaEgress;
+
+impl AsyncCompletion for ArenaEgress {
+    fn on_complete(&self, ctx: &mut Ctx<'_>, _correlation: u64, _payload: &str) {
+        drain_egress(ctx);
+    }
+}
+
+/// Handle every parked egress message. Called on the world task, with a `Ctx`.
+pub fn drain_egress(ctx: &mut Ctx<'_>) {
+    let Some(tasks) = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.tasks.clone())
+    else {
+        return;
+    };
+    for message in tasks.take_staged(MAX_EGRESS_PER_DRAIN) {
+        match message {
+            ArenaOut::Frames { match_id, frames } => on_frames(ctx, match_id, frames),
+            ArenaOut::Ledger { match_id, chunk } => {
+                on_chunk(ctx, match_id, chunk.seq, &chunk.bytes);
+            }
+            ArenaOut::Lagged { match_id } => on_lagged(ctx, match_id),
+            ArenaOut::Ended {
+                match_id,
+                end,
+                digest,
+            } => on_ended(ctx, match_id, end, digest),
+        }
+    }
+}
+
+/// One pulse's frames: a keyframe per pilot, on the feed, through the loop's
+/// ordinary output path (doc 16 §3.1 — the arena never touches a sink).
+fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) {
+    let Some(feed) = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.frames.clone())
+    else {
+        return;
+    };
+    let mut sent = 0_u64;
+    let mut tempo = None;
+    for (pilot, frame) in frames {
+        // A pilot who was destroyed while the pulse ran gets nothing rather than
+        // an event addressed to a dead id (treaty ruling 3: re-validate).
+        if ctx.w.get(pilot).is_none() {
+            continue;
+        }
+        tempo = Some(frame.tempo);
+        feed.keyframe_to(ctx, Audience::Actor(pilot), frame_json(match_id, &frame));
+        sent = sent.saturating_add(1);
+    }
+    if let Some(mirror) = ctx
+        .w
+        .module_state_mut::<ArenaRegistry>()
+        .and_then(|registry| registry.matches.get_mut(&match_id))
+    {
+        mirror.frames_sent = mirror.frames_sent.saturating_add(sent);
+        if let Some(tempo) = tempo {
+            mirror.tempo = tempo;
+        }
+    }
+}
+
+/// One frame, as the panel payload. Cut K replaces this with the real cockpit
+/// keyframe of doc 16 §5; the shape is deliberately the arena's [`Frame`] and
+/// nothing more, so the seam is visible rather than invented.
+fn frame_json(match_id: MatchId, frame: &Frame) -> serde_json::Value {
+    serde_json::json!({
+        "match": match_id.0,
+        "unit": frame.unit.0,
+        "x_cm": frame.pose.x_cm,
+        "y_cm": frame.pose.y_cm,
+        "z_cm": frame.pose.z_cm,
+        "heading_mdeg": frame.pose.heading_mdeg,
+        "speed_cms": frame.speed_cms,
+        "power": frame.power.as_str(),
+        "blocked": frame.blocked,
+        "tempo": frame.tempo.as_str(),
+    })
+}
+
+/// The ledger log id one match streams into: `log:match.<id>` is
+/// `chunk_key("match.<id>", n)`, so the log id itself is `match.<id>`.
+#[must_use]
+pub fn match_log_id(match_id: MatchId) -> String {
+    format!("match.{}", match_id.0)
+}
+
+/// One closed chunk, appended to `log:match.<id>` on the world's own writer
+/// lane (16b T4).
+///
+/// The chunk's **exact bytes** go in, as one entry's `lines` field: doc 16 §4
+/// puts the arena's own ledger digest on the result record, and a reader that
+/// concatenates these in chunk order re-derives it. A chunk that is not UTF-8 —
+/// which nothing the arena writes can be — is counted as lost and acknowledged
+/// anyway, because a black box that lost a page is not a reason to wedge the
+/// match that is still running.
+fn on_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64, bytes: &[u8]) {
+    let log_id = match_log_id(match_id);
+    let Ok(lines) = std::str::from_utf8(bytes) else {
+        tracing::error!(
+            %match_id,
+            chunk = seq,
+            "a match ledger chunk was not UTF-8 and was not recorded"
+        );
+        lose_chunk(ctx, match_id, seq);
+        return;
+    };
+    let arena_ms = last_event_ms(lines);
+    let value = serde_json::json!({
+        "chunk": seq,
+        "bytes": bytes.len(),
+        "lines": lines,
+    });
+    let (tasks, op) = {
+        let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() else {
+            return;
+        };
+        let prepared = match registry.ledger.prepare_append(&log_id, value) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tracing::error!(
+                    %match_id,
+                    chunk = seq,
+                    %error,
+                    "a match ledger chunk was refused without mutating the ledger"
+                );
+                if let Some(mirror) = registry.matches.get_mut(&match_id) {
+                    mirror.chunks_lost = mirror.chunks_lost.saturating_add(1);
+                }
+                let tasks = registry.tasks.clone();
+                // Acknowledge it anyway: the chunk is lost to the log, and
+                // holding the arena's egress open for a page that will never be
+                // written would void a match over a record nobody can produce.
+                let _ = tasks.offer(
+                    match_id,
+                    ArenaMsg::LedgerAck {
+                        upto_chunk_seq: seq,
+                    },
+                );
+                return;
+            }
+        };
+        match registry.ledger.apply_prepared(prepared) {
+            Ok((_entry_seq, op)) => {
+                if let Some(mirror) = registry.matches.get_mut(&match_id) {
+                    mirror.chunks_appended = mirror.chunks_appended.saturating_add(1);
+                    mirror.arena_ms = mirror.arena_ms.max(arena_ms);
+                }
+                (registry.tasks.clone(), op)
+            }
+            Err(error) => {
+                tracing::error!(
+                    %match_id,
+                    chunk = seq,
+                    %error,
+                    "a match ledger append became stale between prepare and apply"
+                );
+                return;
+            }
+        }
+    };
+    // The module's own namespace (`tacsim`), on the ordinary module-op lane —
+    // the same path `mush-scenes` and `mush-canon` append their ledgers on, and
+    // the one the E0 retained table and its durable-commit high-water sit on.
+    push_op(ctx.out, op);
+    tasks.note_ledger_write(match_id, seq);
+}
+
+/// Count one chunk as lost and acknowledge it, so the arena's bounded egress
+/// does not stall on a page that will never be written.
+fn lose_chunk(ctx: &mut Ctx<'_>, match_id: MatchId, seq: u64) {
+    let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() else {
+        return;
+    };
+    if let Some(mirror) = registry.matches.get_mut(&match_id) {
+        mirror.chunks_lost = mirror.chunks_lost.saturating_add(1);
+    }
+    let tasks = registry.tasks.clone();
+    let _ = tasks.offer(
+        match_id,
+        ArenaMsg::LedgerAck {
+            upto_chunk_seq: seq,
+        },
+    );
+}
+
+/// The highest `t_ms` in a chunk, read from its last parsable line. One parse per
+/// chunk (a chunk is 16 KiB and closes every few seconds), which is what lets
+/// `@arena/status` report arena time without the arena reporting it.
+fn last_event_ms(lines: &str) -> i64 {
+    lines
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok())
+        .map(|event| event.t_ms)
+        .next()
+        .unwrap_or(0)
+}
+
+/// The arena says the clock or the egress is behind: one log line and one staff
+/// notice.
+fn on_lagged(ctx: &mut Ctx<'_>, match_id: MatchId) {
+    let count = {
+        let Some(mirror) = ctx
+            .w
+            .module_state_mut::<ArenaRegistry>()
+            .and_then(|registry| registry.matches.get_mut(&match_id))
+        else {
+            return;
+        };
+        mirror.lagged = mirror.lagged.saturating_add(1);
+        mirror.lagged
+    };
+    tracing::warn!(
+        %match_id,
+        lagged = count,
+        "arena match is lagging: the pulse absorbed more wall time than the clamp allows, or the \
+         world is not draining its ledger"
+    );
+    notify_staff(
+        ctx,
+        format!("Arena match {match_id} is lagging ({count} notices so far)."),
+    );
+}
+
+/// The arena reports the end. Cut T.2 records it and tells staff; cut T.3 turns
+/// this into check-in (the units' cells and final poses through `apply` and
+/// `mush_sim::place`, the `deployed` markers cleared, the result record written).
+fn on_ended(ctx: &mut Ctx<'_>, match_id: MatchId, end: MatchEnd, digest: [u8; 32]) {
+    if let Some(mirror) = ctx
+        .w
+        .module_state_mut::<ArenaRegistry>()
+        .and_then(|registry| registry.matches.get_mut(&match_id))
+    {
+        mirror.end = Some(end);
+        mirror.arena_ms = mirror.arena_ms.max(end.t_ms);
+    }
+    let digest = digest_text(&digest);
+    tracing::info!(
+        %match_id,
+        reason = ?end.reason,
+        arena_ms = end.t_ms,
+        %digest,
+        "arena match ended"
+    );
+    notify_staff(
+        ctx,
+        format!(
+            "Arena match {match_id} ended: {:?} at {} ms of arena time. Ledger digest {digest}.",
+            end.reason, end.t_ms
+        ),
+    );
+}
+
+/// The ledger digest, as the 64 lowercase base-16 characters every other digest
+/// in the tree renders as.
+#[must_use]
+pub fn digest_text(digest: &[u8; 32]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        // `write!` into a `String` is infallible; the result is discarded rather
+        // than unwrapped, which is also what keeps this off the panic budget.
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// One line to every connected Wizard-or-better — the one staff audience the
+/// tree fans an alert out to.
+fn notify_staff(ctx: &mut Ctx<'_>, text: String) {
+    let now_ms = ctx.w.now().saturating_mul(1_000);
+    for staff in ctx.w.connected_wizards() {
+        ctx.out
+            .notice_warn_to_actor(staff, now_ms, NOTICE_CATEGORY, text.clone(), None);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The seat facts this cut can observe
+// ---------------------------------------------------------------------------
+
+/// A full disconnect releases the seat (`mush-sim`'s own `Disconnected` hook
+/// does the release); a reconnect makes it live again.
+///
+/// These are the only two seat lifecycle facts the kernel publishes. Linkdead
+/// **onset** and **revival within the grace** have no hook at all — the engine
+/// announces them to the room and fires nothing — and they are cut K4's by 16b
+/// §8's own allocation. `EXIT`, `SIM ABORT` and `BOARD` are cut K's verbs, which
+/// call [`send_control`] directly beside `request_seat_activation`; lease
+/// revocation by a third party cannot happen to a deployed unit at all, because
+/// cut T.3's admission-site refusals refuse it.
+struct SeatFacts;
+
+impl mush_core::EventHook for SeatFacts {
+    fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        if let Some((_match_id, unit)) = ctx
+            .w
+            .module_state::<ArenaRegistry>()
+            .and_then(|registry| registry.seat_of_pilot(actor))
+        {
+            control_all_channels(ctx, unit, ControlState::Live);
+        }
+    }
+
+    fn disconnected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
+        if let Some((_match_id, unit)) = ctx
+            .w
+            .module_state::<ArenaRegistry>()
+            .and_then(|registry| registry.seat_of_pilot(actor))
+        {
+            control_all_channels(ctx, unit, ControlState::Released);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `@arena/status`
+// ---------------------------------------------------------------------------
+
+/// Staff, on `mush-market`'s exact test — the same predicate the rest of this
+/// crate's staff surface uses.
+fn is_staff(ctx: &Ctx<'_>) -> bool {
+    mush_core::perm::has_power(ctx.w, ctx.actor, mush_core::Powers::SIM_ADMIN)
+        || mush_core::perm::has_role(ctx.w, ctx.actor, mush_core::Role::Royalty)
+}
+
+fn arena_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !is_staff(ctx) {
+        return Err(CmdError::msg("Permission denied."));
+    }
+    let rows = status_rows(ctx);
+    let actor = ctx.actor;
+    if rows.is_empty() {
+        ctx.out.sys_to_actor(actor, "arena", "No match is running.");
+        return Ok(());
+    }
+    for row in rows {
+        ctx.out.sys_to_actor(actor, "arena", row);
+    }
+    Ok(())
+}
+
+/// One row per running match: its tempo, its arena time, its lag and its chunk
+/// counts. A read and nothing else.
+fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
+    let Some(registry) = ctx.w.module_state::<ArenaRegistry>() else {
+        return vec!["The arena is not available on this server.".to_owned()];
+    };
+    let live = registry.tasks.live_ids();
+    // One number for the whole server rather than per match: the writes are
+    // stamped with the batch serial they ride, not with the match they came from,
+    // so "how far behind the acknowledgement lane is" is a property of the lane.
+    let unacked = registry.tasks.pending_ledger_acks();
+    let mut rows = Vec::new();
+    for (match_id, mirror) in registry.tracked().take(STATUS_PAGE) {
+        let state = match mirror.end {
+            Some(end) => format!("{:?}", end.reason),
+            None if live.contains(&match_id) => "running".to_owned(),
+            None => "no task".to_owned(),
+        };
+        rows.push(format!(
+            "match {match_id}: {state}, tempo {}, arena {} ms, lagged {}, chunks {} appended / \
+             {} lost, frames {}",
+            mirror.tempo.as_str(),
+            mirror.arena_ms,
+            mirror.lagged,
+            mirror.chunks_appended,
+            mirror.chunks_lost,
+            mirror.frames_sent,
+        ));
+    }
+    if !rows.is_empty() {
+        rows.push(format!(
+            "ledger writes awaiting the store's acknowledgement: {unacked}"
+        ));
+    }
+    if registry.tracked().count() > STATUS_PAGE {
+        rows.push(format!(
+            "… and more than {STATUS_PAGE} matches; the rest are not shown."
+        ));
+    }
+    rows
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+/// Register the arena's world-side surface on the **tacsim** module: the frame
+/// feed, the egress re-entry handler, the two seat facts, the state slot and
+/// `@arena`.
+///
+/// `egress_capacity` is sized from `[tacsim.arena].ledger.max_unflushed_chunks`:
+/// the arena voids a match past that many unacknowledged chunks, so a channel
+/// that can hold twice as many per match never becomes the reason one is lost.
+///
+/// # Errors
+///
+/// [`ModError`] if the feed name, the verb or the completion handler is already
+/// taken.
+pub fn register(reg: &mut Registrar<'_>, egress_capacity: usize) -> Result<(), ModError> {
+    let frames = reg.panel_feed(FRAME_FEED)?;
+    reg.async_completion(Arc::new(ArenaEgress))?;
+    reg.hook(mush_core::HookPoint::Connected, Arc::new(SeatFacts));
+    reg.hook(mush_core::HookPoint::Disconnected, Arc::new(SeatFacts));
+    reg.state(ArenaRegistry::new(ArenaTasks::new(egress_capacity), frames));
+    // Read-only, and declared before the registration it applies to (K8.5).
+    // Cut T.3 adds `start`, `intent` and `abort` to this verb and re-classifies
+    // it in the same commit as their stanza note.
+    reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+    reg.command(
+        CommandSpec {
+            name: "@arena".into(),
+            shape: ArgShape::EqPair,
+            switches: ["status"].iter().copied().map(SmolStr::new).collect(),
+            help: "@arena/status                       (staff) every match this server is \
+                   running: its tempo, its arena time, how often it has lagged, how many ledger \
+                   chunks have been appended and lost, how many cockpit frames have gone out, \
+                   and how many ledger writes are still waiting for the store to acknowledge \
+                   them. A read: it starts, stops and touches nothing."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(arena_cmd),
+    )?;
+    reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+    Ok(())
+}
+
+/// The egress capacity for a given `[tacsim.arena]` block.
+#[must_use]
+pub fn egress_capacity(cfg: &crate::config::ArenaConfig) -> usize {
+    usize::try_from(cfg.ledger.max_unflushed_chunks)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(2)
+        .max(64)
+}
+
+/// The tacsim module's namespace, restated for the host's benefit: the arena's
+/// ledger, its registry and its feed are all this module's.
+pub const MODULE: &str = NS;

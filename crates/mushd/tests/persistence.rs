@@ -2306,6 +2306,9 @@ async fn an_unclean_world_exit_takes_no_shutdown_bgsave() {
         outbox_join,
         persistence_integrity,
         world_exit,
+        // 16b cut T.2: this proof is about the store, not the arena; a
+        // composition with no running match has nothing to join.
+        arenas: _,
     } = handles;
 
     // `kill -9` shape, in-process: the world task stops without ever reaching

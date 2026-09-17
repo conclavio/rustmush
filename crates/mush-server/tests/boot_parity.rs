@@ -288,6 +288,13 @@ fn expected_panels() -> Vec<&'static str> {
     // and no `.vitals` feed — doc 16 §3.3 leaves M32's `TacticalUnit` cells the
     // one damage authority, so the sheet declares no health track to publish.
     panels.push("tacsim.sheet");
+    // 16b cut T.2: the arena's cockpit frame feed, registered by the TacSim LAYER
+    // (module `tacsim`) rather than by the sheet (module `pilot`) — hence after
+    // `tacsim.sheet` in registration order. It is registered whether or not
+    // `[tacsim].enabled` is set, for the same reason the layer's verbs are: a
+    // disabled layer refuses out loud rather than making a feed appear and
+    // disappear under the web client's manifest. Cut K's cockpit is the consumer.
+    panels.push("tacsim.frame");
     panels.push("who");
     panels.push("legal.actions");
     panels

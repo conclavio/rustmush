@@ -437,6 +437,8 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     let mut world_join = handles.world_join;
     let writer_join = handles.writer_join;
     let outbox_join = handles.outbox_join;
+    // 16b cut T.2 (T1): the arena tasks, stopped and joined in the tail below.
+    let arenas = handles.arenas;
 
     // J5: the ledger archive pass, once a UTC day inside its window, beside
     // the store writer and never on the world task. WS04-S1: assembled once, in
@@ -592,6 +594,11 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // batch. Only a cleanly drained writer with no integrity breach may be
     // followed by the ordinary final BGSAVE.
     drop(world);
+    // 16b cut T.2 (T1): the arena tasks, after the world has stopped (so nothing
+    // is starting another match) and before the store writer's drain (an arena
+    // task holds no store handle, so it is not something the writer waits for).
+    // Each join is individually bounded, like every other step of this tail.
+    mush_server::world_task::arena_shutdown(arenas).await;
     if tokio::time::timeout(WRITER_DRAIN_TIMEOUT, outbox_join)
         .await
         .is_err()

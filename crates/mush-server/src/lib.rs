@@ -397,6 +397,8 @@ pub async fn serve_classified(
     let world_join = handles.world_join;
     let store_writer_join = handles.writer_join;
     let outbox_join = handles.outbox_join;
+    // 16b cut T.2 (T1): the arena tasks, stopped and joined in the tail below.
+    let arenas = handles.arenas;
     // The reader's shutdown-provenance source. The world loop sets this as the
     // LAST statement of its own function — before its receiver drops — so a
     // reader that finds the channel closed can already tell an ordinary exit
@@ -511,6 +513,11 @@ pub async fn serve_classified(
     drop(reader);
     drop(to_gw_tx);
     drop(world);
+    // 16b cut T.2 (T1): the arena tasks, after the world has stopped (so nothing
+    // is starting another match) and before the store writer's drain (an arena
+    // task holds no store handle, so it is not something the writer waits for).
+    // Each join is individually bounded, like every other step of this tail.
+    world_task::arena_shutdown(arenas).await;
     let _ = outbox_join.await;
     // Keep custody of the actual persistence writer (distinct from the IPC
     // writer above) and wait for it to drain before this runtime can return.

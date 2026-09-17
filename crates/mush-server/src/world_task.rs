@@ -1780,6 +1780,15 @@ pub struct PersistHandles {
     pub writer_join: JoinHandle<()>,
     /// Recovery-driven durable external-delivery worker.
     pub outbox_join: JoinHandle<()>,
+    /// 16b cut T.2 (T1): the shared table of running arena tasks, or `None` when
+    /// no game layer composed one.
+    ///
+    /// It is on this struct because the two halves that need it do not run in
+    /// the same place: matches are started and driven from **inside** the world
+    /// loop (where the authority checks live), and joined by the process's
+    /// shutdown tail, which is outside it. `arena_shutdown` is what both tails
+    /// call.
+    pub arenas: Option<tacsim::arena_bridge::ArenaTasks>,
     /// Process-local fail-closed snapshot barrier shared by the world,
     /// store writer, and shutdown coordinator.
     pub persistence_integrity: PersistenceIntegrityLatch,
@@ -2099,6 +2108,17 @@ fn spawn_persist_with_gateway_mode(
 ) -> PersistHandles {
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // 16b cut T.2 (T1, T4): the game layer's shared arena-task table, created by
+    // the tacsim module in `register` and read back out of its own state slot
+    // here. An immutable read and a clone of an `Arc` — the host composes the
+    // game, it does not write the game's state — so this is not a cross-module
+    // `module_state_mut` reach and needs no `state-slot-owners.toml` row. A
+    // composition with no game layer leaves it `None` and the arena egress arm
+    // disarmed.
+    let arenas = engine
+        .world
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .map(|registry| registry.tasks().clone());
     let routes = engine
         .registry
         .action_providers()
@@ -2206,6 +2226,7 @@ fn spawn_persist_with_gateway_mode(
         decision_runtime,
         initial_mode,
         outbox_lifetime,
+        arenas.clone(),
     ));
     PersistHandles {
         handle,
@@ -2214,6 +2235,22 @@ fn spawn_persist_with_gateway_mode(
         outbox_join,
         persistence_integrity,
         world_exit,
+        arenas,
+    }
+}
+
+/// **Stop and join every arena task** — the one call both shutdown tails make
+/// (16b cut T.2, T1).
+///
+/// Every stop signal is set first, so no task is still trying to publish a result
+/// into an egress nobody is draining, and then each is joined under its own
+/// bound. `None` (no game layer) is a no-op. Nothing else in the shutdown order
+/// changes: it runs after the world task has stopped and before the store
+/// writer's drain, because an arena task holds no store handle and therefore
+/// nothing the writer is waiting for.
+pub async fn arena_shutdown(arenas: Option<tacsim::arena_bridge::ArenaTasks>) {
+    if let Some(arenas) = arenas {
+        arenas.shutdown(tacsim::arena_bridge::JOIN_TIMEOUT).await;
     }
 }
 
@@ -2231,6 +2268,13 @@ enum Wake {
     DecisionNotification(DecisionWakeDispatch),
     DecisionResult(Box<DecisionWorkerCompletion>),
     DurableDecisions,
+    /// 16b cut T.2 (T4): a running match published something. The payload is the
+    /// first message off the egress; the arm drains the rest without blocking and
+    /// re-enters them all through the game's registered async-completion handler,
+    /// which is the tree's one "run module code with a `Ctx` from the loop"
+    /// mechanism (the same `WorldCommand::ModuleAsyncDone` worldgen and the NPC
+    /// layer come back on) rather than a second one.
+    ArenaEgress(Box<tacsim::arena_task::ArenaOut>),
     Shutdown,
     ShutdownDeadline,
     Closed,
@@ -3651,8 +3695,15 @@ async fn run(
     decision_runtime: Option<DecisionRuntime>,
     initial_mode: Option<WorldMode>,
     _outbox_lifetime: watch::Sender<bool>,
+    arenas: Option<tacsim::arena_bridge::ArenaTasks>,
 ) -> WorldOutcome {
     tracing::info!("world task running");
+    // 16b cut T.2 (T4): the one receiver of every running match's egress. Taken
+    // once, here, because the loop is its only legitimate owner — a second taker
+    // would silently split the stream.
+    let mut arena_egress = arenas
+        .as_ref()
+        .and_then(tacsim::arena_bridge::ArenaTasks::take_egress);
     let boot_unix = unix_now_s();
     // The LLM service handle (built from [llm] config) that drives a module's
     // deferred async work off-loop; cloned out of `deps` so the loop keeps
@@ -3862,6 +3913,21 @@ async fn run(
             && retained.is_empty()
             && !engine.has_legacy_persistence_work()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
+        // 16b cut T.2 (T4): acknowledge every match-ledger chunk the writer has
+        // committed, on the E0 durable-commit high-water and nothing new. Read
+        // once per iteration, before the select blocks, so an arena waiting on an
+        // acknowledgement is never held behind an idle world.
+        if let Some(arenas) = arenas.as_ref() {
+            arenas.ack_ledger_upto(high_water.load(Ordering::Relaxed));
+        }
+        // The arena egress is ordinary module-write work, so it is admitted on the
+        // same terms as a timer — never while a commit is pending, never while a
+        // retained seal is unresolved, and never in a mode that cannot write.
+        let arena_egress_armed = arena_egress.is_some()
+            && pending_commit.is_none()
+            && retained.is_empty()
+            && !engine.has_legacy_persistence_work()
+            && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
         let ready_deferred = if pending_commit.is_none() {
             deferred_world_msg.take()
         } else {
@@ -3913,6 +3979,21 @@ async fn run(
                 None => Wake::DurableDecisions,
             },
             _ = durable_decision_tick.tick(), if durable_decision_armed => Wake::DurableDecisions,
+            // 16b cut T.2 (T4). Armed only while a game layer composed an arena
+            // table and the world may write: an arena chunk is a module write, so
+            // draining into a frozen world would build a batch nobody can commit
+            // and then acknowledge it to the arena.
+            egress = async {
+                match arena_egress.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if arena_egress_armed => match egress {
+                Some(out) => Wake::ArenaEgress(Box::new(out)),
+                // Every sender is gone, which can only happen once every match's
+                // task has ended. Disarm rather than spin.
+                None => { arena_egress = None; Wake::Timer }
+            },
             () = tokio::time::sleep(REEMIT_INTERVAL), if reemit_pending => Wake::Timer,
             changed = shutdown.changed(), if !shutdown_requested => {
                 if changed.is_ok() && *shutdown.borrow_and_update() {
@@ -4493,6 +4574,64 @@ async fn run(
                     );
                 }
                 StepOutcome::Continue
+            }
+            // ---- 16b cut T.2 (T4): the arena egress ----
+            //
+            // One arena message woke the loop; everything else already queued is
+            // drained here, without blocking, so a pulse's chunks and frames are
+            // handled together and the loop pays one step for the batch. The
+            // messages are **parked**, not encoded: they are moved into the game's
+            // own shared table and re-entered through its registered
+            // `AsyncCompletion` with a token payload, which is the one mechanism
+            // in the tree for running module code with a `Ctx` from the loop.
+            Wake::ArenaEgress(first) => {
+                let mut staged = 0_usize;
+                if let Some(arenas) = arenas.as_ref() {
+                    if arenas.stage(*first) {
+                        staged += 1;
+                    }
+                    if let Some(rx) = arena_egress.as_mut() {
+                        while staged < tacsim::arena_bridge::MAX_EGRESS_PER_DRAIN {
+                            match rx.try_recv() {
+                                Ok(message) => {
+                                    if !arenas.stage(message) {
+                                        break;
+                                    }
+                                    staged += 1;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                }
+                if staged == 0 {
+                    StepOutcome::Continue
+                } else {
+                    let outcome = guarded!(
+                        "engine.step/arena-egress",
+                        engine.step(
+                            Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                                module: SmolStr::new_static(tacsim::arena_bridge::MODULE),
+                                actor: mush_core::GOD,
+                                correlation: 0,
+                                payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
+                            }),
+                            &mut out,
+                            &mut fx,
+                        )
+                    );
+                    // The chunk writes this step queued ride the batch the
+                    // foot-of-loop flush is about to build, whose serial is one
+                    // past the current one. Stamping them here is what lets the
+                    // durable-commit high-water acknowledge them to their arenas:
+                    // a batch that is never committed is never acknowledged, the
+                    // arena's egress backs up, and doc 16 §3.1's bound voids the
+                    // match.
+                    if let Some(arenas) = arenas.as_ref() {
+                        arenas.stamp_ledger_writes(serial.saturating_add(1));
+                    }
+                    outcome
+                }
             }
             // ---- E7c2: B1 — the `Authoritative` ingress adapter seam ----
             Wake::CommandSubmits => {
@@ -15722,6 +15861,9 @@ mod tests {
             None,
             None,
             watch::channel(false).0,
+            // 16b cut T.2: this rig composes no game layer, so there is no arena
+            // table and the egress arm stays disarmed.
+            None,
         ));
 
         assert!(
