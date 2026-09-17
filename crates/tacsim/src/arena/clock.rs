@@ -146,6 +146,9 @@ pub struct Clock {
     last_engaged_signal_ms: Option<i64>,
     last_wall_ms: Option<i64>,
     lagged: bool,
+    /// Set only by [`Clock::pin_tempo_for_tests`]; while it is set,
+    /// [`Clock::evaluate`] records signals and changes nothing.
+    pinned: Option<Tempo>,
 }
 
 impl Clock {
@@ -172,6 +175,27 @@ impl Clock {
     #[must_use]
     pub const fn lagged(&self) -> bool {
         self.lagged
+    }
+
+    /// **Hold the tempo at `tempo`** — the one lever a determinism test needs
+    /// (16b A7; doc 16 §3.1 "Rate independence").
+    ///
+    /// The property being tested is that *the tempo decides only how often `step`
+    /// runs and never an outcome*, so the test has to drive one arena at three
+    /// pulse cadences with the tempo **held**: an arena left to evaluate its own
+    /// tempo would pick a different one at a different cadence, and the comparison
+    /// would be measuring the tempo rather than the outcome. Calling it again with
+    /// another tempo is how a test flips the tempo mid-run at a point it chooses.
+    ///
+    /// While it is pinned, [`Clock::evaluate`] still records the signals it is
+    /// given — so a later unpinned clock is not left with a blank history — and
+    /// answers `None`, so no `tempo` ledger event is journalled for a pinned
+    /// change. It is `#[doc(hidden)]` and named for what it is: nothing in the
+    /// shipped lane calls it, and cut T's task must not.
+    #[doc(hidden)]
+    pub fn pin_tempo_for_tests(&mut self, tempo: Tempo) {
+        self.tempo = tempo;
+        self.pinned = Some(tempo);
     }
 
     /// **Doc 16 §3.1's tempo table, exactly.**
@@ -204,6 +228,12 @@ impl Clock {
         let held = |last: Option<i64>, hold_ms: u32| -> bool {
             last.is_some_and(|at| now_ms.saturating_sub(at) < i64::from(hold_ms))
         };
+        // A pinned clock keeps the tempo a test chose: the signals above are still
+        // recorded, and nothing here moves.
+        if let Some(pinned) = self.pinned {
+            self.tempo = pinned;
+            return None;
+        }
         let target = if held(self.last_engaged_signal_ms, cfg.engaged_hold_ms) {
             Tempo::Engaged
         } else if held(self.last_alert_signal_ms, cfg.alert_hold_ms) {

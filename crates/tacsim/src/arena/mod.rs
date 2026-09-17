@@ -31,33 +31,49 @@
 //!
 //! # The two halves of cut A
 //!
-//! **A.1 (this commit)** is the data, the time, the inputs, the randomness, the
-//! hashing and the ledger: [`state`], [`clock`], [`intents`], [`rng`], [`hash`],
-//! [`ledger`], their unit tests, and the two gates doc 16 §8 names. Its public
-//! surface is a contract.
+//! **A.1** was the data, the time, the inputs, the randomness, the hashing and
+//! the ledger: [`state`], [`clock`], [`intents`], [`rng`], [`hash`], [`ledger`],
+//! their unit tests, and the two gates doc 16 §8 names. Its public surface is a
+//! contract.
 //!
-//! **A.2** adds `index.rs` (the uniform grid of cell buckets, rebuilt every
-//! substep), `motion.rs` (doc 16 §3.4 per substep over `move_cost`) and `step.rs`
-//! (the five pulse phases of doc 16 §3.1, in order, each reading what the
-//! previous committed) on exactly the surface below, plus the cross-tempo
-//! property test. **There is deliberately no `step` here**: A.1 builds
-//! everything `step` needs and schedules nothing it does not own, so that the
-//! seam between the two halves is a compile error rather than a judgement call.
+//! **A.2 (this commit)** adds [`index`] (the uniform grid of cell buckets,
+//! rebuilt every substep, and the one Euclidean range function), [`motion`]
+//! (doc 16 §3.4 per substep over `move_cost`, with a fixed-point sine table so
+//! that a stored position is an integer a replay reproduces) and [`step`] (the
+//! five pulse phases of doc 16 §3.1, in order, each reading what the previous
+//! committed) on exactly A.1's surface, plus three additions to it that the
+//! pulse needs and A.1 could not have used: [`state::Arena::index`],
+//! [`state::Arena::last_frames`] and [`state::Arena::substep_hashes`].
+//!
+//! The tests that pin the claim are `crates/tacsim/tests/arena.rs`: one scripted
+//! control and intent log replayed at 5,000, 1,000 and 500 ms produces one
+//! ordered event list and one per-substep hash sequence, crossing an impassable
+//! band and an occupied cell.
+//!
+//! What is still not here, and whose it is: `LOCK` is cut S's and `FIRE` is cut
+//! W's (phase 4 refuses both), the sensor pass and the contact share are cut S's,
+//! the impact and the weapon cycle are cut W's, and the task, the inbox, the
+//! egress, the timer and the unwind boundary are cut T's.
 
 pub mod clock;
 pub mod hash;
+pub mod index;
 pub mod intents;
 pub mod ledger;
+pub mod motion;
 pub mod rng;
 pub mod state;
+pub mod step;
 
 pub use clock::{Clock, MIN_SUBSTEP_MS, Tempo, TempoSignals, substep_ms, substeps};
 pub use hash::state_hash;
+pub use index::{SpatialIndex, range_cm};
 pub use intents::{
     Control, ControlState, Intent, IntentKind, IntentOutcome, Refusal, apply_control, apply_intent,
     drain_pending, resolve_startup,
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
+pub use motion::{MotionOutcome, cos_fx, integrate, sin_fx};
 pub use rng::{DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_permille};
 pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, Classification, ContactId,
@@ -65,6 +81,7 @@ pub use state::{
     MatchEnd, MotionLimits, Pilot, Power, ShadowContact, ShadowContacts, Side, StopReason, Team,
     TerrainCell, TrackedRules, UnitState,
 };
+pub use step::{Frame, FrameSlots, StepOutput};
 
 /// The fixtures every module's unit tests share: a window, a pose, a stock tank
 /// and a one-call [`Arena`].

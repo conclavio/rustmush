@@ -23,8 +23,10 @@ use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
 
 use crate::arena::clock::Clock;
+use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{EventKind, Ledger};
+use crate::arena::step::FrameSlots;
 use crate::config::{ArenaConfig, MatchConfig};
 
 /// The digest domain of [`ArenaDefinition::digest`]. Length-prefixed fields
@@ -1022,6 +1024,21 @@ pub enum ArenaError {
         /// The offered heading.
         heading_mdeg: u32,
     },
+    /// Two units were handed over standing in one cell.
+    #[error(
+        "units {unit} and {other} were both handed over in cell ({x}, {y}): occupancy is one unit \
+         per cell, so a check-out places them apart"
+    )]
+    CellOccupied {
+        /// The unit that could not be placed.
+        unit: ObjId,
+        /// The unit already in the cell.
+        other: ObjId,
+        /// The column.
+        x: u16,
+        /// The row.
+        y: u16,
+    },
     /// A pilot names a unit that was not handed over.
     #[error(
         "pilot {pilot} is seated at station {station:?} on unit {unit}, which was not handed over: a \
@@ -1067,6 +1084,14 @@ pub struct Arena {
     pub due: DueHeap,
     /// The streaming match ledger.
     pub ledger: Ledger,
+    /// **The uniform grid over unit positions** (doc 16 §3.2 "The spatial
+    /// index"), rebuilt twice per substep by [`Arena::step`].
+    ///
+    /// It lives on the arena rather than inside the pulse so that its buffer —
+    /// one slot per cell, 65,536 of them on the shipped window — is allocated
+    /// once for the match instead of once per substep, and so that cut S's sensor
+    /// pass reads the same index motion tested occupancy against.
+    pub index: SpatialIndex,
     /// The adaptive tempo and the lag clamp.
     pub clock: Clock,
     /// The match seed: the key of every draw.
@@ -1080,6 +1105,19 @@ pub struct Arena {
     pub stop: Option<StopReason>,
     /// Arena time: milliseconds since match start.
     pub now_ms: i64,
+    /// **The last frame each pilot was sent** (doc 16 §3.1's *latest-wins slot per
+    /// pilot*), so a pulse that changed nothing a pilot can see sends nothing.
+    pub last_frames: FrameSlots,
+    /// **The state hash of every substep of the pulse just run**, in order, and
+    /// cleared at the start of each pulse (doc 16 §3.1 "Determinism": *each substep
+    /// produces a state hash recorded with its pulse*).
+    ///
+    /// The ledger records a hash on each event, but a substep that journalled
+    /// nothing would leave the sequence with a hole, and the property the hash
+    /// exists for — one scripted log replayed at three tempos produces one hash
+    /// sequence — is about every substep. This is where a test, the harness and cut
+    /// T's watchdog read it.
+    pub substep_hashes: Vec<u64>,
     /// Set once, when the match ends.
     pub ended: Option<MatchEnd>,
     /// The frozen `[tacsim.arena]` block.
@@ -1093,8 +1131,9 @@ impl Arena {
     ///
     /// In order: the units are sorted by id and checked for duplicates; each
     /// pose is checked to be a bearing on the window; each seated pilot's
-    /// station raises the epoch table; the first `position_summary` is scheduled
-    /// at `ledger.summary_ms`; and `match_started` is the ledger's first event,
+    /// station raises the epoch table; the spatial index is built over the
+    /// opening poses; the first `position_summary` is scheduled at
+    /// `ledger.summary_ms`; and `match_started` is the ledger's first event,
     /// carrying the opening state hash.
     ///
     /// # Stations and epochs
@@ -1194,6 +1233,35 @@ impl Arena {
             i64::from(arena_cfg.ledger.summary_ms),
             DueKind::PositionSummary,
         );
+        // Doc 16 §3.4 step 5: occupancy is one unit per cell. Motion is what keeps
+        // it true once the match is running (step 4 refuses an occupied cell), and
+        // this is what makes it true to begin with — the alternative is a cell whose
+        // occupancy has two answers, which every later reader of the index would
+        // have to carry a rule for. **16b cut A.2 added this check**; cut T's
+        // check-out is its caller and places the eight tanks on eight cells.
+        let mut cells: Vec<((u16, u16), ObjId)> = states
+            .iter()
+            .filter_map(|state| {
+                definition
+                    .terrain
+                    .cell_of(&state.pose)
+                    .map(|cell| (cell, state.id))
+            })
+            .collect();
+        cells.sort_unstable();
+        if let Some(((x, y), unit, other)) = cells
+            .windows(2)
+            .find(|pair| pair.first().map(|(at, _)| *at) == pair.get(1).map(|(at, _)| *at))
+            .and_then(|pair| {
+                let (cell, lower) = *pair.first()?;
+                let (_, higher) = *pair.get(1)?;
+                Some((cell, higher, lower))
+            })
+        {
+            return Err(ArenaError::CellOccupied { unit, other, x, y });
+        }
+        let mut index = SpatialIndex::new(&definition.terrain);
+        index.rebuild(&definition.terrain, &states);
         let mut arena = Arena {
             definition,
             units: states,
@@ -1201,12 +1269,15 @@ impl Arena {
             contacts: ShadowContacts::new(),
             due,
             ledger: Ledger::new(&arena_cfg.ledger),
+            index,
             clock: Clock::new(),
             seed,
             pilots,
             pending: BTreeMap::new(),
             stop: None,
             now_ms: 0,
+            last_frames: FrameSlots::new(),
+            substep_hashes: Vec::new(),
             ended: None,
             arena_cfg: arena_cfg.clone(),
             match_cfg: match_cfg.clone(),
@@ -1469,6 +1540,51 @@ mod tests {
             &MatchConfig::default(),
         );
         assert!(matches!(nothing, Err(ArenaError::NoUnits)));
+    }
+
+    #[test]
+    fn opening_a_match_refuses_two_units_in_one_cell() {
+        // Doc 16 §3.4 step 5: occupancy is one unit per cell. Two poses in cell
+        // (2, 2) — different centimetres, one cell — and the refusal names the
+        // cell and the unit already in it (the lower id, because it is the one a
+        // check-out would have placed first).
+        let shared = Arena::new(
+            custody(
+                vec![
+                    tank(ObjId(9), Team::Blue, pose(2_500, 2_500)),
+                    tank(ObjId(4), Team::Red, pose(2_100, 2_900)),
+                ],
+                Vec::new(),
+            ),
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+        );
+        assert!(
+            matches!(
+                shared,
+                Err(ArenaError::CellOccupied {
+                    unit: ObjId(9),
+                    other: ObjId(4),
+                    x: 2,
+                    y: 2
+                })
+            ),
+            "{shared:?}"
+        );
+        // Adjacent cells are fine, and so is the cell boundary: 2,999 is column 2
+        // and 3,000 is column 3.
+        let apart = Arena::new(
+            custody(
+                vec![
+                    tank(ObjId(4), Team::Red, pose(2_999, 2_500)),
+                    tank(ObjId(9), Team::Blue, pose(3_000, 2_500)),
+                ],
+                Vec::new(),
+            ),
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+        );
+        assert!(apart.is_ok(), "{apart:?}");
     }
 
     #[test]

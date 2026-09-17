@@ -494,6 +494,140 @@ fn standable(class: TerrainClass) -> bool {
     )
 }
 
+/// The relief, the booted world and the open window every measurement in this
+/// file starts from.
+///
+/// One helper rather than two copies: cut A's `Arena::step` is measured against
+/// the world-side baseline, and a comparison whose two halves generated different
+/// terrain would not be one. The cells are handed over raw — every cell of the
+/// 256 by 256 grid, with its class and its elevation — and each measurement makes
+/// of them what it needs: the baseline scatters units on the standable ones, and
+/// the arena measurement converts the whole grid into [`TerrainCell`]s.
+struct Window {
+    tw: TestWorld,
+    domain: DomainId,
+    /// Every cell, row-major, as `(x, y, class, elev_cm)`.
+    cells: Vec<(u16, u16, TerrainClass, i16)>,
+    /// How many cells of each class the recipe produced.
+    classes: BTreeMap<&'static str, u64>,
+    generate_ms: f64,
+    boot_ms: f64,
+    apply_ms: f64,
+    open_ms: f64,
+}
+
+/// Generate the relief, boot the production roster over it, apply both packs and
+/// open the 256 by 256 window, answering the world and the cells.
+fn open_window(seed: u64) -> Window {
+    let started = Instant::now();
+    let relief = Relief::generate(seed);
+    let region_json = region_pack(&relief, seed);
+    let region_digest = mush_content::load_pack(&region_json)
+        .expect("the region pack verifies")
+        .manifest()
+        .digest()
+        .to_hex();
+    let area_json = area_pack(&region_digest);
+    let atlas = AtlasConfig {
+        // The `[atlas].pack_paths` route: the host reads the bytes, the module
+        // shelves them. Nothing is written to disk.
+        packs: vec![
+            PackSource {
+                name: format!("<harness {REGION_PACK}>"),
+                bytes: region_json,
+            },
+            PackSource {
+                name: format!("<harness {AREA_PACK}>"),
+                bytes: area_json,
+            },
+        ],
+        ..AtlasConfig::default()
+    };
+    let generate_ms = started.elapsed().as_secs_f64() * 1_000.0;
+
+    let boot_at = Instant::now();
+    let mut tw = TestWorld::with_modules(production_roster(atlas));
+    tw.set_now(1_700_000_000);
+    let boot_ms = boot_at.elapsed().as_secs_f64() * 1_000.0;
+
+    let apply_at = Instant::now();
+    apply_pack(&mut tw, REGION_PACK);
+    apply_pack(&mut tw, AREA_PACK);
+    let apply_ms = apply_at.elapsed().as_secs_f64() * 1_000.0;
+
+    let lo = ORIGIN_M;
+    let hi = ORIGIN_M + i64::from(SIDE) * i64::from(CELL_CM) / 100;
+    let open_at = Instant::now();
+    let (events, effects) = step(
+        &mut tw,
+        GOD,
+        &format!("@atlas/window open {lo},{lo},{hi},{hi}={CELL_CM}"),
+    );
+    let text = said(&tw, &events, GOD);
+    assert!(
+        text.contains("opens; its map is being drawn"),
+        "the window did not open:\n{text}"
+    );
+    finish_composites(&mut tw, GOD, &effects);
+    let open_ms = open_at.elapsed().as_secs_f64() * 1_000.0;
+
+    let domain = {
+        let st = tw
+            .world()
+            .module_state::<AtlasState>()
+            .expect("the atlas state");
+        st.windows
+            .open
+            .keys()
+            .max()
+            .copied()
+            .map(DomainId)
+            .expect("a window entry")
+    };
+
+    let (grid_w, grid_h, cells, classes) = {
+        let st = tw
+            .world()
+            .module_state::<AtlasState>()
+            .expect("the atlas state");
+        let entry = st
+            .windows
+            .open
+            .get(&domain.0)
+            .expect("the window is still open");
+        let composite = entry
+            .composite
+            .as_ref()
+            .expect("the composite landed before the scatter");
+        let surface = composite
+            .surfaces
+            .first()
+            .expect("the ground surface composited");
+        let mut all: Vec<(u16, u16, TerrainClass, i16)> = Vec::new();
+        let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        for (x, y, cell) in surface.cells.iter() {
+            *counts.entry(cell.class.label()).or_default() += 1;
+            all.push((x, y, cell.class, cell.elev_cm));
+        }
+        (surface.grid.width, surface.grid.height, all, counts)
+    };
+    assert_eq!(
+        (grid_w, grid_h),
+        (SIDE, SIDE),
+        "the window did not frame one 256 by 256 grid"
+    );
+    Window {
+        tw,
+        domain,
+        cells,
+        classes,
+        generate_ms,
+        boot_ms,
+        apply_ms,
+        open_ms,
+    }
+}
+
 /// Where `TACSIM_JSON` lands. `cargo test` runs an integration test with the
 /// **package** directory as its working directory, so a relative report path is
 /// resolved against the workspace root instead — the same two-levels-up walk
@@ -578,109 +712,25 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
         "the harness's cell size is no longer `[tacsim].ground_cell_cm`"
     );
     let rss_start_kib = resident_kib();
-    let started = Instant::now();
 
-    // ---- the relief, through the atlas's own pack route ----
-    let relief = Relief::generate(knobs.seed);
-    let region_json = region_pack(&relief, knobs.seed);
-    let region_digest = mush_content::load_pack(&region_json)
-        .expect("the region pack verifies")
-        .manifest()
-        .digest()
-        .to_hex();
-    let area_json = area_pack(&region_digest);
-    let atlas = AtlasConfig {
-        // The `[atlas].pack_paths` route: the host reads the bytes, the module
-        // shelves them. Nothing is written to disk.
-        packs: vec![
-            PackSource {
-                name: format!("<harness {REGION_PACK}>"),
-                bytes: region_json,
-            },
-            PackSource {
-                name: format!("<harness {AREA_PACK}>"),
-                bytes: area_json,
-            },
-        ],
-        ..AtlasConfig::default()
-    };
-    let generate_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    // ---- the relief, the world and the window ----
+    let Window {
+        mut tw,
+        domain,
+        cells: all_cells,
+        classes: class_counts,
+        generate_ms,
+        boot_ms,
+        apply_ms,
+        open_ms,
+    } = open_window(knobs.seed);
 
-    let boot_at = Instant::now();
-    let mut tw = TestWorld::with_modules(production_roster(atlas));
-    tw.set_now(1_700_000_000);
-    let boot_ms = boot_at.elapsed().as_secs_f64() * 1_000.0;
-
-    let apply_at = Instant::now();
-    apply_pack(&mut tw, REGION_PACK);
-    apply_pack(&mut tw, AREA_PACK);
-    let apply_ms = apply_at.elapsed().as_secs_f64() * 1_000.0;
-
-    // ---- the window, through the existing `@atlas/window` lane ----
-    let lo = ORIGIN_M;
-    let hi = ORIGIN_M + i64::from(SIDE) * i64::from(CELL_CM) / 100;
-    let open_at = Instant::now();
-    let (events, effects) = step(
-        &mut tw,
-        GOD,
-        &format!("@atlas/window open {lo},{lo},{hi},{hi}={CELL_CM}"),
-    );
-    let text = said(&tw, &events, GOD);
-    assert!(
-        text.contains("opens; its map is being drawn"),
-        "the window did not open:\n{text}"
-    );
-    finish_composites(&mut tw, GOD, &effects);
-    let open_ms = open_at.elapsed().as_secs_f64() * 1_000.0;
-
-    let domain = {
-        let st = tw
-            .world()
-            .module_state::<AtlasState>()
-            .expect("the atlas state");
-        st.windows
-            .open
-            .keys()
-            .max()
-            .copied()
-            .map(DomainId)
-            .expect("a window entry")
-    };
-
-    // ---- the cells the scatter may use, read back off the composite ----
-    let (grid_w, grid_h, cells, class_counts) = {
-        let st = tw
-            .world()
-            .module_state::<AtlasState>()
-            .expect("the atlas state");
-        let entry = st
-            .windows
-            .open
-            .get(&domain.0)
-            .expect("the window is still open");
-        let composite = entry
-            .composite
-            .as_ref()
-            .expect("the composite landed before the scatter");
-        let surface = composite
-            .surfaces
-            .first()
-            .expect("the ground surface composited");
-        let mut open_cells: Vec<(u16, u16, i32)> = Vec::new();
-        let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
-        for (x, y, cell) in surface.cells.iter() {
-            *counts.entry(cell.class.label()).or_default() += 1;
-            if standable(cell.class) {
-                open_cells.push((x, y, i32::from(cell.elev_cm)));
-            }
-        }
-        (surface.grid.width, surface.grid.height, open_cells, counts)
-    };
-    assert_eq!(
-        (grid_w, grid_h),
-        (SIDE, SIDE),
-        "the window did not frame one 256 by 256 grid"
-    );
+    // ---- the cells the scatter may use ----
+    let cells: Vec<(u16, u16, i32)> = all_cells
+        .iter()
+        .filter(|(_, _, class, _)| standable(*class))
+        .map(|(x, y, _, elev_cm)| (*x, *y, i32::from(*elev_cm)))
+        .collect();
     assert!(
         !cells.is_empty(),
         "the relief left no cell a unit could stand on"
@@ -989,3 +1039,596 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Cut A: the arena's own pulse, at the same scale
+// ---------------------------------------------------------------------------
+
+/// **The `tracked` movement cost of each terrain class, for the harness only.**
+///
+/// Doc 16 §3.2 says the arena's terrain is *the existing 18-class cell grid*, and
+/// `tacsim::arena::state::TerrainCell` carries `move_cost` as data so that a test
+/// can lay one down with no atlas at all — `0` is impassable and the terrain
+/// factor is `100 / move_cost`. Nothing has yet decided the shipped numbers: the
+/// authored `arenas/proving_ground.json` is cut C's and the passability tables are
+/// cut T's. So this table is **the harness's own**, chosen to be plausible and to
+/// put the water and the walls out of bounds so that units really do run into
+/// edges and into each other, and it is named as a test-local table rather than
+/// left to look like a shipped decision.
+fn harness_move_cost(class: TerrainClass) -> u16 {
+    match class {
+        TerrainClass::Ground
+        | TerrainClass::Grass
+        | TerrainClass::Paved
+        | TerrainClass::Sand
+        | TerrainClass::Regolith => 100,
+        TerrainClass::Road => 80,
+        TerrainClass::WoodsLight => 150,
+        TerrainClass::WoodsHeavy => 250,
+        TerrainClass::Rubble | TerrainClass::Rock | TerrainClass::Ice => 200,
+        // Impassable to a tank: water of either depth, a wall, a doorway, an
+        // interior floor or platform, and the cells that are not a surface at all.
+        TerrainClass::Water
+        | TerrainClass::WaterDeep
+        | TerrainClass::Wall
+        | TerrainClass::Void
+        | TerrainClass::Door
+        | TerrainClass::Floor
+        | TerrainClass::Platform => 0,
+    }
+}
+
+/// The stock tank the arena measurement drives: 1,500 cm/s forward, 50% in
+/// reverse, 100/200 cm/s², 30 degrees a second (the numbers cut A is measured at;
+/// the authored definition is cut C's).
+fn harness_mobility() -> tacsim::arena::state::TrackedRules {
+    tacsim::arena::state::TrackedRules {
+        max_speed_cms: 1_500,
+        accel_cms2: 100,
+        brake_cms2: 200,
+        turn_rate_mdeg_s: 30_000,
+        reverse_factor_pct: 50,
+    }
+}
+
+/// An exact definition identity with a zero digest, for the harness's own shapes.
+fn harness_dref(kind: &str, name: &str) -> mush_tactics::DefinitionRef {
+    mush_tactics::DefinitionRef::new(
+        mush_core::DefinitionKey::new(
+            mush_core::OwnerId::new("tacsim").expect("a canonical owner"),
+            mush_core::DefinitionKind::new(kind).expect("a canonical kind"),
+            mush_core::DefinitionId::new(name).expect("a canonical id"),
+        ),
+        1,
+        mush_core::DefinitionDigest::from_bytes([0_u8; 32]),
+    )
+    .expect("version 1 is not zero")
+}
+
+/// An empty opaque rules blob.
+fn harness_rules() -> mush_tactics::RulesValue {
+    mush_tactics::RulesValue::new(
+        harness_dref("schema", "tacsim.arena.harness"),
+        serde_json::json!({}),
+    )
+    .expect("an empty rules blob")
+}
+
+/// The smallest M32 unit the arena can carry: one hull section, one facet, one
+/// armor cell. Cut A applies no plan to it (D-16-6), so the shape is enough and
+/// the authored `line_tank` is cut C's.
+fn harness_unit(id: ObjId) -> mush_tactics::TacticalUnit {
+    let spec = mush_tactics::UnitSpec {
+        definition: harness_dref("unit", "tacsim.unit.line_tank"),
+        sections: vec![mush_tactics::SectionSpec {
+            id: mush_tactics::SectionId::new("hull").expect("a canonical section"),
+            condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+            facets: vec![mush_tactics::FacetSpec {
+                id: mush_tactics::FacetId::new("front").expect("a canonical facet"),
+                cells: vec![mush_tactics::CellSpec {
+                    id: mush_tactics::CellId::new("armor").expect("a cell"),
+                    min: 0,
+                    max: 10,
+                    init: 10,
+                }],
+            }],
+            slots: Vec::new(),
+            cells: vec![mush_tactics::CellSpec {
+                id: mush_tactics::CellId::new("internals").expect("a cell"),
+                min: 0,
+                max: 8,
+                init: 8,
+            }],
+        }],
+        unit_cells: Vec::new(),
+        components: Vec::new(),
+        capabilities: Vec::new(),
+        mobility: None,
+        rules: harness_rules(),
+    };
+    mush_tactics::TacticalUnit::from_spec(&spec, id).expect("a one-section unit")
+}
+
+/// How many times `needle` occurs in `bytes` — the ledger is JSON lines, so
+/// counting a kind is counting a substring, and a chunk can be counted as it
+/// streams rather than kept.
+fn occurrences(bytes: &[u8], needle: &str) -> u64 {
+    u64::try_from(String::from_utf8_lossy(bytes).matches(needle).count()).unwrap_or(0)
+}
+
+/// `<stem>-arena.<ext>` beside the baseline's report, so the two measurements do
+/// not overwrite each other's JSON.
+fn arena_report_path(given: &str) -> std::path::PathBuf {
+    let path = report_path(given);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "harness".to_string());
+    let ext = path
+        .extension()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "json".to_string());
+    path.with_file_name(format!("{stem}-arena.{ext}"))
+}
+
+/// **Cut A's measurement** (16b §6's verify lens: *the harness at 300 moving units
+/// stays under 5 ms per pulse before perception and weapons exist*).
+///
+/// The same generated relief as the baseline above, converted into an
+/// `ArenaDefinition` through [`harness_move_cost`], with `TACSIM_UNITS` tanks
+/// scattered over the passable cells and `TACSIM_FIGHTING` of them seated, driven
+/// through `Arena::step` at the `Engaged` period with the tempo pinned there.
+///
+/// **Every unit is brought online the real way**: a `STARTUP` intent in the
+/// opening pulse and then `match.startup_ms` of arena time, measured separately as
+/// the warm-up, rather than by constructing the units online. Then each is given a
+/// heading and its ceiling speed, and a fresh seeded heading every ten pulses, so
+/// that they keep moving, hit the water and the window's edge, and block each
+/// other rather than settling into a corner.
+///
+/// The arena frame is the **window's own**: cell `(0, 0)` is at the origin,
+/// because `ArenaTerrain` puts the window's corner there. Cut T is where the
+/// region frame and the arena frame are reconciled at check-out and check-in.
+#[test]
+#[ignore = "tacsim harness: run by the CI `tacsim-harness` job (workflow_dispatch / weekly)"]
+#[allow(clippy::too_many_lines)]
+fn tacsim_harness_arena_step() {
+    use tacsim::arena::clock::Tempo as ArenaTempo;
+    use tacsim::arena::intents::{Intent, IntentKind};
+    use tacsim::arena::state::{
+        Arena, ArenaDefinition, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EntryZone,
+        MatchEnd, Pilot, Power, Team, TerrainCell,
+    };
+    use tacsim::arena::step::StepOutput;
+    use tacsim::config::{ArenaConfig, MatchConfig};
+
+    let knobs = Knobs::from_env();
+    let rss_start_kib = resident_kib();
+
+    // ---- the relief, as an arena definition ----
+    let Window {
+        tw,
+        cells: all_cells,
+        classes: class_counts,
+        generate_ms,
+        boot_ms,
+        apply_ms,
+        open_ms,
+        ..
+    } = open_window(knobs.seed);
+    // The world was needed for the terrain and for nothing else: the arena is a
+    // library (doc 16 §3.1) and holds no handle on it.
+    drop(tw);
+
+    let convert_at = Instant::now();
+    let mut grid = vec![
+        TerrainCell {
+            class: TerrainClass::Void,
+            elev_cm: 0,
+            move_cost: 0,
+        };
+        usize::from(SIDE) * usize::from(SIDE)
+    ];
+    for (x, y, class, elev_cm) in &all_cells {
+        let at = usize::from(*y) * usize::from(SIDE) + usize::from(*x);
+        if let Some(cell) = grid.get_mut(at) {
+            *cell = TerrainCell {
+                class: *class,
+                elev_cm: *elev_cm,
+                move_cost: harness_move_cost(*class),
+            };
+        }
+    }
+    let passable: Vec<(u16, u16, i16)> = grid
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| cell.move_cost != 0)
+        .filter_map(|(at, cell)| {
+            let x = u16::try_from(at % usize::from(SIDE)).ok()?;
+            let y = u16::try_from(at / usize::from(SIDE)).ok()?;
+            Some((x, y, cell.elev_cm))
+        })
+        .collect();
+    let definition = ArenaDefinition {
+        id: smol_str::SmolStr::new("tacsim.arena.harness"),
+        terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, grid).expect("the arena window"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 15,
+                y1: SIDE - 1,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: SIDE - 16,
+                y0: 0,
+                x1: SIDE - 1,
+                y1: SIDE - 1,
+            },
+        ],
+    };
+    let convert_ms = convert_at.elapsed().as_secs_f64() * 1_000.0;
+    assert!(
+        u32::try_from(passable.len()).unwrap_or(0) > knobs.units,
+        "only {} passable cells for {} units",
+        passable.len(),
+        knobs.units
+    );
+
+    // ---- the units: a seeded scatter over distinct passable cells ----
+    let mut rng = ChaCha8Rng::seed_from_u64(knobs.seed ^ 0x000a_4e17);
+    let mut pool: Vec<(u16, u16, i16)> = passable.clone();
+    let mut units: Vec<CustodyUnit> = Vec::new();
+    let mut pilots: Vec<Pilot> = Vec::new();
+    for n in 0..knobs.units {
+        if pool.is_empty() {
+            break;
+        }
+        let pick = rng.random_range(0..pool.len());
+        let (cx, cy, elev_cm) = pool.swap_remove(pick);
+        let id = ObjId(100_000 + n);
+        let pose = mush_sim::data::Pose {
+            x_cm: i64::from(cx) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+            y_cm: i64::from(cy) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+            z_cm: i32::from(elev_cm),
+            heading_mdeg: rng.random_range(0..360_u32) * 1_000,
+            posture: harness_rules(),
+        };
+        if n < knobs.fighting {
+            pilots.push(Pilot {
+                unit: id,
+                pilot: ObjId(500_000 + n),
+                station: smol_str::SmolStr::new("cockpit"),
+                epoch: 1,
+            });
+        }
+        units.push(CustodyUnit {
+            id,
+            team: if n % 2 == 0 { Team::Red } else { Team::Blue },
+            pose,
+            mobility: harness_mobility(),
+            unit: harness_unit(id),
+        });
+    }
+    let placed = u32::try_from(units.len()).unwrap_or(0);
+    let seated = u32::try_from(pilots.len()).unwrap_or(0);
+
+    let arena_cfg = ArenaConfig::default();
+    let match_cfg = MatchConfig::default();
+    let open_at = Instant::now();
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots,
+            seed: knobs.seed,
+        },
+        &arena_cfg,
+        &match_cfg,
+    )
+    .expect("the harness arena opens");
+    let arena_open_ms = open_at.elapsed().as_secs_f64() * 1_000.0;
+    // D-16-2: the tempo decides only how often `step` runs. The measurement is of
+    // `Engaged`, which is where the p99 ceiling applies, so it is held there.
+    arena.clock.pin_tempo_for_tests(ArenaTempo::Engaged);
+    let period_ms = i64::from(arena_cfg.tempo.engaged_ms);
+
+    let mut ledger_bytes_streamed = 0_u64;
+    let mut chunks = 0_u64;
+    let mut blocked = 0_u64;
+    let absorb_out = |out: &StepOutput, chunks: &mut u64, blocked: &mut u64, bytes: &mut u64| {
+        for chunk in &out.ledger_chunks {
+            *chunks += 1;
+            *bytes += u64::try_from(chunk.bytes.len()).unwrap_or(0);
+            *blocked += occurrences(&chunk.bytes, "\"kind\":\"blocked\"");
+        }
+    };
+
+    // ---- the warm-up: STARTUP, then `match.startup_ms` of arena time ----
+    let warm_at = Instant::now();
+    let startup: Vec<Intent> = arena
+        .units
+        .iter()
+        .map(|unit| unit.id)
+        .enumerate()
+        .map(|(n, id)| Intent {
+            unit: id,
+            channel: Channel::Helm,
+            epoch: arena.epochs.current(id, Channel::Helm),
+            kind: IntentKind::Startup,
+            seq: u64::try_from(n).unwrap_or(0),
+        })
+        .collect();
+    let mut wall = 0_i64;
+    let out = arena.step(wall, &[], &startup);
+    absorb_out(&out, &mut chunks, &mut blocked, &mut ledger_bytes_streamed);
+    let mut warm_pulses = 1_u32;
+    while arena.now_ms < i64::from(match_cfg.startup_ms) {
+        wall += period_ms;
+        let out = arena.step(wall, &[], &[]);
+        absorb_out(&out, &mut chunks, &mut blocked, &mut ledger_bytes_streamed);
+        arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+        warm_pulses += 1;
+    }
+    let warm_ms = warm_at.elapsed().as_secs_f64() * 1_000.0;
+    let cold = arena
+        .units
+        .iter()
+        .filter(|unit| unit.power != Power::Online)
+        .count();
+    assert_eq!(cold, 0, "{cold} units never came online");
+
+    // ---- the orders, and the measured pulses ----
+    let orders = |arena: &Arena, rng: &mut ChaCha8Rng, with_speed: bool| -> Vec<Intent> {
+        let mut out: Vec<Intent> = Vec::new();
+        for (n, id) in arena.units.iter().map(|unit| unit.id).enumerate() {
+            let epoch = arena.epochs.current(id, Channel::Helm);
+            let seq = u64::try_from(n).unwrap_or(0);
+            out.push(Intent {
+                unit: id,
+                channel: Channel::Helm,
+                epoch,
+                kind: IntentKind::Heading {
+                    mdeg: rng.random_range(0..360_u32) * 1_000,
+                },
+                seq,
+            });
+            if with_speed {
+                out.push(Intent {
+                    unit: id,
+                    channel: Channel::Helm,
+                    epoch,
+                    kind: IntentKind::Speed {
+                        cms: i32::try_from(harness_mobility().max_speed_cms).unwrap_or(i32::MAX),
+                    },
+                    seq,
+                });
+            }
+        }
+        out
+    };
+
+    let mut per_pulse: Vec<f64> = Vec::with_capacity(usize::try_from(knobs.pulses).unwrap_or(0));
+    let mut substeps: Vec<u32> = Vec::new();
+    let mut frames: Vec<f64> = Vec::new();
+    let mut ended: Option<MatchEnd> = None;
+    let mut lagged_pulses = 0_u32;
+    for pulse in 0..knobs.pulses {
+        wall += period_ms;
+        // A fresh heading every ten pulses, and the speed order with the first
+        // one: a standing speed order is what keeps them driving into things.
+        let issued = if pulse % 10 == 0 {
+            orders(&arena, &mut rng, pulse == 0)
+        } else {
+            Vec::new()
+        };
+        let at = Instant::now();
+        let out = arena.step(wall, &[], &issued);
+        per_pulse.push(at.elapsed().as_secs_f64() * 1_000.0);
+        substeps.push(out.substeps);
+        #[allow(clippy::cast_precision_loss)]
+        frames.push(out.frames.len() as f64);
+        if out.lagged {
+            lagged_pulses += 1;
+        }
+        absorb_out(&out, &mut chunks, &mut blocked, &mut ledger_bytes_streamed);
+        // The world half's acknowledgement (doc 16 §3.1's ack-gated egress), so the
+        // bounded ring is measured draining as it would in production.
+        arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+        if let Some(end) = out.ended {
+            ended = Some(end);
+            break;
+        }
+    }
+    // Whatever is still open leaves with the measurement.
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        chunks += 1;
+        ledger_bytes_streamed += u64::try_from(chunk.bytes.len()).unwrap_or(0);
+        blocked += occurrences(&chunk.bytes, "\"kind\":\"blocked\"");
+    }
+
+    let rss_end_kib = resident_kib();
+    let tempo = Tempo {
+        name: "arena_engaged",
+        period_ms: arena_cfg.tempo.engaged_ms,
+        ms: per_pulse,
+    };
+    let (p50, p95, p99, max) = tempo.stats();
+    let substeps_min = substeps.iter().copied().min().unwrap_or(0);
+    let substeps_max = substeps.iter().copied().max().unwrap_or(0);
+    #[allow(clippy::cast_precision_loss)]
+    let frames_mean = if frames.is_empty() {
+        0.0
+    } else {
+        frames.iter().sum::<f64>() / frames.len() as f64
+    };
+    let moving = arena
+        .units
+        .iter()
+        .filter(|unit| unit.speed_cms != 0)
+        .count();
+    let held = arena.units.iter().filter(|unit| unit.blocked).count();
+
+    // **The measurement was of a loaded arena.** These are not thresholds and they
+    // do not wait for `TACSIM_ASSERT`: a regression that refused every `Speed`
+    // order, or stopped integrating, would make the pulse *faster* and pass every
+    // timing bound in this file, so the report would say the arena is fast at doing
+    // nothing. The numbers themselves are noise; that they are non-zero is not.
+    assert!(
+        moving > 0,
+        "no unit was moving: the measurement was of a parked arena"
+    );
+    assert!(
+        blocked > 0,
+        "nothing was ever blocked: the units never reached the water, each other or \
+         the window's edge, so the boundary test was not measured"
+    );
+    assert!(
+        ledger_bytes_streamed > 0,
+        "the ledger streamed nothing: the egress was not measured"
+    );
+    assert_eq!(lagged_pulses, 0, "the measurement was taken while lagging");
+
+    // ---- the report ----
+    println!(
+        "harness_arena_world: units={placed}/{} pilots={seated} cell_cm={CELL_CM} side={SIDE} passable_cells={} seed={} arena_ms={}",
+        knobs.units,
+        passable.len(),
+        knobs.seed,
+        arena.now_ms
+    );
+    let classes = class_counts
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!("harness_arena_classes: {classes}");
+    println!(
+        "harness_arena_setup_ms: generate={generate_ms:.1} boot={boot_ms:.1} pack_apply={apply_ms:.1} window_open={open_ms:.1} terrain_convert={convert_ms:.1} arena_open={arena_open_ms:.1} warm_up={warm_ms:.1} warm_pulses={warm_pulses}"
+    );
+    println!(
+        "harness_arena_engaged: period_ms={} pulses={} p50={p50:.3} p95={p95:.3} p99={p99:.3} max={max:.3}",
+        tempo.period_ms,
+        tempo.ms.len()
+    );
+    println!(
+        "harness_arena_substeps: per_pulse_min={substeps_min} per_pulse_max={substeps_max} substep_ms={}",
+        tacsim::arena::clock::substep_ms(
+            &arena_cfg.tempo,
+            CELL_CM,
+            harness_mobility().max_speed_cms
+        )
+    );
+    println!(
+        "harness_arena_counters: blocked={blocked} ledger_bytes={ledger_bytes_streamed} chunks={chunks} frames_per_pulse_mean={frames_mean:.2} moving_at_end={moving} held_at_end={held} lagged_pulses={lagged_pulses} ended={}",
+        ended.map_or("none".to_string(), |end| format!("{:?}", end.reason))
+    );
+    println!(
+        "harness_arena_memory: vmrss_start_kib={} vmrss_end_kib={}",
+        rss_start_kib.map_or("absent".to_string(), |k| k.to_string()),
+        rss_end_kib.map_or("absent".to_string(), |k| k.to_string())
+    );
+    println!(
+        "harness_arena_thresholds: assert={} cut_a_p99_ms={ARENA_P99_MS} engaged_p99_ms={} max_ledger_bytes={}",
+        knobs.assert, knobs.engaged_p99_ms, knobs.max_ledger_bytes
+    );
+
+    let report = serde_json::json!({
+        "what": "16b cut A: `Arena::step` driven directly at the harness's scale, every unit moving",
+        "world": {
+            "units": placed,
+            "pilots": seated,
+            "cell_cm": CELL_CM,
+            "side_cells": SIDE,
+            "passable_cells": passable.len(),
+            "seed": knobs.seed,
+            "arena_ms": arena.now_ms,
+            "move_cost_table": "harness-local (harness_move_cost); the authored arena is cut C's",
+        },
+        "classes": class_counts,
+        "setup_ms": {
+            "generate": num(generate_ms),
+            "boot": num(boot_ms),
+            "pack_apply": num(apply_ms),
+            "window_open": num(open_ms),
+            "terrain_convert": num(convert_ms),
+            "arena_open": num(arena_open_ms),
+            "warm_up": num(warm_ms),
+            "warm_pulses": warm_pulses,
+        },
+        "tempos": [{
+            "name": tempo.name,
+            "period_ms": tempo.period_ms,
+            "pulses": tempo.ms.len(),
+            "p50_ms": num(p50),
+            "p95_ms": num(p95),
+            "p99_ms": num(p99),
+            "max_ms": num(max),
+        }],
+        "substeps": {
+            "per_pulse_min": substeps_min,
+            "per_pulse_max": substeps_max,
+        },
+        "counters": {
+            "blocked_events": blocked,
+            "ledger_bytes_streamed": ledger_bytes_streamed,
+            "ledger_chunks": chunks,
+            "frames_per_pulse_mean": num(frames_mean),
+            "moving_at_end": moving,
+            "held_at_end": held,
+            "lagged_pulses": lagged_pulses,
+            "ended": ended.map(|end| format!("{:?}", end.reason)),
+        },
+        "memory": { "vmrss_start_kib": rss_start_kib, "vmrss_end_kib": rss_end_kib },
+        "thresholds": {
+            "assert": knobs.assert,
+            "cut_a_p99_ms": ARENA_P99_MS,
+            "engaged_p99_ms": knobs.engaged_p99_ms,
+            "max_ledger_bytes": knobs.max_ledger_bytes,
+        },
+    });
+    let path = arena_report_path(&knobs.json);
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir).expect("the report directory is writable");
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&report).expect("the report encodes"),
+    )
+    .expect("the report is written");
+    println!("harness_arena_json: {}", path.display());
+
+    if knobs.assert {
+        assert!(
+            p99 <= f64::from(knobs.engaged_p99_ms),
+            "per-pulse p99 {p99:.3} ms is past harness.engaged_p99_ms {}",
+            knobs.engaged_p99_ms
+        );
+        // **Cut A's own lens, which is the tighter one.** `harness.engaged_p99_ms`
+        // (25) is doc 16's ceiling for the *finished* arena — perception, weapons,
+        // damage and the reflex controller all inside it. 16b §6 asks cut A for
+        // 5 ms with none of that built, so the cut is measured against its own
+        // number rather than against the budget its successors will spend.
+        assert!(
+            p99 <= ARENA_P99_MS,
+            "per-pulse p99 {p99:.3} ms is past 16b §6's {ARENA_P99_MS} ms lens for cut A"
+        );
+        assert!(
+            ledger_bytes_streamed <= knobs.max_ledger_bytes,
+            "ledger bytes {ledger_bytes_streamed} is past harness.max_ledger_bytes {}",
+            knobs.max_ledger_bytes
+        );
+    }
+}
+
+/// 16b §6's verify lens for cut A: *the harness at 300 moving units stays under
+/// 5 ms per pulse before perception and weapons exist.* It is a plan constant and
+/// not a configured one — `[tacsim.harness].engaged_p99_ms` is the 25 ms ceiling
+/// doc 16 sets for the finished arena — so it lives here, where the cut it bounds
+/// is measured.
+const ARENA_P99_MS: f64 = 5.0;

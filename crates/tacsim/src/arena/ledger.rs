@@ -14,7 +14,7 @@
 //! |---|---|---|
 //! | `ledger.max_bytes` at 90% | [`Ledger::summaries_enabled`] is `false` | the cadenced `position_summary` stops; events keep flowing |
 //! | `ledger.max_bytes` at 100% | [`Ledger::append`] answers [`LedgerFull`] | doc 16 §4: the match is stopped with `Timeout` |
-//! | `ledger.max_unflushed_chunks` | [`Ledger::lagged`], then [`Ledger::overflowed`] past twice it | cut A.2 journals `lagged`, then stops the match with `Void` |
+//! | `ledger.max_unflushed_chunks` | [`Ledger::lagged`] past half of it, [`Ledger::overflowed`] past it | cut A.2 journals `lagged`, then stops the match with `Void` |
 //!
 //! The first two protect the *record*; the third protects *memory*, and it is
 //! deliberately the only one that voids a match — a world that cannot drain the
@@ -379,18 +379,22 @@ impl Ledger {
         self.last_closed_seq
     }
 
-    /// The egress is backing up past `ledger.max_unflushed_chunks`: cut A.2
-    /// journals one `lagged` event.
+    /// The egress is backing up: more than **half** of `ledger.max_unflushed_chunks`
+    /// closed chunks are waiting for the world's acknowledgement. Doc 16 §3.1: the
+    /// arena marks itself `Lagged` when the world cannot keep up, and cut A.2
+    /// journals one `lagged` event. The halfway mark is the warning before the
+    /// bound itself voids the match ([`Ledger::overflowed`]).
     #[must_use]
     pub fn lagged(&self) -> bool {
-        self.unflushed_chunks() > u64::from(self.cfg.max_unflushed_chunks)
+        self.unflushed_chunks() > u64::from(self.cfg.max_unflushed_chunks / 2)
     }
 
-    /// The egress is past **twice** `ledger.max_unflushed_chunks`: the world
-    /// cannot drain it and the match is stopped with `Void` (doc 16 §3.1).
+    /// The egress is past `ledger.max_unflushed_chunks`: the world cannot drain
+    /// it and the match is stopped with `Void` (doc 16 §3.1, the documented bound
+    /// itself, ruled at review of cut A.2).
     #[must_use]
     pub fn overflowed(&self) -> bool {
-        self.unflushed_chunks() > u64::from(self.cfg.max_unflushed_chunks).saturating_mul(2)
+        self.unflushed_chunks() > u64::from(self.cfg.max_unflushed_chunks)
     }
 
     /// Every byte appended, including the newlines.
@@ -625,16 +629,20 @@ mod tests {
         assert_eq!(log.unflushed_chunks(), 0);
         assert!(!log.lagged());
         assert!(!log.overflowed());
-        // Fill chunks until three have closed: past `max_unflushed_chunks` of 2.
+        // Fill chunks until two have closed: past half of `max_unflushed_chunks`
+        // (2), the warning, but not past the bound itself.
         let mut n = 0_i64;
-        while log.last_closed_seq() < 3 {
+        while log.last_closed_seq() < 2 {
             log.append(n, summary(12), None, 0).expect("room");
             n += 1;
         }
-        assert_eq!(log.unflushed_chunks(), 3);
-        assert!(log.lagged(), "three closed against a bound of two");
-        assert!(!log.overflowed(), "three is not past twice two");
-        // Past twice the bound.
+        assert_eq!(log.unflushed_chunks(), 2);
+        assert!(
+            log.lagged(),
+            "two closed against a bound of two: past half of it"
+        );
+        assert!(!log.overflowed(), "two is not past two");
+        // Past the bound: doc 16 §3.1 voids the match here.
         while log.last_closed_seq() < 5 {
             log.append(n, summary(12), None, 0).expect("room");
             n += 1;

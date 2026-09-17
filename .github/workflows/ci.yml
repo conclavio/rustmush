@@ -302,6 +302,10 @@ jobs:
   # `harness.json`. Run it locally with TACSIM_ASSERT=1 to assert the
   # thresholds, and size it with TACSIM_UNITS / TACSIM_FIGHTING /
   # TACSIM_WEAPONS / TACSIM_PULSES / TACSIM_SEED.
+  #
+  # 16b cut A.2 added a second measurement to the same target: the same relief and
+  # the same unit count driven through `Arena::step` directly (`harness_arena_*:`
+  # in the log, `harness-arena.json` beside the baseline's report).
   tacsim-harness:
     name: 16b cut H TacSim harness
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -321,7 +325,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: tacsim-harness-report
-          path: harness.json
+          path: |
+            harness.json
+            harness-arena.json
           if-no-files-found: error
 
   definition-wire-fixtures:

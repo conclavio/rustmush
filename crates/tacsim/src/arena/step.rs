@@ -1,0 +1,785 @@
+//! **The pulse** (16b cut A.2; doc 16 §3.1 "Pulse phases", "Rate independence",
+//! "Clock and lag" and "Determinism").
+//!
+//! One function, [`Arena::step`], and the five phases of doc 16 §3.1 in order,
+//! *each reading the state the previous phase committed*. It is a pure function of
+//! the arena's state and its two argument slices: no clock of its own (the wall
+//! reading is an argument), no task, no I/O. Cut T's `arena_task` is the thin
+//! wrapper that owns the timer, the bounded inbox, the bounded egress and the
+//! unwind boundary.
+//!
+//! # The phases, and each one's snapshot rule
+//!
+//! 1. **Authority.** Every [`Control`] is applied to the epoch table, which purges
+//!    queued orders below the new epoch — so a pilot who types `FIRE` then `EXIT`
+//!    in one burst never fires, because the burst's `Control` is applied *before*
+//!    the burst's `Intent`s. A `Stop` the world sent is honoured here and nowhere
+//!    else: it never lands in the middle of a substep.
+//! 2. **Orders.** Every [`Intent`] is authorised *at apply* against the table
+//!    phase 1 just committed. Continuous orders set a desired value, latest wins;
+//!    discrete ones queue for phase 4.
+//! 3. **Time.** The wall reading becomes a clamped `dt`, and `dt` becomes a
+//!    sequence of substeps. Each substep: (a) motion integrates every unit in
+//!    unit-id order **from the substep-start snapshot**, with occupancy read from
+//!    the index as the earlier movers left it; (b) the index is rebuilt; (c) arena
+//!    time advances by the substep and every due event at or before it is applied
+//!    in `(t_ms, seq)` order. The substep's ledger events are appended last,
+//!    against the hash of the state at the substep's **end**.
+//! 4. **Actions.** Each unit's queue is drained in unit-id order and resolved
+//!    against the world phase 3 left. Nothing is re-queued: an action is resolved
+//!    or refused in the pulse it was drained in.
+//! 5. **The pulse's own record.** The tempo is evaluated, lag is journalled, the
+//!    bounds are checked, the ledger's closed chunks are taken and a frame is
+//!    built for every pilot whose view changed.
+//!
+//! # Why the hash is computed once per substep
+//!
+//! [`crate::arena::hash::state_hash`] folds the ledger's event sequence, so the
+//! hash moves with every append. Every event of a substep therefore carries **one**
+//! hash — the state at the substep's end, before any of that substep's events was
+//! appended — which is what makes the value a function of the state rather than of
+//! the order the events happened to be written in. The sequence of those hashes is
+//! kept on [`crate::arena::state::Arena::substep_hashes`] for the pulse just run,
+//! which is how the cross-tempo property test compares three cadences substep by
+//! substep instead of only at the end.
+
+use std::collections::BTreeMap;
+
+use mush_core::ObjId;
+use mush_sim::data::Pose;
+
+use crate::arena::clock::{Tempo, TempoSignals, substep_ms, substeps};
+use crate::arena::hash::state_hash;
+use crate::arena::intents::{
+    Control, Intent, IntentKind, IntentOutcome, apply_control, apply_intent, drain_pending,
+    resolve_startup,
+};
+use crate::arena::ledger::{EventKind, LedgerChunk};
+use crate::arena::motion::integrate;
+use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, Power, StopReason};
+
+/// **One pilot's latest-wins view** (doc 16 §3.1's `Frames`).
+///
+/// The minimal slot cut A can honestly fill: where the tank is, how fast it is
+/// going, whether its power is up, whether it is held against something, and the
+/// tempo the arena is running at. Cut K builds the real cockpit keyframe and delta
+/// on exactly this seam, and cut S is what makes a frame *per observer* rather
+/// than per unit.
+///
+/// It is not `PartialEq`: [`Frame::same_as`] compares the fields that decide
+/// whether a pilot is told anything, and deliberately not the pose's opaque
+/// posture — a frame is a view, and comparing an opaque rules blob every pulse for
+/// every pilot would be the most expensive thing in phase 5.
+#[derive(Clone, Debug)]
+pub struct Frame {
+    /// The tank the pilot is in.
+    pub unit: ObjId,
+    /// Where it is.
+    pub pose: Pose,
+    /// How fast, cm/s; negative is reverse.
+    pub speed_cms: i32,
+    /// Whether its power is up.
+    pub power: Power,
+    /// Whether it is held against an obstacle, an occupied cell or the window's
+    /// edge.
+    pub blocked: bool,
+    /// The arena's tempo, so a cockpit can say how often it is being told things.
+    pub tempo: Tempo,
+}
+
+impl Frame {
+    /// Whether this frame says the same thing as `other`: the unit, the four pose
+    /// integers, the speed, the power, the block and the tempo.
+    #[must_use]
+    pub fn same_as(&self, other: &Frame) -> bool {
+        self.unit == other.unit
+            && self.pose.x_cm == other.pose.x_cm
+            && self.pose.y_cm == other.pose.y_cm
+            && self.pose.z_cm == other.pose.z_cm
+            && self.pose.heading_mdeg == other.pose.heading_mdeg
+            && self.speed_cms == other.speed_cms
+            && self.power == other.power
+            && self.blocked == other.blocked
+            && self.tempo == other.tempo
+    }
+}
+
+/// **What one pulse produced** (doc 16 §3.1: `StepOutput { ledger_chunks, frames,
+/// tempo, next_due_ms }`, plus what cut T's task needs to schedule and to stop).
+#[derive(Debug)]
+pub struct StepOutput {
+    /// Ledger chunks that closed and have not been handed over before. The world
+    /// half appends them to `log:match.<id>` on its own writer lane and
+    /// acknowledges them with `Ledger::mark_flushed`.
+    pub ledger_chunks: Vec<LedgerChunk>,
+    /// One frame per **pilot** whose view changed this pulse, in pilot-id order.
+    pub frames: Vec<(ObjId, Frame)>,
+    /// The tempo the arena is now in — the period cut T's timer uses.
+    pub tempo: Tempo,
+    /// When the task should step again, in the **wall** milliseconds
+    /// `wall_now_ms` was given in: the earlier of the next period boundary and the
+    /// next due event.
+    pub next_due_ms: i64,
+    /// The pulse absorbed more wall time than the clamp allows, or the egress is
+    /// backing up.
+    pub lagged: bool,
+    /// Set once, on the pulse the match ends.
+    pub ended: Option<MatchEnd>,
+    /// How many substeps phase 3 ran. Zero on the opening pulse, which only
+    /// establishes the wall reference.
+    pub substeps: u32,
+}
+
+impl Arena {
+    /// **One pulse** — doc 16 §3.1's five phases, in order.
+    ///
+    /// `wall_now_ms` is the caller's monotonic wall reading; arena time advances by
+    /// the interval between two readings, clamped to `max_catch_up_steps × period`
+    /// (doc 16 §3.1 "Clock and lag"). The first call establishes the reference and
+    /// integrates nothing, so the opening pulse is identical at every tempo.
+    ///
+    /// A match that has already ended does nothing at all: the output carries its
+    /// [`MatchEnd`] and no chunk, no frame and no substep. Cut T stops stepping at
+    /// the first output with `ended`; a task that steps once more anyway cannot
+    /// move the world afterwards.
+    pub fn step(
+        &mut self,
+        wall_now_ms: i64,
+        controls: &[Control],
+        intents: &[Intent],
+    ) -> StepOutput {
+        if let Some(ended) = self.ended {
+            return StepOutput {
+                ledger_chunks: Vec::new(),
+                frames: Vec::new(),
+                tempo: self.clock.tempo(),
+                next_due_ms: wall_now_ms,
+                lagged: false,
+                ended: Some(ended),
+                substeps: 0,
+            };
+        }
+        self.substep_hashes.clear();
+
+        // ---- phase 1: authority, and the world's `Stop` ----
+        //
+        // Controls first, and every control before any intent: the epoch table
+        // this phase commits is what phase 2 authorises against, which is the
+        // whole mechanism behind doc 16 §3.1's `FIRE` then `EXIT` burst.
+        for control in controls {
+            apply_control(self, control);
+        }
+        if let Some(stop) = self.stop {
+            return self.stopped(wall_now_ms, stop);
+        }
+
+        // ---- phase 2: orders ----
+        let mut fire_intent_queued = false;
+        for intent in intents {
+            let outcome = apply_intent(self, intent);
+            if outcome == IntentOutcome::Queued && matches!(intent.kind, IntentKind::Fire { .. }) {
+                fire_intent_queued = true;
+            }
+        }
+
+        // ---- phase 3: time, in substeps ----
+        let (dt_ms, clock_lagged) = self.clock.advance(wall_now_ms, &self.arena_cfg);
+        let length = substep_ms(&self.arena_cfg.tempo, self.cell_cm(), self.max_speed_cms());
+        let pieces = substeps(dt_ms, length);
+        let ran = u32::try_from(pieces.len()).unwrap_or(u32::MAX);
+        let mut ledger_full = false;
+        for piece in pieces {
+            ledger_full |= self.substep(piece);
+        }
+
+        // ---- phase 4: the queued discrete actions ----
+        let ids: Vec<ObjId> = self.units.iter().map(|unit| unit.id).collect();
+        for id in ids {
+            for order in drain_pending(self, id) {
+                match order.kind {
+                    // The one discrete action cut A owns (doc 16 §3.3 "Startup").
+                    // A refusal is the pilot's business, not the ledger's: cut K's
+                    // cockpit is what turns a `Refusal` into a line.
+                    IntentKind::Startup => {
+                        let _ = resolve_startup(self, id);
+                    }
+                    // Carried as kinds, refused until their cut lands: `LOCK` is
+                    // cut S's (it needs a contact to lock) and `FIRE` is cut W's
+                    // (it needs a weapon to fire). Nothing is re-queued — an
+                    // action is resolved or refused in the pulse it was drained
+                    // in, so a bound another order needs is never held by one that
+                    // cannot be resolved.
+                    IntentKind::Lock { .. } | IntentKind::Fire { .. } => {}
+                    // Continuous orders never queue (phase 2 applies them).
+                    IntentKind::Heading { .. } | IntentKind::Speed { .. } => {}
+                }
+            }
+        }
+
+        // ---- phase 5: the pulse's own record ----
+        let signals = TempoSignals {
+            fire_intent_queued,
+            ..TempoSignals::quiet()
+        };
+        let changed = self
+            .clock
+            .evaluate(self.now_ms, &signals, &self.arena_cfg.tempo);
+        // One hash for every event this phase appends, taken after the tempo is
+        // settled so that a `tempo` event carries the tempo it announces.
+        let hash = state_hash(self);
+        if let Some((from, to)) = changed {
+            ledger_full |= !self.journal(self.now_ms, EventKind::Tempo { from, to }, hash);
+        }
+        // One notice per pulse whichever half is behind: the clock absorbed more
+        // wall time than the clamp allows (doc 16 §3.1 "Clock and lag"), or the
+        // egress is backing up past `ledger.max_unflushed_chunks` (§3.1's egress
+        // paragraph). `dt_ms` is the clamped `dt` the pulse actually ran with.
+        let egress_lagged = self.ledger.lagged();
+        if clock_lagged || egress_lagged {
+            ledger_full |= !self.journal(self.now_ms, EventKind::Lagged { dt_ms }, hash);
+        }
+        if self.ended.is_none() && self.now_ms >= i64::from(self.match_cfg.max_duration_ms) {
+            let reason = EndReason::Timeout;
+            ledger_full |= !self.journal(self.now_ms, EventKind::MatchEnded { reason }, hash);
+            self.ended = Some(MatchEnd {
+                reason,
+                t_ms: self.now_ms,
+            });
+        }
+        // Doc 16 §4: at 100% of `ledger.max_bytes` the match is stopped with
+        // `Timeout`. There is no event to append — the ledger is exactly what has
+        // run out of room — so the end is recorded in the result and not in the
+        // black box.
+        if self.ended.is_none() && ledger_full {
+            self.ended = Some(MatchEnd {
+                reason: EndReason::Timeout,
+                t_ms: self.now_ms,
+            });
+        }
+        // The world cannot drain the egress and the match is **void** — nothing it
+        // derived may be committed. `EndReason::LedgerOverflow` is A.1's declared
+        // name for exactly this condition and the `void` event is what marks the
+        // match void.
+        //
+        // Doc 16 §3.1: *past `ledger.max_unflushed_chunks` the match is stopped with
+        // `Void`*. `Ledger::overflowed` is that bound exactly, and `Ledger::lagged`
+        // (half of it) is the warning journalled before the match is lost; ruled at
+        // the review of cut A.2, so the arena tolerates the documented depth and no
+        // more.
+        if self.ended.is_none() && self.ledger.overflowed() {
+            let _ = self.journal(self.now_ms, EventKind::Void, hash);
+            self.ended = Some(MatchEnd {
+                reason: EndReason::LedgerOverflow,
+                t_ms: self.now_ms,
+            });
+        }
+        let ended = self.ended;
+        if ended.is_some() {
+            // The last chunk leaves with the match rather than with the next
+            // pulse, which there is not going to be.
+            self.ledger.flush();
+        }
+        let tempo = self.clock.tempo();
+        let frames = self.frames(tempo);
+        StepOutput {
+            ledger_chunks: self.ledger.take_chunks(),
+            frames,
+            tempo,
+            next_due_ms: self.next_due_ms(wall_now_ms),
+            lagged: self.clock.lagged() || self.ledger.lagged(),
+            ended,
+            substeps: ran,
+        }
+    }
+
+    /// **One substep** of doc 16 §3.1 phase 3, answering whether the ledger
+    /// refused an event.
+    ///
+    /// (a) motion, in unit-id order, from the substep-start snapshot; (b) the index
+    /// rebuilt; (c) arena time advanced and every due event at or before it
+    /// applied. The events (a) and (c) produced are appended **last**, in that
+    /// order — the `blocked` notices in unit-id order, then the due events in
+    /// `(t_ms, seq)` order — against one hash taken at the substep's end.
+    fn substep(&mut self, dt_ms: u32) -> bool {
+        let mut notices: Vec<(i64, EventKind)> = Vec::new();
+
+        // ---- (a) motion ----
+        {
+            self.index.rebuild(&self.definition.terrain, &self.units);
+            let terrain = &self.definition.terrain;
+            let index = &mut self.index;
+            for slot in 0..self.units.len() {
+                let Some(unit) = self.units.get_mut(slot) else {
+                    continue;
+                };
+                let id = unit.id;
+                let was_blocked = unit.blocked;
+                let from = terrain.cell_of(&unit.pose);
+                let outcome = integrate(unit, dt_ms, terrain, index);
+                if outcome.moved
+                    && let Some(from) = from
+                    && let Some(to) = terrain.cell_of(&unit.pose)
+                    && from != to
+                {
+                    // Doc 16 §3.4 step 5's snapshot rule: the unit that integrates
+                    // next must see where this one went, or two units enter one
+                    // cell in one substep.
+                    index.move_unit(id, from, to);
+                }
+                // One notice per **stop**, not one per substep a standing order
+                // holds the unit against the obstacle: the rising edge of
+                // `blocked` is the event, and `blocked` itself is the condition.
+                if let Some((x, y)) = outcome.blocked_at
+                    && !was_blocked
+                {
+                    notices.push((0, EventKind::Blocked { unit: id, x, y }));
+                }
+            }
+        }
+
+        // ---- (b) the index over the positions motion committed ----
+        self.index.rebuild(&self.definition.terrain, &self.units);
+
+        // ---- (c) arena time, and every due event at or before it ----
+        self.now_ms = self.now_ms.saturating_add(i64::from(dt_ms));
+        for notice in &mut notices {
+            // The `blocked` notices belong to the interval just integrated, which
+            // ends here.
+            notice.0 = self.now_ms;
+        }
+        while let Some(event) = self.due.pop_due(self.now_ms) {
+            match event.kind {
+                // Doc 16 §3.3 "Startup": `match.startup_ms` after `STARTUP` was
+                // accepted. `resolve_startup` already journalled the transition
+                // into `starting`, and doc 16 §4's kind list has no second event
+                // for reaching `online`.
+                DueKind::StartupComplete { unit } => {
+                    if let Some(state) = self.unit_mut(unit)
+                        && state.power == Power::Starting
+                    {
+                        state.power = Power::Online;
+                    }
+                }
+                // Doc 16 §4: every unit, every `ledger.summary_ms` of arena time,
+                // in every tempo. The next one is scheduled from **this one's
+                // timestamp** and not from `now_ms`, so the cadence is a function
+                // of arena time alone and cannot drift with the substep boundary
+                // the summary happened to land on. It is rescheduled even when the
+                // 90% bound has silenced it, so summaries resume if the bound is
+                // raised.
+                DueKind::PositionSummary => {
+                    if self.ledger.summaries_enabled() {
+                        notices.push((
+                            event.t_ms,
+                            EventKind::PositionSummary {
+                                units: self.position_summary(),
+                            },
+                        ));
+                    }
+                    let cadence = i64::from(self.ledger.summary_ms().max(1));
+                    self.due
+                        .schedule(event.t_ms.saturating_add(cadence), DueKind::PositionSummary);
+                }
+                // Cut W schedules and applies the shot's flight time and the
+                // weapon's cycle; cut S the sensor pass and the contact share.
+                // Nothing in cut A schedules one, so nothing here can fire — the
+                // arms exist so the later cut adds a body rather than a shape.
+                DueKind::Impact { .. }
+                | DueKind::WeaponReady { .. }
+                | DueKind::SensorPass { .. }
+                | DueKind::Share { .. } => {}
+            }
+        }
+
+        // ---- the substep's record ----
+        let hash = state_hash(self);
+        self.substep_hashes.push(hash);
+        let mut refused = false;
+        for (t_ms, kind) in notices {
+            refused |= !self.journal(t_ms, kind, hash);
+        }
+        refused
+    }
+
+    /// The world asked the arena to stop (doc 16 §3.1's `Stop`): the reason is
+    /// recorded, the match ends, and the ledger's tail leaves with it.
+    ///
+    /// The three reasons journal three different things, which is doc 16 §4's kind
+    /// list read literally: `Abort` is an `aborted` event, `Timeout` is
+    /// `match_ended{timeout}`, and `Void` is a `void` event — the one that says
+    /// nothing the match derived may be committed.
+    fn stopped(&mut self, wall_now_ms: i64, stop: StopReason) -> StepOutput {
+        let hash = state_hash(self);
+        let (kind, reason) = match stop {
+            StopReason::Abort => (EventKind::Aborted, EndReason::Abort),
+            StopReason::Timeout => (
+                EventKind::MatchEnded {
+                    reason: EndReason::Timeout,
+                },
+                EndReason::Timeout,
+            ),
+            StopReason::Void => (EventKind::Void, EndReason::Void),
+        };
+        let _ = self.journal(self.now_ms, kind, hash);
+        let ended = MatchEnd {
+            reason,
+            t_ms: self.now_ms,
+        };
+        self.ended = Some(ended);
+        self.ledger.flush();
+        StepOutput {
+            ledger_chunks: self.ledger.take_chunks(),
+            frames: Vec::new(),
+            tempo: self.clock.tempo(),
+            next_due_ms: wall_now_ms,
+            lagged: self.clock.lagged() || self.ledger.lagged(),
+            ended: Some(ended),
+            substeps: 0,
+        }
+    }
+
+    /// Append one event, answering whether it was recorded. A `false` is the
+    /// ledger's byte bound (doc 16 §4), which phase 5 turns into the end of the
+    /// match; it is never an error the caller has to handle mid-substep, because a
+    /// black box out of tape is not a reason to lose the pulse in progress.
+    fn journal(&mut self, t_ms: i64, kind: EventKind, hash: u64) -> bool {
+        self.ledger.append(t_ms, kind, None, hash).is_ok()
+    }
+
+    /// One frame per pilot whose view changed, in pilot-id order (doc 16 §3.1's
+    /// latest-wins slots).
+    ///
+    /// Two passes on purpose: the first reads the units, the second writes the
+    /// remembered frames. A pilot seated on a unit this arena does not hold gets
+    /// nothing rather than an empty frame.
+    fn frames(&mut self, tempo: Tempo) -> Vec<(ObjId, Frame)> {
+        let mut candidates: Vec<(ObjId, Frame)> = Vec::with_capacity(self.pilots.len());
+        for pilot in &self.pilots {
+            let Some(unit) = self.unit(pilot.unit) else {
+                continue;
+            };
+            candidates.push((
+                pilot.pilot,
+                Frame {
+                    unit: unit.id,
+                    pose: unit.pose.clone(),
+                    speed_cms: unit.speed_cms,
+                    power: unit.power,
+                    blocked: unit.blocked,
+                    tempo,
+                },
+            ));
+        }
+        candidates.sort_by_key(|(pilot, _)| *pilot);
+        let mut changed: Vec<(ObjId, Frame)> = Vec::new();
+        for (pilot, frame) in candidates {
+            if self
+                .last_frames
+                .get(&pilot)
+                .is_none_or(|last| !last.same_as(&frame))
+            {
+                self.last_frames.insert(pilot, frame.clone());
+                changed.push((pilot, frame));
+            }
+        }
+        changed
+    }
+
+    /// When the task should step again, in wall milliseconds: the earlier of the
+    /// next period boundary and the next due event (doc 16 §3.1 phase 5).
+    ///
+    /// The due event's time is arena time, so it is offered as the interval from
+    /// *now* rather than as an absolute: an arena that is behind does not ask to be
+    /// stepped in the past.
+    fn next_due_ms(&self, wall_now_ms: i64) -> i64 {
+        let period = i64::from(self.clock.tempo().period_ms(&self.arena_cfg.tempo));
+        let by_period = wall_now_ms.saturating_add(period);
+        match self.due.next_t_ms() {
+            Some(due) => {
+                let ahead = due.saturating_sub(self.now_ms).max(0);
+                by_period.min(wall_now_ms.saturating_add(ahead))
+            }
+            None => by_period,
+        }
+    }
+}
+
+/// The remembered frames, as [`Arena`] holds them — a type alias so the field's
+/// declaration reads as one thing rather than as a nested generic.
+pub type FrameSlots = BTreeMap<ObjId, Frame>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arena::intents::{Control, ControlState};
+    use crate::arena::ledger::LedgerEvent;
+    use crate::arena::state::{Channel, Team};
+    use crate::arena::test_support::{arena_at_epoch, pose, tank};
+    use crate::config::{ArenaConfig, MatchConfig};
+
+    const A: ObjId = ObjId(4);
+
+    fn arena() -> Arena {
+        arena_at_epoch(vec![tank(A, Team::Red, pose(3_500, 3_500))], 1)
+    }
+
+    fn startup() -> Intent {
+        Intent {
+            unit: A,
+            channel: Channel::Helm,
+            epoch: 1,
+            kind: IntentKind::Startup,
+            seq: 1,
+        }
+    }
+
+    /// Everything the arena has journalled: the chunks it handed out as it ran,
+    /// plus whatever is still open when the assertion asks.
+    #[derive(Default)]
+    struct Log {
+        bytes: Vec<u8>,
+    }
+
+    impl Log {
+        fn absorb(&mut self, out: &StepOutput) {
+            for chunk in &out.ledger_chunks {
+                self.bytes.extend_from_slice(&chunk.bytes);
+            }
+        }
+
+        fn events(&mut self, arena: &mut Arena) -> Vec<LedgerEvent> {
+            arena.ledger.flush();
+            for chunk in arena.ledger.take_chunks() {
+                self.bytes.extend_from_slice(&chunk.bytes);
+            }
+            String::from_utf8(self.bytes.clone())
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok())
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_opening_pulse_establishes_the_wall_reference_and_integrates_nothing() {
+        let mut arena = arena();
+        let out = arena.step(1_000_000, &[], &[]);
+        assert_eq!(out.substeps, 0);
+        assert_eq!(arena.now_ms, 0);
+        assert!(!out.lagged);
+        assert!(out.ended.is_none());
+        assert_eq!(out.tempo, Tempo::Quiet);
+        // The next step is asked for at the period, or at the first summary,
+        // whichever is sooner: both are 5,000 ms away here.
+        assert_eq!(out.next_due_ms, 1_005_000);
+        assert!(arena.substep_hashes.is_empty());
+        // One frame, because the pilot has never been told anything.
+        assert_eq!(out.frames.len(), 1);
+        assert_eq!(
+            out.frames.first().map(|(pilot, _)| *pilot),
+            Some(ObjId(1000))
+        );
+        // And nothing more until something changes.
+        let again = arena.step(1_000_000, &[], &[]);
+        assert!(again.frames.is_empty());
+    }
+
+    #[test]
+    fn a_pulse_runs_the_substeps_the_clamped_dt_is_cut_into() {
+        let mut arena = arena();
+        arena.step(0, &[], &[]);
+        // 1,000 cm cells and a 1,000 cm/s tank: the substep is the 250 ms cap.
+        let out = arena.step(1_000, &[], &[]);
+        assert_eq!(out.substeps, 4);
+        assert_eq!(arena.now_ms, 1_000);
+        assert_eq!(arena.substep_hashes.len(), 4);
+        // Every substep's hash is recorded, and they differ because `now_ms` does.
+        let unique: std::collections::BTreeSet<u64> =
+            arena.substep_hashes.iter().copied().collect();
+        assert_eq!(unique.len(), 4);
+    }
+
+    #[test]
+    fn startup_is_queued_in_phase_two_and_resolved_in_phase_four() {
+        let mut arena = arena();
+        let out = arena.step(0, &[], &[startup()]);
+        assert!(arena.pending.is_empty(), "phase 4 drained the queue");
+        assert_eq!(arena.unit(A).map(|unit| unit.power), Some(Power::Starting));
+        assert!(out.ended.is_none());
+        // `match.startup_ms` later, at the substep boundary at or after it.
+        let mut wall = 0_i64;
+        for _ in 0..3 {
+            wall += 5_000;
+            arena.step(wall, &[], &[]);
+        }
+        assert_eq!(arena.now_ms, 15_000);
+        assert_eq!(arena.unit(A).map(|unit| unit.power), Some(Power::Online));
+    }
+
+    #[test]
+    fn a_stop_ends_the_match_at_phase_one_and_a_further_step_does_nothing() {
+        for (stop, reason, word) in [
+            (StopReason::Abort, EndReason::Abort, "aborted"),
+            (StopReason::Timeout, EndReason::Timeout, "match_ended"),
+            (StopReason::Void, EndReason::Void, "void"),
+        ] {
+            let mut arena = arena();
+            let mut journal = Log::default();
+            journal.absorb(&arena.step(0, &[], &[]));
+            arena.stop(stop);
+            let out = arena.step(5_000, &[], &[]);
+            journal.absorb(&out);
+            assert_eq!(out.ended.map(|end| end.reason), Some(reason));
+            assert_eq!(out.substeps, 0);
+            assert_eq!(arena.now_ms, 0, "a stop never advances arena time");
+            let log = journal.events(&mut arena);
+            assert_eq!(log.last().map(|event| event.kind.as_str()), Some(word));
+            // And the arena is finished with.
+            let after = arena.step(10_000, &[], &[]);
+            assert_eq!(after.ended.map(|end| end.reason), Some(reason));
+            assert!(after.ledger_chunks.is_empty());
+            assert!(after.frames.is_empty());
+            assert_eq!(after.substeps, 0);
+        }
+    }
+
+    #[test]
+    fn the_duration_bound_ends_the_match_with_a_timeout() {
+        let mut arena = Arena::new(
+            crate::arena::test_support::custody(
+                vec![tank(A, Team::Red, pose(3_500, 3_500))],
+                Vec::new(),
+            ),
+            &ArenaConfig::default(),
+            &MatchConfig {
+                max_duration_ms: 3_000,
+                ..MatchConfig::default()
+            },
+        )
+        .expect("a three-second match");
+        let mut journal = Log::default();
+        journal.absorb(&arena.step(0, &[], &[]));
+        let out = arena.step(2_000, &[], &[]);
+        journal.absorb(&out);
+        assert!(out.ended.is_none());
+        let out = arena.step(4_000, &[], &[]);
+        journal.absorb(&out);
+        assert_eq!(
+            out.ended,
+            Some(MatchEnd {
+                reason: EndReason::Timeout,
+                t_ms: 4_000
+            })
+        );
+        let log = journal.events(&mut arena);
+        assert_eq!(
+            log.last().map(|event| event.kind.as_str()),
+            Some("match_ended")
+        );
+        // And a further step does nothing at all.
+        let after = arena.step(6_000, &[], &[]);
+        assert_eq!(after.substeps, 0);
+        assert!(after.ledger_chunks.is_empty());
+        assert_eq!(arena.now_ms, 4_000);
+    }
+
+    #[test]
+    fn a_released_seat_in_the_same_burst_purges_the_order_it_arrived_with() {
+        // Doc 16 §3.1's burst, end to end through `step`: phase 1 raises the
+        // epoch, phase 2 refuses the order that was typed under the old one.
+        let mut arena = arena();
+        let out = arena.step(
+            0,
+            &[Control {
+                unit: A,
+                channel: Channel::Helm,
+                epoch: 2,
+                state: ControlState::Released,
+            }],
+            &[startup()],
+        );
+        assert!(out.ended.is_none());
+        assert_eq!(arena.unit(A).map(|unit| unit.power), Some(Power::Off));
+        assert!(arena.pending.is_empty());
+        assert_eq!(arena.due.len(), 1, "only the position summary is scheduled");
+        let mut journal = Log::default();
+        journal.absorb(&out);
+        let log = journal.events(&mut arena);
+        assert_eq!(
+            log.iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["match_started"]
+        );
+    }
+
+    #[test]
+    fn a_fire_intent_raises_the_alert_tempo_and_journals_the_change() {
+        let mut arena = arena();
+        arena.step(0, &[], &[]);
+        let fire = Intent {
+            unit: A,
+            channel: Channel::Fire,
+            epoch: 1,
+            kind: IntentKind::Fire {
+                weapon: smol_str::SmolStr::new("cannon"),
+            },
+            seq: 2,
+        };
+        let out = arena.step(5_000, &[], &[fire]);
+        // A queued fire intent is an `Alert` trigger, not an `Engaged` one (doc 16
+        // §3.1's table): the shot itself is cut W's.
+        assert_eq!(out.tempo, Tempo::Alert);
+        let mut journal = Log::default();
+        journal.absorb(&out);
+        let log = journal.events(&mut arena);
+        assert!(
+            log.iter().any(|event| event.kind
+                == EventKind::Tempo {
+                    from: Tempo::Quiet,
+                    to: Tempo::Alert
+                }),
+            "the tempo change was not journalled: {log:?}"
+        );
+    }
+
+    #[test]
+    fn the_position_summary_keeps_its_cadence_in_arena_time() {
+        let mut arena = arena();
+        arena.step(0, &[], &[]);
+        let mut wall = 0_i64;
+        for _ in 0..4 {
+            wall += 5_000;
+            arena.step(wall, &[], &[]);
+        }
+        assert_eq!(arena.now_ms, 20_000);
+        let mut journal = Log::default();
+        let log = journal.events(&mut arena);
+        let summaries: Vec<i64> = log
+            .iter()
+            .filter(|event| event.kind.as_str() == "position_summary")
+            .map(|event| event.t_ms)
+            .collect();
+        assert_eq!(summaries, vec![5_000, 10_000, 15_000, 20_000]);
+        // The next one is scheduled, always.
+        assert_eq!(arena.due.next_t_ms(), Some(25_000));
+    }
+
+    #[test]
+    fn a_pulse_past_the_clamp_journals_one_lagged_notice() {
+        let mut arena = arena();
+        arena.step(0, &[], &[]);
+        // Quiet is a 5,000 ms period and `max_catch_up_steps` is 4, so 20,000 ms
+        // is the clamp and 20,001 is lag.
+        let out = arena.step(30_000, &[], &[]);
+        assert!(out.lagged);
+        assert_eq!(arena.now_ms, 20_000, "the idle wall time is skipped");
+        let mut journal = Log::default();
+        journal.absorb(&out);
+        let log = journal.events(&mut arena);
+        assert!(
+            log.iter()
+                .any(|event| event.kind == EventKind::Lagged { dt_ms: 20_000 })
+        );
+    }
+}

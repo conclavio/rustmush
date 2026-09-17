@@ -77,7 +77,9 @@
 ///
 /// A library with no input and no output: `arena::Arena` holds a match's state
 /// and the modules beside it hold its clock, its inputs, its randomness, its
-/// state hash and its streaming ledger. Cut T's arena task is the thin wrapper
+/// spatial index, its motion, its state hash, its streaming ledger and the pulse
+/// that drives them — `Arena::step(wall_now_ms, controls, intents)`, a pure
+/// function of the state and those inputs. Cut T's arena task is the thin wrapper
 /// that owns one; a contract gate
 /// (`crates/mush-contract-tests/tests/arena_library.rs`) asserts that nothing
 /// under `arena/` can reach persistence, a runtime, an output sink or the world.
