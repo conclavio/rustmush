@@ -114,6 +114,11 @@ pub mod content;
 /// `DefinitionRef` the C1 registry will carry, the arena's window built from the
 /// atlas's records, and the nine content files compiled in beside them.
 pub mod definitions;
+/// **The deliberation layer** (16b cut N.2; doc 16 §6 "Deliberation"): the order
+/// type a squad is steered by, the squad grouping the order is written for, the
+/// structured request that produces one, and the cost table the owner's cost run
+/// prints. The arena imports only [`deliberation::order`], which is data.
+pub mod deliberation;
 pub mod economy;
 pub mod ephemeris;
 pub mod fixture;

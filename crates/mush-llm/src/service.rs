@@ -66,6 +66,12 @@ pub enum LlmFeature {
     /// The WoD Storyteller interpretation pass (M13): narrate the engine's
     /// logged dice outcome in-fiction (cheaper model).
     StInterpret,
+    /// **16b cut N.2**: one squad's standing order in the combat arena (route
+    /// `tacsim_deliberate`). One structured call, one forced tool whose arguments
+    /// are the order, at `Priority::Background` — a squad with no order fights on
+    /// its reflex doctrine, so this never competes with a player for the
+    /// interactive semaphore.
+    TacsimDeliberate,
     /// A staff smoke/test call.
     StaffTool,
 }
@@ -87,6 +93,7 @@ impl LlmFeature {
             LlmFeature::Ambience => "ambience",
             LlmFeature::StAdjudicate => "st_adjudicate",
             LlmFeature::StInterpret => "st_interpret",
+            LlmFeature::TacsimDeliberate => "tacsim_deliberate",
             LlmFeature::StaffTool => "staff_tool",
         }
     }

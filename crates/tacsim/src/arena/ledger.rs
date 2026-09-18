@@ -266,6 +266,28 @@ pub enum EventKind {
         /// The unit.
         unit: ObjId,
     },
+    /// **A squad's standing order ran out unrenewed** (16b cut N.2; doc 16 §6
+    /// "Provider failure": *the visible in-world effect — "mind link dropped, unit
+    /// on doctrine" — is a notice when an order expires unrenewed*).
+    ///
+    /// One line per **unit**, at the arena millisecond that unit's next reflex tick
+    /// read the expiry — not at the millisecond the order nominally ran out, and
+    /// deliberately: the order stops steering when the machine next looks at it,
+    /// and a black box that said otherwise would disagree with what the tank did.
+    ///
+    /// The line is the record; the sentence a person reads is the world's, said
+    /// once per squad by the bridge that issued the order. Both carry
+    /// [`crate::deliberation::order::MIND_LINK_DROPPED`]'s meaning and neither is
+    /// derived from the other, which is the same split every notice in this engine
+    /// has.
+    OrderExpired {
+        /// The unit that dropped to doctrine.
+        unit: ObjId,
+        /// The squad the order was written for, rendered (`red-1`).
+        squad: SmolStr,
+        /// The objective it was carrying, by its word.
+        objective: SmolStr,
+    },
     /// A pulse absorbed more wall time than `max_catch_up_steps × period`, or the
     /// egress backed up past `ledger.max_unflushed_chunks`.
     Lagged {
@@ -304,6 +326,7 @@ impl EventKind {
             EventKind::SectionDestroyed { .. } => "section_destroyed",
             EventKind::UnitDisabled { .. } => "unit_disabled",
             EventKind::UnitDestroyed { .. } => "unit_destroyed",
+            EventKind::OrderExpired { .. } => "order_expired",
             EventKind::Lagged { .. } => "lagged",
             EventKind::MatchEnded { .. } => "match_ended",
             EventKind::Aborted => "aborted",

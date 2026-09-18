@@ -82,11 +82,13 @@ use mush_core::ObjId;
 use smol_str::SmolStr;
 
 use crate::arena::intents::{Intent, IntentKind, IntentOutcome, apply_intent, resolve_startup};
+use crate::arena::ledger::EventKind;
 use crate::arena::path::{PathScratch, path};
 use crate::arena::perception::bearing_of;
 use crate::arena::resolution::facet_band;
 use crate::arena::state::{Arena, Classification, ContactId, Controller, DueKind, Power};
 use crate::config::ReflexConfig;
+use crate::deliberation::order::{Objective, Order, StandingOrder};
 
 /// How near a goal cell counts as arrived, in cells.
 ///
@@ -201,6 +203,13 @@ pub struct ReflexUnit {
     /// A shot of this unit's was refused the line (W's `blocked` or `cover` miss):
     /// the `no line` edge, cleared by the tick that re-plans on it.
     pub no_line: bool,
+    /// **The squad order it is under** (16b cut N.2; doc 16 §6 "Deliberation"),
+    /// with the arena milliseconds it was accepted at and runs out at.
+    ///
+    /// `None` is doctrine, which is what doc 16 §6 calls *the fallback when nothing
+    /// arrives*: not idle, not a hold — the machine below, exactly as it ran before
+    /// an order arrived and exactly as it runs after one expires.
+    pub order: Option<StandingOrder>,
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +240,11 @@ pub struct ReflexCounters {
     pub intents: u32,
     /// `FIRE`s accepted.
     pub shots: u32,
+    /// **Standing orders a tick acted on** (16b cut N.2) — ticks that read a live
+    /// order, not orders accepted.
+    pub ordered: u32,
+    /// **Orders that ran out** (16b cut N.2), one per unit dropped to doctrine.
+    pub orders_expired: u32,
     /// Ticks that ended in each state, in [`ReflexState::ALL`] order.
     pub in_state: [u32; 6],
 }
@@ -246,6 +260,8 @@ impl ReflexCounters {
         self.traces = self.traces.saturating_add(other.traces);
         self.intents = self.intents.saturating_add(other.intents);
         self.shots = self.shots.saturating_add(other.shots);
+        self.ordered = self.ordered.saturating_add(other.ordered);
+        self.orders_expired = self.orders_expired.saturating_add(other.orders_expired);
         for (mine, theirs) in self.in_state.iter_mut().zip(other.in_state.iter()) {
             *mine = mine.saturating_add(*theirs);
         }
@@ -352,6 +368,35 @@ impl ReflexMemory {
         self.units.remove(&unit);
     }
 
+    /// **Write a squad's standing order onto one unit's machine** (16b cut N.2),
+    /// latest-wins.
+    ///
+    /// A unit with no machine gets one, in [`ReflexState::Startup`]: an order may
+    /// arrive for a tank the controller has not ticked yet, and refusing it would
+    /// make the first order of a match the one that never lands.
+    pub fn set_order(&mut self, unit: ObjId, order: StandingOrder) {
+        self.units.entry(unit).or_default().order = Some(order);
+    }
+
+    /// The order a unit is under, if any.
+    #[must_use]
+    pub fn order(&self, unit: ObjId) -> Option<&StandingOrder> {
+        self.units.get(&unit).and_then(|row| row.order.as_ref())
+    }
+
+    /// How many machines are under a live order at `t_ms` — what the harness
+    /// reports and a test asserts.
+    #[must_use]
+    pub fn under_order(&self, t_ms: i64) -> u32 {
+        u32::try_from(
+            self.units
+                .values()
+                .filter(|row| row.order.as_ref().is_some_and(|on| !on.expired_at(t_ms)))
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
+    }
+
     /// Whether this tick may spend a path search, against the per-window budget.
     fn may_search(&mut self, t_ms: i64) -> bool {
         let window_ms = i64::from(self.cfg.decide_ms.max(1));
@@ -384,6 +429,15 @@ struct ReflexPlan {
     speed_cms: Option<i32>,
     lock: Option<ContactId>,
     fire: Option<SmolStr>,
+    /// **16b cut N.2**: this tick found the standing order expired and dropped the
+    /// unit to doctrine — the squad it was written for and the objective it was
+    /// carrying, for the one `order_expired` line the tick journals.
+    ///
+    /// It rides the plan because `decide` holds `&self` and the ledger needs
+    /// `&mut self`, which is the same split every other order on the plan has.
+    expired: Option<(crate::deliberation::squad::SquadId, &'static str)>,
+    /// **16b cut N.2**: the tick read a live order.
+    ordered: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +513,28 @@ impl Arena {
         self.reflex = memory;
         if let Some(slot) = counters.in_state.get_mut(usize::from(state.code())) {
             *slot = slot.saturating_add(1);
+        }
+        // **16b cut N.2** — the one `order_expired` line, and the squad the next
+        // signal will say it is asking about. Journalled before the orders it
+        // decided under doctrine are applied, so the black box reads in the order
+        // it happened: the link dropped, and then the tank did what it does alone.
+        if let Some((squad, objective)) = plan.expired {
+            counters.orders_expired = counters.orders_expired.saturating_add(1);
+            let hash = self.event_hash();
+            let _ = self.ledger.append(
+                t_ms,
+                EventKind::OrderExpired {
+                    unit,
+                    squad: SmolStr::new(squad.to_string()),
+                    objective: SmolStr::new(objective),
+                },
+                None,
+                hash,
+            );
+            self.note_order_expired(squad);
+        }
+        if plan.ordered {
+            counters.ordered = counters.ordered.saturating_add(1);
         }
         self.order(unit, &plan, counters);
         true
@@ -574,6 +650,47 @@ impl Arena {
             return plan;
         }
 
+        // ---- the standing order, and the expiry that ends it (16b cut N.2) ----
+        //
+        // Doc 16 §6: *an order expiring unrenewed drops the squad to doctrine*. The
+        // expiry is read **here**, at the machine's own tick and in arena time, and
+        // not by a sweep at a pulse boundary: a sweep would drop the order at a
+        // different arena millisecond at every tempo, which is the one thing
+        // D-16-2 forbids.
+        //
+        // What doctrine restores: the goal, the route and the target, so a patrol
+        // resumes the waypoint graph and an engagement is re-chosen by the utility
+        // score. A `Withdraw` the **order** put it in is undone as well, but only
+        // when the unit's own health does not ask for one — otherwise the machine
+        // would answer an expired order by driving a wreck back into the fight.
+        if let Some(standing) = row.order.as_ref()
+            && standing.expired_at(t_ms)
+        {
+            let squad = standing.order.squad;
+            let objective = standing.order.objective.as_str();
+            row.order = None;
+            row.goal = None;
+            row.route.clear();
+            row.target = None;
+            if row.state == ReflexState::Withdraw
+                && self.reflex_health_permille(id) >= memory.cfg.withdraw_permille
+            {
+                row.state = ReflexState::Patrol;
+            }
+            plan.expired = Some((squad, objective));
+        }
+        // The order this tick decides under, taken out of the row so the rest of
+        // the function can hold it by reference while `row` is borrowed mutably.
+        let order: Option<Order> = row.order.as_ref().map(|standing| standing.order.clone());
+        plan.ordered = order.is_some();
+        // A unit whose squad is not the one the order was written for obeys
+        // nothing: a roster that changed under an order is an order with two
+        // meanings, and this is the cheap way to have only one.
+        let order = order.filter(|order| {
+            self.squad_of(id)
+                .is_none_or(|roster| roster.id == order.squad)
+        });
+
         // ---- power ----
         match unit.power {
             Power::Off => {
@@ -626,6 +743,44 @@ impl Arena {
             }
         }
 
+        // ---- what the order does to the machine (16b cut N.2) ----
+        //
+        // An order **steers**: it decides which state the machine is in and what
+        // that state is aiming at, and then the state's own body does exactly what
+        // it always did. Nothing below this is a second implementation of the
+        // machine.
+        //
+        // - `withdraw` puts it in `Withdraw`, which is the state's own edge reached
+        //   by a commander instead of by a health threshold;
+        // - `hold` and `advance` are **movement** orders: the squad does not pursue,
+        //   so the target is dropped and `Approach`/`Engage` fall back to `Patrol`
+        //   with the order's goal. A commander who wants the squad to fight orders
+        //   `engage`, which is the whole reason there are four objectives and not
+        //   two;
+        // - `engage` changes nothing about the states and everything about the
+        //   choice inside them: the utility score prefers the hinted contact.
+        if let Some(order) = order.as_ref() {
+            match order.objective {
+                Objective::Withdraw => {
+                    if row.state != ReflexState::Withdraw {
+                        row.state = ReflexState::Withdraw;
+                        row.target = None;
+                        row.goal = None;
+                        row.route.clear();
+                    }
+                }
+                Objective::Hold | Objective::Advance { .. } => {
+                    if matches!(row.state, ReflexState::Approach | ReflexState::Engage) {
+                        row.state = ReflexState::Patrol;
+                        row.goal = None;
+                        row.route.clear();
+                    }
+                    row.target = None;
+                }
+                Objective::Engage { .. } => {}
+            }
+        }
+
         // ---- the `Withdraw` edge ----
         let health = self.reflex_health_permille(id);
         if row.state != ReflexState::Withdraw && health < memory.cfg.withdraw_permille {
@@ -636,11 +791,21 @@ impl Arena {
         }
 
         // ---- the hostile edges ----
-        if matches!(
-            row.state,
-            ReflexState::Patrol | ReflexState::Approach | ReflexState::Engage
-        ) {
-            match self.best_hostile(id, memory, health) {
+        //
+        // 16b cut N.2: a movement order suppresses them entirely (see above), so an
+        // ordered squad walks past a contact rather than turning on it.
+        let may_pursue = !matches!(
+            order.as_ref().map(|order| order.objective),
+            Some(Objective::Hold | Objective::Advance { .. })
+        );
+        if may_pursue
+            && matches!(
+                row.state,
+                ReflexState::Patrol | ReflexState::Approach | ReflexState::Engage
+            )
+        {
+            let prefer = self.ordered_target(id, order.as_ref());
+            match self.best_hostile(id, memory, health, prefer) {
                 Some(found) => {
                     if row.target != Some(found) {
                         row.target = Some(found);
@@ -689,7 +854,24 @@ impl Arena {
         match row.state {
             ReflexState::Startup | ReflexState::Disabled => {}
             ReflexState::Patrol => {
-                self.patrol_goal(id, &mut row, here);
+                // 16b cut N.2: `advance` replaces the waypoint walk with the cell
+                // the commander named; `hold` parks where the unit stands. Both
+                // leave the waypoint the machine was walking to alone, so doctrine
+                // picks it up again at expiry rather than starting from nothing.
+                match order.as_ref().map(|order| order.objective) {
+                    Some(Objective::Advance { to }) => {
+                        if row.goal != Some(to) {
+                            row.goal = Some(to);
+                            row.route.clear();
+                        }
+                    }
+                    Some(Objective::Hold) => {
+                        row.goal = here;
+                        row.route.clear();
+                        plan.speed_cms = Some(0);
+                    }
+                    _ => self.patrol_goal(id, &mut row, here),
+                }
             }
             ReflexState::Approach => {
                 if let Some((contact, target)) = row.target {
@@ -698,16 +880,19 @@ impl Arena {
                         .unit(target)
                         .map(|to| crate::arena::index::range_cm(&unit.pose, &to.pose))
                         .unwrap_or(u64::MAX);
-                    let hold =
-                        reach.saturating_mul(u64::from(memory.cfg.engage_band_permille)) / 1_000;
+                    let hold = band_hold_cm(
+                        unit.weapon_reach_cm(),
+                        memory.cfg.engage_band_permille,
+                        order.as_ref(),
+                    );
                     if reach != 0
-                        && range <= reach.max(1)
+                        && range <= order_reach_cm(unit.weapon_reach_cm(), order.as_ref()).max(1)
                         && self.reflex_has_line(id, target, counters)
                     {
                         row.state = ReflexState::Engage;
                         row.goal = None;
                         row.route.clear();
-                        self.engage_orders(id, contact, target, &mut plan);
+                        self.engage_orders(id, contact, target, order.as_ref(), &mut plan);
                     } else {
                         row.goal = self.stand_off_cell(id, target, hold).or(here);
                     }
@@ -720,10 +905,14 @@ impl Arena {
                         .unit(target)
                         .map(|to| crate::arena::index::range_cm(&unit.pose, &to.pose))
                         .unwrap_or(u64::MAX);
-                    if reach == 0 || range > reach {
+                    if reach == 0 || range > order_reach_cm(unit.weapon_reach_cm(), order.as_ref())
+                    {
                         row.state = ReflexState::Approach;
-                        let hold = reach.saturating_mul(u64::from(memory.cfg.engage_band_permille))
-                            / 1_000;
+                        let hold = band_hold_cm(
+                            unit.weapon_reach_cm(),
+                            memory.cfg.engage_band_permille,
+                            order.as_ref(),
+                        );
                         row.goal = self.stand_off_cell(id, target, hold).or(here);
                     } else {
                         // Holding the band: stop, turn onto the target, shoot.
@@ -733,7 +922,7 @@ impl Arena {
                         plan.heading_mdeg = self.unit(target).map(|to| {
                             bearing_of(to.pose.x_cm - unit.pose.x_cm, to.pose.y_cm - unit.pose.y_cm)
                         });
-                        self.engage_orders(id, contact, target, &mut plan);
+                        self.engage_orders(id, contact, target, order.as_ref(), &mut plan);
                     }
                 }
             }
@@ -819,7 +1008,14 @@ impl Arena {
     /// in component order that is ready, loaded and in reach — component order,
     /// because that is the order `WEAPONSTATUS` prints and the order a pilot would
     /// read down.
-    fn engage_orders(&self, id: ObjId, contact: ContactId, target: ObjId, plan: &mut ReflexPlan) {
+    fn engage_orders(
+        &self,
+        id: ObjId,
+        contact: ContactId,
+        target: ObjId,
+        order: Option<&Order>,
+        plan: &mut ReflexPlan,
+    ) {
         let Some(unit) = self.unit(id) else {
             return;
         };
@@ -829,10 +1025,20 @@ impl Arena {
         if unit.power != Power::Online {
             return;
         }
+        // 16b cut N.2: `hold_fire` is a constraint on the **trigger** and on
+        // nothing else — the machine still closes, turns and locks, so the squad is
+        // one order away from shooting rather than one decision cycle plus a lock.
+        if order.is_some_and(|order| order.constraints.hold_fire) {
+            return;
+        }
         let range = self
             .unit(target)
             .map(|to| crate::arena::index::range_cm(&unit.pose, &to.pose))
             .unwrap_or(u64::MAX);
+        let ceiling = order_reach_cm(unit.weapon_reach_cm(), order);
+        if range > ceiling {
+            return;
+        }
         plan.fire = unit
             .weapons
             .iter()
@@ -842,6 +1048,23 @@ impl Arena {
                     && u64::from(weapon.max_range_cm) >= range
             })
             .map(|weapon| weapon.id.clone());
+    }
+
+    /// **The object an order points this unit at**, or `None` (16b cut N.2).
+    ///
+    /// The hint is written in the **commander's** contact ids, because that is the
+    /// only contact store the request was built from; it is resolved there into an
+    /// object, and the caller then looks for *this* unit's own contact on that
+    /// object. A unit that holds nothing on it prefers nothing and takes its
+    /// doctrine's best target, which is doc 16 §3.6's observer rule read through an
+    /// order: a commander may point, and a tank that cannot see still cannot see.
+    fn ordered_target(&self, id: ObjId, order: Option<&Order>) -> Option<ObjId> {
+        let order = order?;
+        let hint = order.preferred_contact()?;
+        let commander = self.squad_of(id)?.commander;
+        self.contacts
+            .resolve(commander, hint)
+            .map(|held| held.target)
     }
 
     /// Whether a shot at `target` would have a line at all — the test `Approach`
@@ -878,6 +1101,7 @@ impl Arena {
         id: ObjId,
         memory: &ReflexMemory,
         health_permille: u32,
+        prefer: Option<ObjId>,
     ) -> Option<(ContactId, ObjId)> {
         let unit = self.unit(id)?;
         // **A platform with nothing to shoot with has no target.** `Approach` and
@@ -917,9 +1141,19 @@ impl Arena {
                 "front" => EXPOSURE_FRONT,
                 _ => EXPOSURE_FLANK,
             };
-            let score = u64::from(memory.cfg.weight_range.saturating_mul(range_permille))
-                .saturating_add(u64::from(memory.cfg.weight_facet.saturating_mul(exposure)))
-                .saturating_add(u64::from(health_term));
+            // **16b cut N.2**: the order's hint wins outright, and only outright.
+            // It is a zero score rather than a weight, because a commander who
+            // names a target has said something the utility function cannot: what
+            // the *squad* is for. A hint the unit cannot see never reaches here
+            // (`ordered_target` resolved it to nothing), so this can only ever
+            // choose among contacts the unit already holds.
+            let score = if prefer == Some(target.id) {
+                0
+            } else {
+                u64::from(memory.cfg.weight_range.saturating_mul(range_permille))
+                    .saturating_add(u64::from(memory.cfg.weight_facet.saturating_mul(exposure)))
+                    .saturating_add(u64::from(health_term))
+            };
             let candidate = (score, target.id, *contact);
             if best.is_none_or(|(had, unit, _)| (score, target.id) < (had, unit)) {
                 best = Some(candidate);
@@ -1243,10 +1477,32 @@ impl Arena {
                         counters.shots = counters.shots.saturating_add(1);
                     }
                 }
-                IntentKind::Heading { .. } | IntentKind::Speed { .. } => {}
+                IntentKind::Heading { .. } | IntentKind::Speed { .. } | IntentKind::Order(_) => {}
             }
         }
     }
+}
+
+/// **The furthest range an order lets a unit shoot at**, centimetres (16b cut
+/// N.2).
+///
+/// `None`, or an order with no band, is the platform's own reach and nothing
+/// changes. A band caps it at that band's ceiling, so `close` is a squad told to
+/// let the enemy come to it and `far` caps nothing, which is a commander saying
+/// "no restriction" without a fourth word.
+fn order_reach_cm(reach_cm: u32, order: Option<&Order>) -> u64 {
+    let reach = u64::from(reach_cm);
+    match order.and_then(|order| order.constraints.max_range_band) {
+        Some(band) => reach.min(band.ceiling_cm(reach_cm)),
+        None => reach,
+    }
+}
+
+/// **The range `Approach` holds**, centimetres (16b cut N.2): doctrine's own
+/// `engage_band_permille` of the reach, capped by the order's band.
+fn band_hold_cm(reach_cm: u32, engage_band_permille: u32, order: Option<&Order>) -> u64 {
+    let doctrine = u64::from(reach_cm).saturating_mul(u64::from(engage_band_permille)) / 1_000;
+    doctrine.min(order_reach_cm(reach_cm, order))
 }
 
 /// The per-unit rows, for [`crate::arena::hash::state_hash`] — the one reader

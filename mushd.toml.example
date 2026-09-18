@@ -228,6 +228,7 @@ reserved_rooms = []                # extra rooms (#N) that may never become prop
 # wall time between pulses and clamped: past the clamp the arena records
 # `lagged` and skips the idle time rather than expanding dt to hide it.
 max_catch_up_steps = 4             # periods of wall time one pulse may absorb before it records `lagged`
+deliberate_min_ms = 30000          # (16b cut N.2) the least ARENA time between two deliberation requests for one squad: the floor under the event-driven trigger
 
 [tacsim.arena.tempo]               # (16b cut G) the adaptive tempo: how often the arena steps
 # The tempo decides only how OFTEN the arena steps and how output is batched --
@@ -464,6 +465,15 @@ timeout_s = 30
 reasoning = "low"
 # Without this route every NPC decision falls back to its idle action after
 # its deadline (the same degrade shape as dialogue with [llm].enabled = false).
+
+[llm.routes.tacsim_deliberate]      # (16b cut N.2) one squad's standing order in the combat arena
+model = "z-ai/glm-5.3-flash"        # one forced tool whose arguments ARE the order
+max_tokens = 512
+timeout_s = 30
+reasoning = "low"
+# Without this route every squad stays on the reflex controller's own doctrine --
+# patrol, close, hold a band, break off when hurt — which is doc 16 §6's fallback
+# and what every test and CI run does.
 
 [llm.routes.npc_summarize]         # NPC memory fold (cheap, background)
 model = "z-ai/glm-5.3-flash"

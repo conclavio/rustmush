@@ -20,8 +20,12 @@
 //! task  -> world  ArenaOut::Ledger      one closed chunk of the match's black box
 //! task  -> world  ArenaOut::Frames      the pilots whose view changed this pulse
 //! task  -> world  ArenaOut::Lagged      the clock or the egress is behind
+//! task  -> world  ArenaOut::Deliberate  the squads with something new to decide (N.2)
 //! task  -> world  ArenaOut::Ended       the match is over, with its ledger digest
 //! ```
+//!
+//! **`Deliberate` is an eighth message where doc 16 §3.1 names seven**, and
+//! [`ArenaOut::Deliberate`] says why and what it deliberately is not.
 //!
 //! `CustodyOut` is the argument to [`spawn_arena`] rather than a message — a
 //! match is checked out exactly once, at the moment it starts — and `CustodyIn`
@@ -126,6 +130,26 @@ pub enum ArenaOut {
         /// Which match.
         match_id: MatchId,
     },
+    /// **The squads with something new to decide about** (16b cut N.2; doc 16 §6
+    /// "Deliberation").
+    ///
+    /// **This is an eighth message, and doc 16 §3.1 says the seam is seven.** It is
+    /// here because doc 16 §6 puts the deliberation trigger on *the commander's
+    /// contact set* — which only the arena can see — and the request itself on the
+    /// world's own provider path, so something has to cross. It is the narrowest
+    /// thing that can: **egress-only, report-only, and droppable**. It carries no
+    /// authority, asks for nothing back on its own account (the reply is an
+    /// ordinary [`ArenaMsg::Intent`]), and is sent with the same `try_send` frames
+    /// are, because a signal the world misses is re-sent by the next pulse whose
+    /// digest still differs. Nothing in the arena waits for it or reads a
+    /// consequence of it.
+    Deliberate {
+        /// Which match.
+        match_id: MatchId,
+        /// The squads, in squad-id order, already floored by
+        /// `[tacsim.arena].deliberate_min_ms` in arena time.
+        signals: Vec<crate::arena::command::SquadSignal>,
+    },
     /// The match is over. The last chunks precede this message.
     Ended {
         /// Which match.
@@ -155,6 +179,7 @@ impl ArenaOut {
             ArenaOut::Ledger { match_id, .. }
             | ArenaOut::Frames { match_id, .. }
             | ArenaOut::Lagged { match_id }
+            | ArenaOut::Deliberate { match_id, .. }
             | ArenaOut::Ended { match_id, .. } => *match_id,
         }
     }
@@ -481,6 +506,7 @@ impl Task {
             ledger_chunks,
             frames,
             lagged,
+            deliberation,
             ..
         } = out;
         for chunk in ledger_chunks {
@@ -499,6 +525,15 @@ impl Task {
         if lagged {
             let _ = self.egress.try_send(ArenaOut::Lagged {
                 match_id: self.match_id,
+            });
+        }
+        // 16b cut N.2: droppable for the same reason frames are — a signal the
+        // world could not take is re-sent by the next pulse whose digest still
+        // differs, and the arena never learns either way.
+        if !deliberation.is_empty() {
+            let _ = self.egress.try_send(ArenaOut::Deliberate {
+                match_id: self.match_id,
+                signals: deliberation,
             });
         }
     }

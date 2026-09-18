@@ -168,6 +168,19 @@ pub fn state_hash(arena: &Arena) -> u64 {
                 .map_or(0_u32, |(_, target)| target.0)
                 .to_le_bytes(),
         );
+        // **16b cut N.2**: the standing order — what it says and when it stops
+        // saying it. Both are functions of arena time and of nothing else, so two
+        // cadences of the same scripted match fold the same bytes; the order's
+        // `issued_ms` is a *world* millisecond and is deliberately NOT folded, for
+        // exactly that reason.
+        match &row.order {
+            Some(standing) => {
+                hash = fnv1a64_update(hash, &[standing.order.objective.code()]);
+                hash = fnv1a64_update(hash, &standing.expires_ms.to_le_bytes());
+                hash = fnv1a64_update(hash, &[u8::from(standing.order.constraints.hold_fire)]);
+            }
+            None => hash = fnv1a64_update(hash, &[0_u8]),
+        }
     }
     for (viewer, id, held) in arena.contacts.all() {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());

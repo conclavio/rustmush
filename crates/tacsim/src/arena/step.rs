@@ -215,6 +215,16 @@ pub struct StepOutput {
     /// `harness.max_path_queries_per_pulse` against
     /// [`ReflexCounters::path_queries`] and reports the state distribution.
     pub reflex: ReflexCounters,
+    /// **The squads with something new to decide about** (16b cut N.2; doc 16 §6
+    /// "Deliberation"), already floored by `[tacsim.arena].deliberate_min_ms` in
+    /// arena time.
+    ///
+    /// Empty on every pulse of a match with no squads, which is every fixture and
+    /// every match of pilots. The world half turns each into one request through
+    /// its own LLM re-entry seam and the reply comes back as an ordinary
+    /// [`crate::arena::intents::IntentKind::Order`]; the arena waits for neither
+    /// and is told nothing if the world drops it.
+    pub deliberation: Vec<crate::arena::command::SquadSignal>,
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +338,7 @@ impl Arena {
                 substeps: 0,
                 perception: PerceptionCounters::default(),
                 reflex: ReflexCounters::default(),
+                deliberation: Vec::new(),
             };
         }
         self.substep_hashes.clear();
@@ -414,8 +425,13 @@ impl Arena {
                     IntentKind::Fire { ref weapon } => {
                         let _ = self.resolve_fire(id, weapon);
                     }
-                    // Continuous orders never queue (phase 2 applies them).
-                    IntentKind::Heading { .. } | IntentKind::Speed { .. } => {}
+                    // Continuous orders never queue (phase 2 applies them), and
+                    // neither does a squad's standing order (16b cut N.2): it is
+                    // written onto the reflex machine at apply and read by that
+                    // machine's own tick.
+                    IntentKind::Heading { .. }
+                    | IntentKind::Speed { .. }
+                    | IntentKind::Order(_) => {}
                 }
             }
         }
@@ -537,6 +553,15 @@ impl Arena {
             substeps: ran,
             perception,
             reflex,
+            // **16b cut N.2** (doc 16 §6): the last thing the pulse does, after the
+            // frames, so a signal describes the world the pilots were just shown.
+            // A match that ended this pulse asks for nothing: an order for a match
+            // that is over is a provider call nobody will read.
+            deliberation: if ended.is_some() {
+                Vec::new()
+            } else {
+                self.take_deliberation_signals()
+            },
         }
     }
 
@@ -790,6 +815,7 @@ impl Arena {
             substeps: 0,
             perception: PerceptionCounters::default(),
             reflex: ReflexCounters::default(),
+            deliberation: Vec::new(),
         }
     }
 

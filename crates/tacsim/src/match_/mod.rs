@@ -494,6 +494,20 @@ pub fn start(
         ledger_digest: String::new(),
         seed,
         last_pose: BTreeMap::new(),
+        // 16b cut N.2: the same grouping `Arena::new` derives, from the same
+        // triples — a side's reflex units in pod pairs, lowest id commanding.
+        squads: crate::deliberation::squads_of(
+            &custody_units
+                .iter()
+                .map(|unit| {
+                    (
+                        unit.id,
+                        unit.team,
+                        unit.controller == crate::arena::state::Controller::Reflex,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
     };
     {
         let book = ctx

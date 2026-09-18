@@ -68,6 +68,7 @@
 //! | `[tacsim.arena.tempo].substep_max_ms` | `250` | the longest substep a pulse is cut into (doc 16 §3.1 rate independence) |
 //! | `[tacsim.arena.tempo].stall_ms` | `2000` | milliseconds one pulse may take before the watchdog voids the match |
 //! | `[tacsim.arena].max_catch_up_steps` | `4` | periods of wall time one pulse may absorb before the arena records `lagged` and skips the idle time |
+//! | `[tacsim.arena].deliberate_min_ms` | `30000` | **16b cut N.2** (doc 16 §6): the least ARENA time between two deliberation requests for one squad — the floor under the event-driven trigger |
 //! | `[tacsim.arena.intents].max_pending_per_unit` | `8` | discrete actions one unit may have queued at once |
 //! | `[tacsim.arena.ledger].summary_ms` | `5000` | arena milliseconds between `position_summary` ledger events (doc 16 §4) |
 //! | `[tacsim.arena.ledger].max_bytes` | `67108864` | 64 MiB: at 90% summaries stop, at 100% the match is stopped with `Timeout` |
@@ -916,6 +917,16 @@ pub struct TacsimArenaCfg {
     /// records `lagged` and skips the idle time rather than expanding `dt` to hide
     /// it (doc 16 §3.1 "Clock and lag"; doc 06 §6.4).
     pub max_catch_up_steps: u32,
+    /// The least **arena** time between two deliberation requests for one squad,
+    /// milliseconds (**16b cut N.2**; doc 16 §6 "Deliberation": *event-driven with a
+    /// floor of `command.deliberate_min_ms` (30,000)*).
+    ///
+    /// The trigger is the squad commander's contact set changing class or count, or
+    /// an order expiring unrenewed; this is the floor under it, and it is the whole
+    /// of what stops a firefight from asking a provider for a new order every sensor
+    /// pass. It is enforced inside the pulse, in arena time, so the same scripted
+    /// match makes the same number of requests at every tempo (D-16-2).
+    pub deliberate_min_ms: u32,
     /// `[tacsim.arena.intents]` — the per-unit intent inbox bound.
     pub intents: TacsimIntentsCfg,
     /// `[tacsim.arena.ledger]` — the match ledger's summary cadence and its two
@@ -931,6 +942,7 @@ impl Default for TacsimArenaCfg {
         TacsimArenaCfg {
             tempo: TacsimTempoCfg::default(),
             max_catch_up_steps: 4,
+            deliberate_min_ms: 30_000,
             intents: TacsimIntentsCfg::default(),
             ledger: TacsimLedgerCfg::default(),
             reflex: TacsimReflexCfg::default(),

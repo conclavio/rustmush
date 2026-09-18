@@ -437,6 +437,40 @@ pub struct ArenaRegistry {
     /// atlas on every look. One `Arc` per match, taken at check-out and dropped
     /// with the match.
     arenas: BTreeMap<MatchId, Arc<crate::arena::state::ArenaDefinition>>,
+    /// **16b cut N.2**: what each running match's squads have been told and when
+    /// each order runs out, in **world** milliseconds.
+    ///
+    /// The arena keeps the authoritative expiry in arena time and journals
+    /// `order_expired`; this is the world's own copy, and it exists for exactly one
+    /// thing — the in-world sentence doc 16 §6 asks for, which only the world can
+    /// say because only the world has an output sink.
+    deliberation: BTreeMap<MatchId, MatchDeliberation>,
+}
+
+/// **One match's deliberation state, on the world side** (16b cut N.2).
+#[derive(Clone, Debug, Default)]
+pub struct MatchDeliberation {
+    /// Requests deferred and not yet completed. Bounded by
+    /// [`crate::deliberation::MAX_IN_FLIGHT_PER_MATCH`] so a match whose provider
+    /// has stopped answering cannot queue one per pulse for ever.
+    in_flight: usize,
+    /// Per squad: when its order runs out in world time, and what it said.
+    orders: BTreeMap<crate::deliberation::SquadId, OrderWatch>,
+    /// Orders issued, for `@arena/status` and the cost run.
+    issued: u64,
+    /// Requests refused by the provider path, whatever the reason.
+    refused: u64,
+}
+
+/// One squad's order, as the world remembers it.
+#[derive(Clone, Debug)]
+struct OrderWatch {
+    /// The world millisecond the order stops standing at.
+    expires_ms: i64,
+    /// The objective, by its word, for the sentence.
+    objective: SmolStr,
+    /// Whether the expiry has already been said. A notice is said once.
+    said: bool,
 }
 
 impl ArenaRegistry {
@@ -454,7 +488,18 @@ impl ArenaRegistry {
             matches: BTreeMap::new(),
             last_frames: BTreeMap::new(),
             arenas: BTreeMap::new(),
+            deliberation: BTreeMap::new(),
         }
+    }
+
+    /// **16b cut N.2**: how many orders this match has issued and how many
+    /// requests were refused — one line of `@arena/status` and the cost run's own
+    /// cross-check.
+    #[must_use]
+    pub fn deliberation_counts(&self, match_id: MatchId) -> (u64, u64, usize) {
+        self.deliberation.get(&match_id).map_or((0, 0, 0), |state| {
+            (state.issued, state.refused, state.in_flight)
+        })
     }
 
     /// The shared table of live tasks.
@@ -490,6 +535,12 @@ impl ArenaRegistry {
         // behind would be the first thing the *next* match's pilot read.
         self.last_frames.retain(|_, held| held.match_id != match_id);
         self.arenas.remove(&match_id);
+        // 16b cut N.2: and the deliberation row, for the same reason. An order
+        // whose time to live outlives the match it was written for would otherwise
+        // say "mind link dropped" about a squad that no longer exists, and an
+        // in-flight count left behind would be a permanent debit against the *next*
+        // match that took this id.
+        self.deliberation.remove(&match_id);
         self.matches.remove(&match_id)
     }
 
@@ -967,8 +1018,18 @@ fn control_all_channels(ctx: &mut Ctx<'_>, unit: ObjId, state: ControlState) {
 pub struct ArenaEgress;
 
 impl AsyncCompletion for ArenaEgress {
-    fn on_complete(&self, ctx: &mut Ctx<'_>, _correlation: u64, _payload: &str) {
-        drain_egress(ctx);
+    fn on_complete(&self, ctx: &mut Ctx<'_>, _correlation: u64, payload: &str) {
+        // **16b cut N.2**: the module has two async re-entries now and one
+        // registered completion, so this routes on the payload. The egress wake is
+        // a fixed token ([`EGRESS_PAYLOAD`]) and everything else is a deliberation
+        // reply — which is the narrowest test available, because the token is a
+        // constant this crate wrote and a reply is a `DeliberationReply` this crate
+        // also wrote.
+        if payload == EGRESS_PAYLOAD || payload.is_empty() {
+            drain_egress(ctx);
+        } else {
+            on_deliberation_reply(ctx, payload);
+        }
     }
 }
 
@@ -988,6 +1049,9 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
                 on_chunk(ctx, match_id, chunk.seq, &chunk.bytes);
             }
             ArenaOut::Lagged { match_id } => on_lagged(ctx, match_id),
+            ArenaOut::Deliberate { match_id, signals } => {
+                on_deliberate(ctx, match_id, &signals);
+            }
             ArenaOut::Ended {
                 match_id,
                 end,
@@ -996,6 +1060,12 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
             } => on_ended(ctx, match_id, end, digest, &units),
         }
     }
+    // **16b cut N.2** (doc 16 §6 "Provider failure"): the one in-world sentence, said
+    // once per squad whose order ran out unrenewed. It is swept here, on the world's
+    // own drain, because the arena has no sink and the notice has to reach people;
+    // the arena's `order_expired` ledger line is the record of the same fact, and
+    // neither is derived from the other.
+    say_expired_orders(ctx);
 }
 
 /// One pulse's frames: a keyframe per pilot, on the feed, through the loop's
@@ -1611,3 +1681,276 @@ pub fn egress_capacity(cfg: &crate::config::ArenaConfig) -> usize {
 /// The tacsim module's namespace, restated for the host's benefit: the arena's
 /// ledger, its registry and its feed are all this module's.
 pub const MODULE: &str = NS;
+
+// ---------------------------------------------------------------------------
+// Deliberation: the world's half (16b cut N.2)
+// ---------------------------------------------------------------------------
+//
+// Doc 16 §6 splits deliberation across the two authorities, and this is the
+// world's side of the split:
+//
+//   the arena       says WHICH squads have something to decide about, in arena
+//                   time, floored by `[tacsim.arena].deliberate_min_ms`
+//   the world       ASKS, off its own loop, through the same LLM re-entry seam
+//                   worldgen and the NPC turn run on
+//   the arena       is handed an ordinary `IntentKind::Order`, or nothing
+//   the world       says the one sentence when an order runs out unrenewed
+//
+// Nothing here waits: `Effect::ModuleAsync` is deferred and the completion arrives
+// as an ordinary `WorldCommand::ModuleAsyncDone`, so a provider that takes thirty
+// seconds costs the loop one queue entry (doc 16 §6 "Provider failure").
+
+/// **One pulse's deliberation signals** — one request per squad, deferred off the
+/// loop.
+///
+/// The `actor` of the effect is the squad's **commander**, which is a real world
+/// object: it is what the completion runs as, what `mush-llm` meters the call
+/// against ([`mush_llm::CallCtx::with_actor`]) and therefore what makes per-squad
+/// cost a read of the budget ledger rather than a second counter. It never reaches
+/// the prompt.
+pub fn on_deliberate(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    signals: &[crate::arena::command::SquadSignal],
+) {
+    for signal in signals {
+        // The roster, for the unit count the brief carries and for the fan-out the
+        // reply needs. A signal for a squad the record no longer holds is dropped:
+        // the match was aborted under it.
+        let Some(units) = ctx
+            .w
+            .module_state::<crate::match_::MatchBook>()
+            .and_then(|book| book.get(match_id))
+            .and_then(|record| {
+                record
+                    .squads
+                    .iter()
+                    .find(|roster| roster.id == signal.squad)
+                    .map(|roster| roster.units.len())
+            })
+        else {
+            continue;
+        };
+        {
+            let Some(state) = ctx
+                .w
+                .module_state_mut::<ArenaRegistry>()
+                .map(|registry| registry.deliberation.entry(match_id).or_default())
+            else {
+                return;
+            };
+            if state.in_flight >= crate::deliberation::MAX_IN_FLIGHT_PER_MATCH {
+                continue;
+            }
+            state.in_flight = state.in_flight.saturating_add(1);
+        }
+        let brief = crate::deliberation::SquadBrief::from_signal(
+            match_id.0,
+            signal,
+            u16::try_from(units).unwrap_or(u16::MAX),
+        );
+        let job = crate::deliberation::DeliberationJob::Deliberate { brief };
+        let Ok(payload) = serde_json::to_string(&job) else {
+            // A brief is integers and short strings; this cannot fail. If it did,
+            // the in-flight count is given back rather than leaked.
+            release_in_flight(ctx, match_id);
+            continue;
+        };
+        let correlation = ctx.w.next_correlation_id();
+        ctx.out.defer(mush_core::Deferred::Effect(
+            mush_core::Effect::ModuleAsync {
+                module: SmolStr::new_static(crate::store::NS),
+                actor: signal.commander,
+                correlation,
+                payload,
+            },
+        ));
+    }
+}
+
+/// Give one in-flight slot back, whatever the outcome was.
+fn release_in_flight(ctx: &mut Ctx<'_>, match_id: MatchId) {
+    if let Some(state) = ctx
+        .w
+        .module_state_mut::<ArenaRegistry>()
+        .and_then(|registry| registry.deliberation.get_mut(&match_id))
+    {
+        state.in_flight = state.in_flight.saturating_sub(1);
+    }
+}
+
+/// **One deliberation reply**, back on the world task with a `Ctx`.
+///
+/// An order is fanned out as one [`IntentKind::Order`] per unit of the squad, each
+/// through [`send_order`] — so the arena authorises each of them again, at apply,
+/// exactly as it authorises a pilot's. A refusal is doc 16 §6's fallback and costs
+/// one counter: the squad is already on doctrine, because doctrine is what a squad
+/// with no order runs.
+pub fn on_deliberation_reply(ctx: &mut Ctx<'_>, payload: &str) {
+    let Ok(reply) = serde_json::from_str::<crate::deliberation::DeliberationReply>(payload) else {
+        tracing::warn!("tacsim: undecodable deliberation reply dropped");
+        return;
+    };
+    let match_id = MatchId(reply.match_id());
+    release_in_flight(ctx, match_id);
+    let now_ms = ctx.w.now().saturating_mul(1_000);
+    match reply {
+        crate::deliberation::DeliberationReply::Refused { squad, reason, .. } => {
+            if let Some(state) = ctx
+                .w
+                .module_state_mut::<ArenaRegistry>()
+                .and_then(|registry| registry.deliberation.get_mut(&match_id))
+            {
+                state.refused = state.refused.saturating_add(1);
+            }
+            tracing::debug!(%match_id, %squad, %reason, "arena deliberation produced no order");
+        }
+        crate::deliberation::DeliberationReply::Ok {
+            mut order, model, ..
+        } => {
+            // The world stamps `issued_ms`: it is a world millisecond by definition,
+            // and letting the provider name it would let a model backdate an order.
+            order.issued_ms = now_ms;
+            let Some(units) = ctx
+                .w
+                .module_state::<crate::match_::MatchBook>()
+                .and_then(|book| book.get(match_id))
+                .and_then(|record| {
+                    record
+                        .squads
+                        .iter()
+                        .find(|roster| roster.id == order.squad)
+                        .map(|roster| roster.units.clone())
+                })
+            else {
+                return;
+            };
+            let objective = SmolStr::new(order.objective.as_str());
+            let mut sent = 0_usize;
+            for unit in units {
+                if send_order(ctx, match_id, unit, order.clone()).is_ok() {
+                    sent = sent.saturating_add(1);
+                }
+            }
+            if sent == 0 {
+                return;
+            }
+            let squad = order.squad;
+            let expires_ms = now_ms.saturating_add(i64::from(order.ttl_ms));
+            if let Some(state) = ctx
+                .w
+                .module_state_mut::<ArenaRegistry>()
+                .map(|registry| registry.deliberation.entry(match_id).or_default())
+            {
+                state.issued = state.issued.saturating_add(1);
+                state.orders.insert(
+                    squad,
+                    OrderWatch {
+                        expires_ms,
+                        objective: objective.clone(),
+                        said: false,
+                    },
+                );
+            }
+            tracing::debug!(
+                %match_id, %squad, %objective, %model, units = sent,
+                "arena deliberation issued an order"
+            );
+        }
+    }
+}
+
+/// **Send one squad order to the arena that holds `unit`** (16b cut N.2).
+///
+/// Narrower than [`forward_intent`] and deliberately so: there is no focus, no
+/// station and no control lease to check, because there is no seat — the checks
+/// [`forward_intent`] makes are all about *a player's authority over a tank*, and a
+/// squad order's authority is that the unit is on the reflex controller, which is a
+/// fact only the arena holds and which it checks itself
+/// ([`crate::arena::intents::Refusal::NotReflex`]).
+///
+/// The epoch is the one the world last published for the unit's `helm` channel,
+/// exactly as [`forward_intent`] stamps one, so an order written before a seat was
+/// taken is refused `Epoch` at apply rather than steering a tank a player is now
+/// flying.
+///
+/// # Errors
+///
+/// One [`IntentRefusal`] word.
+pub fn send_order(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    unit: ObjId,
+    order: crate::deliberation::Order,
+) -> Result<(), IntentRefusal> {
+    let channel = Channel::Helm;
+    let (intent, tasks) = {
+        let registry = ctx
+            .w
+            .module_state_mut::<ArenaRegistry>()
+            .ok_or(IntentRefusal::Unavailable)?;
+        if registry.match_of_unit(unit) != Some(match_id) {
+            return Err(IntentRefusal::NoMatch);
+        }
+        let intent = Intent {
+            unit,
+            channel,
+            epoch: registry.epoch_of(unit, channel),
+            kind: IntentKind::Order(Box::new(order)),
+            seq: registry.next_seq(),
+        };
+        (intent, registry.tasks.clone())
+    };
+    match tasks.offer(match_id, ArenaMsg::Intent(intent)) {
+        Ok(()) => Ok(()),
+        Err(_) if tasks.is_live(match_id) => Err(IntentRefusal::Busy),
+        Err(_) => Err(IntentRefusal::Gone),
+    }
+}
+
+/// **The one in-world notice doc 16 §6 asks for**, said once per squad whose order
+/// ran out unrenewed: *"mind link dropped, unit on doctrine"*.
+///
+/// Who hears it: every **pilot of the squad's own side** in that match, because
+/// their AI wingmen just stopped taking orders, and every connected wizard, because
+/// staff are who watch a match. The squad's own tanks hear nothing — they have no
+/// pilots, which is why they have a commander.
+fn say_expired_orders(ctx: &mut Ctx<'_>) {
+    let now_ms = ctx.w.now().saturating_mul(1_000);
+    let mut due: Vec<(MatchId, crate::deliberation::SquadId, SmolStr)> = Vec::new();
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        for (match_id, state) in &mut registry.deliberation {
+            for (squad, watch) in &mut state.orders {
+                if !watch.said && now_ms >= watch.expires_ms {
+                    watch.said = true;
+                    due.push((*match_id, *squad, watch.objective.clone()));
+                }
+            }
+        }
+    }
+    for (match_id, squad, objective) in due {
+        let line = format!(
+            "Squad {squad}: {} (its {objective} order has run out).",
+            crate::deliberation::MIND_LINK_DROPPED
+        );
+        let pilots: Vec<ObjId> = ctx
+            .w
+            .module_state::<crate::match_::MatchBook>()
+            .and_then(|book| book.get(match_id))
+            .map(|record| {
+                record
+                    .teams
+                    .iter()
+                    .filter(|roster| roster.team == squad.team)
+                    .flat_map(|roster| roster.pilots.iter().map(|(pilot, _)| *pilot))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for pilot in pilots {
+            if ctx.w.get(pilot).is_some() {
+                ctx.out.sys_to_actor(pilot, NOTICE_CATEGORY, line.clone());
+            }
+        }
+        notify_staff(ctx, format!("Arena match {match_id}: {line}"));
+    }
+}

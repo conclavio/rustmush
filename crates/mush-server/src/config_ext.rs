@@ -297,6 +297,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             intents: tacsim::config::IntentsConfig {
                 max_pending_per_unit: cfg.arena.intents.max_pending_per_unit,
             },
+            // 16b cut N.2: the floor under one squad's deliberation requests, in
+            // arena milliseconds.
+            deliberate_min_ms: cfg.arena.deliberate_min_ms,
             ledger: tacsim::config::LedgerConfig {
                 summary_ms: cfg.arena.ledger.summary_ms,
                 max_bytes: cfg.arena.ledger.max_bytes,
@@ -885,6 +888,7 @@ mod tests {
         let cfg = tacsim_cfg(
             "[tacsim.arena]\n\
              max_catch_up_steps = 2\n\
+             deliberate_min_ms = 12000\n\
              [tacsim.arena.tempo]\n\
              quiet_ms = 4000\n\
              alert_ms = 900\n\
@@ -948,6 +952,7 @@ mod tests {
                     stall_ms: 1_500,
                 },
                 max_catch_up_steps: 2,
+                deliberate_min_ms: 12_000,
                 intents: tacsim::config::IntentsConfig {
                     max_pending_per_unit: 3
                 },

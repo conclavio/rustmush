@@ -139,6 +139,7 @@
 //! egress, the timer and the unwind boundary are cut T's.
 
 pub mod clock;
+pub mod command;
 pub mod damage;
 pub mod hash;
 pub mod index;
@@ -155,6 +156,9 @@ pub mod step;
 pub mod weapons;
 
 pub use clock::{Clock, MIN_SUBSTEP_MS, Tempo, TempoSignals, substep_ms, substeps};
+pub use command::{
+    MAX_SIGNAL_CONTACTS, SignalContact, SignalReason, SquadDigest, SquadSignal, SquadWatch,
+};
 pub use damage::{
     BLOCKED, COVER, DISPERSION, HULL_SECTION, MISS_REASONS, MOVED, REFUSED, TARGET_GONE, WRECK,
     WRECK_CONDITION, is_wreck,

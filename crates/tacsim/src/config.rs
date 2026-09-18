@@ -183,6 +183,20 @@ pub struct ArenaConfig {
     pub max_catch_up_steps: u32,
     /// The per-unit intent-queue bound.
     pub intents: IntentsConfig,
+    /// **The least arena time between two deliberation requests for one squad**
+    /// (16b cut N.2; doc 16 §6: *event-driven with a floor of
+    /// `command.deliberate_min_ms` (30,000)*).
+    ///
+    /// The trigger is the commander's contact set changing class or count, or an
+    /// order expiring; this is the floor under it, and it is the whole of what
+    /// stops a firefight from asking for an order every sensor pass. It is
+    /// **arena** milliseconds, enforced inside the pulse
+    /// ([`crate::arena::command`]), so the same scripted match makes the same
+    /// number of requests at every tempo (D-16-2).
+    ///
+    /// Zero is legal and means "no floor": every trigger asks. Nothing but a
+    /// deliberate test should use it, and the cost run says why.
+    pub deliberate_min_ms: u32,
     /// The match ledger's cadence and its two hard bounds.
     pub ledger: LedgerConfig,
     /// **The reflex controller's cadence, paths and doctrine** (16b cut N.1).
@@ -195,6 +209,7 @@ impl Default for ArenaConfig {
             tempo: TempoConfig::default(),
             max_catch_up_steps: 4,
             intents: IntentsConfig::default(),
+            deliberate_min_ms: 30_000,
             ledger: LedgerConfig::default(),
             reflex: ReflexConfig::default(),
         }

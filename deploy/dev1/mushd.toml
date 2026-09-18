@@ -57,6 +57,8 @@ ic_epoch = "2020-01-01 00:00"
 # unrepresentable factor refuses the boot naming that key.
 [tacsim.arena]
 max_catch_up_steps = 4
+# 16b cut N.2: the floor under one squad's deliberation requests, arena ms.
+deliberate_min_ms = 30000
 
 [tacsim.arena.tempo]
 quiet_ms = 5000

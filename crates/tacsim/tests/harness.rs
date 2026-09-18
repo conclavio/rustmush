@@ -2537,3 +2537,532 @@ const ARENA_P99_MS: f64 = 5.0;
 /// The owner's choice S.2 recorded is unchanged in kind and now measured with the
 /// AI on the field.
 const ARENA_S_P99_MS: f64 = 12.0;
+
+// ---------------------------------------------------------------------------
+// The cost run (16b cut N.2, N3; doc 16 §6 "The cost run"; 16a Q9b)
+// ---------------------------------------------------------------------------
+//
+// **What this is.** The one mode of the harness that spends money. It turns doc 16
+// §6's deliberation layer on for N minutes of arena play, asks a real provider for
+// a real order every time a squad's trigger fires, and prints what that cost per
+// unit-minute, per squad and per match — the table doc 16 can cite as the cost
+// model for the LLM side of the design.
+//
+// **What keeps it off.** Three gates, all of which must be open (16a Q9b):
+//
+//   TACSIM_LLM_COST_RUN=1      the explicit flag, and nothing else counts as one
+//   OPENROUTER_API_KEY         the key, from the environment, never from a file
+//   TACSIM_LLM_COST_CAP_USD    a hard cap; the run stops BEFORE the call that
+//                              would pass it
+//
+// CI sets none of them. The job in `ci.yml` runs `-p tacsim --test harness --
+// --ignored`, and this test is deliberately **not** `#[ignore]`d: it is the
+// ordinary workspace run that proves it returns early, which is a stronger claim
+// than "the job does not name it". Without the flag it contacts nothing, writes
+// nothing and returns, and `the_cost_run_is_off_unless_its_flag_says_1` asserts
+// that the environment it is running in is such an environment.
+//
+// **The mock lane.** `TACSIM_LLM_COST_MOCK=1` runs the whole thing against
+// `mush_llm::MockProvider` with no key and no cap, which is how the plumbing was
+// proved without spending anything: every call is a scripted tool use with a
+// scripted `Usage`, so the table comes out with real arithmetic over fake tokens.
+// That is the run recorded in the cut's ledger row; the owner's run against
+// OpenRouter is theirs to make.
+
+/// Whether a cost run was asked for. **Exactly `"1"`** — a variable that is set to
+/// `true`, `yes` or the empty string is not a request, for the same reason
+/// `TACSIM_ASSERT` is exact.
+fn cost_run_requested(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim() == "1")
+}
+
+/// The cost run's own knobs.
+#[derive(Clone, Debug)]
+struct CostKnobs {
+    /// Minutes of **arena** play to run for.
+    minutes: f64,
+    /// Units on the field.
+    units: u32,
+    /// The hard USD cap, if one was given.
+    cap_usd: Option<f64>,
+    /// Run against `MockProvider` instead of OpenRouter.
+    mock: bool,
+    /// The OpenRouter model to route to.
+    model: String,
+    /// The report path.
+    json: String,
+    /// The relief seed.
+    seed: u64,
+}
+
+/// Cost-run defaults. Twenty-four units is the owner's own "12 v 12 fighting"
+/// (`combat-scale-targets`), which at `SQUAD_SIZE` two is twelve squads under
+/// command — enough for a per-squad table and far short of what 300 units would
+/// spend.
+const COST_UNITS: u32 = 24;
+/// Five minutes, as 16b §8's cut N row asks.
+const COST_MINUTES: f64 = 5.0;
+/// The route's model, overridable so the owner can cost a different one.
+const COST_MODEL: &str = "z-ai/glm-5.3-flash";
+
+impl CostKnobs {
+    fn from_env() -> CostKnobs {
+        CostKnobs {
+            minutes: std::env::var("TACSIM_LLM_COST_MINUTES")
+                .ok()
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| *v > 0.0)
+                .unwrap_or(COST_MINUTES),
+            units: env_u32("TACSIM_LLM_COST_UNITS", COST_UNITS),
+            cap_usd: std::env::var("TACSIM_LLM_COST_CAP_USD")
+                .ok()
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| *v > 0.0),
+            mock: std::env::var("TACSIM_LLM_COST_MOCK").is_ok_and(|v| v.trim() == "1"),
+            model: std::env::var("TACSIM_LLM_COST_MODEL")
+                .unwrap_or_else(|_| COST_MODEL.to_string()),
+            json: std::env::var("TACSIM_JSON")
+                .unwrap_or_else(|_| "target/harness.json".to_string()),
+            seed: env_u64("TACSIM_SEED", DEFAULT_SEED),
+        }
+    }
+}
+
+/// `<stem>-cost.<ext>` beside the other two reports.
+fn cost_report_path(given: &str) -> std::path::PathBuf {
+    let path = report_path(given);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "harness".to_string());
+    let ext = path
+        .extension()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "json".to_string());
+    path.with_file_name(format!("{stem}-cost.{ext}"))
+}
+
+#[test]
+fn the_cost_run_is_off_unless_its_flag_says_1() {
+    assert!(!cost_run_requested(None));
+    assert!(!cost_run_requested(Some("")));
+    assert!(!cost_run_requested(Some("0")));
+    assert!(!cost_run_requested(Some("true")));
+    assert!(!cost_run_requested(Some("yes")));
+    assert!(cost_run_requested(Some("1")));
+    assert!(cost_run_requested(Some(" 1 ")));
+    // And the environment this very run is in. CI does not set it, so the cost run
+    // below returns early here and contacts nothing — which is 16a Q9b's *never run
+    // by CI*, asserted rather than assumed.
+    assert!(
+        !cost_run_requested(std::env::var("TACSIM_LLM_COST_RUN").ok().as_deref()),
+        "TACSIM_LLM_COST_RUN is set in this environment: the cost run contacts a real \
+         provider and spends real money, so an ordinary test run must not request it"
+    );
+}
+
+/// **The cost run** (doc 16 §6; 16a Q9b).
+///
+/// Not `#[ignore]`d, and gated on `TACSIM_LLM_COST_RUN=1` instead: see the note at
+/// the head of this section. Run it with
+///
+/// ```text
+/// TACSIM_LLM_COST_RUN=1 TACSIM_LLM_COST_CAP_USD=1.00 OPENROUTER_API_KEY=... \
+///   cargo test --release -p tacsim --test harness -- --nocapture tacsim_harness_llm_cost_run
+/// ```
+///
+/// or with `TACSIM_LLM_COST_MOCK=1` in place of the key and the cap, which spends
+/// nothing and proves the table.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn tacsim_harness_llm_cost_run() {
+    use tacsim::arena::clock::Tempo as ArenaTempo;
+    use tacsim::arena::state::{Arena, ArenaDefinition, ArenaTerrain, CustodyOut, EntryZone, Team};
+    use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
+    use tacsim::deliberation::{CostGuard, SquadBrief, cost_table, deliberate};
+
+    if !cost_run_requested(std::env::var("TACSIM_LLM_COST_RUN").ok().as_deref()) {
+        println!(
+            "harness_cost_skipped: TACSIM_LLM_COST_RUN is not 1; no provider was contacted, no \
+             report was written"
+        );
+        return;
+    }
+    let knobs = CostKnobs::from_env();
+
+    // ---- the service: OpenRouter, or the mock ----
+    let (llm, mock) = if knobs.mock {
+        let mock = std::sync::Arc::new(mush_llm::MockProvider::new("openrouter").with_caps(
+            mush_llm::ProviderCaps {
+                tool_calling: true,
+                forced_tool_choice: true,
+                ..mush_llm::ProviderCaps::default()
+            },
+        ));
+        let provider: std::sync::Arc<dyn mush_llm::LlmProvider> = mock.clone();
+        let llm = std::sync::Arc::new(
+            mush_llm::LlmService::builder()
+                .provider("openrouter", provider)
+                .route(
+                    "tacsim_deliberate",
+                    mush_llm::RouteConfig {
+                        model: knobs.model.clone(),
+                        max_tokens: 512,
+                        timeout_s: 30,
+                        reasoning: None,
+                        reasoning_max_tokens: None,
+                    },
+                )
+                .global_enabled(true)
+                .build(),
+        );
+        (llm, Some(mock))
+    } else {
+        let key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
+        assert!(
+            !key.trim().is_empty(),
+            "the cost run needs OPENROUTER_API_KEY in the environment (or \
+             TACSIM_LLM_COST_MOCK=1 to prove the plumbing without spending anything)"
+        );
+        assert!(
+            knobs.cap_usd.is_some(),
+            "the cost run needs TACSIM_LLM_COST_CAP_USD: 16a Q9b's hard cap per run"
+        );
+        let mut providers = std::collections::HashMap::new();
+        providers.insert(
+            "openrouter".to_string(),
+            mush_llm::ProviderConfig {
+                kind: mush_llm::ProviderKind::Openai,
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+                requests_per_minute: 120,
+                referer: None,
+                title: Some("rustmush tacsim cost run".to_string()),
+                anthropic_version: None,
+                price_input_per_mtok: None,
+                price_output_per_mtok: None,
+                tool_calling: true,
+                forced_tool_choice: true,
+                native_structured_output: false,
+            },
+        );
+        let mut routes = std::collections::HashMap::new();
+        routes.insert(
+            "tacsim_deliberate".to_string(),
+            mush_llm::RouteConfig {
+                model: knobs.model.clone(),
+                max_tokens: 512,
+                timeout_s: 30,
+                reasoning: Some("low".to_string()),
+                reasoning_max_tokens: None,
+            },
+        );
+        let cfg = mush_llm::LlmConfig {
+            enabled: true,
+            providers,
+            routes,
+            ..mush_llm::LlmConfig::default()
+        };
+        let llm = std::sync::Arc::new(
+            mush_llm::LlmService::from_config(&cfg).expect("the cost run's llm service"),
+        );
+        (llm, None)
+    };
+
+    // ---- the field: the same generated relief the arena harness runs on ----
+    let Window {
+        tw,
+        cells: all_cells,
+        ..
+    } = open_window(knobs.seed);
+    drop(tw);
+    let mut grid = vec![
+        tacsim::arena::state::TerrainCell {
+            class: TerrainClass::Void,
+            elev_cm: 0,
+            move_cost: 0,
+        };
+        usize::from(SIDE) * usize::from(SIDE)
+    ];
+    for (x, y, class, elev_cm) in &all_cells {
+        let at = usize::from(*y) * usize::from(SIDE) + usize::from(*x);
+        if let Some(cell) = grid.get_mut(at) {
+            *cell = tacsim::arena::state::TerrainCell {
+                class: *class,
+                elev_cm: *elev_cm,
+                move_cost: harness_move_cost(*class),
+            };
+        }
+    }
+    let passable: Vec<(u16, u16, i16)> = grid
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| cell.move_cost != 0)
+        .filter_map(|(at, cell)| {
+            let x = u16::try_from(at % usize::from(SIDE)).ok()?;
+            let y = u16::try_from(at / usize::from(SIDE)).ok()?;
+            Some((x, y, cell.elev_cm))
+        })
+        .collect();
+    let waypoints = harness_waypoints(&grid);
+    let definition = ArenaDefinition {
+        id: smol_str::SmolStr::new("tacsim.arena.harness"),
+        terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, grid).expect("the arena window"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 15,
+                y1: SIDE - 1,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: SIDE - 16,
+                y0: 0,
+                x1: SIDE - 1,
+                y1: SIDE - 1,
+            },
+        ],
+        key_spots: Vec::new(),
+        waypoints,
+    };
+
+    // Every unit on the reflex controller and every unit armed: the cost of
+    // commanding a field is what this measures, and a field that never fights
+    // never changes a contact set.
+    let mut units = Vec::new();
+    let mut taken: std::collections::BTreeSet<(u16, u16)> = std::collections::BTreeSet::new();
+    let mut at = 0_usize;
+    for n in 0..knobs.units {
+        let team = if n % 2 == 0 { Team::Red } else { Team::Blue };
+        let cell = loop {
+            let Some((x, y, _)) = passable.get(at * 7 % passable.len().max(1)).copied() else {
+                break None;
+            };
+            at = at.saturating_add(1);
+            if taken.insert((x, y)) {
+                break Some((x, y));
+            }
+            if at > passable.len().saturating_mul(2) {
+                break None;
+            }
+        };
+        let Some((x, y)) = cell else { continue };
+        let id = mush_core::ObjId(100_000 + n);
+        units.push(tacsim::arena::state::CustodyUnit {
+            id,
+            team,
+            pose: mush_sim::data::Pose {
+                x_cm: i64::from(x) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+                y_cm: i64::from(y) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
+                z_cm: 0,
+                heading_mdeg: 0,
+                posture: harness_rules(),
+            },
+            mobility: harness_mobility(),
+            sensor_height_cm: 0,
+            sensor: Some(harness_sensor()),
+            weapons: vec![harness_weapon()],
+            profile: harness_profile(),
+            gunnery: 2,
+            controller: tacsim::arena::state::Controller::Reflex,
+            unit: harness_unit(id),
+        });
+    }
+    let placed = u32::try_from(units.len()).unwrap_or(0);
+    let arena_cfg = ArenaConfig::default();
+    let match_cfg = MatchConfig::default();
+    let sensors_cfg = SensorsConfig::default();
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots: Vec::new(),
+            resolution: tacsim::match_::stock_resolution(),
+            seed: knobs.seed,
+        },
+        &arena_cfg,
+        &match_cfg,
+        &sensors_cfg,
+    )
+    .expect("the cost run's arena");
+    arena.clock.pin_tempo_for_tests(ArenaTempo::Engaged);
+    let squads: Vec<(String, mush_core::ObjId)> = arena
+        .squads
+        .iter()
+        .map(|roster| (roster.id.to_string(), roster.commander))
+        .collect();
+    let squad_units: std::collections::BTreeMap<String, Vec<mush_core::ObjId>> = arena
+        .squads
+        .iter()
+        .map(|roster| (roster.id.to_string(), roster.units.clone()))
+        .collect();
+
+    // ---- the run ----
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the cost run's provider calls");
+    let period_ms = i64::from(arena_cfg.tempo.engaged_ms.max(1));
+    #[allow(clippy::cast_possible_truncation)]
+    let until_ms = (knobs.minutes * 60_000.0) as i64;
+    let mut guard = CostGuard::new(knobs.cap_usd);
+    let mut stopped_at_cap = false;
+    let mut wall = 0_i64;
+    let mut asked = 0_u64;
+    let mut issued = 0_u64;
+    let mut refused = 0_u64;
+    let mut expired = 0_u64;
+    let started = Instant::now();
+    while arena.now_ms < until_ms {
+        wall = wall.saturating_add(period_ms);
+        let out = arena.step(wall, &[], &[]);
+        arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
+        expired = expired.saturating_add(u64::from(out.reflex.orders_expired));
+        if out.ended.is_some() {
+            break;
+        }
+        for signal in &out.deliberation {
+            let spent = llm.ledger().feature("tacsim_deliberate").cost_usd;
+            if !guard.may_call(spent) {
+                stopped_at_cap = true;
+                break;
+            }
+            let key = signal.squad.to_string();
+            let members = squad_units.get(&key).cloned().unwrap_or_default();
+            let brief = SquadBrief::from_signal(
+                1,
+                signal,
+                u16::try_from(members.len()).unwrap_or(u16::MAX),
+            );
+            if let Some(mock) = mock.as_ref() {
+                mock.push_response(mock_order_response());
+            }
+            asked = asked.saturating_add(1);
+            let answer = runtime.block_on(deliberate(&llm, &brief));
+            guard.observe(spent, llm.ledger().feature("tacsim_deliberate").cost_usd);
+            match answer {
+                Ok(mut order) => {
+                    order.issued_ms = arena.now_ms;
+                    issued = issued.saturating_add(1);
+                    for unit in members {
+                        let epoch = arena
+                            .epochs
+                            .current(unit, tacsim::arena::state::Channel::Helm);
+                        let intent = tacsim::arena::intents::Intent {
+                            unit,
+                            channel: tacsim::arena::state::Channel::Helm,
+                            epoch,
+                            kind: tacsim::arena::intents::IntentKind::Order(Box::new(
+                                order.clone(),
+                            )),
+                            seq: 0,
+                        };
+                        let _ = tacsim::arena::intents::apply_intent(&mut arena, &intent);
+                    }
+                }
+                Err(_) => refused = refused.saturating_add(1),
+            }
+        }
+        if stopped_at_cap {
+            break;
+        }
+    }
+    let wall_s = started.elapsed().as_secs_f64();
+    #[allow(clippy::cast_precision_loss)]
+    let minutes = arena.now_ms as f64 / 60_000.0;
+
+    // ---- the table ----
+    let table = cost_table(
+        llm.ledger(),
+        llm.audit_log(),
+        &squads,
+        placed,
+        minutes,
+        knobs.cap_usd,
+        stopped_at_cap,
+    );
+    println!(
+        "harness_cost_run: mode={} model={} units={placed} squads={} arena_minutes={minutes:.3} \
+         wall_s={wall_s:.1} deliberate_min_ms={} asked={asked} issued={issued} refused={refused} \
+         orders_expired={expired} cap_usd={} stopped_at_cap={stopped_at_cap}",
+        if knobs.mock { "mock" } else { "openrouter" },
+        table.model,
+        table.squads,
+        arena_cfg.deliberate_min_ms,
+        knobs
+            .cap_usd
+            .map_or_else(|| "none".to_string(), |cap| format!("{cap:.4}"))
+    );
+    println!(
+        "harness_cost_columns: {}",
+        tacsim::deliberation::CostRow::COLUMNS.join(" ")
+    );
+    for row in &table.rows {
+        println!("harness_cost_row: {}", row.line());
+    }
+    let path = cost_report_path(&knobs.json);
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir).expect("the report directory is writable");
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "what": "16b cut N.2 (N3) — the LLM cost model for one commanded match",
+            "mode": if knobs.mock { "mock" } else { "openrouter" },
+            "requests": { "asked": asked, "issued": issued, "refused": refused,
+                          "orders_expired": expired,
+                          "deliberate_min_ms": arena_cfg.deliberate_min_ms },
+            "wall_seconds": num(wall_s),
+            "columns": tacsim::deliberation::CostRow::COLUMNS,
+            "table": table,
+        }))
+        .expect("the cost report encodes"),
+    )
+    .expect("the cost report is written");
+    println!("harness_cost_json: {}", path.display());
+
+    assert!(asked > 0, "the cost run asked for no order at all");
+    assert_eq!(
+        table.rows.len(),
+        squads.len() + 1,
+        "one row per squad plus the match total"
+    );
+    if let Some(cap) = knobs.cap_usd {
+        let spent = table.total().map_or(0.0, |row| row.cost_usd);
+        assert!(spent <= cap, "the run spent {spent} past its cap of {cap}");
+    }
+}
+
+/// One scripted `issue_order` tool call, for the mock lane.
+///
+/// A short `hold` with a ten-second time to live: long enough to steer the squad,
+/// short enough that a five-minute run sees the order run out, the
+/// `order_expired` line journalled and the squad ask again — which is the whole
+/// loop the cost model is a cost model of.
+fn mock_order_response() -> mush_llm::CompletionResponse {
+    mush_llm::CompletionResponse {
+        content: vec![mush_llm::ContentBlock::ToolUse {
+            id: "call_1".to_string(),
+            name: "issue_order".to_string(),
+            input: serde_json::json!({
+                "objective": "engage",
+                "ttl_ms": 10_000,
+                "horizon_ms": 60_000,
+                "hold_fire": false
+            }),
+        }],
+        stop_reason: mush_llm::StopReason::ToolUse,
+        usage: mush_llm::Usage {
+            input_tokens: 420,
+            output_tokens: 48,
+            cache_read_tokens: 0,
+            reasoning_tokens: 0,
+            cost_usd: Some(0.000_08),
+        },
+        model: "z-ai/glm-5.3-flash".to_string(),
+    }
+}

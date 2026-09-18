@@ -259,6 +259,18 @@ pub struct MatchRecord {
     /// the one the check-out snapshot carried, because the arena never touches a
     /// posture.
     pub last_pose: std::collections::BTreeMap<ObjId, PoseNumbers>,
+    /// **The squads its reflex units are commanded in** (16b cut N.2; doc 16 §6
+    /// "Deliberation": *requested per squad or commander rather than per unit*).
+    ///
+    /// Derived at check-out by `crate::deliberation::squads_of` from the same
+    /// `(unit, team, controller)` triples the `CustodyOut` carries, so the record's
+    /// grouping and the arena's are the same function of the same data and cannot
+    /// disagree. It is on the record and not only in the arena because the world is
+    /// what fans an order out to a squad's units and what says the sentence when one
+    /// expires, and both need the roster without asking across the seam.
+    ///
+    /// Empty for a match of nothing but pilots, which is doc 16 §1's A1 story.
+    pub squads: Vec<crate::deliberation::SquadRoster>,
 }
 
 /// The four integers of a pose (doc 16 §3.2), without the opaque posture.

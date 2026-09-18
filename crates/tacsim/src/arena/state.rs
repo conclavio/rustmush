@@ -1647,6 +1647,29 @@ pub struct Arena {
     /// threshold cannot change under it, exactly as the two configuration blocks
     /// are cloned in for the same reason.
     pub alert_range_cm: u32,
+    /// **The squads this match's reflex units are commanded in** (16b cut N.2;
+    /// doc 16 §6 "Deliberation": *per squad or commander rather than per unit*),
+    /// derived at check-out by [`crate::deliberation::squads_of`] — the same
+    /// function, over the same `(unit, team, controller)` triples, that files them
+    /// on the match record, so the two groupings cannot drift.
+    ///
+    /// Empty for a match with no AI at all: an arena with no squads reports no
+    /// signals and accepts no order, which is exactly what doc 16 §1's two-tank
+    /// story wants.
+    pub squads: Vec<crate::deliberation::squad::SquadRoster>,
+    /// **What the world was last told about each squad** (16b cut N.2), so the
+    /// trigger can be *event-driven* rather than a poll.
+    ///
+    /// A **view**, like `held_losses` and `action_hash`: it is a fact about what
+    /// has been reported and not about the match, so
+    /// [`crate::arena::hash::state_hash`] does not fold it. Folding it would make
+    /// the hash a function of the request cadence, which is the opposite of what
+    /// the cross-tempo property asks for.
+    pub squad_watch: crate::arena::command::SquadWatchTable,
+    /// Squads whose standing order ran out since the last signal was taken (16b
+    /// cut N.2) — the `order_expired` trigger, drained by
+    /// [`Arena::take_deliberation_signals`]. A view, for the same reason.
+    pub squads_expired: crate::arena::command::ExpiredSquads,
 }
 
 impl Arena {
@@ -1821,6 +1844,17 @@ impl Arena {
         }
         let mut index = SpatialIndex::new(&definition.terrain);
         index.rebuild(&definition.terrain, &states);
+        // 16b cut N.2: who is commanded, and by whom (see `squads` below).
+        let squad_input: Vec<(ObjId, Team, bool)> = states
+            .iter()
+            .map(|state| {
+                (
+                    state.id,
+                    state.team,
+                    state.controller == crate::arena::state::Controller::Reflex,
+                )
+            })
+            .collect();
         // 16b cut N.1: the cheapest cell on the window, read once here so the A*
         // heuristic is admissible without a scan per query
         // (`crate::arena::path::min_move_cost`).
@@ -1868,6 +1902,16 @@ impl Arena {
             match_cfg: match_cfg.clone(),
             sensors_cfg: sensors_cfg.clone(),
             alert_range_cm,
+            // **16b cut N.2**: the squads are *derived* from the check-out, by the
+            // same `squads_of` the match record files them with — a side's reflex
+            // units in pod pairs, lowest id commanding. Derived rather than handed
+            // over because two groupings of one match would be two answers to
+            // "which squad is that order for", and because it means the harness and
+            // every fixture get the same grouping the production lobby does without
+            // a second argument to thread.
+            squads: crate::deliberation::squad::squads_of(&squad_input),
+            squad_watch: crate::arena::command::SquadWatchTable::new(),
+            squads_expired: crate::arena::command::ExpiredSquads::new(),
         };
         // Doc 16 §3.6: one pass per unit per `sensors.pass_ms`, staggered by unit
         // id. Scheduled after the arena is built because the stagger reads the

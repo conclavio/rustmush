@@ -9404,6 +9404,67 @@ fn spawn_effect_list(
                             tracing::debug!(correlation, "atlas composite after shutdown dropped");
                         }
                     });
+                } else if module.as_str() == tacsim::store::NS {
+                    // **16b cut N.2** (doc 16 §6 "Deliberation"): one squad's
+                    // standing order, asked for off-loop against the shared
+                    // `LlmService` and re-entering as the serialized
+                    // `DeliberationReply` — which `tacsim`'s registered completion
+                    // turns into one `IntentKind::Order` per unit of the squad, or
+                    // into nothing at all, which is the reflex doctrine.
+                    //
+                    // With no service on this world task (the repl, a test rig) the
+                    // effect would be dropped and the bridge's in-flight count would
+                    // never come back, so a missing service re-enters an
+                    // `unavailable` refusal instead. That is the same degrade shape
+                    // as `[llm].enabled = false`, which the real server always has a
+                    // service for.
+                    let Some(llm) = llm.cloned() else {
+                        tracing::warn!(
+                            correlation,
+                            "tacsim Effect::ModuleAsync: no LlmService on this world task; the \
+                             squad stays on doctrine"
+                        );
+                        let refusal = tacsim::deliberation::unavailable_reply(&payload);
+                        tokio::spawn(async move {
+                            let done = WorldCommand::ModuleAsyncDone {
+                                module,
+                                actor,
+                                correlation,
+                                payload: refusal,
+                            };
+                            if tx
+                                .send(WorldMsg::Inbound(Inbound::Apply(done)))
+                                .await
+                                .is_err()
+                            {
+                                tracing::debug!(
+                                    correlation,
+                                    "tacsim completion after shutdown dropped"
+                                );
+                            }
+                        });
+                        continue;
+                    };
+                    tokio::spawn(async move {
+                        let result =
+                            tacsim::deliberation::run_deliberation_async(&llm, &payload).await;
+                        let done = WorldCommand::ModuleAsyncDone {
+                            module,
+                            actor,
+                            correlation,
+                            payload: result,
+                        };
+                        if tx
+                            .send(WorldMsg::Inbound(Inbound::Apply(done)))
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!(
+                                correlation,
+                                "tacsim completion after shutdown dropped"
+                            );
+                        }
+                    });
                 } else if module.as_str() == mush_weather::NS {
                     // M10 weather flavor top-up: `@weather/generate` runs the
                     // off-loop flavor generator against the shared LlmService

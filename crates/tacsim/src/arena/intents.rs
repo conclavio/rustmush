@@ -30,6 +30,11 @@
 //!   them: `STARTUP` by [`resolve_startup`] here, and `LOCK` and `FIRE` by
 //!   [`crate::arena::state::Arena::resolve_lock`] and
 //!   [`crate::arena::state::Arena::resolve_fire`] (16b cut W.1).
+//! - **[`IntentKind::Order`]** (16b cut N.2) is a third thing and says so: a
+//!   squad's standing instruction, latest-wins like a continuous order and
+//!   affecting nothing on the hull. It is written onto the unit's reflex machine
+//!   and read by that machine's next tick, so an order changes *what the
+//!   controller decides* and never what the physics does.
 //!
 //! A refusal is always one of the named [`Refusal`] words, never a silent drop:
 //! cut K's cockpit turns each into a line a pilot can act on.
@@ -106,6 +111,21 @@ pub enum IntentKind {
         /// The weapon's component id.
         weapon: SmolStr,
     },
+    /// **A squad's standing order** (16b cut N.2; doc 16 §6 "Deliberation"),
+    /// carried in one per unit of the squad.
+    ///
+    /// It is neither continuous nor discrete in the sense the other five are: it
+    /// sets nothing on the hull and queues nothing for phase 4. It is *doctrine*,
+    /// written onto the unit's reflex machine and read by that machine's next tick
+    /// — which is what keeps an order rate-independent, exactly as every other
+    /// reflex decision is (the module head of [`crate::arena::reflex`] says why).
+    ///
+    /// **Only a reflex unit takes one** ([`Refusal::NotReflex`]): a pilot's tank
+    /// has no machine to steer, and an order that silently did nothing to a seated
+    /// tank would be a commander who thinks they have twelve tanks and has six.
+    /// It travels on [`Channel::Helm`] because it is, in the end, a route and a
+    /// posture.
+    Order(Box<crate::deliberation::order::Order>),
 }
 
 impl IntentKind {
@@ -113,7 +133,10 @@ impl IntentKind {
     /// orders are latest-wins and never queue.
     #[must_use]
     pub const fn is_continuous(&self) -> bool {
-        matches!(self, IntentKind::Heading { .. } | IntentKind::Speed { .. })
+        matches!(
+            self,
+            IntentKind::Heading { .. } | IntentKind::Speed { .. } | IntentKind::Order(_)
+        )
     }
 
     /// The channel this order must arrive on. An order on the wrong channel is
@@ -122,9 +145,10 @@ impl IntentKind {
     #[must_use]
     pub const fn channel_required(&self) -> Channel {
         match self {
-            IntentKind::Heading { .. } | IntentKind::Speed { .. } | IntentKind::Startup => {
-                Channel::Helm
-            }
+            IntentKind::Heading { .. }
+            | IntentKind::Speed { .. }
+            | IntentKind::Startup
+            | IntentKind::Order(_) => Channel::Helm,
             IntentKind::Lock { .. } => Channel::Sensors,
             IntentKind::Fire { .. } => Channel::Fire,
         }
@@ -139,6 +163,7 @@ impl IntentKind {
             IntentKind::Startup => "startup",
             IntentKind::Lock { .. } => "lock",
             IntentKind::Fire { .. } => "fire",
+            IntentKind::Order(_) => "order",
         }
     }
 }
@@ -218,6 +243,10 @@ pub enum Refusal {
     /// **`FIRE` naming a weapon the unit does not carry** (16b cut W.1).
     #[error("that unit carries no such weapon")]
     NoWeapon,
+    /// **An `ORDER` for a unit a pilot is flying** (16b cut N.2; doc 16 §6). A
+    /// squad's order steers the reflex machine, and a seated tank has none.
+    #[error("that unit is not on the reflex controller")]
+    NotReflex,
 }
 
 impl Refusal {
@@ -238,6 +267,7 @@ impl Refusal {
             Refusal::Cycling => "cycling",
             Refusal::Empty => "empty",
             Refusal::NoWeapon => "no_weapon",
+            Refusal::NotReflex => "not_reflex",
         }
     }
 }
@@ -353,6 +383,27 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent) -> IntentOutcome {
     if unit.limits.wreck {
         return IntentOutcome::Refused(Refusal::Wreck);
     }
+    // **16b cut N.2** — the squad's standing order (doc 16 §6 "Deliberation").
+    //
+    // It is taken here, before the continuous branch, because it is subject to
+    // neither of that branch's two gates: an order to a **cold** tank is how a
+    // squad is told to start up and advance, and an order to a tank whose engine
+    // is gone still tells it whether to shoot. What it *is* subject to is the one
+    // gate the other five do not have: the unit must be the controller's, because
+    // an order steers a machine and a seated tank has none.
+    if let IntentKind::Order(order) = &i.kind {
+        if unit.controller != Controller::Reflex {
+            return IntentOutcome::Refused(Refusal::NotReflex);
+        }
+        let at = arena.now_ms;
+        arena.reflex.set_order(
+            i.unit,
+            crate::deliberation::order::StandingOrder::accepted((**order).clone(), at),
+        );
+        // Latest-wins, like every other continuous order: a squad that is sent two
+        // orders in one burst obeys the second, and neither queues.
+        return IntentOutcome::AppliedContinuous;
+    }
     if i.kind.is_continuous() {
         if unit.power != Power::Online {
             return IntentOutcome::Refused(Refusal::PowerNotOnline);
@@ -369,7 +420,10 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent) -> IntentOutcome {
                     .saturating_neg();
                 unit.desired_speed_cms = (*cms).clamp(reverse, forward);
             }
-            IntentKind::Startup | IntentKind::Lock { .. } | IntentKind::Fire { .. } => {}
+            IntentKind::Startup
+            | IntentKind::Lock { .. }
+            | IntentKind::Fire { .. }
+            | IntentKind::Order(_) => {}
         }
         return IntentOutcome::AppliedContinuous;
     }

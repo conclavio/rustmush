@@ -836,6 +836,69 @@ before a crash is re-discovered, re-leased and finished after it (K7.4).
   ordinal tokens), and the context fenced as untrusted data. Never a witness,
   a revision, an object id or the decision token.
 
+### Squad deliberation (16b cut N.2): the combat arena's commander
+
+A running match's AI tanks are grouped into **squads** — a side's reflex units in
+pod pairs, the lowest object id commanding — and one squad may hold one
+**standing order**: an objective (`hold`, `advance`, `engage`, `withdraw`), an
+optional target, two constraints (`hold_fire`, `max_range_band`) and a time to
+live. It is asked for per squad, never per unit.
+
+- **Route.** `[llm.routes.tacsim_deliberate]` (`mushd.toml.example`). Without it
+  — or with `[llm].enabled = false`, or no `[llm]` at all — every request answers
+  *unavailable* and the squad runs on the reflex controller's own doctrine:
+  patrol, close on the nearest worthwhile hostile, hold a firing band, break off
+  when hurt. **That is the shipped default and what CI runs.** Deliberation adds
+  a commander to units that already fight; it is never what makes them fight.
+- **When it asks.** Event-driven: the squad's commander's contact set changes
+  class or count, or its order runs out unrenewed. Under that, a floor of
+  `[tacsim.arena].deliberate_min_ms` (default 30,000) of **arena** time per
+  squad, so a firefight cannot ask once a sensor pass and the number of requests
+  a scripted match makes is the same at every tempo.
+- **What it costs the pulse.** Nothing. The request leaves through the same
+  off-loop LLM re-entry `@gen` and the NPC turn use; the arena is handed an
+  ordinary order intent or nothing at all, and never waits for either.
+- **What a person sees.** One line when an order runs out unrenewed — *"mind link
+  dropped, unit on doctrine"* — to the pilots on that squad's own side and to
+  connected wizards. The match ledger carries the matching `order_expired` event
+  per unit.
+- **Budgets.** `[llm.budgets].per_feature.tacsim_deliberate` caps the whole
+  feature; each call is metered against the squad's **commander** as its actor,
+  so `@llm/log` and the cost run below both split spend per squad without a
+  second set of counters.
+- **What the model may say.** Four objectives, two constraints, one contact id
+  the commander already holds, and a bounded time to live. There is no free text
+  and no way to name a unit that is not already a contact, so a jailbroken model
+  can issue a bad *order* and nothing else — the same allowlist posture the NPC
+  actions have.
+
+#### The cost run
+
+`crates/tacsim/tests/harness.rs::tacsim_harness_llm_cost_run` measures what
+commanding a match costs. It is **never run by CI** and needs three things,
+all of them explicit:
+
+```sh
+TACSIM_LLM_COST_RUN=1 \
+TACSIM_LLM_COST_CAP_USD=1.00 \
+OPENROUTER_API_KEY=sk-or-... \
+  cargo test --release -p tacsim --test harness -- --nocapture tacsim_harness_llm_cost_run
+```
+
+Without `TACSIM_LLM_COST_RUN=1` it contacts nothing and returns. The cap is
+hard: the run stops **before** the call that would pass it, measured against the
+worst call it has seen. `TACSIM_LLM_COST_MINUTES` (default 5) is minutes of arena
+play, `TACSIM_LLM_COST_UNITS` (default 24) the field, `TACSIM_LLM_COST_MODEL` the
+model to cost, and `TACSIM_LLM_COST_MOCK=1` runs the whole thing against a scripted
+fake provider — no key, no cap, no spend — which is how the plumbing is proved.
+
+It prints `harness_cost_run:`, `harness_cost_columns:` and one `harness_cost_row:`
+per squad plus a match total, and writes the same table to `harness-cost.json`
+beside the other two harness reports. The columns are `scope key calls refusals
+errors input_tokens output_tokens total_tokens cost_usd calls_per_unit_minute
+tokens_per_unit_minute usd_per_unit_minute`; everything in them is read back out
+of `mush-llm`'s own budget ledger and audit sink.
+
 ### Injection posture (players WILL try to jailbreak NPCs)
 
 The **action allowlist is the security boundary — not the prompt.** Even a fully

@@ -227,6 +227,8 @@ reserved_rooms = []
 # naming that key.
 [tacsim.arena]
 max_catch_up_steps = 4
+# 16b cut N.2: the floor under one squad's deliberation requests, arena ms.
+deliberate_min_ms = 30000
 
 [tacsim.arena.tempo]
 quiet_ms = 5000
@@ -396,6 +398,15 @@ reasoning = "off"
 # Without this route every NPC decision falls back to its idle action after its
 # deadline — the same degrade shape as [llm].enabled = false.
 [llm.routes.npc_decision]
+model = "z-ai/glm-5.3-flash"
+max_tokens = 512
+timeout_s = 30
+reasoning = "low"
+
+# 16b cut N.2: one squad's standing order in the combat arena. Without this route
+# every squad stays on the reflex controller's own doctrine, which is doc 16 §6's
+# fallback and what CI runs.
+[llm.routes.tacsim_deliberate]
 model = "z-ai/glm-5.3-flash"
 max_tokens = 512
 timeout_s = 30
