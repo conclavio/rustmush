@@ -178,6 +178,11 @@ fn definition() -> ArenaDefinition {
                 y1: 63,
             },
         ],
+        // 16b cut N.1: no authored furniture on this fixture window — the
+        // reflex controller is not what these tests are about, and every unit
+        // on them is a `Pilot`.
+        key_spots: Vec::new(),
+        waypoints: tacsim::arena::state::Waypoints::default(),
     }
 }
 
@@ -201,6 +206,7 @@ fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         // 16b cut W.2: cut A's arena presents nothing and is struck by nothing.
         profile: tacsim::arena::resolution::UnitProfile::default(),
         gunnery: 0,
+        controller: tacsim::arena::state::Controller::Pilot,
         unit: tactical_unit(id),
     }
 }
@@ -747,7 +753,16 @@ fn startup_then_released_in_one_burst_never_starts() {
     assert_eq!(arena.unit(MOVER).map(|unit| unit.power), Some(Power::Off));
     assert!(arena.pending.is_empty(), "the order was not purged");
     assert_eq!(arena.epochs.current(MOVER, Channel::Helm), 2);
-    assert_eq!(arena.due.len(), 1, "nothing but the position summary");
+    // **16b cut N.1** amends doc 16 §3.8's *the tank idles*: the released seat goes
+    // to the reflex controller in `Withdraw`, which puts its first tick on the
+    // schedule beside the position summary. A tank handed over **cold** stays cold —
+    // `Withdraw` is a fallback for a tank that is running — which is what the rest of
+    // this test asserts, unchanged.
+    assert_eq!(
+        arena.due.len(),
+        2,
+        "the position summary and the released tank's first reflex tick"
+    );
 
     // Ten seconds of arena time later — `match.startup_ms` — it is still cold.
     let mut wall = 0_i64;

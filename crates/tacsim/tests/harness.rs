@@ -1005,6 +1005,7 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
         },
         "thresholds": {
             "assert": knobs.assert,
+            "max_path_queries_per_pulse": knobs.max_path_queries_per_pulse,
             "engaged_p99_ms": knobs.engaged_p99_ms,
             "max_traces_per_pulse": knobs.max_traces_per_pulse,
             "max_path_queries_per_pulse": knobs.max_path_queries_per_pulse,
@@ -1181,6 +1182,114 @@ fn share_cells() -> u16 {
 
 /// The default of [`share_cells`].
 const SHARE_CELLS: u16 = 8;
+
+/// **The harness's own patrol graph** (16b cut N.1; doc 16 §6: *the arena pack's
+/// waypoint graph*).
+///
+/// The shipped arena authors its graph (`content/arenas/proving_ground.json`'s two
+/// roads and four spurs); this window is *generated relief* and has no author, so
+/// the harness generates one the way it generates everything else here — from the
+/// ground, deterministically, with no file.
+///
+/// **A coarse grid.** Nodes on a [`WAYPOINT_PITCH`]-cell pitch, offset half a pitch
+/// so none sits on the window's edge, each **snapped to the nearest passable cell**
+/// inside a half-pitch box (a node in the middle of the lake is dropped, and its
+/// edges with it). Edges join each node to its east and north neighbours, which
+/// makes the graph a connected lattice wherever the ground allows one. At the
+/// shipped 256-cell window and a 16-cell pitch that is 16 by 16 = 256 nodes —
+/// exactly `MAX_WAYPOINT_NODES` — and at most 480 edges against a bound of 1,024.
+///
+/// The pitch is the number that matters: it sets how far a patrolling unit walks
+/// between decisions, and therefore how long each A\* search is. Sixteen cells is
+/// 160 m, about eleven seconds at the harness tank's ceiling.
+fn harness_waypoints(
+    grid: &[tacsim::arena::state::TerrainCell],
+) -> tacsim::arena::state::Waypoints {
+    let passable_at = |x: u16, y: u16| -> bool {
+        grid.get(usize::from(y) * usize::from(SIDE) + usize::from(x))
+            .is_some_and(|cell| cell.move_cost != 0)
+    };
+    let half = WAYPOINT_PITCH / 2;
+    let mut nodes: Vec<tacsim::arena::state::Waypoint> = Vec::new();
+    let mut present: Vec<Vec<bool>> = Vec::new();
+    let steps = SIDE / WAYPOINT_PITCH;
+    for j in 0..steps {
+        let mut row = Vec::new();
+        for i in 0..steps {
+            let (cx, cy) = (i * WAYPOINT_PITCH + half, j * WAYPOINT_PITCH + half);
+            // The nearest passable cell inside the half-pitch box, by Chebyshev
+            // rings out from the node's own cell: deterministic, and bounded by the
+            // pitch.
+            let mut found: Option<(u16, u16)> = None;
+            'rings: for r in 0..=half {
+                for dy in -i32::from(r)..=i32::from(r) {
+                    for dx in -i32::from(r)..=i32::from(r) {
+                        if dx.abs() != i32::from(r) && dy.abs() != i32::from(r) {
+                            continue;
+                        }
+                        let (Ok(x), Ok(y)) = (
+                            u16::try_from(i32::from(cx) + dx),
+                            u16::try_from(i32::from(cy) + dy),
+                        ) else {
+                            continue;
+                        };
+                        if x < SIDE && y < SIDE && passable_at(x, y) {
+                            found = Some((x, y));
+                            break 'rings;
+                        }
+                    }
+                }
+            }
+            row.push(found.is_some());
+            if let Some((x, y)) = found {
+                nodes.push(tacsim::arena::state::Waypoint {
+                    id: smol_str::SmolStr::new(format!("g{i}_{j}")),
+                    x,
+                    y,
+                });
+            }
+        }
+        present.push(row);
+    }
+    let mut edges: Vec<(smol_str::SmolStr, smol_str::SmolStr)> = Vec::new();
+    let here = |i: u16, j: u16| -> bool {
+        present
+            .get(usize::from(j))
+            .and_then(|row| row.get(usize::from(i)))
+            .copied()
+            .unwrap_or(false)
+    };
+    for j in 0..steps {
+        for i in 0..steps {
+            if !here(i, j) {
+                continue;
+            }
+            if i + 1 < steps && here(i + 1, j) {
+                edges.push((
+                    smol_str::SmolStr::new(format!("g{i}_{j}")),
+                    smol_str::SmolStr::new(format!("g{}_{j}", i + 1)),
+                ));
+            }
+            if j + 1 < steps && here(i, j + 1) {
+                edges.push((
+                    smol_str::SmolStr::new(format!("g{i}_{j}")),
+                    smol_str::SmolStr::new(format!("g{i}_{}", j + 1)),
+                ));
+            }
+        }
+    }
+    tacsim::arena::state::Waypoints::new(nodes, &edges)
+}
+
+/// The harness patrol graph's node pitch, in cells (see [`harness_waypoints`]).
+const WAYPOINT_PITCH: u16 = 16;
+
+/// How far each fighting line stands from the window's centre, in cells: the two
+/// lines are twice this apart.
+const LINE_GAP_CELLS: u16 = 4;
+
+/// How far apart neighbours stand down a fighting line, in cells.
+const LINE_PITCH_CELLS: u16 = 3;
 
 /// **The weapon `TACSIM_WEAPONS` of the units carry** (16b cut W.1; doc 16 §1 A2:
 /// *150 weapons on the field*).
@@ -1500,11 +1609,10 @@ fn arena_report_path(given: &str) -> std::path::PathBuf {
 #[allow(clippy::too_many_lines)]
 fn tacsim_harness_arena_step() {
     use tacsim::arena::clock::Tempo as ArenaTempo;
-    use tacsim::arena::intents::{Intent, IntentKind};
     use tacsim::arena::perception::PerceptionCounters;
     use tacsim::arena::state::{
-        Arena, ArenaDefinition, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EntryZone,
-        MatchEnd, Pilot, Power, Team, TerrainCell,
+        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, MatchEnd, Pilot,
+        Power, Team, TerrainCell,
     };
     use tacsim::arena::step::StepOutput;
     use tacsim::config::{ArenaConfig, MatchConfig};
@@ -1556,6 +1664,15 @@ fn tacsim_harness_arena_step() {
             Some((x, y, cell.elev_cm))
         })
         .collect();
+    // **16b cut N.1**: the harness's own patrol graph. The authored graph is cut
+    // C's, on cut C's arena; this window is generated relief, so the harness
+    // generates a **coarse grid graph** over it ([`harness_waypoints`]) — 16 by 16
+    // nodes on a 16-cell pitch, each snapped to the nearest passable cell, joined
+    // to its orthogonal neighbours. That is 256 nodes and at most 480 edges, which
+    // is exactly `MAX_WAYPOINT_NODES` and well inside `MAX_WAYPOINT_EDGES`, and it
+    // is what gives 276 patrolling units somewhere to be.
+    let waypoints = harness_waypoints(&grid);
+    let waypoint_nodes = waypoints.nodes().len();
     let definition = ArenaDefinition {
         id: smol_str::SmolStr::new("tacsim.arena.harness"),
         terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, grid).expect("the arena window"),
@@ -1575,6 +1692,8 @@ fn tacsim_harness_arena_step() {
                 y1: SIDE - 1,
             },
         ],
+        key_spots: Vec::new(),
+        waypoints,
     };
     let convert_ms = convert_at.elapsed().as_secs_f64() * 1_000.0;
     assert!(
@@ -1584,17 +1703,65 @@ fn tacsim_harness_arena_step() {
         knobs.units
     );
 
-    // ---- the units: a seeded scatter over distinct passable cells ----
+    // ---- the units: the fighting ones nose to nose, the rest scattered ----
+    //
+    // **16b cut N.1**: doc 16 §1 A2 is *300 units placed and moving, 24 of them
+    // fighting*, and with the reflex controller driving the field that has to be
+    // arranged rather than hoped for. The `TACSIM_FIGHTING` units are set out in two
+    // lines across the middle of the window, so they hold each other from the first
+    // sensor pass and spend the measured pulses in `Engage`; the rest are scattered
+    // over the window as before and patrol the graph. A unit's team is still
+    // `n % 2`, so the two sides are even and the two lines alternate.
     let mut rng = ChaCha8Rng::seed_from_u64(knobs.seed ^ 0x000a_4e17);
     let mut pool: Vec<(u16, u16, i16)> = passable.clone();
+    // Two lines facing each other across the middle of the window: the even units
+    // (red) [`LINE_GAP_CELLS`] west of the centre, the odd (blue) the same to the
+    // east, and [`LINE_PITCH_CELLS`] between neighbours down each line. Each wanted
+    // cell is answered with the nearest **passable** one, so the lines follow the
+    // generated relief rather than standing in the lake.
+    //
+    // The pitch is not cosmetic: doc 16 §3.6 step 5's share mesh is one operation
+    // per `(sharer, teammate)` pair inside `comms.share_range_cells`, so twelve
+    // teammates in one blob is 132 operations a pass on its own and blows
+    // `harness.max_share_ops_per_pulse` before the scattered field is counted.
+    // Three cells of pitch spreads a line over 36 and keeps the mesh inside its
+    // bound while leaving the two lines eight cells apart — well inside the sensor
+    // reach and the cannon's, so they fight.
+    let middle = i32::from(SIDE) / 2;
+    let mut arena_cluster: Vec<(u16, u16, i16)> = Vec::new();
+    for n in 0..i32::try_from(knobs.fighting).unwrap_or(0) {
+        let side = if n % 2 == 0 { -1 } else { 1 };
+        let rank = n / 2;
+        let want_x = middle + side * i32::from(LINE_GAP_CELLS);
+        let want_y = middle - 18 + rank * i32::from(LINE_PITCH_CELLS);
+        let Some(at) = pool
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (x, y, _))| {
+                let dx = i32::from(*x) - want_x;
+                let dy = i32::from(*y) - want_y;
+                (dx * dx + dy * dy, i32::from(*x), i32::from(*y))
+            })
+            .map(|(at, _)| at)
+        else {
+            break;
+        };
+        arena_cluster.push(pool.swap_remove(at));
+    }
+    // Taken from the back below, so the first unit made is the first line position.
+    arena_cluster.reverse();
     let mut units: Vec<CustodyUnit> = Vec::new();
     let mut pilots: Vec<Pilot> = Vec::new();
     for n in 0..knobs.units {
-        if pool.is_empty() {
+        if pool.is_empty() && arena_cluster.is_empty() {
             break;
         }
-        let pick = rng.random_range(0..pool.len());
-        let (cx, cy, elev_cm) = pool.swap_remove(pick);
+        let (cx, cy, elev_cm) = if let Some(cell) = arena_cluster.pop() {
+            cell
+        } else {
+            let pick = rng.random_range(0..pool.len());
+            pool.swap_remove(pick)
+        };
         let id = ObjId(100_000 + n);
         let pose = mush_sim::data::Pose {
             x_cm: i64::from(cx) * i64::from(CELL_CM) + i64::from(CELL_CM) / 2,
@@ -1636,6 +1803,15 @@ fn tacsim_harness_arena_step() {
             // which is the cost the p99 below is of. An unarmed unit is still a target.
             profile: harness_profile(),
             gunnery: 1,
+            // **16b cut N.1**: every unit on the field is the reflex controller's
+            // (doc 16 §6). The `TACSIM_FIGHTING` seats below are **frame sinks**,
+            // not pilots: doc 16 §1 A2 asks for connected sessions receiving output
+            // and the frame builder is a real per-pulse cost, so the seats stay to
+            // keep it in the measurement — but no pilot issues an intent, and every
+            // order on this field is the machine's. A seated pilot on a `Reflex`
+            // unit is the state doc 16 §3.8's released seat leaves behind, so it is
+            // not a shape the engine has to invent for the harness.
+            controller: tacsim::arena::state::Controller::Reflex,
             unit: harness_unit(id),
         });
     }
@@ -1699,26 +1875,24 @@ fn tacsim_harness_arena_step() {
         }
     };
 
-    // ---- the warm-up: STARTUP, then `match.startup_ms` of arena time ----
+    // ---- the warm-up: the controller starts them up ----
+    //
+    // **16b cut N.1**: cut A's harness staged 300 `STARTUP` intents by hand and
+    // waited `match.startup_ms`. It does not any more, and that is the measurement:
+    // every unit is the reflex controller's, so bringing 300 tanks online is the
+    // machine's own first state and the warm-up is over when the field is online.
+    // The bound is `decide_ms + startup_ms` plus a pulse, and it is asserted —
+    // a controller that started nothing would otherwise be measured driving an
+    // arena of cold tanks.
     let warm_at = Instant::now();
-    let startup: Vec<Intent> = arena
-        .units
-        .iter()
-        .map(|unit| unit.id)
-        .enumerate()
-        .map(|(n, id)| Intent {
-            unit: id,
-            channel: Channel::Helm,
-            epoch: arena.epochs.current(id, Channel::Helm),
-            kind: IntentKind::Startup,
-            seq: u64::try_from(n).unwrap_or(0),
-        })
-        .collect();
     let mut wall = 0_i64;
-    let out = arena.step(wall, &[], &startup);
+    let out = arena.step(wall, &[], &[]);
     absorb_out(&out, &mut counts);
     let mut warm_pulses = 1_u32;
-    while arena.now_ms < i64::from(match_cfg.startup_ms) {
+    let warm_until = i64::from(match_cfg.startup_ms)
+        .saturating_add(i64::from(arena_cfg.reflex.decide_ms))
+        .saturating_add(period_ms);
+    while arena.now_ms < warm_until {
         wall += period_ms;
         let out = arena.step(wall, &[], &[]);
         absorb_out(&out, &mut counts);
@@ -1731,87 +1905,19 @@ fn tacsim_harness_arena_step() {
         .iter()
         .filter(|unit| unit.power != Power::Online)
         .count();
-    assert_eq!(cold, 0, "{cold} units never came online");
+    assert_eq!(
+        cold, 0,
+        "{cold} units never came online: the reflex controller did not start the field up"
+    );
 
-    // ---- the orders, and the measured pulses ----
-    let orders = |arena: &Arena, rng: &mut ChaCha8Rng, with_speed: bool| -> Vec<Intent> {
-        let mut out: Vec<Intent> = Vec::new();
-        for (n, id) in arena.units.iter().map(|unit| unit.id).enumerate() {
-            let epoch = arena.epochs.current(id, Channel::Helm);
-            let seq = u64::try_from(n).unwrap_or(0);
-            out.push(Intent {
-                unit: id,
-                channel: Channel::Helm,
-                epoch,
-                kind: IntentKind::Heading {
-                    mdeg: rng.random_range(0..360_u32) * 1_000,
-                },
-                seq,
-            });
-            if with_speed {
-                out.push(Intent {
-                    unit: id,
-                    channel: Channel::Helm,
-                    epoch,
-                    kind: IntentKind::Speed {
-                        cms: i32::try_from(harness_mobility().max_speed_cms).unwrap_or(i32::MAX),
-                    },
-                    seq,
-                });
-            }
-        }
-        out
-    };
-
-    // **16b cut W.1's scripted fire.** Every armed unit that holds a classified
-    // contact locks it and pulls the trigger, so the measured pulses carry real
-    // shots: an in-flight table, two due events per shot, a `fired` line, and an
-    // impact that arrives a pulse or two later against the positions that substep
-    // committed. Without it the weapon lane would be measured empty and the impact
-    // heap would never be exercised at all.
+    // ---- the measured pulses ----
     //
-    // The lock and the shot go in the same burst. `Lock` is resolved in phase 4
-    // before `Fire` is — the queue is the pilot's order, and the drain is total —
-    // so a unit that acquires a contact this pulse fires at it in this pulse, which
-    // is the worst case and therefore the one worth measuring.
-    let shots = |arena: &Arena| -> Vec<Intent> {
-        let mut out: Vec<Intent> = Vec::new();
-        let mut seq = 0_u64;
-        for unit in &arena.units {
-            if unit.weapons.is_empty() || unit.power != Power::Online {
-                continue;
-            }
-            let hostile = unit.team;
-            let Some(contact) = arena
-                .contacts
-                .of(unit.id)
-                .find(|(_, held)| held.class.team().is_some_and(|team| team != hostile))
-                .map(|(id, _)| *id)
-            else {
-                continue;
-            };
-            seq = seq.saturating_add(1);
-            out.push(Intent {
-                unit: unit.id,
-                channel: Channel::Sensors,
-                epoch: arena.epochs.current(unit.id, Channel::Sensors),
-                kind: IntentKind::Lock { contact },
-                seq,
-            });
-            seq = seq.saturating_add(1);
-            out.push(Intent {
-                unit: unit.id,
-                channel: Channel::Fire,
-                epoch: arena.epochs.current(unit.id, Channel::Fire),
-                kind: IntentKind::Fire {
-                    weapon: harness_weapon().id,
-                },
-                seq,
-            });
-        }
-        out
-    };
-
+    // **16b cut N.1**: no scripted order, and no scripted fire. Cut A gave every
+    // unit a fresh heading every ten pulses and cut W.1 scripted a lock and a shot
+    // beside it; both are gone, and what steers, closes, locks and fires below is
+    // the reflex controller alone. That is the whole of what this cut measures:
+    // 300 machines deciding on their own cadence, the paths they ask for, and the
+    // shots those decisions produce.
     let mut per_pulse: Vec<f64> = Vec::with_capacity(usize::try_from(knobs.pulses).unwrap_or(0));
     let mut substeps: Vec<u32> = Vec::new();
     let mut frames: Vec<f64> = Vec::new();
@@ -1822,20 +1928,14 @@ fn tacsim_harness_arena_step() {
     // asserted against and the total is what says the pass did work at all.
     let mut perception_total = PerceptionCounters::default();
     let mut peak = PerceptionCounters::default();
-    for pulse in 0..knobs.pulses {
+    // 16b cut N.1: the controller's cost, as a running total and as the worst
+    // pulse. `harness.max_path_queries_per_pulse` is asserted against the peak.
+    let mut reflex_total = tacsim::arena::reflex::ReflexCounters::default();
+    let mut reflex_peak = tacsim::arena::reflex::ReflexCounters::default();
+    for _pulse in 0..knobs.pulses {
         wall += period_ms;
-        // A fresh heading every ten pulses, and the speed order with the first
-        // one: a standing speed order is what keeps them driving into things.
-        let mut issued = if pulse % 10 == 0 {
-            orders(&arena, &mut rng, pulse == 0)
-        } else {
-            Vec::new()
-        };
-        if pulse % 10 == 0 {
-            issued.extend(shots(&arena));
-        }
         let at = Instant::now();
-        let out = arena.step(wall, &[], &issued);
+        let out = arena.step(wall, &[], &[]);
         per_pulse.push(at.elapsed().as_secs_f64() * 1_000.0);
         perception_total.absorb(&out.perception);
         peak.passes = peak.passes.max(out.perception.passes);
@@ -1846,6 +1946,15 @@ fn tacsim_harness_arena_step() {
         peak.detected = peak.detected.max(out.perception.detected);
         peak.classified = peak.classified.max(out.perception.classified);
         peak.lost = peak.lost.max(out.perception.lost);
+        reflex_total.absorb(&out.reflex);
+        reflex_peak.ticks = reflex_peak.ticks.max(out.reflex.ticks);
+        reflex_peak.path_queries = reflex_peak.path_queries.max(out.reflex.path_queries);
+        reflex_peak.path_deferred = reflex_peak.path_deferred.max(out.reflex.path_deferred);
+        reflex_peak.path_cells = reflex_peak.path_cells.max(out.reflex.path_cells);
+        reflex_peak.path_failures = reflex_peak.path_failures.max(out.reflex.path_failures);
+        reflex_peak.traces = reflex_peak.traces.max(out.reflex.traces);
+        reflex_peak.intents = reflex_peak.intents.max(out.reflex.intents);
+        reflex_peak.shots = reflex_peak.shots.max(out.reflex.shots);
         substeps.push(out.substeps);
         #[allow(clippy::cast_precision_loss)]
         frames.push(out.frames.len() as f64);
@@ -2052,6 +2161,74 @@ fn tacsim_harness_arena_step() {
         arena.units.iter().filter(|unit| unit.limits.wreck).count(),
         arena.units.iter().filter(|unit| unit.disabled).count()
     );
+    // **16b cut N.1**, the same rule the four above follow: a controller that never
+    // decided, never searched and never fired would make the pulse cheaper and pass
+    // every timing bound in this file, and the report would say the arena is fast at
+    // standing still.
+    assert!(
+        reflex_total.ticks > 0 && reflex_total.intents > 0,
+        "the reflex controller never decided anything: {reflex_total:?}"
+    );
+    assert!(
+        reflex_total.path_queries > 0,
+        "the controller never searched for a route: {reflex_total:?}"
+    );
+    assert!(
+        reflex_total.shots > 0,
+        "no controller ever pulled a trigger: {reflex_total:?}"
+    );
+    let distribution = arena.reflex.distribution();
+    let engaging = distribution
+        .get(usize::from(
+            tacsim::arena::reflex::ReflexState::Engage.code(),
+        ))
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(
+            distribution
+                .get(usize::from(
+                    tacsim::arena::reflex::ReflexState::Approach.code(),
+                ))
+                .copied()
+                .unwrap_or(0),
+        );
+    assert!(
+        engaging > 0,
+        "nobody was fighting at the end of the run: {distribution:?}"
+    );
+
+    println!(
+        "harness_arena_reflex: waypoint_nodes={waypoint_nodes} decide_ms={} path_max_cells={} max_path_queries={} repath_ms={} ticks={} intents={} shots={} path_queries={} path_deferred={} path_cells={} path_failures={} traces={} peak_ticks={} peak_path_queries={} peak_path_cells={} peak_traces={}",
+        arena_cfg.reflex.decide_ms,
+        arena_cfg.reflex.path_max_cells,
+        arena_cfg.reflex.max_path_queries,
+        arena_cfg.reflex.repath_ms,
+        reflex_total.ticks,
+        reflex_total.intents,
+        reflex_total.shots,
+        reflex_total.path_queries,
+        reflex_total.path_deferred,
+        reflex_total.path_cells,
+        reflex_total.path_failures,
+        reflex_total.traces,
+        reflex_peak.ticks,
+        reflex_peak.path_queries,
+        reflex_peak.path_cells,
+        reflex_peak.traces
+    );
+    println!(
+        "harness_arena_reflex_states: {}",
+        tacsim::arena::reflex::ReflexState::ALL
+            .iter()
+            .enumerate()
+            .map(|(at, state)| format!(
+                "{}={}",
+                state.as_str(),
+                distribution.get(at).copied().unwrap_or(0)
+            ))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     println!(
         "harness_arena_perception_peak: passes={} candidates={} traces={} cell_probes={} share_ops={} detected={} classified={} lost={}",
         peak.passes,
@@ -2095,7 +2272,7 @@ fn tacsim_harness_arena_step() {
     );
 
     let report = serde_json::json!({
-        "what": "16b cut A: `Arena::step` driven directly at the harness's scale, every unit moving",
+        "what": "16b cut N.1: `Arena::step` at the harness's scale with every unit on the reflex controller",
         "world": {
             "units": placed,
             "pilots": seated,
@@ -2186,6 +2363,42 @@ fn tacsim_harness_arena_step() {
                 "lost": perception_total.lost,
             },
         },
+        "reflex": {
+            "waypoint_nodes": waypoint_nodes,
+            "waypoint_pitch_cells": WAYPOINT_PITCH,
+            "decide_ms": arena_cfg.reflex.decide_ms,
+            "path_max_cells": arena_cfg.reflex.path_max_cells,
+            "max_path_queries_per_window": arena_cfg.reflex.max_path_queries,
+            "repath_ms": arena_cfg.reflex.repath_ms,
+            "total": {
+                "ticks": reflex_total.ticks,
+                "intents": reflex_total.intents,
+                "shots": reflex_total.shots,
+                "path_queries": reflex_total.path_queries,
+                "path_deferred": reflex_total.path_deferred,
+                "path_cells": reflex_total.path_cells,
+                "path_failures": reflex_total.path_failures,
+                "traces": reflex_total.traces,
+            },
+            "peak_per_pulse": {
+                "ticks": reflex_peak.ticks,
+                "path_queries": reflex_peak.path_queries,
+                "path_deferred": reflex_peak.path_deferred,
+                "path_cells": reflex_peak.path_cells,
+                "path_failures": reflex_peak.path_failures,
+                "traces": reflex_peak.traces,
+                "intents": reflex_peak.intents,
+                "shots": reflex_peak.shots,
+            },
+            "states_at_end": tacsim::arena::reflex::ReflexState::ALL
+                .iter()
+                .enumerate()
+                .map(|(at, state)| (
+                    state.as_str().to_string(),
+                    distribution.get(at).copied().unwrap_or(0)
+                ))
+                .collect::<BTreeMap<String, u32>>(),
+        },
         "memory": { "vmrss_start_kib": rss_start_kib, "vmrss_end_kib": rss_end_kib },
         "thresholds": {
             "assert": knobs.assert,
@@ -2252,6 +2465,18 @@ fn tacsim_harness_arena_step() {
             knobs.max_share_ops_per_pulse,
             share_cells()
         );
+        // **16b cut N.1**, doc 16 §1 A2's last per-pulse bound: *path queries per
+        // pulse under their bound*. The arena's own budget is per `decide_ms`
+        // window of arena time (D-16-2: a per-pulse throttle would bite differently
+        // at each tempo), and at the `Engaged` period of 500 ms one pulse holds at
+        // most one window — so the per-pulse figure the harness asserts and the
+        // per-window figure the arena enforces are the same number here.
+        assert!(
+            reflex_peak.path_queries <= knobs.max_path_queries_per_pulse,
+            "path queries in one pulse {} is past harness.max_path_queries_per_pulse {}",
+            reflex_peak.path_queries,
+            knobs.max_path_queries_per_pulse
+        );
     }
 }
 
@@ -2295,4 +2520,20 @@ const ARENA_P99_MS: f64 = 5.0;
 /// between are unchanged in kind and now measured in full: **a shorter authored
 /// reach**, or **larger bounds and a slower `Engaged` pulse**. Nothing in this cut
 /// decides it.
+///
+/// **16b cut N.1 spent part of that budget and stayed inside it.** With the
+/// scripted orders and the scripted fire gone and all 300 units on the reflex
+/// controller, the same run measures **p50 0.561 / p95 5.882 / p99 5.918 / max
+/// 6.207** (a second run of the same tree: 0.496 / 6.507 / 6.899 / 6.930) — about
+/// 2 ms more than cut S.2's, which is the controller's 8,826 ticks, its 1,131 path
+/// searches over 190,282 expanded cells, and the 707 shots those decisions
+/// produced. The lens is left at 12 for the same reason S.1 left it there: the
+/// sentence that justified the number has not changed, and tightening it onto a
+/// fresh measurement is the owner's call at a review and not this file's.
+///
+/// At the **authored** reaches the same run measures p50 1.042 / p95 25.655 / p99
+/// 26.374 / max 27.643, past doc 16's 25 — and the cost is still the *traces*
+/// (13,278 in the peak pulse against a bound of 4,000), not the controller (57).
+/// The owner's choice S.2 recorded is unchanged in kind and now measured with the
+/// AI on the field.
 const ARENA_S_P99_MS: f64 = 12.0;

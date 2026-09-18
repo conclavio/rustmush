@@ -194,6 +194,11 @@ fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
                 y1: SIDE - 1,
             },
         ],
+        // 16b cut N.1: no authored furniture on this fixture window — the
+        // reflex controller is not what these tests are about, and every unit
+        // on them is a `Pilot`.
+        key_spots: Vec::new(),
+        waypoints: tacsim::arena::state::Waypoints::default(),
     }
 }
 
@@ -271,6 +276,7 @@ fn scout(id: ObjId, team: Team, pose: Pose, weapons: Vec<WeaponSummary>) -> Cust
         weapons,
         profile: tacsim::arena::resolution::UnitProfile::default(),
         gunnery: 0,
+        controller: tacsim::arena::state::Controller::Pilot,
         unit: tactical_unit(id),
     }
 }
@@ -813,8 +819,28 @@ fn the_engaged_tempo_is_entered_on_a_shot_and_held() {
         wall += 500;
         pulse(&mut arena, wall, &[], &mut bytes);
     }
-    // Back to `Alert`, because the two are still holding each other — the two holds
-    // are independent (doc 16 §3.1).
+    // **16b cut N.1** made doc 16 §3.1's third `Engaged` trigger live — *hostile
+    // units are within weapons range of each other* — and a 250 km cannon reaches
+    // every cell of an eight-cell window. So by the time the shot's own hold has run
+    // out the red tank has told the blue one apart and is holding it in range, and
+    // the tempo stays `Engaged` on that trigger rather than falling back.
+    assert_eq!(arena.clock.tempo(), Tempo::Engaged);
+    assert!(
+        arena.hostile_in_weapons_range(),
+        "the red tank holds the blue one classified, inside its own reach"
+    );
+    // Take the gun off it and the third trigger goes with it. The two still hold
+    // each other inside `tempo.alert_range_cm`, so one `engaged_hold_ms` later the
+    // arena is back at `Alert` — the two holds are independent (doc 16 §3.1).
+    if let Some(state) = arena.unit_mut(RED) {
+        state.weapons.clear();
+    }
+    assert!(!arena.hostile_in_weapons_range());
+    let quiet_from = arena.now_ms;
+    while arena.now_ms < quiet_from + hold + 500 {
+        wall += 500;
+        pulse(&mut arena, wall, &[], &mut bytes);
+    }
     assert_eq!(arena.clock.tempo(), Tempo::Alert);
     let log = events(&mut arena, &mut bytes);
     assert!(

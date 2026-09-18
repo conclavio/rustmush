@@ -38,7 +38,8 @@ use mush_core::ObjId;
 use smol_str::SmolStr;
 
 use crate::arena::ledger::EventKind;
-use crate::arena::state::{Arena, Channel, ContactId, DueKind, Power};
+use crate::arena::reflex::ReflexState;
+use crate::arena::state::{Arena, Channel, ContactId, Controller, DueKind, Power};
 
 /// What a seat is (doc 16 §3.1's `Control`; doc 07 §1.2 for linkdead).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -267,16 +268,46 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
             arena.pending.remove(&c.unit);
         }
     }
-    let Some(unit) = arena.unit_mut(c.unit) else {
-        return;
-    };
-    match c.state {
-        ControlState::Linkdead => unit.linkdead = true,
-        ControlState::Live => unit.linkdead = false,
-        ControlState::Released => {
-            unit.linkdead = false;
-            unit.desired_speed_cms = 0;
+    {
+        let Some(unit) = arena.unit_mut(c.unit) else {
+            return;
+        };
+        match c.state {
+            // Doc 16 §3.1's honest and dangerous answer: the tank keeps its
+            // continuous orders and fires nothing. The controller is **not** handed
+            // the tank here — a pilot inside the doc 07 D1 grace still owns it, and
+            // an AI that took the wheel for four seconds and gave it back would be
+            // worse than a tank that carries on.
+            ControlState::Linkdead => unit.linkdead = true,
+            ControlState::Live => unit.linkdead = false,
+            ControlState::Released => {
+                unit.linkdead = false;
+                unit.desired_speed_cms = 0;
+            }
         }
+    }
+    // **16b cut N.1** — who flies it now (doc 16 §3.8 "Disconnects" and its §11
+    // amendment; doc 07 §1.1's fallback controller).
+    //
+    // `Released` is the seat *gone*: `EXIT`, a revoked lease, a deactivated
+    // station, or the linkdead grace run out. The tank goes to the reflex
+    // controller in `Withdraw` and drives itself home, which is what K4's "the
+    // tank idles" was standing in for until this cut existed. `Live` is the seat a
+    // pilot's again — a reclaim inside the grace, or a fresh activation — and takes
+    // it back, forgetting the machine. `Linkdead` changes nothing.
+    match c.state {
+        ControlState::Released => {
+            arena.set_controller(c.unit, Controller::Reflex, ReflexState::Withdraw);
+        }
+        ControlState::Live => {
+            if arena
+                .unit(c.unit)
+                .is_some_and(|unit| unit.controller != Controller::Pilot)
+            {
+                arena.set_controller(c.unit, Controller::Pilot, ReflexState::Withdraw);
+            }
+        }
+        ControlState::Linkdead => {}
     }
 }
 

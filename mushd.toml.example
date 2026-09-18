@@ -253,11 +253,27 @@ summary_ms = 5000                  # arena ms between position_summary events --
 max_bytes = 67108864               # 64 MiB: at 90% summaries stop, at 100% the match is stopped with Timeout
 max_unflushed_chunks = 256         # chunks the bounded egress ring may hold before the match is stopped with Void
 
+[tacsim.arena.reflex]              # (16b cut N.1) the reflex controller: who flies a tank nobody is sitting in
+# The AI fill of the lobby, the harness's field of 300, and the fallback a seat
+# released past the linkdead grace hands its tank to. It submits the SAME intents
+# a pilot's verbs stage, so nothing here lets a machine do what a player could
+# not; what it tunes is how often it thinks and how far it looks for a route.
+decide_ms = 1000                   # arena ms between one AI unit's decisions, staggered by unit id -- a cadence of ARENA time, not of pulses
+path_max_cells = 65536             # [atlas].path_max_cells RAISED for the arena: one node per cell of the 256x256 window
+max_path_queries = 64              # path searches in one decide_ms window of arena time; a unit refused keeps the path it has
+repath_ms = 4000                   # the least arena time between two searches by one unit
+withdraw_permille = 350            # armour plus internals, per mille of the authored totals, below which it breaks off for its entry zone
+weight_range = 100                 # the utility weight on range to a candidate hostile; lower scores win
+weight_facet = 40                  # the utility weight on the facet a candidate presents (a rear shot beats a frontal one)
+weight_health = 30                 # the utility weight on its OWN health: the same addend for every candidate, so it orders nothing
+engage_band_permille = 700         # the fraction of a weapon's reach Engage holds rather than driving onto the target
+
 [tacsim.match]                     # (16b cut G) the match lifecycle's slots and timeouts
 startup_ms = 10000                 # ms STARTUP takes to carry a unit's power from starting to online; until then motion and fire refuse
 board_timeout_ms = 120000          # ms Boarding waits for every claimed slot to be seated before unseated slots are dropped (an empty side aborts)
 max_duration_ms = 3600000          # one hour: the longest a match runs before it ends as a timeout
 max_slots_per_side = 12            # pilot slots one side may claim (doc 16's 12 v 12); the floor is two
+ai_fill = false                    # (16b cut N.1) whether SIM START also fields the tanks of the pods nobody claimed, under the reflex controller
 
 [tacsim.sensors]                   # (16b cut G) the sensor pass
 pass_ms = 1000                     # arena ms between one unit's passes, staggered by unit id

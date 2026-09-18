@@ -450,6 +450,16 @@ pub fn start(
                 // strike, and the gunnery the `PilotProfile` seam gives its shots.
                 profile: arena_def::unit_profile(&catalog, &cells),
                 gunnery: gunnery_of(ctx, *unit),
+                // **16b cut N.1** (doc 16 §6): a tank with nobody in it is the
+                // reflex controller's. That is the whole of how a lobby fields AI —
+                // `SIM START` puts the unclaimed pods' tanks on the sides and they
+                // arrive here with no seated pilot — and it is also what the
+                // harness's field of 300 is.
+                controller: if seated_pilots(ctx, *unit).is_empty() {
+                    crate::arena::state::Controller::Reflex
+                } else {
+                    crate::arena::state::Controller::Pilot
+                },
                 unit: cells,
             });
             for (pilot, station) in seated_pilots(ctx, *unit) {

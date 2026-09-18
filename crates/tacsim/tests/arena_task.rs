@@ -153,6 +153,11 @@ fn definition() -> ArenaDefinition {
                 y1: 15,
             },
         ],
+        // 16b cut N.1: no authored furniture on this fixture window — the
+        // reflex controller is not what these tests are about, and every unit
+        // on them is a `Pilot`.
+        key_spots: Vec::new(),
+        waypoints: tacsim::arena::state::Waypoints::default(),
     }
 }
 
@@ -173,6 +178,7 @@ fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         weapons: Vec::new(),
         profile: tacsim::arena::resolution::UnitProfile::default(),
         gunnery: 0,
+        controller: tacsim::arena::state::Controller::Pilot,
         unit: tactical_unit(id),
     }
 }

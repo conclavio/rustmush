@@ -69,7 +69,9 @@ use crate::arena::ledger::EventKind;
 use crate::arena::perception::Notice;
 use crate::arena::resolution::{Consequence, Resolution};
 use crate::arena::rng::{DrawLabel, draw};
-use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, Power, Team, UnitState};
+use crate::arena::state::{
+    Arena, Controller, DueKind, EndReason, MatchEnd, Power, Team, UnitState,
+};
 use crate::definitions::unit::{ARMOR_CELL, INTERNALS_CELL};
 
 // ---------------------------------------------------------------------------
@@ -277,11 +279,18 @@ impl Arena {
         // taken as it was and the shot resolves on its own merits.
         if self.unit(shot.shooter).is_some() {
             let (sight, cover) = self.fire_line(shot.shooter, shot.target);
+            // **16b cut N.1**: doc 16 §6's `no line` edge is fed from here and from
+            // nowhere else. The reflex controller learns that a round of its own was
+            // stopped by the ground the way anybody would — by the shot missing —
+            // and re-plans from where it is standing, rather than by taking a trace
+            // of its own before every shot. A pilot's unit notes nothing.
             if !sight.is_clear_or_partial() {
+                self.note_no_line(shot.shooter);
                 miss(BLOCKED, journal);
                 return;
             }
             if cover == Cover::Full {
+                self.note_no_line(shot.shooter);
                 miss(COVER, journal);
                 return;
             }
@@ -728,8 +737,21 @@ impl Arena {
             | DueKind::Share { unit }
             | DueKind::StartupComplete { unit }
             | DueKind::WeaponReady { unit, .. } => *unit != target,
+            // **16b cut N.1**: the wreck's own reflex tick goes with the rest of
+            // its scheduled work, and its machine is put into `Disabled` here
+            // rather than on a tick that is never going to come — doc 16 §6's
+            // `Disabled` state *is* a wreck, so the distribution a report prints
+            // has to agree with the field.
+            DueKind::ReflexTick { unit, .. } => *unit != target,
             DueKind::Impact { .. } | DueKind::PositionSummary => true,
         });
+        if self
+            .unit(target)
+            .is_some_and(|state| state.controller == Controller::Reflex)
+        {
+            self.reflex
+                .adopt(target, crate::arena::reflex::ReflexState::Disabled);
+        }
         journal.push((t_ms, EventKind::UnitDestroyed { unit: target }, None));
     }
 

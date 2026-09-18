@@ -627,7 +627,7 @@ See [16b](16b-combat-implementation-plan.md).
   `DomainClock` floor of one second is unchanged for world-side domains.
 - **doc 07 §1.1**: until the reflex controller exists (16b cut N), a linkdead pilot's tank idles rather
   than falling to a `LinkLossPolicy` controller; §1.2's linkdead onset and revival events are delivered
-  to the arena as `Control` messages. As built (16b cut K.2, 2026-09-17): a kernel `HookPoint::Linkdead` dispatched where the engine announces link-dead, revival carried as a second hook method rather than a widened `connected`, and the arena told `Linkdead`, `Live` with a new epoch, or `Released` past the grace.
+  to the arena as `Control` messages. As built (16b cut K.2, 2026-09-17): a kernel `HookPoint::Linkdead` dispatched where the engine announces link-dead, revival carried as a second hook method rather than a widened `connected`, and the arena told `Linkdead`, `Live` with a new epoch, or `Released` past the grace. As built (16b cut N.1): the reflex controller takes the fallback role. A seat released past the linkdead grace hands the tank to the reflex controller in `Withdraw` (a tank that was still cold stays cold), the pilot cannot reclaim it, and a revival on a reflex-held tank hands it back; the controller is a unit attribute at custody (`Controller::Pilot` for a seated pilot, `Reflex` otherwise), and the lobby fields AI on unclaimed pods behind `[tacsim.match].ai_fill`, off by default until a later lobby owns the fill.
 - **doc 10 §8**: read with §2's W2 and W10.
 - **doc 11-h D-H-8** (the scale harness is report-only in CI): kept; the owner's preference for a
   gating harness is met by `TACSIM_ASSERT=1` locally and on a dedicated runner (D-16-19).

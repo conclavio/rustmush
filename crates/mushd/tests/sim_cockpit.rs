@@ -12,7 +12,8 @@
 //!    event reaches the match's ledger, and nothing refuses after the `EXIT`;
 //! 3. a pilot whose line drops mid-match keeps their tank's heading and speed,
 //!    reclaims the seat on reconnect inside the grace (a fresh `HEADING` is
-//!    taken), and — past the grace — finds the seat gone;
+//!    taken), and — past the grace — finds the seat gone (16b cut N.1 is what the
+//!    *tank* does next: `sim_reflex.rs`);
 //! 4. `HEADING` before `STARTUP` is refused with the cold tank's own word;
 //! 5. `VIEW` prints the arena window as a map with the platform on it;
 //! 6. every cockpit verb outside a cockpit, and `BOARD` outside a team room,
@@ -507,7 +508,7 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn past_the_grace_the_seat_is_released_and_the_tank_idles() {
+async fn past_the_grace_the_seat_is_released_and_the_pilot_cannot_reclaim_it() {
     let server = boot("sim-cockpit-grace", Duration::from_secs(2)).await;
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god, "Simulator Lobby").await;
@@ -537,6 +538,12 @@ async fn past_the_grace_the_seat_is_released_and_the_tank_idles() {
         seen.contains("running"),
         "the match runs on without her: {seen}"
     );
+    // **16b cut N.1 amended what happens to the tank** (doc 16 §3.8 and its §11
+    // amendment): K4's "and the tank idles" was standing in for doc 07 §1.1's
+    // fallback controller until it existed, and the released seat now hands the
+    // tank to the reflex controller in `Withdraw`. What this test is about — the
+    // seat is gone and there is nothing to reclaim — is unchanged; what the tank
+    // does with itself afterwards is `crates/mushd/tests/sim_reflex.rs`'s.
 }
 
 // ---------------------------------------------------------------------------

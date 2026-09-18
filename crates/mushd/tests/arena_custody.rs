@@ -104,6 +104,17 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     // no pilot is in the cockpit (cut T.3's `CustodyIn` seam), so the summary
     // cadence is turned up with the tempo.
     cfg.arena.ledger.summary_ms = 100;
+    // **16b cut N.1**: `@arena/start` deploys units with **no seated pilot**, and
+    // the check-out rule makes a unit with no pilot the reflex controller's (doc
+    // 16 §6). That is correct — a staff-started match is an AI match — but it is
+    // not what this file is about: two machines that patrol, close and shoot make
+    // "the unit nothing happened to comes back byte-identical" false for a reason
+    // that has nothing to do with custody. So the controller's cadence is pushed
+    // past this test's lifetime. Its **first** tick still lands (the stagger is
+    // `id % decide_ms`), which brings both tanks online and orders nothing else,
+    // and the second is an hour of arena time away. What the controller does with
+    // a released seat and an AI-filled lobby is `sim_reflex.rs`'s.
+    cfg.arena.reflex.decide_ms = 3_600_000;
     cfg
 }
 

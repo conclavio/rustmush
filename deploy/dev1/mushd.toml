@@ -77,11 +77,25 @@ summary_ms = 5000
 max_bytes = 67108864
 max_unflushed_chunks = 256
 
+# 16b cut N.1: the reflex controller's cadence, path budgets and doctrine.
+[tacsim.arena.reflex]
+decide_ms = 1000
+path_max_cells = 65536
+max_path_queries = 64
+repath_ms = 4000
+withdraw_permille = 350
+weight_range = 100
+weight_facet = 40
+weight_health = 30
+engage_band_permille = 700
+
 [tacsim.match]
 startup_ms = 10000
 board_timeout_ms = 120000
 max_duration_ms = 3600000
 max_slots_per_side = 12
+# 16b cut N.1: off, because doc 16's A1 is a two-tank story.
+ai_fill = false
 
 [tacsim.sensors]
 pass_ms = 1000

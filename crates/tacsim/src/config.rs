@@ -185,6 +185,8 @@ pub struct ArenaConfig {
     pub intents: IntentsConfig,
     /// The match ledger's cadence and its two hard bounds.
     pub ledger: LedgerConfig,
+    /// **The reflex controller's cadence, paths and doctrine** (16b cut N.1).
+    pub reflex: ReflexConfig,
 }
 
 impl Default for ArenaConfig {
@@ -194,6 +196,87 @@ impl Default for ArenaConfig {
             max_catch_up_steps: 4,
             intents: IntentsConfig::default(),
             ledger: LedgerConfig::default(),
+            reflex: ReflexConfig::default(),
+        }
+    }
+}
+
+/// **The reflex controller** (16b cut N.1; doc 16 §6, 16b §8's cut N row).
+///
+/// Every value is an integer (D-16-4) and every one of them is *doctrine*: what
+/// the controller is told about how often to think, how far to search, when to
+/// run and what to shoot at. None of it decides an outcome on its own — the same
+/// intents a pilot's verbs stage are what leaves the controller — so an operator
+/// who retunes this block gets different AI and the same physics.
+///
+/// **`decide_ms` is a cadence of arena time, not of pulses.** The tick is a
+/// [`crate::arena::state::DueKind::ReflexTick`] applied at its own arena
+/// timestamp, so the controller runs the same number of times per arena second at
+/// every tempo — which is what lets the cross-tempo property hold with AI units
+/// on the field (doc 16 §3.1, D-16-2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReflexConfig {
+    /// Arena milliseconds between one AI unit's decisions, staggered by unit id.
+    pub decide_ms: u32,
+    /// **The A\* node budget** — the most cells one path search may expand before
+    /// it gives up and the `unreachable` edge fires (16b §9: *`[atlas]
+    /// .path_max_cells` for the arena, 65,536*).
+    ///
+    /// It is the arena's own copy of `[atlas].path_max_cells` and deliberately
+    /// **raised** past the atlas's 4,096: the atlas searches a room graph's
+    /// neighbourhood and the arena searches a 256 by 256 window, which is 65,536
+    /// cells, so a budget under the window's size would make "unreachable" a fact
+    /// about the budget rather than about the ground. The arena cannot read the
+    /// atlas's key at pulse time (D-16-1: no window, no records), so the value
+    /// crosses at wiring like every other.
+    pub path_max_cells: u32,
+    /// The most path searches the controller may run in one `decide_ms` window of
+    /// arena time. A unit refused by this budget keeps the path it has.
+    ///
+    /// A budget per *pulse* would be a throttle whose bite depends on the tempo,
+    /// which D-16-2 forbids; a budget per window of arena time bites the same at
+    /// every cadence. `[tacsim.harness].max_path_queries_per_pulse` stays what its
+    /// own block says it is — a threshold the harness asserts.
+    pub max_path_queries: u32,
+    /// The least arena time between two path searches by **one** unit, so a unit
+    /// that cannot reach its goal cannot spend the whole budget rediscovering
+    /// that every tick.
+    pub repath_ms: u32,
+    /// Armour plus internals, per mille of the authored totals, below which a
+    /// unit withdraws (doc 16 §6: *below a health threshold, toward the entry
+    /// zone*).
+    pub withdraw_permille: u32,
+    /// The utility weight on range to a candidate hostile (doc 16 §6). Lower
+    /// scores win, and every term is per mille before it is weighted.
+    pub weight_range: u32,
+    /// The utility weight on the facet the candidate presents: a target showing
+    /// its rear scores better than one showing its front.
+    pub weight_facet: u32,
+    /// The utility weight on the chooser's **own** health. It is the same addend
+    /// for every candidate, so it never changes which target is picked; it is in
+    /// the score because doc 16 §6 puts it there, and because it is the number the
+    /// `Withdraw` edge reads.
+    pub weight_health: u32,
+    /// The fraction of the weapon's reach `Engage` holds, per mille: the
+    /// controller closes to this band and stops rather than driving onto the
+    /// target's guns.
+    pub engage_band_permille: u32,
+}
+
+impl Default for ReflexConfig {
+    fn default() -> Self {
+        ReflexConfig {
+            decide_ms: 1_000,
+            // 16b §9: the arena's raised `path_max_cells`, one node per cell of the
+            // 256 by 256 window.
+            path_max_cells: 65_536,
+            max_path_queries: 64,
+            repath_ms: 4_000,
+            withdraw_permille: 350,
+            weight_range: 100,
+            weight_facet: 40,
+            weight_health: 30,
+            engage_band_permille: 700,
         }
     }
 }
@@ -304,6 +387,15 @@ pub struct MatchConfig {
     pub max_duration_ms: u32,
     /// Pilot slots one side may claim (doc 16 §1's 12 v 12).
     pub max_slots_per_side: u32,
+    /// **Whether `SIM START` also fields the tanks of the pods nobody claimed**,
+    /// under the reflex controller (**16b cut N.1**; doc 16 §6's *the AI fill of a
+    /// later lobby*).
+    ///
+    /// Off by default, and `mush_config`'s own row says why at length: doc 16 §1's
+    /// A1 is a two-tank story and a default-on fill would rewrite it from a cut
+    /// that does not own it. The mechanism, the attribute and the check-out rule
+    /// that reads it are all here and all live; this is the switch.
+    pub ai_fill: bool,
 }
 
 impl Default for MatchConfig {
@@ -314,6 +406,7 @@ impl Default for MatchConfig {
             // One hour.
             max_duration_ms: 3_600_000,
             max_slots_per_side: 12,
+            ai_fill: false,
         }
     }
 }

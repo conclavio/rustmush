@@ -294,8 +294,134 @@ pub struct EntryZone {
     pub y1: u16,
 }
 
-/// The arena a match runs on: its id, its window and its entry zones (doc 16
-/// §4's `arenas/proving_ground.json`).
+/// **A named place on the window** (16b cut N.1; doc 16 §3.2: *three or four key
+/// spots*), as the arena carries it.
+///
+/// Authored by `crate::definitions::arena::KeySpot` and carried across the seam
+/// so that a controller and a pilot can call the same ground by the same name.
+/// Cut N.1 carries it; the first reader that *routes* on it is cut N.2's order
+/// (`objective` names a spot).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeySpot {
+    /// What it is called.
+    pub name: SmolStr,
+    /// Its column.
+    pub x: u16,
+    /// Its row.
+    pub y: u16,
+}
+
+/// **One node of the patrol graph** (16b cut N.1; doc 16 §6: *the arena pack's
+/// waypoint graph*).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Waypoint {
+    /// The node's authored id, which is what a ledger line or a report names it
+    /// by.
+    pub id: SmolStr,
+    /// Its column.
+    pub x: u16,
+    /// Its row.
+    pub y: u16,
+}
+
+/// **The patrol graph**, as the arena carries it (16b cut N.1).
+///
+/// The edges are authored as pairs of node *ids* and stored as pairs of node
+/// **indices**, resolved once at construction: the reflex controller walks this
+/// graph inside a pulse, and an id lookup per step would be a string comparison
+/// per edge per tick. `adjacency` is one sorted, deduplicated row per node, so
+/// "the next node from here" is a deterministic walk with no allocation and no
+/// map.
+///
+/// An edge naming a node that is not in `nodes` is **dropped** at construction
+/// rather than refused: the loader (`crate::definitions::arena::ArenaDef::check`)
+/// is where an unresolvable edge is an authoring error, and a window with one
+/// bad edge is still a window a match can be fought on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Waypoints {
+    nodes: Vec<Waypoint>,
+    adjacency: Vec<Vec<u16>>,
+}
+
+impl Waypoints {
+    /// The graph, with `edges` naming node ids.
+    #[must_use]
+    pub fn new(nodes: Vec<Waypoint>, edges: &[(SmolStr, SmolStr)]) -> Waypoints {
+        let index_of = |id: &SmolStr| -> Option<u16> {
+            nodes
+                .iter()
+                .position(|node| node.id == *id)
+                .and_then(|at| u16::try_from(at).ok())
+        };
+        let mut adjacency: Vec<Vec<u16>> = vec![Vec::new(); nodes.len()];
+        for (from, to) in edges {
+            let (Some(from), Some(to)) = (index_of(from), index_of(to)) else {
+                continue;
+            };
+            if from == to {
+                continue;
+            }
+            if let Some(row) = adjacency.get_mut(usize::from(from)) {
+                row.push(to);
+            }
+            if let Some(row) = adjacency.get_mut(usize::from(to)) {
+                row.push(from);
+            }
+        }
+        for row in &mut adjacency {
+            row.sort_unstable();
+            row.dedup();
+        }
+        Waypoints { nodes, adjacency }
+    }
+
+    /// Every node, in authored order.
+    #[must_use]
+    pub fn nodes(&self) -> &[Waypoint] {
+        &self.nodes
+    }
+
+    /// One node by index.
+    #[must_use]
+    pub fn node(&self, at: u16) -> Option<&Waypoint> {
+        self.nodes.get(usize::from(at))
+    }
+
+    /// The nodes `at` is joined to, in index order.
+    #[must_use]
+    pub fn neighbours(&self, at: u16) -> &[u16] {
+        self.adjacency
+            .get(usize::from(at))
+            .map_or(&[][..], Vec::as_slice)
+    }
+
+    /// Whether the graph has no nodes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    /// **The node nearest a cell**, by squared cell distance, ties to the lower
+    /// index — the `unreachable` edge's fallback and `Patrol`'s first goal.
+    #[must_use]
+    pub fn nearest(&self, x: u16, y: u16) -> Option<u16> {
+        let mut best: Option<(u64, u16)> = None;
+        for (at, node) in self.nodes.iter().enumerate() {
+            let dx = i64::from(node.x) - i64::from(x);
+            let dy = i64::from(node.y) - i64::from(y);
+            let distance = (dx.saturating_mul(dx)).saturating_add(dy.saturating_mul(dy));
+            let distance = u64::try_from(distance).unwrap_or(u64::MAX);
+            let at = u16::try_from(at).unwrap_or(u16::MAX);
+            if best.is_none_or(|(far, _)| distance < far) {
+                best = Some((distance, at));
+            }
+        }
+        best.map(|(_, at)| at)
+    }
+}
+
+/// The arena a match runs on: its id, its window, its entry zones, its named
+/// places and its patrol graph (doc 16 §4's `arenas/proving_ground.json`).
 ///
 /// Immutable for the life of the match. Its [`digest`](ArenaDefinition::digest)
 /// goes on the result record (doc 16 §4 "The result record"), which is how a
@@ -308,6 +434,10 @@ pub struct ArenaDefinition {
     pub terrain: ArenaTerrain,
     /// The deployment rectangles.
     pub entry_zones: Vec<EntryZone>,
+    /// **The named places** (16b cut N.1; doc 16 §3.2).
+    pub key_spots: Vec<KeySpot>,
+    /// **The patrol graph the reflex controller walks** (16b cut N.1; doc 16 §6).
+    pub waypoints: Waypoints,
 }
 
 impl ArenaDefinition {
@@ -321,10 +451,21 @@ impl ArenaDefinition {
     /// 4. the cell count as `u64`, then per cell row-major: the class's byte
     ///    code as `u8`, `elev_cm` as `i16`, `move_cost` as `u16`;
     /// 5. the zone count as `u64`, then per zone in declared order: the team's
-    ///    byte (`0` red, `1` blue) then `x0`, `y0`, `x1`, `y1` as `u16`.
+    ///    byte (`0` red, `1` blue) then `x0`, `y0`, `x1`, `y1` as `u16`;
+    /// 6. **(16b cut N.1)** the key-spot count as `u64`, then per spot in declared
+    ///    order: the name's byte length as `u64`, its bytes, `x` and `y` as `u16`;
+    /// 7. **(16b cut N.1)** the waypoint-node count as `u64`, then per node in
+    ///    declared order: the id's byte length as `u64`, its bytes, `x` and `y` as
+    ///    `u16`, the neighbour count as `u64` and each neighbour index as `u16`.
     ///
     /// Every variable-length run is length-prefixed, so no two different
     /// definitions share an encoding.
+    ///
+    /// **Why the graph is in it** (16b cut N.1): the digest's job is that *a
+    /// replayed ledger can be told to belong to the terrain it was produced on*,
+    /// and from cut N a unit's route is a function of the waypoint graph as much
+    /// as of the cells. Two windows with one terrain and two graphs produce two
+    /// different matches, so they are two different definitions.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
         let mut sha = Sha256::new();
@@ -350,6 +491,28 @@ impl ArenaDefinition {
             sha.update(zone.y0.to_le_bytes());
             sha.update(zone.x1.to_le_bytes());
             sha.update(zone.y1.to_le_bytes());
+        }
+        sha.update((self.key_spots.len() as u64).to_le_bytes());
+        for spot in &self.key_spots {
+            sha.update((spot.name.len() as u64).to_le_bytes());
+            sha.update(spot.name.as_bytes());
+            sha.update(spot.x.to_le_bytes());
+            sha.update(spot.y.to_le_bytes());
+        }
+        let nodes = self.waypoints.nodes();
+        sha.update((nodes.len() as u64).to_le_bytes());
+        for (at, node) in nodes.iter().enumerate() {
+            sha.update((node.id.len() as u64).to_le_bytes());
+            sha.update(node.id.as_bytes());
+            sha.update(node.x.to_le_bytes());
+            sha.update(node.y.to_le_bytes());
+            let neighbours = self
+                .waypoints
+                .neighbours(u16::try_from(at).unwrap_or(u16::MAX));
+            sha.update((neighbours.len() as u64).to_le_bytes());
+            for neighbour in neighbours {
+                sha.update(neighbour.to_le_bytes());
+            }
         }
         sha.finalize().into()
     }
@@ -513,6 +676,44 @@ pub struct WeaponSummary {
     pub count_per_load: u32,
 }
 
+/// **Who is flying a unit** (16b cut N.1; doc 16 §6, §3.8 "Disconnects"; doc 07
+/// §1.1's fallback controller).
+///
+/// A unit attribute at custody rather than a property of the match, because the
+/// two coexist in one match: a lobby that fields fewer pilots than tanks puts
+/// [`Controller::Reflex`] on the empty pods, and a seat released past the
+/// linkdead grace hands one tank over mid-match while the others keep their
+/// pilots.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Controller {
+    /// A player's verbs are the only source of this unit's orders.
+    #[default]
+    Pilot,
+    /// The reflex controller ([`crate::arena::reflex`]) drives it.
+    Reflex,
+}
+
+impl Controller {
+    /// The wire word.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Controller::Pilot => "pilot",
+            Controller::Reflex => "reflex",
+        }
+    }
+
+    /// The byte [`crate::arena::hash::state_hash`] folds in.
+    #[must_use]
+    pub const fn code(&self) -> u8 {
+        match self {
+            Controller::Pilot => 0,
+            Controller::Reflex => 1,
+        }
+    }
+}
+
 /// One unit as it is handed over at check-out (doc 16 §3.1 "Custody").
 #[derive(Clone, Debug)]
 pub struct CustodyUnit {
@@ -541,6 +742,9 @@ pub struct CustodyUnit {
     /// 2's `PilotProfile` seam), 1 to 5. Zero is read as
     /// [`crate::arena::resolution::STOCK_GUNNERY`] — *every stock rating is 1*.
     pub gunnery: u8,
+    /// **Who flies it** (16b cut N.1). The check-out sets [`Controller::Reflex`]
+    /// for a unit with no seated pilot and [`Controller::Pilot`] otherwise.
+    pub controller: Controller,
     /// M32 unit truth, carried opaque: cut A applies no plan to it (D-16-6).
     pub unit: TacticalUnit,
 }
@@ -624,6 +828,10 @@ pub struct UnitState {
     pub profile: UnitProfile,
     /// **The gunnery rating resolving its shots** (16b cut W.2), 1 to 5.
     pub gunnery: u8,
+    /// **Who flies it** (16b cut N.1; doc 16 §6). Set at check-out and moved by
+    /// exactly one thing afterwards: a [`crate::arena::intents::Control`] that
+    /// releases or restores the seat (doc 16 §3.8 "Disconnects").
+    pub controller: Controller,
     /// M32 unit truth, carried opaque — and, from 16b cut W.2, written by exactly
     /// one thing: one [`mush_tactics::UnitMutationPlan`] per impact through
     /// `mush_tactics::apply` (doc 16 §3.5 "Damage").
@@ -1047,6 +1255,22 @@ pub enum DueKind {
         /// The sharing unit.
         unit: ObjId,
     },
+    /// **One AI unit's decision** (16b cut N.1; doc 16 §6), due every
+    /// `arena.reflex.decide_ms` of arena time and staggered by unit id.
+    ///
+    /// It is a due event and not a phase-4 pass for the reason every other
+    /// cadence in this engine is one: a due event is applied at **its own arena
+    /// timestamp**, inside the substep whose boundary that timestamp fell in, so
+    /// the same decisions happen at the same arena milliseconds at 5,000, 1,000
+    /// and 500 ms. A controller run once per *pulse* would run ten times as often
+    /// at the fast cadence as at the slow one, which is doc 16 §3.1's D-16-2
+    /// exactly backwards — the tempo would be deciding outcomes.
+    ReflexTick {
+        /// The unit deciding.
+        unit: ObjId,
+        /// The decision's sequence number for that unit, from `0`.
+        tick_seq: u64,
+    },
     /// Every `ledger.summary_ms` of arena time, in every tempo (doc 16 §4).
     PositionSummary,
 }
@@ -1316,6 +1540,15 @@ pub struct Arena {
     pub resolution: ResolutionDef,
     /// The seated pilots, as handed over.
     pub pilots: Vec<Pilot>,
+    /// **What the reflex controller remembers** (16b cut N.1): one row per AI
+    /// unit — its state in the machine, its goal, the path it is following and
+    /// when it last searched for one — plus the A* scratch buffers and the
+    /// per-window path-query budget.
+    ///
+    /// It lives on the arena rather than on [`UnitState`] because the scratch is
+    /// one buffer for the whole match and not one per unit, and because a unit
+    /// under a pilot carries no machine at all.
+    pub reflex: crate::arena::reflex::ReflexMemory,
     /// Queued discrete actions per unit, bounded by
     /// `intents.max_pending_per_unit`.
     pub pending: BTreeMap<ObjId, VecDeque<Intent>>,
@@ -1512,6 +1745,7 @@ impl Arena {
                 } else {
                     unit.gunnery
                 },
+                controller: unit.controller,
                 unit: unit.unit,
                 lock: None,
                 blocked: false,
@@ -1587,6 +1821,10 @@ impl Arena {
         }
         let mut index = SpatialIndex::new(&definition.terrain);
         index.rebuild(&definition.terrain, &states);
+        // 16b cut N.1: the cheapest cell on the window, read once here so the A*
+        // heuristic is admissible without a scan per query
+        // (`crate::arena::path::min_move_cost`).
+        let min_move_cost = crate::arena::path::min_move_cost(&definition.terrain);
         // 16b §9: `tempo.alert_range_cm` is *2 × max weapon range*, and the
         // configured `0` is what asks for that. Derived once, here, from the units
         // this match was handed; a match whose units carry no weapon derives `0`
@@ -1614,6 +1852,7 @@ impl Arena {
             seed,
             resolution,
             pilots,
+            reflex: crate::arena::reflex::ReflexMemory::new(&arena_cfg.reflex, min_move_cost),
             pending: BTreeMap::new(),
             shots: BTreeMap::new(),
             next_shot_seq: 0,
@@ -1635,6 +1874,9 @@ impl Arena {
         // sorted unit vector, and before the opening hash because the hash folds
         // the schedule's length.
         arena.schedule_first_passes();
+        // 16b cut N.1: doc 16 §6's controller, on the same shape — one tick per AI
+        // unit per `arena.reflex.decide_ms`, staggered by unit id.
+        arena.schedule_first_reflex_ticks();
         let opening = crate::arena::hash::state_hash(&arena);
         // A ledger that refuses its own first event is a black box that will not
         // record anything; the match still opens, and cut A.2's step reads
@@ -2029,6 +2271,26 @@ mod tests {
                 x1: 1,
                 y1: 1,
             }],
+            key_spots: vec![KeySpot {
+                name: SmolStr::new("The Ford"),
+                x: 1,
+                y: 2,
+            }],
+            waypoints: Waypoints::new(
+                vec![
+                    Waypoint {
+                        id: SmolStr::new("west"),
+                        x: 0,
+                        y: 2,
+                    },
+                    Waypoint {
+                        id: SmolStr::new("east"),
+                        x: 3,
+                        y: 2,
+                    },
+                ],
+                &[(SmolStr::new("west"), SmolStr::new("east"))],
+            ),
         };
         assert_eq!(base.digest(), base.clone().digest());
 
@@ -2058,6 +2320,93 @@ mod tests {
         let mut resized = base.clone();
         resized.terrain = ArenaTerrain::uniform(2, 8, 1_000, ground()).expect("a 2x8 window");
         assert_ne!(base.digest(), resized.digest());
+
+        // 16b cut N.1: the furniture is part of the definition's identity — two
+        // windows with one terrain and two graphs are two arenas, because the
+        // routes a replay reproduces are a function of the graph.
+        let mut renamed_spot = base.clone();
+        renamed_spot.key_spots = vec![KeySpot {
+            name: SmolStr::new("The Crossing"),
+            x: 1,
+            y: 2,
+        }];
+        assert_ne!(base.digest(), renamed_spot.digest());
+
+        let mut moved_spot = base.clone();
+        moved_spot.key_spots = vec![KeySpot {
+            name: SmolStr::new("The Ford"),
+            x: 2,
+            y: 2,
+        }];
+        assert_ne!(base.digest(), moved_spot.digest());
+
+        let mut cut_edge = base.clone();
+        cut_edge.waypoints = Waypoints::new(
+            vec![
+                Waypoint {
+                    id: SmolStr::new("west"),
+                    x: 0,
+                    y: 2,
+                },
+                Waypoint {
+                    id: SmolStr::new("east"),
+                    x: 3,
+                    y: 2,
+                },
+            ],
+            &[],
+        );
+        assert_ne!(
+            base.digest(),
+            cut_edge.digest(),
+            "the same nodes with no edge between them is a different graph"
+        );
+    }
+
+    #[test]
+    fn the_waypoint_graph_resolves_its_edges_and_drops_the_unresolvable() {
+        let nodes = vec![
+            Waypoint {
+                id: SmolStr::new("a"),
+                x: 0,
+                y: 0,
+            },
+            Waypoint {
+                id: SmolStr::new("b"),
+                x: 4,
+                y: 0,
+            },
+            Waypoint {
+                id: SmolStr::new("c"),
+                x: 4,
+                y: 4,
+            },
+        ];
+        let graph = Waypoints::new(
+            nodes,
+            &[
+                (SmolStr::new("a"), SmolStr::new("b")),
+                (SmolStr::new("b"), SmolStr::new("c")),
+                // Declared twice, one of them backwards: one edge.
+                (SmolStr::new("c"), SmolStr::new("b")),
+                // A node nothing declares, and a self-edge: both dropped.
+                (SmolStr::new("b"), SmolStr::new("ghost")),
+                (SmolStr::new("a"), SmolStr::new("a")),
+            ],
+        );
+        assert_eq!(graph.nodes().len(), 3);
+        assert!(!graph.is_empty());
+        assert_eq!(graph.neighbours(0), &[1]);
+        assert_eq!(graph.neighbours(1), &[0, 2]);
+        assert_eq!(graph.neighbours(2), &[1]);
+        assert!(graph.neighbours(9).is_empty());
+        assert_eq!(graph.node(2).map(|node| (node.x, node.y)), Some((4, 4)));
+        // The nearest node, ties to the lower index.
+        assert_eq!(graph.nearest(0, 1), Some(0));
+        assert_eq!(graph.nearest(4, 3), Some(2));
+        assert_eq!(graph.nearest(2, 0), Some(0));
+        assert!(Waypoints::default().nearest(0, 0).is_none());
+        assert!(Waypoints::default().is_empty());
     }
 
     #[test]

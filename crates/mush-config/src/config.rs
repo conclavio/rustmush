@@ -72,10 +72,20 @@
 //! | `[tacsim.arena.ledger].summary_ms` | `5000` | arena milliseconds between `position_summary` ledger events (doc 16 §4) |
 //! | `[tacsim.arena.ledger].max_bytes` | `67108864` | 64 MiB: at 90% summaries stop, at 100% the match is stopped with `Timeout` |
 //! | `[tacsim.arena.ledger].max_unflushed_chunks` | `256` | 16 KiB chunks the egress ring may hold before the match is stopped with `Void` |
+//! | `[tacsim.arena.reflex].decide_ms` | `1000` | **16b cut N.1** (doc 16 §6): arena milliseconds between one AI unit's decisions, staggered by unit id — a cadence of arena time, not of pulses |
+//! | `[tacsim.arena.reflex].path_max_cells` | `65536` | `[atlas].path_max_cells` **raised for the arena** (16b §9): cells one bounded A\* may expand before the `unreachable` edge fires |
+//! | `[tacsim.arena.reflex].max_path_queries` | `64` | path searches the controller may run in one `decide_ms` window of arena time; a unit refused keeps the path it has |
+//! | `[tacsim.arena.reflex].repath_ms` | `4000` | the least arena time between two path searches by one unit |
+//! | `[tacsim.arena.reflex].withdraw_permille` | `350` | armour plus internals, per mille of the authored totals, below which a unit breaks off toward its entry zone |
+//! | `[tacsim.arena.reflex].weight_range` | `100` | the utility weight on range to a candidate hostile; lower scores win |
+//! | `[tacsim.arena.reflex].weight_facet` | `40` | the utility weight on the facet a candidate presents |
+//! | `[tacsim.arena.reflex].weight_health` | `30` | the utility weight on the chooser's own health — the same addend for every candidate |
+//! | `[tacsim.arena.reflex].engage_band_permille` | `700` | the fraction of a weapon's reach `Engage` holds |
 //! | `[tacsim.match].startup_ms` | `10000` | **16b cut G** (doc 16 §3.3): milliseconds `STARTUP` takes to bring a unit's power online |
 //! | `[tacsim.match].board_timeout_ms` | `120000` | milliseconds `Boarding` waits before unseated slots are dropped (doc 16 §3.8) |
 //! | `[tacsim.match].max_duration_ms` | `3600000` | the longest a match runs before it ends as a timeout |
 //! | `[tacsim.match].max_slots_per_side` | `12` | pilot slots one side may claim (doc 16 §1's 12 v 12) |
+//! | `[tacsim.match].ai_fill` | `false` | **16b cut N.1** (doc 16 §6): whether `SIM START` also fields the tanks of the pods nobody claimed, under the reflex controller. Off by default because doc 16 §1's A1 is a two-tank story |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.5` | the ceiling on a target's signature factor; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism) |
 //! | `[tacsim.sensors].lost_after_passes` | `3` | **16b cut S.1** (doc 16 §3.6): passes a contact may go unrefreshed before it is lost; the TTL is `pass_ms × lost_after_passes` |
@@ -911,6 +921,9 @@ pub struct TacsimArenaCfg {
     /// `[tacsim.arena.ledger]` — the match ledger's summary cadence and its two
     /// hard bounds.
     pub ledger: TacsimLedgerCfg,
+    /// `[tacsim.arena.reflex]` — the reflex controller's cadence, its path
+    /// budgets and its doctrine.
+    pub reflex: TacsimReflexCfg,
 }
 
 impl Default for TacsimArenaCfg {
@@ -920,6 +933,63 @@ impl Default for TacsimArenaCfg {
             max_catch_up_steps: 4,
             intents: TacsimIntentsCfg::default(),
             ledger: TacsimLedgerCfg::default(),
+            reflex: TacsimReflexCfg::default(),
+        }
+    }
+}
+
+/// `[tacsim.arena.reflex]` — the reflex controller (**16b cut N.1**; doc 16 §6).
+///
+/// The deterministic state machine that flies a tank nobody is sitting in: the AI
+/// fill of a lobby that fields fewer pilots than tanks, the harness's field of
+/// 300, and the fallback a seat released past the linkdead grace hands its tank
+/// to. It submits the **same intents a pilot's verbs stage**, so nothing here can
+/// make a unit do what a player could not; what it tunes is how often the machine
+/// thinks, how far it searches for a route, and what it prefers to shoot at.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TacsimReflexCfg {
+    /// Arena milliseconds between one AI unit's decisions, staggered by unit id.
+    /// A cadence of **arena** time, so the controller runs the same number of
+    /// times per arena second at every tempo (doc 16 §3.1, D-16-2).
+    pub decide_ms: u32,
+    /// The most cells one bounded A\* may expand before it gives up and the
+    /// `unreachable` edge fires. This is `[atlas].path_max_cells` **raised for the
+    /// arena** (16b §9): the atlas searches a room neighbourhood at 4,096 and the
+    /// arena searches a 256 by 256 window, which is 65,536 cells.
+    pub path_max_cells: u32,
+    /// The most path searches the controller may run in one `decide_ms` window of
+    /// arena time; a unit refused by the budget keeps the path it has. A budget
+    /// per *pulse* would bite differently at each tempo, which D-16-2 forbids.
+    pub max_path_queries: u32,
+    /// The least arena time between two path searches by one unit.
+    pub repath_ms: u32,
+    /// Armour plus internals, per mille of the authored totals, below which a
+    /// unit breaks off toward its entry zone.
+    pub withdraw_permille: u32,
+    /// The utility weight on range to a candidate hostile; lower scores win.
+    pub weight_range: u32,
+    /// The utility weight on the facet a candidate presents.
+    pub weight_facet: u32,
+    /// The utility weight on the chooser's own health — the same addend for every
+    /// candidate, so it orders nothing and is what the `Withdraw` edge reads.
+    pub weight_health: u32,
+    /// The fraction of a weapon's reach `Engage` holds, per mille.
+    pub engage_band_permille: u32,
+}
+
+impl Default for TacsimReflexCfg {
+    fn default() -> Self {
+        TacsimReflexCfg {
+            decide_ms: 1_000,
+            path_max_cells: 65_536,
+            max_path_queries: 64,
+            repath_ms: 4_000,
+            withdraw_permille: 350,
+            weight_range: 100,
+            weight_facet: 40,
+            weight_health: 30,
+            engage_band_permille: 700,
         }
     }
 }
@@ -1053,6 +1123,23 @@ pub struct TacsimMatchCfg {
     /// Pilot slots one side may claim: doc 16 §1's 12 v 12, and the floor is two
     /// per side (doc 16 §3.8's `Selection`).
     pub max_slots_per_side: u32,
+    /// **Whether a match fields the tanks of the pods nobody claimed**, under the
+    /// reflex controller (**16b cut N.1**; doc 16 §6's *the AI fill of a later
+    /// lobby*).
+    ///
+    /// `false` is the default and it is not a placeholder. Doc 16 §6 and 16b §9's
+    /// cut N row both put the lobby's AI fill in *a later lobby*, and doc 16 §1's
+    /// A1 — the story test, on the production composition — is a **two-tank**
+    /// story: a default-on fill would make every `SIM START` a four-a-side match
+    /// and rewrite that acceptance from a cut that does not own it. So cut N.1
+    /// ships the whole mechanism — the attribute, the check-out rule that reads it
+    /// (`Reflex` for a unit with no seated pilot), the controller itself — and this
+    /// switch, and the cut that changes what a `SIM START` fields is the cut that
+    /// rewrites A1.
+    ///
+    /// With it on, every pod of a side that has at least one pilot goes to the
+    /// arena: slot *n*'s tank is claimed or it is the machine's.
+    pub ai_fill: bool,
 }
 
 impl Default for TacsimMatchCfg {
@@ -1063,6 +1150,7 @@ impl Default for TacsimMatchCfg {
             // One hour.
             max_duration_ms: 3_600_000,
             max_slots_per_side: 12,
+            ai_fill: false,
         }
     }
 }

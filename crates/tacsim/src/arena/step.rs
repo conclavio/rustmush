@@ -61,6 +61,7 @@ use crate::arena::motion::integrate;
 use crate::arena::perception::{
     FrameContact, FrameNotice, Notice, NoticeKind, PerceptionCounters, bearing_mdeg,
 };
+use crate::arena::reflex::ReflexCounters;
 use crate::arena::state::{
     Arena, Classification, ContactId, DueKind, EndReason, MatchEnd, Power, StopReason, Team,
 };
@@ -209,6 +210,11 @@ pub struct StepOutput {
     /// harness asserts `harness.max_traces_per_pulse` and
     /// `harness.max_share_ops_per_pulse` against it.
     pub perception: PerceptionCounters,
+    /// **What the reflex controller cost this pulse** (16b cut N.1; doc 16 §1 A2:
+    /// *path queries per pulse under their bound*). The harness asserts
+    /// `harness.max_path_queries_per_pulse` against
+    /// [`ReflexCounters::path_queries`] and reports the state distribution.
+    pub reflex: ReflexCounters,
 }
 
 // ---------------------------------------------------------------------------
@@ -321,10 +327,18 @@ impl Arena {
                 ended: Some(ended),
                 substeps: 0,
                 perception: PerceptionCounters::default(),
+                reflex: ReflexCounters::default(),
             };
         }
         self.substep_hashes.clear();
         let mut perception = PerceptionCounters::default();
+        let mut reflex = ReflexCounters::default();
+        // **16b cut N.1**: what the pulse fired, wherever it fired it. Cut W.1 read
+        // this off phase 4's own return, which stopped being the whole answer the
+        // moment the reflex controller began accepting shots inside a substep. The
+        // shot sequence is the one counter that moves on every accepted shot and on
+        // nothing else, so the difference across the pulse is the fact.
+        let shots_before = self.next_shot_seq;
 
         // ---- phase 1: authority, and the world's `Stop` ----
         //
@@ -354,7 +368,7 @@ impl Arena {
         let ran = u32::try_from(pieces.len()).unwrap_or(u32::MAX);
         let mut ledger_full = false;
         for piece in pieces {
-            ledger_full |= self.substep(piece, &mut perception);
+            ledger_full |= self.substep(piece, &mut perception, &mut reflex);
             // **16b cut W.2**: a substep that ended the match ends the pulse. A
             // match is over at the arena millisecond it was won, and stepping the
             // rest of the pulse would journal contacts expiring and summaries
@@ -380,7 +394,6 @@ impl Arena {
         // A match that ended inside phase 3 resolves nothing here: a shot accepted
         // after `match_ended` would be a line in the black box about a match that was
         // already over (16b cut W.2).
-        let mut shot_fired = false;
         self.action_hash = Some(state_hash(self));
         let ids: Vec<ObjId> = if self.ended.is_some() {
             Vec::new()
@@ -399,7 +412,7 @@ impl Arena {
                         let _ = self.resolve_lock(id, contact);
                     }
                     IntentKind::Fire { ref weapon } => {
-                        shot_fired |= self.resolve_fire(id, weapon).is_ok();
+                        let _ = self.resolve_fire(id, weapon);
                     }
                     // Continuous orders never queue (phase 2 applies them).
                     IntentKind::Heading { .. } | IntentKind::Speed { .. } => {}
@@ -418,17 +431,25 @@ impl Arena {
         //
         // The `Engaged` row's first two triggers are one fact in this engine: doc 16
         // §3.5 makes every accepted shot schedule an impact, so a pulse that fired is
-        // a pulse that scheduled one. Its **third** trigger — *hostile units are
-        // within weapons range of each other* — is deliberately left `false` here:
-        // 16b §8's cut W row names the two above and a hostile-in-range sweep is a
-        // per-pulse cost nobody has bounded, so it waits for the cut that needs it
-        // (cut N's controller is the first reader of "who can shoot whom").
+        // a pulse that scheduled one.
+        //
+        // **16b cut N.1 fills the other two.** Its **third** `Engaged` trigger —
+        // *hostile units are within weapons range of each other* — was left `false`
+        // by cut W.1 because a field-wide sweep is a cost nobody had bounded; it is
+        // not a sweep, it is a read of the contacts each platform already holds
+        // (`Arena::hostile_in_weapons_range`), which is the same pass the
+        // controller's `Approach` and `Engage` scoring makes and is bounded by the
+        // contact store rather than by the field. And the `Alert` row's third
+        // trigger — *a controller has entered `Approach`* — is the controller's own
+        // state, which is now a thing that exists.
+        let shot_fired = self.next_shot_seq > shots_before;
         let signals = TempoSignals {
             fire_intent_queued,
             contact_within_alert_range: self.contact_within_alert_range(),
+            ai_approaching: self.reflex.any_approaching(),
             shot_fired,
             impact_scheduled: shot_fired,
-            ..TempoSignals::quiet()
+            hostile_in_weapons_range: self.hostile_in_weapons_range(),
         };
         let changed = self
             .clock
@@ -515,6 +536,7 @@ impl Arena {
             ended,
             substeps: ran,
             perception,
+            reflex,
         }
     }
 
@@ -526,7 +548,12 @@ impl Arena {
     /// applied. The events (a) and (c) produced are appended **last**, in that
     /// order — the `blocked` notices in unit-id order, then the due events in
     /// `(t_ms, seq)` order — against one hash taken at the substep's end.
-    fn substep(&mut self, dt_ms: u32, perception: &mut PerceptionCounters) -> bool {
+    fn substep(
+        &mut self,
+        dt_ms: u32,
+        perception: &mut PerceptionCounters,
+        reflex: &mut ReflexCounters,
+    ) -> bool {
         let mut notices: Vec<Notice> = Vec::new();
 
         // ---- (a) motion ----
@@ -659,8 +686,44 @@ impl Arena {
                 // millisecond the weapon comes ready, so the pilot's frame says
                 // "ready" then rather than at the next period boundary.
                 DueKind::WeaponReady { .. } => {}
+                // **16b cut N.1** (doc 16 §6): one AI unit's decision, applied at
+                // its own arena timestamp against the positions this substep
+                // committed — which is what makes the controller rate-independent
+                // and is why it is a due event and not pulse phase 4
+                // (`crate::arena::reflex`'s module head has the argument).
+                //
+                // A match that ended inside this substep decides nothing more: doc
+                // 16 §3.8's elimination is settled below, and an order given after
+                // `match_ended` would be a line in the black box about a match that
+                // was already over.
+                //
+                // The one hash, taken **lazily**: the discrete actions a tick
+                // resolves journal through `Arena::event_hash`, and a fresh hash per
+                // action is the 5 ms a pulse cut W.1 measured. A substep with no
+                // reflex work pays nothing for this.
+                DueKind::ReflexTick { unit, tick_seq } => {
+                    if self.ended.is_none() {
+                        if self.action_hash.is_none() {
+                            self.action_hash = Some(state_hash(self));
+                        }
+                        if self.reflex_tick(unit, event.t_ms, reflex) {
+                            let cadence = i64::from(self.arena_cfg.reflex.decide_ms.max(1));
+                            self.due.schedule(
+                                event.t_ms.saturating_add(cadence),
+                                DueKind::ReflexTick {
+                                    unit,
+                                    tick_seq: tick_seq.saturating_add(1),
+                                },
+                            );
+                        }
+                    }
+                }
             }
         }
+        // The lazy hash is scratch for this substep's due events exactly as phase
+        // 4's is scratch for that phase; it never leaves the substep it was taken
+        // in.
+        self.action_hash = None;
 
         // **16b cut W.2** (doc 16 §3.8): team elimination is settled **here**, at the
         // substep the last unit of a side went out of action in, and not at the end of
@@ -726,6 +789,7 @@ impl Arena {
             ended: Some(ended),
             substeps: 0,
             perception: PerceptionCounters::default(),
+            reflex: ReflexCounters::default(),
         }
     }
 
@@ -1191,7 +1255,23 @@ mod tests {
         assert!(out.ended.is_none());
         assert_eq!(arena.unit(A).map(|unit| unit.power), Some(Power::Off));
         assert!(arena.pending.is_empty());
-        assert_eq!(arena.due.len(), 1, "only the position summary is scheduled");
+        // **16b cut N.1** amends doc 16 §3.8's *the tank idles*: a released seat
+        // hands the tank to the reflex controller in `Withdraw` (doc 07 §1.1's
+        // fallback controller), so the schedule now carries its first tick beside
+        // the position summary. Nothing else about the burst changed.
+        assert_eq!(
+            arena.unit(A).map(|unit| unit.controller),
+            Some(crate::arena::state::Controller::Reflex)
+        );
+        assert_eq!(
+            arena.reflex.unit(A).map(|row| row.state),
+            Some(crate::arena::reflex::ReflexState::Withdraw)
+        );
+        assert_eq!(
+            arena.due.len(),
+            2,
+            "the position summary and the released tank's first reflex tick"
+        );
         let mut journal = Log::default();
         journal.absorb(&out);
         let log = journal.events(&mut arena);

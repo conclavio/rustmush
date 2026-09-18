@@ -95,16 +95,22 @@ pub struct TempoSignals {
     pub contact_within_alert_range: bool,
     /// A fire intent is queued (16b cut W.1 sets it; the queue is cut A's).
     pub fire_intent_queued: bool,
-    /// A controller has entered `Approach` (cut N).
+    /// A controller has entered `Approach` (**16b cut N.1** sets it, off
+    /// `crate::arena::reflex::ReflexMemory::any_approaching`).
     pub ai_approaching: bool,
     /// A shot was fired this pulse (16b cut W.1).
     pub shot_fired: bool,
     /// An impact is scheduled (16b cut W.1: every accepted shot schedules one,
     /// so this and `shot_fired` move together).
     pub impact_scheduled: bool,
-    /// Hostile units are within weapons range of each other. **Still `false`**:
-    /// 16b §8's cut W row names the other two `Engaged` triggers, and a
-    /// hostile-in-range sweep is a per-pulse cost nobody has bounded yet.
+    /// Hostile units are within weapons range of each other.
+    ///
+    /// Cut W.1 left it `false` because a field-wide sweep was a per-pulse cost
+    /// nobody had bounded. **16b cut N.1 sets it** off
+    /// `crate::arena::state::Arena::hostile_in_weapons_range`, which is not a
+    /// sweep: it reads the classified contacts each platform already holds against
+    /// that platform's own `weapon_reach_cm`, so the cost is bounded by the contact
+    /// store the sensor pass bounds and never by the size of the field.
     pub hostile_in_weapons_range: bool,
 }
 

@@ -99,6 +99,13 @@ pub fn stock_definition(id: &SmolStr) -> Option<ArenaDefinition> {
                 y1: ARENA_CELLS.saturating_sub(1),
             },
         ],
+        // **16b cut N.1**: the stand-in window has no authored furniture. A
+        // controller on it patrols nowhere and holds where it stands, which is the
+        // honest answer for a window nobody drew — and inventing a graph here would
+        // be a second authored arena nobody reviewed, exactly as the flat ground
+        // above would be.
+        key_spots: Vec::new(),
+        waypoints: crate::arena::state::Waypoints::default(),
     })
 }
 

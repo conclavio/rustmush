@@ -636,8 +636,21 @@ pub const fn contact_refusal() -> &'static str {
 /// stored result is quantised*. Two poses in one place answer `0`.
 #[must_use]
 pub fn bearing_mdeg(from: &mush_sim::data::Pose, to: &mush_sim::data::Pose) -> u32 {
-    let dx = to.x_cm.saturating_sub(from.x_cm);
-    let dy = to.y_cm.saturating_sub(from.y_cm);
+    bearing_of(
+        to.x_cm.saturating_sub(from.x_cm),
+        to.y_cm.saturating_sub(from.y_cm),
+    )
+}
+
+/// The same bearing, from a displacement rather than from two poses (16b cut
+/// N.1).
+///
+/// [`bearing_mdeg`] is this function over two [`mush_sim::data::Pose`]s; the
+/// reflex controller steers at *cells*, which have no pose and no opaque posture
+/// blob, so it needs the arithmetic without one. One implementation, two callers,
+/// and the quantisation lives in exactly one place.
+#[must_use]
+pub fn bearing_of(dx: i64, dy: i64) -> u32 {
     if dx == 0 && dy == 0 {
         return 0;
     }

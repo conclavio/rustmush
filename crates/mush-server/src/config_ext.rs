@@ -302,12 +302,27 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
                 max_bytes: cfg.arena.ledger.max_bytes,
                 max_unflushed_chunks: cfg.arena.ledger.max_unflushed_chunks,
             },
+            // 16b cut N.1: the reflex controller's doctrine, including the arena's
+            // own raised copy of `[atlas].path_max_cells` (16b §9).
+            reflex: tacsim::config::ReflexConfig {
+                decide_ms: cfg.arena.reflex.decide_ms,
+                path_max_cells: cfg.arena.reflex.path_max_cells,
+                max_path_queries: cfg.arena.reflex.max_path_queries,
+                repath_ms: cfg.arena.reflex.repath_ms,
+                withdraw_permille: cfg.arena.reflex.withdraw_permille,
+                weight_range: cfg.arena.reflex.weight_range,
+                weight_facet: cfg.arena.reflex.weight_facet,
+                weight_health: cfg.arena.reflex.weight_health,
+                engage_band_permille: cfg.arena.reflex.engage_band_permille,
+            },
         },
         match_: tacsim::config::MatchConfig {
             startup_ms: cfg.match_.startup_ms,
             board_timeout_ms: cfg.match_.board_timeout_ms,
             max_duration_ms: cfg.match_.max_duration_ms,
             max_slots_per_side: cfg.match_.max_slots_per_side,
+            // 16b cut N.1: the lobby's AI fill.
+            ai_fill: cfg.match_.ai_fill,
         },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,
@@ -885,11 +900,22 @@ mod tests {
              summary_ms = 2500\n\
              max_bytes = 1048576\n\
              max_unflushed_chunks = 64\n\
+             [tacsim.arena.reflex]\n\
+             decide_ms = 750\n\
+             path_max_cells = 4096\n\
+             max_path_queries = 12\n\
+             repath_ms = 2500\n\
+             withdraw_permille = 400\n\
+             weight_range = 90\n\
+             weight_facet = 35\n\
+             weight_health = 25\n\
+             engage_band_permille = 600\n\
              [tacsim.match]\n\
              startup_ms = 5000\n\
              board_timeout_ms = 60000\n\
              max_duration_ms = 900000\n\
              max_slots_per_side = 4\n\
+             ai_fill = true\n\
              [tacsim.sensors]\n\
              pass_ms = 750\n\
              max_signature_factor = 2.25\n\
@@ -930,6 +956,18 @@ mod tests {
                     max_bytes: 1_048_576,
                     max_unflushed_chunks: 64,
                 },
+                // 16b cut N.1: the reflex controller's doctrine, mapped the same way.
+                reflex: tacsim::config::ReflexConfig {
+                    decide_ms: 750,
+                    path_max_cells: 4_096,
+                    max_path_queries: 12,
+                    repath_ms: 2_500,
+                    withdraw_permille: 400,
+                    weight_range: 90,
+                    weight_facet: 35,
+                    weight_health: 25,
+                    engage_band_permille: 600,
+                },
             }
         );
         assert_eq!(
@@ -939,6 +977,7 @@ mod tests {
                 board_timeout_ms: 60_000,
                 max_duration_ms: 900_000,
                 max_slots_per_side: 4,
+                ai_fill: true,
             }
         );
         assert_eq!(

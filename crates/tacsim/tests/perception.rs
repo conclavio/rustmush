@@ -227,6 +227,7 @@ fn tank(id: ObjId, team: Team, pose: Pose, sensor: Option<SensorProfile>) -> Cus
         // zero — which is what keeps a perception test about perception.
         profile: tacsim::arena::resolution::UnitProfile::default(),
         gunnery: 0,
+        controller: tacsim::arena::state::Controller::Pilot,
         unit: tactical_unit(id),
     }
 }
@@ -270,6 +271,11 @@ fn arena_of(units: Vec<CustodyUnit>, paint: &[(u16, u16, TerrainCell)]) -> Arena
                         y1: SIDE - 1,
                     },
                 ],
+                // 16b cut N.1: no authored furniture on this fixture window — the
+                // reflex controller is not what these tests are about, and every unit
+                // on them is a `Pilot`.
+                key_spots: Vec::new(),
+                waypoints: tacsim::arena::state::Waypoints::default(),
             },
             units,
             pilots,

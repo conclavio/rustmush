@@ -31,7 +31,10 @@ use mush_atlas::record::{RecordKey, Records, TileRec};
 use mush_core::CanonicalId;
 use serde::{Deserialize, Serialize};
 
-use crate::arena::state::{ArenaDefinition, ArenaTerrain, EntryZone, Team, TerrainCell};
+use crate::arena::state::{
+    ArenaDefinition, ArenaTerrain, EntryZone, KeySpot as ArenaKeySpot, Team, TerrainCell,
+    Waypoint as ArenaWaypoint, Waypoints,
+};
 use crate::definitions::DefinitionError;
 use crate::definitions::unit::TRACKED;
 
@@ -596,6 +599,41 @@ pub fn from_pack(
                 y1: zone.y1,
             })
             .collect(),
+        // **16b cut N.1**: the two authored tables C.2 wrote and nothing read. The
+        // key spots cross whole; the waypoint graph's id-named edges are resolved
+        // into node indices once, here, because cut N's controller walks the graph
+        // inside a pulse and a string comparison per edge per tick is not a thing
+        // the pulse budget has room for.
+        key_spots: def
+            .key_spots
+            .iter()
+            .map(|spot| ArenaKeySpot {
+                name: smol_str::SmolStr::new(&spot.name),
+                x: spot.x,
+                y: spot.y,
+            })
+            .collect(),
+        waypoints: Waypoints::new(
+            def.waypoints
+                .nodes
+                .iter()
+                .map(|node| ArenaWaypoint {
+                    id: smol_str::SmolStr::new(node.id.as_str()),
+                    x: node.x,
+                    y: node.y,
+                })
+                .collect(),
+            &def.waypoints
+                .edges
+                .iter()
+                .map(|[from, to]| {
+                    (
+                        smol_str::SmolStr::new(from.as_str()),
+                        smol_str::SmolStr::new(to.as_str()),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
     })
 }
 

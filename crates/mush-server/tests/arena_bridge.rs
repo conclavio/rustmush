@@ -203,6 +203,9 @@ fn custody() -> CustodyOut {
                 x1: 1,
                 y1: 7,
             }],
+            // 16b cut N.1: no authored furniture; this fixture's unit is a pilot's.
+            key_spots: Vec::new(),
+            waypoints: tacsim::arena::state::Waypoints::default(),
         },
         units: vec![CustodyUnit {
             id: UNIT,
@@ -220,6 +223,7 @@ fn custody() -> CustodyOut {
             weapons: Vec::new(),
             profile: tacsim::arena::resolution::UnitProfile::default(),
             gunnery: 0,
+            controller: tacsim::arena::state::Controller::Pilot,
             unit: tactical_unit(UNIT),
         }],
         pilots: vec![Pilot {

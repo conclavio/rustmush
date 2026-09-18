@@ -58,17 +58,23 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///        the count of `ready_at_ms` rows as `u64`, then per row the weapon id's
 ///        bytes and its `i64`; then the same for `ammo` with its `u32`. The id's
 ///        bytes go in because a row is a `(weapon, value)` pair and folding only the
-///        values would make two weapons that swapped cycles one state.
-/// 2. **The shadow contact store** (16b cut S.1), in its own iteration order —
+///        values would make two weapons that swapped cycles one state;
+///    11. **the controller byte** (16b cut N.1): `0` pilot, `1` reflex.
+/// 2. **The reflex machines** (16b cut N.1), in unit-id order — the map's own, so
+///    there is no iteration order to diverge on: per machine the unit's `u32`, the
+///    state byte, the goal cell's two `u16` (`u16::MAX` twice for none), the
+///    waypoint index as `u16` (`u16::MAX` for none), the route's length as `u64`
+///    and the target unit's `u32` (`0` for none).
+/// 3. **The shadow contact store** (16b cut S.1), in its own iteration order —
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
 ///    `u64`, the target's `u32`, the class byte (`0` unknown, `1` classified red,
 ///    `2` classified blue), `first_seen_ms` and `last_seen_ms` as `i64`.
-/// 3. The tempo byte (`0` quiet, `1` alert, `2` engaged).
-/// 4. `now_ms`, `i64`.
-/// 5. The due-event count, `u64`.
-/// 6. **The in-flight shot count** (16b cut W.1), `u64`.
-/// 7. The ledger's event sequence, `u64`.
+/// 4. The tempo byte (`0` quiet, `1` alert, `2` engaged).
+/// 5. `now_ms`, `i64`.
+/// 6. The due-event count, `u64`.
+/// 7. **The in-flight shot count** (16b cut W.1), `u64`.
+/// 8. The ledger's event sequence, `u64`.
 ///
 /// **Why the contacts are in it** (16b cut S.1). Doc 16 §3.1 makes the arena the
 /// single writer for *unit poses, unit condition cells, contacts, orders,
@@ -86,6 +92,16 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// world *became*, not what it was told. The opaque `TacticalUnit` is not folded
 /// in either; its truth is M32's and its every change is journalled there, so
 /// hashing it would make this function a second, weaker copy of that journal.
+///
+/// **Why the machines are in it** (16b cut N.1). The controller writes no ledger
+/// event of its own — what leaves it is the orders a pilot's verbs would have
+/// staged, and those journal what they always did — so a replay whose machine
+/// chose a different waypoint would compare equal for as many substeps as it took
+/// the divergence to reach a pose. Folding the machine in catches it at the
+/// substep it happened, which is the whole reason the hash sequence and not only
+/// the final state is compared. What is folded is the *decision* and not the
+/// route's cells: the cells are a function of the goal and the ground, and hashing
+/// them would hash the window once per unit.
 ///
 /// **Cut W.1's extension**, which that last sentence promised: the lock, the two
 /// weapon cells and the in-flight shot count. Each is a fact the arena is the single
@@ -134,6 +150,24 @@ pub fn state_hash(arena: &Arena) -> u64 {
             hash = fnv1a64_update(hash, weapon.as_bytes());
             hash = fnv1a64_update(hash, &rounds.to_le_bytes());
         }
+        // 16b cut N.1: who is flying it.
+        hash = fnv1a64_update(hash, &[unit.controller.code()]);
+    }
+    // 16b cut N.1: the controller's own machines, in unit-id order.
+    for (unit, row) in arena.reflex.rows() {
+        hash = fnv1a64_update(hash, &unit.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &[row.state.code()]);
+        let (gx, gy) = row.goal.unwrap_or((u16::MAX, u16::MAX));
+        hash = fnv1a64_update(hash, &gx.to_le_bytes());
+        hash = fnv1a64_update(hash, &gy.to_le_bytes());
+        hash = fnv1a64_update(hash, &row.waypoint.unwrap_or(u16::MAX).to_le_bytes());
+        hash = fnv1a64_update(hash, &(row.route.len() as u64).to_le_bytes());
+        hash = fnv1a64_update(
+            hash,
+            &row.target
+                .map_or(0_u32, |(_, target)| target.0)
+                .to_le_bytes(),
+        );
     }
     for (viewer, id, held) in arena.contacts.all() {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());

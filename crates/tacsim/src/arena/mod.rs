@@ -114,9 +114,29 @@
 //! 16 §3.5 step 3's interpolation and a second copy of a curve walk is a second
 //! answer waiting to happen.
 //!
-//! What is still not here, and whose it is: the story test over real SSH is cut
-//! W.3's, the reflex controller is cut N's, and the task, the inbox, the egress, the
-//! timer and the unwind boundary are cut T's.
+//! # Cut N.1: the reflex controller and the paths
+//!
+//! [`reflex`] is doc 16 §6's deterministic state machine — `Startup → Patrol →
+//! Approach → Engage → Withdraw → Disabled`, with `blocked`, `lost`, `no line`
+//! and `unreachable` as edges — and [`path`] is the bounded A\* over the arena's
+//! own terrain copy that `Patrol`, `Approach` and `Withdraw` route on. The
+//! machine gives its orders through [`intents::apply_intent`], the same door a
+//! pilot's verbs come through, so it can do nothing a player could not.
+//!
+//! It fills the `controller` attribute A.1 had no reader for
+//! ([`state::Controller`]), the two tempo signals W.1 left `false`
+//! ([`clock::TempoSignals::ai_approaching`] and
+//! [`clock::TempoSignals::hostile_in_weapons_range`]), and the waypoint graph and
+//! key spots C.2 authored and nothing read ([`state::ArenaDefinition::waypoints`],
+//! [`state::ArenaDefinition::key_spots`]).
+//!
+//! **Its tick is a [`state::DueKind::ReflexTick`] and not pulse phase 4**, which
+//! is a deviation from 16b §8's cut N row with a reason the same row gives:
+//! [`reflex`]'s module head has it in full.
+//!
+//! What is still not here, and whose it is: deliberation, the order type, the
+//! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
+//! egress, the timer and the unwind boundary are cut T's.
 
 pub mod clock;
 pub mod damage;
@@ -125,7 +145,9 @@ pub mod index;
 pub mod intents;
 pub mod ledger;
 pub mod motion;
+pub mod path;
 pub mod perception;
+pub mod reflex;
 pub mod resolution;
 pub mod rng;
 pub mod state;
@@ -145,19 +167,22 @@ pub use intents::{
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 pub use motion::{MotionOutcome, cos_fx, integrate, sin_fx};
+pub use path::{PathFailure, PathResult, PathScratch, min_move_cost};
 pub use perception::{
     FULL_SIGNATURE_PERMILLE, FrameContact, PerceptionCounters, SensorProfile, SignatureFactor,
-    bearing_mdeg, contact_refusal, sees,
+    bearing_mdeg, bearing_of, contact_refusal, sees,
 };
+pub use reflex::{ARRIVE_CELLS, ReflexCounters, ReflexMemory, ReflexState, ReflexUnit};
 pub use resolution::{
     BandProfile, Consequence, DIRECT_BANDS, Resolution, SectionProfile, UnitProfile, facet_band,
 };
 pub use rng::{DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_permille};
 pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, Classification, ContactId,
-    CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, DueEvent, DueHeap, DueKind, EndReason,
-    EntryZone, EpochTable, MatchEnd, MotionLimits, NO_SUCH_CONTACT, Pilot, Power, ShadowContact,
-    ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules, UnitState, WeaponSummary,
+    Controller, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, DueEvent, DueHeap, DueKind,
+    EndReason, EntryZone, EpochTable, KeySpot, MatchEnd, MotionLimits, NO_SUCH_CONTACT, Pilot,
+    Power, ShadowContact, ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules,
+    UnitState, Waypoint, Waypoints, WeaponSummary,
 };
 pub use step::{Frame, FrameSlots, StepOutput};
 pub use weapons::{FrameBand, FrameWeapon, Shot, WeaponBand};
@@ -268,6 +293,11 @@ pub(crate) mod test_support {
     }
 
     /// The test window.
+    ///
+    /// **16b cut N.1 gave it a two-node patrol graph and one key spot**, which is
+    /// the smallest graph `Patrol` can walk that is not a single point: the two
+    /// nodes are the west and east edges of the middle row, joined, so a unit put
+    /// down anywhere on the window has a nearest node and an onward one.
     pub(crate) fn definition() -> ArenaDefinition {
         ArenaDefinition {
             id: SmolStr::new("tacsim.arena.test"),
@@ -289,6 +319,26 @@ pub(crate) mod test_support {
                     y1: 7,
                 },
             ],
+            key_spots: vec![crate::arena::state::KeySpot {
+                name: SmolStr::new("The Middle"),
+                x: 4,
+                y: 4,
+            }],
+            waypoints: crate::arena::state::Waypoints::new(
+                vec![
+                    crate::arena::state::Waypoint {
+                        id: SmolStr::new("west"),
+                        x: 1,
+                        y: 4,
+                    },
+                    crate::arena::state::Waypoint {
+                        id: SmolStr::new("east"),
+                        x: 6,
+                        y: 4,
+                    },
+                ],
+                &[(SmolStr::new("west"), SmolStr::new("east"))],
+            ),
         }
     }
 
@@ -312,6 +362,9 @@ pub(crate) mod test_support {
             weapons: Vec::new(),
             profile: UnitProfile::default(),
             gunnery: 0,
+            // 16b cut N.1: a fixture tank is a pilot's until a test says otherwise,
+            // which is the check-out's rule for a unit with a seat.
+            controller: crate::arena::state::Controller::Pilot,
             unit: tactical_unit(id),
         }
     }

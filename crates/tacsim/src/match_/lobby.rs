@@ -655,7 +655,7 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
             return Err(SimError::Unavailable);
         };
         for team in Team::ALL {
-            let units: Vec<ObjId> = centre
+            let mut units: Vec<ObjId> = centre
                 .slots
                 .iter()
                 .filter(|slot| slot.team == team)
@@ -663,6 +663,36 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
                 .collect();
             if units.is_empty() {
                 return Err(SimError::EmptySide(team.as_str()));
+            }
+            // **16b cut N.1** (doc 16 §6: *the AI fill of a later lobby*), behind
+            // `[tacsim.match].ai_fill`. With it on, a side with at least one pilot
+            // fields its **whole** four pods: the tanks of the slots nobody claimed,
+            // and of the slots dropped at the boarding deadline, go over with the
+            // rest. They arrive at the check-out with **no seated pilot**, which is
+            // the one thing that makes them the reflex controller's
+            // (`crate::match_::start`) — the lobby names no controller of its own,
+            // so the two halves cannot disagree about who is flying what.
+            //
+            // A side with nobody in it is still an abort, on or off: doc 16 §3.8's
+            // *an empty side aborts* is about a side nobody is *playing*, and a match
+            // of eight machines is a demonstration and not a match.
+            //
+            // Off by default, and `crate::config::MatchConfig::ai_fill` says why.
+            if match_cfg.ai_fill {
+                for index in 1..=slots_per_side(&match_cfg) {
+                    if centre
+                        .slots
+                        .iter()
+                        .any(|slot| slot.team == team && slot.index == index)
+                    {
+                        continue;
+                    }
+                    if let Some(tank) = centre::tank_for_slot(ctx.w, team, index)
+                        && !units.contains(&tank)
+                    {
+                        units.push(tank);
+                    }
+                }
             }
             sides.push(Side { team, units });
         }

@@ -380,6 +380,8 @@ fn arm_panic_for_seed(
                 id: SmolStr::new_static("tacsim.arena.fault"),
                 terrain,
                 entry_zones: Vec::new(),
+                key_spots: Vec::new(),
+                waypoints: crate::arena::state::Waypoints::default(),
             },
             units: vec![CustodyUnit {
                 id: unit,
@@ -391,6 +393,7 @@ fn arm_panic_for_seed(
                 weapons: Vec::new(),
                 profile: crate::arena::resolution::UnitProfile::default(),
                 gunnery: 0,
+                controller: crate::arena::state::Controller::Pilot,
                 unit: cells,
             }],
             pilots: Vec::new(),
