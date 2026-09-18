@@ -559,10 +559,23 @@ pub struct Minter<'a> {
     pub(crate) owner: &'a OwnerId,
 }
 
-/// The three `schema` definitions the unit binding needs, with payloads that
-/// say what each opaque blob carries. They are minted rather than authored: a
-/// schema is the *shape* of a rules value, which is code's, not content's.
+/// The `schema` definitions the unit binding needs, with payloads that say what
+/// each opaque blob carries. They are minted rather than authored: a schema is
+/// the *shape* of a rules value, which is code's, not content's.
+///
+/// **16b cut X.2** adds the fourth, for the legged mode. It is minted whether or
+/// not a loaded unit walks — the set is the code's and not the content's — and
+/// it moves no other definition: a `DefinitionRef` digest is a function of its
+/// own `(owner, kind, id, version, payload, references)` and of nothing the
+/// registry happens to hold beside it.
 fn schema_payloads() -> Vec<(&'static str, serde_json::Value)> {
+    let mode_rules = serde_json::json!({
+        "carries": [
+            "max_speed_cms", "accel_cms2", "brake_cms2",
+            "turn_rate_mdeg_s", "reverse_factor_pct"
+        ],
+        "read_by": "tacsim"
+    });
     vec![
         (
             unit::UNIT_RULES_SCHEMA,
@@ -574,16 +587,8 @@ fn schema_payloads() -> Vec<(&'static str, serde_json::Value)> {
                 "read_by": "tacsim"
             }),
         ),
-        (
-            unit::TRACKED_RULES_SCHEMA,
-            serde_json::json!({
-                "carries": [
-                    "max_speed_cms", "accel_cms2", "brake_cms2",
-                    "turn_rate_mdeg_s", "reverse_factor_pct"
-                ],
-                "read_by": "tacsim"
-            }),
-        ),
+        (unit::TRACKED_RULES_SCHEMA, mode_rules.clone()),
+        (unit::LEGGED_RULES_SCHEMA, mode_rules),
         (
             unit::POWER_RULES_SCHEMA,
             serde_json::json!({ "carries": ["states", "state"], "read_by": "tacsim" }),

@@ -57,7 +57,8 @@
 //!
 //! **16b cut X.1** adds three more files under `content/` — the laser, its charge
 //! and the tank that carries it — which are [`EXTENSIONS`] and deliberately not
-//! [`SOURCES`]. See that constant for why.
+//! [`SOURCES`]. See that constant for why. **16b cut X.2** adds the biped as
+//! [`EXTENSIONS_BIPED`], a table of its own: see that constant for why *that*.
 
 use crate::config::PackSource;
 
@@ -115,8 +116,9 @@ pub const LASER_MK1: &str = "tacsim.weapon.laser_mk1";
 /// The unit that carries it.
 pub const LINE_TANK_LASER: &str = "tacsim.unit.line_tank_laser";
 
-/// **Doc 16 §9's extension content, in `requires` order** (16b cut X.1 fills the
-/// first row; §8 cut X's other five take the rest).
+/// **Doc 16 §9 item 1's content, in `requires` order** (16b cut X.1): the laser,
+/// its charge and the tank that carries it. Every later item of §9 has a table of
+/// its own beside this one — see [`EXTENSIONS_BIPED`] for why.
 ///
 /// Content the game **can** load and does not ship. It goes through exactly the
 /// route an operator's `[tacsim].pack_paths` takes — one
@@ -143,12 +145,39 @@ pub const EXTENSIONS: [(&str, &str); 3] = [
     ),
 ];
 
+/// `crates/tacsim/content/units/biped_mk1.json` (16b cut X.2).
+pub const BIPED_MK1_JSON: &str = include_str!("../../content/units/biped_mk1.json");
+
+/// The biped doc 16 §9 item 2 asks for.
+pub const BIPED_MK1: &str = "tacsim.unit.biped_mk1";
+
+/// **Doc 16 §9 item 2's content** (16b cut X.2): the biped, which mounts the
+/// shipped cannon, coaxial and sight and so requires no other extension row.
+///
+/// A table of its **own**, beside [`EXTENSIONS`] rather than inside it, and the
+/// reason is the rule of cut X itself: X.1's acceptance asserts that the catalog
+/// built from the laser rows is the stock game *plus the laser* — three weapons
+/// and two unit schemas, exactly — and that test is one this cut may not touch.
+/// A biped in the same table would make it three schemas and fail an assertion
+/// about lasers that has nothing to do with bipeds. One table per item keeps each
+/// acceptance a statement about its own content; the route, the loader, the
+/// validation and the C1 descriptors are the one set X.1 established, through
+/// [`extension_sources_of`].
+pub const EXTENSIONS_BIPED: [(&str, &str); 1] =
+    [("tacsim/content/units/biped_mk1.json", BIPED_MK1_JSON)];
+
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it
 /// reads an operator's.
 #[must_use]
 pub fn extension_sources() -> Vec<PackSource> {
-    EXTENSIONS
-        .iter()
+    extension_sources_of(&EXTENSIONS)
+}
+
+/// **One item's extension rows as operator sources** (16b cut X.2), the shape
+/// every §9 item's acceptance loads its own content through.
+#[must_use]
+pub fn extension_sources_of(rows: &[(&str, &str)]) -> Vec<PackSource> {
+    rows.iter()
         .map(|(name, bytes)| PackSource {
             name: format!("<extension {name}>"),
             bytes: (*bytes).to_string(),

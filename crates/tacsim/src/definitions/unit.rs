@@ -10,7 +10,11 @@
 //! content file cannot be one.
 //!
 //! [`UnitSpec`] here is the *authored* shape: the table of doc 16 §3.3 as
-//! integers and names. [`bind`] is the one function that turns the second into
+//! integers and names. It is the shape of **any** unit, not only the tank the
+//! module is named for — 16b cut X.2's biped is six other sections and a `legged`
+//! mode through the very same decoder.
+//!
+//! [`bind`] is the one function that turns the second into
 //! the first, minting every reference through a scratch
 //! [`DefinitionRegistryBuilder`] with the same owner the module registers under,
 //! so the refs it hands back are **the same values** `Registrar::definition`
@@ -68,6 +72,15 @@ pub const UNIT_RULES_SCHEMA: &str = "tacsim.unit.rules";
 /// The `schema` definition a tracked mode's opaque rules blob is bound to.
 pub const TRACKED_RULES_SCHEMA: &str = "tacsim.mobility.tracked";
 
+/// The `schema` definition a **legged** mode's opaque rules blob is bound to
+/// (16b cut X.2; doc 16 §9 item 2: *a `legged` mobility mode*).
+///
+/// A second id for the same five numbers, and deliberately: a schema is what a
+/// blob *is*, and a walking machine's kinematics are not a tracked hull's however
+/// alike the two tables look. [`tracked_rules`] decodes either into one
+/// [`TrackedRules`], which is where the likeness belongs.
+pub const LEGGED_RULES_SCHEMA: &str = "tacsim.mobility.legged";
+
 /// The `schema` definition the power capability's rules blob is bound to.
 pub const POWER_RULES_SCHEMA: &str = "tacsim.power.states";
 
@@ -76,11 +89,19 @@ pub const POWER_RULES_SCHEMA: &str = "tacsim.power.states";
 /// unit's mobility name the same thing.
 pub const TRACKED: &str = "tracked";
 
+/// The locomotion id a legged mode belongs to (16b cut X.2) — the atlas's own,
+/// beside [`TRACKED`] in `mush_atlas::physics::BASE_LOCOMOTIONS`, so a biped and
+/// a tank name their ground the same way.
+pub const LEGGED: &str = "legged";
+
 /// The medium a tracked mode moves in.
 pub const GROUND: &str = "ground";
 
 /// The mobility mode id the stock tank carries.
 pub const TRACKED_MODE: &str = "ground.tracked";
+
+/// The mobility mode id a biped carries (16b cut X.2).
+pub const LEGGED_MODE: &str = "ground.legged";
 
 /// The armour cell every facet carries.
 pub const ARMOR_CELL: &str = "armor";
@@ -188,6 +209,27 @@ pub enum Consequence {
     },
     /// The unit cannot move at all.
     DisableMotion,
+    /// **The unit cannot move once every one of `sections` is destroyed** (16b
+    /// cut X.2; doc 16 §9 item 2: *`slow` for one leg destroyed, `disable_motion`
+    /// for both*).
+    ///
+    /// The one consequence whose effect is not a function of the section it is
+    /// authored on alone, and the reason it is a kind of its own rather than a
+    /// rule about the word `leg` in [`crate::arena::damage`]: a biped's legs are
+    /// two sections that are lethal together and survivable apart, and the pair is
+    /// the content's statement about its own anatomy. Nothing about it is legs —
+    /// a four-legged walker names four sections, a unit with two engines names
+    /// two, and the vocabulary stays closed either way.
+    ///
+    /// It fires from the section that carries it, at the moment that section's
+    /// internals reach zero, and does nothing until every named section is
+    /// [`crate::arena::damage::DESTROYED`]; authoring it on **both** legs is what
+    /// makes the order they are lost in immaterial.
+    DisableMotionWhenAllOf {
+        /// The sections that must all be destroyed, named in this unit's own
+        /// section table.
+        sections: Vec<CanonicalId>,
+    },
 }
 
 impl Consequence {
@@ -200,6 +242,7 @@ impl Consequence {
             Consequence::Slow { .. } => "slow",
             Consequence::NoTurnToward { .. } => "no_turn_toward",
             Consequence::DisableMotion => "disable_motion",
+            Consequence::DisableMotionWhenAllOf { .. } => "disable_motion_when_all_of",
         }
     }
 }
@@ -323,7 +366,12 @@ pub struct Silhouette {
     pub height_cm: u32,
 }
 
-/// The `tracked` mode's rules as authored (doc 16 §3.3 "Mobility mode rules").
+/// One mobility mode's rules as authored (doc 16 §3.3 "Mobility mode rules").
+///
+/// The five numbers doc 16 names, and the shape of **every** mode's blob: the
+/// `legged` mode 16b cut X.2 adds is the same five, under its own
+/// [`LEGGED_RULES_SCHEMA`] and its own locomotion. The name is the tracked
+/// mode's because the tracked mode is the one doc 16 §3.3 authors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrackedDef {
@@ -339,12 +387,92 @@ pub struct TrackedDef {
     pub reverse_factor_pct: u8,
 }
 
-/// A unit's mobility. One mode today; doc 16 §9's extensions add their own.
+/// **A legged mode's rules as authored** (16b cut X.2; doc 16 §9 item 2), the
+/// same five numbers under their own mode.
+pub type LeggedDef = TrackedDef;
+
+/// **How a unit gets about** (doc 16 §3.3 "Mobility mode rules"), one entry per
+/// declared mode.
+///
+/// **16b cut X.2** made both fields optional and added `legged`: a biped has no
+/// tracks and a tank has no legs, so neither can be the field every unit fills.
+/// Each is `skip_serializing_if`, so `line_tank`'s `{"tracked": {…}}` serialises
+/// exactly as it did before the second mode existed — which is what keeps every
+/// shipped `DefinitionRef` and every persisted unit pointing where it was, with
+/// no migration (16b §8 cut X).
+///
+/// [`UnitSpec::check`] refuses a unit that declares neither, which is why there
+/// is no [`Default`]: a `MobilityDef` with both fields empty is not a unit that
+/// stands still, it is a unit the loader will not have.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MobilityDef {
-    /// The tracked mode.
-    pub tracked: TrackedDef,
+    /// The tracked mode, for a unit that has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked: Option<TrackedDef>,
+    /// **The legged mode** (16b cut X.2), for a unit that walks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legged: Option<LeggedDef>,
+}
+
+/// One declared mode, as [`bind`] and [`tracked_rules`] read it: everything
+/// needed to mint a [`MobilityMode`], and the decoded five.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModeDef {
+    /// The `mush-tactics` mode id ([`TRACKED_MODE`] or [`LEGGED_MODE`]).
+    pub mode: &'static str,
+    /// The atlas locomotion ([`TRACKED`] or [`LEGGED`]).
+    pub locomotion: &'static str,
+    /// The `schema` its opaque blob is bound to.
+    pub schema: &'static str,
+    /// The five numbers.
+    pub rules: TrackedRules,
+}
+
+impl MobilityDef {
+    /// **Every mode this unit declares**, tracked first (16b cut X.2).
+    ///
+    /// The order is the authoring order of the struct and it is load-bearing
+    /// twice: the first mode is the [`MobilityProfile`]'s default, and it is what
+    /// [`tracked_rules`] answers with. A unit that declared both would drive as a
+    /// tank and be *able* to walk, which is the only reading of "default" the
+    /// arena has a use for — doc 16 §3.4 integrates one mode.
+    #[must_use]
+    pub fn modes(&self) -> Vec<ModeDef> {
+        let mut out: Vec<ModeDef> = Vec::new();
+        if let Some(tracked) = self.tracked {
+            out.push(ModeDef {
+                mode: TRACKED_MODE,
+                locomotion: TRACKED,
+                schema: TRACKED_RULES_SCHEMA,
+                rules: rules_of(tracked),
+            });
+        }
+        if let Some(legged) = self.legged {
+            out.push(ModeDef {
+                mode: LEGGED_MODE,
+                locomotion: LEGGED,
+                schema: LEGGED_RULES_SCHEMA,
+                rules: rules_of(legged),
+            });
+        }
+        out
+    }
+}
+
+/// One authored mode's five numbers as the arena's own [`TrackedRules`].
+const fn rules_of(def: TrackedDef) -> TrackedRules {
+    TrackedRules {
+        max_speed_cms: def.max_speed_cms,
+        accel_cms2: def.accel_cms2,
+        brake_cms2: def.brake_cms2,
+        turn_rate_mdeg_s: def.turn_rate_mdeg_s,
+        reverse_factor_pct: if def.reverse_factor_pct > 100 {
+            100
+        } else {
+            def.reverse_factor_pct
+        },
+    }
 }
 
 /// One unit schema (doc 16 §3.3's `line_tank`).
@@ -545,6 +673,36 @@ impl UnitSpec {
                             ),
                         ));
                     }
+                    // **16b cut X.2**: the pair is only a statement about this
+                    // unit's own anatomy, so every section it names is one this
+                    // unit declares — an empty list would fire on the first
+                    // section lost, which is `disable_motion` spelled the long
+                    // way and never what an author meant.
+                    Consequence::DisableMotionWhenAllOf { sections: named } => {
+                        if named.is_empty() || named.len() > MAX_SECTIONS {
+                            return Err(DefinitionError::value(
+                                entry,
+                                format!(
+                                    "section `{}`'s disable_motion_when_all_of names 1 to \
+                                     {MAX_SECTIONS} sections; {} is not",
+                                    section.id,
+                                    named.len()
+                                ),
+                            ));
+                        }
+                        for other in named {
+                            if self.section(other).is_none() {
+                                return Err(DefinitionError::value(
+                                    entry,
+                                    format!(
+                                        "section `{}`'s disable_motion_when_all_of names \
+                                         section `{other}`, which this unit does not declare",
+                                        section.id
+                                    ),
+                                ));
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -631,6 +789,7 @@ impl UnitSpec {
         }
         self.check_bands(entry)?;
         self.check_heat(entry)?;
+        self.check_mobility(entry)?;
         if self.sensor_height_cm == 0 || self.sensor_height_cm > MAX_SENSOR_HEIGHT_CM {
             return Err(DefinitionError::value(
                 entry,
@@ -671,6 +830,24 @@ impl UnitSpec {
                      {} and {} are not",
                     self.heat_max, self.heat_dissipation_per_s
                 ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// **At least one mobility mode** (16b cut X.2).
+    ///
+    /// Both fields of [`MobilityDef`] became optional when the legged mode
+    /// arrived, and `"mobility": {}` is the one thing that combination makes
+    /// newly expressible: a unit that declares no way of moving at all. It is
+    /// refused here rather than in [`bind`], because a `MobilityProfile` needs a
+    /// default mode and "the spec named none" is an authoring mistake, not a
+    /// binding failure.
+    fn check_mobility(&self, entry: &str) -> Result<(), DefinitionError> {
+        if self.mobility.modes().is_empty() {
+            return Err(DefinitionError::value(
+                entry,
+                "a unit declares at least one mobility mode (`tracked` or `legged`)",
             ));
         }
         Ok(())
@@ -765,22 +942,29 @@ impl UnitSpec {
     }
 }
 
-/// **The `tracked` mode's rules, read from the authored spec** (doc 16 §3.3).
+/// **The mode rules a unit drives under, read from the authored spec** (doc 16
+/// §3.3).
 ///
 /// The twin of [`crate::match_::tracked_rules`], which reads the same five
 /// numbers out of an instantiated unit's opaque [`ModeRules`]. [`bind`] is what
-/// makes them agree: it writes exactly these five keys into the blob, so for
-/// every unit made from a spec the two functions return the same value. A test
-/// pins that.
+/// makes them agree: it writes exactly these five keys into every mode's blob, so
+/// for every unit made from a spec the two functions return the same value. A
+/// test pins that.
+///
+/// **16b cut X.2**: the mode is [`MobilityDef::modes`]' first — `tracked` for
+/// every unit that has tracks, `legged` for a biped — and both functions take it
+/// the same way round, which is the whole of "motion reads either". The name is
+/// the one doc 16 §3.3 gave the only mode there was; [`TrackedRules`] is the
+/// shape of *a* mode's rules and not a statement about tracks.
+///
+/// A spec with no mode at all is refused at load ([`UnitSpec::check`]) and
+/// answers all-zero here, which is a unit that cannot move.
 #[must_use]
 pub fn tracked_rules(spec: &UnitSpec) -> TrackedRules {
-    TrackedRules {
-        max_speed_cms: spec.mobility.tracked.max_speed_cms,
-        accel_cms2: spec.mobility.tracked.accel_cms2,
-        brake_cms2: spec.mobility.tracked.brake_cms2,
-        turn_rate_mdeg_s: spec.mobility.tracked.turn_rate_mdeg_s,
-        reverse_factor_pct: spec.mobility.tracked.reverse_factor_pct.min(100),
-    }
+    spec.mobility
+        .modes()
+        .first()
+        .map_or_else(TrackedRules::default, |mode| mode.rules)
 }
 
 // ---------------------------------------------------------------------------
@@ -1033,31 +1217,44 @@ pub fn bind(
         });
     }
 
-    // (3) The one mobility mode.
-    let tracked = tracked_rules(spec);
-    let mode = MobilityMode::new(
-        tactics_id!(name, "mobility mode", TRACKED_MODE, MobilityModeId)?,
-        [tactics_id!(name, "medium", GROUND, MediumId)?],
-        tactics_id!(name, "locomotion", TRACKED, LocomotionId)?,
-        ModeRules::new(
-            schema_ref(name, cx.schemas, TRACKED_RULES_SCHEMA)?,
-            serde_json::json!({
-                "max_speed_cms": tracked.max_speed_cms,
-                "accel_cms2": tracked.accel_cms2,
-                "brake_cms2": tracked.brake_cms2,
-                "turn_rate_mdeg_s": tracked.turn_rate_mdeg_s,
-                "reverse_factor_pct": tracked.reverse_factor_pct,
-            }),
+    // (3) The mobility modes — one per mode the spec declares, in the spec's own
+    // order (**16b cut X.2**; before it there was only ever `tracked`, and a unit
+    // that declares only `tracked` binds to exactly the profile it bound to then).
+    let mut modes: Vec<MobilityMode> = Vec::new();
+    let mut default_mode: Option<MobilityModeId> = None;
+    for declared in spec.mobility.modes() {
+        let rules = declared.rules;
+        let id = tactics_id!(name, "mobility mode", declared.mode, MobilityModeId)?;
+        let mode = MobilityMode::new(
+            id.clone(),
+            [tactics_id!(name, "medium", GROUND, MediumId)?],
+            tactics_id!(name, "locomotion", declared.locomotion, LocomotionId)?,
+            ModeRules::new(
+                schema_ref(name, cx.schemas, declared.schema)?,
+                serde_json::json!({
+                    "max_speed_cms": rules.max_speed_cms,
+                    "accel_cms2": rules.accel_cms2,
+                    "brake_cms2": rules.brake_cms2,
+                    "turn_rate_mdeg_s": rules.turn_rate_mdeg_s,
+                    "reverse_factor_pct": rules.reverse_factor_pct,
+                }),
+            )
+            .map_err(|error| DefinitionError::value(name, error.to_string()))?,
         )
-        .map_err(|error| DefinitionError::value(name, error.to_string()))?,
-    )
-    .with_speeds(tracked.max_speed_cms, 0);
-    let profile = MobilityProfile::new(
-        vec![mode],
-        tactics_id!(name, "mobility mode", TRACKED_MODE, MobilityModeId)?,
-        &MobilityVocabulary::base().freeze(),
-    )
-    .map_err(|error| DefinitionError::value(name, error.to_string()))?;
+        .with_speeds(rules.max_speed_cms, 0);
+        if default_mode.is_none() {
+            default_mode = Some(id);
+        }
+        modes.push(mode);
+    }
+    let default_mode = default_mode.ok_or_else(|| {
+        DefinitionError::value(
+            name,
+            "a unit declares at least one mobility mode (`tracked` or `legged`)",
+        )
+    })?;
+    let profile = MobilityProfile::new(modes, default_mode, &MobilityVocabulary::base().freeze())
+        .map_err(|error| DefinitionError::value(name, error.to_string()))?;
 
     // (4) The game's own half, carried opaque (doc 16 §3.3: M32 interprets
     // nothing game-specific).

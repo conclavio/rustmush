@@ -143,7 +143,8 @@ pub const PREDICTION_SLACK_CELLS: u16 = 1;
 /// **Whether one unit is a wreck** (doc 16 §3.3 "A wreck": *the game-crate
 /// predicate `is_wreck(unit)` reads exactly that*).
 ///
-/// Exactly the [`WRECK_CONDITION`] on the [`HULL_SECTION`], and nothing else. The
+/// Exactly the [`WRECK_CONDITION`] on the unit's body — the [`HULL_SECTION`] for
+/// every unit that has one — and nothing else. The
 /// three capability revocations doc 16 names are in the **same plan**, but they are
 /// not what the predicate reads, for a reason worth writing down: a revoke is
 /// idempotent and a unit that never held a capability loses nothing by it, so a
@@ -156,13 +157,17 @@ pub const PREDICTION_SLACK_CELLS: u16 = 1;
 /// This is what a checked-in tank, a `@unit/show` and cut W.3's story test read, and
 /// it is a pure function of a [`mush_tactics::TacticalUnit`] so it can be called from
 /// either side of the seam.
+///
+/// **16b cut X.2** made it read *any* section carrying the mark rather than the
+/// [`HULL_SECTION`] alone, which is where `Arena::wreck_ops` has always put it:
+/// the hull when the unit has one, and the triggering section when it does not. A
+/// biped has a torso and no hull, and until this cut the predicate could not see
+/// its wreck. For every unit that has a hull the answer is what it was — nothing
+/// but `wreck_ops` ever writes the condition, and it writes it once.
 #[must_use]
 pub fn is_wreck(unit: &mush_tactics::TacticalUnit) -> bool {
-    let Ok(hull) = SectionId::new(HULL_SECTION) else {
-        return false;
-    };
-    unit.section(&hull)
-        .is_some_and(|section| section.condition.as_str() == WRECK_CONDITION)
+    unit.sections()
+        .any(|(_, section)| section.condition.as_str() == WRECK_CONDITION)
 }
 
 // ---------------------------------------------------------------------------
@@ -700,11 +705,16 @@ impl Arena {
                     state.limits.no_turn_toward = Some(*side);
                 }
             }
-            Consequence::DisableMotion => {
-                if let Some(state) = self.unit_mut(target) {
-                    state.limits.motion_disabled = true;
-                    state.speed_cms = 0;
-                    state.desired_speed_cms = 0;
+            Consequence::DisableMotion => self.disable_motion(target),
+            // **16b cut X.2** (doc 16 §9 item 2): the pair rule, read off the M32
+            // unit's own section conditions — the very conditions the impact's
+            // plan set a moment ago, so "the second leg has just gone" is a fact
+            // about the unit and not a count the arena keeps beside it. A section
+            // this unit does not declare can never be destroyed, so a list naming
+            // one never fires; the loader refuses that list anyway.
+            Consequence::DisableMotionWhenAllOf { sections } => {
+                if self.all_destroyed(target, sections) {
+                    self.disable_motion(target);
                 }
             }
             Consequence::RemoveWeapons { section } => {
@@ -725,6 +735,39 @@ impl Arena {
                 }
             }
         }
+    }
+
+    /// The motion half of `disable_motion`, shared by the consequence and by the
+    /// pair rule above so the two cannot come to mean different things.
+    fn disable_motion(&mut self, target: ObjId) {
+        if let Some(state) = self.unit_mut(target) {
+            state.limits.motion_disabled = true;
+            state.speed_cms = 0;
+            state.desired_speed_cms = 0;
+        }
+    }
+
+    /// **Whether every one of `sections` is destroyed** (16b cut X.2), off the M32
+    /// unit's section conditions.
+    ///
+    /// An empty list is `false` rather than the vacuous truth: "all of nothing"
+    /// would disable a unit's motion the first time any section carrying the
+    /// consequence was lost, which is `disable_motion` under another name and
+    /// never what an author meant. The loader refuses the empty list too, so this
+    /// is the second of two guards on the same mistake.
+    fn all_destroyed(&self, target: ObjId, sections: &[SmolStr]) -> bool {
+        let Some(state) = self.unit(target) else {
+            return false;
+        };
+        !sections.is_empty()
+            && sections.iter().all(|section| {
+                SectionId::new(section.as_str()).is_ok_and(|id| {
+                    state
+                        .unit
+                        .section(&id)
+                        .is_some_and(|section| section.condition.as_str() == DESTROYED)
+                })
+            })
     }
 
     /// **Make a wreck** (doc 16 §3.3): the M32 half is already in the impact's own

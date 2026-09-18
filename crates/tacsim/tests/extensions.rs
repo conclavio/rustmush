@@ -13,6 +13,14 @@
 //! ceiling with a named refusal; and W2 holding, because a laser's damage against
 //! the line tank's armour is small by definition.
 //!
+//! **X.2, bipeds** (doc 16 §9 item 2, D-18-16's second): a unit of six sections
+//! — two legs, a torso, a head and two arms — walking under a `legged` mobility
+//! mode of its own, presenting a silhouette eleven metres tall from a sight nine
+//! metres up, struck on the front band in its torso and its arms, slowed by the
+//! loss of one leg and stopped by the loss of both. Doc 16 §3.4 is untouched:
+//! the same four steps read the same `MotionLimits` and the same five mode
+//! numbers, off a mode nobody had authored before.
+//!
 //! # What this file loads, and what it deliberately does not
 //!
 //! The three extension packs go through the **operator's** route —
@@ -22,6 +30,12 @@
 //! catalog is the two weapons and the one unit it has always been; the first test
 //! below asserts exactly that, because "the extension changes nothing" is the
 //! acceptance and not an aside.
+//!
+//! Each item loads **its own** rows through that one route
+//! (`content::EXTENSIONS` for X.1, `content::EXTENSIONS_BIPED` for X.2) rather
+//! than a growing union of all of them, because X.1's acceptance asserts the
+//! whole of what the catalog holds with its content loaded — three weapons, two
+//! unit schemas — and that assertion is one no later item may move.
 //!
 //! Run with `TACSIM_WRITE_CONTENT=1` to re-sign the extension packs in place, as
 //! `content.rs` does for the shipped ones; the pins below are still updated by
@@ -80,6 +94,27 @@ const PACK_FILES: [&str; 3] = [
     "units/line_tank_laser.json",
 ];
 
+/// **The biped's digest pin** (16b cut X.2), the way X.1 pins the laser's.
+const DIGESTS_BIPED: [(&str, &str); 1] = [(
+    "tacsim.pack.biped_mk1",
+    "6d2272a002628d03e864e50966a79922427dbdff037d20f1d0eb33c7ca51935b",
+)];
+
+/// The biped's pack file, by its path under `content/`.
+const PACK_FILES_BIPED: [&str; 1] = ["units/biped_mk1.json"];
+
+/// **The shipped tank's exact identity** (16b cut X.2), which is the whole of
+/// what "no migration" means: a `line_tank` persisted before this cut points at
+/// this digest, and a `line_tank` bound after it must point at the same one.
+///
+/// X.2 widened `UnitSpec::mobility` — `tracked` became optional and `legged`
+/// joined it — and the two `skip_serializing_if`s are what keep the tank's
+/// `{"tracked": {…}}` the same bytes, hence the same payload, hence the same
+/// digest. A pin is the only way to say that about a *code* change; the content
+/// pins above only ever catch a content one. The value is this crate's answer at
+/// `e000f06a`, the commit before the cut, taken there and pinned here.
+const LINE_TANK_DIGEST: &str = "72a52d55e73e3d1d4308c8d69ebd3b0a91504a5935571f87ae319c69cd131660";
+
 fn content_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("content")
 }
@@ -91,15 +126,48 @@ fn writing() -> bool {
 /// The whole catalog: the shipped content plus the extension packs, through the
 /// operator's route.
 fn catalog() -> Catalog {
-    let operator: Vec<LoadedPack> = content::extension_sources()
-        .into_iter()
+    catalog_of(&content::extension_sources())
+}
+
+/// **The shipped content plus one item's extension rows** (16b cut X.2), through
+/// the operator's route — one [`tacsim::pack::load_pack`], one
+/// [`Catalog::build_game`], one set of C1 descriptors.
+fn catalog_of(sources: &[tacsim::config::PackSource]) -> Catalog {
+    let operator: Vec<LoadedPack> = sources
+        .iter()
         .map(|source| LoadedPack {
             pack: tacsim::pack::load_pack(&source.bytes)
                 .unwrap_or_else(|error| panic!("{}: {error}", source.name)),
-            source: source.name,
+            source: source.name.clone(),
         })
         .collect();
     Catalog::build_game(&operator, tacsim::NS).expect("the extension content binds")
+}
+
+/// The shipped content plus the biped (16b cut X.2).
+fn biped_catalog() -> Catalog {
+    catalog_of(&content::extension_sources_of(&content::EXTENSIONS_BIPED))
+}
+
+/// Re-sign one extension pack in place and print its pin, as X.1's own writing
+/// branch does for the three laser files.
+fn resign(relative: &str) {
+    let path = content_dir().join(relative);
+    let raw = std::fs::read_to_string(&path).expect("the content file exists");
+    let declared = mush_content::parse_pack(&raw)
+        .expect("the pack parses")
+        .manifest()
+        .digest()
+        .to_hex();
+    let unsigned = raw.replace(&declared, UNSIGNED);
+    let signed = mush_content::parse_pack(&unsigned)
+        .expect("the unsigned pack parses")
+        .computed_digest()
+        .expect("the pack digests")
+        .to_hex();
+    std::fs::write(&path, unsigned.replace(UNSIGNED, &signed))
+        .expect("the content file is writable");
+    println!("    (\"{relative}\", \"{signed}\"),");
 }
 
 // ---------------------------------------------------------------------------
@@ -782,5 +850,607 @@ fn x1_the_overheated_refusal_carries_the_arenas_own_word() {
     assert!(
         arena.unit(RED).is_some_and(UnitState::overheated),
         "the cockpit and the arena agree"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.2 — bipeds
+// ---------------------------------------------------------------------------
+
+/// The biped's cell on the marching window.
+const WALK_CELL: (u16, u16) = (3, 3);
+
+/// The tank's, nine cells east of it, so neither is ever near the other.
+const DRIVE_CELL: (u16, u16) = (12, 3);
+
+/// The legged mode's five numbers, as `content/units/biped_mk1.json` authors
+/// them — and every one of them different from the tank's, which is what lets a
+/// test tell which mode a unit is driving under.
+const LEGGED: tacsim::arena::state::TrackedRules = tacsim::arena::state::TrackedRules {
+    max_speed_cms: 1_200,
+    accel_cms2: 160,
+    brake_cms2: 240,
+    turn_rate_mdeg_s: 45_000,
+    reverse_factor_pct: 40,
+};
+
+/// **A biped and a stock line tank on open ground**, both awake, neither ordered
+/// anywhere yet.
+///
+/// Nine cells apart and both facing north: this is a test about how two units
+/// move, so they are placed where neither can ever be the reason the other
+/// stopped.
+fn march() -> (Catalog, Arena) {
+    let catalog = biped_catalog();
+    let mut arena = arena_of(
+        &catalog,
+        vec![
+            unit_of(&catalog, content::BIPED_MK1, RED, Team::Red, WALK_CELL),
+            unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, DRIVE_CELL),
+        ],
+        &[],
+    );
+    for id in [RED, BLUE] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    (catalog, arena)
+}
+
+/// A stock tank four cells south of `target`, with the target turned to face it
+/// so the band it presents is its `front`.
+fn face_off(catalog: &Catalog, target: &str) -> Arena {
+    let mut arena = arena_of(
+        catalog,
+        vec![
+            unit_of(catalog, content::LINE_TANK, RED, Team::Red, RED_CELL),
+            unit_of(catalog, target, BLUE, Team::Blue, BLUE_CELL),
+        ],
+        &[],
+    );
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose.heading_mdeg = 180_000;
+        state.desired_heading_mdeg = 180_000;
+    }
+    arena
+}
+
+/// **Put one section in the state an impact leaves it in**: its internals at
+/// their floor and its condition `destroyed`, in one plan through M32's own
+/// `apply`.
+///
+/// It is exactly the pair of ops `arena/damage.rs`'s `plan_hit` builds for the
+/// round that takes a section out, and it is spelled here because *which* section
+/// a round takes is a weighted draw the arena owns (`choose_section`): a test
+/// outside the crate can fire all day without being able to say which leg goes
+/// first, and the rule under test is the consequence, not the draw.
+fn destroy_section(arena: &mut Arena, unit: mush_core::ObjId, section: &str) {
+    let id = mush_tactics::SectionId::new(section).expect("a section id");
+    let addr = mush_tactics::CellAddr::Section {
+        section: id.clone(),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL)
+            .expect("a cell id"),
+    };
+    let before = arena.unit(unit).expect("the unit is in the arena");
+    let floor = before
+        .unit
+        .cell(&addr)
+        .map(|scalar| scalar.min)
+        .expect("the section carries internals");
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![
+            mush_tactics::UnitMutationOp::SetCell { addr, value: floor },
+            mush_tactics::UnitMutationOp::SetSectionCondition {
+                section: id,
+                condition: mush_tactics::ConditionId::new(tacsim::arena::damage::DESTROYED)
+                    .expect("a condition id"),
+            },
+        ],
+        None,
+        None,
+    )
+    .expect("a two-op plan");
+    let (post, _) = mush_tactics::apply(&before.unit, &plan, 0).expect("the plan applies");
+    if let Some(state) = arena.unit_mut(unit) {
+        state.unit = post;
+    }
+}
+
+/// Apply one section's authored consequences, in authored order, the way an
+/// impact that emptied it does.
+fn fire_consequences(arena: &mut Arena, unit: mush_core::ObjId, section: &str) {
+    let consequences = arena
+        .unit(unit)
+        .and_then(|state| state.profile.section(section))
+        .map(|section| section.consequences.clone())
+        .expect("the section is in the unit's profile");
+    let mut journal = Vec::new();
+    for consequence in &consequences {
+        arena.apply_consequence(unit, consequence, 0, &mut journal);
+    }
+}
+
+/// **The extension changes nothing about the stock game** — doc 16 §9's own rule,
+/// asserted for the biped as X.1 asserts it for the laser.
+///
+/// The shipped catalog is what `tests/definitions.rs` says it is, the biped pack
+/// verifies and carries its pinned digest, and loading it beside the shipped
+/// content leaves every shipped definition at the identity it already had. The
+/// last two assertions are the ones this cut needs that X.1's did not: X.2
+/// widened `UnitSpec::mobility` itself, so the tank's own digest is pinned
+/// outright and its serialised spec is checked to carry no trace of the mode it
+/// has not got.
+#[test]
+fn x2_the_biped_content_loads_beside_the_stock_game_without_moving_it() {
+    if writing() {
+        for relative in PACK_FILES_BIPED {
+            resign(relative);
+        }
+        return;
+    }
+
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    assert_eq!(stock.weapons.len(), 2, "the cannon and the coaxial");
+    assert_eq!(stock.specs.len(), 1, "one unit schema");
+
+    let pinned: std::collections::BTreeMap<&str, &str> = DIGESTS_BIPED.into_iter().collect();
+    for (name, json) in content::EXTENSIONS_BIPED {
+        let pack = tacsim::pack::load_pack(json)
+            .unwrap_or_else(|error| panic!("{name} does not verify: {error}"));
+        let id = pack.manifest().id().to_string();
+        assert_eq!(
+            pinned.get(id.as_str()).copied(),
+            Some(pack.manifest().digest().to_hex().as_str()),
+            "{id}'s digest moved; re-review the content and re-pin it"
+        );
+    }
+    assert_eq!(pinned.len(), content::EXTENSIONS_BIPED.len());
+
+    // With it loaded: one more unit schema, and not one thing else.
+    let both = biped_catalog();
+    assert_eq!(
+        both.weapons.len(),
+        2,
+        "the biped carries the shipped guns and authors none of its own"
+    );
+    assert_eq!(both.specs.len(), 2, "the line tank and the biped");
+    assert_eq!(
+        both.units.len(),
+        2,
+        "and the tactics catalog carries both, so `@unit/create` resolves either"
+    );
+    assert_eq!(both.arenas.len(), 1, "the extension adds no arena");
+    for (id, reference) in &stock.references {
+        assert_eq!(
+            both.references.get(id),
+            Some(reference),
+            "{id} moved when the extension loaded; a persisted unit points at it"
+        );
+    }
+
+    // And the tank's identity is where it was across the *code* change too: a
+    // unit persisted before this cut resolves its definition by this digest.
+    let tank = CanonicalId::new(content::LINE_TANK).expect("a canonical id");
+    assert_eq!(
+        stock
+            .references
+            .get(&tank)
+            .map(|reference| reference.digest().to_hex())
+            .as_deref(),
+        Some(LINE_TANK_DIGEST),
+        "the shipped tank's definition moved; a persisted unit needs a migration"
+    );
+    let spec = stock.specs.get(&tank).expect("the line tank is shipped");
+    let json = serde_json::to_value(spec).expect("the spec serialises");
+    assert_eq!(
+        json.get("mobility")
+            .and_then(serde_json::Value::as_object)
+            .map(|mobility| mobility.keys().cloned().collect::<Vec<String>>()),
+        Some(vec!["tracked".to_owned()]),
+        "a unit with no legs serialises exactly the mobility it did before legs \
+         existed"
+    );
+}
+
+/// **The legged mode, as the content authors it and as M32 carries it** (doc 16
+/// §9 item 2: *a `legged` mobility mode with its own rules*).
+///
+/// The spec declares legs and no tracks; the two readings of the five numbers —
+/// the authored spec's and the instantiated unit's opaque `ModeRules` — agree,
+/// which is the property `tests/definitions.rs` pins for the tank, read for a
+/// unit that has no tracked mode to fall back on; and the mode reaches M32 under
+/// its own locomotion and its own schema.
+#[test]
+fn x2_the_biped_declares_a_legged_mode_of_its_own() {
+    let catalog = biped_catalog();
+    let key = CanonicalId::new(content::BIPED_MK1).expect("a canonical id");
+    let spec = catalog.specs.get(&key).expect("the biped entry");
+    assert!(spec.mobility.tracked.is_none(), "a biped has no tracks");
+    assert!(
+        spec.mobility.legged.is_some(),
+        "doc 16 §9 item 2's `legged`"
+    );
+    assert_eq!(tacsim::definitions::tracked_rules(spec), LEGGED);
+
+    let binding = catalog.bindings.get(&key).expect("the biped binding");
+    let unit = tacsim::definitions::to_tactical_unit(spec, binding, mush_core::ObjId(21))
+        .expect("the biped instantiates");
+    assert_eq!(
+        tacsim::match_::tracked_rules(&unit),
+        LEGGED,
+        "the two readings of one mode's rules agree for a legged unit too"
+    );
+
+    let profile = unit
+        .mobility()
+        .expect("the biped carries a mobility profile");
+    assert_eq!(profile.modes().len(), 1, "one mode, and it is not tracked");
+    let mode = profile.modes().first().expect("the legged mode");
+    assert_eq!(mode.id.as_str(), "ground.legged");
+    assert_eq!(mode.locomotion.as_str(), "legged");
+    assert_eq!(
+        mode.rules.schema().key().id.as_str(),
+        tacsim::definitions::unit::LEGGED_RULES_SCHEMA,
+        "its own schema, not the tracked mode's"
+    );
+    assert_eq!(
+        mode.rules
+            .data()
+            .get("turn_rate_mdeg_s")
+            .and_then(serde_json::Value::as_u64),
+        Some(45_000),
+        "and the five numbers are in the blob the game crate decodes"
+    );
+
+    // The stock tank is untouched by all of it.
+    let tank = catalog
+        .specs
+        .get(&CanonicalId::new(content::LINE_TANK).expect("a canonical id"))
+        .expect("the line tank");
+    assert_eq!(
+        tacsim::definitions::tracked_rules(tank).max_speed_cms,
+        1_500
+    );
+    assert!(tank.mobility.legged.is_none());
+}
+
+/// **A biped moves under the legged rules** (doc 16 §9 item 2), through
+/// `Arena::step` and doc 16 §3.4's four unchanged steps.
+///
+/// Two units on one window, ordered the same thing, answering with their own
+/// numbers: the biped accelerates at 160 cm/s² where the tank accelerates at
+/// 100, and turns at 45°/s where the tank slews at 30. The distance is pinned as
+/// well as the speed, because "the mode reached motion" and "motion used it" are
+/// two claims and the second is the one doc 16 §3.4 step 3 makes.
+#[test]
+fn x2_the_biped_walks_at_its_own_pace_beside_a_tank_driving_at_its() {
+    let (_catalog, mut arena) = march();
+    assert_eq!(arena.unit(RED).map(|state| state.mobility), Some(LEGGED));
+    assert_eq!(
+        arena.unit(BLUE).map(|state| state.mobility.max_speed_cms),
+        Some(1_500),
+        "the tank is checked out on its own mode, as ever"
+    );
+
+    // Both ordered flat out, north: two seconds is eight 250 ms substeps.
+    for (id, ceiling) in [(RED, LEGGED.max_speed_cms), (BLUE, 1_500_u32)] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.desired_speed_cms = i32::try_from(ceiling).expect("a speed");
+        }
+    }
+    let start = arena.unit(RED).map(|state| state.pose.y_cm);
+    let mut wall = 0_i64;
+    run(&mut arena, &mut wall, 500, 4);
+    assert_eq!(arena.now_ms, 2_000);
+    assert_eq!(
+        arena.unit(RED).map(|state| state.speed_cms),
+        Some(320),
+        "eight substeps at 160 cm/s²"
+    );
+    assert_eq!(
+        arena.unit(BLUE).map(|state| state.speed_cms),
+        Some(200),
+        "and eight at the tank's 100, in the same eight substeps"
+    );
+    assert_eq!(
+        arena
+            .unit(RED)
+            .map(|state| state.pose.y_cm)
+            .zip(start)
+            .map(|(now, start)| now - start),
+        Some(360),
+        "40 cm/s more each substep, 10 cm more of northing each substep"
+    );
+
+    // And the turn, on a fresh window so the heading is the only thing moving.
+    let (_catalog, mut arena) = march();
+    for id in [RED, BLUE] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.desired_heading_mdeg = 90_000;
+        }
+    }
+    let mut wall = 0_i64;
+    run(&mut arena, &mut wall, 500, 1);
+    assert_eq!(
+        arena.unit(RED).map(|state| state.pose.heading_mdeg),
+        Some(22_500),
+        "45°/s over two 250 ms substeps"
+    );
+    assert_eq!(
+        arena.unit(BLUE).map(|state| state.pose.heading_mdeg),
+        Some(15_000),
+        "the tank's 30°/s over the same two"
+    );
+}
+
+/// **The taller silhouette, in the resolution arithmetic** (doc 16 §9 item 2:
+/// *taller silhouettes and a taller `sensor_height_cm`*).
+///
+/// The same shooter, the same weapon, the same range, the same band and the same
+/// error cone: the only thing that differs between the two shots is what the
+/// target presents, and the biped presents half again the tank's frontage and
+/// four times its height. Doc 16 §3.5 step 1 takes the angular size off the
+/// *width*, so that is what moves the per-mille — and the flank tells the other
+/// half of the story, where a biped is the thinner target of the two.
+#[test]
+fn x2_the_biped_is_a_taller_target_than_the_tank_and_an_easier_one_head_on() {
+    let catalog = biped_catalog();
+    let against_tank = face_off(&catalog, content::LINE_TANK);
+    let against_biped = face_off(&catalog, content::BIPED_MK1);
+
+    let tank = against_tank.resolve_shot(RED, BLUE, "cannon", 100_000, mush_atlas::Cover::None);
+    let biped = against_biped.resolve_shot(RED, BLUE, "cannon", 100_000, mush_atlas::Cover::None);
+    assert_eq!(
+        tank.band, "front",
+        "the target is turned to face the shooter"
+    );
+    assert_eq!(biped.band, "front");
+    assert_eq!(
+        (tank.presented_width_cm, biped.presented_width_cm),
+        (350, 520)
+    );
+    assert_eq!(
+        tank.error_urad, biped.error_urad,
+        "one shooter, one weapon, one range: the cone is the same cone"
+    );
+    assert!(
+        biped.angular_urad > tank.angular_urad
+            && biped.presented_area_cm2 > tank.presented_area_cm2
+            && biped.p_permille > tank.p_permille,
+        "a bigger target is an easier shot: {} against {} per mille",
+        biped.p_permille,
+        tank.p_permille
+    );
+
+    // The height is authored and carried even though the width is what the
+    // per-mille reads: eleven metres against two and a half.
+    let heights = |arena: &Arena| {
+        arena
+            .unit(BLUE)
+            .and_then(|state| state.profile.band("front"))
+            .map(|band| band.height_cm)
+    };
+    assert_eq!(
+        (heights(&against_tank), heights(&against_biped)),
+        (Some(250), Some(1_100))
+    );
+
+    // From the flank it is the other way round, which is the fact that makes a
+    // biped want to stand side on and a tank not.
+    let flank = |arena: &Arena| {
+        arena
+            .unit(BLUE)
+            .and_then(|state| state.profile.band("left"))
+            .map(|band| band.width_cm)
+    };
+    assert_eq!(
+        (flank(&against_tank), flank(&against_biped)),
+        (Some(700), Some(340))
+    );
+
+    // And the sight sits nine metres up rather than one and a half (doc 16 §3.2
+    // "Line of sight"), all the way through the check-out.
+    assert_eq!(
+        against_biped.unit(BLUE).map(|state| state.sensor_height_cm),
+        Some(900)
+    );
+    assert_eq!(
+        against_tank.unit(BLUE).map(|state| state.sensor_height_cm),
+        Some(150)
+    );
+}
+
+/// **The front band is the torso and the arms** (doc 16 §9 item 2), and an arm
+/// that is shot off takes the gun it was carrying.
+#[test]
+fn x2_a_hit_on_the_front_finds_the_torso_and_the_arms() {
+    let (_catalog, mut arena) = march();
+    let mut struck: Vec<SmolStr> = Vec::new();
+    for shot_seq in 0..400_u64 {
+        let section = arena
+            .choose_section(RED, "front", shot_seq)
+            .expect("the front band strikes something");
+        if !struck.contains(&section) {
+            struck.push(section);
+        }
+    }
+    struck.sort_unstable();
+    assert_eq!(
+        struck,
+        vec![
+            SmolStr::new("head"),
+            SmolStr::new("left_arm"),
+            SmolStr::new("right_arm"),
+            SmolStr::new("torso"),
+        ],
+        "a shot from ahead finds the torso, the arms and the rare head — and \
+         never a leg, which is struck from the flank and from behind"
+    );
+
+    // The guns are carried in the arms, so that is the section a `remove_weapons`
+    // on an arm names — the weapon rows say `turret`, which this unit has not
+    // got, and the check-out reads the section it was actually installed in.
+    let mounts = |arena: &Arena, unit: mush_core::ObjId| {
+        arena.unit(unit).map(|state| {
+            state
+                .weapons
+                .iter()
+                .map(|weapon| (weapon.id.to_string(), weapon.mount_section.to_string()))
+                .collect::<Vec<(String, String)>>()
+        })
+    };
+    assert_eq!(
+        mounts(&arena, RED),
+        Some(vec![
+            ("cannon".to_owned(), "right_arm".to_owned()),
+            ("machine_gun".to_owned(), "left_arm".to_owned()),
+        ])
+    );
+    assert_eq!(
+        mounts(&arena, BLUE),
+        Some(vec![
+            ("cannon".to_owned(), "turret".to_owned()),
+            ("machine_gun".to_owned(), "turret".to_owned()),
+        ]),
+        "and the tank's are where they have always been"
+    );
+
+    destroy_section(&mut arena, RED, "right_arm");
+    fire_consequences(&mut arena, RED, "right_arm");
+    assert_eq!(
+        mounts(&arena, RED),
+        Some(vec![("machine_gun".to_owned(), "left_arm".to_owned())]),
+        "the arm went and took the cannon with it"
+    );
+}
+
+/// **One leg slows the biped and both stop it** (doc 16 §9 item 2: *§3.4
+/// unchanged except the leg consequences*), through the authored consequences and
+/// doc 16 §3.4's own motion.
+///
+/// The pair rule is authored on each leg, so the order they are lost in does not
+/// matter, and it reads the M32 section conditions the impact plan sets: one leg
+/// destroyed is `slow(50)` and a biped at half pace, the second is
+/// `disable_motion` and a biped that does not move at all.
+#[test]
+fn x2_one_leg_slows_the_biped_and_both_legs_stop_it() {
+    let (catalog, mut arena) = march();
+    // The authored pair, as the content states it.
+    let authored = catalog
+        .specs
+        .get(&CanonicalId::new(content::BIPED_MK1).expect("a canonical id"))
+        .and_then(|spec| {
+            spec.section(&CanonicalId::new("left_leg").expect("a canonical id"))
+                .map(|section| section.consequences.clone())
+        })
+        .expect("the left leg is authored");
+    assert_eq!(
+        authored
+            .iter()
+            .map(tacsim::definitions::unit::Consequence::label)
+            .collect::<Vec<&str>>(),
+        vec!["slow", "disable_motion_when_all_of"],
+        "doc 16 §9 item 2's two leg consequences, in authored order"
+    );
+
+    if let Some(state) = arena.unit_mut(RED) {
+        state.desired_speed_cms = i32::try_from(LEGGED.max_speed_cms).expect("a speed");
+    }
+    let mut wall = 0_i64;
+    run(&mut arena, &mut wall, 500, 15);
+    assert_eq!(
+        arena.unit(RED).map(|state| state.speed_cms),
+        Some(1_200),
+        "thirty substeps at 40 cm/s each is exactly the walking ceiling"
+    );
+
+    // One leg: slowed, and still walking.
+    destroy_section(&mut arena, RED, "left_leg");
+    fire_consequences(&mut arena, RED, "left_leg");
+    assert_eq!(arena.unit(RED).map(|state| state.limits.slow_pct), Some(50));
+    assert_eq!(
+        arena.unit(RED).map(|state| state.limits.motion_disabled),
+        Some(false),
+        "one leg is a limp, not a stop"
+    );
+    run(&mut arena, &mut wall, 500, 8);
+    assert_eq!(
+        arena.unit(RED).map(|state| state.speed_cms),
+        Some(600),
+        "half of the walking ceiling, reached at the braking rate"
+    );
+    let limping = arena.unit(RED).map(|state| state.pose.y_cm);
+    run(&mut arena, &mut wall, 500, 2);
+    assert!(
+        arena.unit(RED).map(|state| state.pose.y_cm) > limping,
+        "and it is still covering ground"
+    );
+
+    // The second leg: stopped, where it stands, at once.
+    destroy_section(&mut arena, RED, "right_leg");
+    fire_consequences(&mut arena, RED, "right_leg");
+    assert_eq!(
+        arena.unit(RED).map(|state| state.limits.motion_disabled),
+        Some(true),
+        "doc 16 §9 item 2: `disable_motion` for both"
+    );
+    assert_eq!(arena.unit(RED).map(|state| state.speed_cms), Some(0));
+    let stopped = arena.unit(RED).map(|state| state.pose.y_cm);
+    run(&mut arena, &mut wall, 500, 8);
+    assert_eq!(
+        arena.unit(RED).map(|state| state.pose.y_cm),
+        stopped,
+        "a unit with no legs is an obstacle, and doc 16 §3.4 step 2 forces its \
+         speed to zero every substep"
+    );
+    // It is not a wreck: doc 10 3A's disabled precedes destroyed, and a biped
+    // that has lost its legs is still a gun that works.
+    assert_eq!(arena.unit(RED).map(|state| state.limits.wreck), Some(false));
+    assert!(
+        arena
+            .unit(RED)
+            .is_some_and(|state| !state.weapons.is_empty())
+    );
+}
+
+/// **A unit with no hull is still a wreck when it carries the mark** (16b cut
+/// X.2's one widening of the damage pipeline).
+///
+/// Doc 16 §3.3's wreck is a named condition on the unit's body, and `wreck_ops`
+/// has always put it on the hull *or on the triggering section* for a unit that
+/// has no hull. A biped is the first unit in the tree with no hull, so this is
+/// the first time the second half of that sentence has been true of the
+/// predicate as well as of the plan.
+#[test]
+fn x2_a_biped_with_no_hull_still_reads_as_a_wreck() {
+    let (_catalog, arena) = march();
+    assert!(
+        arena
+            .unit(RED)
+            .is_some_and(|state| state.profile.section("hull").is_none()),
+        "a biped has a torso and no hull"
+    );
+    let unit = arena.unit(RED).expect("the biped").unit.clone();
+    assert!(!tacsim::arena::damage::is_wreck(&unit));
+    let marked = mush_tactics::apply(
+        &unit,
+        &mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::SetSectionCondition {
+                section: mush_tactics::SectionId::new("torso").expect("a section"),
+                condition: mush_tactics::ConditionId::new(tacsim::arena::damage::WRECK_CONDITION)
+                    .expect("a condition"),
+            }],
+            None,
+            None,
+        )
+        .expect("a one-op plan"),
+        0,
+    )
+    .map(|(post, _)| post)
+    .expect("the mark applies");
+    assert!(
+        tacsim::arena::damage::is_wreck(&marked),
+        "the condition is the mark, wherever the unit's body is"
     );
 }

@@ -11,7 +11,8 @@
 //!   T.3's stand-in — the **same window** (2.56 km at 10 m cells, D-16-16) out of
 //!   uniform ground — and it answers only where no pack does, which is a world
 //!   the content has not been applied to and the unit tests of this crate.
-//! * [`tracked_rules`] — the `tracked` mode's kinematics, read out of the M32
+//! * [`tracked_rules`] — the kinematics of the mode a unit drives under
+//!   (`tracked`, or the `legged` one 16b cut X.2 added), read out of the M32
 //!   unit's opaque [`ModeRules`] by the game crate, which is the only layer
 //!   allowed to interpret them (doc 16 §3.3).
 //! * [`sensor_profile`] and [`weapon_summaries`] (**16b cut S.1**) — what a unit
@@ -233,24 +234,26 @@ pub fn opening_pose(
     None
 }
 
-/// **The `tracked` mode's rules** (doc 16 §3.3 "Mobility mode rules").
+/// **The mode rules a unit drives under** (doc 16 §3.3 "Mobility mode rules").
 ///
 /// M32 keeps a mode's kinematics in an opaque [`mush_tactics::ModeRules`] — a
 /// digest-bound rules value the engine never interprets — and doc 16 §3.3 names
 /// the five fields the game crate decodes out of it. This is that decode, and the
 /// only place in the tree that reads those keys.
 ///
-/// The mode taken is the unit's **effective** mode when its locomotion is
-/// `tracked`, else the first `tracked` mode the profile declares. A unit with no
-/// mobility profile, no tracked mode, or a rules blob missing a field gets the
-/// **stock tank's** values for what is missing — 15 m/s, 1 m/s² away, 2 m/s²
-/// back, 30°/s, 50 % in reverse — which are the numbers
-/// `content/units/line_tank.json` authors (16b cut C.2), so the fallback and the
-/// shipped tank cannot disagree. A unit that
-/// simply cannot move is a different thing and says so: the profile declares no
-/// tracked mode *and* the caller wanted one, so the defaults still let the arena
-/// open, and the unit's own consequences (a destroyed engine, a wreck) are what
-/// stop it.
+/// The mode taken is the profile's `tracked` one, **else its `legged` one** (16b
+/// cut X.2, doc 16 §9 item 2: *motion reads either*), else a mode whose id merely
+/// contains the word. The order is the authored one
+/// ([`crate::definitions::unit::MobilityDef::modes`]) so that a unit which
+/// declared both drives here as it binds there. A unit with no mobility profile,
+/// no mode this recognises, or a rules blob missing a field gets the **stock
+/// tank's** values for what is missing — 15 m/s, 1 m/s² away, 2 m/s² back, 30°/s,
+/// 50 % in reverse — which are the numbers `content/units/line_tank.json` authors
+/// (16b cut C.2), so the fallback and the shipped tank cannot disagree. A unit
+/// that simply cannot move is a different thing and says so: the profile declares
+/// no such mode *and* the caller wanted one, so the defaults still let the arena
+/// open, and the unit's own consequences (a destroyed engine, a lost pair of
+/// legs, a wreck) are what stop it.
 #[must_use]
 pub fn tracked_rules(unit: &mush_tactics::TacticalUnit) -> TrackedRules {
     let mut rules = STOCK_TRACKED;
@@ -261,6 +264,12 @@ pub fn tracked_rules(unit: &mush_tactics::TacticalUnit) -> TrackedRules {
         .modes()
         .iter()
         .find(|mode| mode.locomotion.as_str() == TRACKED)
+        .or_else(|| {
+            profile
+                .modes()
+                .iter()
+                .find(|mode| mode.locomotion.as_str() == LEGGED)
+        })
         .or_else(|| {
             profile
                 .modes()
@@ -436,9 +445,21 @@ pub fn weapon_summaries(
             // *weapon definition's* (doc 16 §3.5 "Weapon definition": *`mount`
             // (section and facet)*) and not the component's install point, because
             // the weapon is what says where it can be carried.
+            //
+            // **16b cut X.2**: unless this unit has no such section. A weapon says
+            // where it can be carried on the hull it was drawn for, and a biped
+            // carrying a turret gun in its right arm declares no turret at all —
+            // so the mount falls back to where the unit actually installed it,
+            // which is the section that goes when the arm is shot off. For every
+            // shipped unit the two are the same word (both tanks install their
+            // turret weapons in the turret), so nothing moves.
             damage: entry(&catalog.ammunition, def.ammunition.as_str())
                 .map_or(0, |ammunition| ammunition.damage),
-            mount_section: SmolStr::new(def.mount.section.as_str()),
+            mount_section: SmolStr::new(if spec.section(&def.mount.section).is_some() {
+                def.mount.section.as_str()
+            } else {
+                component.section.as_str()
+            }),
         });
     }
     out
@@ -517,6 +538,12 @@ fn consequence_of(authored: &crate::definitions::unit::Consequence) -> Consequen
         Authored::Slow { percent } => Consequence::Slow { percent: *percent },
         Authored::NoTurnToward { side } => Consequence::NoTurnToward { side: *side },
         Authored::DisableMotion => Consequence::DisableMotion,
+        Authored::DisableMotionWhenAllOf { sections } => Consequence::DisableMotionWhenAllOf {
+            sections: sections
+                .iter()
+                .map(|section| SmolStr::new(section.as_str()))
+                .collect(),
+        },
     }
 }
 
@@ -576,6 +603,9 @@ pub fn stock_resolution() -> ResolutionDef {
 
 /// The locomotion id doc 16 §3.3's mode rules belong to.
 const TRACKED: &str = "tracked";
+
+/// The locomotion id a biped's mode rules belong to (16b cut X.2).
+const LEGGED: &str = "legged";
 
 /// Doc 16 §3.3's stock tank, as the documented fallback — the five numbers
 /// `content/units/line_tank.json` authors, pinned equal to it by

@@ -168,6 +168,12 @@ pub enum Consequence {
     },
     /// The unit cannot move at all.
     DisableMotion,
+    /// **The unit cannot move once every one of `sections` is destroyed** (16b
+    /// cut X.2; doc 16 §9 item 2's *`disable_motion` for both* legs).
+    DisableMotionWhenAllOf {
+        /// The sections that must all be destroyed, in authored order.
+        sections: Vec<SmolStr>,
+    },
 }
 
 impl Consequence {
@@ -181,6 +187,7 @@ impl Consequence {
             Consequence::Slow { .. } => "slow",
             Consequence::NoTurnToward { .. } => "no_turn_toward",
             Consequence::DisableMotion => "disable_motion",
+            Consequence::DisableMotionWhenAllOf { .. } => "disable_motion_when_all_of",
         }
     }
 }

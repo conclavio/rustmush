@@ -738,12 +738,15 @@ fn pack_show(ctx: &mut Ctx<'_>, arg: &str, cursor: &str) -> Result<(), CmdError>
             // 16b cut C.2: doc 16 §4's six. Each renders the shape a reviewer
             // checks a version bump against, and nothing a listing should not
             // carry — these are rules definitions, so there is no fog to keep.
+            // 16b cut X.2: the speed shown is the unit's first declared mode's —
+            // its tracks if it has any, its legs otherwise — which is the mode
+            // `tracked_rules` and the arena both take.
             PackEntry::Unit(def) => format!(
                 "{} — {} sections, {} components, {} cm/s",
                 def.label,
                 def.sections.len(),
                 def.components.len(),
-                def.mobility.tracked.max_speed_cms
+                crate::definitions::tracked_rules(def).max_speed_cms
             ),
             PackEntry::Weapon(def) => format!(
                 "{} — {}, {} cm at {} ms, {}",

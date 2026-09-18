@@ -1,0 +1,212 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.biped_mk1",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "6d2272a002628d03e864e50966a79922427dbdff037d20f1d0eb33c7ca51935b",
+    "requires": [
+      {
+        "id": "tacsim.pack.cannon_105",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.mg_coax",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.unit.biped_mk1": {
+      "kind": "unit",
+      "def": {
+        "label": "Mk1 biped",
+        "sections": [
+          {
+            "id": "torso",
+            "facets": [
+              { "id": "front", "armor": 450 },
+              { "id": "left", "armor": 300 },
+              { "id": "right", "armor": 300 },
+              { "id": "rear", "armor": 220 },
+              { "id": "top", "armor": 150 }
+            ],
+            "internals": 260,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "head",
+            "facets": [
+              { "id": "front", "armor": 150 },
+              { "id": "left", "armor": 100 },
+              { "id": "right", "armor": 100 },
+              { "id": "rear", "armor": 100 }
+            ],
+            "internals": 80,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "left_arm",
+            "facets": [
+              { "id": "front", "armor": 200 },
+              { "id": "left", "armor": 180 },
+              { "id": "rear", "armor": 120 }
+            ],
+            "internals": 120,
+            "consequences": [{ "kind": "remove_weapons", "section": "left_arm" }]
+          },
+          {
+            "id": "right_arm",
+            "facets": [
+              { "id": "front", "armor": 200 },
+              { "id": "right", "armor": 180 },
+              { "id": "rear", "armor": 120 }
+            ],
+            "internals": 120,
+            "consequences": [
+              { "kind": "remove_weapons", "section": "right_arm" }
+            ]
+          },
+          {
+            "id": "left_leg",
+            "facets": [
+              { "id": "front", "armor": 260 },
+              { "id": "left", "armor": 220 },
+              { "id": "rear", "armor": 180 }
+            ],
+            "internals": 160,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              {
+                "kind": "disable_motion_when_all_of",
+                "sections": ["left_leg", "right_leg"]
+              }
+            ]
+          },
+          {
+            "id": "right_leg",
+            "facets": [
+              { "id": "front", "armor": 260 },
+              { "id": "right", "armor": 220 },
+              { "id": "rear", "armor": 180 }
+            ],
+            "internals": 160,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              {
+                "kind": "disable_motion_when_all_of",
+                "sections": ["left_leg", "right_leg"]
+              }
+            ]
+          }
+        ],
+        "components": [
+          {
+            "id": "cannon",
+            "section": "right_arm",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.cannon_105",
+              "coaxial": false
+            }
+          },
+          {
+            "id": "machine_gun",
+            "section": "left_arm",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.mg_coax",
+              "coaxial": false
+            }
+          },
+          {
+            "id": "visual_sensor",
+            "section": "head",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            }
+          },
+          {
+            "id": "power",
+            "section": "torso",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": ["off", "starting", "online"],
+              "initial": "off"
+            }
+          }
+        ],
+        "mobility": {
+          "legged": {
+            "max_speed_cms": 1200,
+            "accel_cms2": 160,
+            "brake_cms2": 240,
+            "turn_rate_mdeg_s": 45000,
+            "reverse_factor_pct": 40
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              { "section": "torso", "weight": 55 },
+              { "section": "left_arm", "weight": 20 },
+              { "section": "right_arm", "weight": 20 },
+              { "section": "head", "weight": 5 }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              { "section": "torso", "weight": 35 },
+              { "section": "left_arm", "weight": 25 },
+              { "section": "left_leg", "weight": 35 },
+              { "section": "head", "weight": 5 }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              { "section": "torso", "weight": 35 },
+              { "section": "right_arm", "weight": 25 },
+              { "section": "right_leg", "weight": 35 },
+              { "section": "head", "weight": 5 }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              { "section": "torso", "weight": 45 },
+              { "section": "left_leg", "weight": 25 },
+              { "section": "right_leg", "weight": 25 },
+              { "section": "head", "weight": 5 }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              { "section": "torso", "weight": 65 },
+              { "section": "left_arm", "weight": 15 },
+              { "section": "right_arm", "weight": 15 },
+              { "section": "head", "weight": 5 }
+            ]
+          }
+        ],
+        "silhouettes": [
+          { "band": "front", "width_cm": 520, "height_cm": 1100 },
+          { "band": "left", "width_cm": 340, "height_cm": 1100 },
+          { "band": "right", "width_cm": 340, "height_cm": 1100 },
+          { "band": "rear", "width_cm": 520, "height_cm": 1100 },
+          { "band": "top", "width_cm": 520, "height_cm": 340 }
+        ],
+        "sensor_height_cm": 900,
+        "note": "Doc 16 section 9 item 2's six sections, and cut X.2's numbers for them. The front band is the torso and the two arms it carries its weapons in, with the head a rare fifth; the legs are struck from the flanks and from behind, which is what the side and rear bands weight them for. Eleven metres tall and 5.2 m across the shoulders is a bigger target than the line tank from ahead (350 cm) and a thinner one from the flank (700 cm), so a biped wants to be side on and a tank does not. The sight sits 9 m up on the head. The legged mode walks slower than the tank drives, accelerates and stops harder, twists at 45 degrees a second where a hull slews at 30, and backs at 40 per cent. One leg gone is slow(50), which is doc 16 section 3.3's track consequence read for a walker; both gone is disable_motion, authored on each leg as the pair so the order they are lost in does not matter."
+      }
+    }
+  }
+}
