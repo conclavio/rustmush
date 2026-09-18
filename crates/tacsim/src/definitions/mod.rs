@@ -295,11 +295,26 @@ impl Catalog {
         }
         for (id, sourced) in &units {
             for weapon in sourced.def.weapons() {
-                if !weapons.contains_key(weapon) {
+                let Some(def) = weapons.get(weapon) else {
                     return Err(DefinitionError::reference(
                         id.as_str(),
                         "weapon",
                         weapon.as_str(),
+                    ));
+                };
+                // **16b cut X.1** (doc 16 §9 item 1): a unit that mounts a weapon
+                // which makes heat has to say where the heat goes. The two are
+                // authored in different files and neither can check the other
+                // alone, so the cross-reference is checked here with the rest of
+                // them — a laser bolted to a tank with no heat cell would
+                // otherwise run a whole match shedding its heat into nothing.
+                if def.def.heat_per_shot > 0 && sourced.def.heat_max == 0 {
+                    return Err(DefinitionError::value(
+                        id.as_str(),
+                        format!(
+                            "mounts `{weapon}`, which makes heat, so it declares heat_max \
+                             and heat_dissipation_per_s"
+                        ),
                     ));
                 }
             }

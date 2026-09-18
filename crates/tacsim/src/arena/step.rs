@@ -144,6 +144,36 @@ pub struct Frame {
     /// lock is an opaque contact id and the only name a pilot may use, and the band
     /// each weapon's lock falls in already sits on [`FrameWeapon::range_band`].
     pub lock_p_permille: Option<u32>,
+    /// **What the platform is carrying, and what it may** (16b cut X.1; doc 16 §9
+    /// item 1), or `None` for a platform whose content declares no heat — which is
+    /// every stock tank, so nothing about a stock cockpit changes.
+    ///
+    /// It is what lets the cockpit refuse `FIRE` for heat at once instead of a
+    /// pulse later, which is the rule every other `FIRE` refusal already follows
+    /// (`crate::match_::cockpit`).
+    pub heat: Option<FrameHeat>,
+}
+
+/// **The platform's heat, as its pilots' frame carries it** (16b cut X.1).
+///
+/// Two integers and nothing derived: the ceiling is the cell's own maximum, so
+/// the cockpit's predicate and [`crate::arena::state::UnitState::overheated`] are
+/// the same comparison over the same pair and cannot drift.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameHeat {
+    /// What it is carrying.
+    pub heat: u32,
+    /// The ceiling it refuses to fire at.
+    pub max: u32,
+}
+
+impl FrameHeat {
+    /// Whether the platform is at its ceiling — doc 16 §9 item 1's refusal, read
+    /// off the frame.
+    #[must_use]
+    pub const fn overheated(&self) -> bool {
+        self.heat >= self.max
+    }
 }
 
 impl Frame {
@@ -157,6 +187,12 @@ impl Frame {
     ///
     /// The notices are **not** compared: see [`Frame::notices`]. Nor is a weapon's
     /// `ready_in_ms` countdown: see [`FrameWeapon::same_as`].
+    ///
+    /// **16b cut X.1** put the heat in, with the same trade the contact age makes:
+    /// a platform that is cooling changes a number every substep and its pilot is
+    /// told, because a heat gauge that lagged a tempo behind would be a lie about
+    /// the one thing standing between them and the next shot. A platform with no
+    /// heat compares `None` to `None` and costs nothing.
     #[must_use]
     pub fn same_as(&self, other: &Frame) -> bool {
         self.unit == other.unit
@@ -173,6 +209,7 @@ impl Frame {
             && self.contacts == other.contacts
             && self.lock == other.lock
             && self.lock_p_permille == other.lock_p_permille
+            && self.heat == other.heat
             && self.weapons.len() == other.weapons.len()
             && self
                 .weapons
@@ -625,6 +662,15 @@ impl Arena {
             // ends here.
             notice.0 = self.now_ms;
         }
+
+        // **16b cut X.1** (doc 16 §9 item 1): the heat the interval just
+        // integrated shed, at the same boundary the motion belongs to. It is a
+        // rate over **arena time** and not a thing that happens per pulse, which
+        // is why it is here and not in phase 5 — and why the remainder is carried
+        // rather than truncated (`crate::arena::heat`). It journals nothing: doc
+        // 16 §4's event kinds are a closed list and heat is a cell, whose changes
+        // are M32's own journal's to record.
+        self.dissipate_heat(dt_ms, self.now_ms);
         while let Some(event) = self.due.pop_due(self.now_ms) {
             match event.kind {
                 // Doc 16 §3.3 "Startup": `match.startup_ms` after `STARTUP` was
@@ -890,6 +936,12 @@ impl Arena {
                     // pass of the five steps per *seated* platform — not per unit —
                     // and only while that platform holds a lock at all.
                     lock_p_permille: self.lock_p_permille(unit.id),
+                    // 16b cut X.1: two integers off the unit's own cells, and
+                    // `None` for a platform that carries no heat at all.
+                    heat: match (unit.heat_now(), unit.heat_max()) {
+                        (Some(heat), Some(max)) => Some(FrameHeat { heat, max }),
+                        _ => None,
+                    },
                 },
             ));
         }

@@ -60,7 +60,8 @@ mod verbs;
 
 pub use arena_def::{
     ARENA_CELL_CM, ARENA_CELLS, PROVING_GROUND, STAND_IN, definition_for, resolution_for,
-    stock_definition, stock_resolution, tracked_rules, unit_profile,
+    sensor_height_cm, sensor_profile, stock_definition, stock_resolution, tracked_rules,
+    unit_profile, weapon_summaries,
 };
 pub(crate) use centre::record_roster;
 pub use centre::{

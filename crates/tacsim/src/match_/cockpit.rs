@@ -215,6 +215,13 @@ pub const CYCLING: &str = "Still cycling";
 /// doc 16 §3.7: *empty*).
 pub const EMPTY: &str = "Empty";
 
+/// **The words `FIRE` refuses with at the heat ceiling** (16b cut X.1; doc 16 §9
+/// item 1: *a shot refused above a heat ceiling*).
+///
+/// The arena's own refusal renders this same word, for the same reason
+/// [`POWER_NOT_ONLINE`] does, and the pin test below holds the two together.
+pub const OVERHEATED: &str = "Overheated";
+
 /// **The one byte-identical refusal for any contact id the platform does not
 /// hold** (doc 16 §3.6: *unresolvable, unowned or expired* are one answer).
 ///
@@ -288,6 +295,14 @@ pub enum CockpitError {
     /// The named weapon has no rounds left (16b cut W.1).
     #[error("{EMPTY}: that weapon has nothing left to fire.")]
     Empty,
+    /// The platform is at its heat ceiling (16b cut X.1; doc 16 §9 item 1).
+    #[error("{OVERHEATED}: {heat} of {max}. Let it cool.")]
+    Overheated {
+        /// What it is carrying.
+        heat: u32,
+        /// The ceiling.
+        max: u32,
+    },
     /// One line for every contact id the platform does not hold.
     #[error("{NO_SUCH_CONTACT}")]
     NoSuchContact,
@@ -1049,6 +1064,18 @@ fn fire(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
     if weapon.rounds <= 0 {
         return Err(CockpitError::Empty);
     }
+    // **16b cut X.1** (doc 16 §9 item 1), in the arena's own order: the platform's
+    // heat after the weapon's own two refusals and before the power. A platform
+    // whose content declares no heat carries no `heat` on its frame and is never
+    // refused here.
+    if let Some(heat) = held.as_ref().and_then(|held| held.frame.heat)
+        && heat.overheated()
+    {
+        return Err(CockpitError::Overheated {
+            heat: heat.heat,
+            max: heat.max,
+        });
+    }
     require_power(ctx.w, actor)?;
     forward_intent(
         ctx,
@@ -1112,7 +1139,7 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
     let lines = match held.as_ref() {
         Some(held) => {
             let frame = &held.frame;
-            vec![
+            let mut lines = vec![
                 format!(
                     "{}: power {}, {} kph, heading {}°{}",
                     display_name(ctx.w, unit),
@@ -1127,7 +1154,23 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
                     frame.pose.y_cm / 100,
                     frame.tempo.as_str()
                 ),
-            ]
+            ];
+            // **16b cut X.1**: a line of its own, and only for a platform that
+            // carries heat — so a stock tank's `STATUS` is the two lines it always
+            // was, byte for byte.
+            if let Some(heat) = frame.heat {
+                lines.push(format!(
+                    "  heat {} of {}{}",
+                    heat.heat,
+                    heat.max,
+                    if heat.overheated() {
+                        ", OVERHEATED"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            lines
         }
         None => vec![format!(
             "{}: power off. The panel has told you nothing yet.",

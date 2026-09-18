@@ -22,9 +22,9 @@
 //! reproduced. Nothing about the doc's formula changes: the same ratio, three more
 //! digits, no rounding of a weapon's dispersion to the nearest whole cone.
 //!
-//! # The four error terms, and what one unit of each is worth
+//! # The error terms, and what one unit of each is worth
 //!
-//! `resolution.error_terms` (cut C.2, `content/resolution.json`) carries four
+//! `resolution.error_terms` (cut C.2, `content/resolution.json`) carries the
 //! **per-mille weights** and no measurements: *cut W multiplies the term's own
 //! measured quantity by the weight and adds the result to the weapon's band
 //! dispersion*. So this cut owes each term a measurement, and the calibration
@@ -37,6 +37,7 @@
 //! | `target_lateral_speed` | the same speed **across** the line of fire | 800: a target crossing at 15 m/s adds 1.2 mrad |
 //! | `gunnery` | a rating of 1 ([`PilotProfile`](crate::sheet::PilotProfile)'s floor), falling as `1 / rating` | 1,000: a green gunner adds 1 mrad, an ace 0.2 |
 //! | `sensor_condition` | a sight at **zero** condition; nothing at full | 500: a wrecked sight adds 0.5 mrad |
+//! | `beam_attenuation` | a beam's line **wholly** attenuated by the ground it crosses ([`FULL_ATTENUATION`]); zero for anything that is not a beam | 1,000: a beam through half-obscuring ground adds 0.5 mrad (16b cut X.1) |
 //!
 //! Every term **adds**: a cone is never narrower than the weapon's own
 //! dispersion, and a better gunner adds less rather than subtracting. That is the
@@ -98,6 +99,15 @@ pub const STOCK_GUNNERY: u8 = 1;
 /// A sight at full health, as the M32 `condition` cell carries it
 /// (`crate::definitions::unit::MAX_CONDITION`).
 pub const FULL_CONDITION: u32 = 100;
+
+/// **A fully attenuated beam**, percent — one reference unit of the fifth error
+/// term (16b cut X.1; doc 16 §9 item 1).
+///
+/// The trace's `attenuation` is a percentage of the line lost to the ground it
+/// crosses, so a hundred is the whole of it and the term is worth its weight
+/// there; the raw sum a walk gathers can run past a hundred through enough
+/// partial cells, and the term is capped here rather than in the walk.
+pub const FULL_ATTENUATION: u32 = 100;
 
 /// The narrowest cone the arithmetic will divide by, microradians. A weapon with
 /// no authored dispersion, a still shooter, an ace gunner and a perfect sight
@@ -449,6 +459,24 @@ impl Arena {
             .unwrap_or(0);
         let terms = &self.resolution.error_terms;
         let mut urad = u64::from(dispersion_mrad).saturating_mul(u64::from(URAD_PER_MRAD));
+        // **16b cut X.1** (doc 16 §9 item 1): the fifth term, and a beam's alone.
+        // The ground a beam crosses scatters it, so the line it arrives on is
+        // wider than the one it left — which is the same thing cover is for a
+        // round, said as a cone rather than as a silhouette. A direct-fire weapon
+        // takes no trace for it and adds nothing: the `is_beam` test is the whole
+        // of what every stock shot pays for this term existing.
+        if shooter
+            .weapon(weapon)
+            .is_some_and(crate::arena::state::WeaponSummary::is_beam)
+        {
+            let attenuation = self
+                .fire_attenuation(shooter.id, target.id)
+                .min(FULL_ATTENUATION);
+            urad = urad.saturating_add(term_urad(
+                terms.beam_attenuation,
+                attenuation.saturating_mul(PERMILLE) / FULL_ATTENUATION,
+            ));
+        }
         urad = urad.saturating_add(term_urad(
             terms.shooter_speed,
             speed_permille(shooter.speed_cms),

@@ -337,14 +337,10 @@ impl Arena {
     /// S.1's perception pass takes them: a tank shoots from about where it looks.
     #[must_use]
     pub fn fire_line(&self, shooter: ObjId, target: ObjId) -> (Sight, Cover) {
-        let (Some(from), Some(to)) = (self.unit(shooter), self.unit(target)) else {
-            return (Sight::Clear, Cover::None);
-        };
-        let (Some(a), Some(b)) = (self.fire_eye(from), self.fire_eye(to)) else {
-            return (Sight::Clear, Cover::None);
-        };
-        let trace = trace_cells(&self.definition.terrain, a, b);
-        (trace.sight, trace.target_cover)
+        match self.fire_trace(shooter, target) {
+            Some(trace) => (trace.sight, trace.target_cover),
+            None => (Sight::Clear, Cover::None),
+        }
     }
 
     /// Just the cover half of [`Arena::fire_line`] — what the cockpit's percentage
@@ -352,6 +348,35 @@ impl Arena {
     #[must_use]
     pub fn fire_cover(&self, shooter: ObjId, target: ObjId) -> Cover {
         self.fire_line(shooter, target).1
+    }
+
+    /// **What a beam loses on the way** (16b cut X.1; doc 16 §9 item 1:
+    /// *resolution uses `beam_path` attenuation as a cover term*), percent.
+    ///
+    /// It is the third field of the very same walk [`Arena::fire_line`] reads, and
+    /// deliberately so. `mush_atlas::beam_path` and `direct_fire_path` differ by
+    /// one line — the beam levels an eye that a straight flight has already left
+    /// level — so over a [`mush_atlas::trace::CellGrid`] the beam walk **is**
+    /// `trace_cells`' walk, and a `beam_cells` beside it would be the same
+    /// function under a second name. What the beam wants that direct fire does not
+    /// is the attenuation the walk gathered, which cut S.1 computed and cut W.2 had
+    /// no reader for.
+    ///
+    /// It is a read of its own rather than a third element of `fire_line`'s tuple
+    /// because that tuple is destructured in the impact and in the reflex
+    /// controller, and because only a beam ever asks: a direct-fire shot pays
+    /// nothing for this existing.
+    #[must_use]
+    pub fn fire_attenuation(&self, shooter: ObjId, target: ObjId) -> u32 {
+        self.fire_trace(shooter, target)
+            .map_or(0, |trace| trace.attenuation)
+    }
+
+    /// The one walk `fire_line` and `fire_attenuation` are two readings of.
+    fn fire_trace(&self, shooter: ObjId, target: ObjId) -> Option<mush_atlas::trace::CellTrace> {
+        let (from, to) = (self.unit(shooter)?, self.unit(target)?);
+        let (a, b) = (self.fire_eye(from)?, self.fire_eye(to)?);
+        Some(trace_cells(&self.definition.terrain, a, b))
     }
 
     /// One unit's eye, for a fire trace.

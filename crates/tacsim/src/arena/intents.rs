@@ -240,6 +240,11 @@ pub enum Refusal {
     /// **`FIRE` on a weapon with no rounds left** (16b cut W.1).
     #[error("that weapon is empty")]
     Empty,
+    /// **`FIRE` on a platform at its heat ceiling** (16b cut X.1; doc 16 §9 item
+    /// 1: *a shot refused above a heat ceiling*). A platform whose content
+    /// declares no heat is never refused this.
+    #[error("that unit is overheated")]
+    Overheated,
     /// **`FIRE` naming a weapon the unit does not carry** (16b cut W.1).
     #[error("that unit carries no such weapon")]
     NoWeapon,
@@ -266,6 +271,7 @@ impl Refusal {
             Refusal::NoLock => "no_lock",
             Refusal::Cycling => "cycling",
             Refusal::Empty => "empty",
+            Refusal::Overheated => "overheated",
             Refusal::NoWeapon => "no_weapon",
             Refusal::NotReflex => "not_reflex",
         }

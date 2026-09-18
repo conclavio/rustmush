@@ -623,6 +623,118 @@ impl Power {
 /// §3.2 "Line of sight": *`sensor_height_cm` (new field; 150 by default)*).
 pub const DEFAULT_SENSOR_HEIGHT_CM: u32 = 150;
 
+/// **What a unit does with heat** (16b cut X.1; doc 16 §9 item 1: *a `heat` cell
+/// and dissipation appear on the unit*).
+///
+/// Everything about heat that is **not** the number itself. The number is an M32
+/// cell — `heat` on the unit's body section — because doc 16 §3.5 makes the M32
+/// unit the truth of a unit's condition cells and because the check-in hands the
+/// cells back whole; this is the arena's map to it, read once at check-out.
+///
+/// It is read and not carried across the seam. `CustodyUnit` is a struct six test
+/// files build literally, so a new field on it would be a diff in every one of
+/// them; the numbers are already on the `TacticalUnit` that crosses beside it, and
+/// [`HeatState::read`] finds them there. The same reasoning is why the shot's own
+/// cost is a cell on the weapon's component rather than a field on
+/// [`WeaponSummary`].
+///
+/// A unit whose content declares no ceiling has **no** `HeatState` at all, which
+/// is what makes the per-substep dissipation an `Option` test for every stock unit
+/// in the harness's field of 300.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeatState {
+    /// The section the `heat` and `heat_sink` cells sit on — found rather than
+    /// derived, so the rule for *which* section lives in one place
+    /// (`crate::definitions::unit::UnitSpec::heat_section`).
+    pub section: SmolStr,
+    /// The ceiling, off the `heat` cell's own maximum. `FIRE` refuses at it.
+    pub max: u32,
+    /// What the unit sheds per second of arena time, off the `heat_sink` cell.
+    pub per_s: u32,
+    /// What one shot of each weapon adds, by the weapon's component id; a weapon
+    /// with no row makes no heat.
+    pub per_shot: BTreeMap<SmolStr, u32>,
+    /// **The thousandths of a heat unit the substeps have shed and not yet
+    /// spent**, `0..1000`.
+    ///
+    /// Doc 16's model is rate-independent (D-16-2) and integer (D-16-4), and the
+    /// two pull against each other here: `tempo.substep_max_ms` is 250, so
+    /// `per_s × dt_ms / 1000` truncates to nothing for any rate under four a
+    /// second and a tank at `Engaged` would never cool at all. Carrying the
+    /// remainder makes the total shed over any interval exactly
+    /// `per_s × ms / 1000` **however the interval is chopped**, which is the
+    /// property the cross-tempo test asserts of everything else in the model.
+    ///
+    /// It is arena-side scratch and not state: it is reset with the heat it
+    /// belongs to, never leaves the match, and is not folded into the state hash —
+    /// for the same reason the opaque `TacticalUnit` is not
+    /// ([`crate::arena::hash::state_hash`]).
+    pub carry_milli: u32,
+}
+
+impl HeatState {
+    /// **Read one unit's heat numbers off its cells** (16b cut X.1), or `None`
+    /// for a unit that carries no `heat` cell — every stock unit.
+    ///
+    /// The section is found by probing each section the unit's profile declares
+    /// for the cell, so `bind`'s choice of body section is authoritative and this
+    /// never re-derives it. A unit with no profile (every hand-made rig) has no
+    /// section to probe and no heat.
+    #[must_use]
+    pub fn read(
+        unit: &TacticalUnit,
+        profile: &UnitProfile,
+        weapons: &[WeaponSummary],
+    ) -> Option<HeatState> {
+        let (section, cell) = profile.sections.iter().find_map(|section| {
+            let addr = heat_addr(section.id.as_str(), crate::definitions::unit::HEAT_CELL)?;
+            unit.cell(&addr).map(|cell| (section.id.clone(), *cell))
+        })?;
+        let per_s = heat_addr(section.as_str(), crate::definitions::unit::HEAT_SINK_CELL)
+            .and_then(|addr| unit.cell(&addr))
+            .map_or(0, |cell| u32::try_from(cell.current.max(0)).unwrap_or(0));
+        let per_shot = weapons
+            .iter()
+            .filter_map(|weapon| {
+                let addr = mush_tactics::CellAddr::Component {
+                    component: mush_tactics::ComponentId::new(weapon.id.as_str()).ok()?,
+                    cell: mush_tactics::CellId::new(crate::definitions::unit::HEAT_PER_SHOT_CELL)
+                        .ok()?,
+                };
+                let value = u32::try_from(unit.cell(&addr)?.current.max(0)).ok()?;
+                (value > 0).then(|| (weapon.id.clone(), value))
+            })
+            .collect();
+        Some(HeatState {
+            section,
+            max: u32::try_from(cell.max.max(0)).unwrap_or(0),
+            per_s,
+            per_shot,
+            carry_milli: 0,
+        })
+    }
+
+    /// The address of one of this unit's heat cells.
+    #[must_use]
+    pub fn addr(&self, cell: &str) -> Option<mush_tactics::CellAddr> {
+        heat_addr(self.section.as_str(), cell)
+    }
+
+    /// What one shot of `weapon` adds; `0` for a weapon that makes no heat.
+    #[must_use]
+    pub fn per_shot(&self, weapon: &str) -> u32 {
+        self.per_shot.get(weapon).copied().unwrap_or(0)
+    }
+}
+
+/// One section-cell address, or `None` for an id `mush-tactics` will not take.
+fn heat_addr(section: &str, cell: &str) -> Option<mush_tactics::CellAddr> {
+    Some(mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new(section).ok()?,
+        cell: mush_tactics::CellId::new(cell).ok()?,
+    })
+}
+
 /// **One weapon, as the check-out hands it over** (16b cut S.1; doc 16 §3.5
 /// "Weapon definition").
 ///
@@ -828,6 +940,10 @@ pub struct UnitState {
     pub profile: UnitProfile,
     /// **The gunnery rating resolving its shots** (16b cut W.2), 1 to 5.
     pub gunnery: u8,
+    /// **What it does with heat** (16b cut X.1; doc 16 §9 item 1), or `None` for
+    /// a unit whose content declares none — every stock unit, so the per-substep
+    /// dissipation costs the harness one `Option` test per unit.
+    pub heat: Option<HeatState>,
     /// **Who flies it** (16b cut N.1; doc 16 §6). Set at check-out and moved by
     /// exactly one thing afterwards: a [`crate::arena::intents::Control`] that
     /// releases or restores the seat (doc 16 §3.8 "Disconnects").
@@ -1727,6 +1843,11 @@ impl Arena {
                     y_cm: unit.pose.y_cm,
                 });
             }
+            // **16b cut X.1**: the heat numbers, read off the cells the
+            // `TacticalUnit` already carries rather than across a widened seam
+            // (see [`HeatState`]). `None` for every unit whose content declares
+            // no ceiling.
+            let heat = HeatState::read(&unit.unit, &unit.profile, &unit.weapons);
             states.push(UnitState {
                 id: unit.id,
                 team: unit.team,
@@ -1768,6 +1889,7 @@ impl Arena {
                 } else {
                     unit.gunnery
                 },
+                heat,
                 controller: unit.controller,
                 unit: unit.unit,
                 lock: None,

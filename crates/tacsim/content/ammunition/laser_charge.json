@@ -1,0 +1,21 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.laser_charge",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "1128f466f9c5839bbebef59a0f1e57a5e5aafca5e19dc9f0406913b077abeceb",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.ammunition.laser_charge": {
+      "kind": "ammunition",
+      "def": {
+        "label": "laser charge",
+        "damage": 25,
+        "penetration_class": "beam",
+        "count_per_load": 500,
+        "note": "Cut X.1's numbers, and W2 is what fixes the first of them: 25 against the line_tank's own armour is sixteen pulses through a 400 cm front hull facet where the 105's HE takes four, and five through a 120 cm track. A laser is what you wear a tank down with, not what you kill it with, and the arithmetic says so rather than the prose. 500 is deliberately past anything a match spends: doc 16 section 9 makes heat the laser's limit, so the magazine must not be, and a tank that has fired its heat ceiling's worth every cycle for an hour has spent about 1,800."
+      }
+    }
+  }
+}

@@ -3,7 +3,7 @@
 //!
 //! Doc 16 §3.5 step 3: *`p_permille = hit_curve(angular_size_mrad × 1000 /
 //! error_mrad)`, a named monotone table in config with interpolation, clamped to
-//! `[resolution.p_min, resolution.p_max]`*. This is that table, and the four
+//! `[resolution.p_min, resolution.p_max]`*. This is that table, and the
 //! per-mille weights of step 2 beside it.
 //!
 //! Everything is per-mille, so the whole resolution is integer arithmetic
@@ -32,13 +32,28 @@ pub const MAX_HIT_CURVE_X: u32 = 1_000_000;
 /// multiplies the cone by ten.
 pub const MAX_ERROR_WEIGHT: u32 = 10_000;
 
+/// **What a beam's attenuation is worth when a table does not say** (16b cut
+/// X.1; doc 16 §9 item 1), per mille.
+///
+/// The same ×1.0 `shooter_speed` and `gunnery` carry, so a beam that reaches its
+/// target through half-obscuring ground adds half a milliradian to the cone.
+///
+/// It has a default because the stock game has no beam: `content/resolution.json`
+/// was authored for four terms and a fifth key in it would move its digest and
+/// the pin that guards it, for a number every stock shot multiplies by zero. A
+/// table that wants another weight authors one; one that says nothing gets this,
+/// and — because the field is skipped when it equals this — a table that says
+/// nothing serialises to exactly the four keys it always did.
+pub const DEFAULT_BEAM_ATTENUATION: u32 = 1_000;
+
 /// The per-mille weights of doc 16 §3.5 step 2's named terms.
 ///
 /// Each is a **weight**, not a value: cut W multiplies the term's own measured
 /// quantity (the shooter's speed, the target's lateral speed, the gunnery rating
-/// through the `PilotProfile` seam, the sensor's condition cell) by the weight
-/// and adds the result to the weapon's band dispersion. Cut C authors the
-/// weights and reads none of them.
+/// through the `PilotProfile` seam, the sensor's condition cell, and — 16b cut
+/// X.1, for a beam alone — the attenuation of the ground its line crosses) by
+/// the weight and adds the result to the weapon's band dispersion. Cut C authors
+/// the weights and reads none of them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ErrorTerms {
@@ -51,6 +66,29 @@ pub struct ErrorTerms {
     pub gunnery: u32,
     /// How much a damaged sensor widens it.
     pub sensor_condition: u32,
+    /// **How much the ground a beam crosses widens it** (16b cut X.1; doc 16 §9
+    /// item 1: *resolution uses `beam_path` attenuation as a cover term*).
+    ///
+    /// Measured against a **fully** attenuated line: a beam that loses half of
+    /// itself on the way adds half this weight's worth. It is zero for every
+    /// direct-fire weapon, because the term is a beam's alone, and
+    /// [`DEFAULT_BEAM_ATTENUATION`] for a table that does not name it.
+    #[serde(
+        default = "default_beam_attenuation",
+        skip_serializing_if = "is_default_beam_attenuation"
+    )]
+    pub beam_attenuation: u32,
+}
+
+/// The default of [`ErrorTerms::beam_attenuation`], for `serde`.
+const fn default_beam_attenuation() -> u32 {
+    DEFAULT_BEAM_ATTENUATION
+}
+
+/// Whether the authored weight is the default, so an unauthored one is not
+/// written back out (see [`DEFAULT_BEAM_ATTENUATION`]).
+fn is_default_beam_attenuation(value: &u32) -> bool {
+    *value == DEFAULT_BEAM_ATTENUATION
 }
 
 /// One resolution table (doc 16 §3.5).
@@ -62,7 +100,7 @@ pub struct ResolutionDef {
     /// `[[x_permille, p_permille], ..]`, x strictly increasing and p never
     /// falling: the curve is monotone by validation, not by hope.
     pub hit_curve: Vec<[u32; 2]>,
-    /// The four weights of step 2.
+    /// The weights of step 2.
     pub error_terms: ErrorTerms,
     /// The floor a resolved probability is clamped to, per mille.
     pub p_min: u32,
@@ -185,6 +223,7 @@ impl ResolutionDef {
             ),
             ("gunnery", self.error_terms.gunnery),
             ("sensor_condition", self.error_terms.sensor_condition),
+            ("beam_attenuation", self.error_terms.beam_attenuation),
         ] {
             if weight > MAX_ERROR_WEIGHT {
                 return Err(DefinitionError::value(

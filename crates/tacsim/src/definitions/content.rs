@@ -52,6 +52,12 @@
 //! three starter packs do.
 //!
 //! `resources.json` is not a pack at all; see [`super::resources`].
+//!
+//! # And what ships beside it without being shipped
+//!
+//! **16b cut X.1** adds three more files under `content/` — the laser, its charge
+//! and the tank that carries it — which are [`EXTENSIONS`] and deliberately not
+//! [`SOURCES`]. See that constant for why.
 
 use crate::config::PackSource;
 
@@ -91,6 +97,64 @@ pub const LINE_TANK: &str = "tacsim.unit.line_tank";
 
 /// The resolution table the shipped content declares.
 pub const RESOLUTION: &str = "tacsim.resolution.stock";
+
+// ---------------------------------------------------------------------------
+// Doc 16 §9's extensions
+// ---------------------------------------------------------------------------
+
+/// `crates/tacsim/content/ammunition/laser_charge.json` (16b cut X.1).
+pub const LASER_CHARGE_JSON: &str = include_str!("../../content/ammunition/laser_charge.json");
+/// `crates/tacsim/content/weapons/laser_mk1.json` (16b cut X.1).
+pub const LASER_MK1_JSON: &str = include_str!("../../content/weapons/laser_mk1.json");
+/// `crates/tacsim/content/units/line_tank_laser.json` (16b cut X.1).
+pub const LINE_TANK_LASER_JSON: &str = include_str!("../../content/units/line_tank_laser.json");
+
+/// The laser weapon doc 16 §9 item 1 asks for.
+pub const LASER_MK1: &str = "tacsim.weapon.laser_mk1";
+
+/// The unit that carries it.
+pub const LINE_TANK_LASER: &str = "tacsim.unit.line_tank_laser";
+
+/// **Doc 16 §9's extension content, in `requires` order** (16b cut X.1 fills the
+/// first row; §8 cut X's other five take the rest).
+///
+/// Content the game **can** load and does not ship. It goes through exactly the
+/// route an operator's `[tacsim].pack_paths` takes — one
+/// [`crate::pack::load_pack`], one [`super::Catalog::build_game`], one set of C1
+/// descriptors — and is kept out of [`SOURCES`] because doc 16 §9's whole rule is
+/// that an extension passes *without changing* what the stock game is: the shipped
+/// catalog is two weapons, one unit and one arena, and
+/// `crates/tacsim/tests/definitions.rs` says so. An extension that quietly made it
+/// three weapons would be a diff in a test this cut may not touch, and — more to
+/// the point — would put a laser in a lobby that doc 16 §9 has not yet asked to
+/// field one.
+///
+/// `crates/tacsim/tests/extensions.rs` loads it, pins every digest, and drives it
+/// end to end.
+pub const EXTENSIONS: [(&str, &str); 3] = [
+    (
+        "tacsim/content/ammunition/laser_charge.json",
+        LASER_CHARGE_JSON,
+    ),
+    ("tacsim/content/weapons/laser_mk1.json", LASER_MK1_JSON),
+    (
+        "tacsim/content/units/line_tank_laser.json",
+        LINE_TANK_LASER_JSON,
+    ),
+];
+
+/// The extension packs as sources [`crate::verify_sources`] reads exactly as it
+/// reads an operator's.
+#[must_use]
+pub fn extension_sources() -> Vec<PackSource> {
+    EXTENSIONS
+        .iter()
+        .map(|(name, bytes)| PackSource {
+            name: format!("<extension {name}>"),
+            bytes: (*bytes).to_string(),
+        })
+        .collect()
+}
 
 /// Every TacSim pack this crate ships, in `requires` order — a pack after every
 /// pack it names.

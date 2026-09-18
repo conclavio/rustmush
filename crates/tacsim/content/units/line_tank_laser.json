@@ -1,0 +1,178 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.line_tank_laser",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "211cabe64b5940e4092cca1009edf11263c03ef2f202ecc0705075dc27c32a1b",
+    "requires": [
+      {
+        "id": "tacsim.pack.laser_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.mg_coax",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.unit.line_tank_laser": {
+      "kind": "unit",
+      "def": {
+        "label": "line tank (laser)",
+        "sections": [
+          {
+            "id": "hull",
+            "facets": [
+              { "id": "front", "armor": 400 },
+              { "id": "left", "armor": 250 },
+              { "id": "right", "armor": 250 },
+              { "id": "rear", "armor": 150 },
+              { "id": "top", "armor": 100 }
+            ],
+            "internals": 200,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "turret",
+            "facets": [
+              { "id": "front", "armor": 350 },
+              { "id": "left", "armor": 220 },
+              { "id": "right", "armor": 220 },
+              { "id": "rear", "armor": 140 }
+            ],
+            "internals": 150,
+            "consequences": [{ "kind": "remove_weapons", "section": "turret" }]
+          },
+          {
+            "id": "left_track",
+            "facets": [{ "id": "left", "armor": 120 }],
+            "internals": 100,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              { "kind": "no_turn_toward", "side": "left" }
+            ]
+          },
+          {
+            "id": "right_track",
+            "facets": [{ "id": "right", "armor": 120 }],
+            "internals": 100,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              { "kind": "no_turn_toward", "side": "right" }
+            ]
+          },
+          {
+            "id": "engine",
+            "facets": [],
+            "internals": 120,
+            "consequences": [{ "kind": "disable_motion" }],
+            "struck_through": { "section": "hull", "facet": "rear" }
+          }
+        ],
+        "components": [
+          {
+            "id": "laser",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.laser_mk1",
+              "coaxial": false
+            }
+          },
+          {
+            "id": "machine_gun",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.mg_coax",
+              "coaxial": true
+            }
+          },
+          {
+            "id": "visual_sensor",
+            "section": "turret",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            }
+          },
+          {
+            "id": "power",
+            "section": "hull",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": ["off", "starting", "online"],
+              "initial": "off"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 1500,
+            "accel_cms2": 100,
+            "brake_cms2": 200,
+            "turn_rate_mdeg_s": 30000,
+            "reverse_factor_pct": 50
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              { "section": "hull", "weight": 50 },
+              { "section": "turret", "weight": 50 }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "left_track", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "right_track", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "engine", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              { "section": "hull", "weight": 50 },
+              { "section": "turret", "weight": 50 }
+            ]
+          }
+        ],
+        "silhouettes": [
+          { "band": "front", "width_cm": 350, "height_cm": 250 },
+          { "band": "left", "width_cm": 700, "height_cm": 250 },
+          { "band": "right", "width_cm": 700, "height_cm": 250 },
+          { "band": "rear", "width_cm": 350, "height_cm": 250 },
+          { "band": "top", "width_cm": 700, "height_cm": 350 }
+        ],
+        "sensor_height_cm": 150,
+        "heat_max": 60,
+        "heat_dissipation_per_s": 3,
+        "note": "The line tank with the 105 swapped for the Mk1 laser, and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same coaxial and the same sight, so a match between the two is a match between the weapons. The two numbers cut X.1 adds are the ones the swap needs. 60 is three pulses of the laser's 20, which is what makes the third shot the one that locks the turret out rather than the first. 3 a second empties that ceiling in twenty seconds, so a tank that fires its three and waits is firing about one pulse every seven seconds sustained, against the cannon's six-second cycle."
+      }
+    }
+  }
+}

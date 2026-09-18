@@ -563,6 +563,10 @@ pub fn stock_resolution() -> ResolutionDef {
             target_lateral_speed: 800,
             gunnery: 1_000,
             sensor_condition: 500,
+            // 16b cut X.1: the term `content/resolution.json` does not author, at
+            // its documented default — which is what keeps this fallback and the
+            // pack byte-identical when serialised.
+            beam_attenuation: crate::definitions::resolution::DEFAULT_BEAM_ATTENUATION,
         },
         p_min: 10,
         p_max: 950,

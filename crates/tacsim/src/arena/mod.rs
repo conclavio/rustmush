@@ -142,6 +142,7 @@ pub mod clock;
 pub mod command;
 pub mod damage;
 pub mod hash;
+pub mod heat;
 pub mod index;
 pub mod intents;
 pub mod ledger;
@@ -164,6 +165,7 @@ pub use damage::{
     WRECK_CONDITION, is_wreck,
 };
 pub use hash::state_hash;
+pub use heat::{COOL_CAUSE, MILLI, SHOT_CAUSE};
 pub use index::{SpatialIndex, range_cm};
 pub use intents::{
     Control, ControlState, Intent, IntentKind, IntentOutcome, Refusal, apply_control, apply_intent,
@@ -184,11 +186,11 @@ pub use rng::{DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_permille};
 pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, Classification, ContactId,
     Controller, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, DueEvent, DueHeap, DueKind,
-    EndReason, EntryZone, EpochTable, KeySpot, MatchEnd, MotionLimits, NO_SUCH_CONTACT, Pilot,
-    Power, ShadowContact, ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules,
+    EndReason, EntryZone, EpochTable, HeatState, KeySpot, MatchEnd, MotionLimits, NO_SUCH_CONTACT,
+    Pilot, Power, ShadowContact, ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules,
     UnitState, Waypoint, Waypoints, WeaponSummary,
 };
-pub use step::{Frame, FrameSlots, StepOutput};
+pub use step::{Frame, FrameHeat, FrameSlots, StepOutput};
 pub use weapons::{FrameBand, FrameWeapon, Shot, WeaponBand};
 
 /// The fixtures every module's unit tests share: a window, a pose, a stock tank
@@ -669,6 +671,159 @@ pub(crate) mod test_support {
             weapons: vec![cannon()],
             profile: line_tank_profile(),
             unit: line_tank_unit(id),
+            ..tank(id, team, pose)
+        }
+    }
+
+    /// **A laser** (16b cut X.1; doc 16 §9 item 1): a beam, so `muzzle_speed_cms`
+    /// is zero and its impact is scheduled at `now`.
+    ///
+    /// Close to `content/weapons/laser_mk1.json` and deliberately not equal to it,
+    /// for the reason [`cannon`] gives. What matters here is the shape: zero muzzle
+    /// speed, and a shot that costs heat.
+    pub(crate) fn laser() -> WeaponSummary {
+        WeaponSummary {
+            id: SmolStr::new("laser"),
+            max_range_cm: 240_000,
+            cycle_ms: 2_000,
+            ammunition: SmolStr::new("tacsim.ammunition.laser_charge"),
+            burst_rounds: 1,
+            muzzle_speed_cms: 0,
+            bands: vec![
+                crate::arena::weapons::WeaponBand {
+                    max_range_cm: 120_000,
+                    dispersion_mrad: 2,
+                },
+                crate::arena::weapons::WeaponBand {
+                    max_range_cm: 240_000,
+                    dispersion_mrad: 5,
+                },
+            ],
+            count_per_load: 500,
+            damage: 25,
+            mount_section: SmolStr::new("turret"),
+        }
+    }
+
+    /// **The stock tank's structure with heat in it** (16b cut X.1): the same five
+    /// sections, a `heat` and a `heat_sink` cell on the hull, and a laser in the
+    /// turret whose component carries what one shot of it costs.
+    ///
+    /// The cells are laid down here by hand exactly as
+    /// `crate::definitions::unit::bind` lays them down from
+    /// `content/units/line_tank_laser.json`; `crates/tacsim/tests/extensions.rs`
+    /// drives the authored route end to end, and this is the fixture the modules'
+    /// own unit tests use without a pack loader.
+    pub(crate) fn laser_tank_unit(id: ObjId) -> TacticalUnit {
+        let facet = |name: &str, armor: i64| FacetSpec {
+            id: FacetId::new(name).expect("a canonical facet"),
+            cells: vec![CellSpec {
+                id: mush_tactics::CellId::new("armor").expect("a cell"),
+                min: 0,
+                max: armor,
+                init: armor,
+            }],
+        };
+        let cell = |name: &str, max: i64, init: i64| CellSpec {
+            id: mush_tactics::CellId::new(name).expect("a cell"),
+            min: 0,
+            max,
+            init,
+        };
+        let section = |name: &str, facets: Vec<FacetSpec>, internals: i64, cells: Vec<CellSpec>| {
+            let mut all = vec![CellSpec {
+                id: mush_tactics::CellId::new("internals").expect("a cell"),
+                min: 0,
+                max: internals,
+                init: internals,
+            }];
+            all.extend(cells);
+            SectionSpec {
+                id: SectionId::new(name).expect("a canonical section"),
+                condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+                facets,
+                slots: Vec::new(),
+                cells: all,
+            }
+        };
+        let component =
+            |name: &str, section: &str, cells: Vec<CellSpec>| mush_tactics::ComponentSpec {
+                id: mush_tactics::ComponentId::new(name).expect("a component"),
+                definition: dref("component", &format!("tacsim.unit.line_tank_laser.{name}")),
+                install: mush_tactics::InstallPoint::Section(
+                    SectionId::new(section).expect("a canonical section"),
+                ),
+                condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+                cells,
+                asset: None,
+            };
+        let spec = UnitSpec {
+            definition: dref("unit", "tacsim.unit.line_tank_laser"),
+            sections: vec![
+                section(
+                    "hull",
+                    vec![
+                        facet("front", 400),
+                        facet("left", 250),
+                        facet("right", 250),
+                        facet("rear", 150),
+                        facet("top", 100),
+                    ],
+                    200,
+                    vec![
+                        cell(crate::definitions::unit::HEAT_CELL, 60, 0),
+                        cell(crate::definitions::unit::HEAT_SINK_CELL, 3, 3),
+                    ],
+                ),
+                section(
+                    "turret",
+                    vec![
+                        facet("front", 350),
+                        facet("left", 220),
+                        facet("right", 220),
+                        facet("rear", 140),
+                    ],
+                    150,
+                    Vec::new(),
+                ),
+                section("left_track", vec![facet("left", 120)], 100, Vec::new()),
+                section("right_track", vec![facet("right", 120)], 100, Vec::new()),
+                section("engine", Vec::new(), 120, Vec::new()),
+            ],
+            unit_cells: Vec::new(),
+            components: vec![
+                component(
+                    "laser",
+                    "turret",
+                    vec![
+                        cell("ammo", 500, 500),
+                        cell("ready_at_ms", 3_600_000, 0),
+                        cell(crate::definitions::unit::HEAT_PER_SHOT_CELL, 20, 20),
+                    ],
+                ),
+                component("visual_sensor", "turret", vec![cell("condition", 100, 100)]),
+            ],
+            capabilities: vec![mush_tactics::CapabilityInit {
+                key: mush_tactics::CapabilityKey {
+                    id: mush_tactics::CapabilityId::new("tacsim.power").expect("a capability"),
+                    source: None,
+                },
+                rules: rules(),
+            }],
+            mobility: None,
+            rules: rules(),
+        };
+        TacticalUnit::from_spec(&spec, id).expect("the laser tank")
+    }
+
+    /// **The laser tank**, whole (16b cut X.1): the stock tank's structure and
+    /// facet table, a beam in the turret and a heat cell on the hull.
+    pub(crate) fn laser_tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+        CustodyUnit {
+            sensor: Some(visual()),
+            weapons: vec![laser()],
+            profile: line_tank_profile(),
+            unit: laser_tank_unit(id),
             ..tank(id, team, pose)
         }
     }

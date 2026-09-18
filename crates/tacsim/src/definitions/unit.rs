@@ -97,6 +97,34 @@ pub const READY_AT_CELL: &str = "ready_at_ms";
 /// A sensor component's condition cell.
 pub const CONDITION_CELL: &str = "condition";
 
+/// **The heat a unit is carrying** (16b cut X.1; doc 16 §9 item 1: *a `heat` cell
+/// and dissipation appear on the unit*).
+///
+/// A section cell on the unit's body, laid down **only** when the spec declares a
+/// [`UnitSpec::heat_max`], so a unit whose content predates the laser — every
+/// stock unit — carries no such cell and is byte-identical to what it was. It
+/// starts empty and its `max` **is** the ceiling `FIRE` refuses at, which is why
+/// there is no second number to keep in step with it.
+pub const HEAT_CELL: &str = "heat";
+
+/// **What the unit sheds per second** (16b cut X.1), beside [`HEAT_CELL`] on the
+/// same section.
+///
+/// A rating, carried as a cell rather than as a constant so that the one place a
+/// unit's heat numbers live is the unit — and so a later extension can damage a
+/// unit's heat sinks the way a hit damages its sight, with no new seam. Nothing
+/// writes it today.
+pub const HEAT_SINK_CELL: &str = "heat_sink";
+
+/// **What one shot of a weapon adds** (16b cut X.1), a cell on the *weapon's*
+/// component, laid down only when its weapon authors a non-zero
+/// `heat_per_shot`.
+///
+/// The arena reads it at check-out exactly as it reads the armour and the
+/// magazine: the alternative is a new field on the check-out's weapon row, and
+/// the row is a struct six test files build literally.
+pub const HEAT_PER_SHOT_CELL: &str = "heat_per_shot";
+
 /// The condition a section, and a component, is born in.
 pub const INTACT: &str = "intact";
 
@@ -338,9 +366,31 @@ pub struct UnitSpec {
     /// How high the unit's eye sits (doc 16 §3.2 "Line of sight"; 150 by
     /// default in the prose, authored here).
     pub sensor_height_cm: u32,
+    /// **The heat ceiling** (16b cut X.1; doc 16 §9 item 1), or `0` for a unit
+    /// that carries no heat at all.
+    ///
+    /// Zero is the default and the whole of what keeps `line_tank` unchanged:
+    /// nothing is serialised, no cell is laid down, and the arena's per-substep
+    /// dissipation skips the unit on an `Option` test. A unit that declares it
+    /// gets a [`HEAT_CELL`] whose `max` is this number, and `FIRE` refuses at it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub heat_max: u32,
+    /// **What it sheds per second of arena time** (16b cut X.1), or `0`.
+    ///
+    /// Declared together with [`UnitSpec::heat_max`] or not at all: a unit that
+    /// can heat and never cool would lock its own weapons out for the match, and
+    /// a unit that cools and cannot heat is a number nothing reads.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub heat_dissipation_per_s: u32,
     /// Why these numbers.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
+}
+
+/// Whether an authored number is absent — a `serde` predicate, so a spec that
+/// declares no heat serialises exactly as one written before heat existed.
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl UnitSpec {
@@ -364,6 +414,26 @@ impl UnitSpec {
     #[must_use]
     pub fn section(&self, id: &CanonicalId) -> Option<&SectionDef> {
         self.sections.iter().find(|s| &s.id == id)
+    }
+
+    /// **Which section carries the heat cells** (16b cut X.1): the body — the
+    /// section doc 16 §3.3 calls `hull` — and the first authored section for a
+    /// unit whose content calls its body something else.
+    ///
+    /// It is the same rule [`crate::arena::damage`]'s `wreck_ops` follows for the
+    /// condition that marks a wreck, and for the same reason: one section of a
+    /// unit is its body, and content that does not use the word still has one.
+    /// The arena never re-derives it — it **finds** the section that carries the
+    /// cell — so the rule lives here alone.
+    #[must_use]
+    pub fn heat_section(&self) -> Option<&SectionDef> {
+        if self.heat_max == 0 {
+            return None;
+        }
+        CanonicalId::new(crate::arena::damage::HULL_SECTION)
+            .ok()
+            .and_then(|hull| self.section(&hull))
+            .or_else(|| self.sections.first())
     }
 
     /// Re-run every bound and every internal reference.
@@ -560,12 +630,46 @@ impl UnitSpec {
             }
         }
         self.check_bands(entry)?;
+        self.check_heat(entry)?;
         if self.sensor_height_cm == 0 || self.sensor_height_cm > MAX_SENSOR_HEIGHT_CM {
             return Err(DefinitionError::value(
                 entry,
                 format!(
                     "sensor_height_cm is 1 to {MAX_SENSOR_HEIGHT_CM}; {} is not",
                     self.sensor_height_cm
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// **The two heat numbers** (16b cut X.1): both or neither, and each inside
+    /// the cell bound its cell is built with.
+    ///
+    /// Both-or-neither is the interesting half. A unit with a ceiling and no
+    /// dissipation heats to it and refuses `FIRE` for the rest of the match with
+    /// nothing a pilot can do; a unit with dissipation and no ceiling carries a
+    /// rate nothing reads, because the cells are laid down off the ceiling. Both
+    /// are authoring mistakes and both are refused at load rather than discovered
+    /// in a match.
+    fn check_heat(&self, entry: &str) -> Result<(), DefinitionError> {
+        if (self.heat_max == 0) != (self.heat_dissipation_per_s == 0) {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "a unit declares heat_max and heat_dissipation_per_s together or not at \
+                     all; {} and {} do not",
+                    self.heat_max, self.heat_dissipation_per_s
+                ),
+            ));
+        }
+        if self.heat_max > MAX_CELL_VALUE || self.heat_dissipation_per_s > MAX_CELL_VALUE {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "heat_max and heat_dissipation_per_s are at most {MAX_CELL_VALUE}; \
+                     {} and {} are not",
+                    self.heat_max, self.heat_dissipation_per_s
                 ),
             ));
         }
@@ -740,6 +844,12 @@ pub fn bind(
     let mut descriptors: Vec<DefinitionDescriptor> = Vec::new();
 
     // (1) The sections, their facets and their cells.
+    //
+    // **16b cut X.1**: the body section also carries the two heat cells, and only
+    // when the spec declares a ceiling — which is why a `line_tank` bound after
+    // this cut is byte-identical to one bound before it, down to the digest its
+    // persisted units point at (no migration; 16b §8 cut X).
+    let heated = spec.heat_section().map(|section| section.id.clone());
     let mut sections: Vec<SectionSpec> = Vec::new();
     for section in &spec.sections {
         let mut facets: Vec<FacetSpec> = Vec::new();
@@ -754,17 +864,36 @@ pub fn bind(
                 }],
             });
         }
+        let mut cells = vec![CellSpec {
+            id: tactics_id!(name, "cell", INTERNALS_CELL, CellId)?,
+            min: 0,
+            max: i64::from(section.internals),
+            init: i64::from(section.internals),
+        }];
+        if heated.as_ref() == Some(&section.id) {
+            // The ceiling **is** the cell's maximum, so there is no second number
+            // to keep in step with it and no plan this crate builds can ask M32
+            // for a value outside the cell (doc 16 §3.5's refuse-never-clamp, read
+            // for heat).
+            cells.push(CellSpec {
+                id: tactics_id!(name, "cell", HEAT_CELL, CellId)?,
+                min: 0,
+                max: i64::from(spec.heat_max),
+                init: 0,
+            });
+            cells.push(CellSpec {
+                id: tactics_id!(name, "cell", HEAT_SINK_CELL, CellId)?,
+                min: 0,
+                max: i64::from(spec.heat_dissipation_per_s),
+                init: i64::from(spec.heat_dissipation_per_s),
+            });
+        }
         sections.push(SectionSpec {
             id: tactics_id!(name, "section", section.id.as_str(), SectionId)?,
             condition: tactics_id!(name, "condition", INTACT, ConditionId)?,
             facets,
             slots: Vec::new(),
-            cells: vec![CellSpec {
-                id: tactics_id!(name, "cell", INTERNALS_CELL, CellId)?,
-                min: 0,
-                max: i64::from(section.internals),
-                init: i64::from(section.internals),
-            }],
+            cells,
         });
     }
 
@@ -791,6 +920,31 @@ pub fn bind(
                     let weapon_ref = cx.weapon_refs.get(weapon).ok_or_else(|| {
                         DefinitionError::reference(name, "weapon", weapon.as_str())
                     })?;
+                    let mut cells = vec![
+                        CellSpec {
+                            id: tactics_id!(name, "cell", AMMO_CELL, CellId)?,
+                            min: 0,
+                            max: i64::from(rounds),
+                            init: i64::from(rounds),
+                        },
+                        CellSpec {
+                            id: tactics_id!(name, "cell", READY_AT_CELL, CellId)?,
+                            min: 0,
+                            max: MAX_READY_AT_MS,
+                            init: 0,
+                        },
+                    ];
+                    // **16b cut X.1**: what one shot of this weapon adds, and only
+                    // for a weapon that authors any — so both stock weapons'
+                    // components are what they were.
+                    if def.heat_per_shot > 0 {
+                        cells.push(CellSpec {
+                            id: tactics_id!(name, "cell", HEAT_PER_SHOT_CELL, CellId)?,
+                            min: 0,
+                            max: i64::from(def.heat_per_shot),
+                            init: i64::from(def.heat_per_shot),
+                        });
+                    }
                     (
                         serde_json::json!({
                             "role": "weapon",
@@ -798,20 +952,7 @@ pub fn bind(
                             "coaxial": coaxial,
                         }),
                         vec![weapon_ref.clone()],
-                        vec![
-                            CellSpec {
-                                id: tactics_id!(name, "cell", AMMO_CELL, CellId)?,
-                                min: 0,
-                                max: i64::from(rounds),
-                                init: i64::from(rounds),
-                            },
-                            CellSpec {
-                                id: tactics_id!(name, "cell", READY_AT_CELL, CellId)?,
-                                min: 0,
-                                max: MAX_READY_AT_MS,
-                                init: 0,
-                            },
-                        ],
+                        cells,
                     )
                 }
                 ComponentRole::Sensor { sensor } => {

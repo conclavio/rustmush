@@ -411,7 +411,7 @@ impl Arena {
     ///
     /// One [`Refusal`] word: [`Refusal::Unknown`], [`Refusal::Wreck`],
     /// [`Refusal::NoWeapon`], [`Refusal::NoLock`], [`Refusal::Cycling`],
-    /// [`Refusal::Empty`], [`Refusal::PowerNotOnline`].
+    /// [`Refusal::Empty`], [`Refusal::Overheated`], [`Refusal::PowerNotOnline`].
     pub fn resolve_fire(&mut self, unit: ObjId, weapon: &str) -> Result<u64, Refusal> {
         let now_ms = self.now_ms;
         let Some(state) = self.unit(unit) else {
@@ -446,7 +446,16 @@ impl Arena {
         if held == 0 {
             return Err(Refusal::Empty);
         }
-        // (4) The power, last (see the module head).
+        // (4) **16b cut X.1** (doc 16 §9 item 1: *a shot refused above a heat
+        // ceiling*): the platform, not the weapon. It goes after the weapon's own
+        // two refusals and before the power for the reason the module head gives —
+        // a pilot is told the thing they can act on first, and the weapon's cycle
+        // and its magazine are what they are looking at. A unit whose content
+        // declares no heat is never refused here, which is every stock tank.
+        if state.overheated() {
+            return Err(Refusal::Overheated);
+        }
+        // (5) The power, last (see the module head).
         if state.power != Power::Online {
             return Err(Refusal::PowerNotOnline);
         }
@@ -498,6 +507,10 @@ impl Arena {
                 resolution,
             },
         );
+        // **16b cut X.1**: what the shot cost the platform, after the round and the
+        // cycle are spent and before the shot is journalled — so the `fired` line
+        // and the heat it made belong to one moment.
+        self.raise_heat(unit, weapon, seq, now_ms);
         self.due
             .schedule(impact_at, DueKind::Impact { shot_seq: seq });
         self.due.schedule(
