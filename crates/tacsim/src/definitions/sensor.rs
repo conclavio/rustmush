@@ -58,6 +58,89 @@ pub struct SignatureRow {
     pub stopped_permille: u32,
 }
 
+/// **The signature term a thermal sight adds** (16b cut X.3; doc 16 §9 item 3:
+/// *a sensor row with its own range and signature factors — an idling tank is
+/// cold — one new signature term*; 16b §8 cut X: *keyed on power and speed*).
+///
+/// One more factor on doc 16 §3.6 step 3, multiplied into the one
+/// [`SignatureRow`] reads off the ground, and keyed on the **target's** state
+/// rather than on the ground it stands on:
+///
+/// | the target | the factor |
+/// |---|---|
+/// | under way (`speed_cms != 0`) and online | `1000` — the plume a running engine makes |
+/// | online and stopped | [`ThermalSignature::powered_permille`] |
+/// | not online | [`ThermalSignature::cold_permille`] |
+///
+/// Both default to [`MAX_SIGNATURE_PERMILLE`], so a sight that authors one of
+/// them and not the other reads the other as *no discount at all*, and a sight
+/// that authors neither is a sight with no thermal channel.
+///
+/// # Why it is authored on the mount and not here
+///
+/// It belongs, by the doc's reading, on [`SensorDef`] beside the signature table
+/// — and cut X's rule is that an extension *touches no existing test*.
+/// `SensorDef` and [`SignatureRow`] are both built as exhaustive struct literals
+/// by `crates/tacsim/tests/definitions.rs`, and the arena's copies of them
+/// ([`crate::arena::perception::SensorProfile`] and `SignatureFactor`) by seven
+/// more test files, so a new field on any of the four is a diff in a test this
+/// cut may not write. So the term is authored on the **sensor component that
+/// mounts the sight** (`crate::definitions::unit::ComponentRole::Sensor`), which
+/// is where doc 16 §3.2 already puts `sensor_height_cm` — how the sight is
+/// fitted to *this* hull — and it reaches the arena the way 16b cut X.1's
+/// `heat_per_shot` does: as integer cells on the component, read off the
+/// `TacticalUnit` that crosses the custody seam anyway. Moving it onto the row
+/// is a later cut that may open those four structs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThermalSignature {
+    /// The factor a target that is **powered and stopped** presents — an idling
+    /// tank, warm but not running.
+    #[serde(default = "full_permille", skip_serializing_if = "is_full_permille")]
+    pub powered_permille: u32,
+    /// The factor a target whose power is **not online** presents — a tank that
+    /// has been shut down, and cold metal to a thermal sight.
+    #[serde(default = "full_permille", skip_serializing_if = "is_full_permille")]
+    pub cold_permille: u32,
+}
+
+/// The default of both [`ThermalSignature`] columns, for `serde`.
+const fn full_permille() -> u32 {
+    MAX_SIGNATURE_PERMILLE
+}
+
+/// Whether an authored factor is the default, so an unauthored one is not
+/// written back out.
+fn is_full_permille(value: &u32) -> bool {
+    *value == MAX_SIGNATURE_PERMILLE
+}
+
+impl ThermalSignature {
+    /// Re-run both bounds.
+    ///
+    /// # Errors
+    ///
+    /// [`DefinitionError::Value`] naming the entry and the column.
+    pub fn check(&self, entry: &str, owner: &str) -> Result<(), DefinitionError> {
+        for (column, permille) in [
+            ("powered_permille", self.powered_permille),
+            ("cold_permille", self.cold_permille),
+        ] {
+            if permille > MAX_SIGNATURE_PERMILLE {
+                return Err(DefinitionError::value(
+                    entry,
+                    format!(
+                        "`{owner}`'s thermal `{column}` is {permille}, past \
+                         {MAX_SIGNATURE_PERMILLE}: a factor lengthens no sensor's range, it \
+                         only shortens it"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One sensor (doc 16 §3.6).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

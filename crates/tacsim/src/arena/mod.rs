@@ -176,7 +176,7 @@ pub use motion::{MotionOutcome, cos_fx, integrate, sin_fx};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost};
 pub use perception::{
     FULL_SIGNATURE_PERMILLE, FrameContact, PerceptionCounters, SensorProfile, SignatureFactor,
-    bearing_mdeg, bearing_of, contact_refusal, sees,
+    ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
 };
 pub use reflex::{ARRIVE_CELLS, ReflexCounters, ReflexMemory, ReflexState, ReflexUnit};
 pub use resolution::{

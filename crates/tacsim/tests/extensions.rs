@@ -21,6 +21,16 @@
 //! the same four steps read the same `MotionLimits` and the same five mode
 //! numbers, off a mode nobody had authored before.
 //!
+//! **X.3, the thermal sight** (doc 16 §9 item 3, D-16-18's third): a sensor row
+//! with its own range, its own attenuation budget, its own cadences and a
+//! signature table deliberately flatter than the eye's, plus one new signature
+//! term keyed on the **target's** power and speed — a tank under way makes a
+//! plume, an idling one is dim, a shut-down one is nearly dark — multiplied into
+//! the ground's factor inside step 3's range test, so it costs **no new trace**.
+//! The shipped sight's own table is asserted byte for byte, and a stock fixture's
+//! perception counters are asserted identical with the extension loaded and
+//! without it.
+//!
 //! # What this file loads, and what it deliberately does not
 //!
 //! The three extension packs go through the **operator's** route —
@@ -103,6 +113,39 @@ const DIGESTS_BIPED: [(&str, &str); 1] = [(
 /// The biped's pack file, by its path under `content/`.
 const PACK_FILES_BIPED: [&str; 1] = ["units/biped_mk1.json"];
 
+/// **The thermal sight's digest pins** (16b cut X.3), the way X.1 pins the
+/// laser's: the sight, then the tank that mounts it.
+const DIGESTS_THERMAL: [(&str, &str); 2] = [
+    (
+        "tacsim.pack.thermal_mk1",
+        "921be78771d4ce4c07a6289bc448d1b39c622dc68dcadbe266aa4f405629c48b",
+    ),
+    (
+        "tacsim.pack.line_tank_thermal",
+        "11a9019b18d7d4d21ce1850bfcf82a2f53ec869bcab4337d9ff01d2ed82ae178",
+    ),
+];
+
+/// The thermal sight's pack files, by their paths under `content/`.
+const PACK_FILES_THERMAL: [&str; 2] = ["sensors/thermal_mk1.json", "units/line_tank_thermal.json"];
+
+/// **The shipped sight's signature table, verbatim** (16b cut X.3).
+///
+/// Doc 16 §9's rule read for this item: the thermal sight is an addition and the
+/// Mk1 visual sight is what it was. X.3 widened the *sensor mount*
+/// (`ComponentRole::Sensor`) and not [`tacsim::definitions::SensorDef`], and this
+/// is the assertion that says so in bytes rather than in prose — a column added
+/// to a signature row, or a field added to the sensor row itself, moves this
+/// string and with it the reach of every sensor pass in the game.
+const VISUAL_MK1_SIGNATURE: &str = concat!(
+    r#"[{"class":"road","moving_permille":1000,"stopped_permille":1000},"#,
+    r#"{"class":"ground","moving_permille":1000,"stopped_permille":900},"#,
+    r#"{"class":"grass","moving_permille":1000,"stopped_permille":800},"#,
+    r#"{"class":"rubble","moving_permille":950,"stopped_permille":700},"#,
+    r#"{"class":"woods_light","moving_permille":900,"stopped_permille":650},"#,
+    r#"{"class":"woods_heavy","moving_permille":800,"stopped_permille":500}]"#,
+);
+
 /// **The shipped tank's exact identity** (16b cut X.2), which is the whole of
 /// what "no migration" means: a `line_tank` persisted before this cut points at
 /// this digest, and a `line_tank` bound after it must point at the same one.
@@ -147,6 +190,11 @@ fn catalog_of(sources: &[tacsim::config::PackSource]) -> Catalog {
 /// The shipped content plus the biped (16b cut X.2).
 fn biped_catalog() -> Catalog {
     catalog_of(&content::extension_sources_of(&content::EXTENSIONS_BIPED))
+}
+
+/// The shipped content plus the thermal sight and its tank (16b cut X.3).
+fn thermal_catalog() -> Catalog {
+    catalog_of(&content::extension_sources_of(&content::EXTENSIONS_THERMAL))
 }
 
 /// Re-sign one extension pack in place and print its pin, as X.1's own writing
@@ -1452,5 +1500,436 @@ fn x2_a_biped_with_no_hull_still_reads_as_a_wreck() {
     assert!(
         tacsim::arena::damage::is_wreck(&marked),
         "the condition is the mark, wherever the unit's body is"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.3 — the thermal sight
+// ---------------------------------------------------------------------------
+
+/// The observer's cell on the thermal window.
+const WATCH_CELL: (u16, u16) = (8, 2);
+
+/// The target's, ten cells due north of it — 100 m.
+const MARK_CELL: (u16, u16) = (8, 12);
+
+/// A second target cell four cells out — 40 m, inside even a cold tank's reach.
+const NEAR_CELL: (u16, u16) = (8, 6);
+
+/// **What the mount authors** (`content/units/line_tank_thermal.json`), so the
+/// arithmetic below is read off the content rather than restated by it.
+const POWERED_PERMILLE: u32 = 650;
+/// The factor a shut-down target presents to it.
+const COLD_PERMILLE: u32 = 120;
+
+/// **One sensor pass, applied directly**, with the spatial index rebuilt first —
+/// the order `Arena::step`'s phase 3 uses (`tests/perception.rs` drives its own
+/// properties the same way).
+///
+/// Driving `sensor_pass` rather than the pulse is deliberate for a property about
+/// *what is detected*: the target's power and speed can be put exactly where the
+/// property needs them, and the pulse's own wiring is asserted by cut S's tests.
+fn thermal_pass(
+    arena: &mut Arena,
+    observer: mush_core::ObjId,
+    pass_seq: u64,
+    t_ms: i64,
+) -> tacsim::arena::perception::PerceptionCounters {
+    let mut counters = tacsim::arena::perception::PerceptionCounters::default();
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    let units = arena.units.clone();
+    arena.index.rebuild(&arena.definition.terrain, &units);
+    arena.sensor_pass(observer, pass_seq, t_ms, &mut counters, &mut journal);
+    counters
+}
+
+/// **An observer of `watcher` looking at a stock line tank**, both checked out
+/// the way production checks one out, on the open window.
+fn watch(catalog: &Catalog, watcher: &str, target: (u16, u16)) -> Arena {
+    let mut arena = arena_of(
+        catalog,
+        vec![
+            unit_of(catalog, watcher, RED, Team::Red, WATCH_CELL),
+            unit_of(catalog, content::LINE_TANK, BLUE, Team::Blue, target),
+        ],
+        &[],
+    );
+    if let Some(state) = arena.unit_mut(RED) {
+        state.power = Power::Online;
+    }
+    arena
+}
+
+/// Put the target in one of doc 16 §9 item 3's three states.
+fn target_state(arena: &mut Arena, power: Power, speed_cms: i32) {
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.power = power;
+        state.speed_cms = speed_cms;
+    }
+}
+
+/// Whether the observer is holding the target after one pass.
+fn holds(arena: &mut Arena) -> bool {
+    thermal_pass(arena, RED, 1, 0);
+    let id = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+    arena.contacts.resolve(RED, id).is_some()
+}
+
+/// **The extension changes nothing about the stock game** — doc 16 §9's own rule,
+/// asserted for the thermal sight as X.1 asserts it for the laser.
+///
+/// The shipped catalog is what `tests/definitions.rs` says it is, both packs
+/// verify and carry their pinned digests, and loading them beside the shipped
+/// content leaves every shipped definition at the identity it already had. The
+/// last two assertions are this cut's own: X.3 widened `ComponentRole::Sensor`,
+/// which is a field of the unit spec and therefore of the tank's own payload, so
+/// the tank's digest is pinned outright and its serialised mount is checked to
+/// carry no trace of the channel it has not got.
+#[test]
+fn x3_the_thermal_content_loads_beside_the_stock_game_without_moving_it() {
+    if writing() {
+        for relative in PACK_FILES_THERMAL {
+            resign(relative);
+        }
+        return;
+    }
+
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    assert_eq!(stock.weapons.len(), 2, "the cannon and the coaxial");
+    assert_eq!(stock.specs.len(), 1, "one unit schema");
+    assert_eq!(stock.sensors.len(), 1, "one sight");
+
+    let pinned: std::collections::BTreeMap<&str, &str> = DIGESTS_THERMAL.into_iter().collect();
+    for (name, json) in content::EXTENSIONS_THERMAL {
+        let pack = tacsim::pack::load_pack(json)
+            .unwrap_or_else(|error| panic!("{name} does not verify: {error}"));
+        let id = pack.manifest().id().to_string();
+        assert_eq!(
+            pinned.get(id.as_str()).copied(),
+            Some(pack.manifest().digest().to_hex().as_str()),
+            "{id}'s digest moved; re-review the content and re-pin it"
+        );
+    }
+    assert_eq!(pinned.len(), content::EXTENSIONS_THERMAL.len());
+
+    // With them loaded: one more sight, one more unit schema, and not one thing
+    // else — no weapon, no ammunition, no arena.
+    let both = thermal_catalog();
+    assert_eq!(
+        both.sensors.len(),
+        2,
+        "the visual sight and the thermal one"
+    );
+    assert_eq!(both.specs.len(), 2, "the line tank and its thermal variant");
+    assert_eq!(both.units.len(), 2, "and the tactics catalog carries both");
+    assert_eq!(
+        both.weapons.len(),
+        2,
+        "the thermal tank carries the shipped guns and authors none of its own"
+    );
+    assert_eq!(both.arenas.len(), 1, "the extension adds no arena");
+    for (id, reference) in &stock.references {
+        assert_eq!(
+            both.references.get(id),
+            Some(reference),
+            "{id} moved when the extension loaded; a persisted unit points at it"
+        );
+    }
+
+    // And the tank's identity is where X.2 pinned it across this *code* change
+    // too: `ComponentRole::Sensor` grew a field, and the `skip_serializing_if` is
+    // what keeps a mount that authors no thermal channel the bytes it was.
+    let tank = CanonicalId::new(content::LINE_TANK).expect("a canonical id");
+    assert_eq!(
+        stock
+            .references
+            .get(&tank)
+            .map(|reference| reference.digest().to_hex())
+            .as_deref(),
+        Some(LINE_TANK_DIGEST),
+        "the shipped tank's definition moved; a persisted unit needs a migration"
+    );
+    let spec = stock.specs.get(&tank).expect("the line tank is shipped");
+    let json = serde_json::to_value(spec).expect("the spec serialises");
+    let mount = json
+        .get("components")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|components| {
+            components.iter().find_map(|component| {
+                let role = component.get("role")?.as_object()?;
+                (role.get("kind").and_then(serde_json::Value::as_str) == Some("sensor"))
+                    .then(|| role.keys().cloned().collect::<Vec<String>>())
+            })
+        });
+    assert_eq!(
+        mount,
+        Some(vec!["kind".to_owned(), "sensor".to_owned()]),
+        "a sight with no thermal channel serialises exactly the mount it did \
+         before the channel existed"
+    );
+}
+
+/// **The shipped sight's signature table, byte for byte** (doc 16 §9: *a test
+/// that passes without changing A1*), before and after the extension loads.
+///
+/// The reach of every sensor pass in the game is this table times the sensor's
+/// range, so it is the one thing this cut must be able to say it did not touch —
+/// in bytes, and against a string written down here rather than against itself.
+#[test]
+fn x3_the_shipped_sights_signature_table_is_untouched_by_the_extension() {
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    let both = thermal_catalog();
+    let id = CanonicalId::new("tacsim.sensor.visual_mk1").expect("a canonical id");
+    let table = |catalog: &Catalog| {
+        let def = catalog.sensors.get(&id).expect("the shipped sight").clone();
+        serde_json::to_string(&def.signature).expect("the table serialises")
+    };
+    assert_eq!(
+        table(&stock),
+        VISUAL_MK1_SIGNATURE,
+        "the shipped table moved"
+    );
+    assert_eq!(
+        table(&both),
+        VISUAL_MK1_SIGNATURE,
+        "the extension moved the shipped table by loading"
+    );
+    // And the whole row with it: the range, the attenuation, the cadences and the
+    // two hooks the ECM and ECCM extensions own are the numbers cut C.2 authored.
+    let def = stock.sensors.get(&id).expect("the shipped sight");
+    assert_eq!(
+        (
+            def.max_range_cells,
+            def.max_attenuation,
+            def.classify_after_ms,
+            def.share_range_cells,
+            def.sees_wrecks
+        ),
+        (60, 40, 3_000, 30, false)
+    );
+    assert!(def.emission.is_none() && def.jamming.is_none());
+}
+
+/// **The thermal sight is its own row** (doc 16 §9 item 3: *a sensor row with its
+/// own range and signature factors*), and the mount carries the new term.
+///
+/// Its range is not the eye's, its attenuation budget is not the eye's, and its
+/// signature table is deliberately *flat* where the eye's falls away: woods hide a
+/// silhouette and do very little to a heat source. The term that replaces that
+/// fall is the one keyed on the target's power and speed, and it reaches the arena
+/// on the unit's own cells — `None` for the stock tank, which is what makes it an
+/// `Option` test per candidate for every unit the game ships.
+#[test]
+fn x3_the_thermal_sight_declares_its_own_range_and_signature_factors() {
+    let catalog = thermal_catalog();
+    let thermal = catalog
+        .sensors
+        .get(&CanonicalId::new(content::THERMAL_MK1).expect("a canonical id"))
+        .expect("the thermal sight");
+    let visual = catalog
+        .sensors
+        .get(&CanonicalId::new("tacsim.sensor.visual_mk1").expect("a canonical id"))
+        .expect("the shipped sight");
+    assert_eq!(thermal.max_range_cells, 45, "its own range");
+    assert!(
+        thermal.max_range_cells < visual.max_range_cells,
+        "a thermal channel is shorter-legged than a daylight optic"
+    );
+    assert_eq!(
+        thermal.max_attenuation, 30,
+        "one belt of light woods, and no canopy"
+    );
+    assert!(
+        thermal.classify_after_ms > visual.classify_after_ms,
+        "a hot blob takes longer to tell apart than an outline"
+    );
+    let stopped = |def: &tacsim::definitions::SensorDef, class: TerrainClass| {
+        def.signature
+            .iter()
+            .find(|row| row.class == class)
+            .map(|row| row.stopped_permille)
+    };
+    assert_eq!(stopped(thermal, TerrainClass::WoodsHeavy), Some(880));
+    assert_eq!(stopped(visual, TerrainClass::WoodsHeavy), Some(500));
+
+    // The mount's term, decoded at check-out onto the arena's unit, and absent
+    // from the stock tank beside it.
+    let arena = watch(&catalog, content::LINE_TANK_THERMAL, MARK_CELL);
+    let band = arena
+        .unit(RED)
+        .and_then(|state| state.thermal)
+        .expect("the thermal tank's sight carries the channel");
+    assert_eq!(band.powered_permille, POWERED_PERMILLE);
+    assert_eq!(band.cold_permille, COLD_PERMILLE);
+    assert_eq!(
+        arena.unit(BLUE).and_then(|state| state.thermal),
+        None,
+        "the stock sight has no thermal channel"
+    );
+    // The ladder itself: under way is the plume, stopped is the idle, and
+    // anything not online is cold metal.
+    assert_eq!(band.permille(Power::Online, 1_000), 1_000);
+    assert_eq!(band.permille(Power::Online, 0), POWERED_PERMILLE);
+    assert_eq!(band.permille(Power::Off, 0), COLD_PERMILLE);
+    assert_eq!(band.permille(Power::Starting, 0), COLD_PERMILLE);
+}
+
+/// **The acceptance** (doc 16 §9 item 3): a thermal sight holds a moving tank at a
+/// range where a stopped, powered-down one is invisible — and the visual sight
+/// beside it, at that same range, holds all three.
+///
+/// Ten cells of open ground, 100 m. The sight reaches 45 cells at factor 1,000 and
+/// `ground` costs it almost nothing, so the arithmetic is the thermal term's
+/// alone: 45,000 cm against a tank under way, about 28,600 against an idling one,
+/// about 5,200 against a cold one. The stock tank's eye reaches 54,000 cm at the
+/// same range whatever the target's power is doing, which is doc 16 §9's *without
+/// changing A1* stated as a fact about this fixture.
+#[test]
+fn x3_a_thermal_sight_holds_a_moving_tank_where_a_cold_one_is_invisible() {
+    let catalog = thermal_catalog();
+    for (power, speed_cms, held, what) in [
+        (Power::Online, 1_000_i32, true, "a tank under way"),
+        (Power::Online, 0, true, "an idling tank"),
+        (Power::Off, 0, false, "a tank that has shut down"),
+    ] {
+        let mut arena = watch(&catalog, content::LINE_TANK_THERMAL, MARK_CELL);
+        target_state(&mut arena, power, speed_cms);
+        assert_eq!(
+            holds(&mut arena),
+            held,
+            "the thermal sight answered the wrong way about {what} ten cells out"
+        );
+
+        // The same three states, seen by the sight the game ships: the eye does
+        // not care what the target's power is doing, and this cut did not teach
+        // it to.
+        let mut eye = watch(&catalog, content::LINE_TANK, MARK_CELL);
+        target_state(&mut eye, power, speed_cms);
+        assert!(
+            holds(&mut eye),
+            "the visual sight lost {what} ten cells out"
+        );
+    }
+
+    // And the cold tank is not invisible everywhere — it is invisible at range.
+    // Four cells out is inside the 5,200 cm the term leaves, so the same sight
+    // holds the same shut-down tank.
+    let mut near = watch(&catalog, content::LINE_TANK_THERMAL, NEAR_CELL);
+    target_state(&mut near, Power::Off, 0);
+    assert!(
+        holds(&mut near),
+        "a cold tank is dark at a hundred metres, not at forty"
+    );
+}
+
+/// **No new trace** (doc 16 §9 item 3's last three words).
+///
+/// The term is a multiply inside step 3's range test, which runs *before* step 2's
+/// line of sight: a candidate the sight cannot see for heat is culled by
+/// arithmetic over one cell read, and the trace the doc bounds per pulse (W4) is
+/// never walked. The counters say it in the only way that is not an estimate.
+#[test]
+fn x3_the_cold_target_costs_the_pass_a_candidate_and_no_trace() {
+    let catalog = thermal_catalog();
+    let mut cold = watch(&catalog, content::LINE_TANK_THERMAL, MARK_CELL);
+    target_state(&mut cold, Power::Off, 0);
+    let counters = thermal_pass(&mut cold, RED, 1, 0);
+    assert_eq!(counters.passes, 1);
+    assert_eq!(counters.candidates, 1, "the index still offered it");
+    assert_eq!(counters.traces, 0, "and the range test culled it first");
+    assert_eq!(counters.cell_probes, 0);
+    assert_eq!(counters.detected, 0);
+
+    let mut hot = watch(&catalog, content::LINE_TANK_THERMAL, MARK_CELL);
+    target_state(&mut hot, Power::Online, 1_000);
+    let counters = thermal_pass(&mut hot, RED, 1, 0);
+    assert_eq!(counters.candidates, 1);
+    assert_eq!(counters.traces, 1, "the same candidate, traced once");
+    assert!(counters.cell_probes > 0);
+    assert_eq!(counters.detected, 1);
+}
+
+/// **The perception counters of a fixture are byte-identical before and after the
+/// extension loads** (16b §8 cut X: *the story test and the harness unchanged
+/// before and after each*), which is the cost claim as well as the behaviour one.
+///
+/// Two stock tanks, the same window, the same seed, four passes each way: the same
+/// passes, candidates, traces, cell probes, detections and classifications, and
+/// the same contact held at the end. The term is inside the `Option` and not a
+/// multiply by 1,000 outside it, so a stock match runs the arithmetic it ran
+/// before this cut to the centimetre — and this fixture is where that would show.
+#[test]
+fn x3_a_stock_fixtures_pass_is_counter_identical_when_the_extension_loads() {
+    let run_pair = |catalog: &Catalog| {
+        let mut arena = watch(catalog, content::LINE_TANK, MARK_CELL);
+        target_state(&mut arena, Power::Online, 0);
+        let mut total = tacsim::arena::perception::PerceptionCounters::default();
+        for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+            for observer in [RED, BLUE] {
+                total.absorb(&thermal_pass(&mut arena, observer, seq, t_ms));
+            }
+        }
+        let id = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+        let held = arena.contacts.resolve(RED, id).copied();
+        (total, held)
+    };
+    let stock = run_pair(&catalog_of(&[]));
+    let with_thermal = run_pair(&thermal_catalog());
+    assert_eq!(
+        stock.0, with_thermal.0,
+        "the extension moved a stock fixture's perception cost"
+    );
+    assert_eq!(
+        stock.1.map(|held| held.class),
+        with_thermal.1.map(|held| held.class),
+        "the extension moved what a stock fixture sees"
+    );
+    assert!(stock.0.traces > 0, "the fixture traced at all");
+}
+
+/// **A factor past 1,000 is refused by name** (16b cut X.3), the way cut S.1's
+/// signature rows are.
+///
+/// The new term shortens a reach and never lengthens one — that is
+/// `[tacsim.sensors].max_signature_factor`'s job and not content's — so the bound
+/// is re-run where every other component bound is, and the refusal names the
+/// component and the number. The spec under test is the authored thermal tank's
+/// own, decoded and then spoiled, so this is a test about the bound and not about
+/// a hand-made unit.
+#[test]
+fn x3_a_thermal_factor_past_a_thousand_is_refused_naming_the_mount() {
+    let pack: serde_json::Value =
+        serde_json::from_str(content::LINE_TANK_THERMAL_JSON).expect("the pack is json");
+    let def = pack
+        .pointer("/entries/tacsim.unit.line_tank_thermal/def")
+        .expect("the unit entry")
+        .clone();
+    let spec: tacsim::definitions::UnitSpec =
+        serde_json::from_value(def.clone()).expect("the authored spec decodes");
+    spec.check("authored").expect("the authored spec is valid");
+
+    let mut spoiled = def;
+    let mount = spoiled
+        .get_mut("components")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|components| {
+            components.iter_mut().find(|component| {
+                component.get("id").and_then(serde_json::Value::as_str) == Some("thermal_sensor")
+            })
+        })
+        .and_then(|component| component.pointer_mut("/role/thermal/powered_permille"))
+        .expect("the authored mount carries the term");
+    *mount = serde_json::json!(1_001);
+    let spec: tacsim::definitions::UnitSpec =
+        serde_json::from_value(spoiled).expect("the spoiled spec still decodes");
+    let refused = spec
+        .check("spoiled")
+        .expect_err("a factor past 1,000 is refused");
+    let text = refused.to_string();
+    assert!(
+        text.contains("thermal_sensor")
+            && text.contains("powered_permille")
+            && text.contains("1001"),
+        "{text}"
     );
 }

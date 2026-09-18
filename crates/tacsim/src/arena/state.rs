@@ -26,7 +26,7 @@ use crate::arena::clock::Clock;
 use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{EventKind, Ledger};
-use crate::arena::perception::{FrameNotice, SensorProfile};
+use crate::arena::perception::{FrameNotice, SensorProfile, ThermalSignature};
 use crate::arena::resolution::UnitProfile;
 use crate::arena::step::FrameSlots;
 use crate::arena::weapons::{Shot, WeaponBand};
@@ -929,6 +929,14 @@ pub struct UnitState {
     pub sensor_height_cm: u32,
     /// What it sees with (doc 16 §3.6); `None` runs no pass.
     pub sensor: Option<SensorProfile>,
+    /// **What its sight makes of a target's heat** (16b cut X.3; doc 16 §9 item
+    /// 3), or `None` for a sight with no thermal channel — every stock unit, so
+    /// the term costs the pass one `Option` test per candidate.
+    ///
+    /// Read off the cells at check-out rather than carried across the seam, for
+    /// the reason [`HeatState`] gives: `CustodyUnit` and the sensor row are
+    /// structs a dozen test files build literally.
+    pub thermal: Option<ThermalSignature>,
     /// What it shoots with — the definition rows, in component order.
     ///
     /// **16b cut W.2 made it mutable in one way and one only**: doc 16 §3.3's
@@ -1848,6 +1856,9 @@ impl Arena {
             // (see [`HeatState`]). `None` for every unit whose content declares
             // no ceiling.
             let heat = HeatState::read(&unit.unit, &unit.profile, &unit.weapons);
+            // **16b cut X.3**: the sight's thermal channel, read the same way and
+            // `None` for every unit whose mount authors none.
+            let thermal = ThermalSignature::read(&unit.unit);
             states.push(UnitState {
                 id: unit.id,
                 team: unit.team,
@@ -1864,6 +1875,7 @@ impl Arena {
                     unit.sensor_height_cm
                 },
                 sensor: unit.sensor,
+                thermal,
                 // 16b cut W.1: the two live cells, one row per weapon, laid down
                 // here so that every later lookup is a read of a complete table.
                 // A weapon id declared twice on one unit keeps one row, which is

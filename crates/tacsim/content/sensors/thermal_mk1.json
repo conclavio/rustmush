@@ -1,0 +1,33 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.thermal_mk1",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "921be78771d4ce4c07a6289bc448d1b39c622dc68dcadbe266aa4f405629c48b",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.sensor.thermal_mk1": {
+      "kind": "sensor",
+      "def": {
+        "label": "Mk1 thermal sight",
+        "max_range_cells": 45,
+        "max_attenuation": 30,
+        "classify_after_ms": 5000,
+        "sees_wrecks": false,
+        "share_range_cells": 30,
+        "signature": [
+          { "class": "road", "moving_permille": 1000, "stopped_permille": 1000 },
+          { "class": "ground", "moving_permille": 1000, "stopped_permille": 980 },
+          { "class": "grass", "moving_permille": 1000, "stopped_permille": 960 },
+          { "class": "rubble", "moving_permille": 1000, "stopped_permille": 950 },
+          { "class": "woods_light", "moving_permille": 960, "stopped_permille": 920 },
+          { "class": "woods_heavy", "moving_permille": 920, "stopped_permille": 880 }
+        ],
+        "emission": null,
+        "jamming": null,
+        "note": "Doc 16 section 9 item 3's sight, and every number is the same axis: it reads a plume, not a shape. max_range_cells 45 against the Mk1 visual's 60 -- a thermal channel is shorter-legged than a daylight optic. max_attenuation 30 passes one belt of light woods (the atlas prices it 25) and stops at a canopy (60), which is tighter than the eye's 40 because foliage is opaque in this band. classify_after_ms 5,000 against 3,000: a hot blob takes longer to tell apart than an outline. sees_wrecks false for a new reason -- a burnt-out hull goes cold. THE SIGNATURE TABLE is deliberately flatter than the visual sight's: the ground hides a silhouette and does very little to a heat source, so heavy woods stopped is 880 here against 500 there. What replaces it is the thermal term the mount carries (16b cut X.3): an idling tank is dim and a shut-down one is nearly dark, whatever it is standing in."
+      }
+    }
+  }
+}

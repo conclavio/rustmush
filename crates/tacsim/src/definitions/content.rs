@@ -59,6 +59,8 @@
 //! and the tank that carries it — which are [`EXTENSIONS`] and deliberately not
 //! [`SOURCES`]. See that constant for why. **16b cut X.2** adds the biped as
 //! [`EXTENSIONS_BIPED`], a table of its own: see that constant for why *that*.
+//! **16b cut X.3** adds the thermal sight and the tank that mounts it as
+//! [`EXTENSIONS_THERMAL`], on the same rule.
 
 use crate::config::PackSource;
 
@@ -165,6 +167,32 @@ pub const BIPED_MK1: &str = "tacsim.unit.biped_mk1";
 /// [`extension_sources_of`].
 pub const EXTENSIONS_BIPED: [(&str, &str); 1] =
     [("tacsim/content/units/biped_mk1.json", BIPED_MK1_JSON)];
+
+/// `crates/tacsim/content/sensors/thermal_mk1.json` (16b cut X.3).
+pub const THERMAL_MK1_JSON: &str = include_str!("../../content/sensors/thermal_mk1.json");
+/// `crates/tacsim/content/units/line_tank_thermal.json` (16b cut X.3).
+pub const LINE_TANK_THERMAL_JSON: &str = include_str!("../../content/units/line_tank_thermal.json");
+
+/// The thermal sight doc 16 §9 item 3 asks for.
+pub const THERMAL_MK1: &str = "tacsim.sensor.thermal_mk1";
+
+/// The unit that mounts it.
+pub const LINE_TANK_THERMAL: &str = "tacsim.unit.line_tank_thermal";
+
+/// **Doc 16 §9 item 3's content, in `requires` order** (16b cut X.3): the thermal
+/// sight and the tank that mounts it.
+///
+/// A table of its **own** beside [`EXTENSIONS`] and [`EXTENSIONS_BIPED`], for the
+/// reason that constant gives: each item's acceptance states the whole of what its
+/// own content adds to the catalog — here one sensor and one unit schema, and not
+/// one weapon — and no later item may move an earlier one's count.
+pub const EXTENSIONS_THERMAL: [(&str, &str); 2] = [
+    ("tacsim/content/sensors/thermal_mk1.json", THERMAL_MK1_JSON),
+    (
+        "tacsim/content/units/line_tank_thermal.json",
+        LINE_TANK_THERMAL_JSON,
+    ),
+];
 
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it
 /// reads an operator's.

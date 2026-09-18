@@ -358,7 +358,7 @@ pub fn sensor_profile(
         .components
         .iter()
         .find_map(|component| match &component.role {
-            ComponentRole::Sensor { sensor } => Some(sensor),
+            ComponentRole::Sensor { sensor, .. } => Some(sensor),
             _ => None,
         })?;
     let def = entry(&catalog.sensors, named.as_str())?;

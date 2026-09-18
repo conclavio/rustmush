@@ -48,7 +48,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::arena::state::{Side, TrackedRules};
 use crate::definitions::ammunition::AmmunitionDef;
-use crate::definitions::sensor::SensorDef;
+use crate::definitions::sensor::{MAX_SIGNATURE_PERMILLE, SensorDef, ThermalSignature};
 use crate::definitions::weapon::WeaponDef;
 use crate::definitions::{DefinitionError, MAX_ENTRY_REFERENCES};
 
@@ -145,6 +145,25 @@ pub const HEAT_SINK_CELL: &str = "heat_sink";
 /// magazine: the alternative is a new field on the check-out's weapon row, and
 /// the row is a struct six test files build literally.
 pub const HEAT_PER_SHOT_CELL: &str = "heat_per_shot";
+
+/// **What a thermal sight makes of a powered, stopped target** (16b cut X.3;
+/// doc 16 §9 item 3), per mille, on the *sensor's* component.
+///
+/// Laid down only when the mount authors a
+/// [`crate::definitions::sensor::ThermalSignature`], so a unit that carries the
+/// stock sight — every shipped unit — carries no such cell and is byte-identical
+/// to what it was. The cell's `max` is the factor of a target that hides nothing,
+/// so a later cut can *degrade* a sight's thermal channel the way a hit degrades
+/// its [`CONDITION_CELL`], with no new seam.
+pub const THERMAL_POWERED_CELL: &str = "thermal_powered";
+
+/// **What it makes of a target whose power is not online** (16b cut X.3), beside
+/// [`THERMAL_POWERED_CELL`] on the same component.
+///
+/// The arena reads both at check-out exactly as it reads the armour, the magazine
+/// and [`HEAT_PER_SHOT_CELL`]: the alternative is a new field on the check-out's
+/// sensor row, and that row is a struct seven test files build literally.
+pub const THERMAL_COLD_CELL: &str = "thermal_cold";
 
 /// The condition a section, and a component, is born in.
 pub const INTACT: &str = "intact";
@@ -307,6 +326,12 @@ pub enum ComponentRole {
         /// The sensor definition it reads through — an entry id, checked at
         /// load.
         sensor: CanonicalId,
+        /// **What this sight makes of a target's heat** (16b cut X.3; doc 16 §9
+        /// item 3), or `None` for a sight with no thermal channel — every stock
+        /// mount, which is why a `line_tank` bound after this cut is the bytes
+        /// it was before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thermal: Option<ThermalSignature>,
     },
     /// The power plant: a capability with a named state set (doc 16 §3.3
     /// "Startup").
@@ -533,7 +558,7 @@ impl UnitSpec {
     /// Every sensor definition this unit names, in component order.
     pub fn sensors(&self) -> impl Iterator<Item = &CanonicalId> {
         self.components.iter().filter_map(|c| match &c.role {
-            ComponentRole::Sensor { sensor } => Some(sensor),
+            ComponentRole::Sensor { sensor, .. } => Some(sensor),
             _ => None,
         })
     }
@@ -759,6 +784,15 @@ impl UnitSpec {
                         component.id, component.section
                     ),
                 ));
+            }
+            // **16b cut X.3**: the thermal term's own bounds, re-run where every
+            // other component bound is re-run.
+            if let ComponentRole::Sensor {
+                thermal: Some(thermal),
+                ..
+            } = &component.role
+            {
+                thermal.check(entry, component.id.as_str())?;
             }
             if let ComponentRole::Power {
                 states, initial, ..
@@ -1139,23 +1173,47 @@ pub fn bind(
                         cells,
                     )
                 }
-                ComponentRole::Sensor { sensor } => {
+                ComponentRole::Sensor { sensor, thermal } => {
                     if !cx.sensors.contains_key(sensor) {
                         return Err(DefinitionError::reference(name, "sensor", sensor.as_str()));
                     }
                     let sensor_ref = cx.sensor_refs.get(sensor).ok_or_else(|| {
                         DefinitionError::reference(name, "sensor", sensor.as_str())
                     })?;
-                    (
-                        serde_json::json!({ "role": "sensor", "sensor": sensor.as_str() }),
-                        vec![sensor_ref.clone()],
-                        vec![CellSpec {
-                            id: tactics_id!(name, "cell", CONDITION_CELL, CellId)?,
-                            min: 0,
-                            max: MAX_CONDITION,
-                            init: MAX_CONDITION,
-                        }],
-                    )
+                    let mut payload =
+                        serde_json::json!({ "role": "sensor", "sensor": sensor.as_str() });
+                    let mut cells = vec![CellSpec {
+                        id: tactics_id!(name, "cell", CONDITION_CELL, CellId)?,
+                        min: 0,
+                        max: MAX_CONDITION,
+                        init: MAX_CONDITION,
+                    }];
+                    // **16b cut X.3**: the two thermal factors, and only for a
+                    // mount that authors them — so every stock sight's component
+                    // is the definition, the cells and the digest it was.
+                    if let Some(thermal) = thermal {
+                        if let Some(object) = payload.as_object_mut() {
+                            object.insert(
+                                "thermal".to_owned(),
+                                serde_json::json!({
+                                    "powered_permille": thermal.powered_permille,
+                                    "cold_permille": thermal.cold_permille,
+                                }),
+                            );
+                        }
+                        for (cell, permille) in [
+                            (THERMAL_POWERED_CELL, thermal.powered_permille),
+                            (THERMAL_COLD_CELL, thermal.cold_permille),
+                        ] {
+                            cells.push(CellSpec {
+                                id: tactics_id!(name, "cell", cell, CellId)?,
+                                min: 0,
+                                max: i64::from(MAX_SIGNATURE_PERMILLE),
+                                init: i64::from(permille),
+                            });
+                        }
+                    }
+                    (payload, vec![sensor_ref.clone()], cells)
                 }
                 ComponentRole::Power {
                     capability,

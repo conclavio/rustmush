@@ -65,16 +65,26 @@
 //! against *motion and fire intents*; optics are optics, and a cold tank with an
 //! intact sight can be looked out of. A wreck is different: it observes nothing,
 //! because the `destroy_unit` consequence revokes its capabilities (doc 16 §3.3).
+//!
+//! The **target's** power is a different question, and **16b cut X.3** is where
+//! it is asked: a sight with a thermal channel reads a second signature factor
+//! off the target's power state and speed ([`ThermalSignature`]), so a tank that
+//! has been shut down goes dark to it at a range where a running one is held.
+//! It is one more integer multiply inside step 3's range test, behind an
+//! `Option` that is `None` for every sight the game ships — and therefore **no
+//! new trace**: the term can only shorten a reach, so it culls candidates
+//! *before* the trace that step 2 would have walked.
 
 use mush_atlas::TerrainClass;
 use mush_atlas::trace::{Eye, Sight, trace_cells};
 use mush_core::ObjId;
+use mush_tactics::TacticalUnit;
 
 use crate::arena::index::range_cm;
 use crate::arena::ledger::EventKind;
 use crate::arena::rng::{DrawLabel, draw, draw_contact_id};
 use crate::arena::state::{
-    Arena, Classification, ContactId, DueKind, ShadowContact, Team, UnitState,
+    Arena, Classification, ContactId, DueKind, Power, ShadowContact, Team, UnitState,
 };
 
 /// The factor of a target that hides nothing, per mille.
@@ -137,6 +147,80 @@ impl SensorProfile {
             Some(row) if moving => row.moving_permille,
             Some(row) => row.stopped_permille,
             None => FULL_SIGNATURE_PERMILLE,
+        };
+        permille.min(FULL_SIGNATURE_PERMILLE)
+    }
+}
+
+/// **What a sight makes of a target's heat** (16b cut X.3; doc 16 §9 item 3: *an
+/// idling tank is cold*), as the arena carries it.
+///
+/// The arena's own copy of `crate::definitions::sensor::ThermalSignature`, read
+/// once at check-out off the cells the `TacticalUnit` already carries — the same
+/// route 16b cut X.1's heat takes, and for the same reason: the check-out's
+/// sensor row is a struct seven test files build literally, so the numbers ride
+/// on the unit rather than across a widened seam.
+///
+/// A sight that authored no thermal channel has **no** `ThermalSignature` at all,
+/// which is what makes the term an `Option` test per candidate for every unit the
+/// game ships.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThermalSignature {
+    /// The factor a powered, stopped target presents, per mille.
+    pub powered_permille: u32,
+    /// The factor a target whose power is not online presents, per mille.
+    pub cold_permille: u32,
+}
+
+impl ThermalSignature {
+    /// **Read one unit's thermal channel off its cells** (16b cut X.3), or `None`
+    /// for a sight that carries no [`THERMAL_POWERED_CELL`] — every stock sight.
+    ///
+    /// The component is **found** rather than derived, exactly as
+    /// [`crate::arena::state::HeatState::read`] finds the section carrying the
+    /// heat cells: `bind`'s choice of which component the cells sit on is
+    /// authoritative and nothing here re-derives it. A unit that somehow mounted
+    /// two thermal sights reads the first in component order, which is the same
+    /// rule `sensor_profile` follows for the sensor row itself.
+    ///
+    /// [`THERMAL_POWERED_CELL`]: crate::definitions::unit::THERMAL_POWERED_CELL
+    #[must_use]
+    pub fn read(unit: &TacticalUnit) -> Option<ThermalSignature> {
+        let powered =
+            mush_tactics::CellId::new(crate::definitions::unit::THERMAL_POWERED_CELL).ok()?;
+        let cold = mush_tactics::CellId::new(crate::definitions::unit::THERMAL_COLD_CELL).ok()?;
+        unit.components().find_map(|(component, _)| {
+            let at = |cell: &mush_tactics::CellId| {
+                let addr = mush_tactics::CellAddr::Component {
+                    component: component.clone(),
+                    cell: cell.clone(),
+                };
+                u32::try_from(unit.cell(&addr)?.current.max(0)).ok()
+            };
+            Some(ThermalSignature {
+                powered_permille: at(&powered)?,
+                cold_permille: at(&cold)?,
+            })
+        })
+    }
+
+    /// **The factor this sight makes of a target in that state**, per mille (doc
+    /// 16 §9 item 3, keyed on power and speed).
+    ///
+    /// A target under way is the plume a running engine makes and gets no
+    /// discount; a powered, stopped one is an idling engine; anything not online
+    /// is cold metal. The answer is never above [`FULL_SIGNATURE_PERMILLE`] —
+    /// the definition's own `check` refuses that, and it is clamped here for the
+    /// same reason the terrain factor is: a factor above 1 would *lengthen* a
+    /// sensor's range, which is `sensors.max_signature_factor`'s job.
+    #[must_use]
+    pub fn permille(&self, power: Power, speed_cms: i32) -> u32 {
+        let permille = if power != Power::Online {
+            self.cold_permille
+        } else if speed_cms == 0 {
+            self.powered_permille
+        } else {
+            FULL_SIGNATURE_PERMILLE
         };
         permille.min(FULL_SIGNATURE_PERMILLE)
     }
@@ -387,9 +471,18 @@ impl Arena {
                 .get(to.cell.0, to.cell.1)
                 .map_or(TerrainClass::Void, |cell| cell.class);
             let factor = sensor.signature_permille(class, target.speed_cms != 0);
-            let reach_cm = max_range_cm
+            let mut reach_cm = max_range_cm
                 .saturating_mul(u64::from(factor))
                 .saturating_div(1_000);
+            // **16b cut X.3**: the thermal term, multiplied into the ground's
+            // (doc 16 §9 item 3). It is inside the `Option` and not a multiply by
+            // 1,000 on the outside of it, so a match of stock tanks runs the same
+            // arithmetic it ran before this cut, to the centimetre.
+            if let Some(thermal) = watcher.thermal {
+                reach_cm = reach_cm
+                    .saturating_mul(u64::from(thermal.permille(target.power, target.speed_cms)))
+                    .saturating_div(1_000);
+            }
             if range_cm(&watcher.pose, &target.pose) > reach_cm {
                 continue;
             }
