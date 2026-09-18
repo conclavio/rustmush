@@ -32,6 +32,7 @@ use crate::arena::perception::{SensorProfile, SignatureFactor};
 use crate::arena::state::{
     ArenaDefinition, ArenaTerrain, EntryZone, Team, TerrainCell, TrackedRules, WeaponSummary,
 };
+use crate::arena::weapons::WeaponBand;
 use crate::definitions::Catalog;
 use crate::definitions::unit::ComponentRole;
 
@@ -371,8 +372,17 @@ pub fn sensor_profile(
 /// fire on a hand-made rig.
 ///
 /// `max_range_cm` is the **outermost** band's edge: the bands are authored nearest
-/// first, and the one number the arena reads off this row is the longest reach in
+/// first, and the one number cut S reads off this row is the longest reach in
 /// the match (16b §9's derived `tempo.alert_range_cm`).
+///
+/// **16b cut W.1** carries two more: the bands themselves, each with the
+/// `dispersion_mrad` cut W.2's error cone begins at, and `count_per_load` off the
+/// **ammunition** the weapon names — which is the one field of this row that is not
+/// the weapon's own, and which sizes the unit's `ammo` cell exactly as
+/// `definitions/unit.rs` sizes the M32 component cell from the same number. A weapon
+/// whose ammunition the catalog does not hold gets a load of zero, which is a weapon
+/// that refuses `FIRE` as empty; it cannot happen through the loader (a dangling
+/// reference is refused at load) and the honest answer is better than a guess.
 #[must_use]
 pub fn weapon_summaries(
     catalog: &Catalog,
@@ -401,6 +411,16 @@ pub fn weapon_summaries(
             ammunition: SmolStr::new(def.ammunition.as_str()),
             burst_rounds: def.burst_rounds,
             muzzle_speed_cms: def.muzzle_speed_cms,
+            bands: def
+                .bands
+                .iter()
+                .map(|band| WeaponBand {
+                    max_range_cm: band.max_range_cm,
+                    dispersion_mrad: band.dispersion_mrad,
+                })
+                .collect(),
+            count_per_load: entry(&catalog.ammunition, def.ammunition.as_str())
+                .map_or(0, |ammunition| ammunition.count_per_load),
         });
     }
     out

@@ -21,8 +21,10 @@
 //! A's `Arena::step` is compared against.
 //!
 //! Knobs, all optional, `tacsim::config::HarnessConfig::default()` (16b §9) being
-//! the baseline: `TACSIM_UNITS`, `TACSIM_FIGHTING`, `TACSIM_WEAPONS` (parsed and
-//! reported, unused until cut W), `TACSIM_PULSES`, `TACSIM_SEED`, `TACSIM_JSON`
+//! the baseline: `TACSIM_UNITS`, `TACSIM_FIGHTING`, `TACSIM_WEAPONS` (**16b cut
+//! W.1**: how many of the units the arena measurement arms, doc 16 §1 A2's *150
+//! weapons on the field*; the world-side baseline still only reports it),
+//! `TACSIM_PULSES`, `TACSIM_SEED`, `TACSIM_JSON`
 //! (the report path, default `target/harness.json`) and `TACSIM_ASSERT=1`, which
 //! turns the four thresholds into assertions. The default is **report-only**
 //! (D-H-8, D-16-19): a shared runner's speed is not a threshold.
@@ -890,7 +892,7 @@ fn tacsim_harness_reports_the_ground_pulse_baseline() {
 
     // ---- the report ----
     println!(
-        "harness_world: units={placed}/{} fighting={sessions} placed_sessions={placed_sessions} weapons={} (parsed, unused until cut W)",
+        "harness_world: units={placed}/{} fighting={sessions} placed_sessions={placed_sessions} weapons={} (reported; the arena measurement below is what arms them)",
         knobs.units, knobs.weapons
     );
     println!(
@@ -1180,6 +1182,41 @@ fn share_cells() -> u16 {
 /// The default of [`share_cells`].
 const SHARE_CELLS: u16 = 8;
 
+/// **The weapon `TACSIM_WEAPONS` of the units carry** (16b cut W.1; doc 16 §1 A2:
+/// *150 weapons on the field*).
+///
+/// Harness-local, as [`harness_mobility`] and [`harness_sensor`] are: the authored
+/// `cannon_105` is cut C's. What is measured here is the cost of a *shot* — one
+/// insert in the in-flight table, two due events, one ledger line — which is a
+/// function of how often a unit may fire and not of the numbers themselves.
+///
+/// The cycle is 4,000 ms against the scripted fire's every ten `Engaged` pulses
+/// (5,000 ms of arena time), so a unit that holds a lock fires on every attempt
+/// rather than being refused half of them; the muzzle speed puts a shot across the
+/// whole 2.56 km window in about 1.8 s, which is long enough that the impact heap
+/// really carries shots between pulses rather than resolving each inside its own.
+fn harness_weapon() -> tacsim::arena::state::WeaponSummary {
+    tacsim::arena::state::WeaponSummary {
+        id: smol_str::SmolStr::new("cannon"),
+        max_range_cm: 250_000,
+        cycle_ms: 4_000,
+        ammunition: smol_str::SmolStr::new("tacsim.ammunition.he_105"),
+        burst_rounds: 1,
+        muzzle_speed_cms: 145_000,
+        bands: vec![
+            tacsim::arena::weapons::WeaponBand {
+                max_range_cm: 150_000,
+                dispersion_mrad: 3,
+            },
+            tacsim::arena::weapons::WeaponBand {
+                max_range_cm: 250_000,
+                dispersion_mrad: 6,
+            },
+        ],
+        count_per_load: 40,
+    }
+}
+
 /// An exact definition identity with a zero digest, for the harness's own shapes.
 fn harness_dref(kind: &str, name: &str) -> mush_tactics::DefinitionRef {
     mush_tactics::DefinitionRef::new(
@@ -1403,18 +1440,17 @@ fn tacsim_harness_arena_step() {
             // trace, probe and share counts below are the loaded arena's.
             sensor_height_cm: 150,
             sensor: Some(harness_sensor()),
-            // One weapon row, for its one number: `tempo.alert_range_cm` is
-            // derived as twice the longest reach in the match (16b §9), and with no
-            // weapon at all it would derive zero and the `Alert` trigger would
-            // never be exercised. Cut W is what fires it.
-            weapons: vec![tacsim::arena::state::WeaponSummary {
-                id: smol_str::SmolStr::new("cannon"),
-                max_range_cm: 250_000,
-                cycle_ms: 4_000,
-                ammunition: smol_str::SmolStr::new("tacsim.ammunition.he_105"),
-                burst_rounds: 1,
-                muzzle_speed_cms: 145_000,
-            }],
+            // **16b cut W.1**: `TACSIM_WEAPONS` (150 by default) of the units carry
+            // one, which is doc 16 §1 A2's *150 weapons on the field* read
+            // literally; cut S.1 gave every unit a row for its one number, and the
+            // derived `tempo.alert_range_cm` is the longest reach in the *match*, so
+            // arming half the field leaves that unchanged. An unarmed unit is still
+            // a target and still a contact.
+            weapons: if n < knobs.weapons {
+                vec![harness_weapon()]
+            } else {
+                Vec::new()
+            },
             unit: harness_unit(id),
         });
     }
@@ -1443,14 +1479,27 @@ fn tacsim_harness_arena_step() {
     arena.clock.pin_tempo_for_tests(ArenaTempo::Engaged);
     let period_ms = i64::from(arena_cfg.tempo.engaged_ms);
 
-    let mut ledger_bytes_streamed = 0_u64;
-    let mut chunks = 0_u64;
-    let mut blocked = 0_u64;
-    let absorb_out = |out: &StepOutput, chunks: &mut u64, blocked: &mut u64, bytes: &mut u64| {
+    // What the streamed ledger says, counted as it goes rather than kept: the
+    // egress is a ring and the point of the measurement is that it drains.
+    // **16b cut W.1** added the three weapon kinds.
+    #[derive(Default)]
+    struct Counts {
+        chunks: u64,
+        bytes: u64,
+        blocked: u64,
+        locked: u64,
+        fired: u64,
+        impacts: u64,
+    }
+    let mut counts = Counts::default();
+    let absorb_out = |out: &StepOutput, counts: &mut Counts| {
         for chunk in &out.ledger_chunks {
-            *chunks += 1;
-            *bytes += u64::try_from(chunk.bytes.len()).unwrap_or(0);
-            *blocked += occurrences(&chunk.bytes, "\"kind\":\"blocked\"");
+            counts.chunks += 1;
+            counts.bytes += u64::try_from(chunk.bytes.len()).unwrap_or(0);
+            counts.blocked += occurrences(&chunk.bytes, "\"kind\":\"blocked\"");
+            counts.locked += occurrences(&chunk.bytes, "\"kind\":\"locked\"");
+            counts.fired += occurrences(&chunk.bytes, "\"kind\":\"fired\"");
+            counts.impacts += occurrences(&chunk.bytes, "\"kind\":\"impact\"");
         }
     };
 
@@ -1471,12 +1520,12 @@ fn tacsim_harness_arena_step() {
         .collect();
     let mut wall = 0_i64;
     let out = arena.step(wall, &[], &startup);
-    absorb_out(&out, &mut chunks, &mut blocked, &mut ledger_bytes_streamed);
+    absorb_out(&out, &mut counts);
     let mut warm_pulses = 1_u32;
     while arena.now_ms < i64::from(match_cfg.startup_ms) {
         wall += period_ms;
         let out = arena.step(wall, &[], &[]);
-        absorb_out(&out, &mut chunks, &mut blocked, &mut ledger_bytes_streamed);
+        absorb_out(&out, &mut counts);
         arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
         warm_pulses += 1;
     }
@@ -1518,6 +1567,55 @@ fn tacsim_harness_arena_step() {
         out
     };
 
+    // **16b cut W.1's scripted fire.** Every armed unit that holds a classified
+    // contact locks it and pulls the trigger, so the measured pulses carry real
+    // shots: an in-flight table, two due events per shot, a `fired` line, and an
+    // impact that arrives a pulse or two later against the positions that substep
+    // committed. Without it the weapon lane would be measured empty and the impact
+    // heap would never be exercised at all.
+    //
+    // The lock and the shot go in the same burst. `Lock` is resolved in phase 4
+    // before `Fire` is — the queue is the pilot's order, and the drain is total —
+    // so a unit that acquires a contact this pulse fires at it in this pulse, which
+    // is the worst case and therefore the one worth measuring.
+    let shots = |arena: &Arena| -> Vec<Intent> {
+        let mut out: Vec<Intent> = Vec::new();
+        let mut seq = 0_u64;
+        for unit in &arena.units {
+            if unit.weapons.is_empty() || unit.power != Power::Online {
+                continue;
+            }
+            let hostile = unit.team;
+            let Some(contact) = arena
+                .contacts
+                .of(unit.id)
+                .find(|(_, held)| held.class.team().is_some_and(|team| team != hostile))
+                .map(|(id, _)| *id)
+            else {
+                continue;
+            };
+            seq = seq.saturating_add(1);
+            out.push(Intent {
+                unit: unit.id,
+                channel: Channel::Sensors,
+                epoch: arena.epochs.current(unit.id, Channel::Sensors),
+                kind: IntentKind::Lock { contact },
+                seq,
+            });
+            seq = seq.saturating_add(1);
+            out.push(Intent {
+                unit: unit.id,
+                channel: Channel::Fire,
+                epoch: arena.epochs.current(unit.id, Channel::Fire),
+                kind: IntentKind::Fire {
+                    weapon: harness_weapon().id,
+                },
+                seq,
+            });
+        }
+        out
+    };
+
     let mut per_pulse: Vec<f64> = Vec::with_capacity(usize::try_from(knobs.pulses).unwrap_or(0));
     let mut substeps: Vec<u32> = Vec::new();
     let mut frames: Vec<f64> = Vec::new();
@@ -1532,11 +1630,14 @@ fn tacsim_harness_arena_step() {
         wall += period_ms;
         // A fresh heading every ten pulses, and the speed order with the first
         // one: a standing speed order is what keeps them driving into things.
-        let issued = if pulse % 10 == 0 {
+        let mut issued = if pulse % 10 == 0 {
             orders(&arena, &mut rng, pulse == 0)
         } else {
             Vec::new()
         };
+        if pulse % 10 == 0 {
+            issued.extend(shots(&arena));
+        }
         let at = Instant::now();
         let out = arena.step(wall, &[], &issued);
         per_pulse.push(at.elapsed().as_secs_f64() * 1_000.0);
@@ -1555,7 +1656,7 @@ fn tacsim_harness_arena_step() {
         if out.lagged {
             lagged_pulses += 1;
         }
-        absorb_out(&out, &mut chunks, &mut blocked, &mut ledger_bytes_streamed);
+        absorb_out(&out, &mut counts);
         // The world half's acknowledgement (doc 16 §3.1's ack-gated egress), so the
         // bounded ring is measured draining as it would in production.
         arena.ledger.mark_flushed(arena.ledger.last_closed_seq());
@@ -1567,9 +1668,12 @@ fn tacsim_harness_arena_step() {
     // Whatever is still open leaves with the measurement.
     arena.ledger.flush();
     for chunk in arena.ledger.take_chunks() {
-        chunks += 1;
-        ledger_bytes_streamed += u64::try_from(chunk.bytes.len()).unwrap_or(0);
-        blocked += occurrences(&chunk.bytes, "\"kind\":\"blocked\"");
+        counts.chunks += 1;
+        counts.bytes += u64::try_from(chunk.bytes.len()).unwrap_or(0);
+        counts.blocked += occurrences(&chunk.bytes, "\"kind\":\"blocked\"");
+        counts.locked += occurrences(&chunk.bytes, "\"kind\":\"locked\"");
+        counts.fired += occurrences(&chunk.bytes, "\"kind\":\"fired\"");
+        counts.impacts += occurrences(&chunk.bytes, "\"kind\":\"impact\"");
     }
 
     let rss_end_kib = resident_kib();
@@ -1593,6 +1697,27 @@ fn tacsim_harness_arena_step() {
         .filter(|unit| unit.speed_cms != 0)
         .count();
     let held = arena.units.iter().filter(|unit| unit.blocked).count();
+    // 16b cut W.1: the conservation figure, over the whole field. Rounds left plus
+    // rounds spent is the load every armed unit was checked out with, and the
+    // arithmetic is the same one `weapons.rs`'s scripted-run test asserts.
+    let armed = arena
+        .units
+        .iter()
+        .filter(|unit| !unit.weapons.is_empty())
+        .count();
+    let rounds_left: u64 = arena
+        .units
+        .iter()
+        .flat_map(|unit| unit.ammo.values())
+        .map(|rounds| u64::from(*rounds))
+        .sum();
+    let loaded: u64 = arena
+        .units
+        .iter()
+        .flat_map(|unit| unit.weapons.iter())
+        .map(|weapon| u64::from(weapon.count_per_load))
+        .sum();
+    let rounds_spent = loaded.saturating_sub(rounds_left);
 
     // **The measurement was of a loaded arena.** These are not thresholds and they
     // do not wait for `TACSIM_ASSERT`: a regression that refused every `Speed`
@@ -1604,13 +1729,29 @@ fn tacsim_harness_arena_step() {
         "no unit was moving: the measurement was of a parked arena"
     );
     assert!(
-        blocked > 0,
+        counts.blocked > 0,
         "nothing was ever blocked: the units never reached the water, each other or \
          the window's edge, so the boundary test was not measured"
     );
     assert!(
-        ledger_bytes_streamed > 0,
+        counts.bytes > 0,
         "the ledger streamed nothing: the egress was not measured"
+    );
+    // 16b cut W.1, the same rule: a weapon lane that fired nothing would make the
+    // pulse cheaper and pass every timing bound in this file, and the report would
+    // say the arena is fast at not shooting.
+    assert!(
+        counts.locked > 0 && counts.fired > 0,
+        "no shot was ever accepted: the weapon lane was not measured (locked={} \
+         fired={} impacts={})",
+        counts.locked,
+        counts.fired,
+        counts.impacts
+    );
+    assert!(
+        counts.impacts > 0,
+        "no shot ever arrived: the impact heap was not measured (fired={})",
+        counts.fired
     );
     assert_eq!(lagged_pulses, 0, "the measurement was taken while lagging");
     // 16b cut S.1, the same rule as the three above: a perception pass that
@@ -1662,8 +1803,19 @@ fn tacsim_harness_arena_step() {
         )
     );
     println!(
-        "harness_arena_counters: blocked={blocked} ledger_bytes={ledger_bytes_streamed} chunks={chunks} frames_per_pulse_mean={frames_mean:.2} moving_at_end={moving} held_at_end={held} lagged_pulses={lagged_pulses} ended={}",
+        "harness_arena_counters: blocked={} ledger_bytes={} chunks={} frames_per_pulse_mean={frames_mean:.2} moving_at_end={moving} held_at_end={held} lagged_pulses={lagged_pulses} ended={}",
+        counts.blocked,
+        counts.bytes,
+        counts.chunks,
         ended.map_or("none".to_string(), |end| format!("{:?}", end.reason))
+    );
+    println!(
+        "harness_arena_weapons: armed={armed} locked={} fired={} impacts={} in_flight_at_end={} shot_seq={} rounds_spent={rounds_spent} rounds_left={rounds_left}",
+        counts.locked,
+        counts.fired,
+        counts.impacts,
+        arena.shots.len(),
+        arena.next_shot_seq
     );
     println!(
         "harness_arena_perception_peak: passes={} candidates={} traces={} cell_probes={} share_ops={} detected={} classified={} lost={}",
@@ -1744,14 +1896,25 @@ fn tacsim_harness_arena_step() {
             "per_pulse_max": substeps_max,
         },
         "counters": {
-            "blocked_events": blocked,
-            "ledger_bytes_streamed": ledger_bytes_streamed,
-            "ledger_chunks": chunks,
+            "blocked_events": counts.blocked,
+            "ledger_bytes_streamed": counts.bytes,
+            "ledger_chunks": counts.chunks,
             "frames_per_pulse_mean": num(frames_mean),
             "moving_at_end": moving,
             "held_at_end": held,
             "lagged_pulses": lagged_pulses,
             "ended": ended.map(|end| format!("{:?}", end.reason)),
+        },
+        "weapons": {
+            "armed_units": armed,
+            "locked_events": counts.locked,
+            "fired_events": counts.fired,
+            "impact_events": counts.impacts,
+            "in_flight_at_end": arena.shots.len(),
+            "shot_seq_at_end": arena.next_shot_seq,
+            "rounds_loaded": loaded,
+            "rounds_spent": rounds_spent,
+            "rounds_left": rounds_left,
         },
         "perception": {
             "sensor_cells": sensor_cells(),
@@ -1824,8 +1987,9 @@ fn tacsim_harness_arena_step() {
             "per-pulse p99 {p99:.3} ms is past 16b §6's {ARENA_S_P99_MS} ms lens for cut S"
         );
         assert!(
-            ledger_bytes_streamed <= knobs.max_ledger_bytes,
-            "ledger bytes {ledger_bytes_streamed} is past harness.max_ledger_bytes {}",
+            counts.bytes <= knobs.max_ledger_bytes,
+            "ledger bytes {} is past harness.max_ledger_bytes {}",
+            counts.bytes,
             knobs.max_ledger_bytes
         );
         // 16b cut S.1, doc 16 §2 W4 and W6: the two per-pulse perception bounds,

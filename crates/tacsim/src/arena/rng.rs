@@ -35,17 +35,17 @@ use crate::arena::state::ContactId;
 /// label and not a stream position is the identity of the roll.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DrawLabel {
-    /// Whether one shot hits (cut W).
+    /// Whether one shot hits (cut W.2).
     Hit {
         /// The shot's sequence number.
         shot_seq: u64,
     },
-    /// Which section a hit strikes, through the facet table (cut W).
+    /// Which section a hit strikes, through the facet table (cut W.2).
     Facet {
         /// The shot's sequence number.
         shot_seq: u64,
     },
-    /// How many rounds of a burst land (cut W).
+    /// How many rounds of a burst land (cut W.2).
     Burst {
         /// The shot's sequence number.
         shot_seq: u64,

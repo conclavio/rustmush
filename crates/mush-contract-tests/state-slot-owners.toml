@@ -271,6 +271,17 @@ assertions need two pilots seated, and a slot belongs to an account.
 """
 
 [[site]]
+path = "crates/mushd/tests/sim_weapons.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut W.1's weapon lens, performing the same post-composition wiring its three
+rows above perform and for the same reason: two pilots have to hold slots, board
+and take their stations before either of them can lock anything and fire.
+"""
+
+[[site]]
 path = "crates/mush-propagation/tests/e7c11.rs"
 accessor = "World::module_state_mut"
 slot = "FocusState"

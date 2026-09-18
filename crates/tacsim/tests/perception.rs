@@ -190,6 +190,17 @@ fn cannon() -> WeaponSummary {
         ammunition: SmolStr::new("tacsim.ammunition.he_105"),
         burst_rounds: 1,
         muzzle_speed_cms: 145_000,
+        bands: vec![
+            tacsim::arena::weapons::WeaponBand {
+                max_range_cm: 150_000,
+                dispersion_mrad: 3,
+            },
+            tacsim::arena::weapons::WeaponBand {
+                max_range_cm: 250_000,
+                dispersion_mrad: 6,
+            },
+        ],
+        count_per_load: 40,
     }
 }
 

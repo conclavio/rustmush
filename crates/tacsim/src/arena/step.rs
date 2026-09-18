@@ -64,6 +64,7 @@ use crate::arena::perception::{
 use crate::arena::state::{
     Arena, Classification, ContactId, DueKind, EndReason, MatchEnd, Power, StopReason, Team,
 };
+use crate::arena::weapons::FrameWeapon;
 
 /// **One pilot's latest-wins view** (doc 16 §3.1's `Frames`).
 ///
@@ -120,6 +121,14 @@ pub struct Frame {
     /// `last_frames` has this emptied, so a notice is delivered exactly once and a
     /// later `CONTACTS` re-rendering the remembered frame does not repeat it.
     pub notices: Vec<FrameNotice>,
+    /// **The contact the platform is locked on** (16b cut W.1; doc 16 §5's status
+    /// block: *current lock*), by its opaque id — the only name a pilot may use for
+    /// it, and always one of [`Frame::contacts`].
+    pub lock: Option<ContactId>,
+    /// **What the platform carries** (16b cut W.1; doc 16 §5: *ammunition and ready
+    /// state per weapon*), in component order, with the lock's band where there is a
+    /// lock. It is what `WEAPONSTATUS` prints while a match runs.
+    pub weapons: Vec<FrameWeapon>,
 }
 
 impl Frame {
@@ -131,7 +140,8 @@ impl Frame {
     /// therefore gets a frame per pulse, which is the price of the age column being
     /// live rather than a lie.
     ///
-    /// The notices are **not** compared: see [`Frame::notices`].
+    /// The notices are **not** compared: see [`Frame::notices`]. Nor is a weapon's
+    /// `ready_in_ms` countdown: see [`FrameWeapon::same_as`].
     #[must_use]
     pub fn same_as(&self, other: &Frame) -> bool {
         self.unit == other.unit
@@ -146,6 +156,13 @@ impl Frame {
             && self.blocked == other.blocked
             && self.tempo == other.tempo
             && self.contacts == other.contacts
+            && self.lock == other.lock
+            && self.weapons.len() == other.weapons.len()
+            && self
+                .weapons
+                .iter()
+                .zip(other.weapons.iter())
+                .all(|(mine, theirs)| mine.same_as(theirs))
     }
 }
 
@@ -326,38 +343,61 @@ impl Arena {
         }
 
         // ---- phase 4: the queued discrete actions ----
+        //
+        // Doc 16 §3.1: *resolve newly queued discrete actions that became legal this
+        // pulse*. Nothing is re-queued — an action is resolved or refused in the
+        // pulse it was drained in, so a bound another order needs is never held by
+        // one that cannot be resolved — and a refusal is the pilot's business, not
+        // the ledger's: cut K's cockpit is what turns a `Refusal` into a line.
+        //
+        // One hash for the whole phase, taken once: the phase runs at one arena
+        // timestamp with no time advancing inside it, so every action it resolves
+        // happened at one moment and belongs to one hash — the same rule the substep
+        // above follows, and see `Arena::action_hash` for what it costs not to.
+        let mut shot_fired = false;
+        self.action_hash = Some(state_hash(self));
         let ids: Vec<ObjId> = self.units.iter().map(|unit| unit.id).collect();
         for id in ids {
             for order in drain_pending(self, id) {
                 match order.kind {
-                    // The one discrete action cut A owns (doc 16 §3.3 "Startup").
-                    // A refusal is the pilot's business, not the ledger's: cut K's
-                    // cockpit is what turns a `Refusal` into a line.
+                    // Doc 16 §3.3 "Startup".
                     IntentKind::Startup => {
                         let _ = resolve_startup(self, id);
                     }
-                    // Carried as kinds, refused until their cut lands: `LOCK` is
-                    // cut S's (it needs a contact to lock) and `FIRE` is cut W's
-                    // (it needs a weapon to fire). Nothing is re-queued — an
-                    // action is resolved or refused in the pulse it was drained
-                    // in, so a bound another order needs is never held by one that
-                    // cannot be resolved.
-                    IntentKind::Lock { .. } | IntentKind::Fire { .. } => {}
+                    // **16b cut W.1** (doc 16 §3.7, §3.5): the lock, and the shot.
+                    IntentKind::Lock { contact } => {
+                        let _ = self.resolve_lock(id, contact);
+                    }
+                    IntentKind::Fire { ref weapon } => {
+                        shot_fired |= self.resolve_fire(id, weapon).is_ok();
+                    }
                     // Continuous orders never queue (phase 2 applies them).
                     IntentKind::Heading { .. } | IntentKind::Speed { .. } => {}
                 }
             }
         }
+        self.action_hash = None;
 
         // ---- phase 5: the pulse's own record ----
         //
         // Doc 16 §3.1's `Alert` row: *any unit holds a contact (classified or not)
-        // whose Euclidean range is under `tempo.alert_range_cm`*. It is evaluated
-        // here, after phase 3 minted and expired this pulse's contacts, so the
-        // tempo answers to the contacts the pulse ended with.
+        // whose Euclidean range is under `tempo.alert_range_cm`*, *or a fire intent
+        // is queued*. It is evaluated here, after phase 3 minted and expired this
+        // pulse's contacts and phase 4 resolved this pulse's shots, so the tempo
+        // answers to the world the pulse ended with.
+        //
+        // The `Engaged` row's first two triggers are one fact in this engine: doc 16
+        // §3.5 makes every accepted shot schedule an impact, so a pulse that fired is
+        // a pulse that scheduled one. Its **third** trigger — *hostile units are
+        // within weapons range of each other* — is deliberately left `false` here:
+        // 16b §8's cut W row names the two above and a hostile-in-range sweep is a
+        // per-pulse cost nobody has bounded, so it waits for the cut that needs it
+        // (cut N's controller is the first reader of "who can shoot whom").
         let signals = TempoSignals {
             fire_intent_queued,
             contact_within_alert_range: self.contact_within_alert_range(),
+            shot_fired,
+            impact_scheduled: shot_fired,
             ..TempoSignals::quiet()
         };
         let changed = self
@@ -556,11 +596,19 @@ impl Arena {
                 DueKind::Share { unit } => {
                     self.share_pass(unit, event.t_ms, perception, &mut notices);
                 }
-                // Cut W schedules and applies the shot's flight time and the
-                // weapon's cycle. Nothing before it schedules one, so nothing here
-                // can fire — the arms exist so the later cut adds a body rather
-                // than a shape.
-                DueKind::Impact { .. } | DueKind::WeaponReady { .. } => {}
+                // **16b cut W.1** (doc 16 §3.5 "Scheduled impact"): the shot arrives
+                // at its own timestamp, against the positions this substep
+                // committed, which is what makes a moving target's escape a fact of
+                // arena time and not of the pulse rate.
+                DueKind::Impact { shot_seq } => {
+                    self.resolve_impact(shot_seq, event.t_ms, &mut notices);
+                }
+                // **16b cut W.1**: the weapon's cycle has run down. It changes no
+                // state — readiness is `ready_at_ms <= now_ms`, a comparison — and
+                // it is scheduled for `next_due_ms`: it makes the arena pulse at the
+                // millisecond the weapon comes ready, so the pilot's frame says
+                // "ready" then rather than at the next period boundary.
+                DueKind::WeaponReady { .. } => {}
             }
         }
 
@@ -649,12 +697,19 @@ impl Arena {
             let Some(unit) = self.unit(pilot.unit) else {
                 continue;
             };
-            let reach = unit
-                .weapons
-                .iter()
-                .map(|weapon| weapon.max_range_cm)
-                .max()
-                .unwrap_or(0);
+            let reach = unit.weapon_reach_cm();
+            let lock = unit.lock;
+            let contacts = self.frame_contacts(unit.id);
+            // 16b cut W.1: the range to the lock, which is what turns each weapon's
+            // authored bands into the one band `WEAPONSTATUS` names. It is read off
+            // the contact list the frame already carries rather than computed a
+            // second time, so the band and the contact row can never disagree.
+            let lock_range_cm = lock.and_then(|id| {
+                contacts
+                    .iter()
+                    .find(|held| held.id == id)
+                    .map(|held| held.range_cm)
+            });
             candidates.push((
                 pilot.pilot,
                 Frame {
@@ -665,7 +720,7 @@ impl Arena {
                     power: unit.power,
                     blocked: unit.blocked,
                     tempo,
-                    contacts: self.frame_contacts(unit.id),
+                    contacts,
                     weapon_reach_cm: reach,
                     // Per platform, so two pilots in one tank are both told.
                     notices: self
@@ -673,6 +728,8 @@ impl Arena {
                         .get(&unit.id)
                         .cloned()
                         .unwrap_or_default(),
+                    lock,
+                    weapons: self.frame_weapons(unit.id, lock_range_cm),
                 },
             ));
         }
@@ -748,6 +805,31 @@ impl Arena {
             EventKind::Lost {
                 viewer, contact, ..
             } => {
+                // **16b cut W.1**: a lock is *a lock on a contact the platform
+                // holds* (doc 16 §3.5), so a contact that stops being held is a lock
+                // that stops being one. This is the one place it can be done: the
+                // `lost` event is what "this platform no longer holds this contact"
+                // *is*, whatever produced it — the sensor pass's time-to-live now, a
+                // wreck's cleared store later.
+                //
+                // Said at once, with none of the hysteresis below: see
+                // `NoticeKind::LockLost`.
+                if self
+                    .unit(viewer)
+                    .is_some_and(|state| state.lock == Some(contact))
+                {
+                    if let Some(state) = self.unit_mut(viewer) {
+                        state.lock = None;
+                    }
+                    self.stage_notice(
+                        viewer,
+                        FrameNotice {
+                            kind: NoticeKind::LockLost,
+                            contact,
+                            class: Classification::Unknown,
+                        },
+                    );
+                }
                 self.held_losses
                     .insert((viewer, contact), t_ms.saturating_add(window_ms));
             }
@@ -1065,8 +1147,10 @@ mod tests {
             seq: 2,
         };
         let out = arena.step(5_000, &[], &[fire]);
-        // A queued fire intent is an `Alert` trigger, not an `Engaged` one (doc 16
-        // §3.1's table): the shot itself is cut W's.
+        // A queued fire intent is an `Alert` trigger and an accepted **shot** is an
+        // `Engaged` one (doc 16 §3.1's table), and this fixture's tank carries no
+        // weapon: the order is queued, phase 4 refuses it `NoWeapon`, and the tempo
+        // stops at the trigger the queue itself is.
         assert_eq!(out.tempo, Tempo::Alert);
         let mut journal = Log::default();
         journal.absorb(&out);

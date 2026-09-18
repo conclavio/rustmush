@@ -67,10 +67,27 @@
 //! `mush_atlas::SurfaceComposite`, would have brought a surface reference, a room
 //! table and a feature overlay with it.
 //!
-//! What is still not here, and whose it is: `LOCK`'s body is cut S.2's and `FIRE`
-//! is cut W's (phase 4 refuses both), the impact and the weapon cycle are cut W's,
-//! and the task, the inbox, the egress, the timer and the unwind boundary are cut
-//! T's.
+//! # Cut W.1: weapons and the shot
+//!
+//! [`weapons`] is doc 16 §3.5's first half: the two live cells a weapon has on a
+//! unit (`ready_at_ms` and `ammo`, both laid down complete at check-out), the bodies
+//! of the two discrete actions phase 4 used to drop ([`Arena::resolve_lock`] and
+//! [`Arena::resolve_fire`]), the [`weapons::Shot`] an accepted shot puts in
+//! flight, and the [`state::DueKind::Impact`] and [`state::DueKind::WeaponReady`]
+//! events it schedules. It fills four more of the ledger kinds A.1 reserved
+//! ([`ledger::EventKind::Locked`], [`ledger::EventKind::Fired`],
+//! [`ledger::EventKind::Impact`], [`ledger::EventKind::Miss`]), the two `Engaged`
+//! tempo signals A.1's clock left `false`, and [`step::Frame::lock`] and
+//! [`step::Frame::weapons`], which `WEAPONSTATUS` renders.
+//!
+//! **It draws nothing.** Doc 16 §3.5's `hit`, `facet` and `burst` labels, the five
+//! resolution steps and the re-validation at impact are cut W.2's; until then an
+//! arriving shot journals `impact` and a placeholder `miss`
+//! ([`weapons::NOT_RESOLVED`]).
+//!
+//! What is still not here, and whose it is: the resolution and the damage are cut
+//! W.2's and W.3's, and the task, the inbox, the egress, the timer and the unwind
+//! boundary are cut T's.
 
 pub mod clock;
 pub mod hash;
@@ -82,6 +99,7 @@ pub mod perception;
 pub mod rng;
 pub mod state;
 pub mod step;
+pub mod weapons;
 
 pub use clock::{Clock, MIN_SUBSTEP_MS, Tempo, TempoSignals, substep_ms, substeps};
 pub use hash::state_hash;
@@ -104,6 +122,7 @@ pub use state::{
     ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules, UnitState, WeaponSummary,
 };
 pub use step::{Frame, FrameSlots, StepOutput};
+pub use weapons::{FrameBand, FrameWeapon, NOT_RESOLVED, Shot, WeaponBand};
 
 /// The fixtures every module's unit tests share: a window, a pose, a stock tank
 /// and a one-call [`Arena`].
@@ -299,8 +318,14 @@ pub(crate) mod test_support {
         }
     }
 
-    /// The shipped cannon's one number the arena reads: 2,500 m of reach, which
-    /// makes the derived `tempo.alert_range_cm` 5,000 m.
+    /// A cannon: 2,500 m of reach, which makes the derived `tempo.alert_range_cm`
+    /// 5,000 m, two range bands, a four-second cycle and a forty-round load.
+    ///
+    /// Close to `content/weapons/cannon_105.json` and deliberately not equal to it:
+    /// the authored numbers are cut C's and a unit test that asserted them would be
+    /// asserting the content. What it is exact about is the *shape* — bands running
+    /// outward with a dispersion each, a load, a burst of one, a muzzle speed — which
+    /// is what cut W.1 reads.
     pub(crate) fn cannon() -> WeaponSummary {
         WeaponSummary {
             id: SmolStr::new("cannon"),
@@ -309,6 +334,17 @@ pub(crate) mod test_support {
             ammunition: SmolStr::new("tacsim.ammunition.he_105"),
             burst_rounds: 1,
             muzzle_speed_cms: 145_000,
+            bands: vec![
+                crate::arena::weapons::WeaponBand {
+                    max_range_cm: 150_000,
+                    dispersion_mrad: 3,
+                },
+                crate::arena::weapons::WeaponBand {
+                    max_range_cm: 250_000,
+                    dispersion_mrad: 6,
+                },
+            ],
+            count_per_load: 40,
         }
     }
 

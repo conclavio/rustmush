@@ -692,6 +692,17 @@ pub enum NoticeKind {
     Classified,
     /// A contact it held has gone, and stayed gone (see [`FrameNotice`]).
     Lost,
+    /// **The platform's lock broke** because the contact it was on stopped being
+    /// held (16b cut W.1; doc 16 §3.5: a shot needs *a lock on a contact the platform
+    /// holds*).
+    ///
+    /// Said **at once**, with none of [`FrameNotice`]'s hysteresis, and that is the
+    /// one place the two rules part: a contact that flickers behind a treeline costs a
+    /// pilot no `lost` line, but a *lock* that breaks has to be said the moment it
+    /// breaks, because the pilot's next `FIRE` is going to be refused and the reason
+    /// is this. The lock does not come back when the contact does — the platform
+    /// re-acquires the contact and the pilot locks it again.
+    LockLost,
 }
 
 impl NoticeKind {
@@ -702,6 +713,7 @@ impl NoticeKind {
             NoticeKind::Acquired => "acquired",
             NoticeKind::Classified => "classified",
             NoticeKind::Lost => "lost",
+            NoticeKind::LockLost => "lock_lost",
         }
     }
 }

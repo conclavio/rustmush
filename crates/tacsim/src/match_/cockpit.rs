@@ -199,11 +199,21 @@ pub const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit
 /// own word, so the early refusal and the late one can never drift apart.
 pub const POWER_NOT_ONLINE: &str = "Power not online: STARTUP first.";
 
-/// **The one line `FIRE` refuses with until cut W** (doc 16 §3.7: *no lock*).
+/// **The one line `FIRE` refuses with for want of a lock** (doc 16 §3.7: *no
+/// lock*).
 ///
-/// Cut W's arena-side refusal renders these same words, for the same reason
+/// The arena's own refusal renders these same words, for the same reason
 /// [`POWER_NOT_ONLINE`] does.
 pub const NO_LOCK: &str = "No lock: LOCK a contact first.";
+
+/// **The words `FIRE` refuses with while the breech is busy** (16b cut W.1; doc 16
+/// §3.7: *cycling*). The seconds left follow it, so the const is the stable needle
+/// and the line is the useful sentence.
+pub const CYCLING: &str = "Still cycling";
+
+/// **The words `FIRE` refuses with when a weapon is out of rounds** (16b cut W.1;
+/// doc 16 §3.7: *empty*).
+pub const EMPTY: &str = "Empty";
 
 /// **The one byte-identical refusal for any contact id the platform does not
 /// hold** (doc 16 §3.6: *unresolvable, unowned or expired* are one answer).
@@ -266,9 +276,18 @@ pub enum CockpitError {
     /// Power is not online (doc 16 §3.3).
     #[error("{POWER_NOT_ONLINE}")]
     PowerNotOnline,
-    /// No lock (doc 16 §3.7, until cut W).
+    /// No lock (doc 16 §3.7).
     #[error("{NO_LOCK}")]
     NoLock,
+    /// The named weapon's cycle has not finished (16b cut W.1).
+    #[error("{CYCLING}: {secs} s to go.")]
+    Cycling {
+        /// Seconds left, rounded up — a pilot counts in seconds.
+        secs: i64,
+    },
+    /// The named weapon has no rounds left (16b cut W.1).
+    #[error("{EMPTY}: that weapon has nothing left to fire.")]
+    Empty,
     /// One line for every contact id the platform does not hold.
     #[error("{NO_SUCH_CONTACT}")]
     NoSuchContact,
@@ -516,6 +535,9 @@ pub fn notice_line(notice: &FrameNotice, rows: &[ContactRow]) -> String {
             class_word(notice.class)
         ),
         NoticeKind::Lost => format!("Contact {} lost.", notice.contact),
+        // 16b cut W.1: the lock broke because the contact stopped being held. Said
+        // at once, because the pilot's next `FIRE` is going to be refused for it.
+        NoticeKind::LockLost => format!("Lock on {} broken: contact gone.", notice.contact),
     }
 }
 
@@ -531,11 +553,36 @@ pub fn notice_lines(frame: &Frame) -> Vec<String> {
         .collect()
 }
 
-/// **The lock the platform holds**, as the frame carries it. Cut W fills it; see
-/// [`frame_contacts`].
+/// **The lock the platform holds**, as the frame carries it (16b cut W.1 filled
+/// it): always one of [`frame_contacts`]'s rows, because the arena clears a lock the
+/// moment its contact stops being held.
 #[must_use]
-pub fn frame_lock(_frame: &Frame) -> Option<ContactId> {
-    None
+pub fn frame_lock(frame: &Frame) -> Option<ContactId> {
+    frame.lock
+}
+
+/// **Every weapon the platform carries, live** (16b cut W.1), as the arena's frame
+/// carries it.
+///
+/// This is the reading that matters while a match runs: the arena is the single
+/// writer of `ready_at_ms` and `ammo` (D-16-1), so the frame's numbers are the
+/// truth and [`weapons_of`]'s structural read of the M32 component cells is the
+/// answer for a unit no arena holds — a tank in the motor pool, or a pilot who has
+/// boarded and whose arena has not spoken yet.
+#[must_use]
+pub fn frame_weapons(frame: &Frame) -> Vec<WeaponRow> {
+    frame
+        .weapons
+        .iter()
+        .map(|weapon| WeaponRow {
+            id: weapon.id.clone(),
+            ready: weapon.ready,
+            ready_in_ms: weapon.ready_in_ms,
+            rounds: i64::from(weapon.rounds),
+            rounds_max: i64::from(weapon.rounds_max),
+            range_band: weapon.range_band,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -919,12 +966,11 @@ fn speed(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError>
 /// naming a malformed id, another platform's id or an expired one takes the same
 /// path, byte for byte, because all three simply fail to be in the list.
 ///
-/// **What it does not do yet.** The `Lock` intent is staged and the arena's phase 4
-/// still drops it: cut W is what gives `Lock` its effect (a held lock, a `FIRE`
-/// that has something to shoot at), so a pilot who locks a contact they really
-/// hold is told `Locking {id}.` and the arena records nothing. `frame_lock` is
-/// `None` on every frame for the same reason, which is why `FIRE` still answers
-/// [`NO_LOCK`] straight afterwards.
+/// **16b cut W.1 gave the order its effect**: the arena's phase 4 records the lock
+/// on the platform, journals one `locked` line, and puts the contact's id on the
+/// frame — so the `Locking {id}.` this says is now a statement about the arena and
+/// not only about the world's mirror. A contact the platform then *loses* clears the
+/// lock and the pilot is told so once (`NoticeKind::LockLost`).
 fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     let held = last_frame(ctx.w, actor)
@@ -941,15 +987,34 @@ fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
 
 /// `FIRE [<weapon>]` — shoot the lock (doc 16 §3.7).
 ///
-/// Refused with [`NO_LOCK`] until cut W, in doc 16's own order: the weapon has to
-/// exist, then there has to be something to shoot at, then the tank has to be
-/// awake.
+/// **The pre-checks are doc 16 §3.7's refusal column, in its order**: the weapon has
+/// to exist, then there has to be a lock, then the weapon has to be out of its cycle,
+/// then it has to have a round, and *then* the tank has to be awake. Power last is
+/// the doc's order and the useful one — a cold tank with no lock is told to get a
+/// lock, which is the longer job.
+///
+/// Every one of them is a read of the **last frame**, so the pilot is told at once
+/// instead of a pulse later; the arena refuses in the same order against its own
+/// state ([`crate::arena::state::Arena::resolve_fire`]) when the mirror was stale, so
+/// a frame one pulse behind changes which half answers and never what it says.
 fn fire(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
-    let weapon = choose_weapon(ctx.w, unit, rest)?;
-    let locked = last_frame(ctx.w, actor).and_then(|held| frame_lock(&held.frame));
-    if locked.is_none() {
+    let held = last_frame(ctx.w, actor);
+    let weapon = choose_weapon(&carried(ctx.w, unit, held.as_ref()), rest)?;
+    if held
+        .as_ref()
+        .and_then(|held| frame_lock(&held.frame))
+        .is_none()
+    {
         return Err(CockpitError::NoLock);
+    }
+    if !weapon.ready {
+        return Err(CockpitError::Cycling {
+            secs: weapon.ready_in_ms.saturating_add(999) / 1_000,
+        });
+    }
+    if weapon.rounds <= 0 {
+        return Err(CockpitError::Empty);
     }
     require_power(ctx.w, actor)?;
     forward_intent(
@@ -957,10 +1022,10 @@ fn fire(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
         actor,
         unit,
         IntentKind::Fire {
-            weapon: weapon.clone(),
+            weapon: weapon.id.clone(),
         },
     )?;
-    let line = format!("Firing {weapon}.");
+    let line = format!("Firing {}.", weapon.id);
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
     Ok(())
 }
@@ -985,22 +1050,23 @@ fn contacts(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
 }
 
 /// `WEAPONSTATUS` — ammunition and readiness, per weapon (doc 16 §5).
+///
+/// **16b cut W.1 made the numbers live**: they come off the arena's own frame, which
+/// is the single writer of the cycle and the rounds while a match runs, and carry the
+/// band of the platform's lock where there is one.
 fn weapon_status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     let held = last_frame(ctx.w, actor);
-    let weapons = weapons_of(ctx.w, unit);
+    let weapons = carried(ctx.w, unit, held.as_ref());
     let mut lines: Vec<String> = Vec::new();
     if weapons.is_empty() {
         lines.push("This unit carries no weapon.".to_owned());
     }
+    if let Some(lock) = held.as_ref().and_then(|held| frame_lock(&held.frame)) {
+        lines.push(format!("Locked on {lock}."));
+    }
     for weapon in &weapons {
-        lines.push(format!(
-            "{}  {}  {} of {} round(s)",
-            weapon.id,
-            if weapon.ready { "ready" } else { "cycling" },
-            weapon.rounds,
-            weapon.rounds_max
-        ));
+        lines.push(weapon.render());
     }
     say_and_frame(ctx, held.as_ref(), lines, false);
     Ok(())
@@ -1071,7 +1137,7 @@ fn say_and_frame(
     let payload = if with_view {
         view_frame(ctx, held.match_id, &held.frame)
     } else {
-        status_frame(ctx, held.match_id, &held.frame)
+        status_frame(held.match_id, &held.frame)
     };
     ctx.out.push(
         mush_core::Audience::Actor(actor),
@@ -1097,8 +1163,8 @@ pub const FRAME_VERSION: u32 = 1;
 /// whether it is awake, whether it is held, how often it is being told things,
 /// what it holds and what it carries.
 ///
-/// **16b cut S.2 filled `contacts` and added `notices`**; `weapons`' live numbers
-/// are still cut W's.
+/// **16b cut S.2 filled `contacts` and added `notices`; 16b cut W.1 made `weapons`
+/// live and filled `lock`.**
 ///
 /// One contact is `{ id, class, bearing_deg, relative_deg, band, age_ms, age_s,
 /// cell, friendly }` — no object number, no name and **no exact range**, which is
@@ -1109,8 +1175,14 @@ pub const FRAME_VERSION: u32 = 1;
 /// its pilot, already rendered ([`notice_line`]), so a web or TUI panel prints the
 /// same sentence the line client was sent; a frame read back out of the world's
 /// mirror carries none, because the mirror is stored with them cleared.
+///
+/// One weapon is `{ id, ready, ready_in_ms, rounds, rounds_max, range_band }`, and
+/// `range_band` is `{ index, of, max_range_cm, dispersion_mrad }` for the band the
+/// platform's lock falls in — `null` with no lock, which is also when `lock` is
+/// `null`. It takes no world handle: the arena is the single writer of both cells
+/// while a match runs, so the frame is the whole answer.
 #[must_use]
-pub fn status_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json::Value {
+pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     let rows = frame_contacts(frame);
     let contacts: Vec<serde_json::Value> = rows
         .iter()
@@ -1139,14 +1211,21 @@ pub fn status_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_js
             })
         })
         .collect();
-    let weapons: Vec<serde_json::Value> = weapons_of(ctx.w, frame.unit)
+    let weapons: Vec<serde_json::Value> = frame_weapons(frame)
         .iter()
         .map(|weapon| {
             serde_json::json!({
                 "id": weapon.id.as_str(),
                 "ready": weapon.ready,
+                "ready_in_ms": weapon.ready_in_ms,
                 "rounds": weapon.rounds,
                 "rounds_max": weapon.rounds_max,
+                "range_band": weapon.range_band.map(|band| serde_json::json!({
+                    "index": band.index,
+                    "of": band.of,
+                    "max_range_cm": band.max_range_cm,
+                    "dispersion_mrad": band.dispersion_mrad,
+                })),
             })
         })
         .collect();
@@ -1183,7 +1262,7 @@ pub fn status_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_js
 /// atlas's map read alike.
 #[must_use]
 pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json::Value {
-    let mut payload = status_frame(ctx, match_id, frame);
+    let mut payload = status_frame(match_id, frame);
     let Some(ground) = ctx
         .w
         .module_state::<ArenaRegistry>()
@@ -1314,18 +1393,53 @@ pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json
 // The unit's own numbers
 // ---------------------------------------------------------------------------
 
-/// One weapon, as [`weapons_of`] reads it off the unit.
+/// One weapon, as [`frame_weapons`] and [`weapons_of`] read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WeaponRow {
     /// The component id (`cannon`, `machine_gun`).
     pub id: SmolStr,
-    /// Whether its cycle has finished. Cut W keeps `ready_at_ms` live; until
-    /// then a loaded weapon is ready.
+    /// Whether its cycle has finished.
     pub ready: bool,
+    /// **How long until it has**, milliseconds; `0` when it is ready (16b cut W.1).
+    /// Zero from [`weapons_of`], whose world-side cells a running match does not
+    /// move.
+    pub ready_in_ms: i64,
     /// Rounds left.
     pub rounds: i64,
     /// Rounds a full load carries.
     pub rounds_max: i64,
+    /// **The band the platform's lock falls in for this weapon** (16b cut W.1), or
+    /// `None` with no lock, with the lock out of the weapon's reach, or from
+    /// [`weapons_of`], which has no lock to read.
+    pub range_band: Option<crate::arena::weapons::FrameBand>,
+}
+
+impl WeaponRow {
+    /// The line `WEAPONSTATUS` prints for this row (doc 16 §5's status block).
+    ///
+    /// `cannon  ready  40 of 40 round(s)  band 1 of 2` while there is something to
+    /// shoot at, and `cannon  cycling (4 s)  39 of 40 round(s)` while the breech is
+    /// still busy. The band is only ever printed when the platform has a lock,
+    /// because that is the only time it means anything.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let ready = if self.ready {
+            "ready".to_owned()
+        } else {
+            format!(
+                "cycling ({} s)",
+                self.ready_in_ms.saturating_add(999) / 1_000
+            )
+        };
+        let band = match self.range_band {
+            Some(band) => format!("  band {} of {}", band.index, band.of),
+            None => String::new(),
+        };
+        format!(
+            "{}  {}  {} of {} round(s){band}",
+            self.id, ready, self.rounds, self.rounds_max
+        )
+    }
 }
 
 /// The cell a weapon component's ammunition lives in (doc 16 §3.3).
@@ -1369,30 +1483,44 @@ pub fn weapons_of(w: &World, unit: ObjId) -> Vec<WeaponRow> {
         rows.push(WeaponRow {
             id: SmolStr::new(component.as_str()),
             ready: cycle.current == 0,
+            ready_in_ms: 0,
             rounds: rounds.current,
             rounds_max: rounds.max,
+            range_band: None,
         });
     }
     rows
 }
 
+/// **Every weapon the pilot can name**, live where a frame says so (16b cut W.1).
+///
+/// The frame's rows while the arena has spoken, and [`weapons_of`]'s structural read
+/// of the M32 components before it has — which is the same fail-closed rule
+/// [`power_of`] follows, and the reason a pilot who has just boarded can still be
+/// told the cannon exists.
+fn carried(w: &World, unit: ObjId, held: Option<&CockpitFrame>) -> Vec<WeaponRow> {
+    match held {
+        Some(held) if !held.frame.weapons.is_empty() => frame_weapons(&held.frame),
+        _ => weapons_of(w, unit),
+    }
+}
+
 /// The weapon `FIRE` means: the one the pilot named, else [`DEFAULT_WEAPON`],
-/// else the first the unit carries.
-fn choose_weapon(w: &World, unit: ObjId, rest: &str) -> Result<SmolStr, CockpitError> {
-    let carried = weapons_of(w, unit);
+/// else the first the unit carries — answering the whole row, so the caller's
+/// pre-checks read the same numbers the choice was made from.
+fn choose_weapon(rows: &[WeaponRow], rest: &str) -> Result<WeaponRow, CockpitError> {
     let named = rest.trim();
     if !named.is_empty() {
-        return carried
+        return rows
             .iter()
             .find(|weapon| weapon.id.eq_ignore_ascii_case(named))
-            .map(|weapon| weapon.id.clone())
+            .cloned()
             .ok_or_else(|| CockpitError::NoSuchWeapon(named.to_owned()));
     }
-    carried
-        .iter()
+    rows.iter()
         .find(|weapon| weapon.id.as_str() == DEFAULT_WEAPON)
-        .or_else(|| carried.first())
-        .map(|weapon| weapon.id.clone())
+        .or_else(|| rows.first())
+        .cloned()
         .ok_or_else(|| CockpitError::NoSuchWeapon(DEFAULT_WEAPON.to_owned()))
 }
 
@@ -1539,8 +1667,8 @@ fn cockpit_help(verb: &str) -> String {
         }
         "fire" => "FIRE [<weapon>]     shoot your lock; the cannon unless you name another weapon."
             .to_owned(),
-        "weaponstatus" => "WEAPONSTATUS        every weapon you carry: ready or cycling, and its \
-                           rounds."
+        "weaponstatus" => "WEAPONSTATUS        every weapon you carry: ready or cycling, its \
+                           rounds, and the range band of your lock."
             .to_owned(),
         _ => {
             "STATUS              power, speed, heading, position and the arena's tempo.".to_owned()
@@ -1618,6 +1746,56 @@ mod tests {
             POWER_NOT_ONLINE.to_ascii_lowercase().contains(&word),
             "`{POWER_NOT_ONLINE}` does not contain `{word}`"
         );
+    }
+
+    /// **16b cut W.1**, the same rule one test up, for the two words `FIRE` gained:
+    /// the cockpit refuses before the arena does, so each early line has to contain
+    /// the arena's own word for the same refusal or the two can drift apart.
+    #[test]
+    fn the_fire_refusals_carry_the_arenas_own_words() {
+        for (line, refusal) in [
+            (NO_LOCK, Refusal::NoLock),
+            (CYCLING, Refusal::Cycling),
+            (EMPTY, Refusal::Empty),
+        ] {
+            let word = refusal.as_str().replace('_', " ");
+            assert!(
+                line.to_ascii_lowercase().contains(&word),
+                "`{line}` does not contain `{word}`"
+            );
+        }
+    }
+
+    /// The line `WEAPONSTATUS` prints, at both ends of a cycle.
+    #[test]
+    fn a_weapon_row_renders_its_readiness_its_rounds_and_its_band() {
+        let ready = WeaponRow {
+            id: SmolStr::new("cannon"),
+            ready: true,
+            ready_in_ms: 0,
+            rounds: 40,
+            rounds_max: 40,
+            range_band: Some(crate::arena::weapons::FrameBand {
+                index: 1,
+                of: 2,
+                max_range_cm: 150_000,
+                dispersion_mrad: 3,
+            }),
+        };
+        assert_eq!(
+            ready.render(),
+            "cannon  ready  40 of 40 round(s)  band 1 of 2"
+        );
+        // Cycling, with the seconds rounded **up**: a pilot told "0 s" would try
+        // again and be refused.
+        let cycling = WeaponRow {
+            ready: false,
+            ready_in_ms: 3_001,
+            rounds: 39,
+            range_band: None,
+            ..ready
+        };
+        assert_eq!(cycling.render(), "cannon  cycling (4 s)  39 of 40 round(s)");
     }
 
     #[test]

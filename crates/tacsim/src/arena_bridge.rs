@@ -1026,7 +1026,7 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) 
         // 16b cut K.2: the world's copy first, so a cockpit verb typed in the
         // same batch reads the frame the pilot was just sent, and then the frame
         // itself — doc 16 §5's keyframe, which cut K.2 filled out.
-        let payload = crate::match_::cockpit::status_frame(ctx, match_id, &frame);
+        let payload = crate::match_::cockpit::status_frame(match_id, &frame);
         // 16b cut S.2: the notices this frame owes (doc 16 §3.6: *notices fire once
         // per transition*), as ordinary output lines on the pilot's own channel.
         // Rendered through `cockpit::notice_line`, which is also what the frame's

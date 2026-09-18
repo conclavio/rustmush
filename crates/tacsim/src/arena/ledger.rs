@@ -33,6 +33,7 @@ use std::collections::VecDeque;
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use smol_str::SmolStr;
 
 use crate::arena::clock::Tempo;
 use crate::arena::state::{ContactId, EndReason, Team};
@@ -49,20 +50,23 @@ pub const CHUNK_BYTES: usize = 16 * 1024;
 /// [`EventKind::Blocked`], [`EventKind::Lagged`], [`EventKind::MatchEnded`],
 /// [`EventKind::Aborted`] and [`EventKind::Void`]; **16b cut S.1** fills
 /// [`EventKind::Detected`], [`EventKind::Classified`] and [`EventKind::Lost`],
-/// which is what A.1's three placeholders were reserved for. The rest are the
+/// which is what A.1's three placeholders were reserved for; **16b cut W.1** fills
+/// [`EventKind::Locked`], [`EventKind::Fired`], [`EventKind::Impact`] and
+/// [`EventKind::Miss`]. The rest are the
 /// kinds doc 16 §4 names and later cuts give fields to; they are declared here so
 /// that the kind vocabulary is fixed in one reviewed diff and a later cut adds
 /// fields rather than a new event stream. **They still serialise**: an internally
-/// tagged unit variant is `{"kind":"locked"}`, which is a valid, if uninformative,
+/// tagged unit variant is `{"kind":"hit"}`, which is a valid, if uninformative,
 /// line.
 ///
 /// **The `kind` word of every variant is stable.** Cut S.1 gave three of them
-/// fields, which adds keys to those three objects and changes neither the tag nor
-/// any other kind's encoding, so every consumer keyed on `kind` still matches and
-/// every kind cut A actually wrote is byte-identical. The three it did *not* write
-/// are the three that changed: nothing in cut A could schedule a sensor pass, so no
-/// ledger anywhere holds a field-less `{"kind":"detected"}` line for the new shape
-/// to fail to read.
+/// fields and cut W.1 gave four more, which adds keys to those objects and changes
+/// neither the tag nor any other kind's encoding, so every consumer keyed on `kind`
+/// still matches and every kind an earlier cut actually wrote is byte-identical. The
+/// ones that changed are exactly the ones nothing could yet write: no cut before S.1
+/// could schedule a sensor pass and none before W.1 could accept a shot, so no
+/// ledger anywhere holds a field-less `{"kind":"fired"}` line for the new shape to
+/// fail to read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EventKind {
@@ -139,21 +143,66 @@ pub enum EventKind {
         /// What it was holding.
         target: ObjId,
     },
-    /// A platform locked a contact (cut S).
-    Locked,
-    /// A shot was accepted (cut W).
-    Fired,
-    /// A shot's flight time elapsed (cut W).
-    Impact,
-    /// A shot struck (cut W).
+    /// **A platform locked a contact** (16b cut W.1; doc 16 §3.7's `LOCK`).
+    ///
+    /// The opaque contact id is what the pilot named; `target` is the object it is
+    /// held on, which is in the *record* and never reaches the pilot — the same rule
+    /// [`EventKind::Detected`] follows.
+    Locked {
+        /// The platform that locked.
+        unit: ObjId,
+        /// The contact it locked.
+        contact: ContactId,
+        /// What that contact is held on.
+        target: ObjId,
+    },
+    /// **A shot was accepted** (16b cut W.1; doc 16 §3.5 "Acceptance and cost").
+    ///
+    /// One line per accepted shot, whatever it later resolves as: doc 16 §3.5's
+    /// *there is no free probe of line of sight* means a shot that could never have
+    /// hit is in the record beside one that does.
+    Fired {
+        /// Who fired.
+        unit: ObjId,
+        /// The weapon's component id.
+        weapon: SmolStr,
+        /// The shot's sequence within the match — the argument of its draw labels
+        /// (doc 16 §3.5) and the key the `impact`, `hit` and `miss` lines carry.
+        shot_seq: u64,
+        /// What it was fired at.
+        target: ObjId,
+        /// The range at acceptance, centimetres.
+        range_cm: u64,
+        /// How many rounds left the weapon (the burst, or what was left of it).
+        rounds: u32,
+    },
+    /// **A shot's flight time elapsed** (16b cut W.1; doc 16 §3.5 "Scheduled
+    /// impact"). The outcome is the `hit` or `miss` line that follows it.
+    Impact {
+        /// The shot's sequence.
+        shot_seq: u64,
+        /// Who fired it.
+        unit: ObjId,
+        /// What it was fired at.
+        target: ObjId,
+    },
+    /// A shot struck (cut W.2).
     Hit,
-    /// A shot did not strike, with its reason (cut W).
-    Miss,
-    /// A section reached zero internals (cut W).
+    /// **A shot did not strike, with its reason** (16b cut W.1 writes the
+    /// placeholder; cut W.2 writes doc 16 §3.5's real reasons — the blocker, the
+    /// target that left the predicted cell, the wreck, the dispersion).
+    Miss {
+        /// The shot's sequence.
+        shot_seq: u64,
+        /// Why it missed. Cut W.2 pins the vocabulary; until then it is
+        /// `crate::arena::weapons::NOT_RESOLVED`.
+        reason: SmolStr,
+    },
+    /// A section reached zero internals (cut W.3).
     SectionDestroyed,
-    /// A unit was disabled — which precedes destroyed (doc 10 3A; cut W).
+    /// A unit was disabled — which precedes destroyed (doc 10 3A; cut W.3).
     UnitDisabled,
-    /// A unit became a wreck (cut W).
+    /// A unit became a wreck (cut W.3).
     UnitDestroyed,
     /// A pulse absorbed more wall time than `max_catch_up_steps × period`, or the
     /// egress backed up past `ledger.max_unflushed_chunks`.
@@ -185,11 +234,11 @@ impl EventKind {
             EventKind::Detected { .. } => "detected",
             EventKind::Classified { .. } => "classified",
             EventKind::Lost { .. } => "lost",
-            EventKind::Locked => "locked",
-            EventKind::Fired => "fired",
-            EventKind::Impact => "impact",
+            EventKind::Locked { .. } => "locked",
+            EventKind::Fired { .. } => "fired",
+            EventKind::Impact { .. } => "impact",
             EventKind::Hit => "hit",
-            EventKind::Miss => "miss",
+            EventKind::Miss { .. } => "miss",
             EventKind::SectionDestroyed => "section_destroyed",
             EventKind::UnitDisabled => "unit_disabled",
             EventKind::UnitDestroyed => "unit_destroyed",
@@ -571,11 +620,29 @@ mod tests {
                 contact: ContactId(0x0123_4567_89ab_cdef),
                 target: ObjId(9),
             },
-            EventKind::Locked,
-            EventKind::Fired,
-            EventKind::Impact,
+            EventKind::Locked {
+                unit: ObjId(4),
+                contact: ContactId(0x0123_4567_89ab_cdef),
+                target: ObjId(9),
+            },
+            EventKind::Fired {
+                unit: ObjId(4),
+                weapon: SmolStr::new_static("cannon"),
+                shot_seq: 1,
+                target: ObjId(9),
+                range_cm: 4_000,
+                rounds: 1,
+            },
+            EventKind::Impact {
+                shot_seq: 1,
+                unit: ObjId(4),
+                target: ObjId(9),
+            },
             EventKind::Hit,
-            EventKind::Miss,
+            EventKind::Miss {
+                shot_seq: 1,
+                reason: SmolStr::new_static("blocked"),
+            },
             EventKind::SectionDestroyed,
             EventKind::UnitDisabled,
             EventKind::UnitDestroyed,

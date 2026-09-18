@@ -51,7 +51,14 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    6. `speed_cms`, `i32`;
 ///    7. the power byte (`0` off, `1` starting, `2` online);
 ///    8. the four limit bytes: `slow_pct`; `no_turn_toward` (`0` none, `1` left,
-///       `2` right); `motion_disabled` (`0`/`1`); `wreck` (`0`/`1`).
+///       `2` right); `motion_disabled` (`0`/`1`); `wreck` (`0`/`1`);
+///    9. **the lock** (16b cut W.1): the contact id as `u64`, or `0` for none, which
+///       is a value [`crate::arena::rng::draw_contact_id`] never mints;
+///    10. **the weapon cells** (16b cut W.1), in the two `BTreeMap`s' own key order:
+///        the count of `ready_at_ms` rows as `u64`, then per row the weapon id's
+///        bytes and its `i64`; then the same for `ammo` with its `u32`. The id's
+///        bytes go in because a row is a `(weapon, value)` pair and folding only the
+///        values would make two weapons that swapped cycles one state.
 /// 2. **The shadow contact store** (16b cut S.1), in its own iteration order —
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
@@ -60,7 +67,8 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// 3. The tempo byte (`0` quiet, `1` alert, `2` engaged).
 /// 4. `now_ms`, `i64`.
 /// 5. The due-event count, `u64`.
-/// 6. The ledger's event sequence, `u64`.
+/// 6. **The in-flight shot count** (16b cut W.1), `u64`.
+/// 7. The ledger's event sequence, `u64`.
 ///
 /// **Why the contacts are in it** (16b cut S.1). Doc 16 §3.1 makes the arena the
 /// single writer for *unit poses, unit condition cells, contacts, orders,
@@ -78,7 +86,15 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// world *became*, not what it was told. The opaque `TacticalUnit` is not folded
 /// in either; its truth is M32's and its every change is journalled there, so
 /// hashing it would make this function a second, weaker copy of that journal.
-/// Cut W adds the cells it needs as an explicit, documented extension.
+///
+/// **Cut W.1's extension**, which that last sentence promised: the lock, the two
+/// weapon cells and the in-flight shot count. Each is a fact the arena is the single
+/// writer of and each moves without an event of its own — a cycle that has run down,
+/// a lock cleared because its contact expired — so a replay that fired half a pulse
+/// earlier would otherwise compare equal. The shot *record* is not folded in beyond
+/// its count: the shot's own fields are a function of the poses and the range at
+/// acceptance, which are already in here, and folding a predicted point would hash
+/// the same numbers twice.
 #[must_use]
 pub fn state_hash(arena: &Arena) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
@@ -103,6 +119,21 @@ pub fn state_hash(arena: &Arena) -> u64 {
                 u8::from(unit.limits.wreck),
             ],
         );
+        // 16b cut W.1: the lock and the two weapon cells.
+        hash = fnv1a64_update(
+            hash,
+            &unit.lock.map_or(0_u64, |contact| contact.0).to_le_bytes(),
+        );
+        hash = fnv1a64_update(hash, &(unit.ready_at_ms.len() as u64).to_le_bytes());
+        for (weapon, ready_at_ms) in &unit.ready_at_ms {
+            hash = fnv1a64_update(hash, weapon.as_bytes());
+            hash = fnv1a64_update(hash, &ready_at_ms.to_le_bytes());
+        }
+        hash = fnv1a64_update(hash, &(unit.ammo.len() as u64).to_le_bytes());
+        for (weapon, rounds) in &unit.ammo {
+            hash = fnv1a64_update(hash, weapon.as_bytes());
+            hash = fnv1a64_update(hash, &rounds.to_le_bytes());
+        }
     }
     for (viewer, id, held) in arena.contacts.all() {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
@@ -115,6 +146,7 @@ pub fn state_hash(arena: &Arena) -> u64 {
     hash = fnv1a64_update(hash, &[arena.clock.tempo().code()]);
     hash = fnv1a64_update(hash, &arena.now_ms.to_le_bytes());
     hash = fnv1a64_update(hash, &(arena.due.len() as u64).to_le_bytes());
+    hash = fnv1a64_update(hash, &(arena.shots.len() as u64).to_le_bytes());
     hash = fnv1a64_update(hash, &arena.ledger.seq().to_le_bytes());
     hash
 }
@@ -223,6 +255,49 @@ mod tests {
             0,
         );
         assert_ne!(state_hash(&journalled), base);
+    }
+
+    /// **16b cut W.1's extension**: the lock, the two weapon cells and the in-flight
+    /// shot count are each a fact that moves without an event of its own, so each has
+    /// to move the hash.
+    #[test]
+    fn the_hash_folds_the_lock_the_weapon_cells_and_the_shots_in_flight() {
+        let base = state_hash(&two_tanks());
+        for mutate in [
+            (|unit: &mut crate::arena::state::UnitState| {
+                unit.lock = Some(crate::arena::state::ContactId(7));
+            }) as fn(&mut _),
+            |unit| {
+                unit.ready_at_ms
+                    .insert(smol_str::SmolStr::new("cannon"), 1_000);
+            },
+            |unit| {
+                unit.ammo.insert(smol_str::SmolStr::new("cannon"), 40);
+            },
+        ] {
+            let mut probe = two_tanks();
+            if let Some(unit) = probe.unit_mut(ObjId(9)) {
+                mutate(unit);
+            }
+            assert_ne!(state_hash(&probe), base, "a weapon cell went unhashed");
+        }
+        // Two weapons that swapped cycles are not one state, which is why the id's
+        // bytes are folded beside the value.
+        let mut swapped = two_tanks();
+        if let Some(unit) = swapped.unit_mut(ObjId(9)) {
+            unit.ready_at_ms
+                .insert(smol_str::SmolStr::new("cannon"), 1_000);
+            unit.ready_at_ms
+                .insert(smol_str::SmolStr::new("machine_gun"), 2_000);
+        }
+        let mut other = two_tanks();
+        if let Some(unit) = other.unit_mut(ObjId(9)) {
+            unit.ready_at_ms
+                .insert(smol_str::SmolStr::new("cannon"), 2_000);
+            unit.ready_at_ms
+                .insert(smol_str::SmolStr::new("machine_gun"), 1_000);
+        }
+        assert_ne!(state_hash(&swapped), state_hash(&other));
     }
 
     #[test]

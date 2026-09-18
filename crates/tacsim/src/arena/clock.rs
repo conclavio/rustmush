@@ -85,7 +85,7 @@ impl Tempo {
 ///
 /// Every cut supplies its own and no cut reads another's: A.2's `step` passes
 /// what motion and the intent queues know and leaves the rest `false` until cut
-/// S mints contacts and cut W fires shots. That is why this is a struct of flags
+/// S mints contacts and cut W.1 fires shots. That is why this is a struct of flags
 /// rather than a computed tempo — a cut that has not landed contributes nothing
 /// instead of contributing a wrong answer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -93,15 +93,18 @@ pub struct TempoSignals {
     /// Some unit holds a contact (classified or not) inside
     /// `tempo.alert_range_cm` (cut S).
     pub contact_within_alert_range: bool,
-    /// A fire intent is queued (cut W; the queue is cut A's).
+    /// A fire intent is queued (16b cut W.1 sets it; the queue is cut A's).
     pub fire_intent_queued: bool,
     /// A controller has entered `Approach` (cut N).
     pub ai_approaching: bool,
-    /// A shot was fired this pulse (cut W).
+    /// A shot was fired this pulse (16b cut W.1).
     pub shot_fired: bool,
-    /// An impact is scheduled (cut W).
+    /// An impact is scheduled (16b cut W.1: every accepted shot schedules one,
+    /// so this and `shot_fired` move together).
     pub impact_scheduled: bool,
-    /// Hostile units are within weapons range of each other (cut W).
+    /// Hostile units are within weapons range of each other. **Still `false`**:
+    /// 16b §8's cut W row names the other two `Engaged` triggers, and a
+    /// hostile-in-range sweep is a per-pulse cost nobody has bounded yet.
     pub hostile_in_weapons_range: bool,
 }
 

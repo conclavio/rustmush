@@ -28,6 +28,7 @@ use crate::arena::intents::Intent;
 use crate::arena::ledger::{EventKind, Ledger};
 use crate::arena::perception::{FrameNotice, SensorProfile};
 use crate::arena::step::FrameSlots;
+use crate::arena::weapons::{Shot, WeaponBand};
 use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 
 /// The digest domain of [`ArenaDefinition::digest`]. Length-prefixed fields
@@ -463,22 +464,41 @@ pub const DEFAULT_SENSOR_HEIGHT_CM: u32 = 150;
 /// Cut S needs exactly one number off it — the longest `max_range_cm` in the
 /// match, which is what `tempo.alert_range_cm` is derived from when the key is
 /// zero (16b §9) — and cut W needs all of them, so the whole row crosses the seam
-/// once at check-out rather than twice. Every field is an integer (D-16-4) and the
-/// arena interprets none of them except `max_range_cm`.
+/// once at check-out rather than twice. Every field is an integer (D-16-4).
+///
+/// **16b cut W.1 added [`WeaponSummary::bands`] and
+/// [`WeaponSummary::count_per_load`]**, which are the two numbers a shot needs and
+/// S.1 had no reader for: the load sizes the unit's `ammo` cell at check-out, and
+/// the bands carry the per-band `dispersion_mrad` W.2's error cone is built from.
+/// The row is the **definition**, immutable for the life of the match; what a shot
+/// changes is the two live cells beside it on [`UnitState`]
+/// (`ready_at_ms` and `ammo`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WeaponSummary {
     /// The component id the pilot names in `FIRE <weapon>`.
     pub id: SmolStr,
-    /// The outermost range band's edge, centimetres.
+    /// The outermost range band's edge, centimetres. Equal to the largest
+    /// [`WeaponBand::max_range_cm`] of [`WeaponSummary::bands`]; carried
+    /// separately because it is the one number cut S reads and a check-out with no
+    /// authored bands still has a reach.
     pub max_range_cm: u32,
-    /// The cycle, milliseconds (floor 1,000, W14).
+    /// The cycle, milliseconds (floor 1,000, W14 — asserted by the content loader,
+    /// `crate::definitions::weapon::CYCLE_FLOOR_MS`, and taken as authored here).
     pub cycle_ms: u32,
     /// The ammunition family it fires.
     pub ammunition: SmolStr,
     /// Rounds per pull.
     pub burst_rounds: u32,
-    /// Muzzle speed, cm/s; zero exactly for a beam.
+    /// Muzzle speed, cm/s; zero exactly for a beam (doc 16 §3.5: a beam's
+    /// `impact_at_ms` is `now`).
     pub muzzle_speed_cms: u32,
+    /// **The range bands, nearest first** (16b cut W.1; doc 16 §3.5 step 2), each
+    /// with the weapon's own error cone in that band.
+    pub bands: Vec<WeaponBand>,
+    /// **How many rounds one load holds** (16b cut W.1), off the ammunition
+    /// definition. It is what [`Arena::new`] sizes the unit's `ammo` cell from and
+    /// what `WEAPONSTATUS` prints as the denominator.
+    pub count_per_load: u32,
 }
 
 /// One unit as it is handed over at check-out (doc 16 §3.1 "Custody").
@@ -498,7 +518,7 @@ pub struct CustodyUnit {
     /// **What it sees with** (16b cut S.1; doc 16 §3.6). `None` runs no sensor
     /// pass at all.
     pub sensor: Option<SensorProfile>,
-    /// **What it shoots with** (16b cut S.1 carries it; cut W reads it).
+    /// **What it shoots with** (16b cut S.1 carries it; 16b cut W.1 reads it).
     pub weapons: Vec<WeaponSummary>,
     /// M32 unit truth, carried opaque: cut A applies no plan to it (D-16-6).
     pub unit: TacticalUnit,
@@ -563,16 +583,23 @@ pub struct UnitState {
     pub sensor_height_cm: u32,
     /// What it sees with (doc 16 §3.6); `None` runs no pass.
     pub sensor: Option<SensorProfile>,
-    /// What it shoots with. **Carried by cut S.1, read by cut W** — except for
-    /// the longest `max_range_cm`, which `tempo.alert_range_cm` derives from.
+    /// What it shoots with — the immutable definition rows, in component order.
     pub weapons: Vec<WeaponSummary>,
     /// M32 unit truth, carried opaque.
     pub unit: TacticalUnit,
-    /// Per-weapon ready time in arena milliseconds. **Empty until cut W**, which
-    /// is what sets and reads it.
+    /// **Per-weapon ready time in arena milliseconds** (16b cut W.1 fills A.1's
+    /// map): the arena millisecond at or after which that weapon may fire again,
+    /// set to `now + cycle_ms` by an accepted shot. One row per weapon, laid down
+    /// at check-out at zero — a complete table, so a lookup is never the difference
+    /// between "ready" and "no such weapon".
     pub ready_at_ms: BTreeMap<SmolStr, i64>,
-    /// The platform's lock. Cut S.1 mints the contact and cut S.2's `LOCK` names
-    /// one; **`None` until cut W**, which is what gives the order its effect.
+    /// **Rounds left, per weapon** (16b cut W.1), laid down at check-out from each
+    /// weapon's [`WeaponSummary::count_per_load`] and decremented by the burst an
+    /// accepted shot fires. One row per weapon, as `ready_at_ms` is.
+    pub ammo: BTreeMap<SmolStr, u32>,
+    /// The platform's lock (16b cut W.1 gives `LOCK` its effect): the contact
+    /// `FIRE` shoots at, which is always one this platform holds — a contact the
+    /// platform loses clears it (`crate::arena::step`'s `lost` arm).
     pub lock: Option<ContactId>,
     /// Set by motion when this unit was stopped at a cell boundary during the
     /// substep just integrated, and cleared at the start of the next (doc 16
@@ -938,14 +965,17 @@ pub enum DueKind {
         /// The unit starting up.
         unit: ObjId,
     },
-    /// A weapon's cycle has finished (cut W).
+    /// **A weapon's cycle has finished** (16b cut W.1). It changes no state —
+    /// readiness is a comparison against `now_ms` — and exists so that
+    /// `next_due_ms` wakes the pulse when the breech comes free.
     WeaponReady {
         /// The unit.
         unit: ObjId,
         /// The weapon's component id.
         weapon: SmolStr,
     },
-    /// A shot's flight time has elapsed (cut W).
+    /// **A shot's flight time has elapsed** (16b cut W.1): the arena resolves it
+    /// through `Arena::resolve_impact`.
     Impact {
         /// The shot's sequence number, which is also its draw label's argument.
         shot_seq: u64,
@@ -1230,6 +1260,44 @@ pub struct Arena {
     /// Queued discrete actions per unit, bounded by
     /// `intents.max_pending_per_unit`.
     pub pending: BTreeMap<ObjId, VecDeque<Intent>>,
+    /// **The shots in flight**, by shot sequence (16b cut W.1; doc 16 §4 "Arena
+    /// state": *scheduled impacts*).
+    ///
+    /// One row per accepted shot, from the moment `FIRE` is accepted until its
+    /// [`DueKind::Impact`] is applied, which is what removes it. The
+    /// [`DueKind::Impact`] event carries the sequence and nothing else, so this is
+    /// where the shot's shooter, weapon, target, predicted point and round count
+    /// live — everything doc 16 §3.5's re-validation at impact reads.
+    pub shots: BTreeMap<u64, Shot>,
+    /// The sequence the next accepted shot takes; the first shot of a match is `1`,
+    /// so `0` is available as "no shot". It is the argument of the `hit:`, `facet:`
+    /// and `burst:` draw labels (doc 16 §3.5), so it never repeats within a match
+    /// and never restarts.
+    pub next_shot_seq: u64,
+    /// **The hash pulse phase 4's events are recorded against** (16b cut W.1), set
+    /// by [`crate::arena::step::Arena::step`] for the length of the phase and `None`
+    /// everywhere else.
+    ///
+    /// Doc 16 §4 asks every ledger line to carry the substep state hash, and
+    /// [`crate::arena::step`]'s substep already takes **one** hash for all of its
+    /// events — *the state at the substep's end, before any of that substep's events
+    /// was appended* — because that is what makes the value a function of the state
+    /// rather than of the order the events happened to be written in. Phase 4 is the
+    /// same case read once more: it runs at one arena timestamp with no time
+    /// advancing inside it, so every action it resolves happened at one moment and
+    /// belongs to one hash.
+    ///
+    /// It is also the difference between O(1) and O(actions) hashes a pulse, and the
+    /// hash is a walk of every unit and every contact: a pulse in which 150 units
+    /// lock and fire measured 9.5 ms against 4.2 ms with this slot, all of it the
+    /// hash (16b cut W.1's harness run). A caller outside the pulse —
+    /// [`Arena::event_hash`]'s `None` arm — takes a fresh hash, so a direct
+    /// `resolve_fire` in a test is unchanged.
+    ///
+    /// It is a **view** and is deliberately not folded into the state hash, for the
+    /// same reason `held_losses` is not: it is scratch for one phase, and folding it
+    /// would make the hash a function of where in the pulse it was taken.
+    pub action_hash: Option<u64>,
     /// A `Stop` the world sent, honoured by phase 1 of the next step.
     pub stop: Option<StopReason>,
     /// Arena time: milliseconds since match start.
@@ -1359,9 +1427,22 @@ impl Arena {
                     unit.sensor_height_cm
                 },
                 sensor: unit.sensor,
+                // 16b cut W.1: the two live cells, one row per weapon, laid down
+                // here so that every later lookup is a read of a complete table.
+                // A weapon id declared twice on one unit keeps one row, which is
+                // the same thing the component table itself is.
+                ready_at_ms: unit
+                    .weapons
+                    .iter()
+                    .map(|weapon| (weapon.id.clone(), 0_i64))
+                    .collect(),
+                ammo: unit
+                    .weapons
+                    .iter()
+                    .map(|weapon| (weapon.id.clone(), weapon.count_per_load))
+                    .collect(),
                 weapons: unit.weapons,
                 unit: unit.unit,
-                ready_at_ms: BTreeMap::new(),
                 lock: None,
                 blocked: false,
                 linkdead: false,
@@ -1460,6 +1541,9 @@ impl Arena {
             seed,
             pilots,
             pending: BTreeMap::new(),
+            shots: BTreeMap::new(),
+            next_shot_seq: 0,
+            action_hash: None,
             stop: None,
             now_ms: 0,
             last_frames: FrameSlots::new(),
@@ -1504,6 +1588,21 @@ impl Arena {
             .binary_search_by_key(&id, |state| state.id)
             .ok()?;
         self.units.get_mut(index)
+    }
+
+    /// **The hash one discrete action's ledger line carries** (16b cut W.1):
+    /// [`Arena::action_hash`] while the pulse is inside phase 4, and a fresh
+    /// [`crate::arena::hash::state_hash`] outside it.
+    ///
+    /// Every resolver of a discrete action goes through this rather than hashing for
+    /// itself, so the phase's lines share one hash exactly as a substep's do, and a
+    /// caller outside the pulse still gets an honest one.
+    #[must_use]
+    pub fn event_hash(&self) -> u64 {
+        match self.action_hash {
+            Some(hash) => hash,
+            None => crate::arena::hash::state_hash(self),
+        }
     }
 
     /// Ask the arena to stop. **Phase 1 of the next step honours it**; nothing

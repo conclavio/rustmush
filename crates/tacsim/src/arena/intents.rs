@@ -27,8 +27,9 @@
 //! - **Discrete** actions ([`IntentKind::Startup`], [`IntentKind::Lock`],
 //!   [`IntentKind::Fire`]) are queued per unit, bounded at
 //!   `intents.max_pending_per_unit`, and resolved in phase 4 by the cut that owns
-//!   them. Cut A resolves `STARTUP` ([`resolve_startup`]) and carries the other
-//!   two as kinds for cut S and cut W.
+//!   them: `STARTUP` by [`resolve_startup`] here, and `LOCK` and `FIRE` by
+//!   [`crate::arena::state::Arena::resolve_lock`] and
+//!   [`crate::arena::state::Arena::resolve_fire`] (16b cut W.1).
 //!
 //! A refusal is always one of the named [`Refusal`] words, never a silent drop:
 //! cut K's cockpit turns each into a line a pilot can act on.
@@ -94,12 +95,12 @@ pub enum IntentKind {
     },
     /// Bring power up (doc 16 §3.3 "Startup").
     Startup,
-    /// Lock a contact the platform holds (cut S resolves it).
+    /// Lock a contact the platform holds (16b cut W.1 resolves it).
     Lock {
         /// The contact's opaque arena id.
         contact: ContactId,
     },
-    /// Fire a weapon (cut W resolves it).
+    /// Fire a weapon (16b cut W.1 resolves it).
     Fire {
         /// The weapon's component id.
         weapon: SmolStr,
@@ -197,6 +198,25 @@ pub enum Refusal {
     /// No such unit in this arena.
     #[error("this arena has no such unit")]
     Unknown,
+    /// **`LOCK` named a contact the platform does not hold** (16b cut W.1; doc 16
+    /// §3.6). The *pilot's* sentence for this is
+    /// [`crate::arena::state::NO_SUCH_CONTACT`], one answer for all three cases;
+    /// this is the word the arena's own refusal path uses.
+    #[error("that platform holds no such contact")]
+    NoContact,
+    /// **`FIRE` with no lock, or with a lock the platform no longer holds** (16b
+    /// cut W.1; doc 16 §3.5 "Acceptance and cost").
+    #[error("that unit has no lock")]
+    NoLock,
+    /// **`FIRE` on a weapon whose cycle has not finished** (16b cut W.1).
+    #[error("that weapon is still cycling")]
+    Cycling,
+    /// **`FIRE` on a weapon with no rounds left** (16b cut W.1).
+    #[error("that weapon is empty")]
+    Empty,
+    /// **`FIRE` naming a weapon the unit does not carry** (16b cut W.1).
+    #[error("that unit carries no such weapon")]
+    NoWeapon,
 }
 
 impl Refusal {
@@ -212,6 +232,11 @@ impl Refusal {
             Refusal::MotionDisabled => "motion_disabled",
             Refusal::Linkdead => "linkdead",
             Refusal::Unknown => "unknown",
+            Refusal::NoContact => "no_contact",
+            Refusal::NoLock => "no_lock",
+            Refusal::Cycling => "cycling",
+            Refusal::Empty => "empty",
+            Refusal::NoWeapon => "no_weapon",
         }
     }
 }
@@ -351,7 +376,10 @@ pub fn drain_pending(arena: &mut Arena, unit: ObjId) -> Vec<Intent> {
 ///
 /// The ledger event carries the state hash as it was *before* the transition,
 /// which is the same convention cut A.2 uses for a substep: an event says what
-/// the world looked like when it happened.
+/// the world looked like when it happened. **16b cut W.1** routed it through
+/// [`Arena::event_hash`], so every action phase 4 resolves shares the one hash the
+/// phase took — which is that convention read once more, and O(1) hashes a pulse
+/// instead of one per action.
 ///
 /// # Errors
 ///
@@ -372,7 +400,7 @@ pub fn resolve_startup(arena: &mut Arena, unit: ObjId) -> Result<(), Refusal> {
     let at = arena
         .now_ms
         .saturating_add(i64::from(arena.match_cfg.startup_ms));
-    let hash = crate::arena::hash::state_hash(arena);
+    let hash = arena.event_hash();
     if let Some(state) = arena.unit_mut(unit) {
         state.power = Power::Starting;
     }
