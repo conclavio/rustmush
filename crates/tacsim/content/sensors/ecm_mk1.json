@@ -1,0 +1,30 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.ecm_mk1",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "0ce4a2787d83f226b3bad46c9d09b3d960d55c78f00c79c888ac9f08d416ba22",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.sensor.ecm_mk1": {
+      "kind": "sensor",
+      "def": {
+        "label": "Mk1 jamming pod",
+        "max_range_cells": 1,
+        "max_attenuation": 0,
+        "classify_after_ms": 0,
+        "sees_wrecks": false,
+        "share_range_cells": 0,
+        "signature": [],
+        "emission": null,
+        "jamming": {
+          "radius_cells": 6,
+          "attenuation_cost": 25,
+          "signature_permille": 150
+        },
+        "note": "Doc 16 section 9 item 4's pod, and the whole of it is the jamming block: this row is a jammer and not a sight, so nothing mounts it with role sensor and the arena never reads the six detection fields above. They are the schema's floor -- max_range_cells 1 because the decoder's range is 1 to 1024, the rest neutral -- and this note is the reason they are not numbers anybody tuned. radius_cells 6 is a 60 m bubble at cell_cm 1,000: a pod defends the ground around itself and has to be driven where it is wanted. attenuation_cost 25 is priced off the atlas's opacity table, where one belt of light woods attenuates 25: an eye inside the bubble keeps 15 of the Mk1 sight's 40 and stops seeing through the belt it saw through before. signature_permille 150 is doc 16 section 2 W1 -- standard ECM defeats detection at long range -- as arithmetic: the Mk1 sight's 600 m against a tank stopped on open ground falls from 540 m to 81 m, which is why a fight inside a bubble is fought at pistol range."
+      }
+    }
+  }
+}

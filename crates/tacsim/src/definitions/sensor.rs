@@ -5,15 +5,22 @@
 //! attenuation a `Partial` line of sight may carry and still count, how long a
 //! contact must be held before it classifies, whether wrecks are candidates at
 //! all, **the signature table** doc 16 §3.6 step 3 scales the range by, **the
-//! comms reach** step 5 shares along — and the **two null hooks**, `emission`
-//! and `jamming`, which doc 16 §3.6 requires to be *present* and *null* today so
-//! that the ECM and ECCM extensions of §9 are a value change rather than a schema
-//! change.
+//! comms reach** step 5 shares along — and the **two hooks**, `emission` and
+//! `jamming`, which doc 16 §3.6 requires to be *present* and *null* until the
+//! extensions of §9 read them, so that each is a value change rather than a
+//! schema change.
 //!
-//! "Present and null" is load-bearing and is the reason both are
-//! `Option<Value>` without a serde default: a row that simply omits them is
-//! refused by the decoder for a missing field, and a row that fills one is
-//! refused by [`SensorDef::check`] naming the hook and the cut that owns it.
+//! "Present and null" is load-bearing and is the reason both are `Option`s
+//! without a serde default: a row that simply omits one is refused by the
+//! decoder for a missing field, and a row that fills one the reading cut has not
+//! landed yet is refused by [`SensorDef::check`] naming the hook and the cut that
+//! owns it.
+//!
+//! **16b cut X.4 is that cut for `jamming`** (doc 16 §9 item 4: *the `jamming`
+//! field becomes non-null*). It is now a typed [`JammingDef`] rather than an
+//! opaque `Value`, and a row that fills it is a **jammer**: the pod of doc 16 §2
+//! W1, which is why sensor ranges in this game are short. `emission` stays
+//! present and null and is refused as before; the cut that reads it is §9 item 5.
 
 use mush_atlas::TerrainClass;
 use serde::{Deserialize, Serialize};
@@ -37,6 +44,20 @@ pub const MAX_SHARE_RANGE_CELLS: u16 = 256;
 /// range for a particular target, which is the `max_signature_factor` knob's job
 /// and not content's (doc 16 §3.6 steps 1 and 3).
 pub const MAX_SIGNATURE_PERMILLE: u32 = 1_000;
+
+/// The widest bubble one jammer may declare, in cells (16b cut X.4). Bounded by
+/// the arena's own side for the reason [`MAX_SHARE_RANGE_CELLS`] is bounded by
+/// it: a bubble wider than the window jams nobody it was not already jamming.
+pub const MAX_JAM_RADIUS_CELLS: u16 = 256;
+
+/// The most one jammer may take out of an observer's attenuation budget: the
+/// whole of it, on the atlas's own 0-to-100 opacity scale (doc 16 §3.6 step 2).
+///
+/// A cost of `100` is a pod that closes the budget outright — an observer inside
+/// that bubble accepts nothing but a `Clear` line — and is the ceiling rather
+/// than the intention; the shipped pod costs 25, which is one belt of light
+/// woods.
+pub const MAX_ATTENUATION_COST: u8 = 100;
 
 /// **One row of the signature table** (16b cut S.1; doc 16 §3.6 step 3: *a
 /// stopped tank in heavy woods has a lower factor than one moving on a road*).
@@ -141,6 +162,107 @@ impl ThermalSignature {
     }
 }
 
+/// **What a jamming pod does to an observer standing inside its bubble** (16b cut
+/// X.4; doc 16 §9 item 4: *a component that adds to the observer's
+/// `max_attenuation` budget and lowers signature factors within a radius*; doc 16
+/// §2 W1).
+///
+/// The `jamming` hook doc 16 §3.6 left null, filled. Three integers and no
+/// geometry:
+///
+/// | field | what it does |
+/// |---|---|
+/// | [`JammingDef::radius_cells`] | how far the bubble reaches, in cells |
+/// | [`JammingDef::attenuation_cost`] | what it takes out of the observer's step 2 budget |
+/// | [`JammingDef::signature_permille`] | what it leaves of every target's step 3 factor |
+///
+/// # Whose position the radius is measured from
+///
+/// **The observer's** (doc 16 §9 item 4's own words: *adds to an observer's
+/// `max_attenuation` budget … within a radius*). A pod degrades the band around
+/// itself, so what it costs is paid by whoever is trying to *look* from inside
+/// it; a target standing in the bubble is seen exactly as before by an observer
+/// standing outside it. That is the reading the arena implements
+/// ([`crate::arena::perception::Jamming`]) and the one 16b cut X.4's acceptance
+/// asserts both ways round.
+///
+/// # Why it is authored here and not on the mount
+///
+/// Unlike 16b cut X.3's [`ThermalSignature`] — which had to move to the sensor
+/// *mount* because [`SensorDef`] is built as an exhaustive struct literal by tests
+/// this cut may not edit — `jamming` is a field [`SensorDef`] **already has**. It
+/// was `Option<serde_json::Value>` and every literal in the tree writes `None`,
+/// so giving it a type moves no test and moves no shipped
+/// [`mush_core::mechanics::DefinitionRef`]: a `None` still serialises as
+/// `"jamming": null`, which is the byte the shipped sights' digests were taken
+/// over.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JammingDef {
+    /// How far the bubble reaches from the pod, in cells. There is no inert
+    /// jammer: a row that wants none authors no `jamming` at all, so zero is
+    /// refused.
+    pub radius_cells: u16,
+    /// What an observer inside the bubble loses from its own sensor's
+    /// `max_attenuation` (doc 16 §3.6 step 2), on the atlas's 0-to-100 scale.
+    /// Several bubbles **sum**, and the budget floors at zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attenuation_cost: u8,
+    /// What it leaves of every target's signature factor (doc 16 §3.6 step 3),
+    /// per mille: `150` is a sensor pass that reaches 15% as far as it did.
+    /// Several bubbles **multiply**. [`MAX_SIGNATURE_PERMILLE`] is *no discount*
+    /// and is the default, so a pod may author the budget cost alone.
+    #[serde(default = "full_permille", skip_serializing_if = "is_full_permille")]
+    pub signature_permille: u32,
+}
+
+/// Whether an authored cost is the default, so an unauthored one is not written
+/// back out.
+fn is_zero(value: &u8) -> bool {
+    *value == 0
+}
+
+impl JammingDef {
+    /// Re-run every bound.
+    ///
+    /// # Errors
+    ///
+    /// [`DefinitionError::Value`] naming the entry and the field.
+    pub fn check(&self, entry: &str) -> Result<(), DefinitionError> {
+        if self.radius_cells == 0 || self.radius_cells > MAX_JAM_RADIUS_CELLS {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "`jamming.radius_cells` is 1 to {MAX_JAM_RADIUS_CELLS}; {} is not (a row \
+                     that jams nothing authors no `jamming` at all)",
+                    self.radius_cells
+                ),
+            ));
+        }
+        if self.attenuation_cost > MAX_ATTENUATION_COST {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "`jamming.attenuation_cost` is 0 to {MAX_ATTENUATION_COST} (the atlas's own \
+                     scale); {} is not",
+                    self.attenuation_cost
+                ),
+            ));
+        }
+        if self.signature_permille > MAX_SIGNATURE_PERMILLE {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "`jamming.signature_permille` is {}, past {MAX_SIGNATURE_PERMILLE}: a \
+                     jammer shortens a sensor's reach and never lengthens it",
+                    self.signature_permille
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// One sensor (doc 16 §3.6).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,17 +289,22 @@ pub struct SensorDef {
     /// **The comms reach** a classified contact is shared along (doc 16 §3.6
     /// step 5, W6), in cells; 16b §9 pins 30. Zero shares nothing.
     pub share_range_cells: u16,
-    /// **The ECM hook** (doc 16 §3.6 last line, §9). Present and null.
+    /// **The remaining hook** (doc 16 §3.6 last line, §9). Present and null until
+    /// the cut that reads it lands (§9 item 5).
     pub emission: Option<serde_json::Value>,
-    /// **The ECCM hook** (doc 16 §3.6 last line, §9). Present and null.
-    pub jamming: Option<serde_json::Value>,
+    /// **What this row jams** (doc 16 §3.6 last line, §9 item 4), or `None` for
+    /// every row that is a sight rather than a pod — which is every row the game
+    /// ships, and the reason a shipped sight's payload is the bytes it was (16b
+    /// cut X.4).
+    pub jamming: Option<JammingDef>,
     /// Why these numbers.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
 }
 
 impl SensorDef {
-    /// Re-run every bound, including the two hooks' nullity.
+    /// Re-run every bound: `emission`'s nullity, and (16b cut X.4) `jamming`'s
+    /// three numbers where a row carries them.
     ///
     /// # Errors
     ///
@@ -250,19 +377,17 @@ impl SensorDef {
                 }
             }
         }
-        for (hook, value, owner) in [
-            ("emission", self.emission.as_ref(), "ECM"),
-            ("jamming", self.jamming.as_ref(), "ECCM"),
-        ] {
-            if value.is_some_and(|value| !value.is_null()) {
-                return Err(DefinitionError::value(
-                    entry,
-                    format!(
-                        "`{hook}` is the {owner} hook of doc 16 §9 and is null until the cut \
-                         that reads it lands; a value here configures nothing"
-                    ),
-                ));
-            }
+        if self.emission.as_ref().is_some_and(|value| !value.is_null()) {
+            return Err(DefinitionError::value(
+                entry,
+                "`emission` is the remaining hook of doc 16 §9 and is null until the cut that \
+                 reads it lands (item 5); a value here configures nothing",
+            ));
+        }
+        // **16b cut X.4**: and `jamming` is read, so it is bounded rather than
+        // refused (doc 16 §9 item 4).
+        if let Some(jamming) = &self.jamming {
+            jamming.check(entry)?;
         }
         Ok(())
     }

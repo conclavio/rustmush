@@ -31,6 +31,15 @@
 //! perception counters are asserted identical with the extension loaded and
 //! without it.
 //!
+//! **X.4, ECM** (doc 16 §9 item 4, D-16-18's fourth): a sensor row whose `jamming`
+//! block is non-null — the hook doc 16 §3.6 left null — carried by a pod mounted
+//! through a component role of its own, and two terms on the pass of every observer
+//! standing inside its bubble: the step 2 attenuation budget loses the pod's cost,
+//! and every target's step 3 signature factor is multiplied down, which is doc 16 §2
+//! W1 as arithmetic. A target inside the bubble is lost to an observer inside it and
+//! held, unchanged, by the same observer outside it; a pod that is shut down or burnt
+//! out radiates nothing; and a field with no pod on it never scans for one.
+//!
 //! # What this file loads, and what it deliberately does not
 //!
 //! The three extension packs go through the **operator's** route —
@@ -128,6 +137,22 @@ const DIGESTS_THERMAL: [(&str, &str); 2] = [
 
 /// The thermal sight's pack files, by their paths under `content/`.
 const PACK_FILES_THERMAL: [&str; 2] = ["sensors/thermal_mk1.json", "units/line_tank_thermal.json"];
+
+/// **The jamming pod's digest pins** (16b cut X.4), the way X.1 pins the laser's:
+/// the pod's row, then the tank that carries it.
+const DIGESTS_ECM: [(&str, &str); 2] = [
+    (
+        "tacsim.pack.ecm_mk1",
+        "0ce4a2787d83f226b3bad46c9d09b3d960d55c78f00c79c888ac9f08d416ba22",
+    ),
+    (
+        "tacsim.pack.line_tank_ecm",
+        "8f83e07a3a509385b23ff13eee1984ce4a93187d856abcda4713709a6aa4596a",
+    ),
+];
+
+/// The pod's pack files, by their paths under `content/`.
+const PACK_FILES_ECM: [&str; 2] = ["sensors/ecm_mk1.json", "units/line_tank_ecm.json"];
 
 /// **The shipped sight's signature table, verbatim** (16b cut X.3).
 ///
@@ -1932,4 +1957,598 @@ fn x3_a_thermal_factor_past_a_thousand_is_refused_naming_the_mount() {
             && text.contains("1001"),
         "{text}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// X.4 — ECM
+// ---------------------------------------------------------------------------
+
+/// The unit that carries the jamming pod, when a fixture fields one beside the
+/// observer and the target.
+const POD: mush_core::ObjId = mush_core::ObjId(7);
+
+/// The pod's cell: five cells from the observer at [`WATCH_CELL`] and five from
+/// the target at [`MARK_CELL`], so **both ends of the look** stand inside its
+/// six-cell bubble — which is the fixture doc 16 §9 item 4's own sentence needs.
+const POD_CELL: (u16, u16) = (8, 7);
+
+/// A cell the pod reaches neither end from: about 139 m from [`WATCH_CELL`], where
+/// a six-cell bubble is a pod parked in the corner of the window.
+const POD_PARKED_CELL: (u16, u16) = (1, 14);
+
+/// Where the observer stands to be **outside** the bubble while the target stays
+/// inside it: seven cells from the pod, twelve from the target.
+const OUTSIDE_CELL: (u16, u16) = (8, 0);
+
+/// **What the pod authors** (`content/sensors/ecm_mk1.json`), so the arithmetic
+/// below is read off the content rather than restated by it.
+const JAM_RADIUS_CELLS: u16 = 6;
+/// What it takes out of an observer's attenuation budget — one belt of light woods
+/// on the atlas's own opacity table.
+const JAM_ATTENUATION_COST: u8 = 25;
+/// What it leaves of every target's signature factor, per mille.
+const JAM_SIGNATURE_PERMILLE: u32 = 150;
+
+/// The Mk1 visual sight's reach against a tank stopped on open ground: 60 cells at
+/// the `ground` row's 900 per mille.
+const EYE_REACH_CM: u64 = 54_000;
+
+/// The shipped content plus the pod and its tank (16b cut X.4).
+fn ecm_catalog() -> Catalog {
+    catalog_of(&content::extension_sources_of(&content::EXTENSIONS_ECM))
+}
+
+/// One sensor pass with the spatial index rebuilt first — X.3's [`thermal_pass`],
+/// under the name this section reads by. The jam scan reads the same index the
+/// candidate cull does, so the rebuild is what makes a pass driven directly the
+/// pass `Arena::step`'s phase 3 runs.
+fn jam_pass(
+    arena: &mut Arena,
+    observer: mush_core::ObjId,
+    pass_seq: u64,
+    t_ms: i64,
+) -> tacsim::arena::perception::PerceptionCounters {
+    thermal_pass(arena, observer, pass_seq, t_ms)
+}
+
+/// **An observer of `watcher` at `at`, a stock line tank at `target`, and the
+/// pod's tank at `pod` when a fixture fields one**, every unit checked out the way
+/// production checks one out.
+///
+/// The observer and the pod are powered up, because a pod is an emitter and a hull
+/// that has not started up radiates nothing; the target is left as it was checked
+/// out, which is stopped and cold — and nothing here reads either, because the Mk1
+/// sight has no thermal channel.
+fn jam_field(
+    catalog: &Catalog,
+    watcher: &str,
+    at: (u16, u16),
+    target: (u16, u16),
+    pod: Option<(u16, u16)>,
+    paint: &[(u16, u16, TerrainCell)],
+) -> Arena {
+    let mut units = vec![
+        unit_of(catalog, watcher, RED, Team::Red, at),
+        unit_of(catalog, content::LINE_TANK, BLUE, Team::Blue, target),
+    ];
+    if let Some(cell) = pod {
+        units.push(unit_of(
+            catalog,
+            content::LINE_TANK_ECM,
+            POD,
+            Team::Blue,
+            cell,
+        ));
+    }
+    let mut arena = arena_of(catalog, units, paint);
+    for id in [RED, POD] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    arena
+}
+
+/// **The extension changes nothing about the stock game** — doc 16 §9's own rule,
+/// asserted for the pod as X.1 asserts it for the laser.
+///
+/// The last assertions are this cut's own, and they are about a *code* change
+/// rather than a content one: `SensorDef::jamming` stopped being an opaque
+/// `Option<Value>` and became a typed `Option<JammingDef>`, and what keeps every
+/// shipped sight's payload — and therefore its `DefinitionRef`, and therefore every
+/// persisted unit that points at one — exactly where it was is that a `None` still
+/// serialises as `"jamming": null`. The row's whole key set is pinned here so that
+/// a later field added to it cannot slip past unreviewed.
+#[test]
+fn x4_the_ecm_content_loads_beside_the_stock_game_without_moving_it() {
+    if writing() {
+        for relative in PACK_FILES_ECM {
+            resign(relative);
+        }
+        return;
+    }
+
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    assert_eq!(stock.weapons.len(), 2, "the cannon and the coaxial");
+    assert_eq!(stock.specs.len(), 1, "one unit schema");
+    assert_eq!(stock.sensors.len(), 1, "one sight");
+
+    let pinned: std::collections::BTreeMap<&str, &str> = DIGESTS_ECM.into_iter().collect();
+    for (name, json) in content::EXTENSIONS_ECM {
+        let pack = tacsim::pack::load_pack(json)
+            .unwrap_or_else(|error| panic!("{name} does not verify: {error}"));
+        let id = pack.manifest().id().to_string();
+        assert_eq!(
+            pinned.get(id.as_str()).copied(),
+            Some(pack.manifest().digest().to_hex().as_str()),
+            "{id}'s digest moved; re-review the content and re-pin it"
+        );
+    }
+    assert_eq!(pinned.len(), content::EXTENSIONS_ECM.len());
+
+    // With them loaded: one more sensor row, one more unit schema, and not one
+    // thing else — no weapon, no ammunition, no arena.
+    let both = ecm_catalog();
+    assert_eq!(both.sensors.len(), 2, "the Mk1 sight and the pod");
+    assert_eq!(both.specs.len(), 2, "the line tank and its ECM variant");
+    assert_eq!(both.units.len(), 2, "and the tactics catalog carries both");
+    assert_eq!(
+        both.weapons.len(),
+        2,
+        "the ECM tank carries the shipped guns and authors none of its own"
+    );
+    assert_eq!(both.arenas.len(), 1, "the extension adds no arena");
+    for (id, reference) in &stock.references {
+        assert_eq!(
+            both.references.get(id),
+            Some(reference),
+            "{id} moved when the extension loaded; a persisted unit points at it"
+        );
+    }
+
+    // The tank's identity, where X.2 pinned it, across a change to the *sensor*
+    // row's type — which the tank's own payload carries a reference to.
+    let tank = CanonicalId::new(content::LINE_TANK).expect("a canonical id");
+    assert_eq!(
+        stock
+            .references
+            .get(&tank)
+            .map(|reference| reference.digest().to_hex())
+            .as_deref(),
+        Some(LINE_TANK_DIGEST),
+        "the shipped tank's definition moved; a persisted unit needs a migration"
+    );
+
+    // And the shipped sight's row, key for key: `jamming` is still the null hook
+    // doc 16 §3.6 requires of a row that is not a pod, and it still serialises as
+    // `null` now that it has a type.
+    let sight = stock
+        .sensors
+        .get(&CanonicalId::new("tacsim.sensor.visual_mk1").expect("a canonical id"))
+        .expect("the shipped sight");
+    assert!(sight.jamming.is_none() && sight.emission.is_none());
+    let json = serde_json::to_value(sight).expect("the row serialises");
+    let row = json.as_object().expect("a row is an object");
+    assert!(
+        row.get("jamming").is_some_and(serde_json::Value::is_null),
+        "a sight with no jamming block no longer serialises as null"
+    );
+    assert!(row.get("emission").is_some_and(serde_json::Value::is_null));
+    let keys: Vec<&str> = row.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        [
+            "classify_after_ms",
+            "emission",
+            "jamming",
+            "label",
+            "max_attenuation",
+            "max_range_cells",
+            "note",
+            "sees_wrecks",
+            "share_range_cells",
+            "signature",
+        ],
+        "the sensor row's shape moved; every shipped sight's digest moved with it"
+    );
+    // The signature table X.3 pinned is untouched by this cut as well.
+    assert_eq!(
+        serde_json::to_string(&sight.signature).expect("the table serialises"),
+        VISUAL_MK1_SIGNATURE
+    );
+}
+
+/// **The pod is a sensor row whose `jamming` is non-null** (doc 16 §9 item 4's own
+/// words), reaching the arena as cells on the component that radiates it.
+///
+/// And mounting one does not change what the tank *sees* with: `sensor_profile`
+/// reads the first `sensor` mount, the pod is an `ecm` mount, and the ECM tank
+/// looks out of the same Mk1 sight the stock tank does.
+#[test]
+fn x4_the_pod_is_a_sensor_row_whose_jamming_block_is_non_null() {
+    let catalog = ecm_catalog();
+    let pod = catalog
+        .sensors
+        .get(&CanonicalId::new(content::ECM_MK1).expect("a canonical id"))
+        .expect("the pod's row");
+    assert_eq!(
+        pod.jamming,
+        Some(tacsim::definitions::sensor::JammingDef {
+            radius_cells: JAM_RADIUS_CELLS,
+            attenuation_cost: JAM_ATTENUATION_COST,
+            signature_permille: JAM_SIGNATURE_PERMILLE,
+        }),
+        "doc 16 §9 item 4: the `jamming` field becomes non-null"
+    );
+    assert!(pod.emission.is_none(), "the other hook stays null");
+
+    // The cells, decoded at check-out onto the arena's own unit, in centimetres.
+    let arena = jam_field(
+        &catalog,
+        content::LINE_TANK,
+        WATCH_CELL,
+        MARK_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    let jammer = arena
+        .unit(POD)
+        .and_then(|state| state.jammer)
+        .expect("the ECM tank carries a pod");
+    assert_eq!(
+        jammer,
+        tacsim::arena::perception::Jammer {
+            radius_cm: u32::from(JAM_RADIUS_CELLS) * u32::from(CELL_CM),
+            attenuation_cost: JAM_ATTENUATION_COST,
+            signature_permille: JAM_SIGNATURE_PERMILLE,
+        }
+    );
+    assert_eq!(
+        arena.unit(RED).and_then(|state| state.jammer),
+        None,
+        "a stock tank carries no pod"
+    );
+    assert_eq!(
+        arena.jam_radius_cm,
+        u32::from(JAM_RADIUS_CELLS) * u32::from(CELL_CM),
+        "the match's scan radius is the widest bubble on the field"
+    );
+    assert_eq!(
+        jam_field(
+            &catalog,
+            content::LINE_TANK,
+            WATCH_CELL,
+            MARK_CELL,
+            None,
+            &[]
+        )
+        .jam_radius_cm,
+        0,
+        "a field with no pod never scans for one"
+    );
+
+    // The pod is not a sight: the ECM tank looks out of the Mk1 visual sight, and
+    // its own row's floor numbers reach nothing.
+    let looking = arena
+        .unit(POD)
+        .and_then(|state| state.sensor.as_ref())
+        .expect("the ECM tank sees with something");
+    assert_eq!(
+        (looking.max_range_cells, looking.max_attenuation),
+        (60, 40),
+        "mounting a pod changed what the tank sees with"
+    );
+
+    // The two terms, as arithmetic, on their own.
+    let jamming = tacsim::arena::perception::Jamming {
+        attenuation_cost: u32::from(JAM_ATTENUATION_COST),
+        signature_permille: JAM_SIGNATURE_PERMILLE,
+    };
+    assert_eq!(jamming.budget(40), 15, "40 of budget less the pod's 25");
+    assert_eq!(jamming.budget(20), 0, "and it floors at zero, never wraps");
+    assert_eq!(
+        jamming.scale(EYE_REACH_CM),
+        8_100,
+        "540 m of reach becomes 81 m"
+    );
+}
+
+/// **The acceptance** (doc 16 §9 item 4): a target inside the bubble is lost to an
+/// observer whose budget the pod is eating, and **the same observer outside the
+/// radius sees as before**.
+///
+/// Ten cells of open ground, 100 m, with the pod parked halfway between: the Mk1
+/// sight reaches 54,000 cm against a tank stopped on `ground` and the pod leaves
+/// 8,100 of it, so the target 10,000 cm out is gone and the pod 5,000 cm out is the
+/// one thing still on the scope — which is the shape of a fight inside a bubble.
+///
+/// Then the same field with the observer stepped back out of the bubble: the target
+/// is still *in* it, twelve cells away now instead of ten, and it is held exactly as
+/// it was. That is the reading this cut implements, asserted in the one way that
+/// tells it apart from the other: the pod degrades what is looked *from*, not what
+/// is looked *at*.
+#[test]
+fn x4_a_target_in_the_bubble_is_lost_from_inside_it_and_held_from_outside() {
+    let catalog = ecm_catalog();
+
+    // Inside: the pod eats the reach and the target is gone.
+    let mut inside = jam_field(
+        &catalog,
+        content::LINE_TANK,
+        WATCH_CELL,
+        MARK_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    assert!(
+        !holds(&mut inside),
+        "the observer inside the bubble still held a target 100 m out"
+    );
+    let pod_contact = tacsim::arena::rng::draw_contact_id(inside.seed, RED, POD);
+    assert!(
+        inside.contacts.resolve(RED, pod_contact).is_some(),
+        "the pod itself is 50 m out and inside what the jamming leaves"
+    );
+
+    // Outside: the same pod, the same target still inside its bubble, and the
+    // observer two cells further back — held, as it was before the pod existed.
+    let mut outside = jam_field(
+        &catalog,
+        content::LINE_TANK,
+        OUTSIDE_CELL,
+        MARK_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    assert!(
+        holds(&mut outside),
+        "an observer outside the bubble lost a target that is inside it"
+    );
+
+    // And with the pod parked in the far corner, the field answers exactly as a
+    // field with no pod at all does.
+    for pod in [Some(POD_PARKED_CELL), None] {
+        let mut clear = jam_field(
+            &catalog,
+            content::LINE_TANK,
+            WATCH_CELL,
+            MARK_CELL,
+            pod,
+            &[],
+        );
+        assert!(
+            holds(&mut clear),
+            "a pod 139 m away jammed an observer it cannot reach"
+        );
+    }
+
+    // The target is not invisible everywhere — it is invisible at range. Four cells
+    // out is inside the 8,100 cm the jamming leaves, so the same observer under the
+    // same pod holds the same tank: what ECM buys is that it has to come closer,
+    // which is *detected later* read as a fact about a fixture.
+    let mut near = jam_field(
+        &catalog,
+        content::LINE_TANK,
+        WATCH_CELL,
+        NEAR_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    assert!(
+        holds(&mut near),
+        "a jammed sight is blind at a hundred metres, not at forty"
+    );
+}
+
+/// **The budget half, on its own** (doc 16 §9 item 4: *adds to the observer's
+/// `max_attenuation` budget*), with the pod on the observer's own hull.
+///
+/// A belt of light woods on the line and a target four cells out, which is well
+/// inside what the jamming leaves of the reach — so step 3 passes, the trace is
+/// walked, and the only thing that can refuse the detection is step 2's budget: 40
+/// of it against the belt's 25 is a detection, and 15 is not.
+///
+/// The pod is the observer's **own**, which is the other half of the reading: a
+/// bubble is a bubble, the unit carrying the pod is standing in it, and there is no
+/// exception for the tank that switched it on.
+#[test]
+fn x4_the_bubble_eats_the_observers_attenuation_budget() {
+    let catalog = ecm_catalog();
+    let belt = [(8_u16, 4_u16, woods())];
+    for (watcher, held, checks, what) in [
+        (content::LINE_TANK, true, 0, "a stock sight"),
+        // Two, and they are the cost claim: with a pod on the field the scan is one
+        // index query at its radius, and inside 6,000 cm of the observer there are
+        // exactly two units — the observer itself and the target four cells out.
+        (
+            content::LINE_TANK_ECM,
+            false,
+            2,
+            "a sight inside its own bubble",
+        ),
+    ] {
+        let mut arena = jam_field(&catalog, watcher, WATCH_CELL, NEAR_CELL, None, &belt);
+        let counters = jam_pass(&mut arena, RED, 1, 0);
+        assert_eq!(counters.candidates, 1, "{what}: no candidate at all");
+        assert_eq!(
+            counters.traces, 1,
+            "{what}: no trace was walked, so the range test culled the candidate and this is \
+             not a test about the budget after all"
+        );
+        assert_eq!(
+            counters.detected,
+            u32::from(held),
+            "{what} answered the wrong way through one belt of light woods"
+        );
+        assert_eq!(
+            counters.jam_checks, checks,
+            "{what}: the scan looked at the wrong number of units"
+        );
+    }
+}
+
+/// **A pod radiates while it is alive and powered, and not otherwise** (16b cut
+/// X.4).
+///
+/// Doc 16 §3.3 revokes a wreck's capabilities and W3 makes emission a deliberate
+/// act, so the scan reads both at scan time: the same field that loses its target
+/// with the pod online holds it with the pod shut down, and holds it with the pod
+/// burnt out. Both are read where the pod is *read*, not baked in at check-out,
+/// which is what lets a pod be silenced inside a running match.
+#[test]
+fn x4_a_shut_down_or_wrecked_pod_jams_nothing() {
+    let catalog = ecm_catalog();
+    let field = || {
+        jam_field(
+            &catalog,
+            content::LINE_TANK,
+            WATCH_CELL,
+            MARK_CELL,
+            Some(POD_CELL),
+            &[],
+        )
+    };
+    let mut online = field();
+    assert!(!holds(&mut online), "the online pod did not jam at all");
+
+    let mut cold = field();
+    if let Some(state) = cold.unit_mut(POD) {
+        state.power = Power::Off;
+    }
+    assert!(
+        holds(&mut cold),
+        "a pod that has not started up still jammed"
+    );
+
+    let mut wreck = field();
+    if let Some(state) = wreck.unit_mut(POD) {
+        state.limits.wreck = true;
+    }
+    assert!(holds(&mut wreck), "a burnt-out pod still jammed");
+
+    // And the scan still ran in both cases, which is what says the pod was refused
+    // for the reason under test rather than never looked at.
+    assert!(
+        jam_pass(&mut cold, RED, 2, 1_000).jam_checks > 0,
+        "the scan did not run at all"
+    );
+}
+
+/// **A stock fixture's pass is counter-identical when the extension loads** (16b §8
+/// cut X: *the story test and the harness unchanged before and after each*), which
+/// is the cost claim as well as the behaviour one.
+///
+/// Two stock tanks, the same window, the same seed, four passes each way: the same
+/// passes, candidates, traces, cell probes, detections and classifications, and the
+/// same contact held at the end — including `jam_checks`, which is zero, because a
+/// match with no pod on the field has `jam_radius_cm == 0` and the scan returns
+/// before it touches the index.
+#[test]
+fn x4_a_stock_fixtures_pass_is_counter_identical_when_the_extension_loads() {
+    let run_pair = |catalog: &Catalog| {
+        let mut arena = jam_field(
+            catalog,
+            content::LINE_TANK,
+            WATCH_CELL,
+            MARK_CELL,
+            None,
+            &[],
+        );
+        let mut total = tacsim::arena::perception::PerceptionCounters::default();
+        for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+            for observer in [RED, BLUE] {
+                total.absorb(&jam_pass(&mut arena, observer, seq, t_ms));
+            }
+        }
+        let id = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+        let held = arena.contacts.resolve(RED, id).copied();
+        (total, held)
+    };
+    let stock = run_pair(&catalog_of(&[]));
+    let with_ecm = run_pair(&ecm_catalog());
+    assert_eq!(
+        stock.0, with_ecm.0,
+        "the extension moved a stock fixture's perception cost"
+    );
+    assert_eq!(
+        stock.1.map(|held| held.class),
+        with_ecm.1.map(|held| held.class),
+        "the extension moved what a stock fixture sees"
+    );
+    assert!(stock.0.traces > 0, "the fixture traced at all");
+    assert_eq!(stock.0.jam_checks, 0, "a field with no pod scanned for one");
+}
+
+/// **Both of the pod's own refusals, by name** (16b cut X.4), the way cut S.1's
+/// signature rows and cut X.3's thermal band are refused.
+///
+/// The bounds are re-run on the row where every other sensor bound is, and the
+/// cross-reference — a mount that radiates a row with no `jamming` block — is
+/// checked where cut X.1 checks that a laser's tank declares a heat ceiling: at
+/// bind time, because the two are authored in different files and neither can check
+/// the other alone.
+#[test]
+fn x4_a_pod_past_its_bounds_and_a_pod_radiating_a_sight_are_both_refused() {
+    let pack: serde_json::Value =
+        serde_json::from_str(content::ECM_MK1_JSON).expect("the pack is json");
+    let def = pack
+        .pointer("/entries/tacsim.sensor.ecm_mk1/def")
+        .expect("the pod's entry")
+        .clone();
+    let row: tacsim::definitions::SensorDef =
+        serde_json::from_value(def.clone()).expect("the authored row decodes");
+    row.check("authored").expect("the authored row is valid");
+
+    for (field, value) in [
+        ("radius_cells", serde_json::json!(0)),
+        ("signature_permille", serde_json::json!(1_001)),
+        ("attenuation_cost", serde_json::json!(101)),
+    ] {
+        let mut spoiled = def.clone();
+        *spoiled
+            .pointer_mut(&format!("/jamming/{field}"))
+            .expect("the authored block carries the field") = value;
+        let row: tacsim::definitions::SensorDef =
+            serde_json::from_value(spoiled).expect("the spoiled row still decodes");
+        let refused = row.check("spoiled").expect_err("the bound is re-run");
+        assert!(refused.to_string().contains(field), "{refused}");
+    }
+
+    // And a pod that radiates a sight: the ECM tank with its pod pointed at the Mk1
+    // visual row, which declares no `jamming` and would have jammed nothing for a
+    // whole match.
+    let bad = content::LINE_TANK_ECM_JSON.replace(
+        "\"sensor\": \"tacsim.sensor.ecm_mk1\"",
+        "\"sensor\": \"tacsim.sensor.visual_mk1\"",
+    );
+    let operator = vec![LoadedPack {
+        pack: tacsim::pack::load_pack(&sign(&bad))
+            .expect("an unsigned pack is not what is under test"),
+        source: "<spoiled>".to_owned(),
+    }];
+    let refused = Catalog::build_game(&operator, tacsim::NS)
+        .expect_err("a pod radiating a sight is refused at bind");
+    let text = refused.to_string();
+    assert!(
+        text.contains("ecm_pod") && text.contains("jamming"),
+        "{text}"
+    );
+}
+
+/// One edited pack's bytes, re-signed, so a refusal under test is the **rule** and
+/// never the signature the edit also broke (`tests/definitions.rs` calls this
+/// `tampered`).
+fn sign(raw: &str) -> String {
+    let declared = mush_content::parse_pack(raw)
+        .expect("the pack parses")
+        .manifest()
+        .digest()
+        .to_hex();
+    let unsigned = raw.replace(&declared, UNSIGNED);
+    let signed = mush_content::parse_pack(&unsigned)
+        .expect("the unsigned pack parses")
+        .computed_digest()
+        .expect("the pack digests")
+        .to_hex();
+    unsigned.replace(UNSIGNED, &signed)
 }

@@ -26,7 +26,7 @@ use crate::arena::clock::Clock;
 use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{EventKind, Ledger};
-use crate::arena::perception::{FrameNotice, SensorProfile, ThermalSignature};
+use crate::arena::perception::{FrameNotice, Jammer, SensorProfile, ThermalSignature};
 use crate::arena::resolution::UnitProfile;
 use crate::arena::step::FrameSlots;
 use crate::arena::weapons::{Shot, WeaponBand};
@@ -937,6 +937,15 @@ pub struct UnitState {
     /// the reason [`HeatState`] gives: `CustodyUnit` and the sensor row are
     /// structs a dozen test files build literally.
     pub thermal: Option<ThermalSignature>,
+    /// **The jamming pod it carries** (16b cut X.4; doc 16 §9 item 4), or `None`
+    /// for a unit that mounts none — every stock unit, so a stock match's sensor
+    /// pass never scans for one.
+    ///
+    /// Read off the cells at check-out for the reason [`ThermalSignature`] is, and
+    /// not folded into [`crate::arena::hash::state_hash`] for the reason the sensor
+    /// row is not: it is a fact about the unit's fit that nothing in a match moves,
+    /// and what a pod *does* shows up in the contacts the hash already folds.
+    pub jammer: Option<Jammer>,
     /// What it shoots with — the definition rows, in component order.
     ///
     /// **16b cut W.2 made it mutable in one way and one only**: doc 16 §3.3's
@@ -1771,6 +1780,22 @@ pub struct Arena {
     /// threshold cannot change under it, exactly as the two configuration blocks
     /// are cloned in for the same reason.
     pub alert_range_cm: u32,
+    /// **The widest jamming bubble in this match**, centimetres, *resolved* (16b cut
+    /// X.4; doc 16 §9 item 4) — and **zero for every match in which nothing carries
+    /// a pod**, which is every match the game ships.
+    ///
+    /// It is the one radius [`crate::arena::perception::Arena::jamming_at`] queries
+    /// the spatial index at, and the zero is what lets that function return before
+    /// touching the index at all: the ECM term costs a stock match one integer
+    /// comparison per sensor pass and nothing else.
+    ///
+    /// Resolved at check-out from the units it was handed, exactly as
+    /// `alert_range_cm` is, and for the same reason: a match's reach cannot change
+    /// under it. A pod that is wrecked or shut down mid-match stops radiating — the
+    /// scan reads both at scan time — but the *query radius* stays where check-out
+    /// put it, which costs one index query of a bubble nobody is filling and is the
+    /// honest price of not recomputing a maximum per pass.
+    pub jam_radius_cm: u32,
     /// **The squads this match's reflex units are commanded in** (16b cut N.2;
     /// doc 16 §6 "Deliberation": *per squad or commander rather than per unit*),
     /// derived at check-out by [`crate::deliberation::squads_of`] — the same
@@ -1859,6 +1884,9 @@ impl Arena {
             // **16b cut X.3**: the sight's thermal channel, read the same way and
             // `None` for every unit whose mount authors none.
             let thermal = ThermalSignature::read(&unit.unit);
+            // **16b cut X.4**: the jamming pod, likewise — and the window's own
+            // cell size applied here, once, so the pass compares centimetres.
+            let jammer = Jammer::read(&unit.unit, definition.terrain.cell_cm());
             states.push(UnitState {
                 id: unit.id,
                 team: unit.team,
@@ -1876,6 +1904,7 @@ impl Arena {
                 },
                 sensor: unit.sensor,
                 thermal,
+                jammer,
                 // 16b cut W.1: the two live cells, one row per weapon, laid down
                 // here so that every later lookup is a read of a complete table.
                 // A weapon id declared twice on one unit keeps one row, which is
@@ -2008,6 +2037,13 @@ impl Arena {
         } else {
             arena_cfg.tempo.alert_range_cm
         };
+        // **16b cut X.4**: the widest pod bubble on the field, and `0` when there is
+        // no pod — see `jam_radius_cm`.
+        let jam_radius_cm = states
+            .iter()
+            .filter_map(|state| state.jammer.map(|jammer| jammer.radius_cm))
+            .max()
+            .unwrap_or(0);
         let mut arena = Arena {
             definition,
             units: states,
@@ -2036,6 +2072,7 @@ impl Arena {
             match_cfg: match_cfg.clone(),
             sensors_cfg: sensors_cfg.clone(),
             alert_range_cm,
+            jam_radius_cm,
             // **16b cut N.2**: the squads are *derived* from the check-out, by the
             // same `squads_of` the match record files them with — a side's reflex
             // units in pod pairs, lowest id commanding. Derived rather than handed

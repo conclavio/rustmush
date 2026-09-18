@@ -60,7 +60,8 @@
 //! [`SOURCES`]. See that constant for why. **16b cut X.2** adds the biped as
 //! [`EXTENSIONS_BIPED`], a table of its own: see that constant for why *that*.
 //! **16b cut X.3** adds the thermal sight and the tank that mounts it as
-//! [`EXTENSIONS_THERMAL`], on the same rule.
+//! [`EXTENSIONS_THERMAL`], on the same rule. **16b cut X.4** adds the jamming pod
+//! and the tank that carries it as [`EXTENSIONS_ECM`], on the same rule again.
 
 use crate::config::PackSource;
 
@@ -191,6 +192,33 @@ pub const EXTENSIONS_THERMAL: [(&str, &str); 2] = [
     (
         "tacsim/content/units/line_tank_thermal.json",
         LINE_TANK_THERMAL_JSON,
+    ),
+];
+
+/// `crates/tacsim/content/sensors/ecm_mk1.json` (16b cut X.4).
+pub const ECM_MK1_JSON: &str = include_str!("../../content/sensors/ecm_mk1.json");
+/// `crates/tacsim/content/units/line_tank_ecm.json` (16b cut X.4).
+pub const LINE_TANK_ECM_JSON: &str = include_str!("../../content/units/line_tank_ecm.json");
+
+/// The jamming pod doc 16 §9 item 4 asks for — a `sensor` row whose `jamming`
+/// block is non-null, which is the item's own wording.
+pub const ECM_MK1: &str = "tacsim.sensor.ecm_mk1";
+
+/// The unit that carries it.
+pub const LINE_TANK_ECM: &str = "tacsim.unit.line_tank_ecm";
+
+/// **Doc 16 §9 item 4's content, in `requires` order** (16b cut X.4): the jamming
+/// pod and the tank that carries it.
+///
+/// A table of its **own** beside the three before it, for the reason
+/// [`EXTENSIONS_BIPED`] gives: each item's acceptance states the whole of what its
+/// own content adds to the catalog — here one sensor row and one unit schema, and
+/// no weapon — and no later item may move an earlier one's count.
+pub const EXTENSIONS_ECM: [(&str, &str); 2] = [
+    ("tacsim/content/sensors/ecm_mk1.json", ECM_MK1_JSON),
+    (
+        "tacsim/content/units/line_tank_ecm.json",
+        LINE_TANK_ECM_JSON,
     ),
 ];
 

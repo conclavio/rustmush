@@ -1,0 +1,188 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.line_tank_ecm",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "8f83e07a3a509385b23ff13eee1984ce4a93187d856abcda4713709a6aa4596a",
+    "requires": [
+      {
+        "id": "tacsim.pack.cannon_105",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.mg_coax",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.visual_mk1",
+        "version": 1
+      },
+      {
+        "id": "tacsim.pack.ecm_mk1",
+        "version": 1
+      }
+    ]
+  },
+  "entries": {
+    "tacsim.unit.line_tank_ecm": {
+      "kind": "unit",
+      "def": {
+        "label": "line tank (ECM)",
+        "sections": [
+          {
+            "id": "hull",
+            "facets": [
+              { "id": "front", "armor": 400 },
+              { "id": "left", "armor": 250 },
+              { "id": "right", "armor": 250 },
+              { "id": "rear", "armor": 150 },
+              { "id": "top", "armor": 100 }
+            ],
+            "internals": 200,
+            "consequences": [{ "kind": "destroy_unit" }]
+          },
+          {
+            "id": "turret",
+            "facets": [
+              { "id": "front", "armor": 350 },
+              { "id": "left", "armor": 220 },
+              { "id": "right", "armor": 220 },
+              { "id": "rear", "armor": 140 }
+            ],
+            "internals": 150,
+            "consequences": [{ "kind": "remove_weapons", "section": "turret" }]
+          },
+          {
+            "id": "left_track",
+            "facets": [{ "id": "left", "armor": 120 }],
+            "internals": 100,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              { "kind": "no_turn_toward", "side": "left" }
+            ]
+          },
+          {
+            "id": "right_track",
+            "facets": [{ "id": "right", "armor": 120 }],
+            "internals": 100,
+            "consequences": [
+              { "kind": "slow", "percent": 50 },
+              { "kind": "no_turn_toward", "side": "right" }
+            ]
+          },
+          {
+            "id": "engine",
+            "facets": [],
+            "internals": 120,
+            "consequences": [{ "kind": "disable_motion" }],
+            "struck_through": { "section": "hull", "facet": "rear" }
+          }
+        ],
+        "components": [
+          {
+            "id": "cannon",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.cannon_105",
+              "coaxial": false
+            }
+          },
+          {
+            "id": "machine_gun",
+            "section": "turret",
+            "role": {
+              "kind": "weapon",
+              "weapon": "tacsim.weapon.mg_coax",
+              "coaxial": true
+            }
+          },
+          {
+            "id": "visual_sensor",
+            "section": "turret",
+            "role": {
+              "kind": "sensor",
+              "sensor": "tacsim.sensor.visual_mk1"
+            }
+          },
+          {
+            "id": "ecm_pod",
+            "section": "hull",
+            "role": {
+              "kind": "ecm",
+              "sensor": "tacsim.sensor.ecm_mk1"
+            }
+          },
+          {
+            "id": "power",
+            "section": "hull",
+            "role": {
+              "kind": "power",
+              "capability": "tacsim.power",
+              "states": ["off", "starting", "online"],
+              "initial": "off"
+            }
+          }
+        ],
+        "mobility": {
+          "tracked": {
+            "max_speed_cms": 1500,
+            "accel_cms2": 100,
+            "brake_cms2": 200,
+            "turn_rate_mdeg_s": 30000,
+            "reverse_factor_pct": 50
+          }
+        },
+        "facets": [
+          {
+            "band": "front",
+            "sections": [
+              { "section": "hull", "weight": 50 },
+              { "section": "turret", "weight": 50 }
+            ]
+          },
+          {
+            "band": "left",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "left_track", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "right",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "right_track", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "rear",
+            "sections": [
+              { "section": "hull", "weight": 40 },
+              { "section": "engine", "weight": 30 },
+              { "section": "turret", "weight": 30 }
+            ]
+          },
+          {
+            "band": "top",
+            "sections": [
+              { "section": "hull", "weight": 50 },
+              { "section": "turret", "weight": 50 }
+            ]
+          }
+        ],
+        "silhouettes": [
+          { "band": "front", "width_cm": 350, "height_cm": 250 },
+          { "band": "left", "width_cm": 700, "height_cm": 250 },
+          { "band": "right", "width_cm": 700, "height_cm": 250 },
+          { "band": "rear", "width_cm": 350, "height_cm": 250 },
+          { "band": "top", "width_cm": 700, "height_cm": 350 }
+        ],
+        "sensor_height_cm": 150,
+        "note": "The line tank with doc 16 section 9 item 4's jamming pod bolted to the hull and nothing else touched: the same five sections, the same armour, the same facet table, the same silhouettes, the same tracked mode, the same two guns and the same Mk1 visual sight, so a match against a stock tank is a match about the pod. On the HULL and not the turret for a reason: the hull's consequence is destroy_unit, so the one hit that stops the pod radiating is the one that makes the tank a wreck, and the arena reads the wreck it already reads. The pod's three numbers live on the sensor row it names (tacsim.sensor.ecm_mk1) and reach the arena as cells on this component; role ecm rather than a second role sensor because a pod is not something the tank SEES with, and a second sensor mount would shadow the sight the tank aims by."
+      }
+    }
+  }
+}

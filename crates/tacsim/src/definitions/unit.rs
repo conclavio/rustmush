@@ -48,7 +48,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::arena::state::{Side, TrackedRules};
 use crate::definitions::ammunition::AmmunitionDef;
-use crate::definitions::sensor::{MAX_SIGNATURE_PERMILLE, SensorDef, ThermalSignature};
+use crate::definitions::sensor::{
+    MAX_ATTENUATION_COST, MAX_JAM_RADIUS_CELLS, MAX_SIGNATURE_PERMILLE, SensorDef, ThermalSignature,
+};
 use crate::definitions::weapon::WeaponDef;
 use crate::definitions::{DefinitionError, MAX_ENTRY_REFERENCES};
 
@@ -164,6 +166,34 @@ pub const THERMAL_POWERED_CELL: &str = "thermal_powered";
 /// and [`HEAT_PER_SHOT_CELL`]: the alternative is a new field on the check-out's
 /// sensor row, and that row is a struct seven test files build literally.
 pub const THERMAL_COLD_CELL: &str = "thermal_cold";
+
+/// **How far a jamming pod's bubble reaches**, in cells, on the *pod's* component
+/// (16b cut X.4; doc 16 §9 item 4).
+///
+/// Laid down only for a [`ComponentRole::Ecm`] component, whose sensor row
+/// carries a [`crate::definitions::sensor::JammingDef`] — so every unit the game
+/// ships carries no such cell and is byte-identical to what it was. The three jam
+/// cells take the route 16b cut X.1's `heat_per_shot` and cut X.3's thermal band
+/// take, and for the same reason: the arena's check-out rows
+/// ([`crate::arena::state::CustodyUnit`], `SensorProfile`) are structs a dozen
+/// test files build as exhaustive literals, and the numbers ride on the unit
+/// rather than across a widened seam.
+///
+/// In **cells** and not centimetres, because cells are what content authors and
+/// what [`crate::definitions::sensor::SensorDef::max_range_cells`] already is; the
+/// arena multiplies by the window's own `cell_cm` once, at check-out.
+pub const JAM_RADIUS_CELL: &str = "jam_radius_cells";
+
+/// **What the bubble takes out of an observer's attenuation budget** (16b cut
+/// X.4), beside [`JAM_RADIUS_CELL`] on the same component.
+///
+/// The cell's `max` is the whole budget, so a later cut can *degrade* a pod the
+/// way a hit degrades a sight's [`CONDITION_CELL`], with no new seam.
+pub const JAM_ATTENUATION_CELL: &str = "jam_attenuation_cost";
+
+/// **What the bubble leaves of a target's signature factor**, per mille (16b cut
+/// X.4), beside the other two on the same component.
+pub const JAM_SIGNATURE_CELL: &str = "jam_signature_permille";
 
 /// The condition a section, and a component, is born in.
 pub const INTACT: &str = "intact";
@@ -332,6 +362,22 @@ pub enum ComponentRole {
         /// it was before it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thermal: Option<ThermalSignature>,
+    },
+    /// **A jamming pod** (16b cut X.4; doc 16 §9 item 4): a `condition` cell and
+    /// the three jam cells, from the `jamming` block of the sensor row it names.
+    ///
+    /// A role of its own rather than a second [`ComponentRole::Sensor`], because a
+    /// pod is not something the unit *sees with*: `sensor_profile` reads a unit's
+    /// first sensor mount, and a pod mounted as a sight would either shadow the
+    /// sight or depend on which was authored first — which is exactly the *silent
+    /// `max`* [`crate::match_::arena_def::sensor_profile`]'s own note refuses. It
+    /// names a sensor row all the same, because doc 16 §3.6 puts `jamming` on that
+    /// row and this cut does not move it.
+    Ecm {
+        /// The sensor row whose `jamming` block this pod radiates — an entry id,
+        /// checked at load, and refused at bind time if the row carries no
+        /// `jamming`.
+        sensor: CanonicalId,
     },
     /// The power plant: a capability with a named state set (doc 16 §3.3
     /// "Startup").
@@ -555,10 +601,13 @@ impl UnitSpec {
         })
     }
 
-    /// Every sensor definition this unit names, in component order.
+    /// Every sensor definition this unit names, in component order — the sights it
+    /// sees with **and** (16b cut X.4) the rows its jamming pods radiate, because
+    /// what this iterator is for is the reference check at load and a pod's row is
+    /// a reference like any other.
     pub fn sensors(&self) -> impl Iterator<Item = &CanonicalId> {
         self.components.iter().filter_map(|c| match &c.role {
-            ComponentRole::Sensor { sensor, .. } => Some(sensor),
+            ComponentRole::Sensor { sensor, .. } | ComponentRole::Ecm { sensor } => Some(sensor),
             _ => None,
         })
     }
@@ -1214,6 +1263,74 @@ pub fn bind(
                         }
                     }
                     (payload, vec![sensor_ref.clone()], cells)
+                }
+                // **16b cut X.4**: the jamming pod (doc 16 §9 item 4). Its three
+                // numbers are the sensor row's `jamming` block, laid down as cells
+                // so the arena reads them off the unit that crosses the custody
+                // seam anyway.
+                ComponentRole::Ecm { sensor } => {
+                    let def = cx.sensors.get(sensor).ok_or_else(|| {
+                        DefinitionError::reference(name, "sensor", sensor.as_str())
+                    })?;
+                    let sensor_ref = cx.sensor_refs.get(sensor).ok_or_else(|| {
+                        DefinitionError::reference(name, "sensor", sensor.as_str())
+                    })?;
+                    // A pod that radiates a row with no `jamming` block jams
+                    // nothing, and would do it silently for a whole match. The two
+                    // are authored in different files and neither can check the
+                    // other alone, so the cross-reference is checked here — the
+                    // same place cut X.1 checks that a laser's tank declares a heat
+                    // ceiling.
+                    let jamming = def.jamming.as_ref().ok_or_else(|| {
+                        DefinitionError::value(
+                            name,
+                            format!(
+                                "component `{}` is an `ecm` pod radiating `{}`, which declares \
+                                 no `jamming`",
+                                component.id, sensor
+                            ),
+                        )
+                    })?;
+                    let cells = vec![
+                        CellSpec {
+                            id: tactics_id!(name, "cell", CONDITION_CELL, CellId)?,
+                            min: 0,
+                            max: MAX_CONDITION,
+                            init: MAX_CONDITION,
+                        },
+                        CellSpec {
+                            id: tactics_id!(name, "cell", JAM_RADIUS_CELL, CellId)?,
+                            min: 0,
+                            max: i64::from(MAX_JAM_RADIUS_CELLS),
+                            init: i64::from(jamming.radius_cells),
+                        },
+                        CellSpec {
+                            id: tactics_id!(name, "cell", JAM_ATTENUATION_CELL, CellId)?,
+                            min: 0,
+                            max: i64::from(MAX_ATTENUATION_COST),
+                            init: i64::from(jamming.attenuation_cost),
+                        },
+                        CellSpec {
+                            id: tactics_id!(name, "cell", JAM_SIGNATURE_CELL, CellId)?,
+                            min: 0,
+                            max: i64::from(MAX_SIGNATURE_PERMILLE),
+                            init: i64::from(jamming.signature_permille),
+                        },
+                    ];
+                    // The block itself is deliberately **not** copied into the
+                    // payload the way cut X.3's thermal band is. X.3's band is
+                    // authored on the mount, so the mount is the only place it
+                    // exists; a pod's three numbers are the *sensor row's*, and
+                    // that row is `sensor_ref` — a reference with its own digest
+                    // in it. Change the block and the row's digest moves, so this
+                    // component's does, so the unit's does. Copying the numbers in
+                    // as well would hash them twice and give two places to
+                    // disagree.
+                    (
+                        serde_json::json!({ "role": "ecm", "sensor": sensor.as_str() }),
+                        vec![sensor_ref.clone()],
+                        cells,
+                    )
                 }
                 ComponentRole::Power {
                     capability,

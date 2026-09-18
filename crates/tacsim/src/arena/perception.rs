@@ -74,6 +74,39 @@
 //! `Option` that is `None` for every sight the game ships — and therefore **no
 //! new trace**: the term can only shorten a reach, so it culls candidates
 //! *before* the trace that step 2 would have walked.
+//!
+//! The **jammer's** power is a third question, and **16b cut X.4** asks it: a
+//! jamming pod is an emitter, so a pod whose hull has not started up radiates
+//! nothing (see [`Jamming`]).
+//!
+//! # ECM (16b cut X.4; doc 16 §9 item 4, W1)
+//!
+//! A pod degrades the band **around itself**, and what that costs is paid by
+//! whoever is looking from inside the bubble: for each observer, the pass
+//! collects the live pods within their own `radius_cm` of the **observer** and
+//! applies two terms to that one pass —
+//!
+//! 1. the observer's step 2 attenuation budget loses the pods' summed
+//!    `attenuation_cost`, floored at zero, so a line the eye would have accepted
+//!    through one belt of light woods is no longer a detection; and
+//! 2. every target's step 3 signature factor is multiplied by the pods'
+//!    `signature_permille`, so the reach itself collapses — which is the whole of
+//!    doc 16 §2 W1, *standard ECM defeats detection at long range*, as arithmetic.
+//!
+//! A target standing in a bubble is seen exactly as it was by an observer
+//! standing outside one, and a pod is in its own bubble: this is a rule about
+//! where the *looker* is, with no exception for the unit carrying the thing.
+//!
+//! **W3 still holds**: this is not an emitter term in the sense that fact forbids.
+//! Nothing here lengthens a reach, accepts a line the sensor would have refused or
+//! detects anything at all — a pod can only ever take away, which is why the pass
+//! is still *range plus line of sight and nothing else*.
+//!
+//! The scan is bounded by the same spatial index the candidate cull uses, at the
+//! widest radius any pod in the match declared ([`crate::arena::state::Arena`]'s
+//! `jam_radius_cm`), and a match in which nothing carries a pod — every match the
+//! game ships — never looks: the radius is zero and the whole term is skipped, so
+//! the arithmetic above is bit-identical to the arithmetic before this cut.
 
 use mush_atlas::TerrainClass;
 use mush_atlas::trace::{Eye, Sight, trace_cells};
@@ -226,6 +259,106 @@ impl ThermalSignature {
     }
 }
 
+/// **The jamming pod one unit carries** (16b cut X.4; doc 16 §9 item 4), as the
+/// arena carries it.
+///
+/// The arena's own copy of `crate::definitions::sensor::JammingDef`, read once at
+/// check-out off the cells the `TacticalUnit` already carries — the route cut X.1's
+/// heat and cut X.3's thermal band take, for the reason [`ThermalSignature`] gives.
+/// `None` for every unit the game ships.
+///
+/// `radius_cm` and not `radius_cells`: the authored cell is in cells, and the
+/// window's own `cell_cm` is applied once here rather than on every pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Jammer {
+    /// How far the bubble reaches from the pod, centimetres.
+    pub radius_cm: u32,
+    /// What an observer inside it loses from its sensor's `max_attenuation`, on
+    /// the atlas's 0-to-100 scale.
+    pub attenuation_cost: u8,
+    /// What it leaves of a target's signature factor, per mille.
+    pub signature_permille: u32,
+}
+
+impl Jammer {
+    /// **Read one unit's pod off its cells** (16b cut X.4), or `None` for a unit
+    /// carrying no [`JAM_RADIUS_CELL`] — every stock unit.
+    ///
+    /// The component is **found** rather than derived, exactly as
+    /// [`ThermalSignature::read`] finds the sight that carries the thermal band: a
+    /// unit that somehow mounted two pods radiates the first in component order.
+    ///
+    /// [`JAM_RADIUS_CELL`]: crate::definitions::unit::JAM_RADIUS_CELL
+    #[must_use]
+    pub fn read(unit: &TacticalUnit, cell_cm: u16) -> Option<Jammer> {
+        let radius = mush_tactics::CellId::new(crate::definitions::unit::JAM_RADIUS_CELL).ok()?;
+        let cost =
+            mush_tactics::CellId::new(crate::definitions::unit::JAM_ATTENUATION_CELL).ok()?;
+        let signature =
+            mush_tactics::CellId::new(crate::definitions::unit::JAM_SIGNATURE_CELL).ok()?;
+        unit.components().find_map(|(component, _)| {
+            let at = |cell: &mush_tactics::CellId| {
+                let addr = mush_tactics::CellAddr::Component {
+                    component: component.clone(),
+                    cell: cell.clone(),
+                };
+                u32::try_from(unit.cell(&addr)?.current.max(0)).ok()
+            };
+            Some(Jammer {
+                radius_cm: at(&radius)?.saturating_mul(u32::from(cell_cm)),
+                attenuation_cost: u8::try_from(at(&cost)?).unwrap_or(u8::MAX),
+                signature_permille: at(&signature)?.min(FULL_SIGNATURE_PERMILLE),
+            })
+        })
+    }
+}
+
+/// **What the pods one observer is standing among do to its pass** (16b cut X.4;
+/// doc 16 §9 item 4), accumulated once per pass by [`Arena::jamming_at`].
+///
+/// `None` from that function is *no pod in reach*, and the pass then runs the
+/// arithmetic it ran before this cut to the centimetre. A `Some` is two terms:
+///
+/// - [`Jamming::attenuation_cost`] — the pods' costs **summed**, saturating, and
+///   taken off the observer's step 2 budget by [`Jamming::budget`], floored at
+///   zero. Summed because two pods each eating a quarter of the budget have eaten
+///   half of it.
+/// - [`Jamming::signature_permille`] — the pods' factors **multiplied**, per
+///   mille, applied to every target's step 3 reach by [`Jamming::scale`].
+///   Multiplied because each is a fraction of what is left, and folded in
+///   ascending unit-id order (the order [`crate::arena::index::SpatialIndex`]
+///   answers in) so that three pods round the same way on a replay.
+///
+/// One pod's factor survives the fold exactly: `1000 × p / 1000` is `p`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Jamming {
+    /// The summed cost against the observer's attenuation budget.
+    pub attenuation_cost: u32,
+    /// The surviving fraction of every target's signature factor, per mille.
+    pub signature_permille: u32,
+}
+
+impl Jamming {
+    /// **The observer's step 2 budget under this much jamming** (doc 16 §9 item 4:
+    /// *adds to the observer's `max_attenuation` budget* consumed), floored at
+    /// zero: a budget of zero accepts a `Clear` line and nothing else, which is a
+    /// sight that has to be looking straight at what it holds.
+    #[must_use]
+    pub fn budget(&self, max_attenuation: u8) -> u8 {
+        max_attenuation.saturating_sub(u8::try_from(self.attenuation_cost).unwrap_or(u8::MAX))
+    }
+
+    /// **The reach that is left of `reach_cm`** (doc 16 §9 item 4: *lowers
+    /// signature factors within a radius*), per mille, as step 3's own arithmetic
+    /// does it.
+    #[must_use]
+    pub fn scale(&self, reach_cm: u64) -> u64 {
+        reach_cm
+            .saturating_mul(u64::from(self.signature_permille))
+            .saturating_div(u64::from(FULL_SIGNATURE_PERMILLE))
+    }
+}
+
 /// **What one pulse's perception cost** (16b cut S.1; doc 16 §2 W4 and W6: *traces
 /// and cell probes per pulse under `harness.max_traces_per_pulse`*, *share
 /// operations per pulse bounded*).
@@ -246,6 +379,13 @@ pub struct PerceptionCounters {
     pub cell_probes: u64,
     /// `(sharer, teammate)` pairs considered.
     pub share_ops: u32,
+    /// **Units the jammer scan looked at** (16b cut X.4), one per unit the spatial
+    /// index offered inside the match's widest pod radius, pod or not.
+    ///
+    /// Zero for every match in which nothing carries a pod, because the scan does
+    /// not run at all then — which is the cost claim this counter exists to make
+    /// checkable rather than assumed.
+    pub jam_checks: u32,
     /// Contacts newly held.
     pub detected: u32,
     /// Contacts newly told apart.
@@ -262,6 +402,7 @@ impl PerceptionCounters {
         self.traces = self.traces.saturating_add(other.traces);
         self.cell_probes = self.cell_probes.saturating_add(other.cell_probes);
         self.share_ops = self.share_ops.saturating_add(other.share_ops);
+        self.jam_checks = self.jam_checks.saturating_add(other.jam_checks);
         self.detected = self.detected.saturating_add(other.detected);
         self.classified = self.classified.saturating_add(other.classified);
         self.lost = self.lost.saturating_add(other.lost);
@@ -448,6 +589,16 @@ impl Arena {
             ))
             .saturating_div(1_000);
         let cull = u32::try_from(cull_cm).unwrap_or(u32::MAX);
+        // **16b cut X.4**: the pods this observer is standing among, collected once
+        // for the pass (doc 16 §9 item 4). `None` — every match the game ships —
+        // leaves both terms below untouched. The cull radius is deliberately *not*
+        // shortened by the factor: doc 16 §3.2's rule is that the cull never decides
+        // membership, and the jam culls where every other signature term culls, in
+        // step 3.
+        let jam = self.jamming_at(&watcher.pose, counters);
+        let attenuation = jam.map_or(sensor.max_attenuation, |jam| {
+            jam.budget(sensor.max_attenuation)
+        });
         let mut found: Vec<Detection> = Vec::new();
         for id in self.index.in_range(&watcher.pose, cull, &self.units) {
             if id == observer {
@@ -483,6 +634,12 @@ impl Arena {
                     .saturating_mul(u64::from(thermal.permille(target.power, target.speed_cms)))
                     .saturating_div(1_000);
             }
+            // **16b cut X.4**: and the jamming term, multiplied into both of them
+            // (doc 16 §9 item 4, W1). Inside the `Option` for the same reason: a
+            // field with no pod on it runs the multiplication it ran before.
+            if let Some(jam) = jam {
+                reach_cm = jam.scale(reach_cm);
+            }
             if range_cm(&watcher.pose, &target.pose) > reach_cm {
                 continue;
             }
@@ -492,7 +649,7 @@ impl Arena {
             counters.cell_probes = counters
                 .cell_probes
                 .saturating_add(u64::from(trace.visited));
-            if !sees(&trace.sight, sensor.max_attenuation) {
+            if !sees(&trace.sight, attenuation) {
                 continue;
             }
             found.push(Detection {
@@ -501,6 +658,67 @@ impl Arena {
             });
         }
         Some(found)
+    }
+
+    /// **The jamming one observer at `pose` is standing in** (16b cut X.4; doc 16
+    /// §9 item 4), or `None` when no live pod reaches it.
+    ///
+    /// The scan is one [`crate::arena::index::SpatialIndex`] query at
+    /// `jam_radius_cm` — the widest radius any pod in this match declared, resolved
+    /// at check-out — and then each candidate's own radius, so a pod with a short
+    /// bubble is not widened by a long-legged one sharing the field. A match with
+    /// no pod has `jam_radius_cm == 0` and returns here without touching the index
+    /// or the counters, which is what makes the stock pass bit-identical.
+    ///
+    /// Three things stop a pod radiating, all read at scan time rather than baked
+    /// in at check-out:
+    ///
+    /// - **distance**: the observer must be inside *that* pod's radius;
+    /// - **a wreck**: `destroy_unit` revokes a unit's capabilities (doc 16 §3.3),
+    ///   and a burnt-out hull's transmitter is one of them;
+    /// - **power**: a pod is an *emitter* (W3's own distinction), so a hull that has
+    ///   not started up jams nobody. This is the one place the pass reads a unit's
+    ///   power for a reason other than the target's heat, and it is deliberate: the
+    ///   sight of a cold tank still works, because optics are optics, and its pod
+    ///   does not, because a transmitter is not.
+    ///
+    /// A pod is inside its own bubble at range zero, so a unit that carries one
+    /// jams itself. There is no exception: the rule is about where the *looker* is.
+    pub fn jamming_at(
+        &self,
+        pose: &mush_sim::data::Pose,
+        counters: &mut PerceptionCounters,
+    ) -> Option<Jamming> {
+        if self.jam_radius_cm == 0 {
+            return None;
+        }
+        let mut cost: u32 = 0;
+        let mut permille = FULL_SIGNATURE_PERMILLE;
+        let mut jammed = false;
+        for id in self.index.in_range(pose, self.jam_radius_cm, &self.units) {
+            counters.jam_checks = counters.jam_checks.saturating_add(1);
+            let Some(pod) = self.unit(id) else {
+                continue;
+            };
+            let Some(jammer) = pod.jammer else {
+                continue;
+            };
+            if pod.limits.wreck || pod.power != Power::Online {
+                continue;
+            }
+            if range_cm(pose, &pod.pose) > u64::from(jammer.radius_cm) {
+                continue;
+            }
+            jammed = true;
+            cost = cost.saturating_add(u32::from(jammer.attenuation_cost));
+            permille = permille
+                .saturating_mul(jammer.signature_permille)
+                .saturating_div(FULL_SIGNATURE_PERMILLE);
+        }
+        jammed.then_some(Jamming {
+            attenuation_cost: cost,
+            signature_permille: permille,
+        })
     }
 
     /// **One unit's contact share** (doc 16 §3.6 step 5, W6): its classified
