@@ -105,12 +105,22 @@ fn surface_index(w: &World, st: &AtlasState, entry: &WindowEntry, viewer: ObjId)
 }
 
 /// The rooms `viewer` may see on this window.
+///
+/// **16b cut S.2** (doc 16 §3.6 "World-side exclusion"): none at all while a
+/// simulation authority holds custody of a unit mustered in this window's domain.
+/// The exclusion is here, and not only in [`units_for`], because the window's rooms
+/// are what [`crate::window::summary_for`] names and what `frame_for` draws terrain
+/// for — an arena's ground is not somewhere the world may look, for any viewer
+/// including staff.
 pub(crate) fn visible_rooms(
     w: &World,
     st: &AtlasState,
     entry: &WindowEntry,
     viewer: ObjId,
 ) -> BTreeSet<ObjId> {
+    if mush_sim::deployed::excluded(w, mush_sim::deployed::Shown::Domain(DomainId(entry.domain))) {
+        return BTreeSet::new();
+    }
     let staff = is_staff(w, viewer);
     let here = w.get(viewer).and_then(|o| o.location);
     entry
@@ -130,6 +140,13 @@ pub(crate) fn visible_rooms(
 
 /// The units `viewer` sees on `surface`: everyone placed there whose room the
 /// viewer may see, the viewer first.
+///
+/// **16b cut S.2** (doc 16 §3.6 "World-side exclusion"): nobody at all while a
+/// simulation authority holds custody of a unit mustered in `domain`. A deployed
+/// unit is already absent because [`mush_sim::participants`] projects it away, and
+/// this is the *domain's* half of the same rule — the whole window goes, so a
+/// teammate or a bystander standing on an arena's ground is no more visible than
+/// the tanks are.
 fn units_for(
     w: &World,
     composite: &Composite,
@@ -140,6 +157,9 @@ fn units_for(
 ) -> (Vec<MapUnit>, Option<(u32, u32)>) {
     let mut units = Vec::new();
     let mut you = None;
+    if mush_sim::deployed::excluded(w, mush_sim::deployed::Shown::Domain(domain)) {
+        return (units, you);
+    }
     let mut placed = mush_sim::participants(w, domain);
     placed.sort_by_key(|(o, _)| (*o != viewer, o.0));
     for (obj, pose) in placed.into_iter().take(MAX_FRAME_UNITS) {
@@ -188,6 +208,12 @@ fn run_length(glyphs: &[char]) -> Vec<(String, u32)> {
 
 /// The frame `viewer` sees of `domain`'s window, or none when the window is
 /// not open or not drawn.
+///
+/// **16b cut S.2** (doc 16 §3.6 "World-side exclusion"): also none while a
+/// simulation authority holds custody of a unit mustered in `domain` — the arena's
+/// domain is excluded from *the atlas `+map` frame*, and `+map` renders a closed
+/// window exactly as it renders a domain that has none, which is the answer with
+/// the least in it.
 #[must_use]
 pub fn frame_for(
     w: &World,
@@ -195,6 +221,9 @@ pub fn frame_for(
     viewer: ObjId,
     domain: DomainId,
 ) -> Option<AtlasMapFrame> {
+    if mush_sim::deployed::excluded(w, mush_sim::deployed::Shown::Domain(domain)) {
+        return None;
+    }
     let entry = st.windows.open.get(&domain.0)?;
     let composite = entry.composite.as_ref()?;
     let si = surface_index(w, st, entry, viewer);
@@ -255,6 +284,9 @@ pub fn frame_for(
 }
 
 /// The delta `viewer` sees: the units on their surface now, and `note`.
+///
+/// **16b cut S.2**: none while an arena holds the domain, for [`frame_for`]'s
+/// reason — a delta is the frame's own update channel and must not outlive it.
 #[must_use]
 pub fn delta_for(
     w: &World,
@@ -263,6 +295,9 @@ pub fn delta_for(
     domain: DomainId,
     note: Option<String>,
 ) -> Option<AtlasMapDelta> {
+    if mush_sim::deployed::excluded(w, mush_sim::deployed::Shown::Domain(domain)) {
+        return None;
+    }
     let entry = st.windows.open.get(&domain.0)?;
     let composite = entry.composite.as_ref()?;
     let si = surface_index(w, st, entry, viewer);

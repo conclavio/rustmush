@@ -1856,37 +1856,37 @@ fn tacsim_harness_arena_step() {
 /// is measured.
 const ARENA_P99_MS: f64 = 5.0;
 
-/// The same lens one cut on: **16b cut S.1 added the sensor pass**, so the arena's
-/// per-pulse cost is now motion plus perception and [`ARENA_P99_MS`] is no longer
-/// the thing being measured.
+/// The same lens two cuts on: **16b cut S.1 added the sensor pass and cut S.2 paid
+/// for it**, so the arena's per-pulse cost is motion plus perception and
+/// [`ARENA_P99_MS`] is no longer the thing being measured.
 ///
-/// 12 ms, against a measured p99 of about 9.6 at the defaults. **The jump is
-/// large and is stated here rather than smoothed over**: cut A's arena step cost
-/// p50 0.056 / p99 0.084 ms at these 300 units, and the sensor pass costs two
-/// orders of magnitude more than everything before it. The lens is set where it is
-/// because 12 ms is under half the 25 ms `harness.engaged_p99_ms` doc 16 allows the
-/// *finished* arena, so cuts W and N still have a budget — but it is a thin one,
-/// and the note below is the first place to look for it. A plan constant, not a
-/// configured one, exactly as [`ARENA_P99_MS`] is.
+/// 12 ms, against a measured p99 of **3.9** at the defaults. The lens is left where
+/// S.1 set it rather than tightened onto the new measurement, because the sentence
+/// that justified 12 is unchanged — it is under half the 25 ms
+/// `harness.engaged_p99_ms` doc 16 allows the *finished* arena, so cuts W and N have
+/// a budget — and that budget is now a real 8 ms rather than S.1's thin 2.4.
+/// Tightening it is the owner's call at the S.2 review, not this file's. A plan
+/// constant, not a configured one, exactly as [`ARENA_P99_MS`] is.
 ///
-/// **Where the 9.6 ms goes**, because the next cut will need it:
+/// **What S.2 did, and what it did not.** S.1 measured p50 0.299 / p95 8.723 /
+/// p99 8.984 / max 9.309 at 24 sensor cells and found the cull at the top of the
+/// loaded pulse: each of 300 units scanned all 300 of the index's own rows, with an
+/// `i128::isqrt` per pair, because the cell-window branch was only taken while the
+/// covered area was no larger than the unit count — about eight cells of reach at
+/// this density. Cut S.2 fixed both halves in `arena/index.rs` (`within_cm`, and the
+/// cell window preferred wherever the pose is on the window) and the same run is now
+/// **p50 0.208 / p95 3.898 / p99 3.933 / max 3.993**: the traces and cell probes are
+/// unchanged (2,226 and 31,780 in the peak pulse), so the whole of the difference was
+/// the cull.
 ///
-/// 1. The stagger is `id % pass_ms` over consecutive object numbers, so all 300
-///    first passes land inside one 500 ms `Engaged` pulse and the next carries
-///    none. The median pulse costs 0.22 ms and the loaded one costs all of it, so
-///    the p99 is *one pulse's* cost and not a per-second average.
-/// 2. Inside a loaded pulse the traces are not the biggest line: 2,226 traces and
-///    31,780 cell probes are a small part of it. `SpatialIndex::in_range` picks the
-///    cheaper of a cell-window walk and a scan of its own unit table, and at any
-///    sensor reach past about eight cells on a 300-unit arena the window covers
-///    more cells than there are units — so each of the 300 culls scans all 300
-///    units and takes an integer square root per pair. That is 90,000
-///    `range_cm` calls a pulse *before* a trace is walked, and `range_cm`'s
-///    `i128::isqrt` is the expensive part of each.
-/// 3. Two cheap remedies, both in cut A's `arena/index.rs` and therefore not in
-///    this cut: compare squared distances inside `in_range` (the cull's answer is
-///    unchanged — `floor(sqrt(s)) ≤ r` is exactly `s < (r+1)²`), and prefer the
-///    cell-window branch whenever the pose is on the window. Measured at 20 cells
-///    of reach instead of 24 the p99 is 7.6 ms, which is the same cost curve and
-///    confirms it is the cull and not the trace.
+/// **At the authored reaches it is a different story, and the numbers are here
+/// because the choice is the owner's.** `TACSIM_SENSOR_CELLS=60
+/// TACSIM_SHARE_CELLS=30` — the reach the shipped sensor and `comms` rows actually
+/// author — measures **p50 0.703 / p95 22.646 / p99 23.334 / max 24.819**, which is
+/// inside doc 16's 25 ms and leaves nothing for cuts W and N. There the cost is the
+/// *traces*: 13,133 of them and 435,829 cell probes in the peak pulse, against
+/// `harness.max_traces_per_pulse` of 4,000. So the two facts the owner is choosing
+/// between are unchanged in kind and now measured in full: **a shorter authored
+/// reach**, or **larger bounds and a slower `Engaged` pulse**. Nothing in this cut
+/// decides it.
 const ARENA_S_P99_MS: f64 = 12.0;

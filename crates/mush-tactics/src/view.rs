@@ -90,8 +90,24 @@ pub enum UnitSource<'w> {
 }
 
 /// The ONE `UnitStore` read of this file — E7k lane L3's edit point.
+///
+/// **16b cut S.2** (doc 16 §3.6 "World-side exclusion"): `None` while a simulation
+/// authority holds the unit, through the one shared predicate. This is the accessor
+/// `@unit/show`, `unit_for_view`, the `tactics.unit` and `tactics.vitals` queries
+/// and their panel keyframes all read, so one insertion is the whole of *every world
+/// unit listing* for a deployed unit — and each of them already answers a
+/// nonexistent unit the same way, so the refusal is the existence-hiding one by
+/// construction rather than by a new sentence.
+///
+/// The arena's own readers do **not** come through here: the cockpit reads
+/// `crate::module::unit_of` for the weapons a tank carries, and cut T.3's check-out
+/// and check-in read the store directly. That is the seam doc 16 asks for — *the
+/// only views of arena state are the cockpit frames*.
 #[must_use]
 pub fn unit_source(w: &World, object: ObjId) -> Option<UnitSource<'_>> {
+    if mush_sim::deployed::excluded(w, mush_sim::deployed::Shown::Unit(object)) {
+        return None;
+    }
     let store = w.module_state::<UnitStore>()?;
     if let Some(unit) = store.units.get(&object) {
         return Some(UnitSource::Active(unit));

@@ -457,7 +457,7 @@ pub struct TacsimConfig {
     /// is `match`.
     pub match_: MatchConfig,
     /// **16b cut G** — the sensor pass's cadence and its per-mille signature
-    /// ceiling. **Parsed, inert** until cut S.
+    /// ceiling. Live since cut S.1.
     pub sensors: SensorsConfig,
     /// **16b cut G** — where the resolution tables live. **Parsed, inert** until
     /// cut W.

@@ -314,6 +314,32 @@ impl EventHook for PlacementGate {
             None => Ok(()),
         }
     }
+
+    /// **Doc 16 §3.6's world-side exclusion, on the `look` surface** (16b cut S.2).
+    ///
+    /// A deployed unit's world placement is frozen in the arena's muster room and
+    /// its `Obj.location` still points there, so `look` would list it by name beside
+    /// the pods. `mush-core`'s room renderer cannot ask `mush-sim` anything directly
+    /// — it is the layer below — but it already consults every `Perceive` hook for
+    /// exactly this kind of per-observer projection, and that gate is **not waived
+    /// for staff**, which is what doc 16 asks for. So the exclusion arrives on the
+    /// one seam built for it, and it arrives through
+    /// [`crate::deployed::excluded`] like every other listing site.
+    ///
+    /// `is_concealed` is deliberately left at its default `false`: a unit an arena
+    /// holds is not *hiding*, it is somewhere else, and the ruleset-agnostic
+    /// notability question is about concealment effects.
+    fn perceives(
+        &self,
+        ctx: &HookReadContext<'_>,
+        _observer: ObjId,
+        subject: ObjId,
+    ) -> mush_core::module::Perceive {
+        if crate::deployed::excluded(ctx.world(), crate::deployed::Shown::Unit(subject)) {
+            return mush_core::module::Perceive::Conceal;
+        }
+        mush_core::module::Perceive::Abstain
+    }
 }
 
 /// The full movement veto: a traveling object (route.rs), a carrier under way
@@ -796,6 +822,9 @@ impl GameModule for SimulationModule {
         // at a safe boundary, on the same path a clean release uses.
         reg.hook(HookPoint::Disconnected, Arc::new(seat::SeatDisconnectHook));
         reg.hook(HookPoint::CarryAttempt, Arc::new(PlacementGate));
+        // 16b cut S.2: doc 16 §3.6's world-side exclusion on the `look` surface —
+        // see `PlacementGate::perceives`.
+        reg.hook(HookPoint::Perceive, Arc::new(PlacementGate));
         reg.destroy_gate(Arc::new(StructuralDestroyGate));
         reg.detach_gate(Arc::new(SimDetachGate));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));

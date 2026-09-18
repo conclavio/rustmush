@@ -40,14 +40,17 @@ use mush_tactics::{
 use smol_str::SmolStr;
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::perception::{
-    Notice, PerceptionCounters, SensorProfile, SignatureFactor, bearing_mdeg,
+    FrameNotice, Notice, NoticeKind, PerceptionCounters, SensorProfile, SignatureFactor,
+    bearing_mdeg,
 };
 use tacsim::arena::rng::{DrawLabel, draw, draw_contact_id};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
     DueKind, EntryZone, Pilot, Team, TerrainCell, TrackedRules, WeaponSummary,
 };
+use tacsim::arena::step::Frame;
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
+use tacsim::match_::cockpit;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -938,4 +941,327 @@ fn a_contact_id_is_the_pair_and_the_seed_and_resolves_for_nobody_else() {
     assert_ne!(mine, elsewhere);
     assert!(other.contacts.resolve(EYE, elsewhere).is_some());
     assert!(other.contacts.resolve(EYE, mine).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// (k) what a pilot sees — 16b cut S.2's frame rendering
+//
+// The rows, the bands, the two bearings and the map markers are read through
+// `tacsim::match_::cockpit`'s pure renderers, driven off frames `Arena::step`
+// actually produced. Nothing here needs a host: the cockpit's rendering half takes
+// a `Frame` and answers, which is what makes it testable beside the pass that
+// fills one.
+// ---------------------------------------------------------------------------
+
+/// One wall millisecond per arena millisecond, a pulse a second: the cadence that
+/// puts each of `EYE`'s passes (`4`, `1_004`, `2_004`, …) in a pulse of its own, so
+/// a test can say *which pulse* a notice arrived in.
+const PULSE_MS: i64 = 1_000;
+
+/// Step the arena to `wall_ms`, spool whatever ledger chunks closed onto `tape`,
+/// and hand back the frame the first pilot was sent when their view changed.
+fn pulse(arena: &mut Arena, wall_ms: i64, tape: &mut Vec<u8>) -> Option<Frame> {
+    let out = arena.step(wall_ms, &[], &[]);
+    for chunk in &out.ledger_chunks {
+        tape.extend_from_slice(&chunk.bytes);
+    }
+    out.frames
+        .into_iter()
+        .find(|(pilot, _)| *pilot == ObjId(1_000))
+        .map(|(_, frame)| frame)
+}
+
+/// Every event on `tape` plus whatever the ledger is still holding, parsed.
+fn events(arena: &mut Arena, tape: &mut Vec<u8>) -> Vec<LedgerEvent> {
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        tape.extend_from_slice(&chunk.bytes);
+    }
+    String::from_utf8(tape.clone())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok())
+        .collect()
+}
+
+/// The arena millisecond of every event of one kind, in order.
+fn event_times(arena: &mut Arena, tape: &mut Vec<u8>, kind: &str) -> Vec<i64> {
+    events(arena, tape)
+        .iter()
+        .filter(|event| event.kind.as_str() == kind)
+        .map(|event| event.t_ms)
+        .collect()
+}
+
+/// The notice words of one frame, in order.
+fn told(frame: &Frame) -> Vec<&'static str> {
+    frame
+        .notices
+        .iter()
+        .map(|notice| notice.kind.as_str())
+        .collect()
+}
+
+/// A two-tank arena with `EYE` looking and `MARK` thirty cells east, opened and
+/// stepped past its reference pulse.
+fn watching() -> Arena {
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &[],
+    );
+    // The opening pulse establishes the wall reference and integrates nothing.
+    let _ = arena.step(0, &[], &[]);
+    arena
+}
+
+#[test]
+fn the_frame_renders_a_contact_as_an_opaque_id_a_band_and_two_bearings() {
+    let mut arena = watching();
+    let mut tape: Vec<u8> = Vec::new();
+    let frame = pulse(&mut arena, PULSE_MS, &mut tape).expect("the acquiring pulse sends a frame");
+    assert_eq!(told(&frame), vec!["acquired"], "one notice, once");
+
+    let rows = cockpit::frame_contacts(&frame);
+    assert_eq!(rows.len(), 1, "the platform holds one return");
+    let row = rows.first().cloned().expect("one row");
+    let id = draw_contact_id(arena.seed, EYE, MARK);
+    assert_eq!(row.id, id, "the opaque id is the arena's own");
+    assert_eq!(row.class.as_str(), "unknown", "not told apart yet");
+    assert!(!row.friendly, "an unknown return is nobody's");
+    // Due east of a platform facing north: 090 absolute, 090 relative.
+    assert_eq!(row.bearing_deg, 90);
+    assert_eq!(row.relative_deg, 90);
+    // 30,000 cm against the cannon's 250,000 cm reach: inside a third of it.
+    assert_eq!(row.band.as_str(), "close");
+    assert_eq!(row.cell, Some((40, 10)), "the marker's cell");
+    assert_eq!(row.age_ms, arena.now_ms - 4, "held since its first pass");
+    assert!(
+        row.render().contains(&id.to_string()),
+        "the line names the opaque id: {}",
+        row.render()
+    );
+    // No dbref of any shape: the id is the only handle, and a `#` in this line
+    // could only be an object number.
+    assert!(
+        !row.render().contains('#'),
+        "and never the target's object number: {}",
+        row.render()
+    );
+
+    // The relative bearing is off the platform's own nose, and the absolute one is
+    // not: turning the tank moves one and leaves the other.
+    let mut turned = frame.clone();
+    turned.pose.heading_mdeg = 90_000;
+    let turned_row = cockpit::frame_contacts(&turned)
+        .first()
+        .cloned()
+        .expect("one row");
+    assert_eq!(turned_row.bearing_deg, 90);
+    assert_eq!(turned_row.relative_deg, 0, "dead ahead");
+
+    // Classification arrives at `classify_after_ms`, and the class word becomes the
+    // side rather than the state.
+    let mut seen: Vec<&'static str> = Vec::new();
+    let mut classified = None;
+    for n in 2..=5 {
+        if let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) {
+            seen.extend(told(&frame));
+            if cockpit::frame_contacts(&frame)
+                .first()
+                .is_some_and(|row| row.class.as_str() == "blue")
+            {
+                classified = Some(frame);
+            }
+        }
+    }
+    assert_eq!(seen, vec!["classified"], "one notice per transition");
+    let frame = classified.expect("the return is told apart");
+    let row = cockpit::frame_contacts(&frame)
+        .first()
+        .cloned()
+        .expect("one row");
+    assert_eq!(row.class.as_str(), "blue", "the side, not the state");
+    assert!(!row.friendly, "a red platform's blue contact is hostile");
+    assert_eq!(row.glyph(), cockpit::HOSTILE_GLYPH);
+}
+
+#[test]
+fn a_range_band_is_read_against_the_platforms_own_reach() {
+    // Thirds of a 300 cm reach, at the boundaries.
+    assert_eq!(cockpit::range_band(0, 300), "close");
+    assert_eq!(cockpit::range_band(100, 300), "close");
+    assert_eq!(cockpit::range_band(101, 300), "effective");
+    assert_eq!(cockpit::range_band(300, 300), "effective");
+    assert_eq!(cockpit::range_band(301, 300), "far");
+    assert_eq!(cockpit::range_band(600, 300), "far");
+    assert_eq!(cockpit::range_band(601, 300), "beyond");
+    // A platform with nothing to shoot with has nothing in range.
+    assert_eq!(cockpit::range_band(0, 0), "beyond");
+    assert_eq!(cockpit::range_band(u64::MAX, u32::MAX), "beyond");
+}
+
+#[test]
+fn a_teammate_is_a_friendly_marker_and_an_unknown_return_is_neither() {
+    // `MATE` carries a sensor too, so the mesh has somebody to talk to; both are
+    // red, so `EYE`'s classified contact on `MATE` is its own side.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MATE, Team::Red, centre(20, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &[],
+    );
+    let _ = arena.step(0, &[], &[]);
+    let mut tape: Vec<u8> = Vec::new();
+    let mut last = None;
+    for n in 1..=6 {
+        if let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) {
+            last = Some(frame);
+        }
+    }
+    let frame = last.expect("the platform is sent frames");
+    let rows = cockpit::frame_contacts(&frame);
+    assert_eq!(rows.len(), 2, "the teammate and the mark: {rows:?}");
+    let friendly = rows
+        .iter()
+        .find(|row| row.friendly)
+        .expect("the teammate classifies as this platform's own side");
+    assert_eq!(friendly.class.as_str(), "red");
+    assert_eq!(friendly.glyph(), cockpit::FRIEND_GLYPH);
+    let other = rows
+        .iter()
+        .find(|row| !row.friendly)
+        .expect("and the mark does not");
+    assert!(matches!(other.class.as_str(), "blue" | "unknown"));
+    if other.class.as_str() == "unknown" {
+        assert_eq!(other.glyph(), cockpit::UNKNOWN_GLYPH);
+    }
+    // Three glyphs, three meanings, no overlap.
+    assert_ne!(cockpit::UNKNOWN_GLYPH, cockpit::FRIEND_GLYPH);
+    assert_ne!(cockpit::FRIEND_GLYPH, cockpit::HOSTILE_GLYPH);
+    assert_ne!(cockpit::UNKNOWN_GLYPH, cockpit::YOU_GLYPH);
+}
+
+// ---------------------------------------------------------------------------
+// (l) the notice hysteresis — 16b cut S.2
+//
+// The rule, in one sentence: a `lost` notice is held for one further pass, and a
+// re-acquisition inside that window cancels it and is itself not announced. The
+// ledger's `lost` event is unaffected, which is what these two tests assert
+// together — the black box always records the loss, and the pilot is told about it
+// only when it was a real one.
+// ---------------------------------------------------------------------------
+
+/// Where a target goes to be out of every reach: the far corner of the 80-cell
+/// window, 97,000 cm from `EYE`, well past the 54,000 cm a full-signature sensor
+/// reaches on stopped ground.
+fn away() -> Pose {
+    centre(SIDE - 1, SIDE - 1)
+}
+
+#[test]
+fn a_loss_is_announced_one_pass_late_and_the_ledger_records_it_at_once() {
+    let mut arena = watching();
+    let mut tape: Vec<u8> = Vec::new();
+    let frame = pulse(&mut arena, PULSE_MS, &mut tape).expect("the acquiring pulse");
+    assert_eq!(told(&frame), vec!["acquired"]);
+    place(&mut arena, MARK, away(), 0);
+
+    // The pass at 3,004 expires the contact the pass at 4 minted: three passes at
+    // the shipped `lost_after_passes`.
+    let mut words: Vec<(i64, &'static str)> = Vec::new();
+    for n in 2..=6 {
+        if let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) {
+            for word in told(&frame) {
+                words.push((arena.now_ms, word));
+            }
+        }
+    }
+    assert_eq!(
+        words,
+        vec![(5_000, "lost")],
+        "the loss is said once, in the pulse after the one that expired it"
+    );
+
+    // And the black box wrote it at the moment of expiry, three passes in, not when
+    // the pilot was told.
+    assert_eq!(
+        event_times(&mut arena, &mut tape, "lost"),
+        vec![3_004],
+        "the ledger's own timestamp"
+    );
+}
+
+#[test]
+fn a_contact_that_flickers_costs_the_pilot_no_lines_at_all() {
+    let mut arena = watching();
+    let mut tape: Vec<u8> = Vec::new();
+    let frame = pulse(&mut arena, PULSE_MS, &mut tape).expect("the acquiring pulse");
+    assert_eq!(told(&frame), vec!["acquired"]);
+    place(&mut arena, MARK, away(), 0);
+
+    // Out of reach through the pass that expires the contact (3,004) — and back
+    // before the next one (4,004), which is the window the rule names.
+    let mut words: Vec<&'static str> = Vec::new();
+    for n in 2..=7 {
+        if arena.now_ms >= 3_500 {
+            place(&mut arena, MARK, centre(40, 10), 0);
+        }
+        if let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) {
+            words.extend(told(&frame));
+        }
+    }
+    assert!(
+        words.is_empty(),
+        "a contact lost and re-acquired inside one pass is announced neither way: {words:?}"
+    );
+    // It is held again, under the same id, and the ledger has both halves.
+    let id = draw_contact_id(arena.seed, EYE, MARK);
+    assert!(arena.contacts.resolve(EYE, id).is_some());
+    assert_eq!(event_times(&mut arena, &mut tape, "lost"), vec![3_004]);
+    assert_eq!(
+        event_times(&mut arena, &mut tape, "detected"),
+        vec![4, 4_004],
+        "the record is complete even though the pilot heard nothing about the flicker"
+    );
+}
+
+#[test]
+fn a_notice_is_one_sentence_wherever_it_is_rendered() {
+    let mut arena = watching();
+    let mut tape: Vec<u8> = Vec::new();
+    let frame = pulse(&mut arena, PULSE_MS, &mut tape).expect("the acquiring pulse");
+    let lines = cockpit::notice_lines(&frame);
+    let id = draw_contact_id(arena.seed, EYE, MARK);
+    assert_eq!(lines.len(), 1);
+    let line = lines.first().cloned().unwrap_or_default();
+    assert!(line.contains(&id.to_string()), "{line}");
+    assert!(line.contains("close"), "the band the notice quotes: {line}");
+    assert!(
+        !line.contains(&format!("#{}", MARK.0)),
+        "and never the target: {line}"
+    );
+    // The same renderer answers the frame's own `notices` array, so a panel and a
+    // line client read one sentence.
+    for notice in &frame.notices {
+        assert_eq!(
+            cockpit::notice_line(notice, &cockpit::frame_contacts(&frame)),
+            line
+        );
+    }
+    // A `lost` notice names the id and nothing else: the contact is not in the
+    // frame's list any more, so there is no bearing to quote.
+    let gone = FrameNotice {
+        kind: NoticeKind::Lost,
+        contact: id,
+        class: Classification::Unknown,
+    };
+    assert_eq!(
+        cockpit::notice_line(&gone, &[]),
+        format!("Contact {id} lost.")
+    );
 }

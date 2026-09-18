@@ -74,8 +74,9 @@
 //!
 //! ## One frame, two shapes
 //!
-//! [`status_frame`] is what a pulse sends: the numbers, the (empty until cut S)
-//! contacts and the weapons table. [`view_frame`] is that same frame **plus** the
+//! [`status_frame`] is what a pulse sends: the numbers, the contacts (16b cut S.2),
+//! the notices it owes and the weapons table. [`view_frame`] is that same frame
+//! **plus** the
 //! arena window in the grid shape `mush_ansi::panel` already renders, which is
 //! what makes `VIEW` a text map on a line client and a map panel on the web with
 //! no per-feed code in either. The grid rides `VIEW` and not the pulse
@@ -91,7 +92,8 @@ use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
 use crate::arena::intents::{ControlState, IntentKind};
-use crate::arena::state::{Channel, ContactId, Power};
+use crate::arena::perception::{FrameNotice, NoticeKind};
+use crate::arena::state::{Channel, Classification, ContactId, Power};
 use crate::arena::step::Frame;
 use crate::arena_bridge::{
     ArenaRegistry, CockpitFrame, FRAME_FEED, IntentRefusal, NOTICE_CATEGORY, forward_intent,
@@ -162,6 +164,18 @@ pub const VIEW_ROWS: u16 = 20;
 
 /// The glyph the pilot's own platform draws with.
 pub const YOU_GLYPH: &str = "@";
+
+/// **The glyph an unresolved contact draws with** on `VIEW` (16b cut S.2; doc 16
+/// §3.6: *a marker per contact*). A return, not a tank: the pilot knows something
+/// is there and nothing else.
+pub const UNKNOWN_GLYPH: &str = "?";
+
+/// A contact resolved to the platform's **own** side (doc 16 §3.6: *teammates
+/// appear when shared*).
+pub const FRIEND_GLYPH: &str = "+";
+
+/// A contact resolved to the **other** side.
+pub const HOSTILE_GLYPH: &str = "x";
 
 // ---------------------------------------------------------------------------
 // The refusals
@@ -339,18 +353,91 @@ fn require_power(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
     Err(CockpitError::PowerNotOnline)
 }
 
-/// **The contacts the platform holds**, as the frame carries them.
+/// **The contacts the platform holds**, as a pilot is told about them (doc 16
+/// §3.6 "What a pilot sees").
 ///
-/// **16b cut S.1 filled the arena side**: the sensor pass mints the ids and mirrors
-/// them into [`Frame::contacts`] as `crate::arena::perception::FrameContact` rows,
-/// so the data is now there on every frame a held platform is sent. Reading it —
-/// the range band, the degrees, the line `CONTACTS` prints and the `LOCK` that
-/// resolves through it — is **cut S.2's**, which is why this still answers empty:
-/// until it does, `LOCK` answers [`NO_SUCH_CONTACT`] for every id and `CONTACTS`
-/// says so out loud, exactly as K.2 shipped it.
+/// **16b cut S.1 filled the arena side** — the sensor pass mints the ids and
+/// mirrors them into [`Frame::contacts`] — and **this is cut S.2's read of it**:
+/// the opaque id unchanged, the class as `unknown` or as the side the platform has
+/// resolved, the bearing in whole degrees both absolute and relative to the
+/// platform's own heading, the range as one of [`range_band`]'s four words, and
+/// the age in whole seconds.
+///
+/// Four things a pilot is deliberately **not** given, and each is the observer
+/// rule on this surface: the target's object number, its name, its exact range and
+/// its team when the contact is still `unknown`. The row carries the contact's
+/// last-seen **cell** because that is what `VIEW` draws a marker in, which is the
+/// map's own resolution and no finer.
 #[must_use]
-pub fn frame_contacts(_frame: &Frame) -> Vec<ContactRow> {
-    Vec::new()
+pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
+    frame
+        .contacts
+        .iter()
+        .map(|held| ContactRow {
+            id: held.id,
+            class: SmolStr::new(class_word(held.class)),
+            bearing_deg: held.bearing_mdeg / 1_000,
+            relative_deg: relative_mdeg(frame.pose.heading_mdeg, held.bearing_mdeg) / 1_000,
+            band: SmolStr::new(range_band(held.range_cm, frame.weapon_reach_cm)),
+            age_ms: held.age_ms,
+            cell: held.cell,
+            friendly: held.class.team() == Some(frame.team),
+        })
+        .collect()
+}
+
+/// The word a class renders as: `unknown`, or the **side** the platform has
+/// resolved (doc 16 §3.6: *class or `unknown`*).
+///
+/// Not `Classification::as_str`, which answers the *state* (`classified`): what a
+/// pilot wants off a resolved return is whose it is.
+#[must_use]
+fn class_word(class: Classification) -> &'static str {
+    match class.team() {
+        Some(team) => team.as_str(),
+        None => class.as_str(),
+    }
+}
+
+/// A bearing read off the platform's own nose: the absolute bearing less the
+/// platform's heading, wrapped into `0..360_000` millidegrees.
+#[must_use]
+fn relative_mdeg(heading_mdeg: u32, bearing_mdeg: u32) -> u32 {
+    let turn = i64::from(bearing_mdeg) - i64::from(heading_mdeg);
+    u32::try_from(turn.rem_euclid(360_000)).unwrap_or(0)
+}
+
+/// **The range band of a contact** (doc 16 §3.6: *range band*), read against the
+/// longest reach the platform itself carries ([`Frame::weapon_reach_cm`]).
+///
+/// A band and not a range, because a band is what a pilot can act on: the only
+/// question a contact's distance answers is *can I shoot it, nearly, or not at
+/// all*. The four words and their thirds of the platform's own reach:
+///
+/// | word | range |
+/// |---|---|
+/// | `close` | inside a third of the reach |
+/// | `effective` | inside the reach |
+/// | `far` | inside twice the reach |
+/// | `beyond` | further, **or the platform carries no weapon at all** |
+///
+/// The last clause is why a reach of zero is not a special case: a platform with
+/// nothing to shoot with has nothing in range, and `beyond` says exactly that.
+#[must_use]
+pub fn range_band(range_cm: u64, reach_cm: u32) -> &'static str {
+    let reach = u64::from(reach_cm);
+    if reach == 0 {
+        return "beyond";
+    }
+    if range_cm.saturating_mul(3) <= reach {
+        "close"
+    } else if range_cm <= reach {
+        "effective"
+    } else if range_cm <= reach.saturating_mul(2) {
+        "far"
+    } else {
+        "beyond"
+    }
 }
 
 /// One contact, as a pilot is told about it (doc 16 §3.6 "What a pilot sees").
@@ -358,14 +445,90 @@ pub fn frame_contacts(_frame: &Frame) -> Vec<ContactRow> {
 pub struct ContactRow {
     /// The opaque arena id, which is the only name a pilot may use.
     pub id: ContactId,
-    /// The class, or `unknown`.
+    /// `unknown`, or the side the platform has resolved.
     pub class: SmolStr,
     /// Bearing, degrees clockwise from north.
     pub bearing_deg: u32,
-    /// The range band's label.
+    /// The same bearing off the platform's own nose, degrees clockwise (16b cut
+    /// S.2): `0` is dead ahead.
+    pub relative_deg: u32,
+    /// The range band's label ([`range_band`]).
     pub band: SmolStr,
     /// How long it has been held, milliseconds of arena time.
     pub age_ms: i64,
+    /// The cell it was last seen in, for `VIEW`'s marker (16b cut S.2).
+    pub cell: Option<(u16, u16)>,
+    /// Whether the resolved side is the platform's own — what decides the glyph
+    /// `VIEW` draws it with. `false` while the contact is `unknown`.
+    pub friendly: bool,
+}
+
+impl ContactRow {
+    /// The line `CONTACTS` prints for this row.
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "{}  {}  bearing {:03}° (rel {:03}°)  {}  {} s",
+            self.id,
+            self.class,
+            self.bearing_deg,
+            self.relative_deg,
+            self.band,
+            self.age_ms / 1_000
+        )
+    }
+
+    /// The glyph `VIEW` draws this contact with: [`UNKNOWN_GLYPH`] while it is
+    /// unresolved, then [`FRIEND_GLYPH`] or [`HOSTILE_GLYPH`].
+    #[must_use]
+    pub fn glyph(&self) -> &'static str {
+        if self.class == "unknown" {
+            UNKNOWN_GLYPH
+        } else if self.friendly {
+            FRIEND_GLYPH
+        } else {
+            HOSTILE_GLYPH
+        }
+    }
+}
+
+/// **The line one notice prints** (16b cut S.2; doc 16 §3.6: *notices fire once
+/// per transition*).
+///
+/// The one renderer, so the bridge's output line, the frame's `notices` array and
+/// any later surface cannot word the same transition three ways. `rows` is the
+/// frame's own contact list, which is where an acquisition's bearing and band come
+/// from; a `lost` contact is not in it any more and is named by its id alone.
+#[must_use]
+pub fn notice_line(notice: &FrameNotice, rows: &[ContactRow]) -> String {
+    let row = rows.iter().find(|row| row.id == notice.contact);
+    match notice.kind {
+        NoticeKind::Acquired => match row {
+            Some(row) => format!(
+                "New contact {}: bearing {:03}°, {}.",
+                row.id, row.bearing_deg, row.band
+            ),
+            None => format!("New contact {}.", notice.contact),
+        },
+        NoticeKind::Classified => format!(
+            "Contact {} identified: {}.",
+            notice.contact,
+            class_word(notice.class)
+        ),
+        NoticeKind::Lost => format!("Contact {} lost.", notice.contact),
+    }
+}
+
+/// Every line the notices on one frame print, in order — what the bridge says and
+/// what a read verb's frame carries, from one place.
+#[must_use]
+pub fn notice_lines(frame: &Frame) -> Vec<String> {
+    let rows = frame_contacts(frame);
+    frame
+        .notices
+        .iter()
+        .map(|notice| notice_line(notice, &rows))
+        .collect()
 }
 
 /// **The lock the platform holds**, as the frame carries it. Cut W fills it; see
@@ -748,8 +911,20 @@ fn speed(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError>
 /// `LOCK <contact>` — hold one of the platform's contacts (doc 16 §3.7).
 ///
 /// One refusal for every id the platform does not hold, whether it is malformed,
-/// somebody else's or expired (doc 16 §3.6). Cut S is what gives a platform
-/// anything to hold; until then the refusal is the whole verb.
+/// somebody else's or expired (doc 16 §3.6). **16b cut S.2 gave it something to
+/// resolve**: the id is looked up in the platform's own contact list, which is the
+/// world's mirror of `crate::arena::state::ShadowContacts` — the store
+/// `ShadowContacts::resolve` answers from, keyed by the same
+/// `(viewer platform, id)` pair and refusing with the same one sentence. A pilot
+/// naming a malformed id, another platform's id or an expired one takes the same
+/// path, byte for byte, because all three simply fail to be in the list.
+///
+/// **What it does not do yet.** The `Lock` intent is staged and the arena's phase 4
+/// still drops it: cut W is what gives `Lock` its effect (a held lock, a `FIRE`
+/// that has something to shoot at), so a pilot who locks a contact they really
+/// hold is told `Locking {id}.` and the arena records nothing. `frame_lock` is
+/// `None` on every frame for the same reason, which is why `FIRE` still answers
+/// [`NO_LOCK`] straight afterwards.
 fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     let held = last_frame(ctx.w, actor)
@@ -803,14 +978,7 @@ fn contacts(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
         lines.push("No contacts.".to_owned());
     }
     for row in &rows {
-        lines.push(format!(
-            "{}  {}  bearing {}°  {}  {} s",
-            row.id,
-            row.class,
-            row.bearing_deg,
-            row.band,
-            row.age_ms / 1_000
-        ));
+        lines.push(row.render());
     }
     say_and_frame(ctx, held.as_ref(), lines, false);
     Ok(())
@@ -929,19 +1097,45 @@ pub const FRAME_VERSION: u32 = 1;
 /// whether it is awake, whether it is held, how often it is being told things,
 /// what it holds and what it carries.
 ///
-/// `contacts` is empty until cut S and `weapons`' live numbers are cut W's; both
-/// keys exist now so neither cut has to change the shape, only fill it.
+/// **16b cut S.2 filled `contacts` and added `notices`**; `weapons`' live numbers
+/// are still cut W's.
+///
+/// One contact is `{ id, class, bearing_deg, relative_deg, band, age_ms, age_s,
+/// cell, friendly }` — no object number, no name and **no exact range**, which is
+/// doc 16 §3.6's *range band* read strictly. `cell` is the **arena window's** own
+/// cell, so it is comparable with `x_cm / cell_cm`; [`view_frame`]'s `units` carry
+/// the same marker at a cell relative to *that* frame's `origin`, which is what the
+/// grid renderer draws from. `notices` is the lines this frame owes
+/// its pilot, already rendered ([`notice_line`]), so a web or TUI panel prints the
+/// same sentence the line client was sent; a frame read back out of the world's
+/// mirror carries none, because the mirror is stored with them cleared.
 #[must_use]
 pub fn status_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json::Value {
-    let contacts: Vec<serde_json::Value> = frame_contacts(frame)
+    let rows = frame_contacts(frame);
+    let contacts: Vec<serde_json::Value> = rows
         .iter()
         .map(|row| {
             serde_json::json!({
                 "id": row.id.to_string(),
                 "class": row.class.as_str(),
                 "bearing_deg": row.bearing_deg,
+                "relative_deg": row.relative_deg,
                 "band": row.band.as_str(),
                 "age_ms": row.age_ms,
+                "age_s": row.age_ms / 1_000,
+                "cell": row.cell.map(|(x, y)| [x, y]),
+                "friendly": row.friendly,
+            })
+        })
+        .collect();
+    let notices: Vec<serde_json::Value> = frame
+        .notices
+        .iter()
+        .map(|notice| {
+            serde_json::json!({
+                "kind": notice.kind.as_str(),
+                "contact": notice.contact.to_string(),
+                "text": notice_line(notice, &rows),
             })
         })
         .collect();
@@ -972,6 +1166,7 @@ pub fn status_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_js
         "tempo": frame.tempo.as_str(),
         "lock": frame_lock(frame).map(|id| id.to_string()),
         "contacts": contacts,
+        "notices": notices,
         "weapons": weapons,
     })
 }
@@ -1041,20 +1236,55 @@ pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json
         .map(|class| serde_json::json!([class.glyph().to_string(), class.label()]))
         .collect();
     legend.push(serde_json::json!([YOU_GLYPH, "you"]));
-    // The platform, and — when cut S fills them — its contacts. Cells are
+    // The platform at the centre, then one marker per contact. Cells are
     // relative to the window's own origin, which is what the grid renderer
     // centres on.
     let you = [
         u32::from(cx.saturating_sub(x0)),
         u32::from(cy.saturating_sub(y0)),
     ];
-    let units = vec![serde_json::json!({
+    let mut units = vec![serde_json::json!({
         "id": format!("#{}", frame.unit.0),
         "name": display_name(ctx.w, frame.unit),
         "cell": you,
         "glyph": YOU_GLYPH,
         "you": true,
     })];
+    // **16b cut S.2**: the platform's own contacts, at their last known cell, one
+    // marker each, clipped to the window the pilot is looking at. The `name` is
+    // the class word and the `id` is the opaque contact id — the marker carries no
+    // object number and no unit name, which is the observer rule on the map.
+    for row in frame_contacts(frame) {
+        let Some((mx, my)) = row.cell else {
+            continue;
+        };
+        if mx < x0 || my < y0 {
+            continue;
+        }
+        let (dx, dy) = (mx.saturating_sub(x0), my.saturating_sub(y0));
+        if dx >= width || dy >= height {
+            continue;
+        }
+        units.push(serde_json::json!({
+            "id": row.id.to_string(),
+            "name": row.class.as_str(),
+            "cell": [u32::from(dx), u32::from(dy)],
+            "glyph": row.glyph(),
+            "you": false,
+        }));
+        // The legend gains a glyph only when the window actually carries one: a
+        // legend that always advertised `hostile` would tell a pilot with an empty
+        // scope what a full one looks like, which is one more thing than they hold.
+        let label = match row.glyph() {
+            FRIEND_GLYPH => "friendly",
+            HOSTILE_GLYPH => "hostile",
+            _ => "contact",
+        };
+        let entry = serde_json::json!([row.glyph(), label]);
+        if !legend.contains(&entry) {
+            legend.push(entry);
+        }
+    }
     if let Some(object) = payload.as_object_mut() {
         object.insert(
             "schema".to_owned(),

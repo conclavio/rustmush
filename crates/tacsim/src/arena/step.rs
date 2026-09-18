@@ -58,8 +58,12 @@ use crate::arena::intents::{
 };
 use crate::arena::ledger::{EventKind, LedgerChunk};
 use crate::arena::motion::integrate;
-use crate::arena::perception::{FrameContact, Notice, PerceptionCounters, bearing_mdeg};
-use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, Power, StopReason};
+use crate::arena::perception::{
+    FrameContact, FrameNotice, Notice, NoticeKind, PerceptionCounters, bearing_mdeg,
+};
+use crate::arena::state::{
+    Arena, Classification, ContactId, DueKind, EndReason, MatchEnd, Power, StopReason, Team,
+};
 
 /// **One pilot's latest-wins view** (doc 16 §3.1's `Frames`).
 ///
@@ -77,6 +81,11 @@ use crate::arena::state::{Arena, DueKind, EndReason, MatchEnd, Power, StopReason
 pub struct Frame {
     /// The tank the pilot is in.
     pub unit: ObjId,
+    /// **The side it is on** (16b cut S.2), so the cockpit can draw a classified
+    /// contact as a friend or as a hostile without asking the world which team the
+    /// pilot's slot was on. The platform's own side is never a secret from its
+    /// pilot.
+    pub team: Team,
     /// Where it is.
     pub pose: Pose,
     /// How fast, cm/s; negative is reverse.
@@ -97,6 +106,20 @@ pub struct Frame {
     /// renders it; nothing about an undetected unit is in it, which is the whole
     /// observer rule on this surface.
     pub contacts: Vec<FrameContact>,
+    /// **The longest reach of anything the platform carries**, centimetres (16b
+    /// cut S.2), which is what turns a contact's range into doc 16 §3.6's *range
+    /// band*. Zero for a platform that carries no weapon, and then nothing is in
+    /// range of it, which is the honest answer.
+    pub weapon_reach_cm: u32,
+    /// **What the pilot is told once** (16b cut S.2; doc 16 §3.6: *notices fire
+    /// once per transition with hysteresis*), in the order the transitions
+    /// happened.
+    ///
+    /// Deliberately outside [`Frame::same_as`]: a frame is sent when its numbers
+    /// changed *or* when it carries a notice, and the copy remembered in
+    /// `last_frames` has this emptied, so a notice is delivered exactly once and a
+    /// later `CONTACTS` re-rendering the remembered frame does not repeat it.
+    pub notices: Vec<FrameNotice>,
 }
 
 impl Frame {
@@ -107,9 +130,13 @@ impl Frame {
     /// is one of the columns `CONTACTS` prints; a pilot parked beside a held target
     /// therefore gets a frame per pulse, which is the price of the age column being
     /// live rather than a lie.
+    ///
+    /// The notices are **not** compared: see [`Frame::notices`].
     #[must_use]
     pub fn same_as(&self, other: &Frame) -> bool {
         self.unit == other.unit
+            && self.team == other.team
+            && self.weapon_reach_cm == other.weapon_reach_cm
             && self.pose.x_cm == other.pose.x_cm
             && self.pose.y_cm == other.pose.y_cm
             && self.pose.z_cm == other.pose.z_cm
@@ -542,6 +569,10 @@ impl Arena {
         self.substep_hashes.push(hash);
         let mut refused = false;
         for (t_ms, kind, draw) in notices {
+            // 16b cut S.2: the pilot's notice and the ledger's event come off the
+            // same journal entry, in the same order, so a line a pilot read is a
+            // line the black box can be searched for.
+            self.stage_pilot_notice(t_ms, &kind);
             refused |= !self.journal_drawn(t_ms, kind, draw, hash);
         }
         refused
@@ -612,37 +643,153 @@ impl Arena {
     /// remembered frames. A pilot seated on a unit this arena does not hold gets
     /// nothing rather than an empty frame.
     fn frames(&mut self, tempo: Tempo) -> Vec<(ObjId, Frame)> {
+        self.sweep_held_losses();
         let mut candidates: Vec<(ObjId, Frame)> = Vec::with_capacity(self.pilots.len());
         for pilot in &self.pilots {
             let Some(unit) = self.unit(pilot.unit) else {
                 continue;
             };
+            let reach = unit
+                .weapons
+                .iter()
+                .map(|weapon| weapon.max_range_cm)
+                .max()
+                .unwrap_or(0);
             candidates.push((
                 pilot.pilot,
                 Frame {
                     unit: unit.id,
+                    team: unit.team,
                     pose: unit.pose.clone(),
                     speed_cms: unit.speed_cms,
                     power: unit.power,
                     blocked: unit.blocked,
                     tempo,
                     contacts: self.frame_contacts(unit.id),
+                    weapon_reach_cm: reach,
+                    // Per platform, so two pilots in one tank are both told.
+                    notices: self
+                        .pending_notices
+                        .get(&unit.id)
+                        .cloned()
+                        .unwrap_or_default(),
                 },
             ));
         }
+        // One pulse's worth, and no more: a platform nobody is seated on
+        // accumulates nothing.
+        self.pending_notices.clear();
         candidates.sort_by_key(|(pilot, _)| *pilot);
         let mut changed: Vec<(ObjId, Frame)> = Vec::new();
         for (pilot, frame) in candidates {
-            if self
-                .last_frames
-                .get(&pilot)
-                .is_none_or(|last| !last.same_as(&frame))
+            let told = !frame.notices.is_empty();
+            if told
+                || self
+                    .last_frames
+                    .get(&pilot)
+                    .is_none_or(|last| !last.same_as(&frame))
             {
-                self.last_frames.insert(pilot, frame.clone());
+                // The remembered copy carries no notice: `CONTACTS` and `VIEW`
+                // re-render it, and a notice said twice is a notice said wrong.
+                let mut remembered = frame.clone();
+                remembered.notices.clear();
+                self.last_frames.insert(pilot, remembered);
                 changed.push((pilot, frame));
             }
         }
         changed
+    }
+
+    /// **Stage the pilot notice one journalled perception event owes**, and apply
+    /// [`FrameNotice`]'s hysteresis (16b cut S.2; doc 16 §3.6 "What a pilot sees").
+    ///
+    /// Called with every event the pass journalled, so the pilot's lines are a
+    /// projection of the black box's own record and the two cannot disagree. Three
+    /// arms and one rule each:
+    ///
+    /// * `detected` — an acquisition, **unless** a held loss for the same
+    ///   `(platform, contact)` is still inside its window, in which case the
+    ///   contact merely flickered: the held loss is cancelled and nothing is said.
+    /// * `classified` — always said; being told apart is not something that
+    ///   flickers (the pass keeps a classification across a gap by design).
+    /// * `lost` — held for one further pass rather than said, which is the whole
+    ///   hysteresis; [`Arena::sweep_held_losses`] is what eventually says it.
+    fn stage_pilot_notice(&mut self, t_ms: i64, kind: &EventKind) {
+        let window_ms = i64::from(self.sensors_cfg.pass_ms.max(1));
+        match *kind {
+            EventKind::Detected {
+                viewer, contact, ..
+            } => {
+                if self.held_losses.remove(&(viewer, contact)).is_some() {
+                    return;
+                }
+                self.stage_notice(
+                    viewer,
+                    FrameNotice {
+                        kind: NoticeKind::Acquired,
+                        contact,
+                        class: Classification::Unknown,
+                    },
+                );
+            }
+            EventKind::Classified {
+                viewer,
+                contact,
+                team,
+                ..
+            } => self.stage_notice(
+                viewer,
+                FrameNotice {
+                    kind: NoticeKind::Classified,
+                    contact,
+                    class: Classification::Classified { team },
+                },
+            ),
+            EventKind::Lost {
+                viewer, contact, ..
+            } => {
+                self.held_losses
+                    .insert((viewer, contact), t_ms.saturating_add(window_ms));
+            }
+            _ => {}
+        }
+    }
+
+    /// Put one notice in the platform's queue for this pulse.
+    fn stage_notice(&mut self, platform: ObjId, notice: FrameNotice) {
+        self.pending_notices
+            .entry(platform)
+            .or_default()
+            .push(notice);
+    }
+
+    /// **Say the losses whose hysteresis window has run out** (16b cut S.2), at the
+    /// end of the pulse that reached it.
+    ///
+    /// A held loss whose platform has left the match is dropped rather than said:
+    /// there is nobody it is a fact about any more.
+    fn sweep_held_losses(&mut self) {
+        let now = self.now_ms;
+        let due: Vec<(ObjId, ContactId)> = self
+            .held_losses
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|((viewer, contact), _)| (*viewer, *contact))
+            .collect();
+        for (viewer, contact) in due {
+            self.held_losses.remove(&(viewer, contact));
+            if self.unit(viewer).is_none() {
+                continue;
+            }
+            self.stage_notice(
+                viewer,
+                FrameNotice {
+                    kind: NoticeKind::Lost,
+                    contact,
+                    class: Classification::Unknown,
+                },
+            );
+        }
     }
 
     /// **What one platform holds, as its pilots' frame carries it** (16b cut S.1;
@@ -669,6 +816,7 @@ impl Arena {
                     bearing_mdeg: bearing_mdeg(&from.pose, &target.pose),
                     range_cm: range_cm(&from.pose, &target.pose),
                     age_ms: self.now_ms.saturating_sub(held.first_seen_ms),
+                    cell: self.definition.terrain.cell_of(&target.pose),
                 })
             })
             .collect()

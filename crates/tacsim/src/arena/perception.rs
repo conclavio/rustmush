@@ -662,9 +662,76 @@ pub struct FrameContact {
     /// Bearing from the platform, millidegrees clockwise from north.
     pub bearing_mdeg: u32,
     /// Range from the platform, centimetres (doc 16 §3.2's one range function).
+    ///
+    /// **Not rendered to a pilot** (16b cut S.2): doc 16 §3.6 gives `CONTACTS` a
+    /// *range band* and not a range, so the cockpit turns this into one of
+    /// `crate::match_::cockpit::range_band`'s four words and the exact figure
+    /// never leaves the arena's own frame type.
     pub range_cm: u64,
     /// How long the platform has held it, arena milliseconds.
     pub age_ms: i64,
+    /// **The cell the target was last seen in** (16b cut S.2), for the marker
+    /// `VIEW` draws. `None` for a target that has left the window.
+    ///
+    /// A cell and not a pose: the map's resolution is what the map may show, so a
+    /// marker carries exactly the precision the window already prints and no more.
+    pub cell: Option<(u16, u16)>,
+}
+
+/// **Which transition a pilot is being told about** (16b cut S.2; doc 16 §3.6:
+/// *notices fire once per transition (`acquired`, `classified`, `lost`)*).
+///
+/// The three words are the ledger's own `detected`, `classified` and `lost` read
+/// as a pilot hears them — `acquired` rather than `detected`, because what the
+/// pilot is told is that their platform now holds something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// The platform now holds a contact it did not hold before.
+    Acquired,
+    /// A contact it holds has been told apart.
+    Classified,
+    /// A contact it held has gone, and stayed gone (see [`FrameNotice`]).
+    Lost,
+}
+
+impl NoticeKind {
+    /// The wire word, which is the ledger's word for the same transition.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            NoticeKind::Acquired => "acquired",
+            NoticeKind::Classified => "classified",
+            NoticeKind::Lost => "lost",
+        }
+    }
+}
+
+/// **One thing a pilot is told once** (16b cut S.2; doc 16 §3.6 "What a pilot
+/// sees": *notices fire once per transition with hysteresis*).
+///
+/// It rides [`crate::arena::step::Frame::notices`] and the bridge turns it into a
+/// line. It carries the opaque id and the class and **nothing about the target** —
+/// no object number, no name, no pose — because a notice is the first thing a
+/// pilot is ever told about a contact and the observer rule is strictest exactly
+/// there.
+///
+/// # The hysteresis rule, in one sentence
+///
+/// A `lost` notice is **held for one further pass** (`sensors.pass_ms`) before it
+/// is said: if the same platform re-acquires the same contact inside that window
+/// the held notice is cancelled and the re-acquisition is **not** announced, so a
+/// contact that flickers behind a treeline costs the pilot no lines at all. A loss
+/// that outlives the window is announced, one pass late. The ledger's `lost` event
+/// is unaffected — it is written at the moment the contact expired, which is what
+/// makes the black box the record and the notice only the telling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameNotice {
+    /// Which transition.
+    pub kind: NoticeKind,
+    /// The contact it is about, by its opaque id.
+    pub contact: ContactId,
+    /// What the platform knows of it at the moment of the notice.
+    pub class: Classification,
 }
 
 #[cfg(test)]

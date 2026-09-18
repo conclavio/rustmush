@@ -204,3 +204,42 @@ fn the_index_is_composed_even_with_no_game_layer_above_it() {
         "an admission site that reads a missing slot is an admission site that admits"
     );
 }
+
+/// **16b cut S.2: the `look` surface** (doc 16 §3.6 "World-side exclusion": *for
+/// every viewer including staff*).
+///
+/// The room render is `mush-core`'s and cannot ask `mush-sim` anything, so the
+/// exclusion arrives on the one seam built for a per-observer projection —
+/// `HookPoint::Perceive`, which the contents loop consults and which is not waived
+/// for staff. This is that hook, end to end through `look`.
+#[test]
+fn a_deployed_unit_is_not_in_the_room_a_looker_is_shown() {
+    let mut tw = boot();
+    let tank = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Red Tank 1", GOD, Some(LIMBO))
+        .expect("a tank");
+    let seen = texts(&tw.run(GOD, "look"));
+    assert!(
+        seen.contains("Red Tank 1"),
+        "the control: an ordinary thing is in the room:\n{seen}"
+    );
+
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        tank,
+        DeployedMark::new(1, "tacsim.arena.proving_ground"),
+    );
+    let seen = texts(&tw.run(GOD, "look"));
+    assert!(
+        !seen.contains("Red Tank 1"),
+        "a unit an arena holds is in nobody's room, staff included:\n{seen}"
+    );
+
+    mush_sim::deployed::clear(tw.world_mut(), tank);
+    let seen = texts(&tw.run(GOD, "look"));
+    assert!(
+        seen.contains("Red Tank 1"),
+        "and the check-in gives it back:\n{seen}"
+    );
+}

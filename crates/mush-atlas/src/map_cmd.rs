@@ -48,6 +48,12 @@ pub(crate) fn register_map(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     )
 }
 
+/// **The one sentence a map that is not there answers with** — a domain with no
+/// open window, and (16b cut S.2, doc 16 §3.6 "World-side exclusion") a domain a
+/// simulation authority holds. One line for both, so `+map` on an arena's ground
+/// says nothing a closed window would not.
+const MAP_CLOSED: &str = "Your map is closed.";
+
 fn say(ctx: &mut Ctx<'_>, line: String) {
     let actor = ctx.actor;
     ctx.out.to_actor(
@@ -102,6 +108,11 @@ fn cmd_map(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let domain = mush_sim::pose_of(ctx.w, actor)
             .map(|(d, _)| d)
             .ok_or_else(|| CmdError::msg("You are not on a map."))?;
+        // 16b cut S.2: the same exclusion the bare arm applies — a floor of a map
+        // an arena holds is still that map.
+        if mush_sim::deployed::excluded(ctx.w, mush_sim::deployed::Shown::Domain(domain)) {
+            return Err(CmdError::msg(MAP_CLOSED));
+        }
         let st = ctx
             .state_mut::<AtlasState>()
             .ok_or_else(|| CmdError::msg("The atlas module is not composed on this server."))?;
@@ -109,7 +120,7 @@ fn cmd_map(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .windows
             .open
             .get(&domain.0)
-            .ok_or_else(|| CmdError::msg("Your map is closed."))?;
+            .ok_or_else(|| CmdError::msg(MAP_CLOSED))?;
         let index = entry
             .frame
             .surfaces
@@ -129,6 +140,13 @@ fn cmd_map(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "You are not on a map. A scene's facilitator opens one with +map/open.",
         ));
     };
+    // 16b cut S.2 (doc 16 §3.6 "World-side exclusion"): a domain an arena holds is
+    // not a map, for anybody. The answer is the closed window's own sentence —
+    // `frame_for` has already stopped answering for it, and a second sentence here
+    // would be a second fact about the match.
+    if mush_sim::deployed::excluded(ctx.w, mush_sim::deployed::Shown::Domain(domain)) {
+        return Err(CmdError::msg(MAP_CLOSED));
+    }
     // S8.3 (14a #3): the text is the frame's view — built once for this
     // viewer, printed, then sent — so it names what the frame shows and
     // nothing the frame hides.
@@ -140,7 +158,7 @@ fn cmd_map(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .windows
             .open
             .get(&domain.0)
-            .ok_or_else(|| CmdError::msg("Your map is closed."))?;
+            .ok_or_else(|| CmdError::msg(MAP_CLOSED))?;
         let frame = crate::frame::frame_for(ctx.w, st, actor, domain);
         let mut lines = vec![crate::window::summary_for(ctx.w, st, entry, actor)];
         let here = ctx.w.get(actor).and_then(|o| o.location);

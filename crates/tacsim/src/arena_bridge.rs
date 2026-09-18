@@ -1027,14 +1027,28 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) 
         // same batch reads the frame the pilot was just sent, and then the frame
         // itself — doc 16 §5's keyframe, which cut K.2 filled out.
         let payload = crate::match_::cockpit::status_frame(ctx, match_id, &frame);
+        // 16b cut S.2: the notices this frame owes (doc 16 §3.6: *notices fire once
+        // per transition*), as ordinary output lines on the pilot's own channel.
+        // Rendered through `cockpit::notice_line`, which is also what the frame's
+        // own `notices` array carries, so the line client and a panel read one
+        // sentence.
+        let lines = crate::match_::cockpit::notice_lines(&frame);
         if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+            // **Stored with the notices cleared.** The mirror is what `CONTACTS`,
+            // `VIEW` and `STATUS` re-render, and a notice re-rendered is a notice
+            // said twice; the telling happens here, exactly once.
+            let mut remembered = frame.clone();
+            remembered.notices.clear();
             registry.last_frames.insert(
                 pilot,
                 CockpitFrame {
                     match_id,
-                    frame: frame.clone(),
+                    frame: remembered,
                 },
             );
+        }
+        for line in lines {
+            ctx.out.sys_to_actor(pilot, NOTICE_CATEGORY, line);
         }
         feed.keyframe_to(ctx, Audience::Actor(pilot), payload);
         sent = sent.saturating_add(1);

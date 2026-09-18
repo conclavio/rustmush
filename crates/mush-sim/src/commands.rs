@@ -187,13 +187,24 @@ fn pose_from(json: Option<serde_json::Value>) -> Result<Pose, CmdError> {
     }
 }
 
-/// Resolve `<id>` or a host object reference to a domain.
+/// Resolve `<id>` or a host object reference to a domain — which domain
+/// `@domain/<switch> <lhs>` names.
+///
+/// **16b cut S.2** (doc 16 §3.6 "World-side exclusion"): a domain a simulation
+/// authority holds does not resolve, for any viewer including staff — the whole
+/// `@domain` surface answers as though it were not there, with the two sentences a
+/// domain that really is not there already gets. It is the one chokepoint every
+/// `@domain` switch takes its subject through, so the exclusion covers the
+/// listings *and*, as a consequence, keeps `@domain/retire`, `@domain/present` and
+/// `@domain/promote` off an arena's muster while the match runs.
 fn resolve_domain(ctx: &Ctx<'_>, s: &str) -> Result<DomainId, CmdError> {
     let s = s.trim();
+    let hidden =
+        |id: DomainId| crate::deployed::excluded(ctx.w, crate::deployed::Shown::Domain(id));
     let state = st(ctx);
     // A bare number is a domain id; anything else (a name, a #dbref) is a host.
     if let Ok(n) = s.parse::<u64>() {
-        return if state.domains.contains_key(&DomainId(n)) {
+        return if state.domains.contains_key(&DomainId(n)) && !hidden(DomainId(n)) {
             Ok(DomainId(n))
         } else {
             Err(CmdError::msg(format!("No domain #{n}.")))
@@ -203,8 +214,14 @@ fn resolve_domain(ctx: &Ctx<'_>, s: &str) -> Result<DomainId, CmdError> {
     state
         .domain_of_host(host)
         .map(|d| d.id)
+        .filter(|id| !hidden(*id))
         .ok_or_else(|| CmdError::msg("No such domain (give its id, or its host)."))
 }
+
+/// **The one sentence `@spatial <obj>` answers about an object it has nothing to
+/// say about** — never placed, and (16b cut S.2) held by a simulation authority.
+/// Rendered after the object's display name.
+const NOT_SPATIAL: &str = ": not a spatial entity.";
 
 fn sim_err(e: crate::transition::SpatialError) -> CmdError {
     CmdError::msg(e.to_string())
@@ -243,10 +260,23 @@ fn cmd_domain(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 }
 
+/// `@domain` bare — every domain, **except one an arena holds** (16b cut S.2; doc
+/// 16 §3.6 "World-side exclusion"), for every viewer including staff.
+///
+/// A domain a match is running on is simply not in the listing: no row, no count,
+/// no placeholder. `@arena/status` is where a staffer reads a live match, and it is
+/// the only place.
 fn domain_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let hidden: Vec<DomainId> = st(ctx)
+        .domains
+        .keys()
+        .copied()
+        .filter(|id| crate::deployed::excluded(ctx.w, crate::deployed::Shown::Domain(*id)))
+        .collect();
     let lines: Vec<String> = st(ctx)
         .domains
         .values()
+        .filter(|d| !hidden.contains(&d.id))
         .map(|d| {
             format!(
                 "  #{} {:?} host {} presents in {} ({} local, {} projected)",
@@ -648,8 +678,20 @@ fn describe_parent(ctx: &Ctx<'_>, p: &SpatialParent) -> String {
     }
 }
 
+/// `@spatial <obj>` — everything the placement graph holds about one object.
+///
+/// **16b cut S.2** (doc 16 §3.6 "World-side exclusion"): a unit a simulation
+/// authority holds answers [`NOT_SPATIAL`] and nothing else, for every viewer
+/// including staff. Its placement is frozen and its pose is the arena's, so every
+/// line below it would be a stale fact about a unit in a match — and the sentence is
+/// the one an object that was never placed at all gets, so the answer hides the
+/// custody rather than announcing it.
 fn spatial_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    if crate::deployed::excluded(ctx.w, crate::deployed::Shown::Unit(obj)) {
+        info(ctx, format!("{}{NOT_SPATIAL}", display_name(ctx.w, obj)));
+        return Ok(());
+    }
     let lines: Vec<String> = {
         let s = st(ctx);
         let mut v = Vec::new();
@@ -661,7 +703,7 @@ fn spatial_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ));
         } else {
             match s.placements.get(&obj) {
-                None => v.push(format!("{name}: not a spatial entity.")),
+                None => v.push(format!("{name}{NOT_SPATIAL}")),
                 Some(p) => {
                     v.push(format!(
                         "{name}: {} (revision {}).",
@@ -742,6 +784,11 @@ fn spatial_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// `@spatial/tree <root>` — the placement subtree under one object.
+///
+/// **16b cut S.2**: a unit a simulation authority holds is not a node of it, and
+/// neither are its dependents — the walk does not descend into what is not there.
+/// `hidden` is the same predicate [`spatial_show`] uses, resolved once per node.
 fn spatial_tree(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let root = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
     let lines: Vec<String> = {
@@ -749,6 +796,9 @@ fn spatial_tree(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let mut v = Vec::new();
         fn walk(ctx: &Ctx<'_>, s: &SpatialState, obj: ObjId, depth: usize, v: &mut Vec<String>) {
             if depth > crate::data::MAX_SPATIAL_DEPTH {
+                return;
+            }
+            if crate::deployed::excluded(ctx.w, crate::deployed::Shown::Unit(obj)) {
                 return;
             }
             v.push(format!(
@@ -2902,14 +2952,22 @@ fn ab<'a>(ctx: &'a Ctx<'_>) -> &'a ActivationBook {
 /// viewer has never observed answer identically (rule 4).
 fn resolve_domain_opt(ctx: &Ctx<'_>, s: &str) -> Option<DomainId> {
     let s = s.trim();
+    // 16b cut S.2: `resolve_domain`'s exclusion, on the arm that answers `None`
+    // rather than a sentence.
+    let hidden =
+        |id: DomainId| crate::deployed::excluded(ctx.w, crate::deployed::Shown::Domain(id));
     if let Ok(n) = s.parse::<u64>() {
         return st(ctx)
             .domains
             .contains_key(&DomainId(n))
-            .then_some(DomainId(n));
+            .then_some(DomainId(n))
+            .filter(|id| !hidden(*id));
     }
     let host = match_object(ctx.w, ctx.actor, s).ok()?;
-    st(ctx).domain_of_host(host).map(|d| d.id)
+    st(ctx)
+        .domain_of_host(host)
+        .map(|d| d.id)
+        .filter(|id| !hidden(*id))
 }
 
 /// How many objects the domain currently holds — the one observable count cut 6

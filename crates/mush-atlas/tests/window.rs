@@ -1292,3 +1292,100 @@ fn the_geometry_slot_is_filled_once_at_boot() {
     let kit = tw.spawn_player("Kit");
     assert_eq!(mush_sim::metric_between(tw.world(), rae, kit), None);
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut S.2: doc 16 §3.6's world-side exclusion, on the map surface
+// ---------------------------------------------------------------------------
+
+/// **A domain a simulation authority holds is no map, for anybody** (doc 16 §3.6
+/// "World-side exclusion": *its domain is excluded from `visible_rooms`,
+/// `units_for`, the atlas `+map` frame … for every viewer including staff*).
+///
+/// The exclusion is keyed on the **domain**, not on the unit: a deployed unit is
+/// already absent from `mush_sim::participants`, and this is the other half — the
+/// window itself stops answering, so a viewer standing on an arena's ground is told
+/// exactly what a viewer whose window is shut is told, and staff are not exempt.
+///
+/// `mush_sim::deployed::mark` is the world-side index `mush_tactics`' check-out
+/// publishes into; marking Rae's own object is the shortest honest way to put a
+/// deployed unit in this domain, because a deployed unit's world placement is left
+/// frozen exactly where it stood.
+#[test]
+fn a_domain_an_arena_holds_is_no_map_for_anybody() {
+    let mut tw = lot();
+    let staff = GOD;
+    let coffee = room_named(&tw, "Coffee Shop");
+    tw.world_mut()
+        .move_to(staff, coffee)
+        .expect("staff to the coffee shop");
+    let (domain, _) = open_over(&mut tw, staff, "here");
+    let backlot = room_named(&tw, "Backlot");
+    let rae = tw.spawn_player("Rae");
+    tw.world_mut()
+        .move_to(rae, backlot)
+        .expect("Rae to the backlot");
+    // Walking **in** is what places somebody on a window; `move_to` alone does not.
+    tw.run(rae, "coffee");
+    tw.run(staff, "backlot");
+    tw.run(staff, "coffee");
+
+    // The control: the window is there, for the participant and for staff.
+    let events = tw.run(rae, "+map");
+    let shown = text(&tw, &events, rae);
+    assert!(shown.contains("You stand at"), "{shown}");
+    assert!(
+        mush_atlas::frame::frame_for(tw.world(), atlas(&tw), rae, domain).is_some(),
+        "the frame answers before the arena takes the ground"
+    );
+
+    // One unit under custody, standing where it stood.
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        rae,
+        mush_sim::DeployedMark::new(7, "tacsim.arena.proving_ground"),
+    );
+    assert!(
+        mush_sim::deployed::excluded(tw.world(), mush_sim::deployed::Shown::Domain(domain)),
+        "the one predicate answers for the domain the deployed unit stands in"
+    );
+
+    // And the map is shut, in the words a shut map already had.
+    for who in [rae, staff] {
+        let events = tw.run(who, "+map");
+        let seen = text(&tw, &events, who);
+        assert!(
+            seen.contains("Your map is closed."),
+            "#{} was answered something else: {seen}",
+            who.0
+        );
+        assert!(
+            !seen.contains("You stand at"),
+            "and never a pose on an arena's ground: {seen}"
+        );
+        assert!(
+            panel_frames(&events, who, mush_proto::PanelFrameKind::Keyframe).is_empty(),
+            "#{} was sent a frame of a held domain",
+            who.0
+        );
+        assert!(
+            mush_atlas::frame::frame_for(tw.world(), atlas(&tw), who, domain).is_none(),
+            "#{} could still build the frame",
+            who.0
+        );
+        assert!(
+            mush_atlas::frame::delta_for(tw.world(), atlas(&tw), who, domain, None).is_none(),
+            "#{} could still build a delta",
+            who.0
+        );
+    }
+    // `+map/floor` is the other arm of the same verb, and answers the same way.
+    let events = tw.run(rae, "+map/floor 0");
+    let floored = text(&tw, &events, rae);
+    assert!(floored.contains("Your map is closed."), "{floored}");
+
+    // The check-in gives the ground back.
+    mush_sim::deployed::clear(tw.world_mut(), rae);
+    let events = tw.run(rae, "+map");
+    let back = text(&tw, &events, rae);
+    assert!(back.contains("You stand at"), "{back}");
+}

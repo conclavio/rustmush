@@ -260,6 +260,17 @@ account and so does the focus the cockpit seat takes.
 """
 
 [[site]]
+path = "crates/mushd/tests/observer_rule.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut S.2's observer lens, performing the same post-composition wiring its two
+rows above perform and for the same reason: the surface-by-surface observer
+assertions need two pilots seated, and a slot belongs to an account.
+"""
+
+[[site]]
 path = "crates/mush-propagation/tests/e7c11.rs"
 accessor = "World::module_state_mut"
 slot = "FocusState"

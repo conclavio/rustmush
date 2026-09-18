@@ -22,6 +22,25 @@
 //! window the cull walks. A cull that missed candidates would be a silent
 //! perception bug; a cull that offers too many is a wasted comparison.
 //!
+//! # The two cost fixes of 16b cut S.2
+//!
+//! S.1 measured the loaded pulse and found the cull, not the trace, at the top of
+//! it: 300 units each culling 300 candidates, with an `i128::isqrt` per pair. Both
+//! remedies are here, and neither changes an answer.
+//!
+//! 1. **The membership test squares instead of rooting.** `range_cm` floors, so
+//!    `floor(sqrt(s)) ≤ r` is exactly `s < (r+1)²` — [`within_cm`] is that, and it
+//!    is the one test [`SpatialIndex::in_range`] decides membership with.
+//!    [`range_cm`] stays, for the one place a distance is *stored*
+//!    (`crate::arena::step::Arena::frame_contacts`).
+//! 2. **The cell window is preferred whenever the pose is on the window.** The old
+//!    rule took the cell branch only while the covered area was no larger than the
+//!    unit count, which on a 300-unit arena meant any reach past about eight cells
+//!    fell back to a scan of every unit. The window is clamped to the arena either
+//!    way, so the cell branch is bounded by the arena's own cell count, and the
+//!    scan is now only what an **off-window** pose gets — the case where there is
+//!    no cell to centre a window on at all.
+//!
 //! # Why it is rebuilt rather than maintained
 //!
 //! A rebuild is `O(units)` — [`SpatialIndex::rebuild`] clears only the cells the
@@ -47,16 +66,42 @@ use crate::arena::state::{ArenaTerrain, UnitState};
 /// can produce is about 362,000.
 #[must_use]
 pub fn range_cm(a: &Pose, b: &Pose) -> u64 {
+    // A sum of squares is never negative, so `unsigned_abs` is the cast and not
+    // a policy; `isqrt` floors, which makes the answer a whole centimetre.
+    u64::try_from(square_cm(a, b).unsigned_abs().isqrt()).unwrap_or(u64::MAX)
+}
+
+/// The **squared** separation of two poses, square centimetres, in `i128` for the
+/// same reason [`range_cm`] takes its squares there: a pose is `i64` centimetres
+/// and two poses far apart in the region frame would overflow `i64` squared.
+///
+/// Saturating, so the answer is monotone in the separation even at the edges of
+/// the region frame, which is what keeps [`within_cm`] and [`range_cm`] agreeing
+/// there.
+fn square_cm(a: &Pose, b: &Pose) -> i128 {
     let dx = i128::from(a.x_cm) - i128::from(b.x_cm);
     let dy = i128::from(a.y_cm) - i128::from(b.y_cm);
     let dz = i128::from(a.z_cm) - i128::from(b.z_cm);
-    let square = dx
-        .saturating_mul(dx)
+    dx.saturating_mul(dx)
         .saturating_add(dy.saturating_mul(dy))
-        .saturating_add(dz.saturating_mul(dz));
-    // A sum of squares is never negative, so `unsigned_abs` is the cast and not
-    // a policy; `isqrt` floors, which makes the answer a whole centimetre.
-    u64::try_from(square.unsigned_abs().isqrt()).unwrap_or(u64::MAX)
+        .saturating_add(dz.saturating_mul(dz))
+}
+
+/// **Whether two poses are within `reach_cm` of each other** — [`range_cm`]'s
+/// comparison without its square root (16b cut S.2).
+///
+/// `range_cm` floors, so `range_cm(a, b) ≤ r` is *exactly* `square_cm(a, b) <
+/// (r+1)²`: `floor(sqrt(s)) ≤ r` iff `s < (r+1)²` for whole `r`. That identity is
+/// why this is a cost fix and not a behaviour change, and
+/// `the_squared_test_agrees_with_the_rooted_one_at_every_boundary` below pins it
+/// over every distance either function can be asked about near a boundary.
+///
+/// This is the test [`SpatialIndex::in_range`] decides membership with, so a
+/// 300-unit cull costs three multiplications a pair instead of an `i128::isqrt`.
+#[must_use]
+pub fn within_cm(a: &Pose, b: &Pose, reach_cm: u64) -> bool {
+    let bound = i128::from(reach_cm).saturating_add(1);
+    square_cm(a, b) < bound.saturating_mul(bound)
 }
 
 /// **The uniform grid of cell buckets over unit positions** (doc 16 §3.2 "The
@@ -195,12 +240,21 @@ impl SpatialIndex {
     /// know whose pose it was handed, so a caller asking about its own
     /// surroundings filters itself out ([`SpatialIndex::pairs_within`] does).
     ///
-    /// Two culls, and the cheaper one is chosen: walking the covered cells costs
-    /// the covered **area**, and walking the index's own unit table costs the
-    /// **unit count**, so a range that covers more cells than the arena holds
-    /// units is answered by the second. Both produce the same set — the cull never
-    /// decides membership, [`range_cm`] does — and they are the same set because
-    /// occupancy is one unit per cell, which check-out and motion both enforce (see
+    /// Two culls, and **16b cut S.2 made the choice between them a fact about the
+    /// pose** rather than a comparison of costs: a pose on the window is answered
+    /// by walking the cells the range covers, clamped to the window, and a pose
+    /// off it — where there is no cell to centre a window on — by walking the
+    /// index's own unit table.
+    ///
+    /// The old rule preferred the cell walk only while the covered area was no
+    /// larger than the unit count, which on a 300-unit arena sent every reach past
+    /// about eight cells to a scan of all 300 units; the cell walk reads a flat
+    /// row-major slot per cell and is bounded by the arena's own cell count either
+    /// way, so it is the cheaper branch wherever it is available.
+    ///
+    /// Both produce the same set — the cull never decides membership,
+    /// [`within_cm`] does — and they are the same set because occupancy is one unit
+    /// per cell, which check-out and motion both enforce (see
     /// [`SpatialIndex::rebuild`]); a grid slot cannot report a second unit standing
     /// in one cell, and no reachable state has one.
     #[must_use]
@@ -210,20 +264,14 @@ impl SpatialIndex {
         let keep = |id: ObjId, found: &mut Vec<ObjId>| {
             if let Ok(at) = units.binary_search_by_key(&id, |unit| unit.id)
                 && let Some(unit) = units.get(at)
-                && self::range_cm(pose, &unit.pose) <= reach
+                && within_cm(pose, &unit.pose, reach)
             {
                 found.push(id);
             }
         };
-        let cell = self.cell_of_pose(pose);
         let span = reach / u64::from(self.cell_cm.max(1)) + 1;
-        let covered = span
-            .saturating_mul(2)
-            .saturating_add(1)
-            .saturating_mul(span.saturating_mul(2).saturating_add(1));
-        let held = u64::try_from(self.of_unit.len()).unwrap_or(u64::MAX);
-        match cell {
-            Some((cx, cy)) if covered <= held => {
+        match self.cell_of_pose(pose) {
+            Some((cx, cy)) => {
                 let span = u16::try_from(span).unwrap_or(u16::MAX);
                 let x0 = cx.saturating_sub(span);
                 let y0 = cy.saturating_sub(span);
@@ -238,9 +286,9 @@ impl SpatialIndex {
                 }
                 found.sort_unstable();
             }
-            // Either the pose is off the window — there is no cell to centre a
-            // window on — or the range covers more cells than there are units.
-            _ => {
+            // The pose is off the window: there is no cell to centre a window on,
+            // and the honest answer is still every unit the range function keeps.
+            None => {
                 for (id, _) in &self.of_unit {
                     keep(*id, &mut found);
                 }
@@ -467,12 +515,13 @@ mod tests {
         let mut index = SpatialIndex::new(&arena.definition.terrain);
         index.rebuild(&arena.definition.terrain, &arena.units);
         let from = pose(500, 500);
-        // 2,000 cm reaches B exactly and not C. A reach of 2,000 over 1,000 cm cells
-        // is a span of 3, so the cell cull would walk a 7 by 7 window — more cells
-        // than this arena has units — and the unit-table branch is taken instead.
-        // The assertion is the *set*, and
+        // 2,000 cm reaches B exactly and not C. **16b cut S.2 moved the branch**:
+        // an on-window pose now always takes the cell walk, clamped to the window,
+        // so the on-window assertions exercise that branch and the two off-window
+        // ones exercise the unit-table scan. The assertion is the *set*, which is
+        // the same either way, and
         // `the_cell_window_cull_answers_what_a_brute_force_scan_answers` is what
-        // covers the other branch.
+        // walks it cell by cell against a brute-force scan.
         assert_eq!(index.in_range(&from, 2_000, &arena.units), vec![A, B]);
         assert_eq!(index.in_range(&from, 1_999, &arena.units), vec![A]);
         // Off the window there is no cell to centre the cull on, and the answer is
@@ -489,15 +538,52 @@ mod tests {
         assert_eq!(index.in_range(&from, 100_000, &arena.units), vec![A, B, C]);
     }
 
+    /// **16b cut S.2's first index fix**, pinned as the identity it rests on: the
+    /// squared test and the rooted one agree at *every* boundary, so swapping one
+    /// for the other inside [`SpatialIndex::in_range`] cannot move a candidate.
+    #[test]
+    fn the_squared_test_agrees_with_the_rooted_one_at_every_boundary() {
+        let origin = pose(0, 0);
+        // Every separation from 0 to 400 cm, against every reach from 0 to 400: the
+        // two answers are the same test written two ways, including at the exact
+        // boundary (`range_cm == reach`) and one either side of it.
+        for d in 0..=400_u32 {
+            let there = pose(i64::from(d), 0);
+            let exact = range_cm(&origin, &there);
+            for reach in 0..=400_u64 {
+                assert_eq!(
+                    within_cm(&origin, &there, reach),
+                    exact <= reach,
+                    "the squared and rooted tests disagree at d={d} reach={reach}"
+                );
+            }
+        }
+        // And off the axes, where the root floors: root 2 metres is 141 cm.
+        let diagonal = pose(100, 100);
+        assert_eq!(range_cm(&origin, &diagonal), 141);
+        assert!(within_cm(&origin, &diagonal, 141));
+        assert!(!within_cm(&origin, &diagonal, 140));
+        // The three-coordinate case, and the region frame's far edges, where both
+        // functions saturate: neither claims a unit is in reach.
+        let mut high = pose(300, 400);
+        high.z_cm = 1_200;
+        assert!(within_cm(&origin, &high, 1_300));
+        assert!(!within_cm(&origin, &high, 1_299));
+        let far = pose(i64::MAX / 2, 0);
+        assert!(!within_cm(
+            &pose(i64::MIN / 2, 0),
+            &far,
+            u64::from(u32::MAX)
+        ));
+    }
+
     #[test]
     fn the_cell_window_cull_answers_what_a_brute_force_scan_answers() {
-        // **The branch production takes.** The cell window is walked only when it
-        // covers no more cells than the arena holds units — `(2·span+1)² ≤ units` —
-        // so a reach inside one cell (span 1, nine cells) needs nine units, and the
-        // 300-unit arena of the harness takes this branch for every sensor range
-        // under three cells. Nine units on an 8 by 8 window, including the corner,
-        // so the `saturating_sub` and the `min` on the window's bounds are both
-        // exercised; the answer is checked against a scan over every unit.
+        // **The branch production takes.** 16b cut S.2: an on-window pose always
+        // takes the cell walk, so this is now the branch of *every* production cull
+        // and not only of a short one. Nine units on an 8 by 8 window, including the
+        // corner, so the `saturating_sub` and the `min` on the window's bounds are
+        // both exercised; the answer is checked against a scan over every unit.
         //
         // The poses are deliberately **not** all cell centres: two neighbours sit
         // close to the shared boundary, so a reach under one cell really does have

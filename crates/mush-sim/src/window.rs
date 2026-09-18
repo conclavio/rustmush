@@ -388,7 +388,11 @@ pub fn pose_of(w: &World, obj: ObjId) -> Option<(DomainId, Pose)> {
 pub fn participants(w: &World, domain: DomainId) -> Vec<(ObjId, Pose)> {
     raw_participants(w, domain)
         .into_iter()
-        .filter(|(obj, _)| !crate::deployed::is_deployed(w, *obj))
+        .filter(|(obj, _)| {
+            // 16b cut S.2: the one exclusion predicate, shared with every other
+            // listing site rather than re-stated here.
+            !crate::deployed::excluded(w, crate::deployed::Shown::Unit(*obj))
+        })
         .collect()
 }
 

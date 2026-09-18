@@ -15,6 +15,12 @@
 //! * [`refuse_if_deployed`] is the ONE shared helper every admission site calls.
 //! * [`UnitDeployed`] is the ONE named error they all render.
 //!
+//! **16b cut S.2** added the other half of the same index's job: [`excluded`], the
+//! ONE predicate every *listing* site calls for doc 16 §3.6's world-side exclusion.
+//! An admission site refuses a write and says which match holds the unit; a listing
+//! site says nothing at all, because a listing that explained its own omission
+//! would be the leak it exists to prevent.
+//!
 //! # Why the index is here and the record is not
 //!
 //! The durable marker lives on the unit's own record — `mush-tactics`' `unit:<obj>`
@@ -44,6 +50,8 @@ use std::collections::BTreeMap;
 use mush_core::{ObjId, World};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
+
+use crate::data::DomainId;
 
 /// **Which authority holds a unit**, as the world-side index and the durable
 /// marker both carry it.
@@ -175,6 +183,56 @@ pub fn refuse_if_deployed(w: &World, unit: ObjId) -> Result<(), UnitDeployed> {
             unit,
             match_id: mark.match_id,
             arena: mark.arena.clone(),
+        }),
+    }
+}
+
+/// **What a world-side listing is about to show**, for [`excluded`] (16b cut S.2).
+///
+/// Two kinds, because doc 16 §3.6's exclusion is about two kinds of thing — the
+/// deployed unit itself, and the domain it is mustered in — and one enum keeps them
+/// answered by one function instead of by one copy per site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    /// One object a listing, a room render or a status line would name.
+    Unit(ObjId),
+    /// One domain a window, a map frame or a domain listing would name.
+    Domain(DomainId),
+}
+
+/// **The one exclusion predicate** (16b cut S.2; doc 16 §3.6 "World-side
+/// exclusion": *while an arena holds custody, its domain is excluded from
+/// `visible_rooms`, `units_for`, the atlas `+map` frame, `look` and every world
+/// unit listing, for every viewer including staff*).
+///
+/// One function, called at every listing site, so the rule has one definition and
+/// a new listing cannot be written that quietly forgets it. It takes no viewer on
+/// purpose: the exclusion is **not** a permission check and has no staff bypass —
+/// the only view of arena state is the cockpit frame the arena builds per pilot,
+/// and a staffer who wants to see a running match uses `@arena/status`.
+///
+/// * [`Shown::Unit`] — the unit is under an arena's custody. This is
+///   [`is_deployed`] read as a *visibility* question rather than as an admission
+///   one; the two are the same test and deliberately not the same function name,
+///   because the sentences they produce are different ([`UnitDeployed`] names the
+///   match, an exclusion names nothing at all).
+/// * [`Shown::Domain`] — some deployed unit's frozen world placement is in it,
+///   which is exactly *the arena's muster domain while a match runs*. Check-out
+///   leaves each unit placed where it stood ([`crate::pose_of`] still answers for
+///   it, since only [`crate::participants`] projects it away), so the muster domain
+///   identifies itself and nothing has to be told which domain a match belongs to.
+///   The walk is over the custody index, which holds at most
+///   `match.max_slots_per_side × 2` units per match, and not over the placement
+///   graph.
+#[must_use]
+pub fn excluded(w: &World, shown: Shown) -> bool {
+    match shown {
+        Shown::Unit(unit) => mark_of(w, unit).is_some(),
+        Shown::Domain(domain) => w.module_state::<DeployedUnits>().is_some_and(|index| {
+            index
+                .by_unit
+                .keys()
+                .any(|unit| crate::pose_of(w, *unit).is_some_and(|(held, _)| held == domain))
         }),
     }
 }

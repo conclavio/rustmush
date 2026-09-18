@@ -26,7 +26,7 @@ use crate::arena::clock::Clock;
 use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{EventKind, Ledger};
-use crate::arena::perception::SensorProfile;
+use crate::arena::perception::{FrameNotice, SensorProfile};
 use crate::arena::step::FrameSlots;
 use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 
@@ -571,7 +571,8 @@ pub struct UnitState {
     /// Per-weapon ready time in arena milliseconds. **Empty until cut W**, which
     /// is what sets and reads it.
     pub ready_at_ms: BTreeMap<SmolStr, i64>,
-    /// The platform's lock. **`None` until cut S**, which mints the contact.
+    /// The platform's lock. Cut S.1 mints the contact and cut S.2's `LOCK` names
+    /// one; **`None` until cut W**, which is what gives the order its effect.
     pub lock: Option<ContactId>,
     /// Set by motion when this unit was stopped at a cell boundary during the
     /// substep just integrated, and cleared at the start of the next (doc 16
@@ -1236,6 +1237,27 @@ pub struct Arena {
     /// **The last frame each pilot was sent** (doc 16 §3.1's *latest-wins slot per
     /// pilot*), so a pulse that changed nothing a pilot can see sends nothing.
     pub last_frames: FrameSlots,
+    /// **The notices this pulse owes each platform's pilots** (16b cut S.2; doc 16
+    /// §3.6: *notices fire once per transition*), keyed by the **platform** and not
+    /// by the pilot, because doc 16 §3.7 puts the station on the tank and two
+    /// pilots in one tank hear one scope.
+    ///
+    /// Staged as the pass journals its `detected`, `classified` and `lost` events —
+    /// so a pilot's lines and the black box can never say different things — and
+    /// cleared wholesale by [`crate::arena::step::Arena::frames`] at the end of the
+    /// pulse, which bounds it at one pulse's transitions.
+    pub pending_notices: BTreeMap<ObjId, Vec<FrameNotice>>,
+    /// **Losses whose notice is being held** (16b cut S.2), `(platform, contact)`
+    /// to the arena millisecond the notice becomes due.
+    ///
+    /// This is [`FrameNotice`]'s hysteresis, and the whole of it: a loss goes in
+    /// here instead of into `pending_notices`, a re-acquisition inside the window
+    /// takes it back out and says nothing, and a sweep at the pulse's end says what
+    /// is left. It is a **view** and is deliberately not folded into the state hash
+    /// — the sweep happens at pulse boundaries, so folding it would make the hash a
+    /// function of the tempo, which is exactly what the cross-tempo property
+    /// refuses.
+    pub held_losses: BTreeMap<(ObjId, ContactId), i64>,
     /// **The state hash of every substep of the pulse just run**, in order, and
     /// cleared at the start of each pulse (doc 16 §3.1 "Determinism": *each substep
     /// produces a state hash recorded with its pulse*).
@@ -1441,6 +1463,8 @@ impl Arena {
             stop: None,
             now_ms: 0,
             last_frames: FrameSlots::new(),
+            pending_notices: BTreeMap::new(),
+            held_losses: BTreeMap::new(),
             substep_hashes: Vec::new(),
             ended: None,
             arena_cfg: arena_cfg.clone(),

@@ -594,7 +594,11 @@ async fn view_draws_the_platform_at_the_centre_of_a_grid() {
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
-    assert_eq!(units.len(), 1, "one platform, no contacts until cut S");
+    assert_eq!(
+        units.len(),
+        1,
+        "one platform and no marker: 16b cut S.2 draws one per contact, and two tanks in \n         opposite entry zones of a 2.56 km arena hold none"
+    );
     assert_eq!(
         units
             .first()
@@ -691,7 +695,7 @@ async fn the_reads_render_the_last_frame_and_the_frame_carries_doc_16_s_shape() 
     let said = rig.say(0, "contacts");
     assert!(
         said.contains("No contacts."),
-        "nothing is held until cut S: {said}"
+        "nothing is held: the two tanks open 240 cells apart and the stock sensor          reaches 60 (16b cut S.2 renders what a platform does hold): {said}"
     );
 
     let events = rig.events(0, "weaponstatus");
@@ -724,7 +728,7 @@ async fn the_reads_render_the_last_frame_and_the_frame_carries_doc_16_s_shape() 
             .and_then(serde_json::Value::as_array)
             .map(Vec::len),
         Some(0),
-        "empty until cut S"
+        "empty for want of a contact, not for want of a renderer (16b cut S.2)"
     );
     let weapons = frame
         .get("weapons")
