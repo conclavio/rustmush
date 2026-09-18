@@ -24,6 +24,14 @@
 //! see is exactly the contact and nothing more — an opaque id, a class, a bearing,
 //! a band and an age, and no name, no object number and no exact range.
 //!
+//! **16b cut W.3 added the other half of the rule**: it holds through the
+//! *shooting* as well as through the approach.
+//! [`nothing_of_the_shooting_crosses_to_the_world_or_to_the_target`] puts two
+//! rounds from the red tank into the blue one at forty metres and asks the same
+//! witnesses the same questions while it happens — and asks the **target's own
+//! pilot** too, who holds a contact on its attacker and is still told nothing at
+//! all about the round that hit it.
+//!
 //! # Why the tanks are moved before the match starts
 //!
 //! The shipped proving ground musters red at cell 6 and blue at cell 249, 2.4 km
@@ -375,11 +383,19 @@ const HUH: &str = "Huh?";
 const ALT_SCREEN: &str = "\u{1b}[?1049h";
 
 async fn ask_whole(term: &mut Term, line: &str) -> String {
-    let mark = term.mark();
-    term.send_line(line).await;
-    term.send_line(SENTINEL).await;
-    term.expect_after(mark, HUH).await;
-    strip_ansi(&term.seen[mark..])
+    for _ in 0..RETRY_BUDGET {
+        let mark = term.mark();
+        term.send_line(line).await;
+        term.send_line(SENTINEL).await;
+        // The sentinel is a parser refusal and needs no authority, but it rides
+        // the same lane: a world mid-commit answers BOTH lines with the transient
+        // and the `Huh?` never comes. That is a retry, not a failure.
+        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
+            return strip_ansi(&term.seen[mark..]);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("`{line}` never produced a whole answer")
 }
 
 /// One object's dbref, out of an `@find` listing or a `@domain` row.
@@ -869,6 +885,308 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     names_nothing(&seen, red, blue, "the web client's `look` after detection");
 
     say(&mut ada, "SIM ABORT", "aborts match").await;
+}
+
+// ---------------------------------------------------------------------------
+// The shooting (16b cut W.3)
+// ---------------------------------------------------------------------------
+
+/// The cells the two slot-1 tanks are re-posed to for the shooting case: **four
+/// cells apart** on the same road, both pointed east so the blue tank presents
+/// its rear.
+///
+/// The gap above is about the *approach*, which the test above owns; this one is
+/// about the **shot**, so the two tanks start inside the sensor's reach and the
+/// wait is for a round to leave the barrel rather than for a contact to appear.
+/// Forty metres of authored open grass is also what makes the shot land: doc 16
+/// §3.5's presented silhouette against a 3 mrad band at that range is a near
+/// certainty, so the damage this lens then goes looking for is not a coin toss.
+const RED_MUZZLE: (i64, i64) = (90, 97);
+const BLUE_MUZZLE: (i64, i64) = (94, 97);
+
+/// How many rounds the red tank puts into the blue one. Two, because doc 16
+/// §3.3's rear hull is 150 armour over 200 internals against 120 a round: two
+/// hits mark it and **cannot** destroy it, so the match is still running when the
+/// witnesses below are asked what they saw.
+const ROUNDS: usize = 2;
+
+/// Put the two tanks four cells apart on the road, nose to tail.
+async fn close_to_muzzle_range(god: &mut Term, red: u32, blue: u32, domain: u64) {
+    for (unit, (x, y)) in [(red, RED_MUZZLE), (blue, BLUE_MUZZLE)] {
+        let pose = format!(
+            "{{\"x_cm\":{},\"y_cm\":{},\"heading_mdeg\":90000}}",
+            x * 1_000 + 500,
+            y * 1_000 + 500
+        );
+        say(
+            god,
+            &format!("@spatial/place/domain #{unit}={domain},{pose}"),
+            "Placed",
+        )
+        .await;
+    }
+}
+
+/// Bring one tank's power up without moving it.
+async fn power_up(term: &mut Term) {
+    say(term, "STARTUP", "Startup sequence").await;
+    for _ in 0..RETRY_BUDGET {
+        let seen = ask(term, "STATUS", "power").await;
+        if seen.contains("power online") {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("the tank never came online");
+}
+
+/// Wait until `CONTACTS` holds something, and answer the opaque id.
+async fn first_contact(term: &mut Term) -> String {
+    for _ in 0..DRIVE_BUDGET {
+        let mark = term.mark();
+        term.send_line("CONTACTS").await;
+        if term
+            .expect_one_of_after(
+                mark,
+                &["bearing", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
+            )
+            .await
+            == 0
+        {
+            let seen = strip_ansi(&term.seen[mark..]);
+            if let Some(id) = seen
+                .split(|c: char| !c.is_ascii_hexdigit())
+                .find(|word| word.len() == 16)
+            {
+                return id.to_owned();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("nothing was ever detected")
+}
+
+/// Every word that would betray the shooting to somebody outside the cockpit that
+/// took it.
+fn says_nothing_of_the_shooting(seen: &str, contact: &str, what: &str) {
+    for leak in [contact, "Firing", "Locked on", "Locking", "round(s)"] {
+        assert!(
+            !seen.contains(leak),
+            "{what} leaked {leak:?} out of the arena:\n{seen}"
+        );
+    }
+}
+
+/// **The other half of the observer rule** (doc 16 §1 A1, §3.6; 16b cut W.3): the
+/// rule holds through the *shooting*, not only through the approach.
+///
+/// The test above proves that nothing about an **undetected** unit crosses. This
+/// one lets the red tank lock the blue one and put two rounds into it, and then
+/// asks the same witnesses the same questions while the shooting is going on:
+///
+/// * the **bystander** in the muster room, who is not in the match at all;
+/// * the **staffer**, on `look`, `+map`, `@unit/show` and `@unit/status`;
+/// * the **web client**, on the same account through the other transport;
+/// * and the **target's own pilot**, who holds a contact on its attacker and is
+///   still told nothing of the round that hit it — there is no damage or hit feed
+///   in the cockpit at all (doc 16 §5 asks for one; the frame carries none).
+///
+/// The absence assertions are only worth making if something really happened, so
+/// the last act is an abort and a staff read of the checked-in tank: a facet whose
+/// armour is below its authored maximum is the proof that two rounds landed on a
+/// unit nobody outside the arena could see being shot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
+    let server = boot("observer-fight").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let mut web = web_session(&server, "boss", GM_PASSWORD, "God").await;
+
+    let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
+    close_to_muzzle_range(&mut god, red, blue, domain).await;
+    take_off(&mut ada, &mut bo).await;
+    power_up(&mut ada).await;
+    power_up(&mut bo).await;
+
+    // Drain what the walk-in queued: a room render that arrives *after* a mark
+    // but answers a command sent *before* it would make an absence assertion fail
+    // for a reason that has nothing to do with the arena.
+    let _ = ask_whole(&mut cy, "look").await;
+    let _ = ask_whole(&mut god, "look").await;
+
+    // Everything the two watchers and the target are shown from here on.
+    let watcher_mark = cy.mark();
+    let staff_mark = god.mark();
+    let target_mark = bo.mark();
+
+    let contact = first_contact(&mut ada).await;
+    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    // The arena records the lock in its own phase 4 and the cockpit reads it back
+    // off the **next** frame, so `FIRE` before that is refused for the lock — a
+    // wait, not a failure (16b cut K.2's mirror).
+    for _ in 0..DRIVE_BUDGET {
+        if ask_whole(&mut ada, "WEAPONSTATUS")
+            .await
+            .contains("Locked on")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // One round at a time, paced by the cockpit's own count: `FIRE` pre-checks
+    // against the **last frame**, so a second one sent before the frame carrying
+    // the first shot's cycle arrives is accepted here and dropped by the arena.
+    // Waiting for the round to disappear from the table is what makes each pass of
+    // this loop one round that really left the barrel.
+    let mut spent = String::new();
+    for round in 1..=ROUNDS {
+        for _ in 0..RETRY_BUDGET {
+            let mark = ada.mark();
+            ada.send_line("FIRE").await;
+            if ada
+                .expect_one_of_after(
+                    mark,
+                    &[
+                        "Firing cannon",
+                        "Still cycling",
+                        "No lock",
+                        COMMIT_PENDING,
+                        CONTROL_UNKNOWN,
+                    ],
+                )
+                .await
+                == 0
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let want = format!("{} of 40 round(s)", 40 - round);
+        spent = String::new();
+        for _ in 0..DRIVE_BUDGET {
+            let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
+            if seen.contains(&want) {
+                spent = seen;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(
+            !spent.is_empty(),
+            "round {round} never left the barrel:
+{}",
+            strip_ansi(&ada.seen[ada.seen.len().saturating_sub(3_000)..])
+        );
+    }
+    // The shooter's own cockpit is the one place the rounds are visible.
+    assert!(
+        spent.contains(&format!("{} of 40 round(s)", 40 - ROUNDS)),
+        "the red tank really fired: {spent}"
+    );
+
+    // ---- the bystander -------------------------------------------------
+    let seen = ask_whole(&mut cy, "look").await;
+    assert!(
+        seen.contains(MUSTER),
+        "the bystander really looked:\n{seen}"
+    );
+    names_nothing(&seen, red, blue, "the bystander's `look` mid-fight");
+    says_nothing_of_the_shooting(&seen, &contact, "the bystander's `look` mid-fight");
+    says_nothing_of_the_shooting(
+        &strip_ansi(&cy.seen[watcher_mark..]),
+        &contact,
+        "the bystander's whole transcript",
+    );
+
+    // ---- the staffer, on every read the world offers -------------------
+    let seen = ask_whole(&mut god, "look").await;
+    names_nothing(&seen, red, blue, "the staffer's `look` mid-fight");
+    let seen = ask(&mut god, "+map", "not on a map").await;
+    names_nothing(&seen, red, blue, "the staffer's `+map` mid-fight");
+    says_nothing_of_the_shooting(&seen, &contact, "the staffer's `+map` mid-fight");
+    let seen = ask(&mut god, &format!("@unit/show #{blue}"), NOT_A_UNIT).await;
+    assert!(seen.contains(NOT_A_UNIT), "{seen}");
+    let seen = ask(&mut god, &format!("@unit/status #{blue}"), NO_STATION).await;
+    assert!(seen.contains(NO_STATION), "{seen}");
+    says_nothing_of_the_shooting(
+        &strip_ansi(&god.seen[staff_mark..]),
+        &contact,
+        "the staffer's whole transcript",
+    );
+
+    // ---- the same account, through the web client ----------------------
+    let seen = look_web(&mut web).await;
+    assert!(
+        seen.contains(MUSTER),
+        "the web client really looked:\n{seen}"
+    );
+    names_nothing(&seen, red, blue, "the web client's `look` mid-fight");
+    says_nothing_of_the_shooting(&seen, &contact, "the web client's `look` mid-fight");
+    let seen = ask_web(&mut web, &format!("@unit/show #{blue}"), NOT_A_UNIT).await;
+    assert!(seen.contains(NOT_A_UNIT), "{seen}");
+
+    // ---- the target's own pilot ----------------------------------------
+    //
+    // It holds a contact on its attacker — forty metres of open grass is well
+    // inside the stock sensor — and that is **all** it holds: no name, no object
+    // number, and not one word about the two rounds that hit it.
+    let seen = ask(&mut bo, "CONTACTS", "bearing").await;
+    names_nothing(&seen, red, blue, "the target's `CONTACTS`");
+    let target = strip_ansi(&bo.seen[target_mark..]);
+    for leak in [
+        RED_TANK.to_string(),
+        format!("#{red}"),
+        contact.clone(),
+        "Firing".to_string(),
+        "Locked on".to_string(),
+        "to hit".to_string(),
+        "damage".to_string(),
+    ] {
+        assert!(
+            !target.contains(&leak),
+            "the target was told {leak:?} about the round that hit it:\n{target}"
+        );
+    }
+
+    // ---- and it really was hit -----------------------------------------
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.expect("Its units are checked in.").await;
+    let mut marked = String::new();
+    for _ in 0..DRIVE_BUDGET {
+        let seen = ask_whole(&mut god, &format!("@unit/show #{blue}")).await;
+        if damaged_facet(&seen) {
+            marked = seen;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        !marked.is_empty(),
+        "the checked-in tank carries no mark of the two rounds that hit it:\n{}",
+        strip_ansi(&god.seen[god.seen.len().saturating_sub(3_000)..])
+    );
+}
+
+/// Whether any facet's armour cell in a `@unit/show` listing is below its
+/// authored maximum — the world-side mark of a round that landed.
+fn damaged_facet(listing: &str) -> bool {
+    listing.lines().any(|line| {
+        let Some(rest) = line.split_once("cell facet/") else {
+            return false;
+        };
+        let Some((_, values)) = rest.1.split_once(": ") else {
+            return false;
+        };
+        let Some((current, max)) = values.trim().split_once('/') else {
+            return false;
+        };
+        match (current.parse::<i64>(), max.parse::<i64>()) {
+            (Ok(current), Ok(max)) => current < max,
+            _ => false,
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------

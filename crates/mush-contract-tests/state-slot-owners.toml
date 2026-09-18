@@ -296,6 +296,20 @@ and take their stations before either of them can lock anything and fire.
 """
 
 [[site]]
+path = "crates/mushd/tests/arena_story.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut W.3's story test (doc 16 §1's A1), performing the same post-composition
+wiring the four rows above perform and for the same reason, end to end: two
+pilots and a bystander walk in through the front door, and both a simulator slot
+and the cockpit focus belong to an ACCOUNT. The map `mush_server::boot` hydrates
+is boot-time and immutable, which is also why this lens seeds its accounts before
+the engine is built rather than creating them at the welcome screen.
+"""
+
+[[site]]
 path = "crates/mush-propagation/tests/e7c11.rs"
 accessor = "World::module_state_mut"
 slot = "FocusState"
