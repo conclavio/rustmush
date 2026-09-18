@@ -59,8 +59,8 @@ pub mod sim;
 mod verbs;
 
 pub use arena_def::{
-    ARENA_CELL_CM, ARENA_CELLS, PROVING_GROUND, STAND_IN, definition_for, stock_definition,
-    tracked_rules,
+    ARENA_CELL_CM, ARENA_CELLS, PROVING_GROUND, STAND_IN, definition_for, resolution_for,
+    stock_definition, stock_resolution, tracked_rules, unit_profile,
 };
 pub(crate) use centre::record_roster;
 pub use centre::{
@@ -91,6 +91,7 @@ use std::collections::BTreeMap;
 use mush_core::{Ctx, ObjId};
 use smol_str::SmolStr;
 
+use crate::arena::damage::UnitReturn;
 use crate::arena::state::{CustodyOut, CustodyUnit, EndReason, MatchEnd, Pilot, StopReason, Team};
 use crate::arena_bridge::{ArenaRegistry, OpenMatchError, match_log_id};
 use crate::arena_task::MatchId;
@@ -445,6 +446,10 @@ pub fn start(
                 sensor_height_cm: arena_def::sensor_height_cm(&catalog, &cells),
                 sensor: arena_def::sensor_profile(&catalog, &cells),
                 weapons: arena_def::weapon_summaries(&catalog, &cells),
+                // **16b cut W.2**: what the unit presents and what a hit may
+                // strike, and the gunnery the `PilotProfile` seam gives its shots.
+                profile: arena_def::unit_profile(&catalog, &cells),
+                gunnery: gunnery_of(ctx, *unit),
                 unit: cells,
             });
             for (pilot, station) in seated_pilots(ctx, *unit) {
@@ -517,10 +522,12 @@ pub fn start(
     }
 
     // (4) Open. (5) And undo (3) if it refuses.
+    let resolution = arena_def::resolution_for(&catalog);
     let custody = CustodyOut {
         definition,
         units: custody_units,
         pilots,
+        resolution,
         seed,
     };
     if let Err(error) =
@@ -566,6 +573,27 @@ fn roll_back(ctx: &mut Ctx<'_>, match_id: MatchId, units: &[ObjId]) {
             );
         }
     }
+}
+
+/// **The gunnery rating one unit's shots are resolved at** (16b cut W.2; doc 16
+/// §3.5 step 2's `PilotProfile` seam), 1 to 5.
+///
+/// The **best** of the ratings its seated pilots carry, off their character sheets
+/// through [`crate::sheet::PilotProfile`] — a tank with a gunner and a driver aboard
+/// shoots with the gunner's hand, and asking which seat is nominally the gun would
+/// be a rule about stations that doc 16 does not make (§3.7 puts every station on
+/// the tank and lets one pilot hold all three channels).
+///
+/// [`crate::arena::resolution::STOCK_GUNNERY`] for an empty tank, for a pilot with
+/// no sheet, and for a world with no sheet module composed: doc 16 §3.5 says *every
+/// stock rating is 1*, and a resolution that stopped to ask staff for a sheet would
+/// be a pulse that could not run.
+fn gunnery_of(ctx: &Ctx<'_>, unit: ObjId) -> u8 {
+    seated_pilots(ctx, unit)
+        .into_iter()
+        .map(|(pilot, _)| crate::sheet::profile_of(ctx.w, pilot).gunnery)
+        .max()
+        .unwrap_or(crate::arena::resolution::STOCK_GUNNERY)
 }
 
 /// Every actor seated on a station of `unit`, with the station's id.
@@ -618,46 +646,159 @@ pub fn seed_for(match_id: MatchId, world_now: i64) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// **What the arena returned, per unit** — doc 16 §3.1's seventh message, and
-/// the seam cut W fills.
+/// the seam **16b cut W.2** filled.
 ///
 /// Doc 16 §3.1's seam carries `CustodyIn { units[{cells, final_pose, outcome}],
-/// result, ledger_digest, reason }`. Cut T.2's [`crate::arena_task::ArenaOut`]
-/// carries the last three and **not** the per-unit half, deliberately: there is
-/// no damage model yet, so no cell inside a running arena can have changed, and
-/// the only per-unit fact the arena has produced is a **pose**. So this cut
-/// builds the message on the world side out of the two places the arena's own
-/// poses have already arrived — its ledger's `position_summary` events and its
-/// cockpit frames (see [`MatchRecord::last_pose`]) — and leaves `cells` empty.
+/// result, ledger_digest, reason }`. Cut T.2 could carry only the last three: there
+/// was no damage model, so no cell inside a running arena could have changed, and
+/// the one per-unit fact the arena produced was a pose — which it read back off the
+/// ledger's `position_summary` events and the cockpit frames
+/// ([`MatchRecord::last_pose`]).
 ///
-/// Cut W widens `ArenaOut::Ended` to carry the units, and [`custody_in`] below
-/// becomes a decode of that message instead of a read of the record. Nothing
-/// downstream of it changes: [`finish`] already consumes exactly this shape.
+/// Cut W.2 widened [`crate::arena_task::ArenaOut::Ended`] to carry
+/// [`UnitReturn`] per unit, and this is the decode of that: the cells become one
+/// [`mush_tactics::UnitMutationPlan`] against the check-out snapshot, the pose
+/// becomes the four integers, and the outcome and the two counters become the result
+/// record's per-unit row (doc 16 §4). `last_pose` is still the fallback for a unit
+/// the arena's own message did not name.
 #[derive(Clone, Debug, Default)]
 pub struct CustodyIn {
     /// Per unit: the plan to apply, or `None` to restore the check-out snapshot
-    /// (a `Void`, or — until cut W — every ordinary end, because no cell moved).
+    /// (a `Void`, or a unit whose cells the match never moved).
     pub cells: BTreeMap<ObjId, Option<mush_tactics::UnitMutationPlan>>,
     /// Per unit: where the arena left it, as the four integers of doc 16 §3.2.
     /// Absent for a unit the arena never reported, and for every unit on a
     /// `Void`, which commits nothing the arena derived.
     pub poses: BTreeMap<ObjId, PoseNumbers>,
+    /// **Per unit: what became of it, and its two counters** (16b cut W.2; doc 16
+    /// §4's per-unit row). Absent on a `Void`, where nothing the arena derived may
+    /// be committed — including a claim that a tank was destroyed.
+    pub outcomes: BTreeMap<ObjId, (UnitOutcome, u32, u32)>,
 }
 
 /// Build the check-in message for one ended match (see [`CustodyIn`]).
 ///
-/// `void` is doc 16 §3.1's fail-closed case: a panic, a stall or a ledger
-/// overflow returns **nothing** — no cell and no pose — and every unit goes back
-/// to its check-out snapshot.
+/// `returned` is what the arena handed over with its end; `void` is doc 16 §3.1's
+/// fail-closed case — a panic, a stall or a ledger overflow returns **nothing**, no
+/// cell, no pose and no outcome, and every unit goes back to its check-out snapshot.
+///
+/// The plan is a **diff**, [`returned_plan`], between the unit the world still holds
+/// and the unit the arena hands back. That is the honest shape: the world's unit was
+/// frozen for the length of the match (the `deployed` marker refuses every ordinary
+/// mutation), so the two differ in exactly what the arena changed, and a diff cannot
+/// carry a cell the arena never touched.
 #[must_use]
-pub fn custody_in(record: &MatchRecord, void: bool) -> CustodyIn {
+pub fn custody_in(
+    ctx: &Ctx<'_>,
+    record: &MatchRecord,
+    returned: &[UnitReturn],
+    void: bool,
+) -> CustodyIn {
     let mut message = CustodyIn::default();
     for unit in record.units() {
         message.cells.insert(unit, None);
-        if !void && let Some(numbers) = record.last_pose.get(&unit) {
-            message.poses.insert(unit, *numbers);
+        if void {
+            continue;
+        }
+        match returned.iter().find(|back| back.unit == unit) {
+            Some(back) => {
+                if let Some(held) = mush_tactics::module::unit_of(ctx.w, unit)
+                    && let Some(plan) = returned_plan(held, &back.cells)
+                {
+                    message.cells.insert(unit, Some(plan));
+                }
+                message.poses.insert(unit, PoseNumbers::of(&back.pose));
+                let outcome = if back.wreck {
+                    UnitOutcome::Destroyed
+                } else if back.disabled {
+                    UnitOutcome::Disabled
+                } else {
+                    UnitOutcome::Intact
+                };
+                message
+                    .outcomes
+                    .insert(unit, (outcome, back.shots, back.hits));
+            }
+            // A unit the arena's message did not name — an `Ended` from a build
+            // that carried none, or a match voided before it opened. The poses the
+            // world saw on the feed are still the arena's own numbers.
+            None => {
+                if let Some(numbers) = record.last_pose.get(&unit) {
+                    message.poses.insert(unit, *numbers);
+                }
+            }
         }
     }
     message
+}
+
+/// **The plan that turns `held` into `arena`** (16b cut W.2), or `None` when the two
+/// already agree.
+///
+/// Doc 16 §3.1's check-in applies *the returned cells as one `UnitMutationPlan`
+/// through `apply`*, and this is how a whole returned unit becomes one: every scalar
+/// cell whose value moved is a `SetCell`, every section whose condition moved is a
+/// `SetSectionCondition`, and every capability the arena revoked is a
+/// `RevokeCapability`. Absolute `SetCell` rather than `AdjustCell` on purpose — the
+/// arena's value is the truth and a delta would be one more thing that could be
+/// applied twice.
+///
+/// **What it deliberately cannot carry**: a cell or a section the returned unit has
+/// and the held one does not, a capability the arena *granted*, or any structural
+/// change. Nothing in the arena produces one — damage moves cells, conditions and
+/// revocations and nothing else (doc 16 §3.5) — and a check-in that could restructure
+/// a persisted unit is a check-in that could restructure it wrongly.
+#[must_use]
+pub fn returned_plan(
+    held: &mush_tactics::TacticalUnit,
+    arena: &mush_tactics::TacticalUnit,
+) -> Option<mush_tactics::UnitMutationPlan> {
+    let mut ops: Vec<mush_tactics::UnitMutationOp> = Vec::new();
+    for (addr, cell) in arena.cells() {
+        if held
+            .cell(addr)
+            .is_some_and(|before| before.current != cell.current)
+        {
+            ops.push(mush_tactics::UnitMutationOp::SetCell {
+                addr: addr.clone(),
+                value: cell.current,
+            });
+        }
+    }
+    for (id, section) in arena.sections() {
+        if held
+            .section(id)
+            .is_some_and(|before| before.condition != section.condition)
+        {
+            ops.push(mush_tactics::UnitMutationOp::SetSectionCondition {
+                section: id.clone(),
+                condition: section.condition.clone(),
+            });
+        }
+    }
+    for key in held.capabilities() {
+        if arena.capability(key).is_none() {
+            ops.push(mush_tactics::UnitMutationOp::RevokeCapability { key: key.clone() });
+        }
+    }
+    if ops.is_empty() {
+        return None;
+    }
+    match mush_tactics::UnitMutationPlan::new(ops, None, Some(SmolStr::new_static("arena:checkin")))
+    {
+        Ok(plan) => Some(plan),
+        Err(error) => {
+            // The ceiling is M32's `MAX_UNIT_MUTATION_OPERATIONS` and the stock tank
+            // is nowhere near it; a unit with enough cells to reach it comes back
+            // restored from its snapshot rather than half-updated, which is the same
+            // fail-closed answer a `Void` gets.
+            tracing::error!(
+                %error,
+                "tacsim: the returned cells would not fit one plan; the unit is restored instead"
+            );
+            None
+        }
+    }
 }
 
 /// **Check one match in, once** (doc 16 §3.1 "Custody", check-in).
@@ -677,7 +818,13 @@ pub fn custody_in(record: &MatchRecord, void: bool) -> CustodyIn {
 /// **no arena-derived cell is committed**. The pose is restored too, for the
 /// same reason: the arena's last frame is a fact the faulted pulse could have
 /// produced.
-pub fn finish(ctx: &mut Ctx<'_>, match_id: MatchId, end: MatchEnd, ledger_digest: String) -> bool {
+pub fn finish(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    end: MatchEnd,
+    ledger_digest: String,
+    returned: &[UnitReturn],
+) -> bool {
     let Some(record) = ctx
         .w
         .module_state::<MatchBook>()
@@ -693,7 +840,7 @@ pub fn finish(ctx: &mut Ctx<'_>, match_id: MatchId, end: MatchEnd, ledger_digest
     // they are one thing.
     let void = matches!(end.reason, EndReason::Void | EndReason::LedgerOverflow);
     // Doc 16 §3.1's seventh message, built once and consumed below.
-    let returned = custody_in(&record, void);
+    let returned = custody_in(ctx, &record, returned, void);
     let mut results: Vec<UnitResult> = Vec::new();
     for unit in record.units() {
         // Treaty ruling 3: re-validate. An object destroyed while the match ran
@@ -709,9 +856,9 @@ pub fn finish(ctx: &mut Ctx<'_>, match_id: MatchId, end: MatchEnd, ledger_digest
             results.push(UnitResult::lost(unit));
             continue;
         }
-        // Cut T.3 has no damage model, so the plan is always `None` and the
-        // restore path and the ordinary path commit the same cells. Cut W fills
-        // `CustodyIn::cells` and nothing else here changes.
+        // **16b cut W.2** fills `CustodyIn::cells`: the plan is the diff between the
+        // unit the world still holds and the unit the arena hands back, and `None`
+        // is either a void or a unit the match never marked.
         let plan = returned.cells.get(&unit).and_then(Option::as_ref);
         let checked_in = match mush_tactics::custody::check_in(ctx, unit, plan) {
             Ok(checked_in) => checked_in,
@@ -752,7 +899,22 @@ pub fn finish(ctx: &mut Ctx<'_>, match_id: MatchId, end: MatchEnd, ledger_digest
             );
         }
         release_seat(ctx, unit);
-        results.push(UnitResult::intact(unit));
+        // **16b cut W.2**: doc 16 §4's per-unit row — what became of it and its two
+        // counters, off the arena's own message. A unit the message did not name, and
+        // every unit on a void, comes back `intact` with no counters, because that is
+        // what the world is entitled to say about it.
+        let (outcome, shots, hits) =
+            returned
+                .outcomes
+                .get(&unit)
+                .copied()
+                .unwrap_or((UnitOutcome::Intact, 0, 0));
+        results.push(UnitResult {
+            unit: unit.0,
+            outcome,
+            shots,
+            hits,
+        });
     }
 
     // The registry's rows go last: `untrack` is what frees the epoch mirror and
@@ -882,6 +1044,9 @@ pub fn abort(ctx: &mut Ctx<'_>, match_id: MatchId, reason: StopReason) -> bool {
     }
     // No task: the world is the only thing left holding the match, so end it
     // here rather than leaving units deployed to nothing.
+    // No units come back with it: there is no arena to return them, so every one
+    // of them is restored from its check-out snapshot (doc 16 §3.1's fail-closed
+    // read, the same one a void takes).
     finish(
         ctx,
         match_id,
@@ -890,6 +1055,7 @@ pub fn abort(ctx: &mut Ctx<'_>, match_id: MatchId, reason: StopReason) -> bool {
             t_ms: 0,
         },
         String::new(),
+        &[],
     )
 }
 

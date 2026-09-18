@@ -80,28 +80,63 @@
 //! tempo signals A.1's clock left `false`, and [`step::Frame::lock`] and
 //! [`step::Frame::weapons`], which `WEAPONSTATUS` renders.
 //!
-//! **It draws nothing.** Doc 16 §3.5's `hit`, `facet` and `burst` labels, the five
-//! resolution steps and the re-validation at impact are cut W.2's; until then an
-//! arriving shot journals `impact` and a placeholder `miss`
-//! ([`weapons::NOT_RESOLVED`]).
+//! # Cut W.2: the resolution, the damage, and the end of a match
 //!
-//! What is still not here, and whose it is: the resolution and the damage are cut
-//! W.2's and W.3's, and the task, the inbox, the egress, the timer and the unwind
-//! boundary are cut T's.
+//! [`resolution`] is doc 16 §3.5's five steps — the silhouette the target presents
+//! toward the shooter, the error cone the four weighted terms widen, the curve that
+//! turns their ratio into a per-mille probability, the draw that compares against
+//! it, and the number the cockpit shows before any of it. [`damage`] is what a round
+//! does when it arrives: the four re-validations and their named reasons, the facet
+//! draw, the armour and the overflow, the consequences, the wreck, and doc 16
+//! §3.8's team elimination.
+//!
+//! Between them they fill the last of the ledger kinds A.1 reserved
+//! ([`ledger::EventKind::Hit`], [`ledger::EventKind::SectionDestroyed`],
+//! [`ledger::EventKind::UnitDisabled`], [`ledger::EventKind::UnitDestroyed`]), the
+//! three draw labels doc 16 §3.5 pinned and nothing had yet read (`hit`, `facet`,
+//! `burst`), and the per-unit half of doc 16 §3.1's seventh seam message
+//! ([`damage::UnitReturn`]) that cut T.3 left empty.
+//!
+//! **Where a match ends.** Doc 16 §3.8's team elimination is settled inside the
+//! **substep** the last unit of a side went out of action in ([`step`]'s own note
+//! says why): a wreck is applied at a due event's own arena timestamp, so the moment
+//! a side was eliminated is a fact of arena time, and a `match_ended` stamped at the
+//! pulse boundary instead would carry a different timestamp at every cadence — which
+//! is exactly what the cross-tempo property forbids. A substep that ends the match
+//! ends the pulse with it, and phase 4 resolves nothing afterwards.
+//!
+//! Two dependencies outside this tree, both deliberate. `mush_tactics::apply` is the
+//! **only** way a unit's cells move (D-16-6): one
+//! [`mush_tactics::UnitMutationPlan`] per impact, refuse-never-clamp, and it is a
+//! pure library call with no store, no task and no world — which is why the no-I/O
+//! gate still holds. And `crate::definitions::resolution::ResolutionDef` crosses the
+//! seam whole rather than in a copy of its own, because its `hit_permille` *is* doc
+//! 16 §3.5 step 3's interpolation and a second copy of a curve walk is a second
+//! answer waiting to happen.
+//!
+//! What is still not here, and whose it is: the story test over real SSH is cut
+//! W.3's, the reflex controller is cut N's, and the task, the inbox, the egress, the
+//! timer and the unwind boundary are cut T's.
 
 pub mod clock;
+pub mod damage;
 pub mod hash;
 pub mod index;
 pub mod intents;
 pub mod ledger;
 pub mod motion;
 pub mod perception;
+pub mod resolution;
 pub mod rng;
 pub mod state;
 pub mod step;
 pub mod weapons;
 
 pub use clock::{Clock, MIN_SUBSTEP_MS, Tempo, TempoSignals, substep_ms, substeps};
+pub use damage::{
+    BLOCKED, COVER, DISPERSION, HULL_SECTION, MISS_REASONS, MOVED, REFUSED, TARGET_GONE, WRECK,
+    WRECK_CONDITION, is_wreck,
+};
 pub use hash::state_hash;
 pub use index::{SpatialIndex, range_cm};
 pub use intents::{
@@ -114,6 +149,9 @@ pub use perception::{
     FULL_SIGNATURE_PERMILLE, FrameContact, PerceptionCounters, SensorProfile, SignatureFactor,
     bearing_mdeg, contact_refusal, sees,
 };
+pub use resolution::{
+    BandProfile, Consequence, DIRECT_BANDS, Resolution, SectionProfile, UnitProfile, facet_band,
+};
 pub use rng::{DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_permille};
 pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, Classification, ContactId,
@@ -122,7 +160,7 @@ pub use state::{
     ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules, UnitState, WeaponSummary,
 };
 pub use step::{Frame, FrameSlots, StepOutput};
-pub use weapons::{FrameBand, FrameWeapon, NOT_RESOLVED, Shot, WeaponBand};
+pub use weapons::{FrameBand, FrameWeapon, Shot, WeaponBand};
 
 /// The fixtures every module's unit tests share: a window, a pose, a stock tank
 /// and a one-call [`Arena`].
@@ -145,11 +183,13 @@ pub(crate) mod test_support {
     use smol_str::SmolStr;
 
     use crate::arena::perception::{SensorProfile, SignatureFactor};
+    use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
     use crate::arena::state::{
-        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, Pilot, Team,
-        TerrainCell, TrackedRules, WeaponSummary,
+        Arena, ArenaDefinition, ArenaTerrain, CustodyOut, CustodyUnit, EntryZone, Pilot, Side,
+        Team, TerrainCell, TrackedRules, WeaponSummary,
     };
     use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
+    use crate::definitions::resolution::ResolutionDef;
 
     /// The window every unit test lays down: 8 by 8 cells of 1,000 cm, all
     /// passable ground at cost 100.
@@ -270,6 +310,8 @@ pub(crate) mod test_support {
             sensor_height_cm: 150,
             sensor: None,
             weapons: Vec::new(),
+            profile: UnitProfile::default(),
+            gunnery: 0,
             unit: tactical_unit(id),
         }
     }
@@ -345,11 +387,18 @@ pub(crate) mod test_support {
                 },
             ],
             count_per_load: 40,
+            // 16b cut W.2: `content/ammunition/he_105.json`'s own figure, which is
+            // what makes four rounds through a 400 cm facet and one more through
+            // 200 internals the arithmetic every damage test reads.
+            damage: 120,
+            mount_section: SmolStr::new("turret"),
         }
     }
 
     /// A tank that sees and shoots: [`tank`] with the shipped sensor and the
-    /// shipped cannon.
+    /// shipped cannon, and **no** silhouette or facet table — which is cut A's and
+    /// cut S's arena exactly: it can fire, and every shot resolves at zero because
+    /// there is nothing authored for a round to strike.
     pub(crate) fn scout(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         CustodyUnit {
             sensor: Some(visual()),
@@ -358,12 +407,229 @@ pub(crate) mod test_support {
         }
     }
 
+    /// **The stock tank's structure**, as `content/units/line_tank.json` authors it
+    /// (16b cut W.2): five sections with their armour and internals, the five facet
+    /// bands with their silhouettes and weights, and the consequences.
+    ///
+    /// Close to the content and deliberately not loaded from it: the authored numbers
+    /// are cut C's and a unit test that read the pack would be asserting the content
+    /// rather than the arithmetic. What it is exact about is the *shape* — a
+    /// front-heavy hull, two tracks with one facet each, an engine struck through the
+    /// hull's rear, a turret whose loss takes the weapons — which is what damage
+    /// reads. `crates/tacsim/tests/resolution.rs` pins the figures below equal to the
+    /// shipped pack, so the two cannot drift apart unnoticed.
+    pub(crate) fn line_tank_unit(id: ObjId) -> TacticalUnit {
+        let facet = |name: &str, armor: i64| FacetSpec {
+            id: FacetId::new(name).expect("a canonical facet"),
+            cells: vec![CellSpec {
+                id: mush_tactics::CellId::new("armor").expect("a cell"),
+                min: 0,
+                max: armor,
+                init: armor,
+            }],
+        };
+        let section = |name: &str, facets: Vec<FacetSpec>, internals: i64| SectionSpec {
+            id: SectionId::new(name).expect("a canonical section"),
+            condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+            facets,
+            slots: Vec::new(),
+            cells: vec![CellSpec {
+                id: mush_tactics::CellId::new("internals").expect("a cell"),
+                min: 0,
+                max: internals,
+                init: internals,
+            }],
+        };
+        let component =
+            |name: &str, section: &str, cells: Vec<CellSpec>| mush_tactics::ComponentSpec {
+                id: mush_tactics::ComponentId::new(name).expect("a component"),
+                definition: dref("component", &format!("tacsim.unit.line_tank.{name}")),
+                install: mush_tactics::InstallPoint::Section(
+                    SectionId::new(section).expect("a canonical section"),
+                ),
+                condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+                cells,
+                asset: None,
+            };
+        let spec = UnitSpec {
+            definition: dref("unit", "tacsim.unit.line_tank"),
+            sections: vec![
+                section(
+                    "hull",
+                    vec![
+                        facet("front", 400),
+                        facet("left", 250),
+                        facet("right", 250),
+                        facet("rear", 150),
+                        facet("top", 100),
+                    ],
+                    200,
+                ),
+                section(
+                    "turret",
+                    vec![
+                        facet("front", 350),
+                        facet("left", 220),
+                        facet("right", 220),
+                        facet("rear", 140),
+                    ],
+                    150,
+                ),
+                section("left_track", vec![facet("left", 120)], 100),
+                section("right_track", vec![facet("right", 120)], 100),
+                section("engine", Vec::new(), 120),
+            ],
+            unit_cells: Vec::new(),
+            components: vec![
+                component(
+                    "cannon",
+                    "turret",
+                    vec![
+                        CellSpec {
+                            id: mush_tactics::CellId::new("ammo").expect("a cell"),
+                            min: 0,
+                            max: 40,
+                            init: 40,
+                        },
+                        CellSpec {
+                            id: mush_tactics::CellId::new("ready_at_ms").expect("a cell"),
+                            min: 0,
+                            max: 3_600_000,
+                            init: 0,
+                        },
+                    ],
+                ),
+                component(
+                    "visual_sensor",
+                    "turret",
+                    vec![CellSpec {
+                        id: mush_tactics::CellId::new("condition").expect("a cell"),
+                        min: 0,
+                        max: 100,
+                        init: 100,
+                    }],
+                ),
+            ],
+            capabilities: vec![mush_tactics::CapabilityInit {
+                key: mush_tactics::CapabilityKey {
+                    id: mush_tactics::CapabilityId::new("tacsim.power").expect("a capability"),
+                    source: None,
+                },
+                rules: rules(),
+            }],
+            mobility: None,
+            rules: rules(),
+        };
+        TacticalUnit::from_spec(&spec, id).expect("the stock tank")
+    }
+
+    /// The stock tank's own facet table and silhouettes, as the arena carries them
+    /// (`content/units/line_tank.json`).
+    pub(crate) fn line_tank_profile() -> UnitProfile {
+        let band = |name: &str, width: u32, height: u32, sections: &[(&str, u16)]| BandProfile {
+            band: SmolStr::new(name),
+            width_cm: width,
+            height_cm: height,
+            sections: sections
+                .iter()
+                .map(|(section, weight)| (SmolStr::new(*section), *weight))
+                .collect(),
+        };
+        let section =
+            |name: &str, facets: &[&str], consequences: Vec<Consequence>| SectionProfile {
+                id: SmolStr::new(name),
+                facets: facets.iter().map(|facet| SmolStr::new(*facet)).collect(),
+                consequences,
+                struck_through: None,
+            };
+        UnitProfile {
+            bands: vec![
+                band("front", 350, 250, &[("hull", 50), ("turret", 50)]),
+                band(
+                    "left",
+                    700,
+                    250,
+                    &[("hull", 40), ("left_track", 30), ("turret", 30)],
+                ),
+                band(
+                    "right",
+                    700,
+                    250,
+                    &[("hull", 40), ("right_track", 30), ("turret", 30)],
+                ),
+                band(
+                    "rear",
+                    350,
+                    250,
+                    &[("hull", 40), ("engine", 30), ("turret", 30)],
+                ),
+                band("top", 700, 350, &[("hull", 50), ("turret", 50)]),
+            ],
+            sections: vec![
+                section(
+                    "hull",
+                    &["front", "left", "right", "rear", "top"],
+                    vec![Consequence::DestroyUnit],
+                ),
+                section(
+                    "turret",
+                    &["front", "left", "right", "rear"],
+                    vec![Consequence::RemoveWeapons {
+                        section: SmolStr::new("turret"),
+                    }],
+                ),
+                section(
+                    "left_track",
+                    &["left"],
+                    vec![
+                        Consequence::Slow { percent: 50 },
+                        Consequence::NoTurnToward { side: Side::Left },
+                    ],
+                ),
+                section(
+                    "right_track",
+                    &["right"],
+                    vec![
+                        Consequence::Slow { percent: 50 },
+                        Consequence::NoTurnToward { side: Side::Right },
+                    ],
+                ),
+                SectionProfile {
+                    id: SmolStr::new("engine"),
+                    facets: Vec::new(),
+                    consequences: vec![Consequence::DisableMotion],
+                    struck_through: Some((SmolStr::new("hull"), SmolStr::new("rear"))),
+                },
+            ],
+        }
+    }
+
+    /// **The stock tank**, whole: the sight, the cannon, the structure and the facet
+    /// table — the fixture every damage test fights with.
+    pub(crate) fn line_tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
+        CustodyUnit {
+            sensor: Some(visual()),
+            weapons: vec![cannon()],
+            profile: line_tank_profile(),
+            unit: line_tank_unit(id),
+            ..tank(id, team, pose)
+        }
+    }
+
+    /// **The shipped resolution table**, as the arena carries it
+    /// (`content/resolution.json`, pinned equal to it by
+    /// `crates/tacsim/tests/resolution.rs`).
+    pub(crate) fn resolution() -> ResolutionDef {
+        crate::match_::stock_resolution()
+    }
+
     /// A check-out message over the test window with seed `2350`.
     pub(crate) fn custody(units: Vec<CustodyUnit>, pilots: Vec<Pilot>) -> CustodyOut {
         CustodyOut {
             definition: definition(),
             units,
             pilots,
+            resolution: resolution(),
             seed: 2350,
         }
     }
@@ -404,6 +670,7 @@ pub(crate) mod test_support {
                 definition,
                 units,
                 pilots: Vec::new(),
+                resolution: resolution(),
                 seed: 2_350,
             },
             &ArenaConfig::default(),

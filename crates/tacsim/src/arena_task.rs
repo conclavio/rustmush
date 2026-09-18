@@ -57,6 +57,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use crate::arena::damage::UnitReturn;
 use crate::arena::intents::{Control, Intent};
 use crate::arena::ledger::LedgerChunk;
 use crate::arena::state::{Arena, ArenaError, CustodyOut, EndReason, MatchEnd, StopReason};
@@ -134,6 +135,15 @@ pub enum ArenaOut {
         /// The SHA-256 of every ledger byte the match streamed, for the result
         /// record (doc 16 §4).
         digest: [u8; 32],
+        /// **Every unit, as the check-in takes it back** (16b cut W.2): its cells,
+        /// its final pose, what became of it and its two counters — doc 16 §3.1's
+        /// `CustodyIn { units[{cells, final_pose, outcome}] }`, which cut T.2 left
+        /// empty because there was no damage model to fill it.
+        ///
+        /// It rides the **end** and not a message of its own: check-in happens once,
+        /// at the end, and a unit whose cells arrived separately would be a unit the
+        /// world could commit before it knew whether the match was void.
+        units: Vec<UnitReturn>,
     },
 }
 
@@ -497,10 +507,20 @@ impl Task {
     /// but never past the stop signal, which is the process shutting down.
     async fn end(&mut self, end: MatchEnd) {
         self.drain_backlog();
+        // Doc 16 §3.1 "Failure": a void commits nothing the arena derived, so a void
+        // carries no units at all and the world restores every check-out snapshot.
+        // The judgement is made **here**, where the reason is, rather than trusted to
+        // the far end of the seam.
+        let void = matches!(end.reason, EndReason::Void | EndReason::LedgerOverflow);
         let message = ArenaOut::Ended {
             match_id: self.match_id,
             end,
             digest: self.arena.ledger.digest(),
+            units: if void {
+                Vec::new()
+            } else {
+                self.arena.returned_units()
+            },
         };
         // The one message the task does wait to deliver: a result the world
         // never hears is a match whose units are never checked back in. The loop

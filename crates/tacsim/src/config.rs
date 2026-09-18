@@ -356,12 +356,17 @@ impl Default for SensorsConfig {
 /// `resolution.json` row).
 ///
 /// The tables are the hit curve, the error terms, `p_min` and `p_max` — the
-/// per-mille no-dice resolution of D-16-9. **Inert:** cut W reads and validates
-/// them.
+/// per-mille no-dice resolution of D-16-9. **The table itself is live since 16b
+/// cut W.2** (`crate::match_::resolution_for` is what a check-out reads it
+/// through); this block's `paths` override is **still inert**, because cut C.2
+/// shipped the table inside the crate's own content pack and the pack loader is
+/// what finds it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResolutionConfig {
-    /// Resolution-table files, or directories searched for them. Empty is the
-    /// game's own shipped content, which cut W wires.
+    /// Resolution-table files, or directories searched for them. **Nothing reads
+    /// it yet**: the shipped table travels in
+    /// `crate::definitions::content::SOURCES` with the rest of the game's content,
+    /// and an override lane for it is a cut of its own.
     pub paths: Vec<String>,
 }
 
@@ -459,8 +464,9 @@ pub struct TacsimConfig {
     /// **16b cut G** — the sensor pass's cadence and its per-mille signature
     /// ceiling. Live since cut S.1.
     pub sensors: SensorsConfig,
-    /// **16b cut G** — where the resolution tables live. **Parsed, inert** until
-    /// cut W.
+    /// **16b cut G** — where the resolution tables live. The table is live since
+    /// cut W.2; this block's `paths` override is **parsed, inert** (see
+    /// [`ResolutionConfig`]).
     pub resolution: ResolutionConfig,
     /// **16b cut G** — the scale harness's shape and thresholds. **Parsed,
     /// inert** until cut H.

@@ -198,6 +198,9 @@ fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         sensor_height_cm: 150,
         sensor: None,
         weapons: Vec::new(),
+        // 16b cut W.2: cut A's arena presents nothing and is struck by nothing.
+        profile: tacsim::arena::resolution::UnitProfile::default(),
+        gunnery: 0,
         unit: tactical_unit(id),
     }
 }
@@ -219,6 +222,7 @@ fn arena_of(units: Vec<CustodyUnit>, match_cfg: &MatchConfig) -> Arena {
             definition: definition(),
             units,
             pilots,
+            resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
         },
         &ArenaConfig::default(),
@@ -1026,6 +1030,9 @@ fn watcher(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
                 },
             ],
             count_per_load: 40,
+            // 16b cut W.2: the round's own damage and the section it is mounted in.
+            damage: 120,
+            mount_section: SmolStr::new("turret"),
         }],
         ..tank(id, team, pose)
     }

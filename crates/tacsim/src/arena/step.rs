@@ -129,6 +129,20 @@ pub struct Frame {
     /// state per weapon*), in component order, with the lock's band where there is a
     /// lock. It is what `WEAPONSTATUS` prints while a match runs.
     pub weapons: Vec<FrameWeapon>,
+    /// **The chance the lock would be hit at**, per mille (16b cut W.2; doc 16 §3.5
+    /// step 5: *the cockpit shows `p_permille` as a percentage in `WEAPONSTATUS` and
+    /// on `LOCK` before any shot*).
+    ///
+    /// The best of it over the weapons the platform carries, resolved against the
+    /// locked contact's own target through the same five steps a shot would take —
+    /// the trace and the cover included, so what a pilot is shown is what a shot
+    /// taken now would be resolved at. `None` with no lock, and `None` for a
+    /// platform carrying nothing.
+    ///
+    /// It is a **field of its own** rather than a reshaping of [`Frame::lock`]: the
+    /// lock is an opaque contact id and the only name a pilot may use, and the band
+    /// each weapon's lock falls in already sits on [`FrameWeapon::range_band`].
+    pub lock_p_permille: Option<u32>,
 }
 
 impl Frame {
@@ -157,6 +171,7 @@ impl Frame {
             && self.tempo == other.tempo
             && self.contacts == other.contacts
             && self.lock == other.lock
+            && self.lock_p_permille == other.lock_p_permille
             && self.weapons.len() == other.weapons.len()
             && self
                 .weapons
@@ -340,6 +355,14 @@ impl Arena {
         let mut ledger_full = false;
         for piece in pieces {
             ledger_full |= self.substep(piece, &mut perception);
+            // **16b cut W.2**: a substep that ended the match ends the pulse. A
+            // match is over at the arena millisecond it was won, and stepping the
+            // rest of the pulse would journal contacts expiring and summaries
+            // running after `match_ended` — lines whose count is a function of the
+            // cadence, which is exactly what doc 16 §3.1's rate independence forbids.
+            if self.ended.is_some() {
+                break;
+            }
         }
 
         // ---- phase 4: the queued discrete actions ----
@@ -354,9 +377,16 @@ impl Arena {
         // timestamp with no time advancing inside it, so every action it resolves
         // happened at one moment and belongs to one hash — the same rule the substep
         // above follows, and see `Arena::action_hash` for what it costs not to.
+        // A match that ended inside phase 3 resolves nothing here: a shot accepted
+        // after `match_ended` would be a line in the black box about a match that was
+        // already over (16b cut W.2).
         let mut shot_fired = false;
         self.action_hash = Some(state_hash(self));
-        let ids: Vec<ObjId> = self.units.iter().map(|unit| unit.id).collect();
+        let ids: Vec<ObjId> = if self.ended.is_some() {
+            Vec::new()
+        } else {
+            self.units.iter().map(|unit| unit.id).collect()
+        };
         for id in ids {
             for order in drain_pending(self, id) {
                 match order.kind {
@@ -416,6 +446,22 @@ impl Arena {
         let egress_lagged = self.ledger.lagged();
         if clock_lagged || egress_lagged {
             ledger_full |= !self.journal(self.now_ms, EventKind::Lagged { dt_ms }, hash);
+        }
+        // **16b cut W.2**, the **backstop** for doc 16 §3.8's team elimination. Every
+        // ordinary elimination is settled inside the substep the last unit went out of
+        // action in (see `Arena::substep`), because that is what makes its timestamp a
+        // fact of arena time rather than of the cadence; `settle_elimination` answers
+        // `None` for a match that has already ended, so this arm fires only for a side
+        // put out by something that is not a substep — a direct `destroy_unit` from a
+        // test rig today, and whatever a later cut adds. It is **before** the duration
+        // check, so a match whose last unit dies on the pulse the clock runs out is a
+        // victory and not a timeout.
+        if let Some(end) = self.settle_elimination() {
+            ledger_full |= !self.journal(
+                self.now_ms,
+                EventKind::MatchEnded { reason: end.reason },
+                hash,
+            );
         }
         if self.ended.is_none() && self.now_ms >= i64::from(self.match_cfg.max_duration_ms) {
             let reason = EndReason::Timeout;
@@ -599,7 +645,11 @@ impl Arena {
                 // **16b cut W.1** (doc 16 §3.5 "Scheduled impact"): the shot arrives
                 // at its own timestamp, against the positions this substep
                 // committed, which is what makes a moving target's escape a fact of
-                // arena time and not of the pulse rate.
+                // arena time and not of the pulse rate. **Cut W.2** gave it its body
+                // — the four re-validations, the draw, the damage plan and the
+                // consequences (`crate::arena::damage`) — and the draw is keyed on the
+                // shot's sequence, so which pulse the round lands in cannot change
+                // whether it hits.
                 DueKind::Impact { shot_seq } => {
                     self.resolve_impact(shot_seq, event.t_ms, &mut notices);
                 }
@@ -610,6 +660,21 @@ impl Arena {
                 // "ready" then rather than at the next period boundary.
                 DueKind::WeaponReady { .. } => {}
             }
+        }
+
+        // **16b cut W.2** (doc 16 §3.8): team elimination is settled **here**, at the
+        // substep the last unit of a side went out of action in, and not at the end of
+        // the pulse. The difference is the whole of rate independence: the wreck is
+        // applied at a due event's own timestamp inside a substep, so the moment the
+        // side was eliminated is a fact of arena time — and a `match_ended` stamped at
+        // the pulse boundary instead would carry a different timestamp at every
+        // cadence.
+        if let Some(end) = self.settle_elimination() {
+            notices.push((
+                self.now_ms,
+                EventKind::MatchEnded { reason: end.reason },
+                None,
+            ));
         }
 
         // ---- the substep's record ----
@@ -730,6 +795,11 @@ impl Arena {
                         .unwrap_or_default(),
                     lock,
                     weapons: self.frame_weapons(unit.id, lock_range_cm),
+                    // 16b cut W.2: doc 16 §3.5 step 5's percentage, resolved per
+                    // pulse for the platform's own lock. It costs one trace and one
+                    // pass of the five steps per *seated* platform — not per unit —
+                    // and only while that platform holds a lock at all.
+                    lock_p_permille: self.lock_p_permille(unit.id),
                 },
             ));
         }

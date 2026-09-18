@@ -1214,6 +1214,10 @@ fn harness_weapon() -> tacsim::arena::state::WeaponSummary {
             },
         ],
         count_per_load: 40,
+        // 16b cut W.2: the round's damage and the section it is mounted in, so the
+        // measured pulses carry real hits and real damage plans.
+        damage: 120,
+        mount_section: smol_str::SmolStr::new("turret"),
     }
 }
 
@@ -1240,39 +1244,215 @@ fn harness_rules() -> mush_tactics::RulesValue {
     .expect("an empty rules blob")
 }
 
-/// The smallest M32 unit the arena can carry: one hull section, one facet, one
-/// armor cell. Cut A applies no plan to it (D-16-6), so the shape is enough and
-/// the authored `line_tank` is cut C's.
+/// **The M32 unit the harness fights with** — the stock tank's structure: five
+/// sections, their facets and their internals, the cannon and the sight, and the
+/// power capability a wreck loses.
+///
+/// **16b cut W.2 made it the real shape.** Cut A applied no plan to it (D-16-6) and
+/// one hull facet was enough; cut W.2 applies one
+/// [`mush_tactics::UnitMutationPlan`] per hit, and a unit whose sections the facet
+/// table names would be a unit every hit refused — which would measure the cost of
+/// the *miss* path and report it as the cost of the arena. The numbers are close to
+/// `content/units/line_tank.json` and deliberately not read from it: a harness that
+/// booted the content loader would be measuring the content loader.
 fn harness_unit(id: ObjId) -> mush_tactics::TacticalUnit {
-    let spec = mush_tactics::UnitSpec {
-        definition: harness_dref("unit", "tacsim.unit.line_tank"),
-        sections: vec![mush_tactics::SectionSpec {
-            id: mush_tactics::SectionId::new("hull").expect("a canonical section"),
+    let facet = |name: &str, armor: i64| mush_tactics::FacetSpec {
+        id: mush_tactics::FacetId::new(name).expect("a canonical facet"),
+        cells: vec![mush_tactics::CellSpec {
+            id: mush_tactics::CellId::new("armor").expect("a cell"),
+            min: 0,
+            max: armor,
+            init: armor,
+        }],
+    };
+    let section = |name: &str, facets: Vec<mush_tactics::FacetSpec>, internals: i64| {
+        mush_tactics::SectionSpec {
+            id: mush_tactics::SectionId::new(name).expect("a canonical section"),
             condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
-            facets: vec![mush_tactics::FacetSpec {
-                id: mush_tactics::FacetId::new("front").expect("a canonical facet"),
-                cells: vec![mush_tactics::CellSpec {
-                    id: mush_tactics::CellId::new("armor").expect("a cell"),
-                    min: 0,
-                    max: 10,
-                    init: 10,
-                }],
-            }],
+            facets,
             slots: Vec::new(),
             cells: vec![mush_tactics::CellSpec {
                 id: mush_tactics::CellId::new("internals").expect("a cell"),
                 min: 0,
-                max: 8,
-                init: 8,
+                max: internals,
+                init: internals,
             }],
-        }],
+        }
+    };
+    let spec = mush_tactics::UnitSpec {
+        definition: harness_dref("unit", "tacsim.unit.line_tank"),
+        sections: vec![
+            section(
+                "hull",
+                vec![
+                    facet("front", 400),
+                    facet("left", 250),
+                    facet("right", 250),
+                    facet("rear", 150),
+                    facet("top", 100),
+                ],
+                200,
+            ),
+            section(
+                "turret",
+                vec![
+                    facet("front", 350),
+                    facet("left", 220),
+                    facet("right", 220),
+                    facet("rear", 140),
+                ],
+                150,
+            ),
+            section("left_track", vec![facet("left", 120)], 100),
+            section("right_track", vec![facet("right", 120)], 100),
+            section("engine", Vec::new(), 120),
+        ],
         unit_cells: Vec::new(),
-        components: Vec::new(),
-        capabilities: Vec::new(),
+        components: vec![
+            mush_tactics::ComponentSpec {
+                id: mush_tactics::ComponentId::new("cannon").expect("a component"),
+                definition: harness_dref("component", "tacsim.unit.line_tank.cannon"),
+                install: mush_tactics::InstallPoint::Section(
+                    mush_tactics::SectionId::new("turret").expect("a canonical section"),
+                ),
+                condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+                cells: vec![
+                    mush_tactics::CellSpec {
+                        id: mush_tactics::CellId::new("ammo").expect("a cell"),
+                        min: 0,
+                        max: 40,
+                        init: 40,
+                    },
+                    mush_tactics::CellSpec {
+                        id: mush_tactics::CellId::new("ready_at_ms").expect("a cell"),
+                        min: 0,
+                        max: 3_600_000,
+                        init: 0,
+                    },
+                ],
+                asset: None,
+            },
+            mush_tactics::ComponentSpec {
+                id: mush_tactics::ComponentId::new("visual_sensor").expect("a component"),
+                definition: harness_dref("component", "tacsim.unit.line_tank.visual_sensor"),
+                install: mush_tactics::InstallPoint::Section(
+                    mush_tactics::SectionId::new("turret").expect("a canonical section"),
+                ),
+                condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+                cells: vec![mush_tactics::CellSpec {
+                    id: mush_tactics::CellId::new("condition").expect("a cell"),
+                    min: 0,
+                    max: 100,
+                    init: 100,
+                }],
+                asset: None,
+            },
+        ],
+        capabilities: vec![mush_tactics::CapabilityInit {
+            key: mush_tactics::CapabilityKey {
+                id: mush_tactics::CapabilityId::new("tacsim.power").expect("a capability"),
+                source: None,
+            },
+            rules: harness_rules(),
+        }],
         mobility: None,
         rules: harness_rules(),
     };
-    mush_tactics::TacticalUnit::from_spec(&spec, id).expect("a one-section unit")
+    mush_tactics::TacticalUnit::from_spec(&spec, id).expect("the harness tank")
+}
+
+/// **What a harness unit presents and what a hit may strike** (16b cut W.2), the
+/// stock tank's own facet table and silhouettes.
+///
+/// Harness-local for the same reason [`harness_unit`] is: the authored numbers are
+/// cut C's, and what is measured here is the cost of resolving and applying a hit.
+fn harness_profile() -> tacsim::arena::resolution::UnitProfile {
+    use tacsim::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
+    let band = |name: &str, width: u32, height: u32, rows: &[(&str, u16)]| BandProfile {
+        band: smol_str::SmolStr::new(name),
+        width_cm: width,
+        height_cm: height,
+        sections: rows
+            .iter()
+            .map(|(section, weight)| (smol_str::SmolStr::new(*section), *weight))
+            .collect(),
+    };
+    let section = |name: &str, facets: &[&str], consequences: Vec<Consequence>| SectionProfile {
+        id: smol_str::SmolStr::new(name),
+        facets: facets
+            .iter()
+            .map(|facet| smol_str::SmolStr::new(*facet))
+            .collect(),
+        consequences,
+        struck_through: None,
+    };
+    UnitProfile {
+        bands: vec![
+            band("front", 350, 250, &[("hull", 50), ("turret", 50)]),
+            band(
+                "left",
+                700,
+                250,
+                &[("hull", 40), ("left_track", 30), ("turret", 30)],
+            ),
+            band(
+                "right",
+                700,
+                250,
+                &[("hull", 40), ("right_track", 30), ("turret", 30)],
+            ),
+            band(
+                "rear",
+                350,
+                250,
+                &[("hull", 40), ("engine", 30), ("turret", 30)],
+            ),
+            band("top", 700, 350, &[("hull", 50), ("turret", 50)]),
+        ],
+        sections: vec![
+            section(
+                "hull",
+                &["front", "left", "right", "rear", "top"],
+                vec![Consequence::DestroyUnit],
+            ),
+            section(
+                "turret",
+                &["front", "left", "right", "rear"],
+                vec![Consequence::RemoveWeapons {
+                    section: smol_str::SmolStr::new("turret"),
+                }],
+            ),
+            section(
+                "left_track",
+                &["left"],
+                vec![
+                    Consequence::Slow { percent: 50 },
+                    Consequence::NoTurnToward {
+                        side: tacsim::arena::state::Side::Left,
+                    },
+                ],
+            ),
+            section(
+                "right_track",
+                &["right"],
+                vec![
+                    Consequence::Slow { percent: 50 },
+                    Consequence::NoTurnToward {
+                        side: tacsim::arena::state::Side::Right,
+                    },
+                ],
+            ),
+            SectionProfile {
+                id: smol_str::SmolStr::new("engine"),
+                facets: Vec::new(),
+                consequences: vec![Consequence::DisableMotion],
+                struck_through: Some((
+                    smol_str::SmolStr::new("hull"),
+                    smol_str::SmolStr::new("rear"),
+                )),
+            },
+        ],
+    }
 }
 
 /// How many times `needle` occurs in `bytes` — the ledger is JSON lines, so
@@ -1451,6 +1631,11 @@ fn tacsim_harness_arena_step() {
             } else {
                 Vec::new()
             },
+            // **16b cut W.2**: every unit presents a silhouette and carries a facet
+            // table, so a hit resolves, applies its plan and can take a section off —
+            // which is the cost the p99 below is of. An unarmed unit is still a target.
+            profile: harness_profile(),
+            gunnery: 1,
             unit: harness_unit(id),
         });
     }
@@ -1466,6 +1651,7 @@ fn tacsim_harness_arena_step() {
             definition,
             units,
             pilots,
+            resolution: tacsim::match_::stock_resolution(),
             seed: knobs.seed,
         },
         &arena_cfg,
@@ -1481,7 +1667,9 @@ fn tacsim_harness_arena_step() {
 
     // What the streamed ledger says, counted as it goes rather than kept: the
     // egress is a ring and the point of the measurement is that it drains.
-    // **16b cut W.1** added the three weapon kinds.
+    // **16b cut W.1** added the three weapon kinds; **16b cut W.2** added the four
+    // outcome kinds, because a pipeline that resolved every shot as a miss would
+    // never build a mutation plan and would measure the cheap half of the cut.
     #[derive(Default)]
     struct Counts {
         chunks: u64,
@@ -1490,6 +1678,10 @@ fn tacsim_harness_arena_step() {
         locked: u64,
         fired: u64,
         impacts: u64,
+        hits: u64,
+        misses: u64,
+        sections: u64,
+        destroyed: u64,
     }
     let mut counts = Counts::default();
     let absorb_out = |out: &StepOutput, counts: &mut Counts| {
@@ -1500,6 +1692,10 @@ fn tacsim_harness_arena_step() {
             counts.locked += occurrences(&chunk.bytes, "\"kind\":\"locked\"");
             counts.fired += occurrences(&chunk.bytes, "\"kind\":\"fired\"");
             counts.impacts += occurrences(&chunk.bytes, "\"kind\":\"impact\"");
+            counts.hits += occurrences(&chunk.bytes, "\"kind\":\"hit\"");
+            counts.misses += occurrences(&chunk.bytes, "\"kind\":\"miss\"");
+            counts.sections += occurrences(&chunk.bytes, "\"kind\":\"section_destroyed\"");
+            counts.destroyed += occurrences(&chunk.bytes, "\"kind\":\"unit_destroyed\"");
         }
     };
 
@@ -1674,6 +1870,10 @@ fn tacsim_harness_arena_step() {
         counts.locked += occurrences(&chunk.bytes, "\"kind\":\"locked\"");
         counts.fired += occurrences(&chunk.bytes, "\"kind\":\"fired\"");
         counts.impacts += occurrences(&chunk.bytes, "\"kind\":\"impact\"");
+        counts.hits += occurrences(&chunk.bytes, "\"kind\":\"hit\"");
+        counts.misses += occurrences(&chunk.bytes, "\"kind\":\"miss\"");
+        counts.sections += occurrences(&chunk.bytes, "\"kind\":\"section_destroyed\"");
+        counts.destroyed += occurrences(&chunk.bytes, "\"kind\":\"unit_destroyed\"");
     }
 
     let rss_end_kib = resident_kib();
@@ -1697,9 +1897,16 @@ fn tacsim_harness_arena_step() {
         .filter(|unit| unit.speed_cms != 0)
         .count();
     let held = arena.units.iter().filter(|unit| unit.blocked).count();
-    // 16b cut W.1: the conservation figure, over the whole field. Rounds left plus
-    // rounds spent is the load every armed unit was checked out with, and the
-    // arithmetic is the same one `weapons.rs`'s scripted-run test asserts.
+    // 16b cut W.1: the rounds figure, over the whole field.
+    //
+    // **16b cut W.2 made it a statement about the survivors and not a conservation
+    // law.** `armed` and `loaded` are read off each unit's *live* weapon table, and
+    // doc 16 §3.3's `remove_weapons` and `destroy_unit` consequences empty that table
+    // — so a tank whose turret came off, and a wreck, take their remaining rounds out
+    // of both sides of the sum with them. `fired` below is the black box's own count
+    // of pulls and is the number that is conserved; `rounds_spent` is what the tanks
+    // still standing have spent. The exact conservation law is
+    // `crates/tacsim/tests/resolution.rs`'s, on a fixture where nothing is destroyed.
     let armed = arena
         .units
         .iter()
@@ -1736,6 +1943,24 @@ fn tacsim_harness_arena_step() {
     assert!(
         counts.bytes > 0,
         "the ledger streamed nothing: the egress was not measured"
+    );
+    // **16b cut W.2**, the same rule once more: a resolution that hit nothing would
+    // never build a mutation plan, never apply one and never fire a consequence, and
+    // the report would say the arena is fast at missing.
+    assert!(
+        counts.hits > 0,
+        "no shot ever landed: the resolution and the damage plan were not measured          (fired={} impacts={} misses={})",
+        counts.fired,
+        counts.impacts,
+        counts.misses
+    );
+    assert_eq!(
+        counts.hits.saturating_add(counts.misses),
+        counts.impacts,
+        "every arrival is exactly one outcome: {} hits and {} misses against {} impacts",
+        counts.hits,
+        counts.misses,
+        counts.impacts
     );
     // 16b cut W.1, the same rule: a weapon lane that fired nothing would make the
     // pulse cheaper and pass every timing bound in this file, and the report would
@@ -1816,6 +2041,16 @@ fn tacsim_harness_arena_step() {
         counts.impacts,
         arena.shots.len(),
         arena.next_shot_seq
+    );
+    // **16b cut W.2**: what the resolution and the damage did with those shots.
+    println!(
+        "harness_arena_damage: hits={} misses={} sections_destroyed={} units_destroyed={} wrecks_at_end={} disabled_at_end={}",
+        counts.hits,
+        counts.misses,
+        counts.sections,
+        counts.destroyed,
+        arena.units.iter().filter(|unit| unit.limits.wreck).count(),
+        arena.units.iter().filter(|unit| unit.disabled).count()
     );
     println!(
         "harness_arena_perception_peak: passes={} candidates={} traces={} cell_probes={} share_ops={} detected={} classified={} lost={}",
@@ -1911,6 +2146,13 @@ fn tacsim_harness_arena_step() {
             "fired_events": counts.fired,
             "impact_events": counts.impacts,
             "in_flight_at_end": arena.shots.len(),
+            // 16b cut W.2's outcomes.
+            "hits": counts.hits,
+            "misses": counts.misses,
+            "sections_destroyed": counts.sections,
+            "units_destroyed": counts.destroyed,
+            "wrecks_at_end": arena.units.iter().filter(|unit| unit.limits.wreck).count(),
+            "disabled_at_end": arena.units.iter().filter(|unit| unit.disabled).count(),
             "shot_seq_at_end": arena.next_shot_seq,
             "rounds_loaded": loaded,
             "rounds_spent": rounds_spent,

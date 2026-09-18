@@ -29,11 +29,13 @@ use mush_sim::data::Pose;
 use smol_str::SmolStr;
 
 use crate::arena::perception::{SensorProfile, SignatureFactor};
+use crate::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitProfile};
 use crate::arena::state::{
     ArenaDefinition, ArenaTerrain, EntryZone, Team, TerrainCell, TrackedRules, WeaponSummary,
 };
 use crate::arena::weapons::WeaponBand;
 use crate::definitions::Catalog;
+use crate::definitions::resolution::{ErrorTerms, ResolutionDef};
 use crate::definitions::unit::ComponentRole;
 
 /// The arena window's side, in cells. 256 cells at 10 m is 2.56 km (D-16-16).
@@ -421,9 +423,144 @@ pub fn weapon_summaries(
                 .collect(),
             count_per_load: entry(&catalog.ammunition, def.ammunition.as_str())
                 .map_or(0, |ammunition| ammunition.count_per_load),
+            // **16b cut W.2**: the round's own damage, off the same ammunition row,
+            // and the section the weapon is mounted in — which is the section
+            // `remove_weapons` names when the turret is shot off. The mount is the
+            // *weapon definition's* (doc 16 §3.5 "Weapon definition": *`mount`
+            // (section and facet)*) and not the component's install point, because
+            // the weapon is what says where it can be carried.
+            damage: entry(&catalog.ammunition, def.ammunition.as_str())
+                .map_or(0, |ammunition| ammunition.damage),
+            mount_section: SmolStr::new(def.mount.section.as_str()),
         });
     }
     out
+}
+
+/// **What a unit presents and what a hit may strike** (16b cut W.2; doc 16 §3.3
+/// "Facet attribution" and "Silhouette"), decoded for the arena.
+///
+/// The authored spec keeps the two halves apart — `silhouettes` says what a band
+/// presents and `facets` says what a hit on it may strike — and every reader of one
+/// wants the other, so they are joined on the band id here, once, at check-out. A
+/// band with a silhouette and no weights presents a target nothing can be attributed
+/// to (a round arrives and finds no structure); a band with weights and no silhouette
+/// presents nothing at all. Both are content mistakes the loader cannot refuse (the
+/// two lists are independent), and both resolve honestly rather than panicking.
+///
+/// `None` — no spec in the catalog — is an empty profile, which is a unit that
+/// presents nothing and is struck by nothing: every hand-made rig, and every world
+/// the content has not been applied to.
+#[must_use]
+pub fn unit_profile(catalog: &Catalog, unit: &mush_tactics::TacticalUnit) -> UnitProfile {
+    let Some(spec) = spec_of(catalog, unit) else {
+        return UnitProfile::default();
+    };
+    let bands = spec
+        .silhouettes
+        .iter()
+        .map(|silhouette| BandProfile {
+            band: SmolStr::new(silhouette.band.as_str()),
+            width_cm: silhouette.width_cm,
+            height_cm: silhouette.height_cm,
+            sections: spec
+                .facets
+                .iter()
+                .find(|row| row.band == silhouette.band)
+                .map(|row| {
+                    row.sections
+                        .iter()
+                        .map(|weight| (SmolStr::new(weight.section.as_str()), weight.weight))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+        .collect();
+    let sections = spec
+        .sections
+        .iter()
+        .map(|section| SectionProfile {
+            id: SmolStr::new(section.id.as_str()),
+            facets: section
+                .facets
+                .iter()
+                .map(|facet| SmolStr::new(facet.id.as_str()))
+                .collect(),
+            consequences: section.consequences.iter().map(consequence_of).collect(),
+            struck_through: section.struck_through.as_ref().map(|through| {
+                (
+                    SmolStr::new(through.section.as_str()),
+                    SmolStr::new(through.facet.as_str()),
+                )
+            }),
+        })
+        .collect();
+    UnitProfile { bands, sections }
+}
+
+/// The arena's own copy of one authored consequence. A closed vocabulary on both
+/// sides, so this is a total function and not a decode that can fail.
+fn consequence_of(authored: &crate::definitions::unit::Consequence) -> Consequence {
+    use crate::definitions::unit::Consequence as Authored;
+    match authored {
+        Authored::DestroyUnit => Consequence::DestroyUnit,
+        Authored::RemoveWeapons { section } => Consequence::RemoveWeapons {
+            section: SmolStr::new(section.as_str()),
+        },
+        Authored::Slow { percent } => Consequence::Slow { percent: *percent },
+        Authored::NoTurnToward { side } => Consequence::NoTurnToward { side: *side },
+        Authored::DisableMotion => Consequence::DisableMotion,
+    }
+}
+
+/// **The resolution table a match is resolved through** (16b cut W.2; doc 16 §3.5
+/// steps 2 and 3), off the loaded catalog.
+///
+/// [`crate::definitions::content::RESOLUTION`] when the content declares it — the
+/// one id the shipped pack names — and [`stock_resolution`] otherwise — the same fallback shape [`tracked_rules`] takes, and for the same
+/// reason: a world the content pack has not been applied to still runs a match, with
+/// the numbers the pack authors, rather than refusing for want of a curve.
+#[must_use]
+pub fn resolution_for(catalog: &Catalog) -> ResolutionDef {
+    entry(
+        &catalog.resolutions,
+        crate::definitions::content::RESOLUTION,
+    )
+    .cloned()
+    .unwrap_or_else(stock_resolution)
+}
+
+/// **Doc 16 §3.5's curve and weights, as the documented fallback** — the numbers
+/// `content/resolution.json` authors (16b cut C.2), pinned equal to it by
+/// `crates/tacsim/tests/resolution.rs`.
+///
+/// It exists for the same two callers [`stock_definition`] exists for: a world with
+/// no content applied, and the unit tests of this crate, which need a curve without
+/// booting a pack loader.
+#[must_use]
+pub fn stock_resolution() -> ResolutionDef {
+    ResolutionDef {
+        label: "Stock direct-fire resolution".to_owned(),
+        hit_curve: vec![
+            [0, 0],
+            [250, 50],
+            [500, 150],
+            [1_000, 350],
+            [2_000, 600],
+            [4_000, 820],
+            [8_000, 940],
+            [16_000, 980],
+        ],
+        error_terms: ErrorTerms {
+            shooter_speed: 1_000,
+            target_lateral_speed: 800,
+            gunnery: 1_000,
+            sensor_condition: 500,
+        },
+        p_min: 10,
+        p_max: 950,
+        note: String::new(),
+    }
 }
 
 /// The locomotion id doc 16 §3.3's mode rules belong to.

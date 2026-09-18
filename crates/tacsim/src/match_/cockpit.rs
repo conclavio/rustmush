@@ -561,6 +561,28 @@ pub fn frame_lock(frame: &Frame) -> Option<ContactId> {
     frame.lock
 }
 
+/// **The line `LOCK` and `WEAPONSTATUS` both print about the lock** (16b cut W.2;
+/// doc 16 §3.5 step 5: *the cockpit shows `p_permille` as a percentage in
+/// `WEAPONSTATUS` and on `LOCK` before any shot*).
+///
+/// `Locked on 3f2c…, 32% to hit.` when the arena has resolved one, and `Locked on
+/// 3f2c….` when it has not — which is the pulse between a `LOCK` being typed and the
+/// frame that answers it, and a platform carrying no weapon at all. `None` for no
+/// lock, so the caller says nothing rather than saying there is nothing.
+///
+/// The percentage is the frame's own `lock_p_permille`, rounded to whole per cent:
+/// it is the **same number** the draw will be compared against, resolved by the
+/// arena through doc 16 §3.5's five steps with the trace and the cover in it, and
+/// never a second estimate computed here.
+#[must_use]
+pub fn lock_line(frame: &Frame) -> Option<String> {
+    let contact = frame_lock(frame)?;
+    Some(match frame.lock_p_permille {
+        Some(permille) => format!("Locked on {contact}, {}% to hit.", permille / 10),
+        None => format!("Locked on {contact}."),
+    })
+}
+
 /// **Every weapon the platform carries, live** (16b cut W.1), as the arena's frame
 /// carries it.
 ///
@@ -982,6 +1004,17 @@ fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
     forward_intent(ctx, actor, unit, IntentKind::Lock { contact })?;
     let line = format!("Locking {contact}.");
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    // **16b cut W.2**: doc 16 §3.5 step 5's percentage, *on `LOCK`*. The order is
+    // resolved a pulse later, so what a pilot is told here is the chance against the
+    // lock they already held — and against this one from the frame that answers the
+    // order. Silent on a first lock, rather than printing a chance against a contact
+    // the pilot has just stopped aiming at.
+    if let Some(held) = last_frame(ctx.w, actor)
+        && frame_lock(&held.frame) == Some(contact)
+        && let Some(line) = lock_line(&held.frame)
+    {
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    }
     Ok(())
 }
 
@@ -1062,8 +1095,8 @@ fn weapon_status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
     if weapons.is_empty() {
         lines.push("This unit carries no weapon.".to_owned());
     }
-    if let Some(lock) = held.as_ref().and_then(|held| frame_lock(&held.frame)) {
-        lines.push(format!("Locked on {lock}."));
+    if let Some(line) = held.as_ref().and_then(|held| lock_line(&held.frame)) {
+        lines.push(line);
     }
     for weapon in &weapons {
         lines.push(weapon.render());
@@ -1181,6 +1214,12 @@ pub const FRAME_VERSION: u32 = 1;
 /// platform's lock falls in — `null` with no lock, which is also when `lock` is
 /// `null`. It takes no world handle: the arena is the single writer of both cells
 /// while a match runs, so the frame is the whole answer.
+///
+/// **16b cut W.2** added `lock` a companion: `lock_p_permille` and `lock_percent`,
+/// doc 16 §3.5 step 5's chance against the held lock, per mille and as the whole per
+/// cent the line client prints. Both are `null` with no lock and when the arena has
+/// not resolved one, which is what keeps a panel from drawing a 0 % that means
+/// *unknown*.
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     let rows = frame_contacts(frame);
@@ -1244,6 +1283,8 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
         "blocked": frame.blocked,
         "tempo": frame.tempo.as_str(),
         "lock": frame_lock(frame).map(|id| id.to_string()),
+        "lock_p_permille": frame.lock_p_permille,
+        "lock_percent": frame.lock_p_permille.map(|permille| permille / 10),
         "contacts": contacts,
         "notices": notices,
         "weapons": weapons,

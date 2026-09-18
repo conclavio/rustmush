@@ -39,20 +39,28 @@
 //! Doc 16 §3.5: *a shot whose line is blocked at acceptance, or whose target is
 //! behind full cover, is accepted: it consumes ammunition and the cycle exactly like
 //! any shot and resolves as a `miss` with the blocker as its reason. There is no
-//! free probe of line of sight.* So acceptance below never traces: it reads the
-//! lock, the cycle, the rounds and the power, and nothing about the ground between
-//! the two units. The trace happens at resolution, which is cut W.2's, and its
-//! answer costs the round either way.
+//! free probe of line of sight.* So the gates below are the lock, the cycle, the
+//! rounds and the power, and **nothing about the ground between the two units**.
+//! Acceptance does take a trace — cut W.2 needs the target's cover for the
+//! resolution — and deliberately throws its verdict on the *line* away: the round
+//! is spent, and the wall it is going to hit is named at the impact
+//! ([`crate::arena::damage::BLOCKED`]) rather than handed back as a refusal a pilot
+//! could have used to map the ground for free.
 //!
-//! # What this cut does not do
+//! # What acceptance resolves, and what the impact does with it
 //!
-//! **Nothing here draws** (doc 16 §3.5's `hit`, `facet` and `burst` labels are cut
-//! W.2's), and nothing here resolves a shot: the [`crate::arena::state::DueKind::Impact`]
-//! this cut schedules is applied by [`Arena::resolve_impact`], which journals
-//! `impact` and then the placeholder `miss{reason: NOT_RESOLVED}` that cut W.2
-//! replaces with doc 16 §3.5's five steps. The shot record is complete — the
-//! predicted point, the cell, the range, the rounds — so W.2 adds a body and not a
-//! shape.
+//! **16b cut W.2** gave the shot its arithmetic. Doc 16 §3.5 resolves *at the
+//! moment `FIRE` is accepted*, so [`Arena::resolve_fire`] takes one trace, runs
+//! [`crate::arena::resolution`]'s five steps, and records the answer on the
+//! [`Shot`] — the band, the presented width, the cone, the probability — beside the
+//! predicted point. What arrives later re-validates against that record
+//! ([`crate::arena::damage`]) and never re-aims: the shooter's speed, its gunner and
+//! its sight were facts about the barrel, not about the flight.
+//!
+//! The trace at acceptance is **not** a gate. Doc 16 §3.5 is explicit that a shot
+//! whose line is blocked or whose target is behind full cover is accepted and costs
+//! its round; the trace here is what gives the resolution its cover, and its verdict
+//! on the line is spent at the impact, by name.
 
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
@@ -61,17 +69,8 @@ use smol_str::SmolStr;
 use crate::arena::index::range_cm;
 use crate::arena::intents::Refusal;
 use crate::arena::ledger::EventKind;
-use crate::arena::perception::Notice;
+use crate::arena::resolution::Resolution;
 use crate::arena::state::{Arena, ContactId, DueKind, Power, UnitState, WeaponSummary};
-
-/// **The reason cut W.1's placeholder impact misses with**, and the one string cut
-/// W.2 deletes.
-///
-/// Doc 16 §3.5 puts resolution *at acceptance* and re-validation *at impact*, and
-/// both are cut W.2's. Until then a scheduled impact still has to arrive and still
-/// has to be journalled — the alternative is a shot that costs a round and leaves no
-/// line in the black box — so it arrives as a miss that says exactly why it is one.
-pub const NOT_RESOLVED: &str = "not resolved until W.2";
 
 // ---------------------------------------------------------------------------
 // The definition's two derived readings
@@ -246,6 +245,15 @@ pub struct Shot {
     /// The predicted point's cell, or `None` when the target was off the window —
     /// which is what *within one cell of the prediction* is measured against.
     pub aim_cell: Option<(u16, u16)>,
+    /// **What one round of this shot carries** (16b cut W.2), off the ammunition
+    /// the weapon names. Recorded on the shot rather than looked up at the impact,
+    /// because a turret shot off in flight takes the weapon row with it and the
+    /// round already in the air still carries what it was loaded with.
+    pub damage: u32,
+    /// **The resolution taken at acceptance** (16b cut W.2; doc 16 §3.5's five
+    /// steps), which is the moment the doc resolves at. The impact reads it and
+    /// re-resolves only the angular size, and only when the target turned.
+    pub resolution: Resolution,
 }
 
 // ---------------------------------------------------------------------------
@@ -459,11 +467,17 @@ impl Arena {
         let impact_at = now_ms.saturating_add(summary.flight_ms(range));
         let seq = self.next_shot_seq.saturating_add(1);
         self.next_shot_seq = seq;
+        // **16b cut W.2**: doc 16 §3.5 resolves here, at acceptance. One trace, for
+        // the cover the presented silhouette is scaled by; its verdict on the line
+        // is the impact's to spend, because acceptance never refuses for it.
+        let cover = self.fire_cover(unit, target);
+        let resolution = self.resolve_shot(unit, target, weapon, range, cover);
         let hash = self.event_hash();
         if let Some(state) = self.unit_mut(unit) {
             state.ready_at_ms.insert(SmolStr::new(weapon), ready_at);
             let left = state.weapon_ammo(weapon).saturating_sub(rounds);
             state.ammo.insert(SmolStr::new(weapon), left);
+            state.shots_fired = state.shots_fired.saturating_add(1);
         }
         self.shots.insert(
             seq,
@@ -480,6 +494,8 @@ impl Arena {
                 aim_x_cm: aim.x_cm,
                 aim_y_cm: aim.y_cm,
                 aim_cell: self.definition.terrain.cell_of(&aim),
+                damage: summary.damage,
+                resolution,
             },
         );
         self.due
@@ -505,42 +521,6 @@ impl Arena {
             hash,
         );
         Ok(seq)
-    }
-
-    /// **Apply one scheduled impact** (16b cut W.1's half of doc 16 §3.5 "Scheduled
-    /// impact"), inside the substep whose boundary its timestamp fell in.
-    ///
-    /// The shot leaves the in-flight table and journals two lines: `impact`, which
-    /// says the flight time elapsed, and then its outcome. **Cut W.1's outcome is
-    /// always a `miss` reading [`NOT_RESOLVED`]** — the five steps of doc 16 §3.5 and
-    /// the re-validation that decides between `hit` and `miss` are cut W.2's, and this
-    /// is the one line it replaces.
-    ///
-    /// An `Impact` whose shot is not in the table is journalled as nothing: the only
-    /// way to reach it is a shot already resolved, which cannot happen for a heap
-    /// whose entries are unique, and a black box line about a shot nobody fired would
-    /// be worse than silence.
-    pub fn resolve_impact(&mut self, shot_seq: u64, t_ms: i64, journal: &mut Vec<Notice>) {
-        let Some(shot) = self.shots.remove(&shot_seq) else {
-            return;
-        };
-        journal.push((
-            t_ms,
-            EventKind::Impact {
-                shot_seq,
-                unit: shot.shooter,
-                target: shot.target,
-            },
-            None,
-        ));
-        journal.push((
-            t_ms,
-            EventKind::Miss {
-                shot_seq,
-                reason: SmolStr::new_static(NOT_RESOLVED),
-            },
-            None,
-        ));
     }
 
     /// One shot in flight, by its sequence.
@@ -808,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn an_impact_journals_its_arrival_and_cut_w_1_s_placeholder_miss() {
+    fn an_impact_journals_its_arrival_and_then_exactly_one_outcome() {
         let mut arena = two_scouts();
         let id = hold(&mut arena, RED, BLUE);
         let _ = arena.resolve_lock(RED, id);
@@ -816,13 +796,16 @@ mod tests {
         let seq = arena
             .resolve_fire(RED, "cannon")
             .unwrap_or_else(|_| panic!("the shot is accepted"));
-        let mut journal: Vec<Notice> = Vec::new();
+        let mut journal: Vec<crate::arena::perception::Notice> = Vec::new();
         arena.resolve_impact(seq, 100, &mut journal);
-        assert_eq!(journal.len(), 2);
+        assert_eq!(journal.len(), 2, "the arrival and its outcome: {journal:?}");
         assert!(matches!(
             journal.first().map(|(_, kind, _)| kind),
             Some(EventKind::Impact { .. })
         ));
+        // These scouts carry no authored silhouette, so the shot resolves at zero
+        // and the outcome is a miss — which is cut W.2's arithmetic and not a
+        // placeholder (see `crate::arena::resolution`).
         assert!(matches!(
             journal.get(1).map(|(_, kind, _)| kind),
             Some(EventKind::Miss { .. })

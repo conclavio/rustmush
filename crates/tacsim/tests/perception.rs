@@ -201,6 +201,9 @@ fn cannon() -> WeaponSummary {
             },
         ],
         count_per_load: 40,
+        // 16b cut W.2: the round's damage and the section it is mounted in.
+        damage: 120,
+        mount_section: SmolStr::new("turret"),
     }
 }
 
@@ -220,6 +223,10 @@ fn tank(id: ObjId, team: Team, pose: Pose, sensor: Option<SensorProfile>) -> Cus
         sensor_height_cm: 150,
         sensor,
         weapons: vec![cannon()],
+        // 16b cut W.2: these fixtures present nothing, so every shot resolves at
+        // zero — which is what keeps a perception test about perception.
+        profile: tacsim::arena::resolution::UnitProfile::default(),
+        gunnery: 0,
         unit: tactical_unit(id),
     }
 }
@@ -266,6 +273,7 @@ fn arena_of(units: Vec<CustodyUnit>, paint: &[(u16, u16, TerrainCell)]) -> Arena
             },
             units,
             pilots,
+            resolution: tacsim::match_::stock_resolution(),
             seed: 2_350,
         },
         &ArenaConfig::default(),

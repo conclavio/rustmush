@@ -171,6 +171,8 @@ fn tank(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
         sensor_height_cm: 150,
         sensor: None,
         weapons: Vec::new(),
+        profile: tacsim::arena::resolution::UnitProfile::default(),
+        gunnery: 0,
         unit: tactical_unit(id),
     }
 }
@@ -197,6 +199,7 @@ fn custody(seed: u64) -> CustodyOut {
                 epoch: 1,
             },
         ],
+        resolution: tacsim::match_::stock_resolution(),
         seed,
     }
 }

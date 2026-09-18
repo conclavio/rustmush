@@ -135,11 +135,10 @@ impl MatchOutcome {
 }
 
 impl From<EndReason> for MatchOutcome {
-    /// Cut T.3 has no damage model, so no `Elimination` can actually be reached
-    /// — every match this cut runs ends `Abort`, `Timeout` or `Void`. The
-    /// elimination arms are written out anyway because the arena's own
-    /// [`EndReason`] already carries the winning side, and reading it is the
-    /// whole of what cut W needs from this function.
+    /// **16b cut W.2 made the elimination arms reachable**: doc 16 §3.8's team
+    /// elimination is what `Arena::settle_elimination` records, and the arena's own
+    /// [`EndReason`] carries the winning side, so this is a read and never a
+    /// judgement.
     fn from(reason: EndReason) -> MatchOutcome {
         match reason {
             EndReason::Elimination {
@@ -163,9 +162,10 @@ impl From<EndReason> for MatchOutcome {
 pub enum UnitOutcome {
     /// It came back whole.
     Intact,
-    /// It came back unable to fight (cut W).
+    /// It came back unable to fight — no weapons and no motion (doc 16 §3.8; 16b
+    /// cut W.2).
     Disabled,
-    /// It is a wreck (cut W).
+    /// It is a wreck (doc 16 §3.3; 16b cut W.2).
     Destroyed,
     /// The world could not take it back: the object is gone, or its record
     /// refused the return.
@@ -179,9 +179,10 @@ pub struct UnitResult {
     pub unit: u32,
     /// How it came back.
     pub outcome: UnitOutcome,
-    /// Shots fired. `0` until cut W.
+    /// Shots fired, off the arena's own counter (16b cut W.2). `0` for a unit the
+    /// arena's end message did not name, and for every unit on a void.
     pub shots: u32,
-    /// Hits landed. `0` until cut W.
+    /// How many of them landed, likewise.
     pub hits: u32,
 }
 
@@ -248,9 +249,9 @@ pub struct MatchRecord {
     /// **The last pose the world saw for each unit**, as the four integers doc
     /// 16 §3.2 defines a pose by.
     ///
-    /// Doc 16's `CustodyIn` carries a final pose per unit and cut T.2's `Ended`
-    /// does not, so until cut W widens that message this is where a check-in's
-    /// final pose comes from. Two sources feed it, both the arena's own numbers:
+    /// Doc 16's `CustodyIn` carries a final pose per unit, and **16b cut W.2** put
+    /// one on `ArenaOut::Ended`; this is what a check-in falls back to for a unit
+    /// that message did not name. Two sources feed it, both the arena's own numbers:
     /// the **ledger's `position_summary`** events, which name every unit every
     /// `ledger.summary_ms` whether or not anybody is watching, and the
     /// **cockpit frames**, which are fresher but only exist for a unit with a

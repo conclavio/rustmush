@@ -186,24 +186,86 @@ pub enum EventKind {
         /// What it was fired at.
         target: ObjId,
     },
-    /// A shot struck (cut W.2).
-    Hit,
-    /// **A shot did not strike, with its reason** (16b cut W.1 writes the
-    /// placeholder; cut W.2 writes doc 16 §3.5's real reasons — the blocker, the
-    /// target that left the predicted cell, the wreck, the dispersion).
+    /// **A shot struck** (16b cut W.2; doc 16 §3.5 "Damage": *one `hit` ledger
+    /// event carrying the plan's cause*).
+    ///
+    /// One line per hit, carrying the whole of what the impact's single
+    /// [`mush_tactics::UnitMutationPlan`] did: which section the `facet:<shot_seq>`
+    /// draw chose, which facet's armour the round passed, how much damage arrived,
+    /// what is left of both cells afterwards, and the consequences that fired. The
+    /// draw itself rides [`LedgerEvent::draw`], as doc 16 §4 asks.
+    ///
+    /// `armor_left` and `internals_left` are **after** the plan, so a reader of the
+    /// black box never has to know a unit's authored maxima to see a tank coming
+    /// apart.
+    Hit {
+        /// The shot's sequence.
+        shot_seq: u64,
+        /// Who fired it.
+        unit: ObjId,
+        /// What it struck.
+        target: ObjId,
+        /// The section the facet draw chose.
+        section: SmolStr,
+        /// The facet whose `armor` cell the round passed — the struck-through
+        /// section's, for a section with no armour of its own (doc 16 §3.3).
+        facet: SmolStr,
+        /// How many rounds of the shot landed: `1` for a single round, the
+        /// binomial sample for a burst.
+        rounds: u32,
+        /// The damage they carried together.
+        damage: u32,
+        /// The armour left in that facet afterwards.
+        armor_left: u32,
+        /// The internals left in that section afterwards.
+        internals_left: u32,
+        /// The consequences that fired, by their authored words; empty unless the
+        /// section's internals reached zero on this hit.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        consequences: Vec<SmolStr>,
+        /// The mutation plan's own cause tag, which is what ties this line to the
+        /// M32 journal entry the same plan wrote.
+        cause: SmolStr,
+    },
+    /// **A shot did not strike, with its reason** (16b cut W.2; doc 16 §3.5: *a
+    /// failed validation is a `miss` with its reason*).
+    ///
+    /// The vocabulary is [`crate::arena::damage::MISS_REASONS`] and nothing else:
+    /// the four validations doc 16 names, the full cover a shot is accepted into
+    /// anyway, the dispersion that is the draw's own answer, and the refusal M32
+    /// cannot give for a plan this engine builds.
     Miss {
         /// The shot's sequence.
         shot_seq: u64,
-        /// Why it missed. Cut W.2 pins the vocabulary; until then it is
-        /// `crate::arena::weapons::NOT_RESOLVED`.
+        /// Why it missed — one word of [`crate::arena::damage::MISS_REASONS`].
         reason: SmolStr,
     },
-    /// A section reached zero internals (cut W.3).
-    SectionDestroyed,
-    /// A unit was disabled — which precedes destroyed (doc 10 3A; cut W.3).
-    UnitDisabled,
-    /// A unit became a wreck (cut W.3).
-    UnitDestroyed,
+    /// **A section reached zero internals** (16b cut W.2; doc 16 §3.3's
+    /// *Consequence at zero internals* column), with the consequences that fired.
+    ///
+    /// It follows the `hit` that finished the section off and carries the same
+    /// words, because the two answer different questions: the `hit` is what one
+    /// round did and this is what the unit lost.
+    SectionDestroyed {
+        /// The unit.
+        unit: ObjId,
+        /// The section.
+        section: SmolStr,
+        /// Its consequences, by their authored words.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        consequences: Vec<SmolStr>,
+    },
+    /// **A unit was disabled** — no weapons and no motion — which precedes
+    /// destroyed (doc 10 3A; 16b cut W.2). Said once, on the transition.
+    UnitDisabled {
+        /// The unit.
+        unit: ObjId,
+    },
+    /// **A unit became a wreck** (16b cut W.2; doc 16 §3.3 "A wreck"). Said once.
+    UnitDestroyed {
+        /// The unit.
+        unit: ObjId,
+    },
     /// A pulse absorbed more wall time than `max_catch_up_steps × period`, or the
     /// egress backed up past `ledger.max_unflushed_chunks`.
     Lagged {
@@ -237,11 +299,11 @@ impl EventKind {
             EventKind::Locked { .. } => "locked",
             EventKind::Fired { .. } => "fired",
             EventKind::Impact { .. } => "impact",
-            EventKind::Hit => "hit",
+            EventKind::Hit { .. } => "hit",
             EventKind::Miss { .. } => "miss",
-            EventKind::SectionDestroyed => "section_destroyed",
-            EventKind::UnitDisabled => "unit_disabled",
-            EventKind::UnitDestroyed => "unit_destroyed",
+            EventKind::SectionDestroyed { .. } => "section_destroyed",
+            EventKind::UnitDisabled { .. } => "unit_disabled",
+            EventKind::UnitDestroyed { .. } => "unit_destroyed",
             EventKind::Lagged { .. } => "lagged",
             EventKind::MatchEnded { .. } => "match_ended",
             EventKind::Aborted => "aborted",
@@ -638,14 +700,30 @@ mod tests {
                 unit: ObjId(4),
                 target: ObjId(9),
             },
-            EventKind::Hit,
+            EventKind::Hit {
+                shot_seq: 1,
+                unit: ObjId(4),
+                target: ObjId(9),
+                section: SmolStr::new_static("turret"),
+                facet: SmolStr::new_static("front"),
+                rounds: 1,
+                damage: 120,
+                armor_left: 230,
+                internals_left: 150,
+                consequences: Vec::new(),
+                cause: SmolStr::new_static("shot:1"),
+            },
             EventKind::Miss {
                 shot_seq: 1,
                 reason: SmolStr::new_static("blocked"),
             },
-            EventKind::SectionDestroyed,
-            EventKind::UnitDisabled,
-            EventKind::UnitDestroyed,
+            EventKind::SectionDestroyed {
+                unit: ObjId(9),
+                section: SmolStr::new_static("turret"),
+                consequences: vec![SmolStr::new_static("remove_weapons")],
+            },
+            EventKind::UnitDisabled { unit: ObjId(9) },
+            EventKind::UnitDestroyed { unit: ObjId(9) },
             EventKind::Lagged { dt_ms: 20_000 },
             EventKind::MatchEnded {
                 reason: EndReason::Elimination {
@@ -854,7 +932,19 @@ mod tests {
             let _ = log.append(5_000, summary(3), None, 4);
             let _ = log.append(
                 6_000,
-                EventKind::Hit,
+                EventKind::Hit {
+                    shot_seq: 1,
+                    unit: ObjId(4),
+                    target: ObjId(9),
+                    section: SmolStr::new_static("hull"),
+                    facet: SmolStr::new_static("front"),
+                    rounds: 1,
+                    damage: 120,
+                    armor_left: 280,
+                    internals_left: 200,
+                    consequences: Vec::new(),
+                    cause: SmolStr::new_static("shot:1"),
+                },
                 Some(("hit:1".to_string(), 12_072_725_193_963_834_385)),
                 5,
             );

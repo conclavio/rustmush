@@ -57,7 +57,7 @@ use tacsim::arena::state::{
     EntryZone, Pilot, Power, ShadowContact, Team, TerrainCell, TrackedRules, WeaponSummary,
 };
 use tacsim::arena::step::{Frame, StepOutput};
-use tacsim::arena::weapons::{NOT_RESOLVED, WeaponBand};
+use tacsim::arena::weapons::WeaponBand;
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
 use tacsim::match_::cockpit;
 
@@ -243,6 +243,13 @@ fn cannon() -> WeaponSummary {
             },
         ],
         count_per_load: 40,
+        // 16b cut W.2: the round's damage and the section it is mounted in. These
+        // fixtures carry no authored silhouette and no facet table, so every shot
+        // resolves at zero and every arrival is a `dispersion` miss — which is what
+        // keeps this file about acceptance and `crates/tacsim/tests/resolution.rs`
+        // about what a round does.
+        damage: 120,
+        mount_section: SmolStr::new("turret"),
     }
 }
 
@@ -262,6 +269,8 @@ fn scout(id: ObjId, team: Team, pose: Pose, weapons: Vec<WeaponSummary>) -> Cust
         sensor_height_cm: 150,
         sensor: Some(sight()),
         weapons,
+        profile: tacsim::arena::resolution::UnitProfile::default(),
+        gunnery: 0,
         unit: tactical_unit(id),
     }
 }
@@ -296,6 +305,7 @@ fn arena_of(
             definition: definition(paint),
             units,
             pilots,
+            resolution: tacsim::match_::stock_resolution(),
             seed: SEED,
         },
         &ArenaConfig::default(),
@@ -609,11 +619,14 @@ fn an_accepted_shot_sets_the_cycle_spends_the_burst_and_schedules_one_impact() {
         .find(|event| event.kind.as_str() == "miss")
         .cloned()
         .expect("one miss line");
+    // 16b cut W.2: these fixtures present no silhouette at all, so the round is
+    // aimed correctly and finds nothing — doc 16 §3.5's dispersion, resolved rather
+    // than deferred.
     assert_eq!(
         miss.kind,
         EventKind::Miss {
             shot_seq: 1,
-            reason: SmolStr::new(NOT_RESOLVED),
+            reason: SmolStr::new(tacsim::arena::damage::DISPERSION),
         }
     );
     // And the cycle really did run down, by itself.

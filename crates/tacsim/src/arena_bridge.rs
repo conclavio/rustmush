@@ -992,7 +992,8 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
                 match_id,
                 end,
                 digest,
-            } => on_ended(ctx, match_id, end, digest),
+                units,
+            } => on_ended(ctx, match_id, end, digest, &units),
         }
     }
 }
@@ -1263,7 +1264,13 @@ fn on_lagged(ctx: &mut Ctx<'_>, match_id: MatchId) {
 /// The arena reports the end. Cut T.2 records it and tells staff; cut T.3 turns
 /// this into check-in (the units' cells and final poses through `apply` and
 /// `mush_sim::place`, the `deployed` markers cleared, the result record written).
-fn on_ended(ctx: &mut Ctx<'_>, match_id: MatchId, end: MatchEnd, digest: [u8; 32]) {
+fn on_ended(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    end: MatchEnd,
+    digest: [u8; 32],
+    units: &[crate::arena::damage::UnitReturn],
+) {
     if let Some(mirror) = ctx
         .w
         .module_state_mut::<ArenaRegistry>()
@@ -1284,7 +1291,7 @@ fn on_ended(ctx: &mut Ctx<'_>, match_id: MatchId, end: MatchEnd, digest: [u8; 32
     // and final poses back through `apply` and `mush_sim::place`, the markers
     // cleared, the seats released, the match untracked and the result written,
     // all in this one re-entry's authoritative step.
-    let checked_in = crate::match_::finish(ctx, match_id, end, digest.clone());
+    let checked_in = crate::match_::finish(ctx, match_id, end, digest.clone(), units);
     notify_staff(
         ctx,
         format!(

@@ -218,6 +218,8 @@ fn custody() -> CustodyOut {
             sensor_height_cm: 150,
             sensor: None,
             weapons: Vec::new(),
+            profile: tacsim::arena::resolution::UnitProfile::default(),
+            gunnery: 0,
             unit: tactical_unit(UNIT),
         }],
         pilots: vec![Pilot {
@@ -226,6 +228,7 @@ fn custody() -> CustodyOut {
             station: SmolStr::new("cockpit"),
             epoch: 1,
         }],
+        resolution: tacsim::match_::stock_resolution(),
         seed: 7_777,
     }
 }

@@ -57,13 +57,23 @@ impl CellGrid for SurfaceComposite {
 
 /// What a line walk over a plain [`CellGrid`] found (16b cut S.1).
 ///
-/// [`Sight`] is the answer; the other three are what the caller's own budget is
-/// measured in — doc 16 §2 W4 bounds *traces and cell probes per pulse*, and a
-/// bound nobody can count is not a bound.
+/// [`Sight`] is the answer; [`CellTrace::target_cover`] is the target cell's own
+/// class read as cover (16b cut W.2); the other three are what the caller's own
+/// budget is measured in — doc 16 §2 W4 bounds *traces and cell probes per
+/// pulse*, and a bound nobody can count is not a bound.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellTrace {
     /// Clear, attenuated or blocked.
     pub sight: Sight,
+    /// **The target cell's cover** (16b cut W.2; doc 16 §3.5 step 1: *cover from
+    /// `direct_fire_path.target_cover` scales the presented area*).
+    ///
+    /// The same value [`Trace::target_cover`] carries and computed by the same
+    /// walk; it was simply dropped before this cut, because cut S.1 asked a line
+    /// walk only whether it could be seen along. The combat arena holds a cell
+    /// grid and no [`SurfaceComposite`] (doc 16 §3.1, D-16-3), so this is how it
+    /// reads the one field its resolution needs without a window.
+    pub target_cover: Cover,
     /// Attenuation gathered along the line, percent.
     pub attenuation: u32,
     /// Cells read, hit or miss.
@@ -513,6 +523,7 @@ pub fn trace_cells(grid: &dyn CellGrid, a: Eye, b: Eye) -> CellTrace {
     let t = walk(grid, &[], &[], a, b, Flight::Straight, true);
     CellTrace {
         sight: sight_of(&t),
+        target_cover: t.target_cover,
         attenuation: t.attenuation,
         visited: t.visited,
         range_cells: t.range_cells,
@@ -1015,5 +1026,39 @@ mod tests {
             trace_cells(&grid, Eye::standing((0, 0)), Eye::standing((30, 0))).sight,
             Sight::BlockedBy(Blocker::Edge)
         );
+    }
+
+    /// **16b cut W.2: `trace_cells` reports the target cell's cover.**
+    ///
+    /// [`Trace::target_cover`] has always been the walk's answer and
+    /// [`CellTrace`] simply dropped it, because cut S.1 asked a line only whether it
+    /// could be seen along. The combat arena's resolution (doc 16 §3.5 step 1)
+    /// scales the presented silhouette by it and holds no
+    /// [`SurfaceComposite`], so the two readings have to agree over the same ground.
+    #[test]
+    fn a_cell_trace_reports_the_same_target_cover_a_full_trace_does() {
+        for (class, want) in [
+            (TerrainClass::Ground, Cover::None),
+            (TerrainClass::Road, Cover::None),
+            (TerrainClass::Rubble, Cover::Partial),
+            (TerrainClass::WoodsLight, Cover::Partial),
+            (TerrainClass::Wall, Cover::Full),
+        ] {
+            let mut row = surface(6, 1, TerrainClass::Ground);
+            set(&mut row, 5, 0, class, 0);
+            let a = Eye::standing((0, 0));
+            let b = Eye::standing((5, 0));
+            let plain = PlainGrid::of(&row);
+            assert_eq!(
+                trace_cells(&plain, a, b).target_cover,
+                want,
+                "the {class:?} cell's cover"
+            );
+            assert_eq!(
+                direct_fire_path(&row, &[], a, b).target_cover,
+                want,
+                "and the full trace agrees"
+            );
+        }
     }
 }

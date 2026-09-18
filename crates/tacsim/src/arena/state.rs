@@ -27,9 +27,11 @@ use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{EventKind, Ledger};
 use crate::arena::perception::{FrameNotice, SensorProfile};
+use crate::arena::resolution::UnitProfile;
 use crate::arena::step::FrameSlots;
 use crate::arena::weapons::{Shot, WeaponBand};
 use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
+use crate::definitions::resolution::ResolutionDef;
 
 /// The digest domain of [`ArenaDefinition::digest`]. Length-prefixed fields
 /// follow it, so a definition's digest can never collide with another contract's
@@ -495,6 +497,16 @@ pub struct WeaponSummary {
     /// **The range bands, nearest first** (16b cut W.1; doc 16 §3.5 step 2), each
     /// with the weapon's own error cone in that band.
     pub bands: Vec<WeaponBand>,
+    /// **What one round does** (16b cut W.2; doc 16 §3.5 "Ammunition definition":
+    /// *`damage` (one fixed value)*), off the ammunition the weapon names — the
+    /// second field of this row that is the ammunition's and not the weapon's.
+    /// Zero for a weapon whose ammunition the catalog does not hold, which is a
+    /// weapon that arrives and does nothing rather than one that refuses.
+    pub damage: u32,
+    /// **The section it is mounted in** (16b cut W.2; doc 16 §3.5 "Weapon
+    /// definition": *`mount` (section and facet)*), which is what
+    /// `remove_weapons(section)` names when a turret is shot off.
+    pub mount_section: SmolStr,
     /// **How many rounds one load holds** (16b cut W.1), off the ammunition
     /// definition. It is what [`Arena::new`] sizes the unit's `ammo` cell from and
     /// what `WEAPONSTATUS` prints as the denominator.
@@ -520,6 +532,15 @@ pub struct CustodyUnit {
     pub sensor: Option<SensorProfile>,
     /// **What it shoots with** (16b cut S.1 carries it; 16b cut W.1 reads it).
     pub weapons: Vec<WeaponSummary>,
+    /// **What it presents and what a hit may strike** (16b cut W.2; doc 16 §3.3
+    /// "Facet attribution" and "Silhouette"), decoded off the authored `UnitSpec`
+    /// at check-out. An empty profile presents nothing and is struck by nothing,
+    /// which is what every fixture from cut A carries.
+    pub profile: UnitProfile,
+    /// **The gunnery rating resolving its shots** (16b cut W.2; doc 16 §3.5 step
+    /// 2's `PilotProfile` seam), 1 to 5. Zero is read as
+    /// [`crate::arena::resolution::STOCK_GUNNERY`] — *every stock rating is 1*.
+    pub gunnery: u8,
     /// M32 unit truth, carried opaque: cut A applies no plan to it (D-16-6).
     pub unit: TacticalUnit,
 }
@@ -550,6 +571,15 @@ pub struct CustodyOut {
     pub units: Vec<CustodyUnit>,
     /// The seated pilots.
     pub pilots: Vec<Pilot>,
+    /// **The resolution table every shot of this match is resolved through** (16b
+    /// cut W.2; doc 16 §3.5 steps 2 and 3), decoded off the content at check-out.
+    ///
+    /// The one content type the arena carries whole rather than in a copy of its
+    /// own, and deliberately: `ResolutionDef::hit_permille` *is* doc 16 §3.5 step
+    /// 3's interpolation, written and tested beside the table it walks, and a
+    /// second copy of that walk in here would be the one place the cockpit's
+    /// percentage and the draw's threshold could come to disagree.
+    pub resolution: ResolutionDef,
     /// The match seed.
     pub seed: u64,
 }
@@ -583,9 +613,20 @@ pub struct UnitState {
     pub sensor_height_cm: u32,
     /// What it sees with (doc 16 §3.6); `None` runs no pass.
     pub sensor: Option<SensorProfile>,
-    /// What it shoots with — the immutable definition rows, in component order.
+    /// What it shoots with — the definition rows, in component order.
+    ///
+    /// **16b cut W.2 made it mutable in one way and one only**: doc 16 §3.3's
+    /// `remove_weapons(section)` consequence empties the rows mounted on a section
+    /// that has been shot off, which is what makes a turreted tank stop being able
+    /// to fire. Nothing else edits it, and no row's own numbers ever change.
     pub weapons: Vec<WeaponSummary>,
-    /// M32 unit truth, carried opaque.
+    /// **What it presents and what a hit may strike** (16b cut W.2; doc 16 §3.3).
+    pub profile: UnitProfile,
+    /// **The gunnery rating resolving its shots** (16b cut W.2), 1 to 5.
+    pub gunnery: u8,
+    /// M32 unit truth, carried opaque — and, from 16b cut W.2, written by exactly
+    /// one thing: one [`mush_tactics::UnitMutationPlan`] per impact through
+    /// `mush_tactics::apply` (doc 16 §3.5 "Damage").
     pub unit: TacticalUnit,
     /// **Per-weapon ready time in arena milliseconds** (16b cut W.1 fills A.1's
     /// map): the arena millisecond at or after which that weapon may fire again,
@@ -608,6 +649,20 @@ pub struct UnitState {
     /// The seat has gone linkdead (doc 07 §1.2): the tank keeps its continuous
     /// orders and accepts no discrete action.
     pub linkdead: bool,
+    /// **It has no weapons and cannot move** (16b cut W.2; doc 16 §3.8's *a wreck
+    /// or disabled with no weapons*, doc 10 3A's *disabled precedes destroyed*).
+    ///
+    /// Set once, on the transition, by the consequence that finished it off, and
+    /// journalled as `unit_disabled` then. It is **not** folded into the state
+    /// hash: every transition into it is a ledger event, so the ledger's own
+    /// sequence already moves with it (see [`crate::arena::hash::state_hash`]'s
+    /// note on what is deliberately absent).
+    pub disabled: bool,
+    /// **How many shots it has fired** (16b cut W.2), for the result record's
+    /// per-unit row (doc 16 §4).
+    pub shots_fired: u32,
+    /// **How many of them landed** (16b cut W.2), likewise.
+    pub hits: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -1255,6 +1310,10 @@ pub struct Arena {
     pub clock: Clock,
     /// The match seed: the key of every draw.
     pub seed: u64,
+    /// **The resolution table** (16b cut W.2), cloned in at check-out for the same
+    /// reason the configuration blocks are: `step` needs no content argument and
+    /// cannot be handed a different curve halfway through a match.
+    pub resolution: ResolutionDef,
     /// The seated pilots, as handed over.
     pub pilots: Vec<Pilot>,
     /// Queued discrete actions per unit, bounded by
@@ -1391,6 +1450,7 @@ impl Arena {
             definition,
             units,
             pilots,
+            resolution,
             seed,
         } = custody;
         if units.is_empty() {
@@ -1442,10 +1502,23 @@ impl Arena {
                     .map(|weapon| (weapon.id.clone(), weapon.count_per_load))
                     .collect(),
                 weapons: unit.weapons,
+                profile: unit.profile,
+                // Doc 16 §3.5 step 2: *every stock rating is 1 through the
+                // `PilotProfile` seam*, which is also the sheet's own floor, so a
+                // check-out that named none resolves a green gunner rather than
+                // dividing by zero.
+                gunnery: if unit.gunnery == 0 {
+                    crate::arena::resolution::STOCK_GUNNERY
+                } else {
+                    unit.gunnery
+                },
                 unit: unit.unit,
                 lock: None,
                 blocked: false,
                 linkdead: false,
+                disabled: false,
+                shots_fired: 0,
+                hits: 0,
             });
         }
         states.sort_by_key(|state| state.id);
@@ -1539,6 +1612,7 @@ impl Arena {
             index,
             clock: Clock::new(),
             seed,
+            resolution,
             pilots,
             pending: BTreeMap::new(),
             shots: BTreeMap::new(),

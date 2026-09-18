@@ -225,6 +225,20 @@ that makes every claim in the file a claim about accounts.
 """
 
 [[site]]
+path = "crates/tacsim/tests/resolution.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut W.2: the money-rule case fights a whole match on the production
+composition root, and a simulator slot belongs to an ACCOUNT (doc 16 section
+3.8). The oracle is boot-hydrated by the host from the store, which a
+`TestWorld` has none of, so this harness installs the same map
+`mush_server::boot` installs — exactly as `match_lifecycle.rs` does, and for
+exactly the same reason.
+"""
+
+[[site]]
 path = "crates/tacsim/tests/cockpit.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

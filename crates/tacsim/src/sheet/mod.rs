@@ -172,6 +172,27 @@ impl Default for PilotSheetState {
     }
 }
 
+/// **One character's pilot profile, off the world** (16b cut W.2), or the stock
+/// green pilot for a character with no sheet.
+///
+/// The one reader outside this module's own verbs, and the whole of what doc 16
+/// §3.5 step 2's *gunnery (every stock rating is 1 through the `PilotProfile`
+/// seam)* needs: the arena's check-out asks it once per unit and carries the
+/// number across the seam, because the arena holds no world (D-16-1) and a
+/// resolution inside a pulse has nobody to ask.
+///
+/// The schema is built here rather than held in a state slot. It is a pure
+/// function of the code, a check-out asks at most once per seated pilot, and the
+/// alternative is a second copy of the schema living in world state where a boot
+/// could disagree with it.
+#[must_use]
+pub fn profile_of(w: &World, character: ObjId) -> PilotProfile {
+    SheetStore::new(Arc::new(schema::sheet_schema()))
+        .get(w, character)
+        .as_ref()
+        .map_or_else(PilotProfile::default, PilotProfile::from_sheet)
+}
+
 /// The game's character-sheet ruleset: one schema, one chargen flow, one
 /// approval queue, one `+roll`, one NPC ability.
 pub struct PilotRuleset {
