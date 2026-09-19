@@ -308,6 +308,15 @@ struct Struck {
     /// The consequences that fired, in authored order; empty unless the section's
     /// internals reached zero on this hit.
     consequences: Vec<Consequence>,
+    /// **The section reached zero internals on THIS hit** (16b cut F.2).
+    ///
+    /// The transition, and not the value. Until this cut `apply_hit` journalled
+    /// `section_destroyed` whenever `internals_left == 0`, so every further round
+    /// that landed on a spent turret wrote a second destruction — and a reader
+    /// counting destructions counted them twice. The consequences were already
+    /// gated on the transition (`plan_hit`'s `fresh`); this carries the same fact
+    /// out so the line is too.
+    fresh: bool,
 }
 
 impl Arena {
@@ -534,24 +543,34 @@ impl Arena {
             ));
             return;
         };
-        let applied = self
-            .unit(shot.target)
-            .map(|state| mush_tactics::apply(&state.unit, &plan, t_ms));
-        let Some(Ok((post, _))) = applied else {
-            // Refuse, never clamp (M32): the caller's unit is untouched, so the
-            // only thing left to do is say so.
-            journal.push((
-                t_ms,
-                EventKind::Miss {
-                    shot_seq: shot.seq,
-                    reason: SmolStr::new_static(REFUSED),
-                },
-                drawn,
-            ));
-            return;
-        };
-        if let Some(state) = self.unit_mut(shot.target) {
-            state.unit = post;
+        // **16b cut F.2**: a plan with no ops is not applied at all. It happens for
+        // exactly one shot — a round that lands on a section already at zero
+        // armour and zero internals, where there is nothing left to spend — and
+        // `apply` would fold no ops and hand back a unit whose only difference is
+        // a bumped revision. A revision is what the check-out diff is taken
+        // against; bumping it for a round that moved nothing put a lie in the one
+        // document that outlives the match. The round is still journalled as a
+        // hit, truthfully (see below).
+        if !plan.ops().is_empty() {
+            let applied = self
+                .unit(shot.target)
+                .map(|state| mush_tactics::apply(&state.unit, &plan, t_ms));
+            let Some(Ok((post, _))) = applied else {
+                // Refuse, never clamp (M32): the caller's unit is untouched, so the
+                // only thing left to do is say so.
+                journal.push((
+                    t_ms,
+                    EventKind::Miss {
+                        shot_seq: shot.seq,
+                        reason: SmolStr::new_static(REFUSED),
+                    },
+                    drawn,
+                ));
+                return;
+            };
+            if let Some(state) = self.unit_mut(shot.target) {
+                state.unit = post;
+            }
         }
         if let Some(state) = self.unit_mut(shot.shooter) {
             state.hits = state.hits.saturating_add(1);
@@ -577,7 +596,15 @@ impl Arena {
             },
             drawn,
         ));
-        if struck.internals_left == 0 {
+        // **16b cut F.2**: on the **transition**, not on the value. Doc 16 §3.5
+        // names no rule for a round that arrives at a section already at zero, so
+        // this engine's answer is that it is a hit that finds nothing left to
+        // break: it is journalled as the `hit` above, with its damage and its
+        // two noughts, and the section is destroyed **once**. The round is not
+        // spilled to the hull — that would be a damage rule doc 16 does not have
+        // — and `struck_through` stays the only way a section's damage reaches
+        // another's armour (doc 16 §3.3).
+        if struck.fresh {
             journal.push((
                 t_ms,
                 EventKind::SectionDestroyed {
@@ -718,6 +745,7 @@ impl Arena {
                 armor_left: u32::try_from(armor_left.max(0)).unwrap_or(0),
                 internals_left: u32::try_from(internals_left.max(0)).unwrap_or(0),
                 consequences,
+                fresh,
             },
             ops,
         ))
@@ -766,6 +794,39 @@ impl Arena {
             ops.push(UnitMutationOp::RevokeCapability { key });
         }
         ops
+    }
+
+    /// **Which of a destroyed section's authored consequences actually took
+    /// effect** (16b cut F.2), in authored order and by their ledger words.
+    ///
+    /// The `section_destroyed` line carries the section's **whole** authored list,
+    /// because the black box records what the content says about the section, and
+    /// that is not changed here. But the pilot's line is a statement about this
+    /// tank now, and [`Consequence::DisableMotionWhenAllOf`] is the one
+    /// consequence that is written down and then does nothing: a biped that loses
+    /// one leg is slowed and still walking (16b cut X.2, doc 16 §9 item 2), and
+    /// `The left_leg is destroyed: the tank is slowed; the tank cannot move.` is
+    /// a contradiction whose second half the pilot would act on. So the notice's
+    /// list is put through the same question [`Arena::apply_consequence`] asked.
+    #[must_use]
+    pub fn fired_consequences(&self, target: ObjId, section: &str) -> Vec<SmolStr> {
+        let Some(state) = self.unit(target) else {
+            return Vec::new();
+        };
+        let Some(profile) = state.profile.section(section) else {
+            return Vec::new();
+        };
+        profile
+            .consequences
+            .iter()
+            .filter(|consequence| match consequence {
+                Consequence::DisableMotionWhenAllOf { sections } => {
+                    self.all_destroyed(target, sections)
+                }
+                _ => true,
+            })
+            .map(|consequence| SmolStr::new_static(consequence.label()))
+            .collect()
     }
 
     /// **Apply one consequence to the arena's own facts** (doc 16 §3.3's column).

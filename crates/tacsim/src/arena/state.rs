@@ -1016,6 +1016,24 @@ pub struct UnitState {
     /// substep just integrated, and cleared at the start of the next (doc 16
     /// §3.4 step 4: *one `blocked` notice per stop*).
     pub blocked: bool,
+    /// **It is standing against something** (16b cut F.2), which is the condition
+    /// `STATUS` prints `HELD` for and the edge the pilot's one notice per stop
+    /// fires on.
+    ///
+    /// Not [`UnitState::blocked`], which is what the *substep just integrated*
+    /// did: a tank ordered forward against a river bank covers no whole
+    /// centimetre on some substeps, never reaches the boundary to be refused at,
+    /// and so read `0 kph` with no `HELD` — the defect the 2026-09-18 smoke found.
+    /// This is set by a stop, cleared by a substep that covered ground or by the
+    /// order being taken off ([`crate::arena::motion::integrate`]), and left alone
+    /// in between.
+    ///
+    /// **Output only.** Nothing in the arena decides anything by it — the reflex
+    /// controller still reads `blocked`, and the ledger's `blocked` event is still
+    /// that flag's rising edge — and it is deliberately **not** folded into
+    /// [`crate::arena::hash::state_hash`], for the reason `held_losses` is not: it
+    /// is a fact about what a pilot is being shown.
+    pub held: bool,
     /// The seat has gone linkdead (doc 07 §1.2): the tank keeps its continuous
     /// orders and accepts no discrete action.
     pub linkdead: bool,
@@ -1998,6 +2016,7 @@ impl Arena {
                 unit: unit.unit,
                 lock: None,
                 blocked: false,
+                held: false,
                 linkdead: false,
                 // **16b cut F.1**: doc 16 §3.8's *disabled — no weapons and no
                 // motion* is a fact about the unit, so a unit that arrives that

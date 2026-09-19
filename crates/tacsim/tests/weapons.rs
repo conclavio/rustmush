@@ -972,8 +972,8 @@ fn a_contact_the_platform_loses_clears_the_lock_with_one_notice() {
         .iter()
         .filter(|(pilot, _)| *pilot == RED_PILOT)
         .flat_map(|(_, frame)| frame.notices.iter())
-        .filter(|notice| notice.contact == contact)
-        .map(|notice| notice.kind)
+        .filter(|notice| notice.contact() == Some(contact))
+        .map(tacsim::arena::perception::FrameNotice::kind)
         .collect();
     assert_eq!(
         told.iter()
@@ -982,9 +982,15 @@ fn a_contact_the_platform_loses_clears_the_lock_with_one_notice() {
         1,
         "one lock-lost notice, once: {told:?}"
     );
+    let any = frames
+        .iter()
+        .find(|(pilot, _)| *pilot == RED_PILOT)
+        .map(|(_, frame)| frame.clone())
+        .unwrap_or_else(|| panic!("the red pilot was sent a frame"));
     assert!(
         cockpit::notice_line(
-            &tacsim::arena::perception::FrameNotice {
+            &any,
+            &tacsim::arena::perception::FrameNotice::Contact {
                 kind: NoticeKind::LockLost,
                 contact,
                 class: Classification::Unknown,

@@ -473,6 +473,31 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
         seen.contains("band 1 of 2"),
         "forty metres is the cannon's inner band: {seen}"
     );
+
+    // **16b cut F.2**: the percentage is the **arena's** line, said once when the
+    // lock resolves at its own timestamp. Cut W.2 printed it from the cockpit as
+    // well, off the frame the world held *before* the order — so a pilot who
+    // re-locked to watch the number close as the range shortened read two lines
+    // with two different numbers, the first of them stale. One order, one line.
+    let repeat = ada.mark();
+    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    ada.expect_after(repeat, "Locked on ").await;
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    let after = strip_ansi(&ada.seen[repeat..]);
+    assert_eq!(
+        after.matches("Locked on ").count(),
+        1,
+        "one LOCK, one percentage:\n{after}"
+    );
+    assert!(
+        after.contains("% to hit"),
+        "and it carries the chance doc 16 §3.5 step 5 promises:\n{after}"
+    );
+
+    // From here the shooter's own outcome line is waited for rather than read out
+    // of the scrollback: the impact resolves a pulse after the `FIRE`, so a
+    // synchronous scan would race the arena.
+    let shot = ada.mark();
     say(&mut ada, "FIRE", "Firing cannon").await;
 
     // The shooter: a round down, and cycling. The second `FIRE` is refused for the
@@ -482,7 +507,7 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     let seen = ask(&mut ada, "FIRE", "Still cycling").await;
     assert!(!seen.contains("No lock"), "the lock is still held: {seen}");
 
-    // The target: untouched, and ready. Damage is cut W.3's.
+    // The target: untouched in the magazine, and ready. Damage is below.
     let seen = ask(&mut bo, "WEAPONSTATUS", "cannon").await;
     assert!(seen.contains("40 of 40 round(s)"), "{seen}");
     assert!(seen.contains("ready"), "{seen}");
@@ -490,6 +515,63 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
         !seen.contains("Locked on"),
         "the blue pilot locked nothing: {seen}"
     );
+
+    // **16b cut F.2**: what the two pilots are told about a round.
+    //
+    // The shooter is told at the **impact** and not at the `FIRE`, so the outcome
+    // line is waited for from the mark taken before the shot: one line, naming
+    // the contact the shooter's own platform holds and nothing about the target's
+    // tank.
+    ada.expect_one_of_after(shot, &["Hit on ", "Miss on "])
+        .await;
+    let seen = strip_ansi(&ada.seen[shot..]);
+    let outcome = seen
+        .lines()
+        .find(|line| line.starts_with("Hit on ") || line.starts_with("Miss on "))
+        .map(str::to_owned)
+        .unwrap_or_else(|| panic!("the shooter was told nothing about their round:\n{seen}"));
+    assert!(
+        outcome.contains(&contact),
+        "the outcome names the contact it holds and never the unit: {outcome}"
+    );
+    assert!(
+        !outcome.contains("Blue Tank")
+            && !outcome.contains("armour")
+            && !outcome.contains("internals"),
+        "and carries nothing about the target's own tank: {outcome}"
+    );
+
+    // Then the coaxial, whose pull is a ten-round burst: at this range one of
+    // them lands, so the victim's half of the surface is exercised without the
+    // test depending on a single draw. Both waits are taken from a mark, because
+    // `Term::expect` scans the whole transcript from the start and the cannon's
+    // own round has already put `Hit on ` in both of them — the burst would prove
+    // nothing at all.
+    let burst = ada.mark();
+    let taking = bo.mark();
+    say(&mut ada, "FIRE machine_gun", "Firing machine_gun").await;
+    ada.expect_after(burst, "Hit on ").await;
+
+    // The victim: their own section and facet, and what is left there, with
+    // nothing whatever about Ada (`observer_rule.rs` asserts that absence surface
+    // by surface).
+    bo.expect_after(taking, "Hit on the ").await;
+
+    // And doc 16 §5's status block, which until this cut did not exist at all: it
+    // lists every section, and the facet the round passed is now below maximum.
+    let seen = poll(&mut bo, "STATUS", "power", "internals").await;
+    assert!(seen.contains("hull"), "every section is listed: {seen}");
+    let moved = seen.lines().any(|line| {
+        line.split_whitespace().any(|word| {
+            word.split_once('/').is_some_and(|(now, max)| {
+                match (now.parse::<i64>(), max.parse::<i64>()) {
+                    (Ok(now), Ok(max)) => now < max,
+                    _ => false,
+                }
+            })
+        })
+    });
+    assert!(moved, "the status block never moved: {seen}");
 
     // And the black box: the lock, the shot and its arrival, in the match's own
     // ledger on the world's writer lane.

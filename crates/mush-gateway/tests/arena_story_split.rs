@@ -698,11 +698,45 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     );
     bo.say("WEAPONSTATUS", OUTSIDE_COCKPIT).await;
 
+    // **16b cut F.2**: the pilot notices cross the boundary too, and split the
+    // same way they do in process — the shooter is told the round landed, the
+    // victim is told where it landed and nothing about who fired.
+    let winner = strip_ansi(&ada.seen);
+    assert!(
+        winner.contains(&format!("Hit on {held}.")),
+        "the shooter's outcome line never crossed the boundary:\n{winner}"
+    );
+    let loser = strip_ansi(&bo.seen);
+    assert!(
+        loser.contains("Hit on the "),
+        "the victim's damage line never crossed the boundary:\n{loser}"
+    );
+    for line in loser
+        .lines()
+        .filter(|line| line.starts_with("Hit on the ") || line.starts_with("The "))
+    {
+        for leak in [held.as_str(), "red", "bearing", "cannon", "°"] {
+            assert!(
+                !line.contains(leak),
+                "a hit notice carried {leak:?} about the shooter: {line}"
+            );
+        }
+    }
+
     // The bystander stood in the lobby for the whole match: the announcements
     // crossed and nothing of the arena did.
     let bystander = strip_ansi(&cy.seen[bystander_mark..]);
     names_nothing(&bystander, red, blue, "the bystander's whole transcript");
-    for leak in [held.as_str(), "Firing", "Locked on", "round(s)"] {
+    for leak in [
+        held.as_str(),
+        "Firing",
+        "Locked on",
+        "round(s)",
+        "Hit on",
+        "Miss on",
+        "is destroyed",
+        "armour",
+    ] {
         assert!(
             !bystander.contains(leak),
             "the bystander was shown {leak:?} through the boundary:\n{bystander}"

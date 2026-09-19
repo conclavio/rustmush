@@ -1472,6 +1472,15 @@ fn x2_one_leg_slows_the_biped_and_both_legs_stop_it() {
         Some(false),
         "one leg is a limp, not a stop"
     );
+    // **16b cut F.2**: and the line the pilot reads says only what is true. The
+    // `section_destroyed` ledger line carries both authored words, because the
+    // black box records the content; the notice is built from the consequences
+    // that actually fired, so a biped still walking is not told it cannot move.
+    assert_eq!(
+        arena.fired_consequences(RED, "left_leg"),
+        vec![smol_str::SmolStr::new("slow")],
+        "the pair rule has not fired: the pilot is told the limp and nothing else"
+    );
     run(&mut arena, &mut wall, 500, 8);
     assert_eq!(
         arena.unit(RED).map(|state| state.speed_cms),
@@ -1492,6 +1501,14 @@ fn x2_one_leg_slows_the_biped_and_both_legs_stop_it() {
         arena.unit(RED).map(|state| state.limits.motion_disabled),
         Some(true),
         "doc 16 §9 item 2: `disable_motion` for both"
+    );
+    assert_eq!(
+        arena.fired_consequences(RED, "right_leg"),
+        vec![
+            smol_str::SmolStr::new("slow"),
+            smol_str::SmolStr::new("disable_motion_when_all_of"),
+        ],
+        "both legs are gone, so now the pilot is told the tank cannot move"
     );
     assert_eq!(arena.unit(RED).map(|state| state.speed_cms), Some(0));
     let stopped = arena.unit(RED).map(|state| state.pose.y_cm);

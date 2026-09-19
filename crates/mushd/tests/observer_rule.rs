@@ -973,8 +973,24 @@ async fn first_contact(term: &mut Term) -> String {
 
 /// Every word that would betray the shooting to somebody outside the cockpit that
 /// took it.
+///
+/// **16b cut F.2** added the second row: a pilot's notices — the shooter's
+/// outcome line, the victim's damage line, a stop, a refusal — are addressed to
+/// one actor and reach nobody else, on any surface.
 fn says_nothing_of_the_shooting(seen: &str, contact: &str, what: &str) {
-    for leak in [contact, "Firing", "Locked on", "Locking", "round(s)"] {
+    for leak in [
+        contact,
+        "Firing",
+        "Locked on",
+        "Locking",
+        "round(s)",
+        "Hit on",
+        "Miss on",
+        "is destroyed",
+        "armour",
+        "refused",
+        "Held:",
+    ] {
         assert!(
             !seen.contains(leak),
             "{what} leaked {leak:?} out of the arena:\n{seen}"
@@ -993,8 +1009,14 @@ fn says_nothing_of_the_shooting(seen: &str, contact: &str, what: &str) {
 /// * the **staffer**, on `look`, `+map`, `@unit/show` and `@unit/status`;
 /// * the **web client**, on the same account through the other transport;
 /// * and the **target's own pilot**, who holds a contact on its attacker and is
-///   still told nothing of the round that hit it — there is no damage or hit feed
-///   in the cockpit at all (doc 16 §5 asks for one; the frame carries none).
+///   told **that it was hit and where** — doc 16 §5's notice feed, which 16b cut
+///   F.2 built — and still nothing that identifies or locates the shooter: no
+///   object number, no name, no contact id, no bearing, no side, no weapon.
+///
+/// The last of those is the half that changed. Cut W.3 recorded the honest gap —
+/// the frame carried no damage surface, so the target was told nothing at all —
+/// and this cut closes it without loosening the rule by a word: where a round
+/// came from is a thing only a sensor may tell.
 ///
 /// The absence assertions are only worth making if something really happened, so
 /// the last act is an abort and a staff read of the checked-in tank: a facet whose
@@ -1135,11 +1157,42 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     // ---- the target's own pilot ----------------------------------------
     //
     // It holds a contact on its attacker — forty metres of open grass is well
-    // inside the stock sensor — and that is **all** it holds: no name, no object
-    // number, and not one word about the two rounds that hit it.
+    // inside the stock sensor — and it is told, at each impact, that it was hit
+    // and where. What it is **not** told is anything at all about who fired: no
+    // name, no object number, not the contact id it holds the shooter under, not
+    // a bearing, not a side, not a weapon.
     let seen = ask(&mut bo, "CONTACTS", "bearing").await;
     names_nothing(&seen, red, blue, "the target's `CONTACTS`");
     let target = strip_ansi(&bo.seen[target_mark..]);
+    assert!(
+        target.contains("Hit on the "),
+        "the target was told nothing about the rounds that hit it:\n{target}"
+    );
+    // The contact id *the target itself* holds the shooter under is the one id a
+    // leak would most plausibly carry, so it is named explicitly.
+    let bos_contact = first_contact(&mut bo).await;
+    let told: Vec<&str> = target
+        .lines()
+        .filter(|line| line.starts_with("Hit on the ") || line.starts_with("The "))
+        .collect();
+    assert!(!told.is_empty(), "{target}");
+    for line in &told {
+        for leak in [
+            RED_TANK.to_string(),
+            format!("#{red}"),
+            contact.clone(),
+            bos_contact.clone(),
+            "red".to_string(),
+            "bearing".to_string(),
+            "cannon".to_string(),
+            "°".to_string(),
+        ] {
+            assert!(
+                !line.contains(&leak),
+                "a hit notice carried {leak:?} about the shooter: {line}"
+            );
+        }
+    }
     for leak in [
         RED_TANK.to_string(),
         format!("#{red}"),
@@ -1154,6 +1207,13 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
             "the target was told {leak:?} about the round that hit it:\n{target}"
         );
     }
+    // And the shooter is not shown the victim's half either: `Hit on the …` is
+    // the victim's sentence and `Hit on <contact>.` is the shooter's.
+    let shooter = strip_ansi(&ada.seen);
+    assert!(
+        !shooter.contains("Hit on the "),
+        "the shooter was shown the target's own damage:\n{shooter}"
+    );
 
     // ---- and it really was hit -----------------------------------------
     say(&mut ada, "SIM ABORT", "aborts match").await;

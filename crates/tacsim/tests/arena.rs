@@ -2,7 +2,7 @@
 //! A7; doc 16 §3.1 "Rate independence" and "Determinism", §3.4, §8's *cross-tempo
 //! property test*).
 //!
-//! Eight tests, driving the library directly — no host, no store, no task, which
+//! Ten tests, driving the library directly — no host, no store, no task, which
 //! is the whole point of doc 16 §3.1's *the arena core is a library*:
 //!
 //! - **(a)** one scripted control and intent log, keyed by **arena** time,
@@ -17,7 +17,14 @@
 //!   into pulses;
 //! - **(f)** `match.max_duration_ms` ends the match, and a further step does
 //!   nothing;
-//! - **(g)** the window's edge stops a unit with one notice.
+//! - **(g)** the window's edge stops a unit with one notice;
+//! - **(g2)** 16b cut F.2: the **pilot's** own notice per stop, once, naming which
+//!   of doc 16 §3.4 step 4's three refusals it was and never the cell's occupant;
+//! - **(g3)** and the condition it is read off survives a substep in which the
+//!   tank, still ordered forward, covered no whole centimetre — the pulse
+//!   remainder that every pulse in production ends on — while the substep flag
+//!   the ledger's own edge reads is off, and the pilot's frame carries the
+//!   condition.
 //!
 //! # Why the tempo is pinned, and pinned to `Quiet`
 //!
@@ -53,7 +60,7 @@ use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EndReason, EntryZone,
     Pilot, Power, StopReason, Team, TerrainCell, TrackedRules,
 };
-use tacsim::arena::step::StepOutput;
+use tacsim::arena::step::{Frame, StepOutput};
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
 
 // ---------------------------------------------------------------------------
@@ -1092,6 +1099,191 @@ fn the_window_edge_stops_a_unit_with_one_notice() {
         .map(|(pilot, frame)| (*pilot, frame.blocked))
         .collect();
     assert_eq!(last.get(&ObjId(1_000)), Some(&true));
+}
+
+// ---------------------------------------------------------------------------
+// (g2) The pilot's own `blocked` notice (16b cut F.2; doc 16 §3.4 step 4)
+// ---------------------------------------------------------------------------
+
+/// Every notice line one pilot was sent over a run, in order.
+fn heard(collected: &[(ObjId, Frame)], pilot: ObjId) -> Vec<String> {
+    collected
+        .iter()
+        .filter(|(who, _)| *who == pilot)
+        .flat_map(|(_, frame)| tacsim::match_::cockpit::notice_lines(frame))
+        .collect()
+}
+
+/// Drive `MOVER` at `heading_mdeg` for `pulses` pulses of a second, answering
+/// every frame the run produced.
+fn drive(arena: &mut Arena, heading_mdeg: u32, pulses: u32) -> Vec<(ObjId, Frame)> {
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    if let Some(unit) = arena.unit_mut(MOVER) {
+        unit.power = Power::Online;
+        unit.pose.heading_mdeg = heading_mdeg;
+        unit.desired_heading_mdeg = heading_mdeg;
+        unit.speed_cms = 1_000;
+        unit.desired_speed_cms = 1_000;
+    }
+    let mut collected: Vec<(ObjId, Frame)> = Vec::new();
+    let mut wall = 0_i64;
+    collected.extend(arena.step(wall, &[], &[]).frames);
+    for _ in 0..pulses {
+        wall += 1_000;
+        collected.extend(arena.step(wall, &[], &[]).frames);
+    }
+    collected
+}
+
+#[test]
+fn a_stop_tells_the_pilot_once_and_names_what_stopped_it() {
+    // Doc 16 §3.4 step 4's three refusals, each with its own sentence, and each
+    // said **once per stop** however long the standing order holds the tank
+    // against the obstacle. 16b cut F.2: until this cut the only surface for the
+    // fact was a `, HELD` suffix a pilot had to type `STATUS` to see.
+    //
+    // (1) The window's edge: north out of the top row.
+    let mut arena = arena_of(
+        vec![tank(MOVER, Team::Red, centre(30, 62))],
+        &MatchConfig::default(),
+    );
+    let told = heard(&drive(&mut arena, 0, 10), ObjId(1_000));
+    let stops: Vec<&String> = told
+        .iter()
+        .filter(|line| line.starts_with("Held:"))
+        .collect();
+    assert_eq!(
+        stops,
+        vec![&"Held: this is the edge of the arena.".to_owned()],
+        "one line per stop, and it names the edge: {told:?}"
+    );
+    assert!(
+        arena.unit(MOVER).is_some_and(|unit| unit.held),
+        "and the condition stands while the order does"
+    );
+
+    // (2) Impassable ground: east into the band at column 20.
+    let mut arena = arena_of(
+        vec![tank(MOVER, Team::Red, centre(BAND_X - 3, 30))],
+        &MatchConfig::default(),
+    );
+    let told = heard(&drive(&mut arena, 90_000, 10), ObjId(1_000));
+    let stops: Vec<&String> = told
+        .iter()
+        .filter(|line| line.starts_with("Held:"))
+        .collect();
+    assert_eq!(
+        stops,
+        vec![&"Held: the ground ahead will not take the tank.".to_owned()],
+        "{told:?}"
+    );
+
+    // (3) An occupied cell — and the line names neither what nor whose, because
+    // the cell may hold a unit this platform has not detected (doc 16 §3.6).
+    let mut arena = arena_of(
+        vec![
+            tank(MOVER, Team::Red, centre(10, 30)),
+            tank(PARKED, Team::Blue, centre(13, 30)),
+        ],
+        &MatchConfig::default(),
+    );
+    let told = heard(&drive(&mut arena, 90_000, 10), ObjId(1_000));
+    let stops: Vec<&String> = told
+        .iter()
+        .filter(|line| line.starts_with("Held:"))
+        .collect();
+    assert_eq!(
+        stops,
+        vec![&"Held: something is in the way.".to_owned()],
+        "{told:?}"
+    );
+    for line in &told {
+        assert!(
+            !line.contains(&format!("#{}", PARKED.0)) && !line.contains("blue"),
+            "the stop names neither the unit nor its side: {line}"
+        );
+    }
+}
+
+#[test]
+fn a_tank_still_pushing_against_an_obstacle_still_reads_held() {
+    // The defect the 2026-09-18 smoke found: `UnitState::blocked` is cleared at
+    // the top of every substep and only set again by a substep that reached the
+    // boundary, so a tank ordered forward from rest against a bank read `0 kph`
+    // with no `HELD` on the substeps it covered no whole centimetre in. The
+    // condition the frame carries is now `held`, which a stop sets and only
+    // movement (or the order coming off) clears.
+    let mut arena = arena_of(
+        vec![tank(MOVER, Team::Red, centre(BAND_X - 1, 30))],
+        &MatchConfig::default(),
+    );
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    if let Some(unit) = arena.unit_mut(MOVER) {
+        unit.power = Power::Online;
+        unit.pose.heading_mdeg = 90_000;
+        unit.desired_heading_mdeg = 90_000;
+        unit.desired_speed_cms = 1_000;
+    }
+    // The pulse length is **not** a multiple of the substep, which is what makes
+    // this test the one the defect needs. 1,000 cm cells against 1,000 cm/s is a
+    // 250 ms substep, so a 1,030 ms pulse ends on a 30 ms remainder — and in that
+    // remainder a tank the previous substep stopped accelerates from nought to
+    // `200 × 30 / 1000 = 6` cm/s and travels `6 × 30 / 1000 = 0` cm. `advance`
+    // returns early on that, so `blocked` — cleared at the top of every substep —
+    // is **false** at the end of the pulse while the tank is standing against the
+    // bank with a standing order to go through it. Every pulse in production has
+    // such a remainder.
+    let mut wall = 0_i64;
+    arena.step(wall, &[], &[]);
+    let mut stopped = false;
+    let mut short_substep_pulses = 0_u32;
+    let mut frames_held = 0_u32;
+    for _ in 0..20 {
+        wall += 1_030;
+        let out = arena.step(wall, &[], &[]);
+        let Some(unit) = arena.unit(MOVER) else {
+            continue;
+        };
+        stopped |= unit.held;
+        if stopped {
+            assert!(
+                unit.held,
+                "the condition did not survive a substep that covered no ground"
+            );
+            // The two facts the cut claims are different, on the pulses where they
+            // are: the substep flag is off and the condition is on.
+            if !unit.blocked {
+                short_substep_pulses += 1;
+            }
+            // And it is the **condition** the pilot's frame carries, which is what
+            // `STATUS` prints `, HELD` off (16b cut F.2's half of brief item 1).
+            for (_, frame) in &out.frames {
+                assert!(
+                    frame.blocked,
+                    "the frame says the tank is free while it stands against the bank"
+                );
+                frames_held += 1;
+            }
+        }
+    }
+    assert!(stopped, "the tank reached the band");
+    assert!(
+        short_substep_pulses > 0,
+        "no pulse ended on a substep that covered no ground, so `held` was never \
+         tested against `blocked`"
+    );
+    assert!(frames_held > 0, "the pilot was sent no frame at all");
+    // And the order coming off clears it: a tank told to stop is not being held
+    // against anything.
+    if let Some(unit) = arena.unit_mut(MOVER) {
+        unit.desired_speed_cms = 0;
+    }
+    wall += 1_030;
+    let out = arena.step(wall, &[], &[]);
+    assert!(arena.unit(MOVER).is_some_and(|unit| !unit.held));
+    for (_, frame) in &out.frames {
+        assert!(!frame.blocked, "and the frame says so too");
+    }
 }
 
 // ---------------------------------------------------------------------------

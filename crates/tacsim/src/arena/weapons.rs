@@ -298,6 +298,20 @@ pub struct FrameWeapon {
     /// 2), or `None` with no lock, with the lock past the last band, or on a weapon
     /// that declares no band at all.
     pub range_band: Option<FrameBand>,
+    /// **The chance one round of THIS weapon would land**, per mille (16b cut
+    /// F.2; doc 16 §3.5 step 5, and §5's *per weapon*), or `None` with no lock.
+    ///
+    /// Cut W.2 put one number on the frame — the **best** of the platform's
+    /// weapons — and printed it above the rows, so a pilot who reached for the
+    /// coaxial during the cannon's six-second cycle read the cannon's 46 % and
+    /// fired at 21 %. Doc 16 §5 makes `WEAPONSTATUS` a per-weapon block and §3.5
+    /// step 5 defines `p_permille` per **shot**, so the number belongs on the row.
+    ///
+    /// Resolved through the same five steps the shot itself takes, against the
+    /// locked contact's own target and through the one trace
+    /// [`crate::arena::resolution::LockAim`] already took — so what a pilot is
+    /// shown is what a shot taken now would be drawn against.
+    pub p_permille: Option<u32>,
 }
 
 impl FrameWeapon {
@@ -316,6 +330,11 @@ impl FrameWeapon {
             && self.rounds == other.rounds
             && self.rounds_max == other.rounds_max
             && self.range_band == other.range_band
+            // **16b cut F.2**: the chance is compared, exactly as cut W.2's
+            // platform-wide one was on the frame itself — a percentage that lagged
+            // a tempo behind the range it is a function of would be a lie about the
+            // one number a pilot decides to shoot on.
+            && self.p_permille == other.p_permille
     }
 }
 
@@ -545,11 +564,20 @@ impl Arena {
     /// **What one platform carries, as its pilots' frame carries it** (16b cut W.1),
     /// in component order.
     ///
-    /// `lock_range_cm` is the range to the locked contact, which the frame builder
-    /// already has off [`crate::arena::step::Frame::contacts`]; `None` is no lock,
-    /// and then no weapon reports a band.
+    /// `aim` is the platform's own lock, resolved once by
+    /// [`Arena::lock_aim`](crate::arena::state::Arena); `None` is no lock, and then
+    /// no weapon reports a band or a chance.
+    ///
+    /// **16b cut F.2** widened it from the bare range to the whole aim, because a
+    /// per-weapon chance needs the target and the cover as well — and resolving
+    /// the one trace per platform rather than per weapon is what keeps the cost
+    /// where cut W.2's single platform-wide number left it.
     #[must_use]
-    pub fn frame_weapons(&self, platform: ObjId, lock_range_cm: Option<u64>) -> Vec<FrameWeapon> {
+    pub fn frame_weapons(
+        &self,
+        platform: ObjId,
+        aim: Option<&crate::arena::resolution::LockAim>,
+    ) -> Vec<FrameWeapon> {
         let Some(state) = self.unit(platform) else {
             return Vec::new();
         };
@@ -573,13 +601,17 @@ impl Arena {
                     ready_in_ms: state.weapon_ready_in_ms(&weapon.id, self.now_ms),
                     rounds: state.weapon_ammo(&weapon.id),
                     rounds_max: weapon.count_per_load,
-                    range_band: lock_range_cm.and_then(|range| {
-                        weapon.band_of(range).map(|(index, band)| FrameBand {
+                    range_band: aim.and_then(|aim| {
+                        weapon.band_of(aim.range_cm).map(|(index, band)| FrameBand {
                             index,
                             of: bands,
                             max_range_cm: band.max_range_cm,
                             dispersion_mrad: band.dispersion_mrad,
                         })
+                    }),
+                    p_permille: aim.map(|aim| {
+                        self.resolve_shot(platform, aim.target, &weapon.id, aim.range_cm, aim.cover)
+                            .p_permille
                     }),
                 }
             })
@@ -842,16 +874,24 @@ mod tests {
         assert!(row.ready && row.ready_in_ms == 0);
         assert_eq!((row.rounds, row.rounds_max), (40, 40));
         assert_eq!(row.range_band, None, "no lock, no band");
-        // A lock inside the first band, and one past the last.
+        assert_eq!(row.p_permille, None, "and no chance to quote");
+        // A lock inside the first band, and one past the last. **16b cut F.2**:
+        // the aim carries the target and the cover as well as the range, because
+        // each weapon resolves its own chance against them.
+        let aim = |range_cm: u64| crate::arena::resolution::LockAim {
+            target: BLUE,
+            range_cm,
+            cover: mush_atlas::Cover::None,
+        };
         let inside = arena
-            .frame_weapons(RED, Some(4_000))
+            .frame_weapons(RED, Some(&aim(4_000)))
             .first()
             .and_then(|row| row.range_band)
             .unwrap_or_else(|| panic!("a band"));
         assert_eq!((inside.index, inside.of), (1, 2));
         assert_eq!(
             arena
-                .frame_weapons(RED, Some(400_000))
+                .frame_weapons(RED, Some(&aim(400_000)))
                 .first()
                 .and_then(|row| row.range_band),
             None,
@@ -863,7 +903,7 @@ mod tests {
         online(&mut arena, RED);
         let _ = arena.resolve_fire(RED, "cannon");
         let row = arena
-            .frame_weapons(RED, Some(4_000))
+            .frame_weapons(RED, Some(&aim(4_000)))
             .first()
             .cloned()
             .unwrap_or_else(|| panic!("the cannon"));

@@ -607,30 +607,44 @@ impl Arena {
         }
     }
 
-    /// **Doc 16 §3.5 step 5**: the chance the platform's own lock would be hit at,
-    /// per mille, for the weapon with the best of it — the number `LOCK` and
-    /// `WEAPONSTATUS` print *before any shot*.
+    /// **What the platform's own lock resolves against** (16b cut W.1's
+    /// `lock_range_cm`, widened by cut F.2): the target behind the contact, the
+    /// range to it, and the cover the ground gives it.
     ///
-    /// `None` with no lock, with a lock whose contact is no longer held, or on a
-    /// platform carrying nothing. It traces, exactly as the shot will: what the
-    /// pilot is shown is what a shot taken now would be resolved at, cover and all.
+    /// `None` with no lock, with a lock whose contact is no longer held, and for a
+    /// target that has left the match. It takes the **one** trace a shot would
+    /// take, here rather than once per weapon, so what a pilot is shown is what a
+    /// shot taken now would be resolved at — cover and all — at the cost cut W.2's
+    /// `lock_p_permille` already paid.
+    ///
+    /// The range is `range_cm(shooter, target)`, which is the same function
+    /// [`crate::arena::step::Arena::frame_contacts`] takes a contact's range with,
+    /// so the band a weapon reports and the band the contact row prints cannot
+    /// disagree.
     #[must_use]
-    pub fn lock_p_permille(&self, platform: ObjId) -> Option<u32> {
+    pub fn lock_aim(&self, platform: ObjId) -> Option<LockAim> {
         let state = self.unit(platform)?;
         let contact = state.lock?;
         let target = self.contacts.resolve(platform, contact)?.target;
         let at = self.unit(target)?;
-        let range = range_cm(&state.pose, &at.pose);
-        let cover = self.fire_cover(platform, target);
-        state
-            .weapons
-            .iter()
-            .map(|weapon| {
-                self.resolve_shot(platform, target, &weapon.id, range, cover)
-                    .p_permille
-            })
-            .max()
+        Some(LockAim {
+            target,
+            range_cm: range_cm(&state.pose, &at.pose),
+            cover: self.fire_cover(platform, target),
+        })
     }
+}
+
+/// **The lock, resolved once per pilot per pulse** (16b cut F.2), for every
+/// weapon's band and every weapon's chance to read off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LockAim {
+    /// What the locked contact is held on.
+    pub target: ObjId,
+    /// The range to it, centimetres.
+    pub range_cm: u64,
+    /// What the ground it stands on gives it.
+    pub cover: Cover,
 }
 
 /// One error term in microradians: `weight × units / 1000`, where both are per

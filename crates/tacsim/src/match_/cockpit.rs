@@ -91,8 +91,10 @@ use mush_core::{ArgShape, ChannelId, CmdError, CommandSpec, Ctx, ObjId, Registry
 use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
+use crate::arena::damage;
 use crate::arena::intents::{ControlState, IntentKind};
-use crate::arena::perception::{FrameNotice, NoticeKind};
+use crate::arena::motion::BlockedCause;
+use crate::arena::perception::{FrameNotice, NoticeKind, RefusalDetail};
 use crate::arena::state::{Channel, Classification, ContactId, Power};
 use crate::arena::step::Frame;
 use crate::arena_bridge::{
@@ -562,34 +564,215 @@ impl ContactRow {
     }
 }
 
-/// **The line one notice prints** (16b cut S.2; doc 16 §3.6: *notices fire once
-/// per transition*).
+/// **The line one notice prints** (16b cut S.2, extended by 16b cut F.2; doc 16
+/// §3.6: *notices fire once per transition*, §3.4 step 4, §5: *`Notice` events for
+/// transitions and refusals*).
 ///
 /// The one renderer, so the bridge's output line, the frame's `notices` array and
 /// any later surface cannot word the same transition three ways. `rows` is the
 /// frame's own contact list, which is where an acquisition's bearing and band come
 /// from; a `lost` contact is not in it any more and is named by its id alone.
+/// `frame` is the frame the notice rides — a lock's percentage is the one this
+/// pulse resolved, read off the very rows `WEAPONSTATUS` prints, so the two can
+/// never be two numbers. Every sentence is otherwise built from the notice's
+/// **own** fields: the frame is a source of numbers and never of identities, so
+/// two locks that resolved in one pulse each name the contact they were about.
+///
+/// **The observer rule is checked sentence by sentence here.** A shooter's line
+/// names the contact its own platform holds and never a unit; a victim's line
+/// names the victim's own section and facet and carries no id, no bearing, no team
+/// and no weapon; a blocked line names a cause and never a cell's occupant.
 #[must_use]
-pub fn notice_line(notice: &FrameNotice, rows: &[ContactRow]) -> String {
-    let row = rows.iter().find(|row| row.id == notice.contact);
-    match notice.kind {
-        NoticeKind::Acquired => match row {
-            Some(row) => format!(
-                "New contact {}: bearing {:03}°, {}.",
-                row.id, row.bearing_deg, row.band
-            ),
-            None => format!("New contact {}.", notice.contact),
+pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> String {
+    match notice {
+        FrameNotice::Contact {
+            kind,
+            contact,
+            class,
+        } => {
+            let row = rows.iter().find(|row| row.id == *contact);
+            match kind {
+                NoticeKind::Acquired => match row {
+                    Some(row) => format!(
+                        "New contact {}: bearing {:03}°, {}.",
+                        row.id, row.bearing_deg, row.band
+                    ),
+                    None => format!("New contact {contact}."),
+                },
+                NoticeKind::Classified => {
+                    format!("Contact {contact} identified: {}.", class_word(*class))
+                }
+                // 16b cut W.1: the lock broke because the contact stopped being
+                // held. Said at once, because the pilot's next `FIRE` is going to
+                // be refused for it.
+                NoticeKind::LockLost => format!("Lock on {contact} broken: contact gone."),
+                // `Lost`, and anything a later cut puts in the contact arm
+                // without a sentence of its own.
+                _ => format!("Contact {contact} lost."),
+            }
+        }
+        // 16b cut F.2: doc 16 §3.5 step 5's percentage, said when the lock
+        // resolves. The same sentence `WEAPONSTATUS` prints, from the same place.
+        //
+        // The percentage is quoted **only** when the frame's lock is still this
+        // notice's contact. `LOCK` is a discrete, queued intent, so two of them
+        // drain in one pulse and the frame carries the second one's lock: a
+        // superseded lock's line would otherwise be rendered with the chance
+        // against a contact the pilot has already stopped aiming at, and both
+        // lines would name the same id. The bare sentence is the honest answer
+        // for a lock that was taken and then replaced inside one pulse.
+        FrameNotice::Locked { contact } => match frame_lock(frame) {
+            Some(held) if held == *contact => {
+                lock_line(frame).unwrap_or_else(|| format!("Locked on {contact}."))
+            }
+            _ => format!("Locked on {contact}."),
         },
-        NoticeKind::Classified => format!(
-            "Contact {} identified: {}.",
-            notice.contact,
-            class_word(notice.class)
-        ),
-        NoticeKind::Lost => format!("Contact {} lost.", notice.contact),
-        // 16b cut W.1: the lock broke because the contact stopped being held. Said
-        // at once, because the pilot's next `FIRE` is going to be refused for it.
-        NoticeKind::LockLost => format!("Lock on {} broken: contact gone.", notice.contact),
+        FrameNotice::Hit { contact } => match contact {
+            Some(contact) => format!("Hit on {contact}."),
+            None => "Hit.".to_owned(),
+        },
+        FrameNotice::Miss { contact, reason } => match contact {
+            Some(contact) => format!("Miss on {contact}: {}.", miss_words(reason)),
+            None => format!("Miss: {}.", miss_words(reason)),
+        },
+        FrameNotice::Kill { contact } => match contact {
+            Some(contact) => format!("{contact} destroyed."),
+            None => "Target destroyed.".to_owned(),
+        },
+        FrameNotice::Struck {
+            section,
+            armor_section,
+            facet,
+            armor_left,
+            armor_max,
+            internals_left,
+            internals_max,
+        } => {
+            // Doc 16 §3.3: a section with no armour of its own is **struck
+            // through** another's, and the armour numbers are then that other
+            // section's cell. The sentence says so rather than hanging a foreign
+            // facet off the section that took the round — a pilot who reads
+            // `the engine's rear facet` on a tank whose engine has no facets is
+            // being told something about their own machine that is not true.
+            let place = if armor_section == section {
+                format!("the {section}'s {facet} facet")
+            } else {
+                format!("the {section}, through the {armor_section}'s {facet} facet")
+            };
+            if *armor_left > 0 {
+                format!("Hit on {place}: {armor_left} of {armor_max} armour left.")
+            } else {
+                format!("Hit on {place}: armour gone, {internals_left} of {internals_max} inside.")
+            }
+        }
+        FrameNotice::SectionLost {
+            section,
+            consequences,
+        } => {
+            let cost = consequence_words(consequences);
+            if cost.is_empty() {
+                format!("The {section} is destroyed.")
+            } else {
+                format!("The {section} is destroyed: {cost}.")
+            }
+        }
+        FrameNotice::Refused {
+            order,
+            refusal,
+            weapon,
+            detail,
+        } => refusal_line(order, *refusal, weapon.as_deref(), *detail),
+        FrameNotice::Blocked { cause } => match cause {
+            BlockedCause::Impassable => "Held: the ground ahead will not take the tank.".to_owned(),
+            BlockedCause::Occupied => "Held: something is in the way.".to_owned(),
+            BlockedCause::Edge => "Held: this is the edge of the arena.".to_owned(),
+        },
     }
+}
+
+/// **A miss reason in plain words** (16b cut F.2), one per
+/// [`crate::arena::damage::MISS_REASONS`] — the ledger's own vocabulary read as a
+/// gunner hears it. An unknown word is printed as it stands rather than swallowed,
+/// so a seventh reason is a sentence somebody has to come and write.
+fn miss_words(reason: &str) -> &str {
+    match reason {
+        damage::TARGET_GONE => "the target is gone",
+        damage::WRECK => "the target is already a wreck",
+        damage::MOVED => "the target moved",
+        damage::BLOCKED => "the line was blocked",
+        damage::COVER => "the target is behind cover",
+        damage::DISPERSION => "the round went wide",
+        damage::REFUSED => "the round found nothing to break",
+        other => other,
+    }
+}
+
+/// **What a lost section costs the tank, in plain words** (16b cut F.2), joined in
+/// authored order.
+///
+/// The words are `crate::arena::resolution::Consequence::label`'s, so the pilot's
+/// sentence and the black box name the same things. The **list** is not the
+/// ledger line's: `crate::arena::damage::Arena::fired_consequences` has already
+/// dropped the one consequence that can be authored and not fire — a biped's
+/// `disable_motion_when_all_of` on the first of its two legs — so every word
+/// joined here is true of the tank as it now stands.
+fn consequence_words(consequences: &[SmolStr]) -> String {
+    consequences
+        .iter()
+        .map(|label| match label.as_str() {
+            "destroy_unit" => "the tank is finished",
+            "remove_weapons" => "its weapons are gone",
+            "slow" => "the tank is slowed",
+            "no_turn_toward" => "it will not turn that way",
+            "disable_motion" | "disable_motion_when_all_of" => "the tank cannot move",
+            other => other,
+        })
+        .collect::<Vec<&str>>()
+        .join("; ")
+}
+
+/// **The line an arena-side refusal prints** (16b cut F.2).
+///
+/// It is the **same sentence** the cockpit's own pre-check prints for the same
+/// condition, built from the same [`CockpitError`] — so the answer a pilot gets
+/// when the frame was fresh enough to refuse locally and the answer they get a
+/// pulse later are one string, and neither can drift. The prefix names the order,
+/// because a refusal that arrives a pulse after the pilot typed something has to
+/// say what it is about.
+fn refusal_line(
+    order: &str,
+    refusal: crate::arena::intents::Refusal,
+    weapon: Option<&str>,
+    detail: RefusalDetail,
+) -> String {
+    use crate::arena::intents::Refusal;
+    let said = match (refusal, detail) {
+        (Refusal::NoLock | Refusal::NoContact, _) => match refusal {
+            Refusal::NoContact => CockpitError::NoSuchContact.to_string(),
+            _ => CockpitError::NoLock.to_string(),
+        },
+        (Refusal::Cycling, RefusalDetail::Cycling { secs }) => {
+            CockpitError::Cycling { secs }.to_string()
+        }
+        (Refusal::Cycling, _) => CockpitError::Cycling { secs: 0 }.to_string(),
+        (Refusal::Empty, _) => CockpitError::Empty.to_string(),
+        (Refusal::Overheated, RefusalDetail::Overheated { heat, max }) => {
+            CockpitError::Overheated { heat, max }.to_string()
+        }
+        (Refusal::Overheated, _) => OVERHEATED.to_owned(),
+        (Refusal::PowerNotOnline, _) => CockpitError::PowerNotOnline.to_string(),
+        (Refusal::NoWeapon, _) => {
+            CockpitError::NoSuchWeapon(weapon.unwrap_or_default().to_owned()).to_string()
+        }
+        // The rest cannot be produced by a pilot's own order today — a wreck and a
+        // unit the arena has let go are refused at phase 2 unless the tank died
+        // between the queue and the apply, which is exactly when a pilot most
+        // wants to be told. One short sentence each, in the same voice.
+        (Refusal::Wreck, _) => "Your tank is a wreck.".to_owned(),
+        (Refusal::Unknown, _) => "That tank is no longer in the match.".to_owned(),
+        (other, _) => format!("Refused: {other}."),
+    };
+    format!("{} refused. {said}", order.to_uppercase())
 }
 
 /// Every line the notices on one frame print, in order — what the bridge says and
@@ -600,7 +783,7 @@ pub fn notice_lines(frame: &Frame) -> Vec<String> {
     frame
         .notices
         .iter()
-        .map(|notice| notice_line(notice, &rows))
+        .map(|notice| notice_line(frame, notice, &rows))
         .collect()
 }
 
@@ -612,26 +795,52 @@ pub fn frame_lock(frame: &Frame) -> Option<ContactId> {
     frame.lock
 }
 
-/// **The line `LOCK` and `WEAPONSTATUS` both print about the lock** (16b cut W.2;
-/// doc 16 §3.5 step 5: *the cockpit shows `p_permille` as a percentage in
-/// `WEAPONSTATUS` and on `LOCK` before any shot*).
+/// **The line the arena's `Locked` notice and `WEAPONSTATUS` both print about the
+/// lock** (16b cut W.2; doc 16 §3.5 step 5: *the cockpit shows `p_permille` as a
+/// percentage in `WEAPONSTATUS` and on `LOCK` before any shot*).
+///
+/// The `LOCK` verb itself no longer prints it: 16b cut F.2 moved that to the
+/// arena's own notice, said when the lock resolves, so there is one owner of the
+/// sentence rather than a cockpit echo beside it (16b §0.2).
 ///
 /// `Locked on 3f2c…, 32% to hit.` when the arena has resolved one, and `Locked on
 /// 3f2c….` when it has not — which is the pulse between a `LOCK` being typed and the
 /// frame that answers it, and a platform carrying no weapon at all. `None` for no
 /// lock, so the caller says nothing rather than saying there is nothing.
 ///
-/// The percentage is the frame's own `lock_p_permille`, rounded to whole per cent:
-/// it is the **same number** the draw will be compared against, resolved by the
-/// arena through doc 16 §3.5's five steps with the trace and the cover in it, and
-/// never a second estimate computed here.
+/// The percentage is the row of **the weapon a bare `FIRE` would fire**
+/// ([`fired_by_default`]), rounded to whole per cent: it is the same number the
+/// draw will be compared against, resolved by the arena through doc 16 §3.5's five
+/// steps with the trace and the cover in it, and never a second estimate computed
+/// here.
+///
+/// **16b cut F.2** changed which number that is. Cut W.2 showed the **best** of
+/// the platform's weapons, so a pilot who read `46% to hit` and reached for the
+/// coaxial during the cannon's cycle fired at 21 %; doc 16 §3.5 step 5 defines
+/// `p_permille` per shot, and the shot a bare `FIRE` takes is the cannon's. Each
+/// weapon's own chance is on its `WEAPONSTATUS` row.
 #[must_use]
 pub fn lock_line(frame: &Frame) -> Option<String> {
     let contact = frame_lock(frame)?;
-    Some(match frame.lock_p_permille {
-        Some(permille) => format!("Locked on {contact}, {}% to hit.", permille / 10),
-        None => format!("Locked on {contact}."),
-    })
+    Some(
+        match fired_by_default(&frame.weapons).and_then(|weapon| weapon.p_permille) {
+            Some(permille) => format!("Locked on {contact}, {}% to hit.", permille / 10),
+            None => format!("Locked on {contact}."),
+        },
+    )
+}
+
+/// **The weapon a bare `FIRE` would fire** (16b cut F.2): [`DEFAULT_WEAPON`], else
+/// the first the platform carries — the same choice [`choose_weapon`] makes for an
+/// empty argument, which is what makes `LOCK`'s percentage the percentage of the
+/// shot the pilot is about to take.
+fn fired_by_default(
+    weapons: &[crate::arena::weapons::FrameWeapon],
+) -> Option<&crate::arena::weapons::FrameWeapon> {
+    weapons
+        .iter()
+        .find(|weapon| weapon.id.as_str() == DEFAULT_WEAPON)
+        .or_else(|| weapons.first())
 }
 
 /// **Every weapon the platform carries, live** (16b cut W.1), as the arena's frame
@@ -654,6 +863,7 @@ pub fn frame_weapons(frame: &Frame) -> Vec<WeaponRow> {
             rounds: i64::from(weapon.rounds),
             rounds_max: i64::from(weapon.rounds_max),
             range_band: weapon.range_band,
+            p_permille: weapon.p_permille,
         })
         .collect()
 }
@@ -1243,6 +1453,13 @@ fn speed(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError>
 /// frame — so the `Locking {id}.` this says is now a statement about the arena and
 /// not only about the world's mirror. A contact the platform then *loses* clears the
 /// lock and the pilot is told so once (`NoticeKind::LockLost`).
+///
+/// **16b cut F.2 took the percentage off this verb.** Cut W.2 printed it here off
+/// the frame the world already held, which meant a first `LOCK` was silent and a
+/// repeat quoted the *previous* pulse's chance; the arena now says it itself when
+/// the lock resolves ([`crate::arena::perception::FrameNotice::Locked`]), at the
+/// timestamp it resolves at. There is one owner of the sentence and no second
+/// lane (16b §0.2), so this says `Locking {id}.` and nothing else.
 fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     let held = last_frame(ctx.w, actor)
@@ -1254,17 +1471,6 @@ fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
     forward_intent(ctx, actor, unit, IntentKind::Lock { contact })?;
     let line = format!("Locking {contact}.");
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
-    // **16b cut W.2**: doc 16 §3.5 step 5's percentage, *on `LOCK`*. The order is
-    // resolved a pulse later, so what a pilot is told here is the chance against the
-    // lock they already held — and against this one from the frame that answers the
-    // order. Silent on a first lock, rather than printing a chance against a contact
-    // the pilot has just stopped aiming at.
-    if let Some(held) = last_frame(ctx.w, actor)
-        && frame_lock(&held.frame) == Some(contact)
-        && let Some(line) = lock_line(&held.frame)
-    {
-        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
-    }
     Ok(())
 }
 
@@ -1391,8 +1597,7 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
                 ),
             ];
             // **16b cut X.1**: a line of its own, and only for a platform that
-            // carries heat — so a stock tank's `STATUS` is the two lines it always
-            // was, byte for byte.
+            // carries heat.
             if let Some(heat) = frame.heat {
                 lines.push(format!(
                     "  heat {} of {}{}",
@@ -1405,6 +1610,12 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
                     }
                 ));
             }
+            // **16b cut F.2**: doc 16 §5's *armor and internals per section as
+            // current over max*, one line per section and wrapped to eighty
+            // columns by construction — the section, its internals, then each
+            // facet's armour. It is the recorded open point K7's whole surface,
+            // and a pilot's own tank is outside the observer rule entirely.
+            lines.extend(section_lines(&frame.sections));
             lines
         }
         None => vec![format!(
@@ -1414,6 +1625,48 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
     };
     say_and_frame(ctx, held.as_ref(), lines, false);
     Ok(())
+}
+
+/// How wide a `STATUS` damage line may run before it is wrapped — inside the
+/// eighty columns a line client is entitled to assume, with room for the
+/// renderer's own margin.
+const DAMAGE_COLUMNS: usize = 76;
+
+/// **The damage block `STATUS` prints** (16b cut F.2; doc 16 §5: *armor and
+/// internals per section as current over max*).
+///
+/// Two lines per section — the section with its condition and its internals, then
+/// its facets' armour, wrapped at [`DAMAGE_COLUMNS`] — and one for a section that
+/// declares no facets. Empty for a platform the arena has told the world nothing
+/// about, so a fixture with no structure prints the two lines it always did.
+#[must_use]
+pub fn section_lines(sections: &[crate::arena::step::FrameSection]) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for section in sections {
+        let inside = match section.internals {
+            Some((current, max)) => format!("  internals {current}/{max}"),
+            None => String::new(),
+        };
+        lines.push(format!("  {}  {}{inside}", section.id, section.condition));
+        let mut run = String::new();
+        for facet in &section.facets {
+            let cell = format!("{} {}/{}", facet.id, facet.armor, facet.armor_max);
+            if !run.is_empty() && run.len() + cell.len() + 2 > DAMAGE_COLUMNS {
+                lines.push(run.clone());
+                run.clear();
+            }
+            if run.is_empty() {
+                run.push_str("    ");
+            } else {
+                run.push_str("  ");
+            }
+            run.push_str(&cell);
+        }
+        if !run.is_empty() {
+            lines.push(run);
+        }
+    }
+    lines
 }
 
 /// `VIEW` — the arena window, as the grid frame (doc 16 §3.6, §5).
@@ -1497,7 +1750,23 @@ pub const FRAME_VERSION: u32 = 1;
 /// doc 16 §3.5 step 5's chance against the held lock, per mille and as the whole per
 /// cent the line client prints. Both are `null` with no lock and when the arena has
 /// not resolved one, which is what keeps a panel from drawing a 0 % that means
-/// *unknown*.
+/// *unknown*. **16b cut F.2** made them the chance of *the weapon a bare `FIRE`
+/// would fire* rather than the best of the platform's, and gave every weapon row
+/// its own `p_permille` and `percent`.
+///
+/// **16b cut F.2** also added `sections` — doc 16 §5's status block, one entry per
+/// section as `{ id, condition, internals, internals_max, facets[{ id, armor,
+/// armor_max }] }` — and `heat` as `{ heat, max, overheated }` or `null`, which
+/// cut X.1 put on `STATUS`'s text and not on the payload, so the two renderers had
+/// drifted.
+///
+/// **One owner per sentence.** `notices` carries the same rendered line the bridge
+/// sends the pilot as a `Sys` line, and both go to the same audience: a panel
+/// renderer that prints this array **as well as** the scrollback will print every
+/// notice twice. The array is the shape a panel should *draw* from — kinds, ids,
+/// and the text as a fallback — and a renderer that owns the scrollback should not
+/// print the text again. A frame read back out of the world's mirror carries no
+/// notices at all, because the mirror is stored with them cleared.
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     let rows = frame_contacts(frame);
@@ -1522,9 +1791,9 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
         .iter()
         .map(|notice| {
             serde_json::json!({
-                "kind": notice.kind.as_str(),
-                "contact": notice.contact.to_string(),
-                "text": notice_line(notice, &rows),
+                "kind": notice.kind().as_str(),
+                "contact": notice.contact().map(|id| id.to_string()),
+                "text": notice_line(frame, notice, &rows),
             })
         })
         .collect();
@@ -1543,9 +1812,33 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
                     "max_range_cm": band.max_range_cm,
                     "dispersion_mrad": band.dispersion_mrad,
                 })),
+                "p_permille": weapon.p_permille,
+                "percent": weapon.p_permille.map(|permille| permille / 10),
             })
         })
         .collect();
+    // **16b cut F.2**: doc 16 §5's status block, the same numbers `STATUS` prints
+    // and from the same frame — so the line client, the TUI and the web draw one
+    // tank (§5: *the TUI and web render the same structure; parity is a golden
+    // test in each renderer*).
+    let sections: Vec<serde_json::Value> = frame
+        .sections
+        .iter()
+        .map(|section| {
+            serde_json::json!({
+                "id": section.id.as_str(),
+                "condition": section.condition.as_str(),
+                "internals": section.internals.map(|(current, _)| current),
+                "internals_max": section.internals.map(|(_, max)| max),
+                "facets": section.facets.iter().map(|facet| serde_json::json!({
+                    "id": facet.id.as_str(),
+                    "armor": facet.armor,
+                    "armor_max": facet.armor_max,
+                })).collect::<Vec<serde_json::Value>>(),
+            })
+        })
+        .collect();
+    let chosen = fired_by_default(&frame.weapons).and_then(|weapon| weapon.p_permille);
     serde_json::json!({
         "schema": { "id": FRAME_SCHEMA, "version": FRAME_VERSION },
         "match": match_id.0,
@@ -1561,11 +1854,17 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
         "blocked": frame.blocked,
         "tempo": frame.tempo.as_str(),
         "lock": frame_lock(frame).map(|id| id.to_string()),
-        "lock_p_permille": frame.lock_p_permille,
-        "lock_percent": frame.lock_p_permille.map(|permille| permille / 10),
+        "lock_p_permille": chosen,
+        "lock_percent": chosen.map(|permille| permille / 10),
         "contacts": contacts,
         "notices": notices,
         "weapons": weapons,
+        "sections": sections,
+        "heat": frame.heat.map(|heat| serde_json::json!({
+            "heat": heat.heat,
+            "max": heat.max,
+            "overheated": heat.overheated(),
+        })),
     })
 }
 
@@ -1731,15 +2030,21 @@ pub struct WeaponRow {
     /// `None` with no lock, with the lock out of the weapon's reach, or from
     /// [`weapons_of`], which has no lock to read.
     pub range_band: Option<crate::arena::weapons::FrameBand>,
+    /// **This weapon's own chance against the lock**, per mille (16b cut F.2; doc
+    /// 16 §3.5 step 5 and §5's *per weapon*), or `None` with no lock and from
+    /// [`weapons_of`], which has none to resolve against.
+    pub p_permille: Option<u32>,
 }
 
 impl WeaponRow {
     /// The line `WEAPONSTATUS` prints for this row (doc 16 §5's status block).
     ///
-    /// `cannon  ready  40 of 40 round(s)  band 1 of 2` while there is something to
-    /// shoot at, and `cannon  cycling (4 s)  39 of 40 round(s)` while the breech is
-    /// still busy. The band is only ever printed when the platform has a lock,
-    /// because that is the only time it means anything.
+    /// `cannon  ready  40 of 40 round(s)  band 1 of 2  46% to hit` while there is
+    /// something to shoot at, and `cannon  cycling (4 s)  39 of 40 round(s)` while
+    /// the breech is still busy. The band and the percentage are only ever printed
+    /// when the platform has a lock, because that is the only time either means
+    /// anything — and the percentage is **this weapon's**, which is the whole of
+    /// 16b cut F.2's item 4.
     #[must_use]
     pub fn render(&self) -> String {
         let ready = if self.ready {
@@ -1754,8 +2059,12 @@ impl WeaponRow {
             Some(band) => format!("  band {} of {}", band.index, band.of),
             None => String::new(),
         };
+        let chance = match self.p_permille {
+            Some(permille) => format!("  {}% to hit", permille / 10),
+            None => String::new(),
+        };
         format!(
-            "{}  {}  {} of {} round(s){band}",
+            "{}  {}  {} of {} round(s){band}{chance}",
             self.id, ready, self.rounds, self.rounds_max
         )
     }
@@ -1806,6 +2115,7 @@ pub fn weapons_of(w: &World, unit: ObjId) -> Vec<WeaponRow> {
             rounds: rounds.current,
             rounds_max: rounds.max,
             range_band: None,
+            p_permille: None,
         });
     }
     rows
@@ -2127,18 +2437,21 @@ mod tests {
                 max_range_cm: 150_000,
                 dispersion_mrad: 3,
             }),
+            // 16b cut F.2: this weapon's own chance, not the platform's best.
+            p_permille: Some(464),
         };
         assert_eq!(
             ready.render(),
-            "cannon  ready  40 of 40 round(s)  band 1 of 2"
+            "cannon  ready  40 of 40 round(s)  band 1 of 2  46% to hit"
         );
         // Cycling, with the seconds rounded **up**: a pilot told "0 s" would try
-        // again and be refused.
+        // again and be refused. No lock, so no band and no chance.
         let cycling = WeaponRow {
             ready: false,
             ready_in_ms: 3_001,
             rounds: 39,
             range_band: None,
+            p_permille: None,
             ..ready
         };
         assert_eq!(cycling.render(), "cannon  cycling (4 s)  39 of 40 round(s)");

@@ -1023,7 +1023,7 @@ fn told(frame: &Frame) -> Vec<&'static str> {
     frame
         .notices
         .iter()
-        .map(|notice| notice.kind.as_str())
+        .map(|notice| notice.kind().as_str())
         .collect()
 }
 
@@ -1274,19 +1274,19 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     // line client read one sentence.
     for notice in &frame.notices {
         assert_eq!(
-            cockpit::notice_line(notice, &cockpit::frame_contacts(&frame)),
+            cockpit::notice_line(&frame, notice, &cockpit::frame_contacts(&frame)),
             line
         );
     }
     // A `lost` notice names the id and nothing else: the contact is not in the
     // frame's list any more, so there is no bearing to quote.
-    let gone = FrameNotice {
+    let gone = FrameNotice::Contact {
         kind: NoticeKind::Lost,
         contact: id,
         class: Classification::Unknown,
     };
     assert_eq!(
-        cockpit::notice_line(&gone, &[]),
+        cockpit::notice_line(&frame, &gone, &[]),
         format!("Contact {id} lost.")
     );
 }

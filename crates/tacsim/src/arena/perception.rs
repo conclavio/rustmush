@@ -135,6 +135,7 @@ use mush_atlas::TerrainClass;
 use mush_atlas::trace::{Eye, Sight, trace_cells};
 use mush_core::ObjId;
 use mush_tactics::TacticalUnit;
+use smol_str::SmolStr;
 
 use crate::arena::index::range_cm;
 use crate::arena::ledger::EventKind;
@@ -1139,11 +1140,17 @@ pub struct FrameContact {
 }
 
 /// **Which transition a pilot is being told about** (16b cut S.2; doc 16 §3.6:
-/// *notices fire once per transition (`acquired`, `classified`, `lost`)*).
+/// *notices fire once per transition (`acquired`, `classified`, `lost`)*, §3.4
+/// step 4's `blocked`, §5's *`Notice` events for transitions and refusals*).
 ///
-/// The three words are the ledger's own `detected`, `classified` and `lost` read
-/// as a pilot hears them — `acquired` rather than `detected`, because what the
-/// pilot is told is that their platform now holds something.
+/// The first three words are the ledger's own `detected`, `classified` and `lost`
+/// read as a pilot hears them — `acquired` rather than `detected`, because what
+/// the pilot is told is that their platform now holds something.
+///
+/// **16b cut F.2** added the other eight: doc 16 §5 asks for a notice per
+/// transition *and refusal*, and until that cut the vocabulary was the contact
+/// lifecycle alone — so a pilot shot to pieces was told nothing, and every order
+/// the arena refused at apply vanished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoticeKind {
     /// The platform now holds a contact it did not hold before.
@@ -1163,10 +1170,36 @@ pub enum NoticeKind {
     /// is this. The lock does not come back when the contact does — the platform
     /// re-acquires the contact and the pilot locks it again.
     LockLost,
+    /// **The platform's lock resolved** (16b cut F.2; doc 16 §3.5 step 5: the
+    /// percentage *on `LOCK` before any shot*), said at the arena timestamp the
+    /// lock was taken at.
+    Locked,
+    /// **A round of this platform's landed** (16b cut F.2), said to the shooter.
+    Hit,
+    /// **A round of this platform's did not land**, with the ledger's own reason
+    /// (16b cut F.2), said to the shooter.
+    Miss,
+    /// **A round of this platform's finished the target** (16b cut F.2), said to
+    /// the shooter after its [`NoticeKind::Hit`].
+    Kill,
+    /// **This platform was hit** (16b cut F.2), said to the victim — the section
+    /// and facet struck and what is left there, and nothing whatever about the
+    /// shooter.
+    Struck,
+    /// **One of this platform's sections is gone** (16b cut F.2), with what that
+    /// costs the tank.
+    SectionLost,
+    /// **The arena refused an order at apply** (16b cut F.2; doc 16 §5's
+    /// *refusals*), after the world had authorised it.
+    Refused,
+    /// **Motion stopped the platform** (16b cut F.2; doc 16 §3.4 step 4: *one
+    /// `blocked` notice per stop*).
+    Blocked,
 }
 
 impl NoticeKind {
-    /// The wire word, which is the ledger's word for the same transition.
+    /// The wire word, which is the ledger's word for the same transition where
+    /// the ledger has one.
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -1174,18 +1207,58 @@ impl NoticeKind {
             NoticeKind::Classified => "classified",
             NoticeKind::Lost => "lost",
             NoticeKind::LockLost => "lock_lost",
+            NoticeKind::Locked => "locked",
+            NoticeKind::Hit => "hit",
+            NoticeKind::Miss => "miss",
+            NoticeKind::Kill => "kill",
+            NoticeKind::Struck => "struck",
+            NoticeKind::SectionLost => "section_lost",
+            NoticeKind::Refused => "refused",
+            NoticeKind::Blocked => "blocked",
         }
     }
 }
 
-/// **One thing a pilot is told once** (16b cut S.2; doc 16 §3.6 "What a pilot
-/// sees": *notices fire once per transition with hysteresis*).
+/// **The numbers a refusal's sentence needs** (16b cut F.2), so the arena's own
+/// refusal renders the byte-identical line the cockpit's local pre-check prints
+/// for the same condition.
+///
+/// Read at the moment the order was refused, because that is the only moment they
+/// are true: the cycle's remainder is against the arena's `now_ms` and the heat is
+/// the cell's, not the pilot's pulse-old mirror of either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusalDetail {
+    /// The refusal needs no number.
+    None,
+    /// [`crate::arena::intents::Refusal::Cycling`]: seconds left, rounded up.
+    Cycling {
+        /// Seconds until the weapon is ready.
+        secs: i64,
+    },
+    /// [`crate::arena::intents::Refusal::Overheated`]: the platform's heat and
+    /// its ceiling.
+    Overheated {
+        /// What it is carrying.
+        heat: u32,
+        /// The ceiling.
+        max: u32,
+    },
+}
+
+/// **One thing a pilot is told once** (16b cut S.2, extended by 16b cut F.2; doc
+/// 16 §3.6 "What a pilot sees", §3.4 step 4, §5).
 ///
 /// It rides [`crate::arena::step::Frame::notices`] and the bridge turns it into a
-/// line. It carries the opaque id and the class and **nothing about the target** —
-/// no object number, no name, no pose — because a notice is the first thing a
-/// pilot is ever told about a contact and the observer rule is strictest exactly
-/// there.
+/// line through the one renderer, `crate::match_::cockpit::notice_line`.
+///
+/// **The observer rule is the shape of this type.** A contact notice carries the
+/// opaque id and the class and **nothing about the target** — no object number, no
+/// name, no pose — because a notice is the first thing a pilot is ever told about a
+/// contact. A [`FrameNotice::Struck`] carries the victim's own section and facet
+/// and **nothing about the shooter**: where a round came from is a thing only a
+/// sensor may tell, so there is no field here for it to be leaked through. A
+/// [`FrameNotice::Blocked`] carries a cause and never the cell's occupant, because
+/// an occupied cell may hold a unit this platform has not detected.
 ///
 /// # The hysteresis rule, in one sentence
 ///
@@ -1196,14 +1269,125 @@ impl NoticeKind {
 /// that outlives the window is announced, one pass late. The ledger's `lost` event
 /// is unaffected — it is written at the moment the contact expired, which is what
 /// makes the black box the record and the notice only the telling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FrameNotice {
-    /// Which transition.
-    pub kind: NoticeKind,
-    /// The contact it is about, by its opaque id.
-    pub contact: ContactId,
-    /// What the platform knows of it at the moment of the notice.
-    pub class: Classification,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FrameNotice {
+    /// A contact's lifecycle transition (16b cut S.2).
+    Contact {
+        /// Which transition.
+        kind: NoticeKind,
+        /// The contact it is about, by its opaque id.
+        contact: ContactId,
+        /// What the platform knows of it at the moment of the notice.
+        class: Classification,
+    },
+    /// **The platform's lock resolved** (16b cut F.2): the percentage rides the
+    /// frame this notice arrives on, so the line is the same one `WEAPONSTATUS`
+    /// prints and never a second estimate.
+    Locked {
+        /// The contact now locked.
+        contact: ContactId,
+    },
+    /// **A round of this platform's landed** (16b cut F.2), named by the contact
+    /// the shooter's platform holds the target under — `None` when it holds none
+    /// any more, and then the pilot is told only that the round landed.
+    Hit {
+        /// The contact, where the platform still holds one.
+        contact: Option<ContactId>,
+    },
+    /// **A round of this platform's went nowhere** (16b cut F.2), with the
+    /// ledger's own reason word ([`crate::arena::damage::MISS_REASONS`]).
+    Miss {
+        /// The contact, where the platform still holds one.
+        contact: Option<ContactId>,
+        /// The reason, as the black box records it.
+        reason: SmolStr,
+    },
+    /// **A round of this platform's finished the target** (16b cut F.2).
+    Kill {
+        /// The contact, where the platform still holds one.
+        contact: Option<ContactId>,
+    },
+    /// **This platform was hit** (16b cut F.2): the pilot's own tank's section
+    /// and facet, which is physical knowledge, and what is left of them.
+    Struck {
+        /// The section the round found.
+        section: SmolStr,
+        /// **The section whose armour it passed**, which is `section` itself
+        /// unless that section is struck through another's (doc 16 §3.3: the
+        /// engine through `hull.rear`). The armour numbers below are this
+        /// section's cell, so the sentence names it when the two differ.
+        armor_section: SmolStr,
+        /// The facet whose armour it passed, on `armor_section`.
+        facet: SmolStr,
+        /// The armour left in that facet.
+        armor_left: u32,
+        /// What that facet holds when it is whole.
+        armor_max: u32,
+        /// The internals left in that section.
+        internals_left: u32,
+        /// What that section holds when it is whole.
+        internals_max: u32,
+    },
+    /// **One of this platform's sections reached zero internals** (16b cut F.2),
+    /// with the consequences that fired, by their authored words.
+    SectionLost {
+        /// The section.
+        section: SmolStr,
+        /// Its consequences, in authored order.
+        consequences: Vec<SmolStr>,
+    },
+    /// **The arena refused an order at apply** (16b cut F.2).
+    Refused {
+        /// The order's own word (`startup`, `lock`, `fire`).
+        order: SmolStr,
+        /// Why.
+        refusal: crate::arena::intents::Refusal,
+        /// The weapon it named, where it named one.
+        weapon: Option<SmolStr>,
+        /// The numbers that refusal's sentence carries.
+        detail: RefusalDetail,
+    },
+    /// **Motion stopped the platform** (16b cut F.2; doc 16 §3.4 step 4).
+    Blocked {
+        /// Why it stopped.
+        cause: crate::arena::motion::BlockedCause,
+    },
+}
+
+impl FrameNotice {
+    /// Which kind this is — the wire word every renderer keys on.
+    #[must_use]
+    pub const fn kind(&self) -> NoticeKind {
+        match self {
+            FrameNotice::Contact { kind, .. } => *kind,
+            FrameNotice::Locked { .. } => NoticeKind::Locked,
+            FrameNotice::Hit { .. } => NoticeKind::Hit,
+            FrameNotice::Miss { .. } => NoticeKind::Miss,
+            FrameNotice::Kill { .. } => NoticeKind::Kill,
+            FrameNotice::Struck { .. } => NoticeKind::Struck,
+            FrameNotice::SectionLost { .. } => NoticeKind::SectionLost,
+            FrameNotice::Refused { .. } => NoticeKind::Refused,
+            FrameNotice::Blocked { .. } => NoticeKind::Blocked,
+        }
+    }
+
+    /// The contact this notice names, where it names one. Never a unit and never
+    /// a name: the opaque id is the only handle a pilot is ever given.
+    #[must_use]
+    pub const fn contact(&self) -> Option<ContactId> {
+        match self {
+            FrameNotice::Contact { contact, .. } | FrameNotice::Locked { contact } => {
+                Some(*contact)
+            }
+            FrameNotice::Hit { contact }
+            | FrameNotice::Miss { contact, .. }
+            | FrameNotice::Kill { contact } => *contact,
+            FrameNotice::Struck { .. }
+            | FrameNotice::SectionLost { .. }
+            | FrameNotice::Refused { .. }
+            | FrameNotice::Blocked { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -3,9 +3,9 @@
 //! "Damage", §3.3 "A wreck", "Facet attribution" and "Silhouette", §3.8 "Team
 //! elimination", §3.1 "Custody").
 //!
-//! Fifteen tests. Fourteen drive the library directly — no host, no store, no task —
-//! the same shape `arena.rs`, `perception.rs` and `weapons.rs` take; the last is the
-//! **money rule** and needs a world, because the claim is about one.
+//! Twenty-nine tests. Twenty-eight drive the library directly — no host, no store,
+//! no task — the same shape `arena.rs`, `perception.rs` and `weapons.rs` take; the
+//! last is the **money rule** and needs a world, because the claim is about one.
 //!
 //! - **(a0)** the fixtures below are the shipped packs' own numbers, pinned, so a
 //!   content edit fails here rather than quietly changing what every other test
@@ -34,7 +34,29 @@
 //! - **(k)** ammunition is conserved across a scripted run that hits;
 //! - **(l)** the check-in's shape: the returned units carry their cells, their poses
 //!   and their outcomes, and the plan the world applies is the diff;
-//! - **(m)** the **money rule**: no instrument moves while a match runs.
+//! - **(m)** the **money rule**: no instrument moves while a match runs;
+//! - **(n1)** 16b cut F.2: the shooter is told the round landed and the victim is
+//!   told where it landed, and **neither line carries the other pilot's half** —
+//!   the shooter learns nothing of the internals and the victim learns nothing of
+//!   the shooter;
+//! - **(n2)** a miss carries the ledger's own reason in plain words;
+//! - **(n3)** the kill line, the hull's own sentence, and `section_destroyed`
+//!   **once** however many further rounds land on a spent section;
+//! - **(n4)** every refusal the arena makes at apply reaches the pilot, in the
+//!   cockpit's own words, and an order refused before it was ever queued stays
+//!   silent;
+//! - **(n5)** the percentage doc 16 §3.5 step 5 promises *on `LOCK` before any
+//!   shot*, printed when the lock resolves;
+//! - **(n5b)** each weapon's row carries **its own** chance and `LOCK` quotes the
+//!   one a bare `FIRE` would take, on a platform carrying two;
+//! - **(n6)** the cross-tempo property over the **notices**: one scripted duel
+//!   gives each pilot one ordered list of lines at 5,000, 1,000 and 500 ms, and a
+//!   second run covers the two notices produced outside the journal scan — a stop
+//!   against a bank and an order refused at apply — plus the spent-section ledger;
+//! - **(n7)** the frame's own status block: every section, its condition, its
+//!   internals and its facets' armour against the cells they are read from, the
+//!   armour a **struck-through** section's round really passed, and `STATUS`
+//!   inside eighty columns.
 //!
 //! # Why these fixtures carry the stock tank's numbers
 //!
@@ -92,6 +114,9 @@ const BLUE: ObjId = ObjId(9);
 
 /// The pilot `arena_of` seats on the red tank.
 const RED_PILOT: ObjId = ObjId(1_000);
+
+/// And on the blue one — the victim, in every test of 16b cut F.2's notices.
+const BLUE_PILOT: ObjId = ObjId(1_001);
 
 /// An exact definition identity with a zero digest.
 fn dref(kind: &str, id: &str) -> DefinitionRef {
@@ -868,7 +893,19 @@ fn the_five_steps_are_the_pinned_table_of_angular_size_against_error() {
     }
     // Four cells is 4,000 cm, where the rear's 350 cm is 875 µrad against the same
     // 4,000 µrad cone — well past the curve's last knee, so the ceiling answers.
-    assert_eq!(arena.lock_p_permille(RED), Some(950));
+    // **16b cut F.2**: per weapon, off the one aim the frame resolves.
+    let aim = arena
+        .lock_aim(RED)
+        .unwrap_or_else(|| panic!("the red tank has a lock"));
+    assert_eq!(aim.target, BLUE);
+    assert_eq!(
+        arena
+            .frame_weapons(RED, Some(&aim))
+            .iter()
+            .find(|weapon| weapon.id == "cannon")
+            .and_then(|weapon| weapon.p_permille),
+        Some(950)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -902,7 +939,15 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
     assert_eq!(frame.lock, Some(contact));
     // 4,000 cm against the rear's 350 cm is 87,500 µrad against a 4,000 µrad cone,
     // which is past the curve's last knee: the ceiling answers (p_max 950).
-    assert_eq!(frame.lock_p_permille, Some(950));
+    // **16b cut F.2**: the number lives on the weapon's own row now.
+    assert_eq!(
+        frame
+            .weapons
+            .iter()
+            .find(|weapon| weapon.id == "cannon")
+            .and_then(|weapon| weapon.p_permille),
+        Some(950)
+    );
     // The one sentence `LOCK` and `WEAPONSTATUS` both print.
     let line = tacsim::match_::cockpit::lock_line(&frame)
         .unwrap_or_else(|| panic!("a held lock has a line"));
@@ -926,8 +971,23 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
     // *unknown*.
     let mut bare = frame.clone();
     bare.lock = None;
-    bare.lock_p_permille = None;
+    for weapon in &mut bare.weapons {
+        weapon.p_permille = None;
+    }
     assert_eq!(tacsim::match_::cockpit::lock_line(&bare), None);
+    // **16b cut F.2**: and the row itself carries the same number, which is what
+    // makes `WEAPONSTATUS` per weapon rather than per platform.
+    let rows = tacsim::match_::cockpit::frame_weapons(&frame);
+    let cannon = rows
+        .iter()
+        .find(|row| row.id == "cannon")
+        .unwrap_or_else(|| panic!("the cannon's row"));
+    assert_eq!(cannon.p_permille, Some(950));
+    assert!(
+        cannon.render().contains("95% to hit"),
+        "{}",
+        cannon.render()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1612,6 +1672,10 @@ struct Replay {
     /// How the match ended, if it did.
     ended: Option<EndReason>,
     pulses: u32,
+    /// **Every notice line each pilot was sent, in order** (16b cut F.2) — the
+    /// cross-tempo property read on the pilot's own surface rather than on the
+    /// black box, which is the thing a person actually experiences.
+    notices: BTreeMap<ObjId, Vec<String>>,
 }
 
 /// Drive `arena` through `script` at `cadence_ms`, with the tempo pinned and each
@@ -1625,6 +1689,15 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
     let mut next = 0_usize;
     let mut pulses = 0_u32;
     let mut ended = false;
+    let mut notices: BTreeMap<ObjId, Vec<String>> = BTreeMap::new();
+    let absorb_notices = |out: &StepOutput, into: &mut BTreeMap<ObjId, Vec<String>>| {
+        for (pilot, frame) in &out.frames {
+            let lines = tacsim::match_::cockpit::notice_lines(frame);
+            if !lines.is_empty() {
+                into.entry(*pilot).or_default().extend(lines);
+            }
+        }
+    };
     loop {
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
         let mut intents: Vec<Intent> = Vec::new();
@@ -1638,6 +1711,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
         if !intents.is_empty() {
             let out = arena.step(wall, &[] as &[Control], &intents);
             absorb(&out, &mut bytes);
+            absorb_notices(&out, &mut notices);
             hashes.extend(arena.substep_hashes.iter().copied());
             pulses += 1;
             ended = out.ended.is_some();
@@ -1648,6 +1722,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
         wall += cadence_ms;
         let out = arena.step(wall, &[] as &[Control], &[]);
         absorb(&out, &mut bytes);
+        absorb_notices(&out, &mut notices);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
         if out.ended.is_some() || arena.now_ms >= until_ms {
@@ -1686,6 +1761,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
         armor_left: cell_of(arena, BLUE, &armor("hull", "rear")),
         internals_left: cell_of(arena, BLUE, &internals("hull")),
         pulses,
+        notices,
     }
 }
 
@@ -1829,6 +1905,1165 @@ fn one_scripted_engagement_at_three_cadences_is_one_hit_sequence() {
         assert_eq!(run.internals_left, first.internals_left);
         assert_eq!(run.ended, first.ended, "the match ended differently");
         assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+}
+
+/// Ground no tracked unit may enter (doc 16 §3.4 step 4's *impassable*).
+fn impassable() -> TerrainCell {
+    TerrainCell {
+        class: mush_atlas::TerrainClass::Wall,
+        elev_cm: 0,
+        move_cost: 0,
+    }
+}
+
+/// A tank with a bank to run into and a pilot whose orders the arena refuses.
+///
+/// The two notices 16b cut F.2 produces **outside** the damage pipeline: the stop
+/// is staged in the motion loop and the refusal in pulse phase 4, so neither is
+/// covered by the duel's cross-tempo run, which never moves a tank and never has
+/// an order rejected.
+fn held_and_refused_arena() -> Arena {
+    let bank: Vec<(u16, u16, TerrainCell)> = (0..SIDE).map(|y| (6, y, impassable())).collect();
+    arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(RED_CELL.0, RED_CELL.1),
+                vec![cannon()],
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(BLUE_CELL.0, BLUE_CELL.1),
+                Vec::new(),
+            ),
+        ],
+        &bank,
+        &match_cfg(),
+    )
+}
+
+/// Startup, then west into the bank, then two orders the arena refuses at apply:
+/// a `FIRE` with no lock and a `LOCK` on an id the platform does not hold.
+fn held_and_refused_script() -> Vec<Beat> {
+    vec![
+        Beat {
+            t_ms: 0,
+            intents: vec![intent(RED, IntentKind::Startup, 1)],
+        },
+        Beat {
+            t_ms: 10_000,
+            intents: vec![
+                intent(RED, IntentKind::Heading { mdeg: 270_000 }, 2),
+                intent(RED, IntentKind::Speed { cms: 1_000 }, 3),
+            ],
+        },
+        Beat {
+            t_ms: 20_000,
+            intents: vec![intent(
+                RED,
+                IntentKind::Fire {
+                    weapon: SmolStr::new("cannon"),
+                },
+                4,
+            )],
+        },
+        Beat {
+            t_ms: 25_000,
+            intents: vec![intent(
+                RED,
+                IntentKind::Lock {
+                    contact: ContactId(7),
+                },
+                5,
+            )],
+        },
+    ]
+}
+
+#[test]
+fn one_drive_into_a_bank_and_two_refused_orders_are_one_list_at_three_cadences() {
+    // 16b §11 and doc 16 §3.1: the tempo decides nothing, including what a pilot
+    // is told. The duel's own cross-tempo run covers the notices that come off the
+    // journal scan; this one covers the other two — a stop, which is staged in the
+    // motion loop because its hysteresis needs the pre-stop condition, and a
+    // refusal, which is staged in phase 4. `unit.held` is deliberately not in the
+    // state hash, so the hash sequence cannot catch a divergence in either and
+    // this is the only thing that can.
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = held_and_refused_arena();
+        runs.push((
+            cadence,
+            replay(&mut arena, cadence, 40_000, &held_and_refused_script()),
+        ));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    let told = first.notices.get(&RED_PILOT).cloned().unwrap_or_default();
+    // The run is worth comparing: the tank stopped **once** against the bank and
+    // was told so once however long it went on pushing, and both refusals arrived
+    // in the cockpit's own words.
+    assert_eq!(
+        told.iter()
+            .filter(|line| line.starts_with("Held:"))
+            .collect::<Vec<&String>>(),
+        vec![&"Held: the ground ahead will not take the tank.".to_owned()],
+        "{told:?}"
+    );
+    assert!(
+        told.contains(&"FIRE refused. No lock: LOCK a contact first.".to_owned()),
+        "{told:?}"
+    );
+    assert!(
+        told.iter().any(|line| line.starts_with("LOCK refused.")
+            && line.contains(tacsim::match_::cockpit::NO_SUCH_CONTACT)),
+        "{told:?}"
+    );
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.notices, first.notices,
+            "the notices differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.events, first.events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+    }
+}
+
+#[test]
+fn a_spent_section_is_one_ledger_at_three_cadences() {
+    // 16b cut F.2's item 3 changed what the black box records for a round that
+    // arrives at a section with nothing left to break — one `section_destroyed`,
+    // on the transition — so the change gets the cross-tempo cover every arena
+    // behaviour gets.
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = spent_section_arena();
+        runs.push((
+            cadence,
+            replay(&mut arena, cadence, 60_000, &spent_section_script()),
+        ));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    let destroyed = first
+        .events
+        .iter()
+        .filter(|(_, encoded, _, _)| encoded.contains("\"kind\":\"section_destroyed\""))
+        .count();
+    let hits = first
+        .events
+        .iter()
+        .filter(|(_, encoded, _, _)| encoded.contains("\"kind\":\"hit\""))
+        .count();
+    assert_eq!(destroyed, 1, "one destruction, whatever landed afterwards");
+    // 140 of rear armour and 150 of internals against a 120-round: the third
+    // finishes the turret and the five after it arrive at a section with nothing
+    // left to break. Before this cut each of those wrote a second destruction.
+    assert!(
+        hits >= 5,
+        "the run has no rounds after the turret went: {hits}"
+    );
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.notices, first.notices,
+            "the notices differ at {cadence} ms"
+        );
+    }
+}
+
+/// The scripted duel with every round sent to blue's **turret**, which the third
+/// one finishes: the turret's consequence takes weapons blue does not have, so
+/// blue lives and the rounds after it land on a spent section.
+fn spent_section_arena() -> Arena {
+    let mut arena = scripted_arena();
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.profile.bands = state
+            .profile
+            .bands
+            .iter()
+            .map(|band| BandProfile {
+                sections: vec![(SmolStr::new("turret"), 1)],
+                ..band.clone()
+            })
+            .collect();
+    }
+    arena
+}
+
+/// Eight beats of lock-and-fire, five seconds apart — past the three that finish
+/// the turret.
+fn spent_section_script() -> Vec<Beat> {
+    let contact = contact_of(RED, BLUE);
+    let mut beats = vec![Beat {
+        t_ms: 0,
+        intents: vec![intent(RED, IntentKind::Startup, 1)],
+    }];
+    for (n, at) in [
+        15_000_i64, 20_000, 25_000, 30_000, 35_000, 40_000, 45_000, 50_000,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let seq = u64::try_from(n).unwrap_or(0).saturating_mul(2);
+        beats.push(Beat {
+            t_ms: at,
+            intents: vec![
+                intent(RED, IntentKind::Lock { contact }, seq + 2),
+                intent(
+                    RED,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                    },
+                    seq + 3,
+                ),
+            ],
+        });
+    }
+    beats
+}
+
+// ---------------------------------------------------------------------------
+// (n) What a pilot is told (16b cut F.2; doc 16 §5)
+// ---------------------------------------------------------------------------
+
+/// Every notice line one pilot was sent by one pulse, in order.
+fn told(out: &StepOutput, pilot: ObjId) -> Vec<String> {
+    out.frames
+        .iter()
+        .filter(|(who, _)| *who == pilot)
+        .flat_map(|(_, frame)| tacsim::match_::cockpit::notice_lines(frame))
+        .collect()
+}
+
+/// Warm the duel, hand red a contact on blue, and fire once — answering every
+/// notice line each pilot was sent from the shot to its arrival.
+fn one_shot(arena: &mut Arena, bytes: &mut Vec<u8>) -> BTreeMap<ObjId, Vec<String>> {
+    let wall = warm(arena, bytes);
+    let contact = hold(arena, RED, BLUE);
+    let mut heard: BTreeMap<ObjId, Vec<String>> = BTreeMap::new();
+    let mut wall_ms = wall + 500;
+    let out = pulse(
+        arena,
+        wall_ms,
+        &[
+            intent(RED, IntentKind::Lock { contact }, 3),
+            intent(
+                RED,
+                IntentKind::Fire {
+                    weapon: SmolStr::new("cannon"),
+                },
+                4,
+            ),
+        ],
+        bytes,
+    );
+    for pilot in [RED_PILOT, BLUE_PILOT] {
+        heard.entry(pilot).or_default().extend(told(&out, pilot));
+    }
+    for _ in 0..8 {
+        wall_ms += 500;
+        let out = pulse(arena, wall_ms, &[], bytes);
+        for pilot in [RED_PILOT, BLUE_PILOT] {
+            heard.entry(pilot).or_default().extend(told(&out, pilot));
+        }
+        if let Some(held) = arena.contacts.get_mut(RED, contact) {
+            held.last_seen_ms = arena.now_ms;
+        }
+    }
+    heard
+}
+
+#[test]
+fn the_shooter_is_told_the_round_landed_and_the_victim_where_it_landed() {
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let heard = one_shot(&mut arena, &mut bytes);
+    let shooter = heard.get(&RED_PILOT).cloned().unwrap_or_default();
+    let victim = heard.get(&BLUE_PILOT).cloned().unwrap_or_default();
+    let contact = contact_of(RED, BLUE);
+
+    // The shooter: the round landed, on the contact their own platform holds.
+    assert!(
+        shooter.contains(&format!("Hit on {contact}.")),
+        "the shooter was told the round landed: {shooter:?}"
+    );
+    // And nothing about what it did. A gunner sees the strike, not the internals.
+    for line in &shooter {
+        assert!(
+            !line.contains("armour") && !line.contains("facet") && !line.contains("internals"),
+            "the shooter reads the target's damage: {line}"
+        );
+    }
+
+    // The victim: their own section and facet, and what is left there.
+    let struck = victim
+        .iter()
+        .find(|line| line.starts_with("Hit on the "))
+        .cloned()
+        .unwrap_or_else(|| panic!("the victim was told nothing: {victim:?}"));
+    assert!(
+        struck.contains("facet") && struck.contains("armour"),
+        "{struck}"
+    );
+    // Red is due south of blue, so the round arrives at the rear band; the hull
+    // and the turret share it 50/50 and either is a section of blue's own tank.
+    assert!(
+        struck.contains("hull") || struck.contains("turret"),
+        "{struck}"
+    );
+
+    // **The observer rule, sentence by sentence.** Nothing in anything the victim
+    // was told identifies or locates the shooter: not its object number, not the
+    // contact id blue holds it under, not a bearing, not a side, not a weapon.
+    let blues_contact_on_red = contact_of(BLUE, RED);
+    for line in &victim {
+        if line.starts_with("New contact") || line.starts_with("Contact ") {
+            // The contact lifecycle is cut S.2's surface and has its own test.
+            continue;
+        }
+        for forbidden in [
+            format!("#{}", RED.0),
+            contact.to_string(),
+            blues_contact_on_red.to_string(),
+            "red".to_owned(),
+            "bearing".to_owned(),
+            "cannon".to_owned(),
+            "°".to_owned(),
+        ] {
+            assert!(
+                !line.contains(&forbidden),
+                "a hit notice carries `{forbidden}`: {line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_miss_carries_the_ledgers_own_reason_in_plain_words() {
+    // The blue tank stands on a wall cell: doc 16 §3.5 accepts the shot, spends
+    // the round and resolves it as a miss with the blocker as its reason.
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(RED_CELL.0, RED_CELL.1),
+                vec![cannon()],
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(BLUE_CELL.0, BLUE_CELL.1),
+                Vec::new(),
+            ),
+        ],
+        &[(
+            BLUE_CELL.0,
+            BLUE_CELL.1,
+            cell(mush_atlas::TerrainClass::Wall),
+        )],
+        &match_cfg(),
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let heard = one_shot(&mut arena, &mut bytes);
+    let shooter = heard.get(&RED_PILOT).cloned().unwrap_or_default();
+    let contact = contact_of(RED, BLUE);
+    assert!(
+        shooter.contains(&format!("Miss on {contact}: the target is behind cover.")),
+        "the shooter was told why: {shooter:?}"
+    );
+    // And the victim is told nothing at all: a miss is not a thing that happened
+    // to them.
+    let victim = heard.get(&BLUE_PILOT).cloned().unwrap_or_default();
+    assert!(
+        !victim.iter().any(|line| line.starts_with("Hit on")),
+        "{victim:?}"
+    );
+    // The black box agrees with the line.
+    assert_eq!(misses(&events(&mut arena, &mut bytes)), vec!["cover"]);
+}
+
+#[test]
+fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
+    // Every round to the turret: 140 of rear armour and 150 of internals against
+    // 120 a round, so the third finishes it and the turret's consequence takes
+    // blue's (non-existent) weapons rather than the tank. Blue survives, so the
+    // rounds after that land on a section with nothing left to break.
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let contact = hold(&mut arena, RED, BLUE);
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.profile.bands = state
+            .profile
+            .bands
+            .iter()
+            .map(|band| BandProfile {
+                sections: vec![(SmolStr::new("turret"), 1)],
+                ..band.clone()
+            })
+            .collect();
+    }
+    let mut heard: Vec<String> = Vec::new();
+    let mut shooter: Vec<String> = Vec::new();
+    let mut wall_ms = wall;
+    let mut fired = 0_u32;
+    while fired < 8 {
+        wall_ms += 500;
+        let ready = arena
+            .unit(RED)
+            .is_some_and(|state| state.weapon_ready("cannon", arena.now_ms));
+        let intents = if ready {
+            fired += 1;
+            vec![
+                intent(RED, IntentKind::Lock { contact }, u64::from(fired) * 2),
+                intent(
+                    RED,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                    },
+                    u64::from(fired) * 2 + 1,
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
+        let out = pulse(&mut arena, wall_ms, &intents, &mut bytes);
+        heard.extend(told(&out, BLUE_PILOT));
+        shooter.extend(told(&out, RED_PILOT));
+        if let Some(held) = arena.contacts.get_mut(RED, contact) {
+            held.last_seen_ms = arena.now_ms;
+        }
+    }
+    for _ in 0..12 {
+        wall_ms += 500;
+        let out = pulse(&mut arena, wall_ms, &[], &mut bytes);
+        heard.extend(told(&out, BLUE_PILOT));
+        shooter.extend(told(&out, RED_PILOT));
+    }
+    let log = events(&mut arena, &mut bytes);
+    let hits = count(&log, "hit");
+    assert!(
+        hits >= 5,
+        "the run has rounds after the turret went: {hits}"
+    );
+    assert_eq!(
+        count(&log, "section_destroyed"),
+        1,
+        "the turret was destroyed once, not once per round that found it afterwards"
+    );
+    // And the victim was told once, in plain words.
+    let lost: Vec<&String> = heard
+        .iter()
+        .filter(|line| line.starts_with("The turret is destroyed"))
+        .collect();
+    assert_eq!(
+        lost,
+        vec![&"The turret is destroyed: its weapons are gone.".to_owned()],
+        "{heard:?}"
+    );
+    // The rounds that arrived afterwards are still hits, and still say so — a
+    // round that finds nothing left to break is not a miss.
+    assert!(
+        heard
+            .iter()
+            .filter(|line| line.contains("armour gone"))
+            .count()
+            >= 2,
+        "{heard:?}"
+    );
+    // The shooter was never told the target was destroyed, because it was not.
+    assert!(
+        !shooter.iter().any(|line| line.contains("destroyed")),
+        "{shooter:?}"
+    );
+}
+
+#[test]
+fn the_frame_carries_the_tanks_own_status_block_and_status_prints_it_in_eighty_columns() {
+    // Doc 16 §5's status block — *armor and internals per section as current over
+    // max* — which is the whole of the recorded open point K7. Each number is
+    // pinned against the cell it is read from, because a block that is merely
+    // *present* proves nothing: `armor` and `armor_max` swapped, or a section
+    // with no internals cell reporting a nought, would look exactly the same to a
+    // test that only asked whether the word `hull` appeared.
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let contact = hold(&mut arena, RED, BLUE);
+    let whole = arena.frame_sections(BLUE);
+    assert_eq!(
+        whole
+            .iter()
+            .map(|section| section.id.as_str())
+            .collect::<Vec<&str>>(),
+        vec!["engine", "hull", "left_track", "right_track", "turret"],
+        "every section, in section-id order"
+    );
+    let block = |id: &str| {
+        whole
+            .iter()
+            .find(|section| section.id == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id}'s block"))
+    };
+    let hull = block("hull");
+    assert_eq!(hull.condition, "intact");
+    assert_eq!(hull.internals, Some((200, 200)));
+    assert_eq!(
+        hull.facets
+            .iter()
+            .map(|facet| (facet.id.as_str(), facet.armor, facet.armor_max))
+            .collect::<Vec<(&str, i64, i64)>>(),
+        vec![
+            ("front", 400, 400),
+            ("left", 250, 250),
+            ("rear", 150, 150),
+            ("right", 250, 250),
+            ("top", 100, 100),
+        ],
+        "the authored maxima, in facet-id order, current over max and not the \
+         other way round"
+    );
+    let engine = block("engine");
+    assert!(
+        engine.facets.is_empty(),
+        "the engine declares no armour of its own (doc 16 §3.3)"
+    );
+    assert_eq!(
+        engine.internals,
+        Some((120, 120)),
+        "and still reports what it has inside"
+    );
+    for line in tacsim::match_::cockpit::section_lines(&whole) {
+        assert!(
+            line.chars().count() <= 80,
+            "the block ran past eighty columns: {line:?}"
+        );
+    }
+
+    // A section a unit declares no internals cell for reports **nothing** rather
+    // than a nought that would read as destroyed, and a long facet run is wrapped
+    // rather than allowed to run off an eighty-column terminal.
+    let wide = tacsim::arena::step::FrameSection {
+        id: SmolStr::new("hull"),
+        condition: SmolStr::new("intact"),
+        internals: None,
+        facets: (0..9)
+            .map(|n| tacsim::arena::step::FrameFacet {
+                id: SmolStr::new(format!("facet_{n}")),
+                armor: 1_000,
+                armor_max: 1_000,
+            })
+            .collect(),
+    };
+    let lines = tacsim::match_::cockpit::section_lines(std::slice::from_ref(&wide));
+    assert!(lines.len() > 2, "nine facets fit on one line: {lines:?}");
+    assert!(
+        !lines[0].contains("internals"),
+        "a section with no internals cell printed one: {:?}",
+        lines[0]
+    );
+    for line in &lines {
+        assert!(
+            line.chars().count() <= 80,
+            "the wrap let a line past eighty columns: {line:?}"
+        );
+    }
+
+    // And it **moves**, on the frame the pilot is actually sent: one 120-round
+    // into blue's rear band takes 120 off the facet it found.
+    let mut wall_ms = wall + 500;
+    let mut sent: Vec<tacsim::arena::step::FrameSection> = Vec::new();
+    let out = pulse(
+        &mut arena,
+        wall_ms,
+        &[
+            intent(RED, IntentKind::Lock { contact }, 3),
+            intent(
+                RED,
+                IntentKind::Fire {
+                    weapon: SmolStr::new("cannon"),
+                },
+                4,
+            ),
+        ],
+        &mut bytes,
+    );
+    for (pilot, frame) in &out.frames {
+        if *pilot == BLUE_PILOT {
+            sent.clone_from(&frame.sections);
+        }
+    }
+    for _ in 0..8 {
+        wall_ms += 500;
+        let out = pulse(&mut arena, wall_ms, &[], &mut bytes);
+        for (pilot, frame) in &out.frames {
+            if *pilot == BLUE_PILOT {
+                sent.clone_from(&frame.sections);
+            }
+        }
+        if let Some(held) = arena.contacts.get_mut(RED, contact) {
+            held.last_seen_ms = arena.now_ms;
+        }
+    }
+    assert_eq!(
+        sent,
+        arena.frame_sections(BLUE),
+        "the frame's block is the cells' own, not a copy that drifted"
+    );
+    let struck: Vec<(&str, &str, i64, i64)> = sent
+        .iter()
+        .flat_map(|section| {
+            section.facets.iter().map(|facet| {
+                (
+                    section.id.as_str(),
+                    facet.id.as_str(),
+                    facet.armor,
+                    facet.armor_max,
+                )
+            })
+        })
+        .filter(|(_, _, armor, max)| armor < max)
+        .collect();
+    assert_eq!(
+        struck.len(),
+        1,
+        "exactly one facet took the round: {struck:?}"
+    );
+    let (section, facet, armor, max) = struck[0];
+    assert_eq!(
+        armor,
+        max - 120,
+        "the cannon's 120 came off {section}'s {facet}: {armor} of {max}"
+    );
+    assert_eq!(facet, "rear", "red stands due south of blue");
+}
+
+#[test]
+fn a_round_struck_through_another_sections_armour_quotes_that_sections_numbers() {
+    // Doc 16 §3.3: the engine declares **no facets** and is *struck through*
+    // `hull.rear`, so `plan_hit` spends the round on the hull's rear armour and
+    // the `armor_left` the ledger carries is that cell's. The victim's line has to
+    // read its maximum from the same cell: reading it at `engine/rear/armor` — an
+    // address the tank does not declare — answered nought, and a pilot shot in the
+    // back read `30 of 0 armour left`, a ratio with a zero denominator in the one
+    // sentence this cut exists to deliver. Thirty per cent of every rear-band hit
+    // on the stock tank picks the engine.
+    let mut arena = duel();
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.profile.bands = state
+            .profile
+            .bands
+            .iter()
+            .map(|band| BandProfile {
+                sections: vec![(SmolStr::new("engine"), 1)],
+                ..band.clone()
+            })
+            .collect();
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    let heard = one_shot(&mut arena, &mut bytes);
+    let victim = heard.get(&BLUE_PILOT).cloned().unwrap_or_default();
+    // 150 of rear armour, one 120-round: 30 left, of 150.
+    assert!(
+        victim.contains(
+            &"Hit on the engine, through the hull's rear facet: 30 of 150 armour left.".to_owned()
+        ),
+        "{victim:?}"
+    );
+    for line in &victim {
+        assert!(
+            !line.contains("of 0 armour"),
+            "a maximum of nought under a positive current: {line}"
+        );
+    }
+    // And the sentence is about the cell the round really moved.
+    assert_eq!(cell_of(&arena, BLUE, &armor("hull", "rear")), Some(30));
+    assert_eq!(
+        cell_of(&arena, BLUE, &internals("engine")),
+        Some(120),
+        "the armour held, so nothing overflowed into the engine"
+    );
+}
+
+#[test]
+fn each_weapon_carries_its_own_chance_and_the_lock_quotes_the_one_fire_would_take() {
+    // 16b cut F.2's item 4, and the defect it exists to close: cut W.2 put **one**
+    // number on the frame — the best of the platform's weapons — so a pilot who
+    // read `90% to hit` and reached for the coaxial during the cannon's cycle
+    // fired at a number twenty points lower. A one-weapon fixture cannot tell the
+    // two sourcings apart, because the maximum over one weapon is that weapon.
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(RED_CELL.0, 1),
+                vec![cannon(), machine_gun()],
+            ),
+            tank(BLUE, Team::Blue, centre(RED_CELL.0, 13), Vec::new()),
+        ],
+        &[],
+        &match_cfg(),
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let contact = hold(&mut arena, RED, BLUE);
+    let out = pulse(
+        &mut arena,
+        wall + 500,
+        &[intent(RED, IntentKind::Lock { contact }, 3)],
+        &mut bytes,
+    );
+    let frame = out
+        .frames
+        .iter()
+        .rev()
+        .find(|(pilot, _)| *pilot == RED_PILOT)
+        .map(|(_, frame)| frame.clone())
+        .unwrap_or_else(|| panic!("the red pilot's frame"));
+    // What the arena would draw each of them against, taken the way a shot takes
+    // it: one aim, then the five steps per weapon.
+    let aim = arena
+        .lock_aim(RED)
+        .unwrap_or_else(|| panic!("the red tank has a lock"));
+    let drawn_against = |weapon: &str| {
+        arena
+            .resolve_shot(RED, aim.target, weapon, aim.range_cm, aim.cover)
+            .p_permille
+    };
+    let row = |id: &str| {
+        frame
+            .weapons
+            .iter()
+            .find(|weapon| weapon.id == id)
+            .and_then(|weapon| weapon.p_permille)
+            .unwrap_or_else(|| panic!("{id} has a chance against a held lock"))
+    };
+    assert_eq!(row("cannon"), drawn_against("cannon"));
+    assert_eq!(row("machine_gun"), drawn_against("machine_gun"));
+    // Twelve cells of it: the cannon's 3 mrad band against the coaxial's 8 puts
+    // them two hundred per mille apart, which the platform's maximum hid.
+    assert!(
+        row("machine_gun") < row("cannon"),
+        "the coaxial reads the cannon's chance: {} against {}",
+        row("machine_gun"),
+        row("cannon")
+    );
+    // Each row prints its own, and `LOCK` prints the one a bare `FIRE` would take
+    // — `DEFAULT_WEAPON`, the cannon — and not the best of the two.
+    let rows = tacsim::match_::cockpit::frame_weapons(&frame);
+    for (id, permille) in [
+        ("cannon", row("cannon")),
+        ("machine_gun", row("machine_gun")),
+    ] {
+        let rendered = rows
+            .iter()
+            .find(|row| row.id == id)
+            .map(tacsim::match_::cockpit::WeaponRow::render)
+            .unwrap_or_else(|| panic!("{id}'s row"));
+        assert!(
+            rendered.contains(&format!("{}% to hit", permille / 10)),
+            "{rendered}"
+        );
+    }
+    let line = tacsim::match_::cockpit::lock_line(&frame)
+        .unwrap_or_else(|| panic!("a held lock has a line"));
+    assert_eq!(
+        line,
+        format!("Locked on {contact}, {}% to hit.", row("cannon") / 10),
+        "`LOCK` quotes the weapon a bare `FIRE` fires"
+    );
+    // And the notice the arena staged when the lock resolved says the same thing.
+    assert!(
+        told(&out, RED_PILOT).contains(&line),
+        "{:?}",
+        told(&out, RED_PILOT)
+    );
+}
+
+#[test]
+fn two_locks_in_one_pulse_each_name_their_own_contact() {
+    // `LOCK` is a discrete, queued intent, so a pilot who types two of them inside
+    // one pulse period — 5,000 ms at `Quiet`, which is where a match sits before
+    // the first shot — has both drained by phase 4. The frame carries the second
+    // one's lock, so a line rendered off the frame would print the second id
+    // twice and never mention the first.
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let first = hold(&mut arena, RED, BLUE);
+    let second = ContactId(first.0.wrapping_add(1));
+    let now = arena.now_ms;
+    arena.contacts.insert(
+        RED,
+        second,
+        ShadowContact {
+            target: BLUE,
+            class: Classification::Classified { team: Team::Blue },
+            first_seen_ms: now,
+            last_seen_ms: now,
+        },
+    );
+    let out = pulse(
+        &mut arena,
+        wall + 500,
+        &[
+            intent(RED, IntentKind::Lock { contact: first }, 3),
+            intent(RED, IntentKind::Lock { contact: second }, 4),
+        ],
+        &mut bytes,
+    );
+    let lines: Vec<String> = told(&out, RED_PILOT)
+        .into_iter()
+        .filter(|line| line.starts_with("Locked on "))
+        .collect();
+    assert_eq!(lines.len(), 2, "one line per lock taken: {lines:?}");
+    assert!(
+        lines[0].starts_with(&format!("Locked on {first}")),
+        "the first lock named the second one's contact: {lines:?}"
+    );
+    assert!(
+        lines[1].starts_with(&format!("Locked on {second}")),
+        "{lines:?}"
+    );
+    // The superseded lock is said bare: quoting a chance against a contact the
+    // pilot has already stopped aiming at would be the same lie cut W.2's stale
+    // frame told.
+    assert_eq!(lines[0], format!("Locked on {first}."));
+    assert!(lines[1].contains("% to hit"), "{lines:?}");
+}
+
+#[test]
+fn the_shooter_is_told_when_the_round_finishes_the_target() {
+    let mut arena = scripted_arena();
+    let run = replay(&mut arena, 1_000, 45_000, &script());
+    let contact = contact_of(RED, BLUE);
+    let shooter = run.notices.get(&RED_PILOT).cloned().unwrap_or_default();
+    let victim = run.notices.get(&BLUE_PILOT).cloned().unwrap_or_default();
+    assert_eq!(
+        run.ended,
+        Some(EndReason::Elimination {
+            winner: Some(Team::Red)
+        }),
+        "the script kills the blue tank"
+    );
+    assert!(
+        shooter.contains(&format!("{contact} destroyed.")),
+        "the shooter was told the target went: {shooter:?}"
+    );
+    // The victim's last word is their own hull, and it names the consequence.
+    assert!(
+        victim.contains(&"The hull is destroyed: the tank is finished.".to_owned()),
+        "{victim:?}"
+    );
+    // And after that, nothing: a wreck's contact store is emptied and its pilot
+    // is told no more (doc 16 §3.3).
+    let after = victim
+        .iter()
+        .skip_while(|line| !line.starts_with("The hull is destroyed"))
+        .skip(1)
+        .count();
+    assert_eq!(
+        after, 0,
+        "the wreck's pilot went on being told things: {victim:?}"
+    );
+}
+
+#[test]
+fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = warm(&mut arena, &mut bytes);
+    let contact = hold(&mut arena, RED, BLUE);
+
+    // (1) No lock.
+    wall += 500;
+    let out = pulse(
+        &mut arena,
+        wall,
+        &[intent(
+            RED,
+            IntentKind::Fire {
+                weapon: SmolStr::new("cannon"),
+            },
+            2,
+        )],
+        &mut bytes,
+    );
+    assert!(
+        told(&out, RED_PILOT).contains(&"FIRE refused. No lock: LOCK a contact first.".to_owned()),
+        "{:?}",
+        told(&out, RED_PILOT)
+    );
+
+    // (2) A contact the platform does not hold — one byte-identical refusal.
+    wall += 500;
+    let out = pulse(
+        &mut arena,
+        wall,
+        &[intent(
+            RED,
+            IntentKind::Lock {
+                contact: ContactId(7),
+            },
+            3,
+        )],
+        &mut bytes,
+    );
+    let lines = told(&out, RED_PILOT);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains(tacsim::match_::cockpit::NO_SUCH_CONTACT)),
+        "{lines:?}"
+    );
+
+    // (3) A weapon the tank does not carry.
+    wall += 500;
+    let out = pulse(
+        &mut arena,
+        wall,
+        &[intent(
+            RED,
+            IntentKind::Fire {
+                weapon: SmolStr::new("railgun"),
+            },
+            4,
+        )],
+        &mut bytes,
+    );
+    assert!(
+        told(&out, RED_PILOT)
+            .iter()
+            .any(|line| line.contains("no weapon called `railgun`")),
+        "{:?}",
+        told(&out, RED_PILOT)
+    );
+
+    // (4) Two shots in one pulse: the second is refused for the cycle, with the
+    // seconds the cockpit's own pre-check would have printed.
+    wall += 500;
+    let out = pulse(
+        &mut arena,
+        wall,
+        &[
+            intent(RED, IntentKind::Lock { contact }, 5),
+            intent(
+                RED,
+                IntentKind::Fire {
+                    weapon: SmolStr::new("cannon"),
+                },
+                6,
+            ),
+            intent(
+                RED,
+                IntentKind::Fire {
+                    weapon: SmolStr::new("cannon"),
+                },
+                7,
+            ),
+        ],
+        &mut bytes,
+    );
+    let lines = told(&out, RED_PILOT);
+    assert!(
+        lines.contains(&"FIRE refused. Still cycling: 4 s to go.".to_owned()),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("FIRE refused"))
+            .count(),
+        1,
+        "one refusal for one refused order: {lines:?}"
+    );
+
+    // (5) Out of rounds.
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ammo.insert(SmolStr::new("cannon"), 0);
+        state.ready_at_ms.insert(SmolStr::new("cannon"), 0);
+    }
+    wall += 500;
+    if let Some(held) = arena.contacts.get_mut(RED, contact) {
+        held.last_seen_ms = arena.now_ms;
+    }
+    let out = pulse(
+        &mut arena,
+        wall,
+        &[intent(
+            RED,
+            IntentKind::Fire {
+                weapon: SmolStr::new("cannon"),
+            },
+            8,
+        )],
+        &mut bytes,
+    );
+    assert!(
+        told(&out, RED_PILOT)
+            .contains(&"FIRE refused. Empty: that weapon has nothing left to fire.".to_owned()),
+        "{:?}",
+        told(&out, RED_PILOT)
+    );
+
+    // (6) Power off, which is the refusal doc 16 §3.7 puts last.
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ammo.insert(SmolStr::new("cannon"), 10);
+        state.power = Power::Off;
+    }
+    wall += 500;
+    if let Some(held) = arena.contacts.get_mut(RED, contact) {
+        held.last_seen_ms = arena.now_ms;
+    }
+    let out = pulse(
+        &mut arena,
+        wall,
+        &[intent(
+            RED,
+            IntentKind::Fire {
+                weapon: SmolStr::new("cannon"),
+            },
+            9,
+        )],
+        &mut bytes,
+    );
+    assert!(
+        told(&out, RED_PILOT)
+            .contains(&"FIRE refused. Power not online: STARTUP first.".to_owned()),
+        "{:?}",
+        told(&out, RED_PILOT)
+    );
+}
+
+#[test]
+fn an_order_the_arena_never_queued_and_a_shot_the_controller_took_are_both_silent() {
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = warm(&mut arena, &mut bytes);
+
+    // Doc 16 §3.1's burst: the `Control` is applied in phase 1 and raises the
+    // epoch, so the `FIRE` behind it is refused at apply and **never queued**.
+    // The pilot who let the seat go is told nothing about the shot they did not
+    // take, and that is by design.
+    wall += 500;
+    let out = arena.step(
+        wall,
+        &[Control {
+            unit: RED,
+            channel: tacsim::arena::state::Channel::Fire,
+            epoch: 2,
+            state: tacsim::arena::intents::ControlState::Live,
+            pilot: None,
+        }],
+        &[intent(
+            RED,
+            IntentKind::Fire {
+                weapon: SmolStr::new("cannon"),
+            },
+            2,
+        )],
+    );
+    absorb(&out, &mut bytes);
+    assert!(
+        !told(&out, RED_PILOT)
+            .iter()
+            .any(|line| line.contains("refused")),
+        "{:?}",
+        told(&out, RED_PILOT)
+    );
+
+    // And the shape the reflex controller resolves in — straight into
+    // `resolve_fire`, inside a substep, never through pulse phase 4 — stages
+    // nothing for anybody.
+    assert!(arena.resolve_fire(RED, "cannon").is_err());
+    wall += 500;
+    let out = pulse(&mut arena, wall, &[], &mut bytes);
+    assert!(
+        !told(&out, RED_PILOT)
+            .iter()
+            .any(|line| line.contains("refused")),
+        "{:?}",
+        told(&out, RED_PILOT)
+    );
+}
+
+#[test]
+fn the_percentage_is_printed_when_the_lock_resolves() {
+    // Doc 16 §3.5 step 5: *the cockpit shows `p_permille` ... on `LOCK` before any
+    // shot*. It resolves in the arena a pulse after the verb, so the line is a
+    // notice at the lock's own arena timestamp — which is what the first `LOCK`
+    // never printed.
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let contact = contact_of(RED, BLUE);
+    let out = pulse(
+        &mut arena,
+        wall + 500,
+        &[intent(RED, IntentKind::Lock { contact }, 3)],
+        &mut bytes,
+    );
+    let lines = told(&out, RED_PILOT);
+    assert!(
+        lines.contains(&format!("Locked on {contact}, 95% to hit.")),
+        "the first lock prints the chance: {lines:?}"
+    );
+}
+
+#[test]
+fn one_scripted_duel_at_three_cadences_tells_each_pilot_one_list_of_lines() {
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = scripted_arena();
+        runs.push((cadence, replay(&mut arena, cadence, 45_000, &script())));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    // The run is worth comparing: both pilots were told several things.
+    assert!(
+        first
+            .notices
+            .get(&RED_PILOT)
+            .is_some_and(|lines| lines.len() >= 3),
+        "{:?}",
+        first.notices
+    );
+    assert!(
+        first
+            .notices
+            .get(&BLUE_PILOT)
+            .is_some_and(|lines| lines.len() >= 3),
+        "{:?}",
+        first.notices
+    );
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.notices, first.notices,
+            "the notices differ at {cadence} ms"
+        );
     }
 }
 

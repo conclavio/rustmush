@@ -48,18 +48,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use mush_core::ObjId;
 use mush_sim::data::Pose;
+use smol_str::SmolStr;
 
 use crate::arena::clock::{Tempo, TempoSignals, substep_ms, substeps};
 use crate::arena::hash::state_hash;
 use crate::arena::index::range_cm;
 use crate::arena::intents::{
-    Control, Intent, IntentKind, IntentOutcome, apply_control, apply_intent, drain_pending,
-    resolve_startup,
+    Control, Intent, IntentKind, IntentOutcome, Refusal, apply_control, apply_intent,
+    drain_pending, resolve_startup,
 };
 use crate::arena::ledger::{EventKind, LedgerChunk};
 use crate::arena::motion::integrate;
 use crate::arena::perception::{
-    FrameContact, FrameNotice, Notice, NoticeKind, PerceptionCounters, bearing_mdeg,
+    FrameContact, FrameNotice, Notice, NoticeKind, PerceptionCounters, RefusalDetail, bearing_mdeg,
 };
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::state::{
@@ -96,6 +97,11 @@ pub struct Frame {
     pub power: Power,
     /// Whether it is held against an obstacle, an occupied cell or the window's
     /// edge.
+    ///
+    /// **16b cut F.2** re-sourced it from [`crate::arena::state::UnitState::held`]
+    /// — the *condition* — rather than from `blocked`, the flag for the substep
+    /// just integrated: a tank ordered forward against a river bank covers no
+    /// whole centimetre on some substeps and read `0 kph` with no `HELD` on those.
     pub blocked: bool,
     /// The arena's tempo, so a cockpit can say how often it is being told things.
     pub tempo: Tempo,
@@ -130,20 +136,19 @@ pub struct Frame {
     /// state per weapon*), in component order, with the lock's band where there is a
     /// lock. It is what `WEAPONSTATUS` prints while a match runs.
     pub weapons: Vec<FrameWeapon>,
-    /// **The chance the lock would be hit at**, per mille (16b cut W.2; doc 16 §3.5
-    /// step 5: *the cockpit shows `p_permille` as a percentage in `WEAPONSTATUS` and
-    /// on `LOCK` before any shot*).
+    /// **What the tank has left** (16b cut F.2; doc 16 §5's status block: *armor
+    /// and internals per section as current over max*), in **section-id order**:
+    /// [`mush_tactics::TacticalUnit`] holds its sections and their facets in
+    /// ordered maps, so a stock tank reads `engine, hull, left_track, right_track,
+    /// turret` and not the order its pack authored them in.
     ///
-    /// The best of it over the weapons the platform carries, resolved against the
-    /// locked contact's own target through the same five steps a shot would take —
-    /// the trace and the cover included, so what a pilot is shown is what a shot
-    /// taken now would be resolved at. `None` with no lock, and `None` for a
-    /// platform carrying nothing.
-    ///
-    /// It is a **field of its own** rather than a reshaping of [`Frame::lock`]: the
-    /// lock is an opaque contact id and the only name a pilot may use, and the band
-    /// each weapon's lock falls in already sits on [`FrameWeapon::range_band`].
-    pub lock_p_permille: Option<u32>,
+    /// The whole of the recorded open point K7: a pilot shot to pieces had no
+    /// surface at all on which to read it. It is a projection of the M32 cells the
+    /// impact writes and never a second model — built per pilot per pulse, which is
+    /// why a platform nobody is seated on pays nothing for it — and it names only
+    /// the pilot's **own** tank, which is physical knowledge and outside the
+    /// observer rule entirely.
+    pub sections: Vec<FrameSection>,
     /// **What the platform is carrying, and what it may** (16b cut X.1; doc 16 §9
     /// item 1), or `None` for a platform whose content declares no heat — which is
     /// every stock tank, so nothing about a stock cockpit changes.
@@ -152,6 +157,36 @@ pub struct Frame {
     /// pulse later, which is the rule every other `FIRE` refusal already follows
     /// (`crate::match_::cockpit`).
     pub heat: Option<FrameHeat>,
+}
+
+/// **One facet's armour, as the pilot's own status block carries it** (16b cut
+/// F.2; doc 16 §5: *armor ... per section as current over max*).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameFacet {
+    /// The facet's id (`front`, `left`, `right`, `rear`, `top`).
+    pub id: SmolStr,
+    /// What it has left.
+    pub armor: i64,
+    /// What it holds when it is whole.
+    pub armor_max: i64,
+}
+
+/// **One section of the pilot's own tank** (16b cut F.2; doc 16 §5's status
+/// block), read off the M32 cells the damage pipeline writes.
+///
+/// `internals` is `None` for a section whose content declares no internals cell —
+/// there is nothing to report rather than a nought that would read as destroyed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameSection {
+    /// The section's id (`hull`, `turret`, `left_track`, …).
+    pub id: SmolStr,
+    /// Its opaque condition, as M32 holds it (`intact`, `destroyed`, `wreck`).
+    pub condition: SmolStr,
+    /// Its internals as current over max.
+    pub internals: Option<(i64, i64)>,
+    /// Its facets, in **facet-id order** (the unit's own ordered map's), so the
+    /// hull reads `front, left, rear, right, top`.
+    pub facets: Vec<FrameFacet>,
 }
 
 /// **The platform's heat, as its pilots' frame carries it** (16b cut X.1).
@@ -208,8 +243,13 @@ impl Frame {
             && self.tempo == other.tempo
             && self.contacts == other.contacts
             && self.lock == other.lock
-            && self.lock_p_permille == other.lock_p_permille
             && self.heat == other.heat
+            // **16b cut F.2**: the damage surface is compared, so a round that
+            // came off the armour sends a frame. It is the cheapest comparison on
+            // this list after the integers — a handful of small structs per pilot
+            // — and a status block that lagged a pulse behind the tank would be
+            // the same lie the heat gauge would be.
+            && self.sections == other.sections
             && self.weapons.len() == other.weapons.len()
             && self
                 .weapons
@@ -453,14 +493,25 @@ impl Arena {
                 match order.kind {
                     // Doc 16 §3.3 "Startup".
                     IntentKind::Startup => {
-                        let _ = resolve_startup(self, id);
+                        if let Err(refusal) = resolve_startup(self, id) {
+                            self.stage_refusal(id, "startup", refusal, None);
+                        }
                     }
                     // **16b cut W.1** (doc 16 §3.7, §3.5): the lock, and the shot.
-                    IntentKind::Lock { contact } => {
-                        let _ = self.resolve_lock(id, contact);
-                    }
+                    IntentKind::Lock { contact } => match self.resolve_lock(id, contact) {
+                        // **16b cut F.2** (doc 16 §3.5 step 5): the percentage
+                        // *on `LOCK` before any shot*. The lock resolves here, at
+                        // its own arena timestamp, so this is where it is said —
+                        // the cockpit could only ever say it against the frame it
+                        // held *before* the order, which is why a first `LOCK`
+                        // was silent.
+                        Ok(()) => self.stage_notice(id, FrameNotice::Locked { contact }),
+                        Err(refusal) => self.stage_refusal(id, "lock", refusal, None),
+                    },
                     IntentKind::Fire { ref weapon } => {
-                        let _ = self.resolve_fire(id, weapon);
+                        if let Err(refusal) = self.resolve_fire(id, weapon) {
+                            self.stage_refusal(id, "fire", refusal, Some(weapon.clone()));
+                        }
                     }
                     // Continuous orders never queue (phase 2 applies them), and
                     // neither does a squad's standing order (16b cut N.2): it is
@@ -617,6 +668,14 @@ impl Arena {
         reflex: &mut ReflexCounters,
     ) -> bool {
         let mut notices: Vec<Notice> = Vec::new();
+        // **16b cut F.2**: the stops this substep's motion produced, in unit-id
+        // order, collected inside the borrow of `self.units` and staged after it.
+        // A pilot's blocked notice cannot be staged from the journal scan below
+        // the way every other one is, because its hysteresis reads the *pre-stop*
+        // `held` condition and only this loop has it; it is produced at the same
+        // point in the same order as the ledger's own `blocked` line, which is
+        // what the scan would have given.
+        let mut stops: Vec<(ObjId, crate::arena::motion::BlockedCause)> = Vec::new();
 
         // ---- (a) motion ----
         {
@@ -629,6 +688,7 @@ impl Arena {
                 };
                 let id = unit.id;
                 let was_blocked = unit.blocked;
+                let was_held = unit.held;
                 let from = terrain.cell_of(&unit.pose);
                 let outcome = integrate(unit, dt_ms, terrain, index);
                 if outcome.moved
@@ -649,7 +709,19 @@ impl Arena {
                 {
                     notices.push((0, EventKind::Blocked { unit: id, x, y }, None));
                 }
+                // The pilot's one line per stop, off the rising edge of the
+                // `held` **condition** — which is the stricter of the two, and
+                // the one doc 16 §3.4 step 4 means: a tank that re-collides with
+                // the same bank every substep is one stop and says so once.
+                if let Some(cause) = outcome.blocked_by
+                    && !was_held
+                {
+                    stops.push((id, cause));
+                }
             }
+        }
+        for (unit, cause) in stops {
+            self.stage_notice(unit, FrameNotice::Blocked { cause });
         }
 
         // ---- (b) the index over the positions motion committed ----
@@ -815,11 +887,19 @@ impl Arena {
         let hash = state_hash(self);
         self.substep_hashes.push(hash);
         let mut refused = false;
+        // **16b cut F.2**: which impact is being resolved. `EventKind::Miss`
+        // carries the shot's sequence and no shooter — and it may not gain one,
+        // because that would change the bytes of every `miss` line ever written —
+        // but `EventKind::Impact` immediately precedes exactly one `hit` or `miss`
+        // for the same shot and carries both. So the scan reads the impact and the
+        // outcome as the pair they are, which is also how a reader of the black
+        // box has always had to read them.
+        let mut in_flight: Option<(ObjId, ObjId)> = None;
         for (t_ms, kind, draw) in notices {
             // 16b cut S.2: the pilot's notice and the ledger's event come off the
             // same journal entry, in the same order, so a line a pilot read is a
             // line the black box can be searched for.
-            self.stage_pilot_notice(t_ms, &kind);
+            self.stage_pilot_notice(t_ms, &kind, &mut in_flight);
             refused |= !self.journal_drawn(t_ms, kind, draw, hash);
         }
         refused
@@ -901,16 +981,13 @@ impl Arena {
             let reach = unit.weapon_reach_cm();
             let lock = unit.lock;
             let contacts = self.frame_contacts(unit.id);
-            // 16b cut W.1: the range to the lock, which is what turns each weapon's
-            // authored bands into the one band `WEAPONSTATUS` names. It is read off
-            // the contact list the frame already carries rather than computed a
-            // second time, so the band and the contact row can never disagree.
-            let lock_range_cm = lock.and_then(|id| {
-                contacts
-                    .iter()
-                    .find(|held| held.id == id)
-                    .map(|held| held.range_cm)
-            });
+            // **16b cut W.1, re-shaped by cut F.2**: the lock's own target, range
+            // and cover. Cut W.1 needed only the range — the band each weapon's
+            // lock falls in — and read it off the contact list the frame already
+            // carries; cut F.2 resolves **each weapon's** own chance, which needs
+            // the target and one trace. It is one trace per *seated* platform per
+            // pulse, which is what `lock_p_permille` already cost.
+            let aim = self.lock_aim(unit.id);
             candidates.push((
                 pilot.pilot,
                 Frame {
@@ -919,7 +996,8 @@ impl Arena {
                     pose: unit.pose.clone(),
                     speed_cms: unit.speed_cms,
                     power: unit.power,
-                    blocked: unit.blocked,
+                    // 16b cut F.2: the condition, not the substep's flag.
+                    blocked: unit.held,
                     tempo,
                     contacts,
                     weapon_reach_cm: reach,
@@ -930,12 +1008,10 @@ impl Arena {
                         .cloned()
                         .unwrap_or_default(),
                     lock,
-                    weapons: self.frame_weapons(unit.id, lock_range_cm),
-                    // 16b cut W.2: doc 16 §3.5 step 5's percentage, resolved per
-                    // pulse for the platform's own lock. It costs one trace and one
-                    // pass of the five steps per *seated* platform — not per unit —
-                    // and only while that platform holds a lock at all.
-                    lock_p_permille: self.lock_p_permille(unit.id),
+                    weapons: self.frame_weapons(unit.id, aim.as_ref()),
+                    // 16b cut F.2: doc 16 §5's status block, off the same M32
+                    // cells the impact writes.
+                    sections: self.frame_sections(unit.id),
                     // 16b cut X.1: two integers off the unit's own cells, and
                     // `None` for a platform that carries no heat at all.
                     heat: match (unit.heat_now(), unit.heat_max()) {
@@ -983,7 +1059,12 @@ impl Arena {
     ///   flickers (the pass keeps a classification across a gap by design).
     /// * `lost` — held for one further pass rather than said, which is the whole
     ///   hysteresis; [`Arena::sweep_held_losses`] is what eventually says it.
-    fn stage_pilot_notice(&mut self, t_ms: i64, kind: &EventKind) {
+    fn stage_pilot_notice(
+        &mut self,
+        t_ms: i64,
+        kind: &EventKind,
+        in_flight: &mut Option<(ObjId, ObjId)>,
+    ) {
         let window_ms = i64::from(self.sensors_cfg.pass_ms.max(1));
         match *kind {
             EventKind::Detected {
@@ -994,7 +1075,7 @@ impl Arena {
                 }
                 self.stage_notice(
                     viewer,
-                    FrameNotice {
+                    FrameNotice::Contact {
                         kind: NoticeKind::Acquired,
                         contact,
                         class: Classification::Unknown,
@@ -1008,12 +1089,86 @@ impl Arena {
                 ..
             } => self.stage_notice(
                 viewer,
-                FrameNotice {
+                FrameNotice::Contact {
                     kind: NoticeKind::Classified,
                     contact,
                     class: Classification::Classified { team },
                 },
             ),
+            // **16b cut F.2**, the four combat arms. Each is produced where its
+            // event is produced, at that event's own arena timestamp, so the list
+            // a scripted run gives a pilot is the same at every cadence.
+            EventKind::Impact { unit, target, .. } => *in_flight = Some((unit, target)),
+            EventKind::Hit {
+                unit,
+                target,
+                ref section,
+                ref facet,
+                armor_left,
+                internals_left,
+                ..
+            } => {
+                // The shooter sees the round land, and nothing about what it did:
+                // a gunner reads the strike, not the target's internals.
+                let held = self.contacts.id_of(unit, target);
+                self.stage_notice(unit, FrameNotice::Hit { contact: held });
+                // The victim reads their own tank. **Nothing about the shooter** —
+                // no id, no bearing, no team, no weapon: where a round came from
+                // is a thing only a sensor may tell.
+                let (armor_section, armor_max, internals_max) =
+                    self.struck_maxima(target, section, facet);
+                self.stage_notice(
+                    target,
+                    FrameNotice::Struck {
+                        section: section.clone(),
+                        armor_section,
+                        facet: facet.clone(),
+                        armor_left,
+                        armor_max,
+                        internals_left,
+                        internals_max,
+                    },
+                );
+            }
+            EventKind::Miss { ref reason, .. } => {
+                if let Some((shooter, target)) = *in_flight {
+                    let held = self.contacts.id_of(shooter, target);
+                    self.stage_notice(
+                        shooter,
+                        FrameNotice::Miss {
+                            contact: held,
+                            reason: reason.clone(),
+                        },
+                    );
+                }
+            }
+            EventKind::SectionDestroyed {
+                unit, ref section, ..
+            } => {
+                // The consequences that **fired**, not the authored list the
+                // ledger line carries: `disable_motion_when_all_of` is written
+                // down on each of a biped's legs and does nothing until the
+                // second one goes (16b cut X.2), and a pilot told their tank
+                // cannot move while it is still walking would act on it.
+                let consequences = self.fired_consequences(unit, section);
+                self.stage_notice(
+                    unit,
+                    FrameNotice::SectionLost {
+                        section: section.clone(),
+                        consequences,
+                    },
+                );
+            }
+            // The kill line the shooter is owed, and only when the round in flight
+            // is what did it: a unit destroyed by anything else is nobody's shot.
+            EventKind::UnitDestroyed { unit } => {
+                if let Some((shooter, target)) = *in_flight
+                    && target == unit
+                {
+                    let held = self.contacts.id_of(shooter, target);
+                    self.stage_notice(shooter, FrameNotice::Kill { contact: held });
+                }
+            }
             EventKind::Lost {
                 viewer, contact, ..
             } => {
@@ -1035,7 +1190,7 @@ impl Arena {
                     }
                     self.stage_notice(
                         viewer,
-                        FrameNotice {
+                        FrameNotice::Contact {
                             kind: NoticeKind::LockLost,
                             contact,
                             class: Classification::Unknown,
@@ -1047,6 +1202,125 @@ impl Arena {
             }
             _ => {}
         }
+    }
+
+    /// **Whose armour the round passed, and what that facet and this section hold
+    /// when they are whole** (16b cut F.2), so the victim's line can say *of* as
+    /// well as *left*.
+    ///
+    /// The armour is **not** always the struck section's. Doc 16 §3.3: a section
+    /// with no armour of its own is *struck through* another's — the engine
+    /// through `hull.rear` — and `crate::arena::damage::Arena::plan_hit` spends
+    /// the round on that other section's cell, so the `armor_left` the ledger
+    /// carries is that cell's and its maximum has to be read from the same place.
+    /// Reading it at `engine/rear/armor`, a cell the stock tank does not declare,
+    /// answered nought, and a pilot shot in the back read `110 of 0 armour left`.
+    /// So the pair is resolved through the profile's own `struck_through`, exactly
+    /// as the plan was, and the section it names is returned with it for the
+    /// sentence to be honest about.
+    ///
+    /// The internals are always the **struck** section's: that is where the
+    /// overflow went, whoever's armour it passed first.
+    ///
+    /// Both maxima are read off the cells' own `max`, which is content and does
+    /// not move, so they are facts about the tank rather than about the round.
+    fn struck_maxima(&self, unit: ObjId, section: &str, facet: &str) -> (SmolStr, u32, u32) {
+        let Some(state) = self.unit(unit) else {
+            return (SmolStr::new(section), 0, 0);
+        };
+        let armor_section = state
+            .profile
+            .section(section)
+            .and_then(|profile| profile.struck_through.as_ref())
+            .map_or_else(
+                || SmolStr::new(section),
+                |(through, _)| SmolStr::new(through.as_str()),
+            );
+        let armor = mush_tactics::SectionId::new(armor_section.as_str())
+            .ok()
+            .zip(mush_tactics::FacetId::new(facet).ok())
+            .and_then(|(section, facet)| {
+                mush_tactics::CellId::new(crate::definitions::unit::ARMOR_CELL)
+                    .ok()
+                    .map(|cell| mush_tactics::CellAddr::Facet {
+                        section,
+                        facet,
+                        cell,
+                    })
+            })
+            .and_then(|addr| state.unit.cell(&addr))
+            .map_or(0, |cell| u32::try_from(cell.max.max(0)).unwrap_or(u32::MAX));
+        let internals = mush_tactics::SectionId::new(section)
+            .ok()
+            .and_then(|section| {
+                mush_tactics::CellId::new(crate::definitions::unit::INTERNALS_CELL)
+                    .ok()
+                    .map(|cell| mush_tactics::CellAddr::Section { section, cell })
+            })
+            .and_then(|addr| state.unit.cell(&addr))
+            .map_or(0, |cell| u32::try_from(cell.max.max(0)).unwrap_or(u32::MAX));
+        (armor_section, armor, internals)
+    }
+
+    /// **Stage the line one refused order owes its pilot** (16b cut F.2; doc 16
+    /// §5: *`Notice` events for transitions and refusals*).
+    ///
+    /// The recorded open point K8, in its broad form: pulse phase 4 threw every
+    /// refusal away — `let _ = self.resolve_fire(…)` — and the only refusals a
+    /// pilot ever saw were the cockpit's own pre-checks against a frame up to one
+    /// pulse old. So a second `FIRE` inside one pulse printed `Firing cannon.` and
+    /// spent nothing, and a lock that expired between the frame and the apply was
+    /// silent.
+    ///
+    /// The numbers are read **here**, at the refusal, because that is the only
+    /// moment they are true; `crate::match_::cockpit` turns the pair into the same
+    /// sentence its own pre-check prints for the same condition, which is what
+    /// keeps the early answer and the late one from drifting apart.
+    ///
+    /// Two silences are deliberate. An intent **purged** by an epoch raise never
+    /// reaches this phase at all (`apply_control` drops it), which is doc 16
+    /// §3.1's `FIRE` then `EXIT` burst working exactly as written — the pilot who
+    /// left is told nothing about the shot they did not take. And the reflex
+    /// controller resolves its own shots inside a substep and never through this
+    /// phase, so an AI refusal reaches nobody.
+    fn stage_refusal(
+        &mut self,
+        unit: ObjId,
+        order: &'static str,
+        refusal: Refusal,
+        weapon: Option<SmolStr>,
+    ) {
+        let detail = match refusal {
+            Refusal::Cycling => {
+                let secs = weapon
+                    .as_ref()
+                    .and_then(|weapon| {
+                        self.unit(unit)
+                            .map(|state| state.weapon_ready_in_ms(weapon, self.now_ms))
+                    })
+                    .unwrap_or(0);
+                RefusalDetail::Cycling {
+                    secs: secs.saturating_add(999) / 1_000,
+                }
+            }
+            Refusal::Overheated => match self
+                .unit(unit)
+                .and_then(|state| state.heat_now().zip(state.heat_max()))
+            {
+                Some((heat, max)) => RefusalDetail::Overheated { heat, max },
+                None => RefusalDetail::None,
+            },
+            _ => RefusalDetail::None,
+        };
+        self.stage_notice(
+            unit,
+            FrameNotice::Refused {
+                order: SmolStr::new_static(order),
+                refusal,
+                weapon,
+                detail,
+            },
+        );
     }
 
     /// Put one notice in the platform's queue for this pulse.
@@ -1077,7 +1351,7 @@ impl Arena {
             }
             self.stage_notice(
                 viewer,
-                FrameNotice {
+                FrameNotice::Contact {
                     kind: NoticeKind::Lost,
                     contact,
                     class: Classification::Unknown,
@@ -1112,6 +1386,66 @@ impl Arena {
                     age_ms: self.now_ms.saturating_sub(held.first_seen_ms),
                     cell: self.definition.terrain.cell_of(&target.pose),
                 })
+            })
+            .collect()
+    }
+
+    /// **What one tank has left, as its own pilots' frame carries it** (16b cut
+    /// F.2; doc 16 §5's status block: *armor and internals per section as current
+    /// over max*), in **section-id then facet-id order** — which is the order
+    /// [`mush_tactics::TacticalUnit`]'s own ordered maps hold them in, and not the
+    /// order the pack authored them in.
+    ///
+    /// A projection of the M32 cells and never a second model: the impact's plan
+    /// is the single writer of both (doc 16 §3.5 "Damage"), so there is nothing
+    /// here to keep in step. It is built **per pilot per pulse** and the walk is
+    /// the unit's own five sections and their facets — a handful of small reads,
+    /// which is why a platform nobody is seated on pays nothing for it.
+    ///
+    /// It names the pilot's **own** tank and is therefore outside the observer
+    /// rule: what a crew can read off its own gauges is physical knowledge.
+    #[must_use]
+    pub fn frame_sections(&self, platform: ObjId) -> Vec<FrameSection> {
+        let Some(state) = self.unit(platform) else {
+            return Vec::new();
+        };
+        let Ok(armor_cell) = mush_tactics::CellId::new(crate::definitions::unit::ARMOR_CELL) else {
+            return Vec::new();
+        };
+        let Ok(internals_cell) =
+            mush_tactics::CellId::new(crate::definitions::unit::INTERNALS_CELL)
+        else {
+            return Vec::new();
+        };
+        state
+            .unit
+            .sections()
+            .map(|(id, section)| FrameSection {
+                id: SmolStr::new(id.as_str()),
+                condition: SmolStr::new(section.condition.as_str()),
+                internals: state
+                    .unit
+                    .cell(&mush_tactics::CellAddr::Section {
+                        section: id.clone(),
+                        cell: internals_cell.clone(),
+                    })
+                    .map(|cell| (cell.current, cell.max)),
+                facets: section
+                    .facets
+                    .iter()
+                    .filter_map(|facet| {
+                        let cell = state.unit.cell(&mush_tactics::CellAddr::Facet {
+                            section: id.clone(),
+                            facet: facet.clone(),
+                            cell: armor_cell.clone(),
+                        })?;
+                        Some(FrameFacet {
+                            id: SmolStr::new(facet.as_str()),
+                            armor: cell.current,
+                            armor_max: cell.max,
+                        })
+                    })
+                    .collect(),
             })
             .collect()
     }

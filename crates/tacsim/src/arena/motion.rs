@@ -145,6 +145,39 @@ fn scale_round(value: i64, fixed: i64) -> i64 {
     i64::try_from(rounded).unwrap_or(if rounded < 0 { i64::MIN } else { i64::MAX })
 }
 
+/// **Why a unit was stopped at a cell boundary** (16b cut F.2; doc 16 §3.4 step
+/// 4's three refusals, read as the three things a pilot can be told).
+///
+/// The cause and not the cell: doc 16 §3.6's observer rule is what fixes the
+/// vocabulary here, because an occupied cell may hold a unit this platform has
+/// not detected — so [`BlockedCause::Occupied`] says *something*, and the three
+/// words are the whole of what leaves the arena.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockedCause {
+    /// The ground ahead is impassable for this mode (doc 16 §3.4 step 4).
+    ///
+    /// The one-cell guard's refusal is read as this too: a jump longer than a
+    /// cell is a configuration the substep length forbids, and what the pilot
+    /// sees is a tank that will not go forward.
+    Impassable,
+    /// Another unit holds the cell (doc 16 §3.4 step 5's one unit per cell).
+    Occupied,
+    /// The cell is off the arena window (doc 16 §3.2 "Edges").
+    Edge,
+}
+
+impl BlockedCause {
+    /// The wire word, for the frame's own notice array.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            BlockedCause::Impassable => "impassable",
+            BlockedCause::Occupied => "occupied",
+            BlockedCause::Edge => "edge",
+        }
+    }
+}
+
 /// What one substep of [`integrate`] did to one unit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MotionOutcome {
@@ -158,6 +191,8 @@ pub struct MotionOutcome {
     /// window has no coordinates: a unit driven north out of the top row names
     /// the top-row cell it stopped in.
     pub blocked_at: Option<(u16, u16)>,
+    /// **Why** it was stopped (16b cut F.2), `None` when it was not.
+    pub blocked_by: Option<BlockedCause>,
 }
 
 /// **One substep of motion for one unit** (doc 16 §3.4, exactly).
@@ -170,10 +205,43 @@ pub struct MotionOutcome {
 /// a unit reads — its own heading, speed and pose, the terrain — is the
 /// substep-start snapshot.
 ///
-/// `unit.blocked` is **set here and cleared here**: it is the condition "stopped
-/// against something", not an event, and the caller turns its rising edge into the
-/// one ledger notice per stop.
+/// `unit.blocked` is **set here and cleared here**: it is the per-substep flag
+/// the caller turns into the one ledger notice per stop, and the edge the reflex
+/// controller re-plans off.
+///
+/// **16b cut F.2 added [`UnitState::held`] beside it**, and the two are not the
+/// same fact. `blocked` is what *this substep* did; `held` is the condition a
+/// pilot's `STATUS` reads, and it survives a substep in which the tank covered no
+/// whole centimetre and so never reached the boundary to be refused at again. The
+/// smoke of 2026-09-18 found the difference: a tank ordered forward against a
+/// river bank read `0 kph` with no `HELD` on exactly those substeps. `held` is
+/// deliberately **output only** — nothing in the arena reads it, it is not folded
+/// into [`crate::arena::hash::state_hash`], and the reflex controller still reads
+/// `blocked`, so no outcome moves with it.
 pub fn integrate(
+    unit: &mut UnitState,
+    dt_ms: u32,
+    terrain: &ArenaTerrain,
+    index: &SpatialIndex,
+) -> MotionOutcome {
+    let outcome = advance(unit, dt_ms, terrain, index);
+    // **The `held` condition** (16b cut F.2), settled once, at the one exit: a
+    // stop sets it, a substep that covered ground clears it, and a tank that is
+    // no longer being ordered anywhere is not being held against anything. A
+    // substep that did neither — no whole centimetre travelled, so no boundary to
+    // be refused at — leaves it exactly as it was, which is the case the smoke
+    // found.
+    if outcome.blocked_by.is_some() {
+        unit.held = true;
+    } else if outcome.moved || unit.desired_speed_cms == 0 {
+        unit.held = false;
+    }
+    outcome
+}
+
+/// Doc 16 §3.4's four steps, in order — everything [`integrate`] does except
+/// settle [`UnitState::held`].
+fn advance(
     unit: &mut UnitState,
     dt_ms: u32,
     terrain: &ArenaTerrain,
@@ -215,6 +283,7 @@ pub fn integrate(
         return MotionOutcome {
             moved: false,
             blocked_at: Some((0, 0)),
+            blocked_by: Some(BlockedCause::Edge),
         };
     };
     // The move is made **in place** and undone by clamping on a refusal, rather
@@ -230,23 +299,28 @@ pub fn integrate(
         Some(to) if to == from => MotionOutcome {
             moved: true,
             blocked_at: None,
+            blocked_by: None,
         },
-        Some(to) if enterable(unit, terrain, index, from, to) => {
-            // Doc 16 §3.2: `z_cm` is the cell's `elev_cm`, carried on entry.
-            if let Some(entered) = terrain.get(to.0, to.1) {
-                unit.pose.z_cm = i32::from(entered.elev_cm);
+        Some(to) => match refusal(unit, terrain, index, from, to) {
+            None => {
+                // Doc 16 §3.2: `z_cm` is the cell's `elev_cm`, carried on entry.
+                if let Some(entered) = terrain.get(to.0, to.1) {
+                    unit.pose.z_cm = i32::from(entered.elev_cm);
+                }
+                MotionOutcome {
+                    moved: true,
+                    blocked_at: None,
+                    blocked_by: None,
+                }
             }
-            MotionOutcome {
-                moved: true,
-                blocked_at: None,
-            }
-        }
-        // Impassable, occupied or more than one cell away: stop at the boundary.
-        Some(to) => stop_at_boundary(unit, terrain, from, to),
+            // Impassable, occupied or more than one cell away: stop at the
+            // boundary.
+            Some(cause) => stop_at_boundary(unit, terrain, from, to, cause),
+        },
         // Off the window (doc 16 §3.2 "Edges").
         None => {
             let nearest = nearest_on_window(terrain, &unit.pose);
-            stop_at_boundary(unit, terrain, from, nearest)
+            stop_at_boundary(unit, terrain, from, nearest, BlockedCause::Edge)
         }
     }
 }
@@ -382,22 +456,31 @@ fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u16) {
 /// A **diagonal** crossing tests the diagonal neighbour and nothing else: the
 /// unit cuts the corner and never occupies either edge-adjacent cell, so neither
 /// is entered and neither needs testing.
-fn enterable(
+/// **16b cut F.2**: the same three questions, answering *which* of them said no
+/// so that doc 16 §3.4 step 4's notice can name a cause. `None` is "enterable",
+/// which is the predicate this replaced.
+///
+/// The order is the order a pilot would work it out in — the ground, then the
+/// traffic — and the one-cell guard is folded into the ground's answer for the
+/// reason [`BlockedCause::Impassable`] gives.
+fn refusal(
     unit: &UnitState,
     terrain: &ArenaTerrain,
     index: &SpatialIndex,
     from: (u16, u16),
     to: (u16, u16),
-) -> bool {
+) -> Option<BlockedCause> {
     let one_step = from.0.abs_diff(to.0) <= 1 && from.1.abs_diff(to.1) <= 1;
     let passable = terrain
         .get(to.0, to.1)
         .is_some_and(crate::arena::state::TerrainCell::passable);
-    let free = match index.occupant(to.0, to.1) {
-        None => true,
-        Some(holder) => holder == unit.id,
-    };
-    one_step && passable && free
+    if !one_step || !passable {
+        return Some(BlockedCause::Impassable);
+    }
+    match index.occupant(to.0, to.1) {
+        Some(holder) if holder != unit.id => Some(BlockedCause::Occupied),
+        _ => None,
+    }
 }
 
 /// Stop the unit at the boundary it could not cross: the pose is clamped into the
@@ -413,6 +496,7 @@ fn stop_at_boundary(
     terrain: &ArenaTerrain,
     from: (u16, u16),
     refused: (u16, u16),
+    cause: BlockedCause,
 ) -> MotionOutcome {
     let side = i64::from(terrain.cell_cm());
     let low_x = i64::from(from.0).saturating_mul(side);
@@ -426,6 +510,7 @@ fn stop_at_boundary(
     MotionOutcome {
         moved: false,
         blocked_at: Some(refused),
+        blocked_by: Some(cause),
     }
 }
 

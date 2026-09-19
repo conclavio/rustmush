@@ -19,21 +19,33 @@
 //! | witness | seat | what this file asserts about them |
 //! |---|---|---|
 //! | Ada | red pilot | the whole cockpit: contacts, the lock and its percentage, the rounds going down, the kill, the team room afterwards |
-//! | Bo | blue pilot | the cockpit on the other side, and that it is told **nothing** about the shots that killed it beyond the result |
+//! | Bo | blue pilot | the cockpit on the other side: that it is told of every round that hit it and of its hull going, and **still nothing** that identifies or locates its killer |
 //! | Cy | a bystander standing in the lobby for the whole match | the centre's own announcements, and **nothing of the arena** |
 //! | God | staff | `@arena/status` running then reset, `@unit/show` on the wreck, the ledger, the result document, the money |
 //!
-//! # What the shipped cockpit can and cannot show a pilot
+//! # What the cockpit shows each pilot about the shooting
 //!
 //! Doc 16 §5 lists *armor and internals per section as current over max* in the
-//! status block. **The frame carries none** — [`tacsim::arena::step::Frame`] has the
-//! pose, the speed, the power, the contacts, the lock and the weapons and no damage
-//! at all — so neither pilot is told about a hit in the cockpit, and "the loser sees
-//! its tank destroyed" is asserted on the surfaces that *do* carry it: the centre's
-//! own "Match 1 is over (red)" line, the hatch that opens, the result document's
-//! `destroyed` row, and `@unit/show`'s `section hull: wreck` on the checked-in tank.
-//! That gap is recorded here rather than papered over: a damage panel is a change to
-//! the frame protocol and belongs to the cut that adds it, not to the story test.
+//! status block and *`Notice` events for transitions and refusals* beside it. Cut
+//! W.3 shipped neither — the frame carried no damage at all, so neither pilot was
+//! told about a hit and this file recorded the gap honestly — and **16b cut F.2
+//! closed it**. So the story now asserts what each side is told, and the split is
+//! the point:
+//!
+//! * **Ada**, the shooter, is told that each round landed, named by the opaque
+//!   contact her own platform holds, and that the target was destroyed. She is
+//!   told nothing of which section she struck or what the target had left: a
+//!   gunner sees the round land, not the target's internals.
+//! * **Bo**, the victim, is told that it was hit, which of *its own* sections and
+//!   facets took it and what is left there, and that its hull is gone. It is told
+//!   nothing whatever about Ada — no object number, no name, no contact id, no
+//!   bearing, no side, no weapon — because where a round came from is a thing only
+//!   a sensor may tell.
+//!
+//! "The loser sees its tank destroyed" is therefore asserted in the cockpit as
+//! well as on the surfaces that always carried it: the centre's own "Match 1 is
+//! over (red)" line, the hatch that opens, the result document's `destroyed` row,
+//! and `@unit/show`'s `section hull: wreck` on the checked-in tank.
 //!
 //! # Why the two accounts are seeded before the world task spawns
 //!
@@ -769,6 +781,12 @@ fn says_nothing_of_the_fight(seen: &str, contact: &str, what: &str) {
         "Locking",
         "bearing",
         "round(s)",
+        // 16b cut F.2: a pilot's notices are addressed to one actor and reach
+        // nobody else, on any surface.
+        "Hit on",
+        "Miss on",
+        "is destroyed",
+        "armour",
     ] {
         assert!(
             !seen.contains(leak),
@@ -1095,13 +1113,21 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         "but the centre's own announcements did reach it:\n{bystander}"
     );
 
-    // The loser's transcript names its killer nowhere. It names its **own** tank
-    // — `STATUS` prints the platform a pilot is sitting in — and nothing of the
+    // **16b cut F.2**: the loser was told about the rounds that killed it. It
+    // names its **own** tank — `STATUS` prints the platform a pilot is sitting in,
+    // and a hit names the section and facet the round found — and nothing of the
     // other side: not the red tank, not its dbref, not the shot, not the lock.
-    // The cockpit carries no damage feed at all (see the module head), so what
-    // the blue pilot was told about the rounds that killed it is the centre's own
-    // result line and nothing else.
     let loser = strip_ansi(&bo.seen);
+    assert!(
+        loser.contains("Hit on the "),
+        "the loser was told nothing about being shot:\n{}",
+        tail(&loser)
+    );
+    assert!(
+        loser.contains("The hull is destroyed: the tank is finished."),
+        "and nothing about its hull going:\n{}",
+        tail(&loser)
+    );
     never_names(
         &loser,
         &[
@@ -1112,10 +1138,42 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         ],
         "the loser's whole transcript",
     );
+    // Line by line, on the sentences this cut added: nothing in them identifies or
+    // locates the shooter.
+    for line in loser
+        .lines()
+        .filter(|line| line.starts_with("Hit on the ") || line.starts_with("The hull is"))
+    {
+        for leak in [contact.as_str(), "red", "bearing", "cannon", "°"] {
+            assert!(
+                !line.contains(leak),
+                "a hit notice carried {leak:?} about the shooter: {line}"
+            );
+        }
+    }
     assert!(
         loser.contains(OVER),
         "but it was told which side won:\n{}",
         tail(&loser)
+    );
+
+    // The winner saw her rounds land and saw the kill, and saw nothing of what
+    // the blue tank had left: the two halves of the same shot never cross.
+    let winner = strip_ansi(&ada.seen);
+    assert!(
+        winner.contains(&format!("Hit on {contact}.")),
+        "the shooter was never told a round landed:\n{}",
+        tail(&winner)
+    );
+    assert!(
+        winner.contains(&format!("{contact} destroyed.")),
+        "nor that the target went:\n{}",
+        tail(&winner)
+    );
+    assert!(
+        !winner.contains("Hit on the "),
+        "the shooter was shown the target's own damage:\n{}",
+        tail(&winner)
     );
 
     // -----------------------------------------------------------------
