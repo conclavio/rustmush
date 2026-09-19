@@ -490,6 +490,22 @@ pub enum ArenaBuildError {
 /// `100 / move_cost` **of the cell the unit is in**. Slope is a property of a
 /// pair of cells and belongs to the motion that crosses them.
 ///
+/// **16b cut X.6 is where that slope finally lands.** `elev_cm` was already
+/// copied verbatim and has been carried onto a unit's `z_cm` and honoured by the
+/// line of sight since cut S.1; what cut X.6 adds is the edge. The slope of a
+/// crossing is priced by [`crate::arena::slope`] at the crossing itself and in
+/// the reflex controller's A\*, off this same shipped table's limits, and an edge
+/// steeper than a unit's locomotion will take is refused there. So the cell's
+/// cost and the edge's surcharge are two halves of one answer, applied in the two
+/// places each belongs.
+///
+/// The arena still never calls `physics::move_cost`, and in particular its
+/// **climb branch is not applied**: `rise <= climb_cm && is_built(to.class)`
+/// models a kerb or a doorstep inside one cell, and these cells are 10 m across,
+/// so a `legged` unit stepping up 100 cm onto `Road` pays `cost × 110 / 100` here
+/// against the atlas's `cost × 150 / 100`. [`crate::arena::slope`]'s head argues
+/// it and its tests pin it.
+///
 /// # Errors
 ///
 /// [`ArenaBuildError`] naming the arena and the record that is missing or

@@ -947,6 +947,36 @@ pub struct UnitState {
     pub power: Power,
     /// The decoded `tracked` rules.
     pub mobility: TrackedRules,
+    /// **The steepest edge this unit's locomotion will cross**, per cent (16b
+    /// cut X.6; doc 16 §9 item 6), or `None` for no limit at all.
+    ///
+    /// Read off the M32 unit at check-out by
+    /// [`crate::arena::slope::SlopeLimit::read`], beside [`HeatState::read`] and
+    /// the three sight reads, and for the same reason: it is a fact about the
+    /// unit's fit that nothing in a match moves, and `CustodyUnit` is a struct a
+    /// dozen test files build literally.
+    ///
+    /// `None` is **no limit**, not a limit of zero — a unit whose content
+    /// declares no locomotion the shipped table knows still drives, and still
+    /// pays the slope's surcharge. It is not folded into
+    /// [`crate::arena::hash::state_hash`], for the reason `jammer` is not: it
+    /// never moves, and what it *does* is the refusals the hash already folds
+    /// through the poses.
+    pub slope_limit_pct: Option<u32>,
+    /// **The uphill slope of the edge this unit entered its cell by**, per cent
+    /// (16b cut X.6; doc 16 §3.4 step 2).
+    ///
+    /// Written by [`crate::arena::motion::integrate`] on every accepted
+    /// crossing, beside `pose.z_cm`, and read by the terrain factor of the next
+    /// substep: a tank half way up a ramp is held to `max_speed × 100 /
+    /// (move_cost × (100 + grade) / 100)`. `0` on flat ground, which makes the
+    /// factor exactly what it was before this cut.
+    ///
+    /// It **is** folded into [`crate::arena::hash::state_hash`], unlike the
+    /// limit: it is authoritative state with one writer, it moves without a
+    /// ledger event of its own, and a unit can sit in a cell for many substeps
+    /// after the crossing that set it.
+    pub grade_pct: u16,
     /// What damage has taken from its motion.
     pub limits: MotionLimits,
     /// How high its eye sits, centimetres (doc 16 §3.2 "Line of sight").
@@ -2066,19 +2096,29 @@ impl Arena {
             return Err(ArenaError::NoUnits);
         }
         let mut states: Vec<UnitState> = Vec::with_capacity(units.len());
-        for unit in units {
+        for mut unit in units {
             if unit.pose.heading_mdeg >= 360_000 {
                 return Err(ArenaError::BadHeading {
                     unit: unit.id,
                     heading_mdeg: unit.pose.heading_mdeg,
                 });
             }
-            if definition.terrain.cell_of(&unit.pose).is_none() {
+            let Some(opening_cell) = definition.terrain.cell_of(&unit.pose) else {
                 return Err(ArenaError::PoseOffWindow {
                     unit: unit.id,
                     x_cm: unit.pose.x_cm,
                     y_cm: unit.pose.y_cm,
                 });
+            };
+            // **16b cut X.6** (doc 16 §3.2 "Terrain"): *a unit's `z_cm` equals the
+            // cell's `elev_cm`*, and that is true from the opening hash and not
+            // merely from the first crossing. [`CustodyOut`] is the only door into
+            // an arena; the arena is the authority for its own grid, so it does not
+            // trust an inbound z — a stale one, or the flat zero every world-side
+            // placement writes, is corrected here rather than carried for however
+            // many substeps it takes the tank to cross a boundary.
+            if let Some(cell) = definition.terrain.get(opening_cell.0, opening_cell.1) {
+                unit.pose.z_cm = i32::from(cell.elev_cm);
             }
             // **16b cut X.1**: the heat numbers, read off the cells the
             // `TacticalUnit` already carries rather than across a widened seam
@@ -2095,6 +2135,11 @@ impl Arena {
             // when its component has been shot off, which is the one thing that
             // stops a filter working.
             let eccm = Eccm::read(&unit.unit);
+            // **16b cut X.6**: the steepest edge this unit's locomotion will
+            // cross, read off the same record and `None` for a unit that declares
+            // no locomotion the shipped table knows — every engine fixture, which
+            // therefore still drives and still pays the surcharge.
+            let slope_limit_pct = crate::arena::slope::SlopeLimit::read(&unit.unit);
             // **16b cut F.1** (doc 16 §3.1 "Custody"): the match opens on the unit
             // the world hands over, and that unit's own record may already say it
             // is a wreck, has lost a track or has had its turret shot off. Until
@@ -2117,6 +2162,10 @@ impl Arena {
                 desired_speed_cms: 0,
                 power: Power::Off,
                 mobility: unit.mobility,
+                slope_limit_pct,
+                // A unit opens the match standing still, so it entered its cell by
+                // no edge at all: grade zero, which is the flat factor.
+                grade_pct: 0,
                 limits: entry.limits,
                 sensor_height_cm: if unit.sensor_height_cm == 0 {
                     DEFAULT_SENSOR_HEIGHT_CM

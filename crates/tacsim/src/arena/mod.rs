@@ -134,6 +134,35 @@
 //! is a deviation from 16b §8's cut N row with a reason the same row gives:
 //! [`reflex`]'s module head has it in full.
 //!
+//! # Cut X.6: elevation, and the one slope rule
+//!
+//! [`slope`] is doc 16 §9 item 6's second half. The heightfield itself was
+//! already here — `crate::definitions::arena::from_pack` copies `elev_cm`
+//! verbatim, [`motion`] carries it onto the pose at a crossing, and doc 16
+//! §3.2's line of sight has honoured it since cut S.1 — so what this cut adds is
+//! the *edge*: the slope between two cells surcharges what it costs to cross
+//! them, and a slope past the locomotion's limit is not an edge at all.
+//!
+//! One module, because the rule has to be one rule: [`motion`] drives over an
+//! edge and [`path`] plans over it, and a route that promised an edge the tank
+//! is then refused at is a tank driving at a bluff until the match ends. The
+//! flat case is the identity (`cost × 100 / 100`), so every level window in this
+//! crate runs exactly the arithmetic it ran before.
+//!
+//! Its one dependency outside this tree is `mush_atlas::physics::{slope_pct,
+//! StepKind, LocomotionTable}` — arithmetic and a table, no window, no record and
+//! no store, so the no-I/O gate holds for the reason cut S.1's `trace_cells` does.
+//! `LocomotionTable::shipped()` is an `include_str!` parsed once behind a
+//! `OnceLock`, and [`slope::SlopeLimit::read`] runs once per unit at check-out,
+//! so no pulse ever reads it. `from_pack` already prices every cell off the same
+//! table, which is what makes the cell's cost and the edge's surcharge one
+//! answer rather than two.
+//!
+//! **Two deliberate divergences**, both argued in [`slope`]'s own head: the
+//! limit is symmetric where the atlas's is uphill-only (an uphill-only limit
+//! makes a bluff a one-way door), and `physics::move_cost`'s climb branch is not
+//! applied (it models a kerb inside one cell, and the arena's cells are 10 m).
+//!
 //! What is still not here, and whose it is: deliberation, the order type, the
 //! squad grouping and the cost run are cut N.2's, and the task, the inbox, the
 //! egress, the timer and the unwind boundary are cut T's.
@@ -152,6 +181,7 @@ pub mod perception;
 pub mod reflex;
 pub mod resolution;
 pub mod rng;
+pub mod slope;
 pub mod state;
 pub mod step;
 pub mod weapons;
@@ -173,7 +203,7 @@ pub use intents::{
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 pub use motion::{MotionOutcome, cos_fx, integrate, sin_fx};
-pub use path::{PathFailure, PathResult, PathScratch, min_move_cost};
+pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
     FULL_SIGNATURE_PERMILLE, FrameContact, PerceptionCounters, SensorProfile, SignatureFactor,
     ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
@@ -183,6 +213,9 @@ pub use resolution::{
     BandProfile, Consequence, DIRECT_BANDS, Resolution, SectionProfile, UnitProfile, facet_band,
 };
 pub use rng::{DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_permille};
+pub use slope::{
+    SlopeLimit, driving_mode, effective_cost, grade_pct, steepness_pct, step_kind, too_steep,
+};
 pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, Classification, ContactId,
     Controller, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, DueEvent, DueHeap, DueKind,

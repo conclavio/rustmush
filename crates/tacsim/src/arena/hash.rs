@@ -59,7 +59,9 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///        bytes and its `i64`; then the same for `ammo` with its `u32`. The id's
 ///        bytes go in because a row is a `(weapon, value)` pair and folding only the
 ///        values would make two weapons that swapped cycles one state;
-///    11. **the controller byte** (16b cut N.1): `0` pilot, `1` reflex.
+///    11. **the controller byte** (16b cut N.1): `0` pilot, `1` reflex;
+///    12. **`grade_pct`** (16b cut X.6), `u16` — the uphill slope of the edge the
+///        unit entered its cell by.
 /// 2. **The reflex machines** (16b cut N.1), in unit-id order — the map's own, so
 ///    there is no iteration order to diverge on: per machine the unit's `u32`, the
 ///    state byte, the goal cell's two `u16` (`u16::MAX` twice for none), the
@@ -111,6 +113,16 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// its count: the shot's own fields are a function of the poses and the range at
 /// acceptance, which are already in here, and folding a predicted point would hash
 /// the same numbers twice.
+///
+/// **Cut X.6's extension**: `grade_pct`, for the same argument. It is
+/// authoritative state with exactly one writer
+/// ([`crate::arena::motion::integrate`]'s accepted crossing), it moves without a
+/// ledger event, and a unit can sit in one cell for many substeps after the
+/// crossing that set it — so a replay that took a ramp a substep earlier would
+/// compare equal until the difference in speed had accumulated into a whole
+/// centimetre of pose. The *limit* beside it is deliberately not folded: it is
+/// read once at check-out and never moves, and every refusal it causes is a pose
+/// that is already in here.
 #[must_use]
 pub fn state_hash(arena: &Arena) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
@@ -152,6 +164,8 @@ pub fn state_hash(arena: &Arena) -> u64 {
         }
         // 16b cut N.1: who is flying it.
         hash = fnv1a64_update(hash, &[unit.controller.code()]);
+        // 16b cut X.6: the slope it is standing on.
+        hash = fnv1a64_update(hash, &unit.grade_pct.to_le_bytes());
     }
     // 16b cut N.1: the controller's own machines, in unit-id order.
     for (unit, row) in arena.reflex.rows() {
@@ -373,6 +387,30 @@ mod tests {
                 .insert(smol_str::SmolStr::new("machine_gun"), 1_000);
         }
         assert_ne!(state_hash(&swapped), state_hash(&other));
+    }
+
+    /// **16b cut X.6's extension**: the slope a unit entered its cell by is a
+    /// fact with one writer that moves without an event, so it has to move the
+    /// hash. The limit beside it never moves, so it deliberately does not.
+    #[test]
+    fn the_hash_folds_the_slope_a_unit_entered_its_cell_by() {
+        let base = state_hash(&two_tanks());
+        let mut climbed = two_tanks();
+        if let Some(unit) = climbed.unit_mut(ObjId(9)) {
+            unit.grade_pct = 30;
+        }
+        assert_ne!(state_hash(&climbed), base, "a grade went unhashed");
+        // Back to the flat is the same state again.
+        if let Some(unit) = climbed.unit_mut(ObjId(9)) {
+            unit.grade_pct = 0;
+        }
+        assert_eq!(state_hash(&climbed), base);
+        // The limit is a fact about the fit, not about the match.
+        let mut limited = two_tanks();
+        if let Some(unit) = limited.unit_mut(ObjId(9)) {
+            unit.slope_limit_pct = Some(45);
+        }
+        assert_eq!(state_hash(&limited), base);
     }
 
     #[test]

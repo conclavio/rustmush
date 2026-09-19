@@ -751,6 +751,10 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
             BlockedCause::Impassable => "Held: the ground ahead will not take the tank.".to_owned(),
             BlockedCause::Occupied => "Held: something is in the way.".to_owned(),
             BlockedCause::Edge => "Held: this is the edge of the arena.".to_owned(),
+            // 16b cut X.6: the ground ahead would take the tank; the slope onto
+            // it will not. The difference is worth a sentence of its own, because
+            // what a pilot does about it is drive round rather than give up.
+            BlockedCause::TooSteep => "Held: the slope ahead is too steep for the tank.".to_owned(),
         },
     }
 }

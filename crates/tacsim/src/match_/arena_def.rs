@@ -241,9 +241,16 @@ pub fn opening_pose(
 /// the five fields the game crate decodes out of it. This is that decode, and the
 /// only place in the tree that reads those keys.
 ///
-/// The mode taken is the profile's `tracked` one, **else its `legged` one** (16b
-/// cut X.2, doc 16 §9 item 2: *motion reads either*), else a mode whose id merely
-/// contains the word. The order is the authored one
+/// The mode taken is [`crate::arena::slope::driving_mode`]'s: the profile's
+/// `tracked` one, **else its `legged` one** (16b cut X.2, doc 16 §9 item 2:
+/// *motion reads either*), else a mode whose id merely contains the word — the
+/// same three rungs the unit's slope limit is read off (16b cut X.6), written
+/// once so that there is one ladder rather than two copies of it. What the two
+/// readers do when the ladder answers nothing differs, by intent: this one falls
+/// through to the stock tank below, while
+/// [`crate::arena::slope::SlopeLimit::read`] falls back to the profile's first
+/// mode so that a `wheeled`-only unit is not silently unlimited. The order is
+/// the authored one
 /// ([`crate::definitions::unit::MobilityDef::modes`]) so that a unit which
 /// declared both drives here as it binds there. A unit with no mobility profile,
 /// no mode this recognises, or a rules blob missing a field gets the **stock
@@ -260,23 +267,10 @@ pub fn tracked_rules(unit: &mush_tactics::TacticalUnit) -> TrackedRules {
     let Some(profile) = unit.mobility() else {
         return rules;
     };
-    let mode = profile
-        .modes()
-        .iter()
-        .find(|mode| mode.locomotion.as_str() == TRACKED)
-        .or_else(|| {
-            profile
-                .modes()
-                .iter()
-                .find(|mode| mode.locomotion.as_str() == LEGGED)
-        })
-        .or_else(|| {
-            profile
-                .modes()
-                .iter()
-                .find(|mode| mode.id.as_str().contains(TRACKED))
-        });
-    let Some(mode) = mode else {
+    // **16b cut X.6** moved the three rungs into `crate::arena::slope`, where the
+    // slope limit reads them too: the kinematics and the limit must come off the
+    // same mode, and two copies of the ladder are two modes waiting to disagree.
+    let Some(mode) = crate::arena::slope::driving_mode(profile) else {
         return rules;
     };
     let data = mode.rules.data();
@@ -601,11 +595,9 @@ pub fn stock_resolution() -> ResolutionDef {
     }
 }
 
-/// The locomotion id doc 16 §3.3's mode rules belong to.
-const TRACKED: &str = "tracked";
-
-/// The locomotion id a biped's mode rules belong to (16b cut X.2).
-const LEGGED: &str = "legged";
+// **16b cut X.6** retired this file's own `TRACKED` and `LEGGED` copies with the
+// mode ladder that read them: the ladder now lives in `crate::arena::slope`,
+// which reads `crate::definitions::unit`'s originals.
 
 /// Doc 16 §3.3's stock tank, as the documented fallback — the five numbers
 /// `content/units/line_tank.json` authors, pinned equal to it by

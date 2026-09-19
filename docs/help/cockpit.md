@@ -25,14 +25,20 @@ else — `help simulator` is how you get there.
 **Heading is 0 to 359 degrees, clockwise from north**, so 90 is east and 270 is
 west. **Speed is kph.** Terrain caps it: order 54 on grass and the tank will
 make about 41, and `STATUS` shows what it is really doing rather than what you
-asked for.
+asked for. A climb costs its slope on top of that, so the same order up a bank
+of one in three makes about 31 and the tank is slowest where the ground is
+steepest; a descent costs nothing extra.
 
 Ground a tank cannot enter stops it, and the cockpit says so once per stop —
 `Held: the ground ahead will not take the tank.` for impassable ground,
 `Held: something is in the way.` for another unit, `Held: this is the edge of
-the arena.` at the boundary. `STATUS` carries `HELD` until you order something
-that frees it. Deep water is impassable to a tracked tank; the proving ground
-has one ford, on the east-west road.
+the arena.` at the boundary, and `Held: the slope ahead is too steep for the
+tank.` where the ground would take the tank but the bank onto it will not. That
+last one is the one to drive **round**: tracks stop at 45 per cent, legs at 70,
+and a slope too steep to climb is too steep to drop off, so a bank is never a
+one-way door. `STATUS` carries `HELD` until you order something that frees it.
+Deep water is impassable to a tracked tank; the proving ground has one ford, on
+the east-west road.
 
 ## Seeing
 

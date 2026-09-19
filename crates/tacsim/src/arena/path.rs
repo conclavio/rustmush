@@ -30,15 +30,39 @@
 //!
 //! D-16-4. The step cost is the entered cell's `move_cost` for an orthogonal step
 //! and `move_cost × 181 / 128` for a diagonal one — 1.4140625, which is
-//! `sqrt(2)` to four decimal places and is exact in integers. The heuristic is the
-//! octile distance in the same units against the window's **cheapest** cell
-//! ([`min_move_cost`]), which is admissible by construction: no real step can cost
-//! less than the cheapest cell's cost.
+//! `sqrt(2)` to four decimal places and is exact in integers — and then, from 16b
+//! cut X.6, the slope surcharge of the edge ([`crate::arena::slope`]). The
+//! heuristic is the octile distance in the same units against the window's
+//! **cheapest** cell ([`min_move_cost`]), which is admissible by construction: no
+//! real step can cost less than the cheapest cell's cost, and slope only ever
+//! raises a step's cost.
+//!
+//! # 16b cut X.6: the ground has a third dimension
+//!
+//! [`path_with`] takes the caller's slope limit and refuses an edge too steep
+//! **either way** for it, exactly as [`crate::arena::motion`] refuses one at the
+//! crossing — the same [`crate::arena::slope`] rule, because a route that
+//! promised an edge the tank is then refused at is a tank driving at a bluff
+//! until the match ends. [`path`] keeps its signature and its behaviour: it is
+//! `path_with(.., None)`, and with no limit no edge is refused and no shoulder
+//! is read, so every **level** window answers cell for cell and node for node
+//! what it answered before. The surcharge itself is not gated on the limit: an
+//! unlimited caller on relief pays the climb it plans over, because a search
+//! that priced a climb at the flat's cost would promise a route motion charges
+//! differently.
+//!
+//! The one named residual against `mush_atlas::physics::move_cost` is the
+//! diagonal constant — 181/128 here against the atlas's 141/100 — which predates
+//! this cut and is left alone; [`crate::arena::slope`]'s own tests pin the
+//! difference.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use crate::arena::state::ArenaTerrain;
+use mush_atlas::physics::StepKind;
+
+use crate::arena::slope;
+use crate::arena::state::{ArenaTerrain, TerrainCell};
 
 /// The numerator of the diagonal step's cost multiplier.
 ///
@@ -172,10 +196,18 @@ impl PathScratch {
 /// **The bounded A\*** (doc 16 §6): the cheapest route from `start` to `goal` over
 /// `terrain`, expanding at most `budget` nodes.
 ///
-/// The step cost is the **entered** cell's `move_cost`, scaled for a diagonal, so
-/// a road is cheap and rubble is dear exactly as motion's terrain factor makes
-/// them (doc 16 §3.4 step 2). An impassable cell (`move_cost == 0`) is never
+/// The step cost is the **entered** cell's `move_cost`, scaled for a diagonal and
+/// then surcharged for the slope of the edge (16b cut X.6), so a road is cheap, a
+/// climb is dear and rubble is dear exactly as motion's terrain factor makes them
+/// (doc 16 §3.4 step 2). An impassable cell (`move_cost == 0`) is never
 /// entered and never expanded, which is the same rule motion's step 4 applies.
+///
+/// This is [`path_with`] with **no limit**, which is the whole of the difference:
+/// no edge is refused for being too steep, and no shoulder is read. On level
+/// ground the surcharge is the identity, so every flat window answers exactly
+/// what it answered before cut X.6; on relief the unlimited search pays the
+/// climb it plans over, as it must, or it would promise a route motion prices
+/// differently.
 /// **Occupancy is not consulted**: a unit standing in a cell is a thing to drive
 /// around at the moment of the step, not a permanent hole in the map, and a route
 /// recomputed every time somebody parked would be a route recomputed every tick.
@@ -203,7 +235,48 @@ pub fn path(
     budget: u32,
     scale: u32,
 ) -> Result<PathResult, PathFailure> {
+    path_with(terrain, scratch, start, goal, budget, scale, None)
+}
+
+/// **The bounded A\* with a slope limit** (16b cut X.6; doc 16 §9 item 6) —
+/// [`path`] with the caller's `slope_limit_pct`, which is the whole of the
+/// difference.
+///
+/// The step cost is the entered cell's `move_cost`, then the diagonal factor,
+/// then the slope surcharge of the edge ([`crate::arena::slope::effective_cost`]
+/// over [`crate::arena::slope::grade_pct`]); and **an edge too steep either way
+/// for `slope_limit` is not an edge**, so the search walks round a bluff rather
+/// than promising a route over it. That is the same rule
+/// [`crate::arena::motion`]'s step 4 applies at the crossing, read out of the
+/// same module, because a route the tank is then refused at is worse than no
+/// route at all.
+///
+/// **The shoulder rule.** A diagonal step cuts a corner and motion never
+/// occupies either edge-adjacent cell while it does — but a corner both of whose
+/// shoulders are a cliff is a corner nothing drives through, and a route that
+/// took one would send a tank along the ridge line beside it. So with a limit in
+/// force a diagonal is refused when a shoulder that exists and is passable is
+/// unreachable from here, or cannot reach the neighbour. A missing or impassable
+/// shoulder is **skipped**: the class gap there predates this cut, and closing it
+/// would change every route on every window with a wall in it.
+///
+/// With `slope_limit` `None` neither test runs, and the surcharge is the
+/// identity on level ground, so [`path`] is exactly what it was.
+///
+/// # Errors
+///
+/// [`PathFailure`], exactly as [`path`].
+pub fn path_with(
+    terrain: &ArenaTerrain,
+    scratch: &mut PathScratch,
+    start: (u16, u16),
+    goal: (u16, u16),
+    budget: u32,
+    scale: u32,
+    slope_limit: Option<u32>,
+) -> Result<PathResult, PathFailure> {
     let passable = |x: u16, y: u16| terrain.get(x, y).is_some_and(|cell| cell.passable());
+    let cell_cm = u32::from(terrain.cell_cm());
     if !passable(start.0, start.1) || !passable(goal.0, goal.1) {
         return Err(PathFailure::OffGround);
     }
@@ -268,6 +341,9 @@ pub fn path(
         if expanded > budget {
             return Err(PathFailure::Budget);
         }
+        // 16b cut X.6: the expanding node's own cell, read once per expansion and
+        // not once per neighbour — it is the `from` of all eight edges.
+        let here_cell = terrain.get(x, y);
         for (dx, dy) in NEIGHBOURS {
             let (Some(nx), Some(ny)) = (
                 u16::try_from(i32::from(x).saturating_add(dx)).ok(),
@@ -281,12 +357,46 @@ pub fn path(
             if !cell.passable() {
                 continue;
             }
+            let kind = if dx != 0 && dy != 0 {
+                StepKind::Diagonal
+            } else {
+                StepKind::Orthogonal
+            };
+            // **16b cut X.6's edge rule**, after the class test and before the
+            // cost: an edge too steep either way is not an edge, and a diagonal
+            // whose shoulders are a cliff is not a corner anything drives through.
+            //
+            // Both tests hang off `slope_limit` being `Some`, and deliberately so:
+            // `too_steep(None, ..)` refuses nothing, so an unlimited caller that
+            // computed the steepness would be computing two slopes an edge at a
+            // time to throw them both away. [`path`] is the search the harness
+            // times, and it does no slope work here at all.
+            let mut grade = 0;
+            if let Some(here_cell) = here_cell {
+                if let Some(limit) = slope_limit {
+                    if slope::too_steep(
+                        Some(limit),
+                        slope::steepness_pct(here_cell, cell, kind, cell_cm),
+                    ) {
+                        continue;
+                    }
+                    if kind == StepKind::Diagonal
+                        && shoulder_refuses(terrain, Some(limit), here_cell, cell, (x, y), (nx, ny))
+                    {
+                        continue;
+                    }
+                }
+                grade = slope::grade_pct(here_cell, cell, kind, cell_cm);
+            }
             let cost = u32::from(cell.move_cost);
             let step = if dx != 0 && dy != 0 {
                 cost.saturating_mul(DIAGONAL_NUM) / DIAGONAL_DEN
             } else {
                 cost
             };
+            // The surcharge goes on last, in the atlas's own order: the class's
+            // cost, the diagonal factor, then the slope.
+            let step = slope::effective_cost(step, grade);
             let next = here.saturating_add(step.max(1));
             let Some(neighbour) = scratch.at(nx, ny) else {
                 continue;
@@ -346,6 +456,44 @@ pub fn path(
     }
     cells.reverse();
     Ok(PathResult { cells, expanded })
+}
+
+/// **The shoulder rule** (16b cut X.6): whether either shoulder of a diagonal
+/// step refuses it.
+///
+/// The two shoulders of the corner `here → to` are `(to.0, here.1)` and
+/// `(here.0, to.1)`. A shoulder that is off the window or impassable is skipped
+/// — motion cuts that corner today and this cut does not close the gap — and one
+/// that is there and passable must be reachable from `here` and able to reach
+/// `to`, both as **orthogonal** steps, or the corner is a cliff edge and the
+/// route goes another way.
+fn shoulder_refuses(
+    terrain: &ArenaTerrain,
+    limit: Option<u32>,
+    here_cell: &TerrainCell,
+    to_cell: &TerrainCell,
+    here: (u16, u16),
+    to: (u16, u16),
+) -> bool {
+    let cell_cm = u32::from(terrain.cell_cm());
+    for (sx, sy) in [(to.0, here.1), (here.0, to.1)] {
+        let Some(shoulder) = terrain.get(sx, sy) else {
+            continue;
+        };
+        if !shoulder.passable() {
+            continue;
+        }
+        if slope::too_steep(
+            limit,
+            slope::steepness_pct(here_cell, shoulder, StepKind::Orthogonal, cell_cm),
+        ) || slope::too_steep(
+            limit,
+            slope::steepness_pct(shoulder, to_cell, StepKind::Orthogonal, cell_cm),
+        ) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -520,6 +668,34 @@ mod tests {
             "the road should carry most of the run: {:?}",
             found.cells
         );
+    }
+
+    /// **16b cut X.6**: on a level window a limit changes nothing at all — the
+    /// surcharge is the identity at grade zero and no edge is ever too steep — so
+    /// the limited search must answer cell for cell and node for node what the
+    /// unlimited one answers. That is what lets every flat fixture in this crate
+    /// stand unedited.
+    #[test]
+    fn a_limit_changes_no_route_on_level_ground() {
+        let wall: Vec<(u16, u16)> = (1..8).map(|y| (4_u16, y)).collect();
+        for terrain in [
+            window(8, 8, &[]),
+            window(8, 8, &wall),
+            window(16, 16, &[(8, 8), (8, 9), (8, 10)]),
+            window(32, 32, &[]),
+        ] {
+            let scale = min_move_cost(&terrain);
+            let last = (terrain.width() - 1, terrain.height() - 1);
+            for (start, goal) in [((0_u16, 0_u16), last), ((0, 4), (7, 4)), ((2, 1), (5, 6))] {
+                let mut plain = PathScratch::default();
+                let mut limited = PathScratch::default();
+                assert_eq!(
+                    path(&terrain, &mut plain, start, goal, 65_536, scale),
+                    path_with(&terrain, &mut limited, start, goal, 65_536, scale, Some(45)),
+                    "{start:?} -> {goal:?} moved under a limit on level ground"
+                );
+            }
+        }
     }
 
     #[test]

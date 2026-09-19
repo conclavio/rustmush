@@ -83,7 +83,7 @@ use smol_str::SmolStr;
 
 use crate::arena::intents::{Intent, IntentKind, IntentOutcome, apply_intent, resolve_startup};
 use crate::arena::ledger::EventKind;
-use crate::arena::path::{PathScratch, path};
+use crate::arena::path::{PathScratch, path_with};
 use crate::arena::perception::bearing_of;
 use crate::arena::resolution::facet_band_seen;
 use crate::arena::state::{
@@ -1367,13 +1367,19 @@ impl Arena {
                 counters.path_queries = counters.path_queries.saturating_add(1);
                 let budget = memory.cfg.path_max_cells;
                 let scale = memory.min_move_cost;
-                match path(
+                // **16b cut X.6**: the unit's own slope limit goes into the
+                // search, so the route the controller follows is a route the
+                // crossing will accept. A route over an edge motion then refuses
+                // is a tank driving at a bluff and re-planning at it every
+                // `repath_ms` for the rest of the match.
+                match path_with(
                     &self.definition.terrain,
                     &mut memory.scratch,
                     here,
                     goal,
                     budget,
                     scale,
+                    unit.slope_limit_pct,
                 ) {
                     Ok(found) => {
                         counters.path_cells = counters

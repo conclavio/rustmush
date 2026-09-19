@@ -12,9 +12,17 @@
 //!    that is not online;
 //! 3. the position advances `speed × dt` along the heading, which by the
 //!    construction of the substep crosses at most one cell boundary;
-//! 4. a crossing tests the cell entered — impassable, occupied or off the window
-//!    — and a refusal stops the unit at the boundary with `speed = 0` and one
-//!    `blocked` notice.
+//! 4. a crossing tests the cell entered — impassable, occupied, too steep or off
+//!    the window — and a refusal stops the unit at the boundary with `speed = 0`
+//!    and one `blocked` notice.
+//!
+//! **16b cut X.6 put the ground's third dimension into steps 2 and 4.** The
+//! slope of the edge a unit crossed to reach its cell surcharges that cell's
+//! `move_cost` for as long as it stands there, and an edge steeper than the
+//! unit's locomotion will take is refused — in **either** direction, so a bluff
+//! is never a one-way door. Both are [`crate::arena::slope`]'s rule and not a
+//! second copy of it, because the reflex controller's A\* plans over exactly the
+//! same one. On level ground the surcharge is the identity and nothing moves.
 //!
 //! **The invariant: no unit ever occupies a cell that was not tested on entry.**
 //! It holds by construction rather than by inspection: a refused crossing clamps
@@ -37,10 +45,12 @@
 //! [`crate::arena::state::UnitState`] deliberately holds none). At 250 ms
 //! substeps that is under 2 cm a second against cells 10 m wide.
 
+use mush_atlas::physics::StepKind;
 use mush_sim::data::Pose;
 
 use crate::arena::index::SpatialIndex;
-use crate::arena::state::{ArenaTerrain, Power, Side, UnitState};
+use crate::arena::slope;
+use crate::arena::state::{ArenaTerrain, Power, Side, TerrainCell, UnitState};
 
 /// A full turn, millidegrees.
 pub const FULL_TURN_MDEG: u32 = 360_000;
@@ -146,12 +156,15 @@ fn scale_round(value: i64, fixed: i64) -> i64 {
 }
 
 /// **Why a unit was stopped at a cell boundary** (16b cut F.2; doc 16 §3.4 step
-/// 4's three refusals, read as the three things a pilot can be told).
+/// 4's refusals, read as the things a pilot can be told — three of them until
+/// 16b cut X.6 gave the slope its own word, which is four).
 ///
 /// The cause and not the cell: doc 16 §3.6's observer rule is what fixes the
 /// vocabulary here, because an occupied cell may hold a unit this platform has
-/// not detected — so [`BlockedCause::Occupied`] says *something*, and the three
-/// words are the whole of what leaves the arena.
+/// not detected — so [`BlockedCause::Occupied`] says *something*, and the four
+/// words are the whole of what leaves the arena. The fourth costs the rule
+/// nothing: a slope is the ground's own fact, map knowledge a pilot could read
+/// off the terrain himself, and it tells nobody about another unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockedCause {
     /// The ground ahead is impassable for this mode (doc 16 §3.4 step 4).
@@ -164,6 +177,17 @@ pub enum BlockedCause {
     Occupied,
     /// The cell is off the arena window (doc 16 §3.2 "Edges").
     Edge,
+    /// **The edge between the two cells is steeper than this unit's locomotion
+    /// will cross** (16b cut X.6; doc 16 §9 item 6).
+    ///
+    /// A fourth word rather than [`BlockedCause::Impassable`] because it is a
+    /// different fact and a pilot can act on the difference: the ground ahead
+    /// would take the tank, the *slope* onto it will not, so the answer is to
+    /// go round rather than to give the cell up. It is also the one refusal a
+    /// unit meets **leaving** a cell as well as entering one, and it names
+    /// terrain and nothing else, so doc 16 §3.6's observer rule is untouched —
+    /// the ground is map knowledge and tells nobody about another unit.
+    TooSteep,
 }
 
 impl BlockedCause {
@@ -174,6 +198,7 @@ impl BlockedCause {
             BlockedCause::Impassable => "impassable",
             BlockedCause::Occupied => "occupied",
             BlockedCause::Edge => "edge",
+            BlockedCause::TooSteep => "too_steep",
         }
     }
 }
@@ -258,10 +283,19 @@ fn advance(
 
     // ---- 2. the speed moves toward the ordered one ----
     let cell = terrain.cell_of(&unit.pose);
-    let move_cost = cell
-        .and_then(|(x, y)| terrain.get(x, y))
-        .map_or(0, |cell| cell.move_cost);
-    accelerate(unit, dt, move_cost);
+    // **16b cut X.6**: the cell the unit is standing in is kept, not merely its
+    // cost — step 4 needs it to price the edge it is about to cross, and fetching
+    // it twice would be two reads of the same immutable window.
+    let from_cell = cell.and_then(|(x, y)| terrain.get(x, y));
+    let move_cost = from_cell.map_or(0, |cell| cell.move_cost);
+    // The slope the unit entered this cell by surcharges the cell's own cost: a
+    // tank half way up a ramp is held below the flat ceiling. At grade zero the
+    // surcharge is the identity, so level ground accelerates exactly as before.
+    accelerate(
+        unit,
+        dt,
+        slope::effective_cost(u32::from(move_cost), u32::from(unit.grade_pct)),
+    );
 
     // ---- 3. the position advances along the heading ----
     let travel = i64::from(unit.speed_cms).saturating_mul(dt) / 1_000;
@@ -301,22 +335,39 @@ fn advance(
             blocked_at: None,
             blocked_by: None,
         },
-        Some(to) => match refusal(unit, terrain, index, from, to) {
-            None => {
-                // Doc 16 §3.2: `z_cm` is the cell's `elev_cm`, carried on entry.
-                if let Some(entered) = terrain.get(to.0, to.1) {
-                    unit.pose.z_cm = i32::from(entered.elev_cm);
+        Some(to) => {
+            // **16b cut X.6**: the cell entered is fetched **once** here and read
+            // three times below — by the refusal, by the elevation and by the
+            // grade. Before this cut it was read in `enterable` and again for
+            // `z_cm`.
+            let crossing = Crossing {
+                from,
+                to,
+                from_cell,
+                to_cell: terrain.get(to.0, to.1),
+                kind: slope::step_kind(from, to),
+                cell_cm: u32::from(terrain.cell_cm()),
+            };
+            match refusal(unit, index, &crossing) {
+                None => {
+                    // Doc 16 §3.2: `z_cm` is the cell's `elev_cm`, carried on entry.
+                    if let Some(entered) = crossing.to_cell {
+                        unit.pose.z_cm = i32::from(entered.elev_cm);
+                    }
+                    // **16b cut X.6**: and the slope it came up, which the next
+                    // substep's terrain factor is measured against.
+                    unit.grade_pct = u16::try_from(crossing.grade_pct()).unwrap_or(u16::MAX);
+                    MotionOutcome {
+                        moved: true,
+                        blocked_at: None,
+                        blocked_by: None,
+                    }
                 }
-                MotionOutcome {
-                    moved: true,
-                    blocked_at: None,
-                    blocked_by: None,
-                }
+                // Impassable, occupied, too steep or more than one cell away:
+                // stop at the boundary.
+                Some(cause) => stop_at_boundary(unit, terrain, from, to, cause),
             }
-            // Impassable, occupied or more than one cell away: stop at the
-            // boundary.
-            Some(cause) => stop_at_boundary(unit, terrain, from, to, cause),
-        },
+        }
         // Off the window (doc 16 §3.2 "Edges").
         None => {
             let nearest = nearest_on_window(terrain, &unit.pose);
@@ -390,6 +441,14 @@ fn turn(unit: &mut UnitState, dt: i64) {
 /// the stock tank's 1,500 cm/s that is 1,500 → 600 in heavy woods (cost 250) →
 /// 300 with a destroyed track (`slow(50)`).
 ///
+/// **16b cut X.6**: `move_cost` arrives already surcharged for the slope, so the
+/// terrain factor is `100 / (move_cost × (100 + grade) / 100)` with `grade` the
+/// uphill slope of the edge by which the unit entered the cell it is standing in
+/// ([`crate::arena::state::UnitState::grade_pct`]). On the flat that is the
+/// identity, so a level window caps exactly where it did before. The parameter
+/// widened from `u16` to `u32` with the surcharge; a `move_cost` of zero still
+/// caps at zero, because `checked_div` by zero is what answers it.
+///
 /// An impassable `move_cost` of zero caps the speed at zero: a unit standing on
 /// a cell nothing may enter cannot drive out of it. Motion never puts one there
 /// (step 4), and a check-out that does is held rather than allowed to drive.
@@ -406,7 +465,7 @@ fn turn(unit: &mut UnitState, dt: i64) {
 /// can never sit above `max_speed_cms`, because the order is clamped to that
 /// (`apply_intent`) and nothing else raises it, so the substep's one-cell bound
 /// (doc 16 §3.1) still holds.
-fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u16) {
+fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u32) {
     if unit.limits.wreck || unit.limits.motion_disabled || unit.power != Power::Online {
         unit.speed_cms = 0;
         return;
@@ -442,8 +501,53 @@ fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u16) {
     };
 }
 
+/// **The one boundary a substep crosses**, fetched once (16b cut X.6).
+///
+/// Doc 16 §3.4 step 4 asks four questions of the same pair of cells — is it one
+/// step, is it passable, is it empty, is the edge onto it too steep — and then
+/// reads the entered cell twice more for the elevation and the grade. The pair
+/// is therefore assembled once, here, and passed down; before cut X.6 the
+/// entered cell was fetched in the refusal and again for `z_cm`.
+struct Crossing<'a> {
+    /// The cell the unit is leaving.
+    from: (u16, u16),
+    /// The cell it is entering.
+    to: (u16, u16),
+    /// `from`'s terrain, or `None` when it is off the window.
+    from_cell: Option<&'a TerrainCell>,
+    /// `to`'s terrain, or `None` when it is off the window.
+    to_cell: Option<&'a TerrainCell>,
+    /// The step, or `None` when the two are not neighbours.
+    kind: Option<StepKind>,
+    /// The window's cell size, centimetres — the slope's run.
+    cell_cm: u32,
+}
+
+impl Crossing<'_> {
+    /// The **uphill** slope of this crossing, per cent; `0` for a step that is
+    /// not one step, or either side of which is off the window.
+    fn grade_pct(&self) -> u32 {
+        match (self.from_cell, self.to_cell, self.kind) {
+            (Some(from), Some(to), Some(kind)) => slope::grade_pct(from, to, kind, self.cell_cm),
+            _ => 0,
+        }
+    }
+
+    /// The slope of this crossing **whichever way it is taken**, per cent, which
+    /// is what a limit is compared against; `0` in the same three cases.
+    fn steepness_pct(&self) -> u32 {
+        match (self.from_cell, self.to_cell, self.kind) {
+            (Some(from), Some(to), Some(kind)) => {
+                slope::steepness_pct(from, to, kind, self.cell_cm)
+            }
+            _ => 0,
+        }
+    }
+}
+
 /// Whether `to` may be entered from `from`: it is at most one cell away on each
-/// axis, it is passable, and it is either empty or already held by this unit.
+/// axis, it is passable, the edge onto it is within this unit's slope limit, and
+/// it is either empty or already held by this unit.
 ///
 /// **The one-cell guard.** The substep length is `min(substep_max_ms, cell_cm ×
 /// 1000 / max_speed_cms)` (doc 16 §3.1), so a unit covers at most one cell in a
@@ -456,26 +560,45 @@ fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u16) {
 /// A **diagonal** crossing tests the diagonal neighbour and nothing else: the
 /// unit cuts the corner and never occupies either edge-adjacent cell, so neither
 /// is entered and neither needs testing.
-/// **16b cut F.2**: the same three questions, answering *which* of them said no
-/// so that doc 16 §3.4 step 4's notice can name a cause. `None` is "enterable",
+/// **16b cut F.2**: the same questions, answering *which* of them said no so
+/// that doc 16 §3.4 step 4's notice can name a cause. `None` is "enterable",
 /// which is the predicate this replaced.
 ///
 /// The order is the order a pilot would work it out in — the ground, then the
-/// traffic — and the one-cell guard is folded into the ground's answer for the
-/// reason [`BlockedCause::Impassable`] gives.
+/// slope, then the traffic — and the one-cell guard is folded into the ground's
+/// answer for the reason [`BlockedCause::Impassable`] gives. A crossing of more
+/// than one cell has no [`StepKind`], and the slope test therefore adds no
+/// second reason for refusing it: it has already been refused.
+///
+/// **16b cut X.6's conjunct, and why the limit is symmetric.** The edge is
+/// refused when [`crate::arena::slope::steepness_pct`] — the slope of the edge
+/// *whichever way it is crossed* — passes the unit's limit, so a descent too
+/// steep to climb is refused too. `mush_atlas::physics::move_cost` refuses only
+/// the climb, which is right for a world where a step is asked for one at a
+/// time and wrong for an arena: an uphill-only limit makes any bluff a one-way
+/// door into a cell the unit can never drive out of, and a reflex controller
+/// would re-plan at the wall of that cell every `repath_ms` until the match
+/// ended. The *surcharge* stays uphill-only, because a descent is not slower
+/// than the flat.
+///
+/// A unit with no limit at all (`slope_limit_pct: None` — one whose content
+/// declares no locomotion the shipped table knows) is refused by no slope and
+/// still pays the surcharge.
 fn refusal(
     unit: &UnitState,
-    terrain: &ArenaTerrain,
     index: &SpatialIndex,
-    from: (u16, u16),
-    to: (u16, u16),
+    crossing: &Crossing<'_>,
 ) -> Option<BlockedCause> {
+    let (from, to) = (crossing.from, crossing.to);
     let one_step = from.0.abs_diff(to.0) <= 1 && from.1.abs_diff(to.1) <= 1;
-    let passable = terrain
-        .get(to.0, to.1)
+    let passable = crossing
+        .to_cell
         .is_some_and(crate::arena::state::TerrainCell::passable);
     if !one_step || !passable {
         return Some(BlockedCause::Impassable);
+    }
+    if slope::too_steep(unit.slope_limit_pct, crossing.steepness_pct()) {
+        return Some(BlockedCause::TooSteep);
     }
     match index.occupant(to.0, to.1) {
         Some(holder) if holder != unit.id => Some(BlockedCause::Occupied),

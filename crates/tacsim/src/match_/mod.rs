@@ -1031,19 +1031,21 @@ pub fn finish(
     true
 }
 
-/// Release the seats, leases and focus of everyone stationed on `unit`.
-///
-/// Doc 16 §3.8: *seats, leases, focus and pods released atomically*. The pods are
-/// cut C's (they do not exist yet); what exists is the station assignment, the
-/// control lease behind it and the account focus pointed at it, and
-/// `mush_sim::request_seat_activation(&SeatRequest::Revoke { .. })` is the one
-/// seam that ends all three. The marker has already been cleared by the check-in
-/// above, so the admission site this cut added does not refuse it.
 /// Whether the unit's current placement already **is** the pose a check-in
-/// would write: the same domain and the same four integers doc 16 §3.2 defines a
-/// pose by. The opaque posture is deliberately not compared — the arena never
-/// touches it, so a difference there is the world's own and must not be
-/// overwritten.
+/// would write: the same domain, and the same three integers of doc 16 §3.2's
+/// pose that the *world* decides.
+///
+/// Two fields are deliberately not compared. The opaque **posture** is not — the
+/// arena never touches it, so a difference there is the world's own and must not
+/// be overwritten. And, from **16b cut X.6**, neither is **`z_cm`**: inside a
+/// match a unit's `z_cm` is a pure function of the cell it stands in (doc 16
+/// §3.2, *`z_cm` equals the cell's `elev_cm`*), and `x_cm` and `y_cm` are what
+/// decide the cell — so a difference in z alone is not a unit that moved, it is
+/// the arena having told the truth about ground the world's flat placement did
+/// not know about. Comparing it would make every tank standing on anything but
+/// the datum re-place itself at check-in, which is exactly the second spatial
+/// write doc 16 §3.1's *the custody markers are the only unit writes during a
+/// match* exists to keep out of the record.
 fn same_pose(
     current: Option<&(mush_sim::DomainId, mush_sim::data::Pose)>,
     domain: mush_sim::DomainId,
@@ -1053,7 +1055,6 @@ fn same_pose(
         *at == domain
             && held.x_cm == pose.x_cm
             && held.y_cm == pose.y_cm
-            && held.z_cm == pose.z_cm
             && held.heading_mdeg == pose.heading_mdeg
     })
 }
@@ -1066,6 +1067,13 @@ pub fn release_seats_after_restart(ctx: &mut Ctx<'_>, unit: ObjId) {
     release_seat(ctx, unit);
 }
 
+/// Release the seats, leases and focus of everyone stationed on `unit`.
+///
+/// Doc 16 §3.8: *seats, leases, focus and pods released atomically*. What is
+/// released here is the station assignment, the control lease behind it and the
+/// account focus pointed at it; the pods and the bodies in them are the lobby's
+/// half (`cockpit::eject_all`, 16b cut F.1). The marker has already been cleared
+/// by the check-in above, so the `deployed` admission site does not refuse it.
 fn release_seat(ctx: &mut Ctx<'_>, unit: ObjId) {
     let seats: Vec<(mush_sim::StationId, ObjId)> = ctx
         .w
@@ -1147,5 +1155,51 @@ mod tests {
         assert_ne!(seed_for(MatchId(1), 100), seed_for(MatchId(2), 100));
         // The same id in the same second, twice: two servers in one process.
         assert_ne!(seed_for(MatchId(1), 100), seed_for(MatchId(1), 100));
+    }
+
+    /// **16b cut X.6**: a z-only difference is not a move. The arena sets a
+    /// unit's `z_cm` from the cell it stands on at check-out, so a tank the world
+    /// placed flat on ground 300 cm up comes back with a z the placement never
+    /// had — and re-placing it for that alone would be a spatial write for a unit
+    /// that never drove. The other three are compared, and each of them alone is
+    /// a move.
+    #[test]
+    fn a_z_only_difference_is_not_a_move_and_the_other_three_are() {
+        let at = |x_cm: i64, y_cm: i64, z_cm: i32, heading_mdeg: u32| {
+            let mut pose =
+                mush_sim::data::Pose::at(x_cm, y_cm, z_cm, crate::arena::test_support::rules());
+            pose.heading_mdeg = heading_mdeg;
+            pose
+        };
+        let domain = mush_sim::DomainId(1);
+        let other = mush_sim::DomainId(2);
+        let held = at(6_500, 6_500, 0, 90_000);
+        let current = (domain, held.clone());
+        assert!(same_pose(Some(&current), domain, &held));
+        // z alone: not a move.
+        assert!(same_pose(
+            Some(&current),
+            domain,
+            &at(6_500, 6_500, 300, 90_000)
+        ));
+        // Each of the other three, alone: a move.
+        assert!(!same_pose(
+            Some(&current),
+            domain,
+            &at(6_501, 6_500, 0, 90_000)
+        ));
+        assert!(!same_pose(
+            Some(&current),
+            domain,
+            &at(6_500, 6_501, 0, 90_000)
+        ));
+        assert!(!same_pose(
+            Some(&current),
+            domain,
+            &at(6_500, 6_500, 0, 90_001)
+        ));
+        // And the domain.
+        assert!(!same_pose(Some(&current), other, &held));
+        assert!(!same_pose(None, domain, &held));
     }
 }

@@ -79,7 +79,7 @@ use tacsim::arena::intents::Refusal;
 use tacsim::arena::resolution::FULL_ATTENUATION;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, CustodyOut, CustodyUnit, EntryZone,
-    Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, UnitState, Waypoints,
+    Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, UnitState, Waypoint, Waypoints,
 };
 use tacsim::config::{ArenaConfig, LoadedPack, MatchConfig, SensorsConfig};
 use tacsim::definitions::unit::{HEAT_CELL, HEAT_PER_SHOT_CELL, HEAT_SINK_CELL};
@@ -3280,5 +3280,2161 @@ fn x5_a_filter_past_its_bounds_and_a_filter_fitted_to_a_sight_are_both_refused()
     assert!(
         text.contains("eccm_pod") && text.contains("emission"),
         "{text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.6 — elevation
+// ---------------------------------------------------------------------------
+
+/// **A ground cell at `elev_cm`** (16b cut X.6): [`ground`] with a height.
+fn at_elev(elev_cm: i16) -> TerrainCell {
+    TerrainCell {
+        elev_cm,
+        ..ground()
+    }
+}
+
+/// **A relief window** (16b cut X.6): `width` by `height` cells of [`CELL_CM`],
+/// every one of them [`ground`]'s class and cost, at the elevation `profile`
+/// gives it.
+///
+/// A window of its own rather than [`definition`]'s sixteen cells a side,
+/// because this item needs room: the line tank does 15 m/s, so a lane has to be
+/// long enough for it to reach a sustained speed on a slope and still have
+/// ground to be refused on. Forty-eight by eight is that lane.
+fn relief(width: u16, height: u16, profile: &dyn Fn(u16, u16) -> i16) -> ArenaDefinition {
+    let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+    for y in 0..height {
+        for x in 0..width {
+            cells.push(at_elev(profile(x, y)));
+        }
+    }
+    ArenaDefinition {
+        id: SmolStr::new("tacsim.arena.relief"),
+        terrain: ArenaTerrain::new(width, height, CELL_CM, cells).expect("the relief window"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: height - 1,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: width - 2,
+                y0: 0,
+                x1: width - 1,
+                y1: height - 1,
+            },
+        ],
+        key_spots: Vec::new(),
+        waypoints: Waypoints::default(),
+    }
+}
+
+/// A patrol graph of exactly one node (16b cut X.6): a unit whose only node it
+/// can never reach keeps that node as its goal — the graph has no other — so it
+/// drives at the ground between, which is the failure mode test 9 measures.
+fn relief_waypoint(at: (u16, u16)) -> Waypoints {
+    Waypoints::new(
+        vec![Waypoint {
+            id: SmolStr::new("far"),
+            x: at.0,
+            y: at.1,
+        }],
+        &[],
+    )
+}
+
+/// A two-node patrol graph joining `a` and `b` — the smallest graph on which
+/// `Patrol` produces a route (16b cut X.6).
+fn relief_waypoints(a: (u16, u16), b: (u16, u16)) -> Waypoints {
+    Waypoints::new(
+        vec![
+            Waypoint {
+                id: SmolStr::new("start"),
+                x: a.0,
+                y: a.1,
+            },
+            Waypoint {
+                id: SmolStr::new("far"),
+                x: b.0,
+                y: b.1,
+            },
+        ],
+        &[(SmolStr::new("start"), SmolStr::new("far"))],
+    )
+}
+
+/// An arena over an explicit `definition` and `cfg` (16b cut X.6), with every
+/// unit seated — [`arena_of`] for a window this file's [`definition`] does not
+/// make.
+fn arena_over(
+    catalog: &Catalog,
+    units: Vec<CustodyUnit>,
+    definition: ArenaDefinition,
+    cfg: &ArenaConfig,
+) -> Arena {
+    let pilots = units
+        .iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit: unit.id,
+            pilot: mush_core::ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots,
+            resolution: tacsim::match_::resolution_for(catalog),
+            seed: SEED,
+        },
+        cfg,
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the relief arena")
+}
+
+/// The same unit under the reflex controller (16b cut X.6).
+fn under_reflex(unit: CustodyUnit) -> CustodyUnit {
+    CustodyUnit {
+        controller: tacsim::arena::state::Controller::Reflex,
+        ..unit
+    }
+}
+
+/// The same unit with no sight at all (16b cut X.6) — what a fixture about
+/// motion wants, so that no contact, no share and no tempo signal is mixed into
+/// the event list it compares.
+fn blind(unit: CustodyUnit) -> CustodyUnit {
+    CustodyUnit {
+        sensor: None,
+        ..unit
+    }
+}
+
+/// The same unit with `tests/reflex.rs`'s own fixture helm (16b cut X.6): 10 m/s
+/// and 180 degrees a second.
+///
+/// The shipped tank turns at 30 degrees a second and does 15 m/s, which makes it
+/// a sloppy follower — it overshoots a corner and spends six seconds coming back
+/// round — and every reflex fixture in this tree gives its tanks a nimbler helm
+/// for exactly that reason. The mobility **profile** is untouched, so the unit's
+/// slope limit is still the shipped `tracked` row's, which is what the fixture is
+/// about.
+fn nimble(unit: CustodyUnit) -> CustodyUnit {
+    CustodyUnit {
+        mobility: tacsim::arena::state::TrackedRules {
+            max_speed_cms: 1_000,
+            turn_rate_mdeg_s: 180_000,
+            ..unit.mobility
+        },
+        ..unit
+    }
+}
+
+/// Wake `id` and point it: online, at `heading_mdeg`, already at `speed_cms` —
+/// the shape `arena::motion`'s own tests pre-set a unit in (16b cut X.6).
+fn under_way(arena: &mut Arena, id: mush_core::ObjId, heading_mdeg: u32, speed_cms: i32) {
+    if let Some(state) = arena.unit_mut(id) {
+        state.power = Power::Online;
+        state.pose.heading_mdeg = heading_mdeg;
+        state.desired_heading_mdeg = heading_mdeg;
+        state.speed_cms = speed_cms;
+        state.desired_speed_cms = speed_cms;
+    }
+}
+
+/// Run `pulses` pulses of `period` ms, absorbing the ledger (16b cut X.6).
+///
+/// [`run`] drops the step's output, and these tests need the ledger lines that
+/// came out of it.
+fn run_logged(
+    arena: &mut Arena,
+    wall: &mut i64,
+    period: i64,
+    pulses: usize,
+    bytes: &mut Vec<u8>,
+) -> tacsim::arena::reflex::ReflexCounters {
+    let mut counters = tacsim::arena::reflex::ReflexCounters::default();
+    if *wall == 0 {
+        let out = arena.step(0, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        counters.absorb(&out.reflex);
+    }
+    for _ in 0..pulses {
+        *wall += period;
+        let out = arena.step(*wall, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        counters.absorb(&out.reflex);
+    }
+    counters
+}
+
+/// Every notice line the pilot in `seat` was told over `pulses` pulses of
+/// `period` ms (16b cut X.6).
+///
+/// [`run_logged`] for the cockpit's own words rather than the ledger's — the
+/// shape `tests/arena.rs`'s `heard` takes, which is where cut F.2's three stop
+/// sentences are pinned.
+fn run_heard(
+    arena: &mut Arena,
+    wall: &mut i64,
+    period: i64,
+    pulses: usize,
+    seat: mush_core::ObjId,
+) -> Vec<String> {
+    let mut told: Vec<String> = Vec::new();
+    let mut hear = |frames: &[(mush_core::ObjId, tacsim::arena::step::Frame)]| {
+        told.extend(
+            frames
+                .iter()
+                .filter(|(who, _)| *who == seat)
+                .flat_map(|(_, frame)| cockpit::notice_lines(frame)),
+        );
+    };
+    if *wall == 0 {
+        hear(&arena.step(0, &[], &[]).frames);
+    }
+    for _ in 0..pulses {
+        *wall += period;
+        hear(&arena.step(*wall, &[], &[]).frames);
+    }
+    told
+}
+
+/// Every ledger line so far, flushed (16b cut X.6).
+fn ledger_of(arena: &mut Arena, bytes: &mut Vec<u8>) -> Vec<tacsim::arena::ledger::LedgerEvent> {
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    String::from_utf8(bytes.clone())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<tacsim::arena::ledger::LedgerEvent>(line).ok())
+        .collect()
+}
+
+/// Every `blocked` line naming `unit`, as `(x, y)` (16b cut X.6).
+fn blocked_cells(
+    events: &[tacsim::arena::ledger::LedgerEvent],
+    unit: mush_core::ObjId,
+) -> Vec<(u16, u16)> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            tacsim::arena::ledger::EventKind::Blocked { unit: at, x, y } if *at == unit => {
+                Some((*x, *y))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Run `pulses` pulses of `period` ms and answer the **steepest edge `id` came
+/// up** on the way (16b cut X.6).
+///
+/// `grade_pct` is the slope of the *last* edge crossed, so a tank that has
+/// climbed a ledge and driven on across the flat reads zero again; what a
+/// fixture about a ledge wants to know is what it paid to get up it.
+fn run_watching_grade(
+    arena: &mut Arena,
+    wall: &mut i64,
+    period: i64,
+    pulses: usize,
+    id: mush_core::ObjId,
+    bytes: &mut Vec<u8>,
+) -> u16 {
+    let mut steepest = 0_u16;
+    for _ in 0..pulses {
+        run_logged(arena, wall, period, 1, bytes);
+        steepest = steepest.max(arena.unit(id).map_or(0, |unit| unit.grade_pct));
+    }
+    steepest
+}
+
+/// A unit's cell, its z and the slope it came up (16b cut X.6).
+fn standing(arena: &Arena, id: mush_core::ObjId) -> ((u16, u16), i32, u16) {
+    let unit = arena.unit(id).expect("the unit");
+    let cell = arena
+        .definition
+        .terrain
+        .cell_of(&unit.pose)
+        .expect("on the window");
+    (cell, unit.pose.z_cm, unit.grade_pct)
+}
+
+/// The `tracked` row's own slope limit — the number every line tank is held to.
+fn tracked_limit() -> u32 {
+    mush_atlas::physics::LocomotionTable::shipped()
+        .max_slope_pct("tracked", &[])
+        .expect("the shipped table prices tracked")
+}
+
+/// **The M32 unit a profile-less check-out carries** (16b cut X.6): one hull
+/// section and `mobility: None`, which is every engine fixture in this tree.
+fn bare_tactical_unit(id: mush_core::ObjId) -> mush_tactics::TacticalUnit {
+    let reference = mush_tactics::DefinitionRef::new(
+        mush_core::DefinitionKey::new(
+            mush_core::OwnerId::new("tacsim").expect("a canonical owner"),
+            mush_core::DefinitionKind::new("unit").expect("a canonical kind"),
+            mush_core::DefinitionId::new("tacsim.unit.bare").expect("a canonical id"),
+        ),
+        1,
+        mush_core::DefinitionDigest::from_bytes([0_u8; 32]),
+    )
+    .expect("version 1 is not zero");
+    let spec = mush_tactics::UnitSpec {
+        definition: reference,
+        sections: vec![mush_tactics::SectionSpec {
+            id: mush_tactics::SectionId::new("hull").expect("a canonical section"),
+            condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+            facets: Vec::new(),
+            slots: Vec::new(),
+            cells: Vec::new(),
+        }],
+        unit_cells: Vec::new(),
+        components: Vec::new(),
+        capabilities: Vec::new(),
+        mobility: None,
+        rules: rules(),
+    };
+    mush_tactics::TacticalUnit::from_spec(&spec, id).expect("a one-section unit")
+}
+
+// ---------------------------------------------------------------------------
+// X.6 (1) the authored heightfield
+// ---------------------------------------------------------------------------
+
+/// The production roster, composed exactly as `mush_server::boot` composes it —
+/// `tests/definitions.rs`'s own helper, copied here because the heightfield this
+/// item imports comes out of the atlas records that roster's content module
+/// lays down (16b cut X.6).
+fn x6_production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
+    use tacsim::composition as comp;
+
+    let llm = std::sync::Arc::new(
+        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
+            .expect("a disabled LLM service composes"),
+    );
+    let cfg = tacsim::TacsimConfig {
+        enabled: true,
+        ..tacsim::TacsimConfig::default()
+    };
+    let onboarding = mush_core::OnboardingConfig::default();
+    let game = tacsim::GameEconomyConfig::default();
+    let mut mods = comp::server_modules_with(
+        mush_weather::WeatherConfig::default(),
+        mush_economy::EconomyConfig::default(),
+        mush_atlas::AtlasConfig::default(),
+        &onboarding,
+        &game,
+        comp::recovery_policy(&cfg.recovery),
+    );
+    mods.push(comp::worldgen_module_with(
+        std::sync::Arc::clone(&llm),
+        mush_worldgen::WorldgenConfig::default(),
+    ));
+    mods.push(comp::npc_module_with(
+        comp::npc_agent_adapter(),
+        &mush_config::config::NpcCfg::default(),
+    ));
+    mods.extend(comp::ruleset_modules(&onboarding, &game));
+    mods.push(comp::tacsim_module(cfg));
+    mods.push(comp::content_module_with(false, true).expect("the content module composes"));
+    mods
+}
+
+/// **The authored heightfield reaches the arena verbatim, and no shipped unit
+/// can be refused by it** (16b cut X.6; doc 16 §9 item 6).
+///
+/// The first half is the import: `from_pack` copies `elev_cm` straight off the
+/// tile, so the nine levels the proving ground's generator writes are the nine
+/// levels the window holds, at the cells that hold them.
+///
+/// The second half is the whole reason A1 does not move. The steepest edge
+/// between two cells a tank may stand on is 20 per cent orthogonal and 21
+/// diagonal, and the `tracked` row's limit is 45 — so on the shipped map there
+/// is no edge any shipped unit can be refused at, in either direction, and the
+/// surcharge is the only thing X.6 does to a stock match. The ford road, which
+/// is the ground A1's two tanks actually drive, is gentler still: nothing on row
+/// 97 rises more than one level between neighbours.
+#[test]
+fn x6_the_authored_heightfield_reaches_the_arena_verbatim() {
+    let tw = mush_testkit::TestWorld::with_modules(x6_production_roster());
+    let records = tw
+        .world()
+        .module_state::<mush_atlas::AtlasState>()
+        .map(|state| state.records.clone())
+        .expect("the atlas is composed");
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    let (id, def) = stock
+        .arenas
+        .iter()
+        .next()
+        .expect("the proving ground is shipped");
+    let arena = tacsim::definitions::from_pack(id.as_str(), def, &records)
+        .expect("the arena's ground is in this world's records");
+    let terrain = &arena.terrain;
+    assert_eq!((terrain.width(), terrain.height()), (256, 256));
+
+    // The nine levels, and the three cells the design note names.
+    let levels: std::collections::BTreeSet<i16> =
+        terrain.cells().iter().map(|cell| cell.elev_cm).collect();
+    assert_eq!(
+        levels.iter().copied().collect::<Vec<i16>>(),
+        vec![-400, -300, -200, -100, 0, 100, 200, 300, 400],
+        "the authored relief is nine levels a hundred centimetres apart"
+    );
+    let elev = |x: u16, y: u16| terrain.get(x, y).map(|cell| cell.elev_cm);
+    assert_eq!(
+        elev(208, 148),
+        Some(-400),
+        "the floor of the south-east bowl"
+    );
+    assert_eq!(elev(56, 97), Some(300), "the crest west of the ford");
+    assert_eq!(
+        elev(64, 97),
+        Some(0),
+        "the ford itself, cut two levels down"
+    );
+
+    // No edge between two cells a tank may stand on is steeper than the `tracked`
+    // row's own limit — in either direction, which is what X.6 refuses on.
+    let limit = tracked_limit();
+    assert_eq!(limit, 45);
+    let cell_cm = u32::from(terrain.cell_cm());
+    let mut steepest = 0_u32;
+    let mut worst = ((0_u16, 0_u16), (0_u16, 0_u16));
+    for y in 0..terrain.height() {
+        for x in 0..terrain.width() {
+            let Some(here) = terrain.get(x, y).filter(|cell| cell.passable()) else {
+                continue;
+            };
+            for (dx, dy) in [(1_i32, 0_i32), (0, 1), (1, 1), (1, -1)] {
+                let (Some(nx), Some(ny)) = (
+                    u16::try_from(i32::from(x) + dx).ok(),
+                    u16::try_from(i32::from(y) + dy).ok(),
+                ) else {
+                    continue;
+                };
+                let Some(there) = terrain.get(nx, ny).filter(|cell| cell.passable()) else {
+                    continue;
+                };
+                let Some(kind) = tacsim::arena::slope::step_kind((x, y), (nx, ny)) else {
+                    continue;
+                };
+                let steepness = tacsim::arena::slope::steepness_pct(here, there, kind, cell_cm);
+                if steepness > steepest {
+                    steepest = steepness;
+                    worst = ((x, y), (nx, ny));
+                }
+            }
+        }
+    }
+    assert!(
+        steepest <= limit,
+        "the shipped map has a {steepest} per cent edge at {worst:?}, which a line \
+         tank would be refused at — A1 cannot stand"
+    );
+    assert_eq!(
+        steepest, 21,
+        "the steepest passable edge on the proving ground moved"
+    );
+
+    // And the ford road itself, which is the ground A1 drives: one level a cell.
+    for x in 0..terrain.width().saturating_sub(1) {
+        let (Some(here), Some(next)) = (terrain.get(x, 97), terrain.get(x + 1, 97)) else {
+            continue;
+        };
+        let steepness = tacsim::arena::slope::steepness_pct(
+            here,
+            next,
+            mush_atlas::physics::StepKind::Orthogonal,
+            cell_cm,
+        );
+        assert!(steepness <= 20, "row 97 rises {steepness} per cent at {x}");
+    }
+    // The muster columns of cut F.4's ford road, which is where A1's tanks stand.
+    assert_eq!(elev(6, 97), Some(100));
+    assert_eq!(elev(249, 97), Some(-100));
+
+    // X.6 authors no content, so the shipped tank's identity has not moved.
+    let tank = CanonicalId::new(content::LINE_TANK).expect("a canonical id");
+    assert_eq!(
+        stock
+            .references
+            .get(&tank)
+            .map(|reference| reference.digest().to_hex())
+            .as_deref(),
+        Some(LINE_TANK_DIGEST),
+        "the shipped tank's definition moved; a persisted unit needs a migration"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.6 (2) z at check-out
+// ---------------------------------------------------------------------------
+
+/// **A unit opens the match at its cell's elevation** (16b cut X.6; doc 16 §3.2:
+/// *`z_cm` equals the cell's `elev_cm`*).
+///
+/// `CustodyOut` is the only door into an arena and the arena is the authority for
+/// its own grid, so an inbound z is normalised at check-out rather than trusted
+/// — the world's placements are written flat, and before this cut a tank stood
+/// three metres under the hill it was parked on until it happened to cross a cell
+/// boundary. Every range, every plot and the opening state hash read the
+/// corrected number.
+#[test]
+fn x6_a_unit_opens_the_match_at_its_cells_elevation() {
+    let catalog = catalog();
+    let high: (u16, u16) = (4, 4);
+    let low: (u16, u16) = (12, 4);
+    let profile = move |x: u16, _y: u16| match x {
+        4 => 300,
+        12 => -200,
+        _ => 0,
+    };
+    let mut red = unit_of(&catalog, content::LINE_TANK, RED, Team::Red, high);
+    let mut blue = unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, low);
+    // What the world hands over: a flat z on one, and a stale one on the other.
+    assert_eq!(red.pose.z_cm, 0, "the check-out pose is written flat");
+    blue.pose.z_cm = 9_999;
+    red.pose.z_cm = 0;
+    let mut arena = arena_over(
+        &catalog,
+        vec![red, blue],
+        relief(48, 8, &profile),
+        &ArenaConfig::default(),
+    );
+
+    assert_eq!(standing(&arena, RED), (high, 300, 0));
+    assert_eq!(
+        standing(&arena, BLUE),
+        (low, -200, 0),
+        "a stale inbound z is corrected and not carried"
+    );
+
+    // The five hundred centimetres between them are in the range, from the first
+    // instant of the match.
+    let red_pose = arena.unit(RED).map(|unit| unit.pose.clone()).expect("red");
+    let blue_pose = arena
+        .unit(BLUE)
+        .map(|unit| unit.pose.clone())
+        .expect("blue");
+    let solid = tacsim::arena::index::range_cm(&red_pose, &blue_pose);
+    let flat = tacsim::arena::index::range_between(4_500, 4_500, 0, 12_500, 4_500, 0);
+    assert_eq!(flat, 8_000);
+    assert_eq!(
+        solid,
+        tacsim::arena::index::range_between(4_500, 4_500, 300, 12_500, 4_500, -200)
+    );
+    assert_eq!(
+        solid, 8_015,
+        "the five hundred centimetres are in the range"
+    );
+
+    // And the ledger's own summary says so, at the first cadence.
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    run_logged(&mut arena, &mut wall, 500, 12, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    let summary = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            tacsim::arena::ledger::EventKind::PositionSummary { units } => Some(units.clone()),
+            _ => None,
+        })
+        .expect("a position summary");
+    assert_eq!(
+        summary
+            .iter()
+            .map(|(unit, _, _, z, _)| (*unit, *z))
+            .collect::<Vec<(mush_core::ObjId, i32)>>(),
+        vec![(RED, 300), (BLUE, -200)]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.6 (3) the surcharge
+// ---------------------------------------------------------------------------
+
+/// **A climb is slower than the flat, and a descent is not faster** (16b cut
+/// X.6; doc 16 §3.4 step 2).
+///
+/// Three lanes of the same ground: one rising 300 cm a cell, one level, one
+/// falling 300 cm a cell. The climber's ceiling is `max_speed × 100 /
+/// effective_cost(move_cost, 30)` and it sits there; the descender's is the flat
+/// one, because the surcharge is uphill-only — a tank does not go faster
+/// downhill, it simply is not slowed. And at every sample the z is the cell's,
+/// which is the other half of doc 16 §3.2's rule.
+#[test]
+fn x6_a_climb_is_slower_than_the_flat_and_a_descent_is_not_faster() {
+    const CLIMBER: mush_core::ObjId = mush_core::ObjId(4);
+    const LEVEL: mush_core::ObjId = mush_core::ObjId(9);
+    const FALLER: mush_core::ObjId = mush_core::ObjId(11);
+
+    let catalog = catalog();
+    let profile = |x: u16, y: u16| -> i16 {
+        let step = i32::from(x) * 300;
+        match y {
+            1 => i16::try_from(step).unwrap_or(i16::MAX),
+            6 => i16::try_from(-step).unwrap_or(i16::MIN),
+            _ => 0,
+        }
+    };
+    let mut arena = arena_over(
+        &catalog,
+        vec![
+            blind(unit_of(
+                &catalog,
+                content::LINE_TANK,
+                CLIMBER,
+                Team::Red,
+                (1, 1),
+            )),
+            blind(unit_of(
+                &catalog,
+                content::LINE_TANK,
+                LEVEL,
+                Team::Red,
+                (1, 4),
+            )),
+            blind(unit_of(
+                &catalog,
+                content::LINE_TANK,
+                FALLER,
+                Team::Red,
+                (1, 6),
+            )),
+        ],
+        relief(48, 8, &profile),
+        &ArenaConfig::default(),
+    );
+    for id in [CLIMBER, LEVEL, FALLER] {
+        under_way(&mut arena, id, 90_000, 1_500);
+    }
+
+    // The ceiling on the ramp, off the one rule: 1,500 × 100 / 130.
+    let ramp_cost = tacsim::arena::slope::effective_cost(100, 30);
+    assert_eq!(ramp_cost, 130);
+    let ramp_speed = i32::try_from(1_500 * 100 / ramp_cost).unwrap_or(0);
+    assert_eq!(ramp_speed, 1_153);
+
+    let mut wall = 0_i64;
+    for _ in 0..40 {
+        run(&mut arena, &mut wall, 500, 1);
+        // Doc 16 §3.2, at every sample: a unit's z is the cell's elevation.
+        for id in [CLIMBER, LEVEL, FALLER] {
+            let (cell, z, _) = standing(&arena, id);
+            assert_eq!(
+                Some(z),
+                arena
+                    .definition
+                    .terrain
+                    .get(cell.0, cell.1)
+                    .map(|cell| i32::from(cell.elev_cm)),
+                "unit {id} is not standing on its own cell"
+            );
+        }
+    }
+
+    let (climber_cell, climber_z, climber_grade) = standing(&arena, CLIMBER);
+    let (level_cell, level_z, level_grade) = standing(&arena, LEVEL);
+    let (faller_cell, faller_z, faller_grade) = standing(&arena, FALLER);
+    assert_eq!(climber_grade, 30, "the climber came up a 30 per cent edge");
+    assert_eq!(level_grade, 0);
+    assert_eq!(faller_grade, 0, "a descent is not a climb");
+    assert_eq!(climber_z, i32::from(climber_cell.0) * 300);
+    assert_eq!(level_z, 0);
+    assert_eq!(faller_z, -i32::from(faller_cell.0) * 300);
+
+    // The climber is held at the surcharged ceiling; the other two are at the
+    // flat one, and the descender has covered exactly the level tank's ground.
+    assert_eq!(
+        arena.unit(CLIMBER).map(|unit| unit.speed_cms),
+        Some(ramp_speed)
+    );
+    assert_eq!(arena.unit(LEVEL).map(|unit| unit.speed_cms), Some(1_500));
+    assert_eq!(arena.unit(FALLER).map(|unit| unit.speed_cms), Some(1_500));
+    let x_of = |id: mush_core::ObjId| arena.unit(id).map(|unit| unit.pose.x_cm);
+    assert_eq!(
+        x_of(FALLER),
+        x_of(LEVEL),
+        "the descender covered exactly the flat tank's distance"
+    );
+    assert!(
+        x_of(CLIMBER) < x_of(LEVEL),
+        "the climber fell behind: {:?} against {:?}",
+        x_of(CLIMBER),
+        x_of(LEVEL)
+    );
+    assert!(climber_cell.0 < level_cell.0);
+}
+
+// ---------------------------------------------------------------------------
+// X.6 (4) the limit
+// ---------------------------------------------------------------------------
+
+/// **A slope past the limit is refused in both directions** (16b cut X.6; doc 16
+/// §3.4 step 4).
+///
+/// The one deliberate divergence from `mush_atlas::physics::move_cost`, which
+/// refuses only the climb. A 500 cm step at 10 m cells is 50 per cent and the
+/// `tracked` row stops at 45: the tank is refused climbing it **and** refused
+/// driving off the top of it, because an uphill-only limit would make the top of
+/// that ledge a cell nothing could ever leave. A 450 cm step is exactly the
+/// limit and is taken, up and down, the down side at the flat ceiling.
+#[test]
+fn x6_a_slope_past_the_limit_blocks_both_ways() {
+    let catalog = catalog();
+    let ledge = |height: i16| move |x: u16, _y: u16| if x >= 24 { height } else { 0 };
+
+    // (a) climbing a 50 per cent ledge.
+    let mut arena = arena_over(
+        &catalog,
+        vec![blind(unit_of(
+            &catalog,
+            content::LINE_TANK,
+            RED,
+            Team::Red,
+            (20, 4),
+        ))],
+        relief(48, 8, &ledge(500)),
+        &ArenaConfig::default(),
+    );
+    under_way(&mut arena, RED, 90_000, 1_500);
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    run_logged(&mut arena, &mut wall, 500, 20, &mut bytes);
+    assert_eq!(
+        standing(&arena, RED),
+        ((23, 4), 0, 0),
+        "the climber is held in the cell below the ledge, at its own elevation"
+    );
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.pose.x_cm),
+        Some(23_999),
+        "it stopped at the last centimetre of its own cell"
+    );
+    assert_eq!(arena.unit(RED).map(|unit| unit.speed_cms), Some(0));
+    assert_eq!(arena.unit(RED).map(|unit| unit.blocked), Some(true));
+    assert_eq!(
+        blocked_cells(&ledger_of(&mut arena, &mut bytes), RED),
+        vec![(24, 4)],
+        "one notice per stop, naming the cell it could not enter"
+    );
+
+    // (b) driving off the top of the same ledge — refused the same way.
+    let mut arena = arena_over(
+        &catalog,
+        vec![blind(unit_of(
+            &catalog,
+            content::LINE_TANK,
+            RED,
+            Team::Red,
+            (28, 4),
+        ))],
+        relief(48, 8, &ledge(500)),
+        &ArenaConfig::default(),
+    );
+    under_way(&mut arena, RED, 270_000, 1_500);
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    run_logged(&mut arena, &mut wall, 500, 20, &mut bytes);
+    assert_eq!(
+        standing(&arena, RED),
+        ((24, 4), 500, 0),
+        "the descent is refused too: the ledge is not a one-way door"
+    );
+    assert_eq!(arena.unit(RED).map(|unit| unit.pose.x_cm), Some(24_000));
+    assert_eq!(arena.unit(RED).map(|unit| unit.speed_cms), Some(0));
+    assert_eq!(
+        blocked_cells(&ledger_of(&mut arena, &mut bytes), RED),
+        vec![(23, 4)]
+    );
+
+    // (c) a 450 cm step is exactly the limit: climbed, and descended at the flat
+    // ceiling, because the surcharge is uphill-only.
+    let mut arena = arena_over(
+        &catalog,
+        vec![
+            blind(unit_of(
+                &catalog,
+                content::LINE_TANK,
+                RED,
+                Team::Red,
+                (20, 2),
+            )),
+            blind(unit_of(
+                &catalog,
+                content::LINE_TANK,
+                BLUE,
+                Team::Blue,
+                (28, 5),
+            )),
+        ],
+        relief(48, 8, &ledge(450)),
+        &ArenaConfig::default(),
+    );
+    under_way(&mut arena, RED, 90_000, 1_500);
+    under_way(&mut arena, BLUE, 270_000, 1_500);
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let climbed = run_watching_grade(&mut arena, &mut wall, 500, 20, RED, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert!(
+        blocked_cells(&events, RED).is_empty(),
+        "45 per cent is not past a limit of 45"
+    );
+    assert!(blocked_cells(&events, BLUE).is_empty());
+    assert_eq!(standing(&arena, RED).1, 450, "the climber is on the ledge");
+    assert_eq!(climbed, 45, "and it paid the forty-five per cent to get up");
+    assert_eq!(standing(&arena, BLUE).1, 0, "the descender is off it");
+    assert_eq!(standing(&arena, BLUE).2, 0);
+    assert_eq!(arena.unit(BLUE).map(|unit| unit.speed_cms), Some(1_500));
+
+    // (d) and the property the (a)/(b) pair is an instance of, swept over a table
+    // of ledges either side of the limit and driven through **motion** rather
+    // than through the arithmetic: what a limited tank may enter, it may leave.
+    //
+    // Through motion deliberately. Asking `steepness_pct` the same question twice
+    // would be asking whether `max(a, b) == max(b, a)`, which holds for every
+    // implementation of anything; what is worth a sweep is the refusal itself,
+    // which is the one place the choice between the edge's steepness and the
+    // uphill grade is made. A refusal that read the grade would let a tank down a
+    // 500 cm ledge it cannot climb, and the 500 and 700 cm rows below say so.
+    let column_after = |from: (u16, u16), heading_mdeg: u32, height: i16| -> u16 {
+        let mut arena = arena_over(
+            &catalog,
+            vec![blind(unit_of(
+                &catalog,
+                content::LINE_TANK,
+                RED,
+                Team::Red,
+                from,
+            ))],
+            relief(48, 8, &ledge(height)),
+            &ArenaConfig::default(),
+        );
+        under_way(&mut arena, RED, heading_mdeg, 1_500);
+        let mut wall = 0_i64;
+        let mut bytes: Vec<u8> = Vec::new();
+        run_logged(&mut arena, &mut wall, 500, 20, &mut bytes);
+        standing(&arena, RED).0.0
+    };
+    let mut crossed = 0_usize;
+    let mut refused = 0_usize;
+    for height in [100_i16, 300, 450, 460, 500, 700, 1_200] {
+        let entered = column_after((20, 4), 90_000, height) >= 24;
+        let left = column_after((28, 4), 270_000, height) <= 23;
+        assert_eq!(
+            entered, left,
+            "a {height} cm ledge is a one-way door: entered {entered}, left {left}"
+        );
+        if entered {
+            crossed += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // And the sweep is not vacuous in either direction: three of those ledges are
+    // inside the tracked row's 45 per cent and four are past it.
+    assert_eq!((crossed, refused), (3, 4));
+}
+
+/// **A slope refusal has its own word and its own sentence** (16b cut X.6; doc 16
+/// §3.4 step 4, §3.6).
+///
+/// The fourth `BlockedCause` is the cut's only new player-facing surface, so it
+/// is pinned the way cut F.2 pinned the other three: drive a tank at a ledge it
+/// cannot climb and read what the cockpit told its pilot. The distinction is
+/// worth the sentence — the ground ahead *would* take the tank and the slope onto
+/// it will not, so what the pilot does about it is drive round rather than give
+/// the cell up — and a refusal that fell back to
+/// [`tacsim::arena::motion::BlockedCause::Impassable`] would tell him the
+/// opposite. The line names terrain and nothing else, so the observer rule is
+/// untouched.
+#[test]
+fn x6_a_slope_refusal_is_its_own_word_and_its_own_sentence() {
+    use tacsim::arena::motion::BlockedCause;
+
+    // The wire word every renderer keys on, and the four the arena ships.
+    assert_eq!(BlockedCause::TooSteep.as_str(), "too_steep");
+    assert_eq!(
+        [
+            BlockedCause::Impassable,
+            BlockedCause::Occupied,
+            BlockedCause::Edge,
+            BlockedCause::TooSteep,
+        ]
+        .map(|cause| cause.as_str()),
+        ["impassable", "occupied", "edge", "too_steep"]
+    );
+
+    // Test 4(a)'s own fixture: a 50 per cent ledge, and a tank driving at it.
+    let catalog = catalog();
+    let mut arena = arena_over(
+        &catalog,
+        vec![blind(unit_of(
+            &catalog,
+            content::LINE_TANK,
+            RED,
+            Team::Red,
+            (20, 4),
+        ))],
+        relief(48, 8, &|x: u16, _y: u16| if x >= 24 { 500 } else { 0 }),
+        &ArenaConfig::default(),
+    );
+    under_way(&mut arena, RED, 90_000, 1_500);
+    let mut wall = 0_i64;
+    let told = run_heard(&mut arena, &mut wall, 500, 20, mush_core::ObjId(1_000));
+    let stops: Vec<&String> = told
+        .iter()
+        .filter(|line| line.starts_with("Held:"))
+        .collect();
+    assert_eq!(
+        stops,
+        vec![&"Held: the slope ahead is too steep for the tank.".to_owned()],
+        "one line per stop, and it is the slope's own: {told:?}"
+    );
+    assert_eq!(standing(&arena, RED).0, (23, 4));
+
+    // And the ground's own refusal still reads as the ground's: the same window
+    // level, with the cell at (24, 4) made impassable instead of steep.
+    let mut cells: Vec<TerrainCell> = Vec::new();
+    for y in 0..8_u16 {
+        for x in 0..48_u16 {
+            cells.push(if (x, y) == (24, 4) {
+                TerrainCell {
+                    move_cost: 0,
+                    ..ground()
+                }
+            } else {
+                ground()
+            });
+        }
+    }
+    let mut impassable = relief(48, 8, &|_x: u16, _y: u16| 0);
+    impassable.terrain =
+        ArenaTerrain::new(48, 8, CELL_CM, cells).expect("the level window with one hole in it");
+    let mut arena = arena_over(
+        &catalog,
+        vec![blind(unit_of(
+            &catalog,
+            content::LINE_TANK,
+            RED,
+            Team::Red,
+            (20, 4),
+        ))],
+        impassable,
+        &ArenaConfig::default(),
+    );
+    under_way(&mut arena, RED, 90_000, 1_500);
+    let mut wall = 0_i64;
+    let told = run_heard(&mut arena, &mut wall, 500, 20, mush_core::ObjId(1_000));
+    assert_eq!(
+        told.iter()
+            .filter(|line| line.starts_with("Held:"))
+            .collect::<Vec<&String>>(),
+        vec![&"Held: the ground ahead will not take the tank.".to_owned()],
+        "{told:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.6 (5) whose limit it is
+// ---------------------------------------------------------------------------
+
+/// **The limit is the locomotion's own** (16b cut X.6; doc 16 §9 item 6).
+///
+/// The same 600 cm ledge, the same window, two units: the biped's `legged` row
+/// stops at 70 per cent and it walks up; the tank's `tracked` row stops at 45 and
+/// it is held. The limit is read off the shipped locomotion table at check-out,
+/// through the same mode ladder `tracked_rules` reads the kinematics off, so for
+/// every shipped unit the slope limit and the speed come from one mode (only a
+/// profile the ladder does not recognise falls back to its first mode for the
+/// limit; see `slope::driving_mode`). A unit with no mobility profile at all —
+/// every engine fixture in this tree — has no limit and still pays the surcharge.
+#[test]
+fn x6_the_limit_is_the_locomotions_own() {
+    let catalog = biped_catalog();
+    let ledge = |x: u16, _y: u16| if x >= 24 { 600_i16 } else { 0 };
+    let mut arena = arena_over(
+        &catalog,
+        vec![
+            blind(unit_of(
+                &catalog,
+                content::BIPED_MK1,
+                RED,
+                Team::Red,
+                (20, 2),
+            )),
+            blind(unit_of(
+                &catalog,
+                content::LINE_TANK,
+                BLUE,
+                Team::Blue,
+                (20, 5),
+            )),
+        ],
+        relief(48, 8, &ledge),
+        &ArenaConfig::default(),
+    );
+    assert_eq!(
+        arena.unit(RED).and_then(|unit| unit.slope_limit_pct),
+        Some(70),
+        "the biped walks under the legged row"
+    );
+    assert_eq!(
+        arena.unit(BLUE).and_then(|unit| unit.slope_limit_pct),
+        Some(45),
+        "the tank drives under the tracked row"
+    );
+
+    under_way(&mut arena, RED, 90_000, 1_200);
+    under_way(&mut arena, BLUE, 90_000, 1_500);
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let climbed = run_watching_grade(&mut arena, &mut wall, 500, 24, RED, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert!(
+        blocked_cells(&events, RED).is_empty(),
+        "60 per cent is inside the legged limit"
+    );
+    assert_eq!(standing(&arena, RED).1, 600, "the biped is on the ledge");
+    assert_eq!(climbed, 60, "and it paid the sixty per cent to get up");
+    assert_eq!(
+        blocked_cells(&events, BLUE),
+        vec![(24, 5)],
+        "60 per cent is past the tracked limit"
+    );
+    assert_eq!(standing(&arena, BLUE), ((23, 5), 0, 0));
+
+    // And a unit whose content declares no locomotion the table knows: no limit
+    // at all, which is not a limit of zero.
+    assert_eq!(
+        tacsim::arena::slope::SlopeLimit::read(&bare_tactical_unit(mush_core::ObjId(77))),
+        None
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.6 (6) the route goes round
+// ---------------------------------------------------------------------------
+
+/// The cliff-and-ramp window tests 6 and 9 share: a plateau 800 cm up behind an
+/// unbroken cliff line at column 20, reached only by a 200 cm-a-cell ramp along
+/// the last row (16b cut X.6).
+///
+/// `ramp` false seals it: the plateau is then a cell no limited unit can reach
+/// from the low ground, in any direction.
+fn plateau(ramp: bool) -> ArenaDefinition {
+    relief(48, 8, &move |x: u16, y: u16| {
+        if x < 20 {
+            return 0;
+        }
+        if ramp && y == 7 {
+            return match x {
+                20 => 200,
+                21 => 400,
+                22 => 600,
+                _ => 800,
+            };
+        }
+        800
+    })
+}
+
+/// **The route goes round what motion would refuse** (16b cut X.6; doc 16 §6).
+///
+/// The point of putting the slope in the search at all: a route is a promise
+/// about edges motion will accept, and a route over a cliff is a tank driving at
+/// that cliff and re-planning at it every `repath_ms` until the match ends. With
+/// the limit in force the search takes the ramp — every consecutive pair of the
+/// route is inside the limit, and so is every shoulder of every diagonal on it —
+/// and a reflex tank told to go there arrives having been blocked by nothing.
+/// Without a limit the same search goes straight over, which is what the
+/// unlimited `path` has always done and still does.
+///
+/// **What the end-to-end half is conditional on, said here rather than in a
+/// comment half way down.** The zero-`Blocked` arrival holds at `decide_ms` 250,
+/// `repath_ms` 0 and `tests/reflex.rs`'s own 10 m/s, 180°-a-second helm. At the
+/// shipped doctrine and the shipped helm it does not, and the reason is the
+/// follower and not the route: a tank doing 15 m/s and turning at 30°/s
+/// overshoots a corner, throws its route away, and is **not** given another
+/// until `repath_ms` has passed — and while it has none it steers straight at
+/// the goal, which on this window is straight at the cliff. That is 16b cut
+/// N.1's follower, which this cut does not touch; test 9 measures what it costs
+/// at the stock settings, with the numbers printed for the ledger. What *this*
+/// test is about is whether the route is one motion accepts, so it asks for a
+/// route that is never stale.
+#[test]
+fn x6_the_route_goes_round_what_motion_refuses() {
+    let limit = tracked_limit();
+    let start = (2_u16, 4_u16);
+    let goal = (40_u16, 2_u16);
+
+    let terrain = plateau(true).terrain;
+    let cell_cm = u32::from(terrain.cell_cm());
+    let scale = tacsim::arena::min_move_cost(&terrain);
+    let mut scratch = tacsim::arena::PathScratch::default();
+
+    let limited = tacsim::arena::path_with(
+        &terrain,
+        &mut scratch,
+        start,
+        goal,
+        65_536,
+        scale,
+        Some(limit),
+    )
+    .expect("the ramp is a way up");
+    assert!(
+        limited.cells.iter().any(|(x, y)| *x == 20 && *y == 7),
+        "the limited route takes the ramp: {:?}",
+        limited.cells
+    );
+
+    // Every edge of it is one motion would accept, shoulders and all.
+    let mut walked = vec![start];
+    walked.extend(limited.cells.iter().copied());
+    for pair in walked.windows(2) {
+        let (Some(from), Some(to)) = (pair.first().copied(), pair.get(1).copied()) else {
+            continue;
+        };
+        let (Some(here), Some(there), Some(kind)) = (
+            terrain.get(from.0, from.1),
+            terrain.get(to.0, to.1),
+            tacsim::arena::slope::step_kind(from, to),
+        ) else {
+            panic!("{from:?} -> {to:?} is not a step");
+        };
+        assert!(
+            !tacsim::arena::slope::too_steep(
+                Some(limit),
+                tacsim::arena::slope::steepness_pct(here, there, kind, cell_cm)
+            ),
+            "{from:?} -> {to:?} is past the limit"
+        );
+        if kind == mush_atlas::physics::StepKind::Diagonal {
+            for shoulder in [(to.0, from.1), (from.0, to.1)] {
+                let Some(cell) = terrain
+                    .get(shoulder.0, shoulder.1)
+                    .filter(|cell| cell.passable())
+                else {
+                    continue;
+                };
+                for (a, b) in [(here, cell), (cell, there)] {
+                    assert!(
+                        !tacsim::arena::slope::too_steep(
+                            Some(limit),
+                            tacsim::arena::slope::steepness_pct(
+                                a,
+                                b,
+                                mush_atlas::physics::StepKind::Orthogonal,
+                                cell_cm
+                            )
+                        ),
+                        "the shoulder {shoulder:?} of {from:?} -> {to:?} is past the limit"
+                    );
+                }
+            }
+        }
+    }
+
+    // The unlimited search goes straight over the cliff, as it always has.
+    let plain = tacsim::arena::path::path(&terrain, &mut scratch, start, goal, 65_536, scale)
+        .expect("a route over the top");
+    assert!(
+        plain.cells.iter().all(|(_, y)| *y < 7),
+        "the unlimited route never goes near the ramp: {:?}",
+        plain.cells
+    );
+    assert_ne!(plain.cells, limited.cells);
+
+    // With the ramp sealed there is no route at all for a limited unit, and the
+    // unlimited one still finds its way over.
+    let sealed = plateau(false).terrain;
+    assert_eq!(
+        tacsim::arena::path_with(
+            &sealed,
+            &mut scratch,
+            start,
+            goal,
+            65_536,
+            scale,
+            Some(limit)
+        ),
+        Err(tacsim::arena::PathFailure::NoRoute)
+    );
+    assert!(tacsim::arena::path::path(&sealed, &mut scratch, start, goal, 65_536, scale).is_ok());
+
+    // And the controller counts that failure rather than swallowing it: the same
+    // sealed window under the **stock** doctrine, driven long enough for one
+    // search, answers a failure the ledger can read.
+    let catalog = catalog();
+    let mut definition = plateau(false);
+    definition.waypoints = relief_waypoint(goal);
+    let mut arena = arena_over(
+        &catalog,
+        vec![under_reflex(blind(unit_of(
+            &catalog,
+            content::LINE_TANK,
+            RED,
+            Team::Red,
+            start,
+        )))],
+        definition,
+        &ArenaConfig::default(),
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let sealed_counters = run_logged(&mut arena, &mut wall, 500, 60, &mut bytes);
+    assert!(
+        sealed_counters.path_failures >= 1,
+        "the sealed plateau was searched {} times and never reported a failure",
+        sealed_counters.path_queries
+    );
+
+    // And the controller, end to end: a reflex tank whose patrol node is on the
+    // plateau gets there over the ramp, blocked by nothing on the way.
+    let mut definition = plateau(true);
+    definition.waypoints = relief_waypoints(start, goal);
+    // The doctrine `tests/reflex.rs` runs its own edges on: think every 250 ms
+    // and re-plan whenever the route is gone. A tank doing 15 m/s covers a cell
+    // and a half between decisions at the stock cadence, and a route it has
+    // wandered off is thrown away and **not** replaced until `repath_ms` has
+    // passed — during which the follower steers straight at the goal, which on
+    // this window means straight at the cliff. That is the pre-existing follower
+    // (16b cut N.1) and not this cut's; what this test is about is whether the
+    // *route* is one motion accepts, so the fixture asks for a fresh one.
+    let cfg = ArenaConfig {
+        reflex: tacsim::config::ReflexConfig {
+            decide_ms: 250,
+            repath_ms: 0,
+            ..tacsim::config::ReflexConfig::default()
+        },
+        ..ArenaConfig::default()
+    };
+    let mut arena = arena_over(
+        &catalog,
+        vec![nimble(under_reflex(blind(unit_of(
+            &catalog,
+            content::LINE_TANK,
+            RED,
+            Team::Red,
+            start,
+        ))))],
+        definition,
+        &cfg,
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let counters = run_logged(&mut arena, &mut wall, 500, 260, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert!(
+        blocked_cells(&events, RED).is_empty(),
+        "the reflex tank drove at something the route promised: {:?}",
+        blocked_cells(&events, RED)
+    );
+    assert_eq!(counters.path_failures, 0);
+    let (cell, z, _) = standing(&arena, RED);
+    assert!(
+        cell.0 >= 20 && z == 800,
+        "the reflex tank never reached the plateau: {cell:?} at {z} cm"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.6 (7) the ridge
+// ---------------------------------------------------------------------------
+
+/// **A ridge blocks the line both ways, and a taller eye sees over it** (16b cut
+/// X.6; doc 16 §3.2 "Line of sight").
+///
+/// Elevation has been in the line walk since cut S.1 — this is the acceptance
+/// that says so on a window X.6 could author, and the reason X.6 changes no line
+/// of sight code at all. A 400 cm ridge across the whole window blocks a pair of
+/// 150 cm eyes in **both** directions; the sensor pass therefore offers the
+/// candidate, traces it and holds nothing, where the same field flat holds a
+/// contact; a 100 cm ridge does not block a 150 cm eye at all; a nine-metre eye
+/// looks over the 400 cm ridge and the tank looks back up at it; and a shot over
+/// it is refused the line, spending its round and its cycle exactly as doc 16
+/// §3.5's re-validation says.
+#[test]
+fn x6_a_ridge_blocks_the_line_both_ways_and_a_taller_eye_sees_over_it() {
+    use mush_atlas::trace::{Blocker, Eye, Sight, trace_cells};
+
+    /// Two 150 cm eyes at `a` and `b`: the walk must answer the ridge, and name a
+    /// cell on `ridge_y` as the thing that blocked it.
+    fn blocked_by_the_ridge(terrain: &ArenaTerrain, a: (u16, u16), b: (u16, u16), ridge_y: u16) {
+        let trace = trace_cells(
+            terrain,
+            Eye {
+                cell: a,
+                height_cm: 150,
+            },
+            Eye {
+                cell: b,
+                height_cm: 150,
+            },
+        );
+        match trace.sight {
+            Sight::BlockedBy(Blocker::Elevation { at, elev_cm }) => {
+                assert_eq!(at.1, ridge_y, "the blocker is a ridge cell: {at:?}");
+                assert_eq!(elev_cm, 400);
+            }
+            other => panic!("{a:?} -> {b:?} is not blocked by the ridge: {other:?}"),
+        }
+    }
+
+    const RIDGE_Y: u16 = 7;
+    let ridge = |height: i16| move |_x: u16, y: u16| if y == RIDGE_Y { height } else { 0 };
+
+    // (a) the geometry, in both directions, over a sweep of offsets.
+    let terrain = relief(16, 16, &ridge(400)).terrain;
+    for (dx, dy) in [(0_i32, 0_i32), (2, 1), (-3, 2), (5, -2), (1, 4)] {
+        let Some(shooter) = u16::try_from(8 + dx).ok().map(|x| (x, 3_u16)) else {
+            continue;
+        };
+        let Some(target) = u16::try_from(8 - dx + dy).ok().map(|x| (x, 11_u16)) else {
+            continue;
+        };
+        for (a, b) in [(shooter, target), (target, shooter)] {
+            blocked_by_the_ridge(&terrain, a, b, RIDGE_Y);
+        }
+    }
+
+    // (a2) and the **shallow** lines, which the sweep above does not produce: its
+    // five pairs all span eight rows, and `mush_atlas::trace::line_cells` is known
+    // not to be symmetric under swapping its endpoints on a line like two across
+    // and one down — (0,0) to (2,1) walks (1,1) where the reverse walks (1,0).
+    // Against a ridge every walk must cross, the two walks must still agree, and
+    // these are the shapes that would say otherwise.
+    for (from, to) in [
+        ((6_u16, 6_u16), (10_u16, 8_u16)),
+        ((6, 6), (2, 8)),
+        ((2, 6), (14, 8)),
+        ((12, 6), (6, 8)),
+        ((4, 6), (10, 8)),
+    ] {
+        for (a, b) in [(from, to), (to, from)] {
+            blocked_by_the_ridge(&terrain, a, b, RIDGE_Y);
+        }
+    }
+
+    // (b) a 100 cm ridge does not block a 150 cm eye.
+    let low = relief(16, 16, &ridge(100)).terrain;
+    assert!(
+        trace_cells(
+            &low,
+            Eye {
+                cell: (8, 3),
+                height_cm: 150
+            },
+            Eye {
+                cell: (8, 11),
+                height_cm: 150
+            },
+        )
+        .sight
+        .is_clear_or_partial(),
+        "a ridge under the eye is not a ridge"
+    );
+
+    // (c) the sensor pass: the candidate is offered and traced over the ridge,
+    // and nothing is held; the same field flat holds a contact.
+    let catalog = catalog();
+    let sensor_run = |profile: &dyn Fn(u16, u16) -> i16| {
+        let mut arena = arena_over(
+            &catalog,
+            vec![
+                unit_of(&catalog, content::LINE_TANK, RED, Team::Red, (8, 3)),
+                unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, (8, 11)),
+            ],
+            relief(16, 16, profile),
+            &ArenaConfig::default(),
+        );
+        for id in [RED, BLUE] {
+            if let Some(state) = arena.unit_mut(id) {
+                state.power = Power::Online;
+            }
+        }
+        let mut wall = 0_i64;
+        let mut counters = tacsim::arena::perception::PerceptionCounters::default();
+        if wall == 0 {
+            arena.step(0, &[], &[]);
+        }
+        for _ in 0..12 {
+            wall += 500;
+            counters.absorb(&arena.step(wall, &[], &[]).perception);
+        }
+        let held = arena.contacts.of(RED).count();
+        (counters, held)
+    };
+    let (over, held_over) = sensor_run(&ridge(400));
+    let (flat, held_flat) = sensor_run(&|_x, _y| 0);
+    assert_eq!(held_over, 0, "the ridge is between them");
+    assert!(held_flat > 0, "the same field flat acquires a contact");
+    assert!(
+        over.candidates > 0 && over.traces > 0,
+        "the pass offered the candidate and traced it: {over:?}"
+    );
+    assert!(flat.candidates > 0 && flat.traces > 0);
+
+    // (d) a nine-metre eye looks over the 400 cm ridge, and the tank looks back.
+    let biped = biped_catalog();
+    let mut arena = arena_over(
+        &biped,
+        vec![
+            unit_of(&biped, content::BIPED_MK1, RED, Team::Red, (8, 3)),
+            unit_of(&biped, content::LINE_TANK, BLUE, Team::Blue, (8, 11)),
+        ],
+        relief(16, 16, &ridge(400)),
+        &ArenaConfig::default(),
+    );
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.sensor_height_cm),
+        Some(900),
+        "the biped's eye is nine metres up"
+    );
+    for id in [RED, BLUE] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    let mut wall = 0_i64;
+    run(&mut arena, &mut wall, 500, 12);
+    assert!(
+        arena.contacts.of(RED).count() > 0,
+        "the biped looks over the ridge"
+    );
+    assert!(
+        arena.contacts.of(BLUE).count() > 0,
+        "and the tank looks up at the biped"
+    );
+
+    // (e) and a shot over the ridge: the line is refused, the round and the cycle
+    // are spent, and the miss names the blocker's own reason.
+    let mut arena = arena_over(
+        &catalog,
+        vec![
+            unit_of(&catalog, content::LINE_TANK, RED, Team::Red, (8, 3)),
+            unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, (8, 11)),
+        ],
+        relief(16, 16, &ridge(400)),
+        &ArenaConfig::default(),
+    );
+    for id in [RED, BLUE] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    assert!(
+        !arena.fire_line(RED, BLUE).0.is_clear_or_partial(),
+        "the ridge is in the way of the round too"
+    );
+    let contact = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+    arena.contacts.insert(
+        RED,
+        contact,
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot_of(&arena, BLUE),
+        ),
+    );
+    arena.resolve_lock(RED, contact).expect("the lock holds");
+    let cannon = SmolStr::new("cannon");
+    let before = arena
+        .unit(RED)
+        .and_then(|unit| unit.ammo.get(&cannon).copied())
+        .expect("the cannon's rounds");
+    arena
+        .resolve_fire(RED, "cannon")
+        .expect("the shot is taken");
+    assert_eq!(
+        arena
+            .unit(RED)
+            .and_then(|unit| unit.ammo.get(&cannon).copied()),
+        Some(before - 1),
+        "the round is spent whatever the line does"
+    );
+    assert!(
+        arena
+            .unit(RED)
+            .and_then(|unit| unit.ready_at_ms.get(&cannon).copied())
+            .is_some_and(|ready| ready > arena.now_ms),
+        "and so is the cycle"
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    run_logged(&mut arena, &mut wall, 500, 12, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    let reasons: Vec<String> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            tacsim::arena::ledger::EventKind::Miss { reason, .. } => Some(reason.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        reasons,
+        vec![tacsim::arena::damage::BLOCKED.to_owned()],
+        "the round found the ridge"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.6 (8) the cross-tempo property
+// ---------------------------------------------------------------------------
+
+/// One entry of a scripted log, keyed by **arena** time (16b cut X.6) — the
+/// shape `tests/arena.rs`'s own driver takes, copied here because this file may
+/// not edit that one.
+struct ReliefBeat {
+    t_ms: i64,
+    intents: Vec<tacsim::arena::intents::Intent>,
+}
+
+/// One ledger line, normalised: arena timestamp, kind and fields as JSON, the
+/// draw where one was made, and the substep hash.
+type ReliefLine = (i64, String, Option<(String, u64)>, u64);
+
+/// One unit as a replay left it, **including the two numbers X.6 added**:
+/// `(unit, x_cm, y_cm, z_cm, grade_pct, heading_mdeg, speed_cms, blocked)`.
+type ReliefFinal = (mush_core::ObjId, i64, i64, i32, u16, u32, i32, bool);
+
+/// What one replay produced.
+struct ReliefReplay {
+    events: Vec<ReliefLine>,
+    hashes: Vec<u64>,
+    finals: Vec<ReliefFinal>,
+    /// Every distinct elevation the mover stood at, in order — the evidence that
+    /// the run climbed anything at all. Sampled once a **pulse**, so it is a
+    /// property of one cadence and is never compared across them.
+    climbed: Vec<i32>,
+    /// The mover's speed at the last sample of the northward leg: the sustained
+    /// ceiling on the ramp, once the acceleration has finished with it.
+    ramp_speed: i32,
+    /// What the reflex controller did over the replay — the evidence that the
+    /// slope-limited A\* was inside the property and not merely seated beside it.
+    /// A per-run counter, never compared across cadences.
+    reflex: tacsim::arena::reflex::ReflexCounters,
+}
+
+/// One order on the channel its kind travels on.
+fn relief_intent(
+    unit: mush_core::ObjId,
+    kind: tacsim::arena::intents::IntentKind,
+    seq: u64,
+) -> tacsim::arena::intents::Intent {
+    tacsim::arena::intents::Intent {
+        unit,
+        channel: kind.channel_required(),
+        epoch: 1,
+        kind,
+        seq,
+    }
+}
+
+/// Drive one arena through `script` at `cadence_ms` until arena time reaches
+/// `until_ms`, with the tempo pinned — [`replay`] in `tests/arena.rs`, over this
+/// item's own final tuple.
+fn relief_replay(
+    arena: &mut Arena,
+    mover: mush_core::ObjId,
+    cadence_ms: i64,
+    until_ms: i64,
+    script: &[ReliefBeat],
+) -> ReliefReplay {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut climbed: Vec<i32> = Vec::new();
+    let mut ramp_speed = 0_i32;
+    let mut reflex = tacsim::arena::reflex::ReflexCounters::default();
+    let mut wall = 0_i64;
+    let mut next = 0_usize;
+    loop {
+        arena
+            .clock
+            .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+        let mut intents: Vec<tacsim::arena::intents::Intent> = Vec::new();
+        while let Some(beat) = script.get(next) {
+            if beat.t_ms > arena.now_ms {
+                break;
+            }
+            intents.extend(beat.intents.iter().cloned());
+            next += 1;
+        }
+        let out = arena.step(wall, &[], &intents);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        reflex.absorb(&out.reflex);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if let Some(unit) = arena.unit(mover) {
+            if climbed.last() != Some(&unit.pose.z_cm) {
+                climbed.push(unit.pose.z_cm);
+            }
+            // The northward leg only: once the mover turns east it is braking
+            // into a cliff, and the slope it last came up is still on it.
+            if unit.grade_pct > 0 && unit.speed_cms > 0 && unit.pose.heading_mdeg == 0 {
+                ramp_speed = unit.speed_cms;
+            }
+        }
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    ReliefReplay {
+        events: String::from_utf8(bytes)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                serde_json::from_str::<tacsim::arena::ledger::LedgerEvent>(line).ok()
+            })
+            .map(|event| {
+                (
+                    event.t_ms,
+                    serde_json::to_string(&event.kind).unwrap_or_default(),
+                    event.draw,
+                    event.hash,
+                )
+            })
+            .collect(),
+        hashes,
+        finals: arena
+            .units
+            .iter()
+            .map(|unit| {
+                (
+                    unit.id,
+                    unit.pose.x_cm,
+                    unit.pose.y_cm,
+                    unit.pose.z_cm,
+                    unit.grade_pct,
+                    unit.pose.heading_mdeg,
+                    unit.speed_cms,
+                    unit.blocked,
+                )
+            })
+            .collect(),
+        climbed,
+        ramp_speed,
+        reflex,
+    }
+}
+
+/// The window the scripted climb runs on: a 30 per cent ramp northward from row
+/// 10 to row 19, a plateau above it, and an 800 cm cliff eastward at column 24
+/// that no `tracked` unit may cross in either direction (16b cut X.6).
+fn scripted_relief() -> ArenaDefinition {
+    let mut definition = relief(32, 32, &|x: u16, y: u16| {
+        let base = match y {
+            0..=9 => 0_i32,
+            10..=19 => (i32::from(y) - 9) * 300,
+            _ => 3_000,
+        };
+        let step = if x >= 24 { 800 } else { 0 };
+        i16::try_from(base + step).unwrap_or(i16::MAX)
+    });
+    definition.waypoints = relief_waypoints((5, 2), (20, 28));
+    definition
+}
+
+/// The script: start up cold, drive north up the ramp, then turn east into the
+/// cliff and stand against it (16b cut X.6).
+///
+/// Every timestamp is a multiple of 5,000 ms, which is a pulse boundary at all
+/// three cadences, so one script means one thing in all three replays.
+fn scripted_climb(mover: mush_core::ObjId) -> Vec<ReliefBeat> {
+    use tacsim::arena::intents::IntentKind;
+    vec![
+        ReliefBeat {
+            t_ms: 0,
+            intents: vec![relief_intent(mover, IntentKind::Startup, 1)],
+        },
+        ReliefBeat {
+            t_ms: 10_000,
+            intents: vec![
+                relief_intent(mover, IntentKind::Heading { mdeg: 0 }, 2),
+                relief_intent(mover, IntentKind::Speed { cms: 1_500 }, 3),
+            ],
+        },
+        ReliefBeat {
+            t_ms: 25_000,
+            intents: vec![
+                relief_intent(mover, IntentKind::Heading { mdeg: 90_000 }, 4),
+                relief_intent(mover, IntentKind::Speed { cms: 1_500 }, 5),
+            ],
+        },
+    ]
+}
+
+/// The two units the script drives: a pilot's tank on the ramp and a reflex tank
+/// patrolling the same relief, so the A\* with a slope limit is inside the
+/// property and not beside it (16b cut X.6).
+fn scripted_climb_arena(catalog: &Catalog, cfg: &ArenaConfig) -> Arena {
+    const MOVER: mush_core::ObjId = mush_core::ObjId(4);
+    const WALKER: mush_core::ObjId = mush_core::ObjId(9);
+    arena_over(
+        catalog,
+        vec![
+            blind(unit_of(
+                catalog,
+                content::LINE_TANK,
+                MOVER,
+                Team::Red,
+                (5, 5),
+            )),
+            under_reflex(blind(unit_of(
+                catalog,
+                content::LINE_TANK,
+                WALKER,
+                Team::Red,
+                (5, 2),
+            ))),
+        ],
+        scripted_relief(),
+        cfg,
+    )
+}
+
+/// **One scripted climb at three cadences is one event list and one hash
+/// sequence** (16b §11's mandatory cross-tempo test for this cut; doc 16 §3.1
+/// "Rate independence", D-16-2).
+///
+/// The tempo never decides an outcome, and X.6 put two new numbers into the
+/// world that a cadence could have moved: the slope a unit entered its cell by,
+/// which its next ceiling is measured against, and the elevation it stands at.
+/// Both are folded into the substep hash, so a replay that took the ramp one
+/// substep early diverges at that substep rather than at the end of the match.
+/// The reflex tank in the same replay puts the slope-limited A\* inside the
+/// property too.
+#[test]
+fn x6_one_scripted_climb_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
+    const MOVER: mush_core::ObjId = mush_core::ObjId(4);
+    const WALKER: mush_core::ObjId = mush_core::ObjId(9);
+    let catalog = catalog();
+    let mut runs: Vec<(i64, ReliefReplay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = scripted_climb_arena(&catalog, &ArenaConfig::default());
+        let run = relief_replay(&mut arena, MOVER, cadence, 60_000, &scripted_climb(MOVER));
+        assert_eq!(
+            arena.now_ms, 60_000,
+            "cadence {cadence} ran to a different time"
+        );
+        // The second tank has to have driven the slope-limited search, or the
+        // three replays would agree about a machine that never started: an empty
+        // history is trivially equal to an empty history, and the A\* would be
+        // seated beside the property rather than inside it.
+        assert!(
+            run.reflex.path_queries > 0,
+            "the walker asked for no route at {cadence} ms"
+        );
+        assert_eq!(run.reflex.path_failures, 0, "at {cadence} ms");
+        assert_ne!(
+            arena
+                .definition
+                .terrain
+                .cell_of(&arena.unit(WALKER).expect("the walker").pose),
+            Some((5, 2)),
+            "the walker never left its opening cell at {cadence} ms"
+        );
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+
+    // The run is worth asserting before it is compared.
+    assert!(
+        first.climbed.len() >= 4 && first.climbed.iter().any(|z| *z >= 2_700),
+        "the mover barely changed height: {:?}",
+        first.climbed
+    );
+    assert_eq!(
+        first.ramp_speed, 1_153,
+        "the mover never held the surcharged ceiling"
+    );
+    let blocked = first
+        .events
+        .iter()
+        .filter(|(_, kind, _, _)| kind.starts_with("{\"kind\":\"blocked\",\"unit\":4,"))
+        .count();
+    assert_eq!(
+        blocked,
+        1,
+        "exactly one stop, and it is the cliff: {:?}",
+        first
+            .events
+            .iter()
+            .map(|(_, kind, _, _)| kind.clone())
+            .collect::<Vec<String>>()
+    );
+    let mover = first
+        .finals
+        .iter()
+        .find(|(id, ..)| *id == MOVER)
+        .copied()
+        .expect("the mover");
+    assert_eq!(mover.1, 23_999, "the mover is not against the cliff");
+    assert_eq!(mover.6, 0, "the mover is not stopped");
+    assert!(mover.7, "the mover is not held");
+
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes,
+            first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms ({} against {})",
+            run.hashes.len(),
+            first.hashes.len()
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "a final pose, z, grade or speed differs at {cadence} ms"
+        );
+    }
+}
+
+/// **The climb does not depend on the substep length either** (16b cut X.6).
+///
+/// The three cadences of the test above all run 250 ms substeps, because
+/// `substep_ms` is `min(substep_max_ms, cell_cm × 1000 / max_speed_cms)` and
+/// depends on neither the tempo nor the pulse. So the substep length is covered
+/// here instead, by moving the table's own `substep_max_ms`: the sustained speed
+/// on the ramp and the cell the mover is refused at are the same at 250 ms and at
+/// 150 ms.
+///
+/// What is **not** asserted identical, deliberately: the transient — a shorter
+/// substep quantises the acceleration finer, so the pose at a given arena
+/// millisecond differs by centimetres — and the *count* of `blocked` events. At
+/// 150 ms a 5,000 ms pulse is thirty-three substeps of 150 and one of 50, and on
+/// that 50 ms piece a held tank gains 5 cm/s, travels no whole centimetre, and
+/// `integrate` returns having cleared `blocked` — so the next refusal is a second
+/// rising edge. That is the pre-existing short-substep truncation, which X.6
+/// neither fixes nor widens.
+#[test]
+fn x6_the_climb_does_not_depend_on_the_substep_length() {
+    const MOVER: mush_core::ObjId = mush_core::ObjId(4);
+    let catalog = catalog();
+    let mut answers: Vec<(i32, i64)> = Vec::new();
+    let mut blocked_counts: Vec<usize> = Vec::new();
+    for substep_max_ms in [250_u32, 150] {
+        let cfg = ArenaConfig {
+            tempo: tacsim::config::TempoConfig {
+                substep_max_ms,
+                ..tacsim::config::TempoConfig::default()
+            },
+            ..ArenaConfig::default()
+        };
+        let mut arena = scripted_climb_arena(&catalog, &cfg);
+        let run = relief_replay(&mut arena, MOVER, 5_000, 60_000, &scripted_climb(MOVER));
+        let mover = run
+            .finals
+            .iter()
+            .find(|(id, ..)| *id == MOVER)
+            .copied()
+            .expect("the mover");
+        let cell = arena
+            .definition
+            .terrain
+            .cell_at(mover.1, mover.2)
+            .expect("on the window");
+        answers.push((run.ramp_speed, i64::from(cell.0)));
+        blocked_counts.push(
+            run.events
+                .iter()
+                .filter(|(_, kind, _, _)| kind.starts_with("{\"kind\":\"blocked\",\"unit\":4,"))
+                .count(),
+        );
+    }
+    assert_eq!(
+        answers.first(),
+        answers.get(1),
+        "the ramp's ceiling or the cell of the refusal moved with the substep length"
+    );
+    assert_eq!(
+        answers.first().map(|answer| answer.0),
+        Some(1_153),
+        "the surcharged ceiling is the one rule's own number"
+    );
+    assert_eq!(
+        answers.first().map(|answer| answer.1),
+        Some(23),
+        "the mover is refused at the cliff either way"
+    );
+    // And the one thing that does move, reported rather than asserted equal.
+    println!(
+        "harness_x6_substep_blocked: 250ms={:?} 150ms={:?}",
+        blocked_counts.first(),
+        blocked_counts.get(1)
+    );
+    assert!(
+        blocked_counts.first().copied().unwrap_or(0) >= 1
+            && blocked_counts.get(1).copied().unwrap_or(0) >= 1
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.6 (9) a refused route is bounded work
+// ---------------------------------------------------------------------------
+
+/// **A route the ground refuses is bounded work** (16b cut X.6; doc 16 §1 A2,
+/// §6's path budget).
+///
+/// The failure mode X.6 could have introduced: a reflex unit whose goal is behind
+/// a cliff it cannot climb, re-planning at the cliff for the rest of the match.
+/// The two bounds that stop it are the controller's own and predate this cut —
+/// one search per unit per `repath_ms`, and `max_path_queries` per `decide_ms`
+/// window — and this is the measurement that they still hold when the search can
+/// fail on a slope rather than on a wall. The numbers are printed for the ledger;
+/// whatever they are, they are the answer.
+#[test]
+fn x6_a_refused_route_is_bounded_work() {
+    let catalog = catalog();
+    let cfg = ArenaConfig::default();
+    let span_ms = 60_000_i64;
+    let pulses = usize::try_from(span_ms / 500).unwrap_or(0);
+    let bound = u32::try_from(span_ms / i64::from(cfg.reflex.repath_ms) + 1).unwrap_or(u32::MAX);
+
+    // (a) a limited reflex tank whose goal is behind an unbroken cliff line, and
+    // whose graph offers it nowhere else to be: the worst case, a unit that will
+    // keep asking for a route to a cell no route reaches for the whole match.
+    let mut definition = plateau(false);
+    definition.waypoints = relief_waypoint((40, 2));
+    let mut arena = arena_over(
+        &catalog,
+        vec![under_reflex(blind(unit_of(
+            &catalog,
+            content::LINE_TANK,
+            RED,
+            Team::Red,
+            (2, 4),
+        )))],
+        definition,
+        &cfg,
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let counters = run_logged(&mut arena, &mut wall, 500, pulses, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    let (cell, z, _) = standing(&arena, RED);
+    assert!(
+        cell.0 < 20 && z == 0,
+        "the tank got onto a plateau nothing can climb: {cell:?} at {z} cm"
+    );
+    assert!(
+        counters.path_queries <= bound,
+        "{} searches in {span_ms} ms of arena time, against a bound of {bound}",
+        counters.path_queries
+    );
+    let speed = arena.unit(RED).map(|unit| unit.speed_cms).unwrap_or(0);
+    let held = arena.unit(RED).map(|unit| unit.held).unwrap_or(false);
+    assert!(
+        speed == 0 || held,
+        "the tank ended neither at rest nor held: {speed} cm/s"
+    );
+    println!(
+        "harness_x6_refused_a: blocked={} path_queries={} path_deferred={} path_failures={}",
+        blocked_cells(&events, RED).len(),
+        counters.path_queries,
+        counters.path_deferred,
+        counters.path_failures
+    );
+
+    // (b) two tanks and one ramp, the second parked on the ramp.
+    let mut definition = plateau(true);
+    definition.waypoints = relief_waypoints((2, 4), (40, 2));
+    let mut arena = arena_over(
+        &catalog,
+        vec![
+            under_reflex(blind(unit_of(
+                &catalog,
+                content::LINE_TANK,
+                RED,
+                Team::Red,
+                (2, 4),
+            ))),
+            blind(unit_of(
+                &catalog,
+                content::LINE_TANK,
+                BLUE,
+                Team::Red,
+                (21, 7),
+            )),
+        ],
+        definition,
+        &cfg,
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let counters = run_logged(&mut arena, &mut wall, 500, pulses, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    assert!(
+        counters.path_queries <= bound.saturating_mul(2),
+        "{} searches for two units against a bound of {}",
+        counters.path_queries,
+        bound.saturating_mul(2)
+    );
+    println!(
+        "harness_x6_refused_b: blocked={} path_queries={} path_deferred={} path_failures={}",
+        blocked_cells(&events, RED).len(),
+        counters.path_queries,
+        counters.path_deferred,
+        counters.path_failures
+    );
+}
+
+// ---------------------------------------------------------------------------
+// X.6 (10) what the limited search costs
+// ---------------------------------------------------------------------------
+
+/// A deterministic 256 by 256 relief: eight terraces 700 cm apart — a 70 per cent
+/// seam no `tracked` unit may cross — with a landing half way up the seam on the
+/// ramp rows, which is two 35 per cent steps and is the only way between terraces
+/// (16b cut X.6).
+fn terraces() -> ArenaTerrain {
+    relief(256, 256, &|x: u16, y: u16| {
+        let terrace = i32::from(x / 32);
+        let base = terrace * 700;
+        if x.is_multiple_of(32) && terrace > 0 && y % 16 < 4 {
+            return i16::try_from(base - 350).unwrap_or(i16::MAX);
+        }
+        i16::try_from(base).unwrap_or(i16::MAX)
+    })
+    .terrain
+}
+
+/// **The limited search costs what it costs** (16b cut X.6; doc 16 §1 A2).
+///
+/// The harness measures the surcharge and nothing else — every harness unit is
+/// `mobility: None`, so it has no limit and the edge rule never runs on the
+/// production window — so this is the one measurement of the limit and the
+/// shoulder rule, on a window deliberately harder than the shipped one. Both
+/// searches stay inside the 65,536-node budget, every route the limited one
+/// returns is a route motion would accept, and the two expansion totals are
+/// printed for the ledger.
+#[test]
+fn x6_the_limited_search_costs_what_it_costs() {
+    let terrain = terraces();
+    let cell_cm = u32::from(terrain.cell_cm());
+    let scale = tacsim::arena::min_move_cost(&terrain);
+    let limit = tracked_limit();
+    let mut scratch = tacsim::arena::PathScratch::default();
+    let pairs = [
+        ((2_u16, 2_u16), (250_u16, 250_u16)),
+        ((4, 200), (240, 20)),
+        ((16, 128), (200, 130)),
+        ((120, 8), (130, 248)),
+        ((60, 60), (196, 196)),
+    ];
+
+    let mut plain_total = 0_u64;
+    let mut limited_total = 0_u64;
+    // The node counts alone read the wrong way round — a refused edge is a branch
+    // never pushed, so the limit *narrows* the frontier here — while the work per
+    // edge goes up: a limited expansion reads two more slopes an edge and, on a
+    // diagonal, two shoulders. The harness cannot see any of that, because every
+    // harness unit is profile-less, so the wall clock is taken here as well. It
+    // is printed, never asserted: this is a measurement for the ledger, not a
+    // gate, and a gate on a shared machine's clock would be a flake.
+    let mut plain_us = 0_u128;
+    let mut limited_us = 0_u128;
+    for (start, goal) in pairs {
+        let at = std::time::Instant::now();
+        let plain = tacsim::arena::path::path(&terrain, &mut scratch, start, goal, 65_536, scale)
+            .unwrap_or_else(|why| panic!("{start:?} -> {goal:?} unlimited: {why:?}"));
+        plain_us += at.elapsed().as_micros();
+        let at = std::time::Instant::now();
+        let limited = tacsim::arena::path_with(
+            &terrain,
+            &mut scratch,
+            start,
+            goal,
+            65_536,
+            scale,
+            Some(limit),
+        )
+        .unwrap_or_else(|why| panic!("{start:?} -> {goal:?} limited: {why:?}"));
+        limited_us += at.elapsed().as_micros();
+        plain_total += u64::from(plain.expanded);
+        limited_total += u64::from(limited.expanded);
+
+        // Every edge of the limited route is one motion would accept, shoulders
+        // and all: the promise the search makes is the promise the crossing keeps.
+        let mut walked = vec![start];
+        walked.extend(limited.cells.iter().copied());
+        for pair in walked.windows(2) {
+            let (Some(from), Some(to)) = (pair.first().copied(), pair.get(1).copied()) else {
+                continue;
+            };
+            let (Some(here), Some(there), Some(kind)) = (
+                terrain.get(from.0, from.1),
+                terrain.get(to.0, to.1),
+                tacsim::arena::slope::step_kind(from, to),
+            ) else {
+                panic!("{from:?} -> {to:?} is not a step");
+            };
+            assert!(
+                !tacsim::arena::slope::too_steep(
+                    Some(limit),
+                    tacsim::arena::slope::steepness_pct(here, there, kind, cell_cm)
+                ),
+                "{from:?} -> {to:?} is past the limit"
+            );
+            if kind == mush_atlas::physics::StepKind::Diagonal {
+                for shoulder in [(to.0, from.1), (from.0, to.1)] {
+                    let Some(cell) = terrain
+                        .get(shoulder.0, shoulder.1)
+                        .filter(|cell| cell.passable())
+                    else {
+                        continue;
+                    };
+                    for (a, b) in [(here, cell), (cell, there)] {
+                        assert!(
+                            !tacsim::arena::slope::too_steep(
+                                Some(limit),
+                                tacsim::arena::slope::steepness_pct(
+                                    a,
+                                    b,
+                                    mush_atlas::physics::StepKind::Orthogonal,
+                                    cell_cm
+                                )
+                            ),
+                            "the shoulder {shoulder:?} of {from:?} -> {to:?} is past the limit"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "harness_x6_search: pairs={} expanded_unlimited={plain_total} expanded_limited={limited_total} us_unlimited={plain_us} us_limited={limited_us}",
+        pairs.len()
     );
 }
