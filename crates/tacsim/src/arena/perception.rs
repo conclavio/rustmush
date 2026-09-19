@@ -141,7 +141,8 @@ use crate::arena::index::range_cm;
 use crate::arena::ledger::EventKind;
 use crate::arena::rng::{DrawLabel, draw, draw_contact_id};
 use crate::arena::state::{
-    Arena, Classification, ContactId, DueKind, Power, ShadowContact, Team, UnitState,
+    Arena, Classification, ContactId, DueKind, OwnSighting, Power, SeenPose, ShadowContact, Team,
+    UnitState,
 };
 
 /// The factor of a target that hides nothing, per mille.
@@ -547,6 +548,26 @@ pub type Notice = (i64, EventKind, Option<(String, u64)>);
 struct Detection {
     target: ObjId,
     team: Team,
+    /// **Where it stood at this sighting** (16b cut F.3), taken from the same
+    /// snapshot the range test and the trace were decided against — so the plot a
+    /// contact records is the substep boundary's position and not the position at
+    /// whatever later moment somebody reads the contact.
+    seen_at: SeenPose,
+}
+
+/// **One classified contact, as the mesh carries it** (16b cut F.3; doc 16 §3.6
+/// step 5, W6).
+///
+/// A share hands over the sharer's **own** sighting — its timestamp and the plot
+/// that goes with it, from [`ShadowContact::own_seen`] and never from the
+/// sharer's copy of somebody else's. That is what makes a mesh copy expire when
+/// the sighting behind it does, and it is why this carries a stamp at all rather
+/// than being refreshed to "now".
+struct Shared {
+    target: ObjId,
+    team: Team,
+    /// The sharer's own last sighting: when, and where the target stood at it.
+    own: OwnSighting,
 }
 
 impl Arena {
@@ -574,12 +595,21 @@ impl Arena {
     /// **One unit's sensor pass** (doc 16 §3.6), applied at `t_ms` against the
     /// positions the substep boundary committed.
     ///
-    /// Answers whether the observer **now holds anything classified**, which is
+    /// Answers whether the observer **now holds anything the mesh may carry** —
+    /// a classified contact its own sensors saw inside the time to live — which is
     /// what makes the caller schedule a [`DueKind::Share`]; everything else it did
     /// is in `journal` and in `counters`.
     ///
     /// The next pass is not scheduled here — [`Arena::step`] does that from the
     /// event's own timestamp, so the cadence is a function of arena time alone.
+    ///
+    /// **16b cut F.3 split it in two.** The read half short-circuits for a
+    /// platform that detects nothing by construction — no sensor, a wreck, a pose
+    /// off the window — but the **loss band runs for every platform that holds
+    /// contacts**, because the expiry inside this function is the only one in the
+    /// engine and a platform that runs no detections is exactly the platform a
+    /// teammate can hand contacts to for ever. It stays here, at the platform's
+    /// own pass time, rather than becoming a per-pulse sweep.
     pub fn sensor_pass(
         &mut self,
         observer: ObjId,
@@ -589,10 +619,7 @@ impl Arena {
         journal: &mut Vec<Notice>,
     ) -> bool {
         // ---- the read half: who is detected, decided against one snapshot ----
-        let Some(found) = self.detections(observer, counters) else {
-            return false;
-        };
-        counters.passes = counters.passes.saturating_add(1);
+        let found = self.detections(observer, counters);
 
         // ---- the write half: the store, then the loss band ----
         let gap_ms = i64::from(self.sensors_cfg.pass_ms.max(1));
@@ -601,7 +628,15 @@ impl Arena {
             .and_then(|unit| unit.sensor.as_ref())
             .map_or(i64::MAX, |sensor| i64::from(sensor.classify_after_ms));
         let seed = self.seed;
-        for Detection { target, team } in found {
+        if found.is_some() {
+            counters.passes = counters.passes.saturating_add(1);
+        }
+        for Detection {
+            target,
+            team,
+            seen_at,
+        } in found.into_iter().flatten()
+        {
             let id = draw_contact_id(seed, observer, target);
             match self.contacts.get_mut(observer, id) {
                 Some(held) => {
@@ -610,12 +645,23 @@ impl Arena {
                     // classified yet; one that has stays classified, because
                     // telling a tank apart is not something a viewer forgets while
                     // still holding it.
+                    //
+                    // 16b cut F.3: read against `last_seen_ms` still, and the two
+                    // stamps coincide for the whole of the arm that reads it —
+                    // only classified contacts travel over the mesh, so nothing
+                    // but this platform's own sensors has ever touched the stamps
+                    // of a contact that is still `Unknown`.
                     if held.class == Classification::Unknown
                         && t_ms.saturating_sub(held.last_seen_ms) > gap_ms
                     {
                         held.first_seen_ms = t_ms;
                     }
                     held.last_seen_ms = t_ms;
+                    held.seen_at = seen_at;
+                    held.own_seen = Some(OwnSighting {
+                        at_ms: t_ms,
+                        plot: seen_at,
+                    });
                     if held.class == Classification::Unknown
                         && t_ms.saturating_sub(held.first_seen_ms) >= classify_after_ms
                     {
@@ -648,12 +694,7 @@ impl Arena {
                     self.contacts.insert(
                         observer,
                         id,
-                        ShadowContact {
-                            target,
-                            class: Classification::Unknown,
-                            first_seen_ms: t_ms,
-                            last_seen_ms: t_ms,
-                        },
+                        ShadowContact::sighted(target, Classification::Unknown, t_ms, seen_at),
                     );
                     journal.push((
                         t_ms,
@@ -688,9 +729,16 @@ impl Arena {
         }
         // Whether the mesh has anything to carry, read after the losses: a unit
         // whose last classified contact just expired says nothing this pass.
+        //
+        // **16b cut F.3**: and a unit whose only classified contacts arrived over
+        // the mesh says nothing either, because a share is built from the sharer's
+        // **own** sighting (doc 16 §2 W6). It is `ShadowContact::shareable` — the
+        // one place both share rules are written — asked here once so that a
+        // platform with nothing to relay schedules no share at all, and asked
+        // again per contact in [`Arena::share_pass`].
         self.contacts
             .of(observer)
-            .any(|(_, held)| held.class != Classification::Unknown)
+            .any(|(_, held)| held.shareable(cutoff).is_some())
     }
 
     /// Steps 1 to 3 of doc 16 §3.6, over one snapshot of the units and the index.
@@ -792,6 +840,9 @@ impl Arena {
             found.push(Detection {
                 target: id,
                 team: target.team,
+                // 16b cut F.3: the plot, off the same snapshot every test above
+                // was decided against.
+                seen_at: SeenPose::of(target),
             });
         }
         Some(found)
@@ -865,7 +916,29 @@ impl Arena {
     /// *tactical comms are LOS mesh jammed by the same ECM*), so a teammate behind
     /// a wall is told nothing. A share **refreshes** what it hands over, which is
     /// what keeps a contact the mesh is still reporting from expiring in the
-    /// teammate's own store.
+    /// teammate's own store (cut S's deviation (3), kept).
+    ///
+    /// **16b cut F.3 gave the refresh its provenance**, which is what stops it
+    /// being unbounded. Two rules, and together they end the loop cut S left:
+    ///
+    /// 1. **Only a sighting travels**, and it travels whole. A platform shares a
+    ///    contact only when its **own** sensors saw the target inside the time to
+    ///    live, and what it hands over is that sighting's own stamp *and its own
+    ///    plot* ([`ShadowContact::own_seen`]) — never the newer copy of somebody
+    ///    else's that a teammate's share may have written over
+    ///    [`ShadowContact::seen_at`]. A position relayed that way would be a
+    ///    second hop in everything but the name on it, and doc 16 §2 W6 is that
+    ///    shared contacts fan out only within comms range *of the platform that
+    ///    sees*.
+    /// 2. **A share never raises a receiver's stamp above the sharer's own
+    ///    sighting.** So a mesh copy goes stale exactly when the sighting behind
+    ///    it does, plus nothing.
+    ///
+    /// Before them, two teammates inside share range each refreshed the other's
+    /// copy to *now* on every pass, so a contact never expired however far the
+    /// target drove, however completely it broke line of sight, and even after it
+    /// was a wreck. Entry zones put teammates in adjacent cells, so that held from
+    /// the first pulse of every match with two or more tanks a side.
     pub fn share_pass(
         &mut self,
         sharer: ObjId,
@@ -892,15 +965,24 @@ impl Arena {
         let cell_cm = u64::from(self.definition.terrain.cell_cm());
         let reach = u32::try_from(u64::from(sensor.share_range_cells).saturating_mul(cell_cm))
             .unwrap_or(u32::MAX);
-        // What there is to say. Only classified contacts travel: an `unknown`
-        // return is a smudge on one platform's own scope and means nothing to
-        // anybody else.
-        let mine: Vec<(ObjId, Team)> = self
+        // What there is to say: [`ShadowContact::shareable`], which is both of this
+        // function's rules written once — classified, and seen by **this
+        // platform's own** sensors inside the time to live, with that sighting's
+        // own stamp and its own plot. The plot comes off `own_seen` and never off
+        // `seen_at`, because `seen_at` may be a teammate's: relaying it would put
+        // a position one hop further than the platform that took it, which is the
+        // transitive relay doc 16 §2 W6 forbids, wearing this platform's name.
+        let cutoff = t_ms.saturating_sub(self.contact_ttl_ms()).saturating_add(1);
+        let mine: Vec<Shared> = self
             .contacts
             .of(sharer)
-            .filter_map(|(_, held)| match held.class {
-                Classification::Classified { team } => Some((held.target, team)),
-                Classification::Unknown => None,
+            .filter_map(|(_, held)| {
+                let (team, own) = held.shareable(cutoff)?;
+                Some(Shared {
+                    target: held.target,
+                    team,
+                    own,
+                })
             })
             .collect();
         if mine.is_empty() {
@@ -935,25 +1017,36 @@ impl Arena {
         }
         let seed = self.seed;
         for mate in mates {
-            for (target, team) in &mine {
+            for shared in &mine {
+                let target = shared.target;
+                let team = shared.team;
                 // A unit is never handed a contact on itself: doc 16 §3.6's
                 // contacts are what a platform holds on *something else*.
-                if *target == mate {
+                if target == mate {
                     continue;
                 }
-                let id = draw_contact_id(seed, mate, *target);
+                let id = draw_contact_id(seed, mate, target);
                 match self.contacts.get_mut(mate, id) {
                     Some(held) => {
-                        held.last_seen_ms = held.last_seen_ms.max(t_ms);
+                        // **16b cut F.3**: the sharer's own sighting, and only
+                        // when it is newer than what the receiver already has.
+                        // Never `t_ms`: a share carries a sighting, not a moment
+                        // of transmission, so a receiver's copy cannot outlive the
+                        // sighting behind it. The plot travels with the stamp, so
+                        // the two can never be a fresh time against an old place.
+                        if shared.own.at_ms > held.last_seen_ms {
+                            held.last_seen_ms = shared.own.at_ms;
+                            held.seen_at = shared.own.plot;
+                        }
                         if held.class == Classification::Unknown {
-                            held.class = Classification::Classified { team: *team };
+                            held.class = Classification::Classified { team };
                             journal.push((
                                 t_ms,
                                 EventKind::Classified {
                                     viewer: mate,
                                     contact: id,
-                                    target: *target,
-                                    team: *team,
+                                    target,
+                                    team,
                                 },
                                 // No draw: the classification was the sharer's,
                                 // and its label is already in the ledger against
@@ -968,10 +1061,18 @@ impl Arena {
                             mate,
                             id,
                             ShadowContact {
-                                target: *target,
-                                class: Classification::Classified { team: *team },
-                                first_seen_ms: t_ms,
-                                last_seen_ms: t_ms,
+                                target,
+                                class: Classification::Classified { team },
+                                // The sighting's own stamp on both, so a copy that
+                                // arrives already two passes old is two passes old
+                                // and expires accordingly.
+                                first_seen_ms: shared.own.at_ms,
+                                last_seen_ms: shared.own.at_ms,
+                                seen_at: shared.own.plot,
+                                // Nothing of this platform's own saw it: the copy
+                                // is a mesh copy, and cut F.3's first rule stops
+                                // it being relayed on.
+                                own_seen: None,
                             },
                         );
                         // Two transitions in one moment, both true of the teammate:
@@ -981,7 +1082,7 @@ impl Arena {
                             EventKind::Detected {
                                 viewer: mate,
                                 contact: id,
-                                target: *target,
+                                target,
                             },
                             None,
                         ));
@@ -990,8 +1091,8 @@ impl Arena {
                             EventKind::Classified {
                                 viewer: mate,
                                 contact: id,
-                                target: *target,
-                                team: *team,
+                                target,
+                                team,
                             },
                             None,
                         ));
@@ -1010,6 +1111,18 @@ impl Arena {
     /// A derived range of zero — a match in which no unit carries a weapon — is
     /// never under itself, so nothing raises `Alert` on a contact alone. That is
     /// the honest answer: there is nothing to shoot with.
+    ///
+    /// **16b cut F.3** gave it the two things its siblings
+    /// ([`Arena::hostile_in_weapons_range`], the reflex controller's target
+    /// choice) already had and it lacked:
+    ///
+    /// * **the wreck filter** — a contact on a burnt-out hull held the whole arena
+    ///   at the `Alert` cadence, which is exactly what `sees_wrecks: false` was
+    ///   meant to let go of;
+    /// * **the plot** — the range is to where the platform last *saw* the target,
+    ///   not to where the target is. A tempo read off a position nobody holds
+    ///   would be the one place in the arena where hidden truth reached a pilot,
+    ///   because how often a pilot is sent a frame is something a pilot can count.
     #[must_use]
     pub fn contact_within_alert_range(&self) -> bool {
         let reach = u64::from(self.alert_range_cm);
@@ -1019,13 +1132,22 @@ impl Arena {
         self.units.iter().any(|viewer| {
             self.contacts.of(viewer.id).any(|(_, held)| {
                 self.unit(held.target)
-                    .is_some_and(|target| range_cm(&viewer.pose, &target.pose) < reach)
+                    .is_some_and(|target| !target.limits.wreck)
+                    && held.seen_at.range_from(&viewer.pose) < reach
             })
         })
     }
 
-    /// The first [`DueKind::SensorPass`] of every unit that carries a sensor, at
-    /// **`id % pass_ms`** of arena time (doc 16 §3.6: *staggered by unit id*).
+    /// The first [`DueKind::SensorPass`] of **every unit**, at **`id % pass_ms`**
+    /// of arena time (doc 16 §3.6: *staggered by unit id*).
+    ///
+    /// **16b cut F.3** widened it from the units that carry a sensor. The pass is
+    /// also where a platform's contacts expire, and a platform with no sight of
+    /// its own is exactly the platform a teammate can hand contacts to: it was
+    /// never scheduled a pass, so nothing ever let go of what the mesh gave it. A
+    /// unit that detects nothing pays one short event a cadence — the read half
+    /// returns before the index is touched — which is the cheapest place to put
+    /// an expiry that must run for everyone and must not become a per-pulse sweep.
     ///
     /// The stagger is the object number modulo the cadence, so it needs no state,
     /// it is the same on a replay, and two units never collide unless their ids do
@@ -1034,12 +1156,7 @@ impl Arena {
     /// worst pulse's trace count near the average (doc 16 §2 W4).
     pub fn schedule_first_passes(&mut self) {
         let cadence = i64::from(self.sensors_cfg.pass_ms.max(1));
-        let ids: Vec<ObjId> = self
-            .units
-            .iter()
-            .filter(|unit| unit.sensor.is_some())
-            .map(|unit| unit.id)
-            .collect();
+        let ids: Vec<ObjId> = self.units.iter().map(|unit| unit.id).collect();
         for id in ids {
             let offset = i64::from(id.0) % cadence;
             self.due.schedule(
@@ -1122,17 +1239,24 @@ pub struct FrameContact {
     pub class: Classification,
     /// Bearing from the platform, millidegrees clockwise from north.
     pub bearing_mdeg: u32,
-    /// Range from the platform, centimetres (doc 16 §3.2's one range function).
+    /// Range from the platform **to the plot**, centimetres (doc 16 §3.2's one
+    /// range function).
     ///
-    /// **Not rendered to a pilot** (16b cut S.2): doc 16 §3.6 gives `CONTACTS` a
-    /// *range band* and not a range, so the cockpit turns this into one of
-    /// `crate::match_::cockpit::range_band`'s four words and the exact figure
-    /// never leaves the arena's own frame type.
+    /// **Rendered coarsely** (16b cut F.3): the cockpit turns it into one of
+    /// `crate::match_::cockpit::range_band`'s four words *and* into metres
+    /// rounded to `crate::match_::cockpit::CONTACT_RANGE_STEP_M`. Cut S.2 kept the
+    /// figure inside the arena entirely, on doc 16 §3.6's *range band* read
+    /// strictly, and that left a pilot with no distance information at all; the
+    /// rounding is the deliberate coarseness that replaces the silence, and
+    /// `range_m_rounded` records it as the owner's to revisit.
     pub range_cm: u64,
-    /// How long the platform has held it, arena milliseconds.
+    /// **How stale the plot is**, arena milliseconds (16b cut F.3): now less the
+    /// sighting that last refreshed the contact. Cut S.2 carried the hold time
+    /// since first detection, which told a pilot nothing about whether the plot
+    /// in front of them was a live track or a dying one.
     pub age_ms: i64,
     /// **The cell the target was last seen in** (16b cut S.2), for the marker
-    /// `VIEW` draws. `None` for a target that has left the window.
+    /// `VIEW` draws. `None` for a plot off the window.
     ///
     /// A cell and not a pose: the map's resolution is what the map may show, so a
     /// marker carries exactly the precision the window already prints and no more.
@@ -1548,7 +1672,9 @@ mod tests {
                 unit.sensor_height_cm = 150;
             }
         }
-        arena.schedule_first_passes();
+        // 16b cut F.3: `Arena::new` already scheduled a pass for **every** unit,
+        // so the explicit call cut S.1's version of this test needed (the fixture
+        // mounts its sights afterwards) would now schedule a second one each.
         let scheduled: Vec<(i64, ObjId)> = arena
             .due
             .iter()

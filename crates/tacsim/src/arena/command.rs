@@ -118,9 +118,12 @@ pub struct SquadSignal {
     pub digest: SquadDigest,
     /// The commander's contacts, nearest first, at most [`MAX_SIGNAL_CONTACTS`].
     pub contacts: Vec<SignalContact>,
-    /// The commander's own longest weapon reach, centimetres — what turns a
-    /// contact's range into a band.
-    pub reach_cm: u32,
+    /// **The authored band edges of the weapon the commander's bare `FIRE` would
+    /// fire**, centimetres, outward (16b cut F.3) — what turns a contact's range
+    /// into a band, and the same list the pilot's own `CONTACTS` band is read
+    /// against. It replaces cut N.2's `reach_cm`, which banded in thirds of the
+    /// longest reach and so answered `close` for everything a sight can see.
+    pub bands_cm: Vec<u32>,
     /// The squad's mean health, per mille of the authored totals.
     pub health_permille: u32,
     /// How many of the squad's machines are in each state, in
@@ -239,14 +242,16 @@ impl Arena {
                 .contacts
                 .of(squad.commander)
                 .map(|(id, held)| {
+                    // **16b cut F.3**: the commander's brief is written from the
+                    // commander's **plot** — where its platform last saw the
+                    // target — for the same reason the pilot's contact row is.
+                    // A deliberating mind that was handed a target's live pose
+                    // would be told something no platform on the field knows.
                     let (range_cm, bearing_mdeg) =
-                        self.unit(held.target).map_or((u64::MAX, 0), |target| {
+                        self.unit(held.target).map_or((u64::MAX, 0), |_| {
                             (
-                                crate::arena::index::range_cm(&commander.pose, &target.pose),
-                                crate::arena::perception::bearing_of(
-                                    target.pose.x_cm - commander.pose.x_cm,
-                                    target.pose.y_cm - commander.pose.y_cm,
-                                ),
+                                held.seen_at.range_from(&commander.pose),
+                                held.seen_at.bearing_from(&commander.pose),
                             )
                         });
                     SignalContact {
@@ -284,7 +289,7 @@ impl Arena {
                 at_ms: now,
                 digest,
                 contacts,
-                reach_cm: commander.weapon_reach_cm(),
+                bands_cm: commander.fire_bands_cm(),
                 health_permille: u32::try_from(health_total / health_count.max(1)).unwrap_or(1_000),
                 states,
                 cell: self.definition.terrain.cell_of(&commander.pose),

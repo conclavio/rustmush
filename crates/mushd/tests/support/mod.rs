@@ -624,3 +624,22 @@ impl Drop for ChildServer {
         }
     }
 }
+
+/// **Whether a line names a side as a word** (16b cut F.3).
+///
+/// The observer-rule leak checks forbid the substring `red` in a victim's own
+/// damage lines, and `starts_with("The ")` lets in every line that opens that
+/// way — so a sentence such as `The last match is cleared from the board.` would
+/// false-fail on `cleared`. A boundary test forbids exactly what the leak check
+/// meant to forbid, the side's own name, and nothing that merely spells it.
+///
+/// A match counts when neither neighbour is alphanumeric, so `red`, `(red)` and
+/// `red's` are leaks and `cleared`, `predicted` and `redoubt` are not.
+#[must_use]
+pub fn names_side(line: &str, side: &str) -> bool {
+    line.match_indices(side).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at.saturating_add(side.len())..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}

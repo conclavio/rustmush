@@ -53,8 +53,8 @@ use tacsim::arena::reflex::ReflexState;
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyOut,
-    CustodyUnit, EntryZone, Pilot, Power, ShadowContact, Team, TerrainCell, TrackedRules, Waypoint,
-    Waypoints, WeaponSummary,
+    CustodyUnit, EntryZone, Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, TrackedRules,
+    Waypoint, Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
 use tacsim::arena::weapons::WeaponBand;
@@ -418,6 +418,15 @@ fn state_of(arena: &Arena, unit: ObjId) -> Option<ReflexState> {
     arena.reflex.unit(unit).map(|row| row.state)
 }
 
+/// **Where `target` actually stands, as a contact's plot** (16b cut F.3).
+///
+/// These fixtures plant a contact by hand, and the plot they plant is the
+/// target's true pose — so every range and bearing they assert is the one they
+/// asserted before the contact store learned the difference.
+fn plot_of(arena: &Arena, target: ObjId) -> SeenPose {
+    arena.unit(target).map(SeenPose::of).unwrap_or_default()
+}
+
 /// Make `viewer` hold `target` as a classified hostile from `at_ms`, whatever the
 /// ground between them says. See this file's head for why a test may do this.
 fn plant_contact(arena: &mut Arena, viewer: ObjId, target: ObjId, team: Team, at_ms: i64) {
@@ -425,12 +434,12 @@ fn plant_contact(arena: &mut Arena, viewer: ObjId, target: ObjId, team: Team, at
     arena.contacts.insert(
         viewer,
         id,
-        ShadowContact {
+        ShadowContact::sighted(
             target,
-            class: Classification::Classified { team },
-            first_seen_ms: at_ms,
-            last_seen_ms: at_ms,
-        },
+            Classification::Classified { team },
+            at_ms,
+            plot_of(arena, target),
+        ),
     );
 }
 
@@ -549,6 +558,83 @@ fn a_classified_hostile_out_of_reach_is_closed_on_to_the_stand_off_cell() {
     // live at last.
     assert!(arena.reflex.any_approaching());
     assert!(arena.clock.tempo() >= Tempo::Alert);
+}
+
+// ---------------------------------------------------------------------------
+// (j) the controller reads the plot and never the target — 16b cut F.3
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_controller_approaches_the_plot_and_not_the_target() {
+    // Doc 16 §3.6 read as the owner's principle: the contact store is the whole
+    // of what a unit knows. Before 16b cut F.3 every read in this module went
+    // through the contact to the **unit** and then read its live pose, so a
+    // reflex tank pursued a target it could no longer see, through a wall, with
+    // perfect knowledge, for the whole time to live.
+    //
+    // The red tank carries a two-cell carbine, so a hostile four cells away is
+    // out of band and the machine is in `Approach` — the state whose goal is a
+    // position, which is what makes the difference visible.
+    let mut arena = arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(6, 8),
+                    vec![carbine()],
+                    Controller::Reflex,
+                ),
+                14,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(13, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 5_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Approach));
+    let goal = arena
+        .reflex
+        .unit(RED)
+        .and_then(|row| row.goal)
+        .unwrap_or_else(|| panic!("a goal"));
+
+    // The target is teleported to the far corner and the red tank's sight is
+    // taken away, so nothing refreshes the plot. The contact is still held for
+    // the rest of its time to live.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(1, 1);
+    }
+    if let Some(state) = arena.unit_mut(RED) {
+        state.sensor = None;
+    }
+    run(&mut arena, 7_000, &mut bytes);
+    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert_eq!(
+        row.target.map(|(_, unit)| unit),
+        Some(BLUE),
+        "the contact is still held, which is what makes the plot readable"
+    );
+    assert_eq!(
+        row.goal,
+        Some(goal),
+        "the approach goal followed the target instead of holding on the plot"
+    );
+    let (gx, gy) = row.goal.unwrap_or((0, 0));
+    assert!(
+        gx > 4 && gy > 4,
+        "the goal moved toward the target's new corner: {:?}",
+        row.goal
+    );
 }
 
 // ---------------------------------------------------------------------------

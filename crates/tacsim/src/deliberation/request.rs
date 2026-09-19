@@ -127,7 +127,7 @@ impl SquadBrief {
                     }
                     Classification::Classified { .. } => "hostile".to_string(),
                 },
-                band: crate::match_::cockpit::range_band(contact.range_cm, signal.reach_cm)
+                band: crate::match_::cockpit::range_band(contact.range_cm, &signal.bands_cm)
                     .to_string(),
                 bearing_deg: contact.bearing_mdeg / 1_000,
             })
@@ -484,7 +484,7 @@ mod tests {
                     range_cm: 9_000,
                 },
             ],
-            reach_cm: 6_000,
+            bands_cm: vec![6_000, 12_000],
             health_permille: 900,
             states: [0, 2, 0, 0, 0, 0],
             cell: Some((3, 4)),

@@ -105,7 +105,7 @@ use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::world_task::{self, PersistHandles, ServerDeps};
 use serde_json::Value;
 
-use support::{Term, play_client, scratch_dir, strip_ansi};
+use support::{Term, names_side, play_client, scratch_dir, strip_ansi};
 
 const GM_PASSWORD: &str = "gm-secret-1";
 const PILOT_PASSWORD: &str = "pilot-secret-1";
@@ -1144,12 +1144,18 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         .lines()
         .filter(|line| line.starts_with("Hit on the ") || line.starts_with("The hull is"))
     {
-        for leak in [contact.as_str(), "red", "bearing", "cannon", "°"] {
+        for leak in [contact.as_str(), "bearing", "cannon", "°"] {
             assert!(
                 !line.contains(leak),
                 "a hit notice carried {leak:?} about the shooter: {line}"
             );
         }
+        // 16b cut F.3: the side is forbidden as a **word**, so a future sentence
+        // that happens to spell it (`cleared`) is not a false failure.
+        assert!(
+            !names_side(line, "red"),
+            "a hit notice named the shooter's side: {line}"
+        );
     }
     assert!(
         loser.contains(OVER),

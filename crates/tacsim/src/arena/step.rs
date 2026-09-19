@@ -52,7 +52,6 @@ use smol_str::SmolStr;
 
 use crate::arena::clock::{Tempo, TempoSignals, substep_ms, substeps};
 use crate::arena::hash::state_hash;
-use crate::arena::index::range_cm;
 use crate::arena::intents::{
     Control, Intent, IntentKind, IntentOutcome, Refusal, apply_control, apply_intent,
     drain_pending, resolve_startup,
@@ -60,7 +59,7 @@ use crate::arena::intents::{
 use crate::arena::ledger::{EventKind, LedgerChunk};
 use crate::arena::motion::integrate;
 use crate::arena::perception::{
-    FrameContact, FrameNotice, Notice, NoticeKind, PerceptionCounters, RefusalDetail, bearing_mdeg,
+    FrameContact, FrameNotice, Notice, NoticeKind, PerceptionCounters, RefusalDetail,
 };
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::state::{
@@ -114,11 +113,6 @@ pub struct Frame {
     /// renders it; nothing about an undetected unit is in it, which is the whole
     /// observer rule on this surface.
     pub contacts: Vec<FrameContact>,
-    /// **The longest reach of anything the platform carries**, centimetres (16b
-    /// cut S.2), which is what turns a contact's range into doc 16 §3.6's *range
-    /// band*. Zero for a platform that carries no weapon, and then nothing is in
-    /// range of it, which is the honest answer.
-    pub weapon_reach_cm: u32,
     /// **What the pilot is told once** (16b cut S.2; doc 16 §3.6: *notices fire
     /// once per transition with hysteresis*), in the order the transitions
     /// happened.
@@ -232,7 +226,6 @@ impl Frame {
     pub fn same_as(&self, other: &Frame) -> bool {
         self.unit == other.unit
             && self.team == other.team
-            && self.weapon_reach_cm == other.weapon_reach_cm
             && self.pose.x_cm == other.pose.x_cm
             && self.pose.y_cm == other.pose.y_cm
             && self.pose.z_cm == other.pose.z_cm
@@ -473,7 +466,10 @@ impl Arena {
         // pulse*. Nothing is re-queued — an action is resolved or refused in the
         // pulse it was drained in, so a bound another order needs is never held by
         // one that cannot be resolved — and a refusal is the pilot's business, not
-        // the ledger's: cut K's cockpit is what turns a `Refusal` into a line.
+        // the ledger's: **16b cut F.2** stages a `FrameNotice::Refused` here and
+        // `crate::match_::cockpit::refusal_line` is what turns it into a
+        // sentence, so a refused order is said and still never written to the
+        // black box.
         //
         // One hash for the whole phase, taken once: the phase runs at one arena
         // timestamp with no time advancing inside it, so every action it resolves
@@ -785,8 +781,12 @@ impl Arena {
                 // alone and cannot drift with the substep boundary the pass
                 // happened to land on.
                 //
-                // A pass that leaves the unit holding anything classified schedules
-                // a `Share` at the *same* timestamp: the heap orders
+                // A pass that leaves the unit holding **anything the mesh may
+                // carry** — a classified contact its own sensors saw inside the
+                // time to live, which is 16b cut F.3's two share rules and is
+                // written once in `ShadowContact::shareable`; `Arena::sensor_pass`'s
+                // head has the argument — schedules a `Share` at the *same*
+                // timestamp: the heap orders
                 // `(t_ms, seq, kind)` and the share is inserted with a later
                 // sequence, so it is applied after the pass, in this same substep,
                 // and the mesh never lags a pulse behind the tracks it carries. It
@@ -797,7 +797,12 @@ impl Arena {
                     if shared {
                         self.due.schedule(event.t_ms, DueKind::Share { unit });
                     }
-                    if self.unit(unit).is_some_and(|state| state.sensor.is_some()) {
+                    // **16b cut F.3**: rescheduled for every unit still in the
+                    // match, not only for one that carries a sensor. The pass is
+                    // where contacts expire, and a platform with no sight of its
+                    // own still holds what the mesh handed it
+                    // (`Arena::schedule_first_passes` has the argument).
+                    if self.unit(unit).is_some() {
                         let cadence = i64::from(self.sensors_cfg.pass_ms.max(1));
                         self.due.schedule(
                             event.t_ms.saturating_add(cadence),
@@ -978,7 +983,6 @@ impl Arena {
             let Some(unit) = self.unit(pilot.unit) else {
                 continue;
             };
-            let reach = unit.weapon_reach_cm();
             let lock = unit.lock;
             let contacts = self.frame_contacts(unit.id);
             // **16b cut W.1, re-shaped by cut F.2**: the lock's own target, range
@@ -1000,7 +1004,6 @@ impl Arena {
                     blocked: unit.held,
                     tempo,
                     contacts,
-                    weapon_reach_cm: reach,
                     // Per platform, so two pilots in one tank are both told.
                     notices: self
                         .pending_notices
@@ -1363,12 +1366,23 @@ impl Arena {
     /// **What one platform holds, as its pilots' frame carries it** (16b cut S.1;
     /// doc 16 §3.6 "What a pilot sees"), in contact-id order.
     ///
-    /// Bearing and range are taken from the **target's current pose**, which is
-    /// what a live sensor track is: the contact was refreshed within the last
-    /// `sensors.pass_ms` or it would not be here, and doc 16 §3.6's observer rule is
-    /// about *undetected* units — nothing here exists for a unit the platform does
-    /// not hold. A contact whose target has left the match is dropped rather than
-    /// reported at a stale bearing.
+    /// **16b cut F.3 made it a plot rather than a tether.** Bearing, range and
+    /// cell are taken from the pose the target was in **at the sighting that last
+    /// refreshed this contact** — this platform's own, or the sharer's own as the
+    /// share carried it — and never from the target's live pose. Cut S.1 read the
+    /// target live and justified it with "the contact was refreshed within the
+    /// last `sensors.pass_ms` or it would not be here", which was false by a factor
+    /// of `lost_after_passes`: a tank that ducked behind a building was tracked
+    /// through it, cell by cell, for the whole time to live, by pilots and by the
+    /// reflex controller alike.
+    ///
+    /// `age_ms` is the age of **that sighting** (`now − last_seen_ms`) and not the
+    /// hold time since first detection, because what a pilot needs off this column
+    /// is whether the plot in front of them is a live track or a dying one. While
+    /// a target is in continuous view it is at most one `sensors.pass_ms` old.
+    ///
+    /// A contact whose target has left the match is dropped rather than reported:
+    /// there is no unit for it to be a fact about.
     #[must_use]
     pub fn frame_contacts(&self, platform: ObjId) -> Vec<FrameContact> {
         let Some(from) = self.unit(platform) else {
@@ -1377,14 +1391,16 @@ impl Arena {
         self.contacts
             .of(platform)
             .filter_map(|(id, held)| {
-                let target = self.unit(held.target)?;
+                // A contact whose target has left the match is dropped: only the
+                // unit's presence is read here, never its pose.
+                let _ = self.unit(held.target)?;
                 Some(FrameContact {
                     id: *id,
                     class: held.class,
-                    bearing_mdeg: bearing_mdeg(&from.pose, &target.pose),
-                    range_cm: range_cm(&from.pose, &target.pose),
-                    age_ms: self.now_ms.saturating_sub(held.first_seen_ms),
-                    cell: self.definition.terrain.cell_of(&target.pose),
+                    bearing_mdeg: held.seen_at.bearing_from(&from.pose),
+                    range_cm: held.seen_at.range_from(&from.pose),
+                    age_ms: self.now_ms.saturating_sub(held.last_seen_ms),
+                    cell: held.seen_at.cell(&self.definition.terrain),
                 })
             })
             .collect()
@@ -1534,9 +1550,11 @@ mod tests {
         assert!(!out.lagged);
         assert!(out.ended.is_none());
         assert_eq!(out.tempo, Tempo::Quiet);
-        // The next step is asked for at the period, or at the first summary,
-        // whichever is sooner: both are 5,000 ms away here.
-        assert_eq!(out.next_due_ms, 1_005_000);
+        // The next step is asked for at the period, at the first summary, or at
+        // the first sensor pass, whichever is soonest. **16b cut F.3** makes that
+        // the pass: every unit has one, staggered at `id % pass_ms`, and this
+        // fixture's is unit #4's at 4 ms.
+        assert_eq!(out.next_due_ms, 1_000_004);
         assert!(arena.substep_hashes.is_empty());
         // One frame, because the pilot has never been told anything.
         assert_eq!(out.frames.len(), 1);
@@ -1680,10 +1698,11 @@ mod tests {
             arena.reflex.unit(A).map(|row| row.state),
             Some(crate::arena::reflex::ReflexState::Withdraw)
         );
+        // 16b cut F.3 adds the third: this platform's own sensor pass.
         assert_eq!(
             arena.due.len(),
-            2,
-            "the position summary and the released tank's first reflex tick"
+            3,
+            "the position summary, the released tank's first reflex tick, its pass"
         );
         let mut journal = Log::default();
         journal.absorb(&out);
@@ -1746,8 +1765,19 @@ mod tests {
             .map(|event| event.t_ms)
             .collect();
         assert_eq!(summaries, vec![5_000, 10_000, 15_000, 20_000]);
-        // The next one is scheduled, always.
-        assert_eq!(arena.due.next_t_ms(), Some(25_000));
+        // The next one is scheduled, always. The four above are already journalled,
+        // so it is the *schedule* and not the log that says the cadence continues —
+        // and `next_t_ms` cannot say it since 16b cut F.3 gives every unit a sensor
+        // pass, which on this fixture falls nearer (unit #4's, at 20,004 ms).
+        assert!(
+            arena
+                .due
+                .iter()
+                .any(|event| event.t_ms == 25_000 && event.kind == DueKind::PositionSummary),
+            "the next position summary is not on the schedule: {:?}",
+            arena.due.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(arena.due.next_t_ms(), Some(20_004), "unit #4's own stagger");
     }
 
     /// **16b cut S.1, the pulse end to end**: the sensor pass is due in phase

@@ -54,7 +54,8 @@ use tacsim::arena::perception::{NoticeKind, SensorProfile, SignatureFactor};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    EntryZone, Pilot, Power, ShadowContact, Team, TerrainCell, TrackedRules, WeaponSummary,
+    EntryZone, Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, TrackedRules,
+    WeaponSummary,
 };
 use tacsim::arena::step::{Frame, StepOutput};
 use tacsim::arena::weapons::WeaponBand;
@@ -342,6 +343,15 @@ fn intent(unit: ObjId, kind: IntentKind, seq: u64) -> Intent {
         kind,
         seq,
     }
+}
+
+/// **Where `target` actually stands, as a contact's plot** (16b cut F.3).
+///
+/// These fixtures plant a contact by hand, and the plot they plant is the
+/// target's true pose — so every range and bearing they assert is the one they
+/// asserted before the contact store learned the difference.
+fn plot_of(arena: &Arena, target: mush_core::ObjId) -> SeenPose {
+    arena.unit(target).map(SeenPose::of).unwrap_or_default()
 }
 
 /// The contact id `viewer` holds `target` under in this match.
@@ -732,12 +742,12 @@ fn a_blocked_shot_is_accepted_and_costs_its_round() {
     arena.contacts.insert(
         RED,
         contact,
-        ShadowContact {
-            target: BLUE,
-            class: Classification::Classified { team: Team::Blue },
-            first_seen_ms: arena.now_ms,
-            last_seen_ms: arena.now_ms,
-        },
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            arena.now_ms,
+            plot_of(&arena, BLUE),
+        ),
     );
     let before = arena
         .unit(RED)

@@ -46,7 +46,7 @@ use tacsim::arena::perception::{
 use tacsim::arena::rng::{DrawLabel, draw, draw_contact_id};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    DueKind, EntryZone, Pilot, Team, TerrainCell, TrackedRules, WeaponSummary,
+    DueKind, EntryZone, Pilot, SeenPose, Team, TerrainCell, TrackedRules, WeaponSummary,
 };
 use tacsim::arena::step::Frame;
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -72,6 +72,13 @@ const CELL_CM: u16 = 1_000;
 const EYE: ObjId = ObjId(4);
 const MARK: ObjId = ObjId(9);
 const MATE: ObjId = ObjId(13);
+
+/// A second teammate, inside `MATE`'s mesh and outside `EYE`'s (16b cut F.3's
+/// relay case).
+const RELAY: ObjId = ObjId(21);
+
+/// A teammate that carries no sight at all (16b cut F.3's no-pass viewer).
+const BLIND: ObjId = ObjId(27);
 
 fn dref(kind: &str, id: &str) -> DefinitionRef {
     DefinitionRef::new(
@@ -1114,18 +1121,51 @@ fn the_frame_renders_a_contact_as_an_opaque_id_a_band_and_two_bearings() {
 }
 
 #[test]
-fn a_range_band_is_read_against_the_platforms_own_reach() {
-    // Thirds of a 300 cm reach, at the boundaries.
-    assert_eq!(cockpit::range_band(0, 300), "close");
-    assert_eq!(cockpit::range_band(100, 300), "close");
-    assert_eq!(cockpit::range_band(101, 300), "effective");
-    assert_eq!(cockpit::range_band(300, 300), "effective");
-    assert_eq!(cockpit::range_band(301, 300), "far");
-    assert_eq!(cockpit::range_band(600, 300), "far");
-    assert_eq!(cockpit::range_band(601, 300), "beyond");
+fn a_range_band_is_read_against_the_fired_weapons_own_bands() {
+    // **16b cut F.3.** Cut S.2 banded in thirds of the platform's longest reach,
+    // which for the shipped tank is the cannon's 3 km — so `close` covered
+    // everything inside 1 km and the shipped 600 m sight could never produce any
+    // other word. The bands are the fired weapon's own, at their boundaries.
+    let bands = [300_u32, 600];
+    assert_eq!(cockpit::range_band(0, &bands), "close");
+    assert_eq!(cockpit::range_band(100, &bands), "close");
+    assert_eq!(cockpit::range_band(101, &bands), "effective");
+    assert_eq!(cockpit::range_band(300, &bands), "effective");
+    assert_eq!(cockpit::range_band(301, &bands), "far");
+    assert_eq!(cockpit::range_band(600, &bands), "far");
+    assert_eq!(cockpit::range_band(601, &bands), "beyond");
     // A platform with nothing to shoot with has nothing in range.
-    assert_eq!(cockpit::range_band(0, 0), "beyond");
-    assert_eq!(cockpit::range_band(u64::MAX, u32::MAX), "beyond");
+    assert_eq!(cockpit::range_band(0, &[]), "beyond");
+    assert_eq!(cockpit::range_band(u64::MAX, &[u32::MAX]), "beyond");
+    // One band is a legal weapon: everything past its edge is `beyond`, and
+    // nothing ever reads `far`.
+    assert_eq!(cockpit::range_band(100, &[300]), "close");
+    assert_eq!(cockpit::range_band(300, &[300]), "effective");
+    assert_eq!(cockpit::range_band(301, &[300]), "beyond");
+}
+
+#[test]
+fn a_contact_row_reports_its_range_in_metres_rounded_to_fifty() {
+    // 16b cut F.3: the one named constant, and half a step rounds up.
+    assert_eq!(cockpit::CONTACT_RANGE_STEP_M, 50);
+    for (range_cm, metres) in [
+        (0_u64, 0_u64),
+        (2_400, 0),
+        (2_500, 50),
+        (3_000, 50),
+        (7_400, 50),
+        (7_500, 100),
+        (30_000, 300),
+        (32_499, 300),
+        (32_500, 350),
+        (60_000, 600),
+    ] {
+        assert_eq!(
+            cockpit::range_m_rounded(range_cm),
+            metres,
+            "{range_cm} cm rounded the wrong way"
+        );
+    }
 }
 
 #[test]
@@ -1288,5 +1328,547 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     assert_eq!(
         cockpit::notice_line(&frame, &gone, &[]),
         format!("Contact {id} lost.")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (m) what a platform knows — 16b cut F.3
+//
+// Two defects of the cut S store, and one usability decision:
+//
+// - **(m1)** the mesh had no provenance, so two teammates refreshed each other's
+//   copy of a target for ever and a contact never expired;
+// - **(m2)** a held contact was reported at the target's **live** pose, so a tank
+//   that broke line of sight was tracked through it for the whole time to live;
+// - **(m3)** the range band was thirds of the platform's longest weapon reach
+//   against a sight that cannot see a third of it, so every row read `close`.
+// ---------------------------------------------------------------------------
+
+/// The shipped sight with a five-cell reach: a teammate that can talk over the
+/// mesh (`share_range_cells` is untouched at 30) and cannot see the far side of
+/// the window for itself.
+fn short_sight() -> SensorProfile {
+    SensorProfile {
+        max_range_cells: 5,
+        ..visual()
+    }
+}
+
+/// `EYE` and `MATE` three cells apart with a mesh line between them, both holding
+/// blue `MARK` thirty cells east of `EYE`.
+fn meshed_pair() -> Arena {
+    arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MATE, Team::Red, centre(10, 13), Some(visual())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &[],
+    )
+}
+
+/// Run one pass for `EYE` and one for `MATE` at `t_ms`, and answer every journal
+/// kind the two produced, in order.
+fn mesh_round(arena: &mut Arena, seq: u64, t_ms: i64) -> Vec<&'static str> {
+    let (_, mine) = pass(arena, EYE, seq, t_ms);
+    let (_, theirs) = pass(arena, MATE, seq, t_ms + 10);
+    let mut words = kinds(&mine);
+    words.extend(kinds(&theirs));
+    words
+}
+
+/// A wall down the whole of column `x`: a curtain a target can drive behind and
+/// stay behind, rather than the one cell the time-to-live test puts on one line.
+fn curtain(x: u16) -> Vec<(u16, u16, TerrainCell)> {
+    (0..SIDE)
+        .map(|y| (x, y, cell(TerrainClass::Wall)))
+        .collect()
+}
+
+/// Whether `viewer` still holds a contact on `MARK`.
+fn holds_mark(arena: &Arena, viewer: ObjId) -> bool {
+    arena
+        .contacts
+        .resolve(viewer, draw_contact_id(arena.seed, viewer, MARK))
+        .is_some()
+}
+
+#[test]
+fn two_meshed_teammates_let_go_of_a_target_that_leaves_everyones_reach() {
+    // **(m1), the regression.** Before 16b cut F.3 this loop had no exit: each
+    // pass raised the other platform's `last_seen_ms` to *now*, so the cutoff was
+    // never reached on either side and a `lost` was never written at all.
+    let mut arena = meshed_pair();
+    // Four rounds carry both platforms' own contacts to `classified`.
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        mesh_round(&mut arena, seq, t_ms);
+    }
+    assert!(holds_mark(&arena, EYE) && holds_mark(&arena, MATE));
+    // The last real sighting is `MATE`'s, at 3,010 ms. The target then leaves
+    // every reach.
+    place(&mut arena, MARK, away(), 0);
+    let mut lost_at: Vec<(ObjId, i64)> = Vec::new();
+    for (seq, t_ms) in [(5_u64, 4_000_i64), (6, 5_000), (7, 6_000), (8, 7_000)] {
+        let (_, mine) = pass(&mut arena, EYE, seq, t_ms);
+        if kinds(&mine).contains(&"lost") {
+            lost_at.push((EYE, t_ms));
+        }
+        let (_, theirs) = pass(&mut arena, MATE, seq, t_ms + 10);
+        if kinds(&theirs).contains(&"lost") {
+            lost_at.push((MATE, t_ms + 10));
+        }
+    }
+    assert!(!holds_mark(&arena, EYE), "the loop kept EYE's copy alive");
+    assert!(!holds_mark(&arena, MATE), "the loop kept MATE's copy alive");
+    // And both losses fell inside the time to live of the last real sighting,
+    // which is 3,010 ms (`MATE`'s own, the later of the two): the contact is not
+    // refreshed past 6,010 ms, and the `lost` is written at the first pass at or
+    // after that, which is the same rule an ordinary loss has always followed.
+    let ttl = arena.contact_ttl_ms();
+    let cadence = 1_000_i64;
+    for (viewer, at_ms) in &lost_at {
+        assert!(
+            *at_ms <= 3_010 + ttl + cadence,
+            "{viewer:?} let go at {at_ms}, past the TTL of the last sighting"
+        );
+    }
+    assert_eq!(lost_at.len(), 2, "one loss each: {lost_at:?}");
+}
+
+#[test]
+fn two_meshed_teammates_let_go_of_a_target_that_is_destroyed() {
+    // The same loop, with the target a wreck rather than gone: `sees_wrecks` is
+    // false, so neither platform's own pass finds it again, and the mesh has
+    // nothing of its own left to carry.
+    let mut arena = meshed_pair();
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        mesh_round(&mut arena, seq, t_ms);
+    }
+    assert!(holds_mark(&arena, EYE) && holds_mark(&arena, MATE));
+    if let Some(state) = arena.unit_mut(MARK) {
+        state.limits.wreck = true;
+    }
+    for (seq, t_ms) in [(5_u64, 4_000_i64), (6, 5_000), (7, 6_000), (8, 7_000)] {
+        mesh_round(&mut arena, seq, t_ms);
+    }
+    assert!(
+        !holds_mark(&arena, EYE) && !holds_mark(&arena, MATE),
+        "a classified contact outlived the hull it was on"
+    );
+}
+
+#[test]
+fn a_contact_that_only_ever_arrived_over_the_mesh_is_never_shared_on() {
+    // **Doc 16 §2 W6**: shared contacts fan out only within comms range *of the
+    // platform that sees*. `EYE` sees `MARK`; `MATE` is inside `EYE`'s share reach
+    // and holds `MARK` only over the mesh; `RELAY` is inside `MATE`'s reach and
+    // outside `EYE`'s, and must never learn of `MARK`.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MATE, Team::Red, centre(10, 13), Some(short_sight())),
+            tank(RELAY, Team::Red, centre(10, 43), Some(short_sight())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &[],
+    );
+    for (seq, t_ms) in [
+        (1_u64, 0_i64),
+        (2, 1_000),
+        (3, 2_000),
+        (4, 3_000),
+        (5, 4_000),
+        (6, 5_000),
+    ] {
+        pass(&mut arena, EYE, seq, t_ms);
+        pass(&mut arena, MATE, seq, t_ms + 10);
+        pass(&mut arena, RELAY, seq, t_ms + 20);
+    }
+    // The first hop happened.
+    assert!(holds_mark(&arena, MATE), "the mesh's first hop never ran");
+    // The second did not.
+    assert!(
+        !holds_mark(&arena, RELAY),
+        "a mesh copy was relayed on: the contact fanned out past the platform that sees"
+    );
+    // And the relay is genuinely inside the mesh: `MATE` shares what its **own**
+    // five-cell sight holds — `EYE`, three cells away — and that reaches it.
+    assert!(
+        arena
+            .contacts
+            .resolve(RELAY, draw_contact_id(arena.seed, RELAY, EYE))
+            .is_some(),
+        "the relay is outside MATE's mesh, so the property above proves nothing"
+    );
+}
+
+#[test]
+fn a_share_never_raises_a_receivers_stamp_above_the_sharers_own_sighting() {
+    let mut arena = meshed_pair();
+    // `MATE` cannot see `MARK` for itself, so whatever it holds is the mesh's.
+    if let Some(state) = arena.unit_mut(MATE) {
+        state.sensor = Some(short_sight());
+    }
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+        pass(&mut arena, MATE, seq, t_ms + 10);
+    }
+    let theirs = draw_contact_id(arena.seed, MATE, MARK);
+    let held = arena
+        .contacts
+        .resolve(MATE, theirs)
+        .copied()
+        .unwrap_or_else(|| panic!("the mesh reached the teammate"));
+    assert_eq!(held.last_seen_ms, 3_000, "the sharer's own sighting");
+    assert_eq!(held.own_seen, None, "nothing of its own saw it");
+
+    // `MARK` steps behind a wall: `EYE` stops seeing it but still holds it, so the
+    // mesh keeps carrying it (cut S's deviation (3)) — and carries the **old**
+    // sighting, not the moment of transmission.
+    let walled = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MATE, Team::Red, centre(10, 13), Some(short_sight())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &[(25, 10, cell(TerrainClass::Wall))],
+    );
+    arena.definition = walled.definition.clone();
+    pass(&mut arena, EYE, 5, 4_000);
+    pass(&mut arena, MATE, 5, 4_010);
+    let held = arena
+        .contacts
+        .resolve(MATE, theirs)
+        .copied()
+        .unwrap_or_else(|| panic!("still held one pass on"));
+    assert_eq!(
+        held.last_seen_ms, 3_000,
+        "the share raised the receiver's stamp to the moment of transmission"
+    );
+    // Which is what makes it expire on time: three passes past 3,000 ms and no
+    // sighting behind it.
+    pass(&mut arena, EYE, 6, 5_000);
+    pass(&mut arena, MATE, 6, 5_010);
+    pass(&mut arena, EYE, 7, 6_000);
+    let (_, journal) = pass(&mut arena, MATE, 7, 6_010);
+    assert_eq!(kinds(&journal), vec!["lost"]);
+    assert!(arena.contacts.resolve(MATE, theirs).is_none());
+}
+
+#[test]
+fn a_viewer_that_runs_no_pass_of_its_own_still_expires_what_was_shared_to_it() {
+    // A unit with no sight at all: content can field one (a logistics or command
+    // variant), and before 16b cut F.3 it was never scheduled a pass, so the only
+    // expiry in the engine never ran for it and a teammate's shares piled up for
+    // the whole match.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(BLIND, Team::Red, centre(10, 13), None),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &[],
+    );
+    // It has a pass of its own on the schedule, which is the whole fix.
+    assert!(
+        arena.due.iter().any(|event| matches!(
+            event.kind,
+            DueKind::SensorPass { unit, .. } if unit == BLIND
+        )),
+        "a platform that holds contacts has no pass at which to expire them"
+    );
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+        pass(&mut arena, BLIND, seq, t_ms + 10);
+    }
+    let theirs = draw_contact_id(arena.seed, BLIND, MARK);
+    assert!(
+        arena.contacts.resolve(BLIND, theirs).is_some(),
+        "the mesh never reached the sightless teammate"
+    );
+    // The sharer loses its own sighting, so nothing refreshes the copy.
+    place(&mut arena, MARK, away(), 0);
+    for (seq, t_ms) in [(5_u64, 4_000_i64), (6, 5_000), (7, 6_000), (8, 7_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+        pass(&mut arena, BLIND, seq, t_ms + 10);
+    }
+    assert!(
+        arena.contacts.resolve(BLIND, theirs).is_none(),
+        "the sightless viewer kept a contact nobody is reporting"
+    );
+}
+
+#[test]
+fn a_held_contact_is_reported_where_it_was_last_seen_and_ages() {
+    // **(m2), the regression.** Before 16b cut F.3 the frame read the target's
+    // live pose for the whole time to live, so a tank that ducked behind a
+    // building was tracked through it, cell by cell.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &[],
+    );
+    pass(&mut arena, EYE, 1, 0);
+    let row = arena
+        .frame_contacts(EYE)
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("one contact"));
+    assert_eq!(row.cell, Some((40, 10)));
+    assert_eq!(row.range_cm, 30_000);
+    assert_eq!(row.age_ms, 0, "just seen");
+
+    // The wall goes up and the target drives away behind it.
+    let walled = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &curtain(25),
+    );
+    arena.definition = walled.definition.clone();
+    for (seq, t_ms, x) in [(2_u64, 1_000_i64, 45_u16), (3, 2_000, 50)] {
+        place(&mut arena, MARK, centre(x, 10), 1_000);
+        arena.now_ms = t_ms;
+        pass(&mut arena, EYE, seq, t_ms);
+        let row = arena
+            .frame_contacts(EYE)
+            .first()
+            .copied()
+            .unwrap_or_else(|| panic!("still held at {t_ms}"));
+        assert_eq!(
+            row.cell,
+            Some((40, 10)),
+            "the plot followed the target through the wall at {t_ms}"
+        );
+        assert_eq!(row.range_cm, 30_000, "and so did the range at {t_ms}");
+        assert_eq!(row.age_ms, t_ms, "the plot is not ageing");
+    }
+
+    // The contact is lost at the TTL and re-acquired under the same id, at the
+    // new sighting's plot.
+    arena.now_ms = 3_000;
+    let (_, journal) = pass(&mut arena, EYE, 4, 3_000);
+    assert_eq!(kinds(&journal), vec!["lost"]);
+    let open = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(50, 10), None),
+        ],
+        &[],
+    );
+    arena.definition = open.definition.clone();
+    arena.now_ms = 4_000;
+    pass(&mut arena, EYE, 5, 4_000);
+    let row = arena
+        .frame_contacts(EYE)
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("re-acquired"));
+    assert_eq!(
+        row.id,
+        draw_contact_id(arena.seed, EYE, MARK),
+        "the same id, as cut S.1 minted it"
+    );
+    assert_eq!(row.cell, Some((50, 10)), "the plot jumped to the sighting");
+    assert_eq!(row.range_cm, 40_000);
+    assert_eq!(row.age_ms, 0);
+}
+
+#[test]
+fn a_contact_row_prints_a_band_and_a_range_in_metres() {
+    // **(m3)**: the band is the fired weapon's own, and the range is beside it.
+    let mut arena = watching();
+    let mut tape: Vec<u8> = Vec::new();
+    let frame = pulse(&mut arena, PULSE_MS, &mut tape).expect("the acquiring pulse sends a frame");
+    let row = cockpit::frame_contacts(&frame)
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("one row"));
+    // 30,000 cm against the fixture cannon's inner band of 150,000 cm: inside a
+    // third of it.
+    assert_eq!(row.band.as_str(), "close");
+    assert_eq!(row.range_m, 300, "300 m, to the nearest fifty");
+    let line = row.render();
+    assert!(line.contains("close"), "{line}");
+    assert!(line.contains("300 m"), "{line}");
+    assert!(!line.contains('#'), "never an object number: {line}");
+
+    // Past a third of the inner band the word changes, which is the whole point:
+    // the shipped sight can produce it and cut S.2's thirds-of-the-reach never
+    // could.
+    place(&mut arena, MARK, centre(61, 10), 0);
+    let mut last = None;
+    for n in 2..=6 {
+        if let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) {
+            last = Some(frame);
+        }
+    }
+    let frame = last.expect("the platform is sent frames");
+    let row = cockpit::frame_contacts(&frame)
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("one row"));
+    assert_eq!(row.band.as_str(), "effective");
+    // 51,000 cm is 510 m, and 510 m to the nearest fifty is 500.
+    assert_eq!(row.range_m, 500);
+    assert!(row.render().contains("500 m"), "{}", row.render());
+}
+
+#[test]
+fn a_contact_on_a_wreck_does_not_hold_the_alert_tempo() {
+    // Doc 16 §3.1's `Alert` trigger had no wreck filter, so a classified contact
+    // on a burnt-out hull held the whole arena at the 1,000 ms cadence — exactly
+    // what `sees_wrecks: false` was meant to let go of.
+    let mut arena = watching();
+    pass(&mut arena, EYE, 9, 9_000);
+    assert!(
+        arena.contact_within_alert_range(),
+        "the fixture never held a contact inside the alert range"
+    );
+    if let Some(state) = arena.unit_mut(MARK) {
+        state.limits.wreck = true;
+    }
+    assert!(
+        !arena.contact_within_alert_range(),
+        "a contact on a wreck still raised Alert"
+    );
+}
+
+#[test]
+fn nothing_a_pilot_is_shown_is_newer_than_the_platforms_last_sighting() {
+    // The observer rule read through 16b cut F.3: every column of the row, and
+    // the cell `VIEW` draws its marker in, come from one plot — so there is no
+    // surface on which a pilot can read where a target *is* rather than where
+    // their platform last saw it.
+    let mut arena = watching();
+    let mut tape: Vec<u8> = Vec::new();
+    let frame = pulse(&mut arena, PULSE_MS, &mut tape).expect("the acquiring pulse");
+    let seen = cockpit::frame_contacts(&frame)
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("one row"));
+    // The target moves behind a wall, and the platform is told nothing more.
+    let walled = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &curtain(25),
+    );
+    arena.definition = walled.definition.clone();
+    for n in 2..=3_u16 {
+        place(&mut arena, MARK, centre(40 + n, 12), 1_000);
+        let Some(frame) = pulse(&mut arena, PULSE_MS * i64::from(n), &mut tape) else {
+            continue;
+        };
+        let row = cockpit::frame_contacts(&frame)
+            .first()
+            .cloned()
+            .unwrap_or_else(|| panic!("still held"));
+        assert_eq!(
+            row.cell, seen.cell,
+            "VIEW's marker moved without a sighting"
+        );
+        assert_eq!(row.bearing_deg, seen.bearing_deg);
+        assert_eq!(row.range_m, seen.range_m);
+        assert!(row.age_ms > 0, "the age column says the plot is stale");
+    }
+}
+
+/// The plot `viewer` holds on `target`, if it holds one (16b cut F.3).
+fn plot_of(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<SeenPose> {
+    arena
+        .contacts
+        .resolve(viewer, draw_contact_id(arena.seed, viewer, target))
+        .map(|held| held.seen_at)
+}
+
+#[test]
+fn a_share_carries_the_sharers_own_plot_and_never_a_teammates() {
+    // **(m1), the second half.** A platform may relay a contact only when its own
+    // sensors saw it — and what it relays is *that* sighting's plot. A platform
+    // whose own sighting has gone stale while a teammate's share keeps refreshing
+    // its copy holds a fresh plot it never took; handing that on would put a
+    // position one hop further than the platform that saw it, which is the
+    // transitive relay doc 16 §2 W6 forbids, wearing somebody else's name.
+    //
+    // `EYE` sees `MARK` throughout. `MATE` sees it at first and then goes blind to
+    // it. `RELAY` starts outside every mesh and joins `MATE`'s after the two have
+    // diverged, so what it is told is one share and not an older one.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MATE, Team::Red, centre(10, 13), Some(visual())),
+            tank(RELAY, Team::Red, centre(10, 70), Some(short_sight())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &[],
+    );
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+        pass(&mut arena, MATE, seq, t_ms + 10);
+        pass(&mut arena, RELAY, seq, t_ms + 20);
+    }
+    let own = plot_of(&arena, MATE, MARK).unwrap_or_else(|| panic!("MATE saw it for itself"));
+    assert_eq!(
+        (own.x_cm, own.y_cm),
+        (centre(40, 10).x_cm, centre(40, 10).y_cm),
+        "MATE's own sighting is where MARK stood"
+    );
+    assert!(
+        !holds_mark(&arena, RELAY),
+        "RELAY is outside every mesh until it is moved"
+    );
+
+    // `MATE` goes blind to `MARK` — a shorter sight is the cheapest wall — and
+    // `MARK` drives twenty cells north, where only `EYE` sees it.
+    if let Some(state) = arena.unit_mut(MATE) {
+        state.sensor = Some(short_sight());
+    }
+    place(&mut arena, MARK, centre(40, 30), 0);
+    pass(&mut arena, EYE, 5, 4_000);
+    pass(&mut arena, MATE, 5, 4_010);
+
+    // The hard case really is set up: `MATE`'s copy now plots `MARK` at the new
+    // position, off `EYE`'s share, while its own sensors have not seen it since.
+    let theirs = plot_of(&arena, MATE, MARK).unwrap_or_else(|| panic!("the mesh still carries it"));
+    assert_eq!(
+        (theirs.x_cm, theirs.y_cm),
+        (centre(40, 30).x_cm, centre(40, 30).y_cm),
+        "the share never refreshed MATE's plot, so this test proves nothing"
+    );
+
+    // `RELAY` joins the formation: thirty cells from `MATE`, which is its mesh
+    // exactly, and thirty-three from `EYE`, which is outside its.
+    place(&mut arena, RELAY, centre(10, 43), 0);
+    pass(&mut arena, EYE, 6, 5_000);
+    pass(&mut arena, MATE, 6, 5_010);
+    pass(&mut arena, RELAY, 6, 5_020);
+    // And the relay is genuinely inside `MATE`'s mesh and outside `EYE`'s: it
+    // learns of `EYE`, which only `MATE` can tell it about.
+    assert!(
+        arena
+            .contacts
+            .resolve(RELAY, draw_contact_id(arena.seed, RELAY, EYE))
+            .is_some(),
+        "RELAY is outside MATE's mesh"
+    );
+
+    // The property. `MATE` may relay `MARK` — its own sighting at 3,010 ms is
+    // still inside the time to live — but only at the plot that sighting took.
+    let relayed = plot_of(&arena, RELAY, MARK)
+        .unwrap_or_else(|| panic!("MATE's own sighting is inside the TTL, so the mesh carries it"));
+    assert_eq!(
+        (relayed.x_cm, relayed.y_cm),
+        (own.x_cm, own.y_cm),
+        "a teammate's plot was relayed a second hop"
+    );
+    assert_ne!(
+        (relayed.x_cm, relayed.y_cm),
+        (theirs.x_cm, theirs.y_cm),
+        "RELAY was told a position only EYE ever observed"
     );
 }

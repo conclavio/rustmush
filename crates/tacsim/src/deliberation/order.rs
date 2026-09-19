@@ -153,16 +153,30 @@ impl RangeBand {
         }
     }
 
-    /// The outer edge of this band, in centimetres, for a platform whose longest
-    /// weapon reaches `reach_cm` — the inverse of
+    /// The outer edge of this band, in centimetres, against the authored band
+    /// edges of the weapon a bare `FIRE` would fire
+    /// (`UnitState::fire_bands_cm`) — the inverse of
     /// [`crate::match_::cockpit::range_band`] and pinned to it by a test.
+    ///
+    /// **16b cut F.3** re-based it from thirds of the platform's longest reach,
+    /// with the word `range_band` itself: a commander's `close` and a pilot's
+    /// `close` have to be one distance, so they are read off one list.
+    ///
+    /// Nought for an empty list, which is a platform that carries nothing that
+    /// fires — the same reading [`crate::match_::cockpit::range_band`]'s `beyond`
+    /// is, and it caps nothing a squad could have done anyway. A weapon with a
+    /// reach and no authored bands is **not** that case; it answers one band at
+    /// its reach ([`crate::arena::state::WeaponSummary::bands_cm`]).
     #[must_use]
-    pub const fn ceiling_cm(&self, reach_cm: u32) -> u64 {
-        let reach = reach_cm as u64;
+    pub fn ceiling_cm(&self, bands_cm: &[u32]) -> u64 {
+        let (Some(first), Some(last)) = (bands_cm.first(), bands_cm.last()) else {
+            return 0;
+        };
+        let (first, last) = (u64::from(*first), u64::from(*last));
         match self {
-            RangeBand::Close => reach / 3,
-            RangeBand::Effective => reach,
-            RangeBand::Far => reach.saturating_mul(2),
+            RangeBand::Close => first / 3,
+            RangeBand::Effective => first,
+            RangeBand::Far => last,
         }
     }
 }
@@ -366,12 +380,13 @@ mod tests {
     #[test]
     fn the_bands_agree_with_the_cockpits_own_words() {
         // `RangeBand::ceiling_cm` is the inverse of `cockpit::range_band`, and this
-        // is what keeps the two from drifting apart.
-        let reach = 9_000_u32;
+        // is what keeps the two from drifting apart. 16b cut F.3: both are read
+        // against the same authored band edges.
+        let bands = [9_000_u32, 18_000];
         for band in [RangeBand::Close, RangeBand::Effective, RangeBand::Far] {
-            let at = band.ceiling_cm(reach);
+            let at = band.ceiling_cm(&bands);
             assert_eq!(
-                crate::match_::cockpit::range_band(at, reach),
+                crate::match_::cockpit::range_band(at, &bands),
                 band.as_str(),
                 "the ceiling of {} must still read as {}",
                 band.as_str(),

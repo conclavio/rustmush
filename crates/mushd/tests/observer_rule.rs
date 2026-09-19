@@ -71,7 +71,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-use support::{STEP_TIMEOUT, Term, play_client, scratch_dir, strip_ansi};
+use support::{STEP_TIMEOUT, Term, names_side, play_client, scratch_dir, strip_ansi};
 
 type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -832,7 +832,70 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     assert!(held.contains("bearing"), "{held}");
     assert!(
         held.contains("close") || held.contains("effective") || held.contains("far"),
-        "a range band and not a range:\n{held}"
+        "a range band read against the fired weapon's own bands:\n{held}"
+    );
+    // **16b cut F.3**: and a range beside the band, deliberately coarse. Doc 16
+    // §3.6 gives `CONTACTS` a band and no range, and read strictly that left a
+    // pilot with no distance information at all; the rounding to fifty metres is
+    // what a passive sight is allowed to say, and it is the one thing on this
+    // surface a pilot can act on.
+    let row = held
+        .lines()
+        .find(|line| line.contains("bearing") && line.contains(" m "))
+        .unwrap_or_else(|| panic!("a contact row with a range on it:\n{held}"));
+    /// The number before a unit word on the row, if there is exactly one.
+    fn column(row: &str, unit: &str) -> Option<u64> {
+        let words: Vec<&str> = row.split_whitespace().collect();
+        let found: Vec<u64> = words
+            .windows(2)
+            .filter(|pair| pair.get(1).copied() == Some(unit))
+            .filter_map(|pair| pair.first().and_then(|word| word.parse::<u64>().ok()))
+            .collect();
+        match found.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        }
+    }
+    let range_m = column(row, "m").unwrap_or_else(|| panic!("one range, in metres: {row}"));
+    assert_eq!(
+        range_m % 50,
+        0,
+        "the range is finer than a passive sight may say: {row}"
+    );
+    // The age column is the plot's staleness, so it can never exceed the
+    // time-to-live the contact is held for (`pass_ms × lost_after_passes`, three
+    // seconds on the shipped sensor). A row that showed where the target *is*
+    // rather than where it was last seen would have no honest number to put here.
+    let age_s = column(row, "s").unwrap_or_else(|| panic!("one age, in seconds: {row}"));
+    assert!(age_s <= 3, "the plot is older than the time to live: {row}");
+    // **The plot can only ever be somewhere this platform could see.** The shipped
+    // sight reaches 600 m and the mesh carries a classified contact one 300 m hop,
+    // so nothing a pilot is shown can be plotted past 900 m — a row that reported
+    // where the target *is* would have no such ceiling, because a held contact
+    // outlives the sighting by the whole time to live and a tank covers ground in
+    // it. This is what the surface can say about *nothing newer than the last
+    // sighting*; the plot standing still across a break in the sighting is proved
+    // deterministically in `tacsim/tests/perception.rs`, which can stop the sensor
+    // pass and this scripted run cannot.
+    assert!(
+        range_m <= 900,
+        "the plot is further than any sight or mesh hop on this map reaches: {row}"
+    );
+    // And the band and the range are two readings of **one** plot, so they agree
+    // against the shipped cannon's own edges (1.5 km and 3 km, the list
+    // `range_band` is read against): `close` is inside a third of the inner band.
+    let band = ["close", "effective", "far", "beyond"]
+        .into_iter()
+        .find(|word| row.contains(word))
+        .unwrap_or_else(|| panic!("one band word: {row}"));
+    let inside_m = match band {
+        "close" => 500,
+        "effective" => 1_500,
+        _ => panic!("nothing on this map can be plotted past the cannon's inner band: {row}"),
+    };
+    assert!(
+        range_m <= inside_m,
+        "the band and the range disagree, so they are not one plot: {row}"
     );
     assert!(
         held.split(|c: char| !c.is_ascii_hexdigit())
@@ -1182,7 +1245,6 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
             format!("#{red}"),
             contact.clone(),
             bos_contact.clone(),
-            "red".to_string(),
             "bearing".to_string(),
             "cannon".to_string(),
             "°".to_string(),
@@ -1192,6 +1254,12 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
                 "a hit notice carried {leak:?} about the shooter: {line}"
             );
         }
+        // 16b cut F.3: the side is forbidden as a **word**, so a future sentence
+        // that happens to spell it (`cleared`) is not a false failure.
+        assert!(
+            !names_side(line, "red"),
+            "a hit notice named the shooter's side: {line}"
+        );
     }
     for leak in [
         RED_TANK.to_string(),

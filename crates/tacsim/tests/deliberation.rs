@@ -46,8 +46,8 @@ use tacsim::arena::reflex::ReflexState;
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, Classification, Controller, CustodyOut,
-    CustodyUnit, EntryZone, Pilot, ShadowContact, Team, TerrainCell, TrackedRules, Waypoint,
-    Waypoints, WeaponSummary,
+    CustodyUnit, EntryZone, Pilot, SeenPose, ShadowContact, Team, TerrainCell, TrackedRules,
+    Waypoint, Waypoints, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
 use tacsim::arena::weapons::WeaponBand;
@@ -368,17 +368,26 @@ fn goal_of(arena: &Arena, unit: ObjId) -> Option<(u16, u16)> {
     arena.reflex.unit(unit).and_then(|row| row.goal)
 }
 
+/// **Where `target` actually stands, as a contact's plot** (16b cut F.3).
+///
+/// These fixtures plant a contact by hand, and the plot they plant is the
+/// target's true pose — so every range and bearing they assert is the one they
+/// asserted before the contact store learned the difference.
+fn plot_of(arena: &Arena, target: ObjId) -> SeenPose {
+    arena.unit(target).map(SeenPose::of).unwrap_or_default()
+}
+
 fn plant_contact(arena: &mut Arena, viewer: ObjId, target: ObjId, team: Team, at_ms: i64) {
     let id = draw_contact_id(SEED, viewer, target);
     arena.contacts.insert(
         viewer,
         id,
-        ShadowContact {
+        ShadowContact::sighted(
             target,
-            class: Classification::Classified { team },
-            first_seen_ms: at_ms,
-            last_seen_ms: at_ms,
-        },
+            Classification::Classified { team },
+            at_ms,
+            plot_of(arena, target),
+        ),
     );
 }
 

@@ -85,8 +85,10 @@ use crate::arena::intents::{Intent, IntentKind, IntentOutcome, apply_intent, res
 use crate::arena::ledger::EventKind;
 use crate::arena::path::{PathScratch, path};
 use crate::arena::perception::bearing_of;
-use crate::arena::resolution::facet_band;
-use crate::arena::state::{Arena, Classification, ContactId, Controller, DueKind, Power};
+use crate::arena::resolution::facet_band_seen;
+use crate::arena::state::{
+    Arena, Classification, ContactId, Controller, DueKind, Power, SeenPose, UnitState,
+};
 use crate::config::ReflexConfig;
 use crate::deliberation::order::{Objective, Order, StandingOrder};
 
@@ -602,6 +604,12 @@ impl Arena {
     /// classified contact and never a pass over pairs of units. A platform with no
     /// weapon has no reach and answers `false` for every contact it holds, which is
     /// the honest reading of *within weapons range*.
+    ///
+    /// **16b cut F.3**: the range is to the contact's **plot** — where the
+    /// platform last saw the target — for the same reason
+    /// [`Arena::contact_within_alert_range`]'s is. How often a pilot is sent a
+    /// frame is something a pilot can count, so a tempo read off a position
+    /// nobody holds would be a leak of hidden truth.
     #[must_use]
     pub fn hostile_in_weapons_range(&self) -> bool {
         self.units.iter().any(|viewer| {
@@ -609,11 +617,10 @@ impl Arena {
             reach != 0
                 && self.contacts.of(viewer.id).any(|(_, held)| {
                     held.class.team().is_some_and(|team| team != viewer.team)
-                        && self.unit(held.target).is_some_and(|target| {
-                            !target.limits.wreck
-                                && crate::arena::index::range_cm(&viewer.pose, &target.pose)
-                                    <= reach
-                        })
+                        && self
+                            .unit(held.target)
+                            .is_some_and(|target| !target.limits.wreck)
+                        && held.seen_at.range_from(&viewer.pose) <= reach
                 })
         })
     }
@@ -873,56 +880,57 @@ impl Arena {
                     _ => self.patrol_goal(id, &mut row, here),
                 }
             }
+            // **16b cut F.3**: every range, goal and heading below is read off the
+            // unit's **own contact** — the plot, where its sensors or its mesh
+            // last saw the target — and never off the target's live pose. A
+            // reflex unit drives to where it last saw something, which is what a
+            // crew does; before this cut it closed on a tank it could not see,
+            // through a wall, with perfect knowledge, for the whole time to live.
+            //
+            // `reflex_has_line` is deliberately **not** on the plot: it is the
+            // same trace the round will take, so asking it about the live target
+            // is asking "would this shot arrive", which is physics and not
+            // knowledge.
             ReflexState::Approach => {
                 if let Some((contact, target)) = row.target {
                     let reach = u64::from(unit.weapon_reach_cm());
-                    let range = self
-                        .unit(target)
-                        .map(|to| crate::arena::index::range_cm(&unit.pose, &to.pose))
-                        .unwrap_or(u64::MAX);
-                    let hold = band_hold_cm(
-                        unit.weapon_reach_cm(),
-                        memory.cfg.engage_band_permille,
-                        order.as_ref(),
-                    );
+                    let plot = self.plot_of(id, contact);
+                    let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
+                    let hold = band_hold_cm(unit, memory.cfg.engage_band_permille, order.as_ref());
                     if reach != 0
-                        && range <= order_reach_cm(unit.weapon_reach_cm(), order.as_ref()).max(1)
+                        && range <= order_reach_cm(unit, order.as_ref()).max(1)
                         && self.reflex_has_line(id, target, counters)
                     {
                         row.state = ReflexState::Engage;
                         row.goal = None;
                         row.route.clear();
-                        self.engage_orders(id, contact, target, order.as_ref(), &mut plan);
+                        self.engage_orders(id, contact, order.as_ref(), &mut plan);
                     } else {
-                        row.goal = self.stand_off_cell(id, target, hold).or(here);
+                        row.goal = plot
+                            .and_then(|plot| self.stand_off_cell(id, &plot, hold))
+                            .or(here);
                     }
                 }
             }
             ReflexState::Engage => {
-                if let Some((contact, target)) = row.target {
+                if let Some((contact, _)) = row.target {
                     let reach = u64::from(unit.weapon_reach_cm());
-                    let range = self
-                        .unit(target)
-                        .map(|to| crate::arena::index::range_cm(&unit.pose, &to.pose))
-                        .unwrap_or(u64::MAX);
-                    if reach == 0 || range > order_reach_cm(unit.weapon_reach_cm(), order.as_ref())
-                    {
+                    let plot = self.plot_of(id, contact);
+                    let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
+                    if reach == 0 || range > order_reach_cm(unit, order.as_ref()) {
                         row.state = ReflexState::Approach;
-                        let hold = band_hold_cm(
-                            unit.weapon_reach_cm(),
-                            memory.cfg.engage_band_permille,
-                            order.as_ref(),
-                        );
-                        row.goal = self.stand_off_cell(id, target, hold).or(here);
+                        let hold =
+                            band_hold_cm(unit, memory.cfg.engage_band_permille, order.as_ref());
+                        row.goal = plot
+                            .and_then(|plot| self.stand_off_cell(id, &plot, hold))
+                            .or(here);
                     } else {
-                        // Holding the band: stop, turn onto the target, shoot.
+                        // Holding the band: stop, turn onto the plot, shoot.
                         row.goal = here;
                         row.route.clear();
                         plan.speed_cms = Some(0);
-                        plan.heading_mdeg = self.unit(target).map(|to| {
-                            bearing_of(to.pose.x_cm - unit.pose.x_cm, to.pose.y_cm - unit.pose.y_cm)
-                        });
-                        self.engage_orders(id, contact, target, order.as_ref(), &mut plan);
+                        plan.heading_mdeg = plot.map(|plot| plot.bearing_from(&unit.pose));
+                        self.engage_orders(id, contact, order.as_ref(), &mut plan);
                     }
                 }
             }
@@ -1012,7 +1020,6 @@ impl Arena {
         &self,
         id: ObjId,
         contact: ContactId,
-        target: ObjId,
         order: Option<&Order>,
         plan: &mut ReflexPlan,
     ) {
@@ -1031,11 +1038,11 @@ impl Arena {
         if order.is_some_and(|order| order.constraints.hold_fire) {
             return;
         }
+        // 16b cut F.3: the plot's range, which is the range the gunner has.
         let range = self
-            .unit(target)
-            .map(|to| crate::arena::index::range_cm(&unit.pose, &to.pose))
-            .unwrap_or(u64::MAX);
-        let ceiling = order_reach_cm(unit.weapon_reach_cm(), order);
+            .plot_of(id, contact)
+            .map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
+        let ceiling = order_reach_cm(unit, order);
         if range > ceiling {
             return;
         }
@@ -1087,7 +1094,8 @@ impl Arena {
     /// * **range** — the range as a fraction of this unit's own reach, so a
     ///   platform with a long gun is not drawn off by something far away that it
     ///   could still hit;
-    /// * **facet** — the band the candidate presents toward us ([`facet_band`]),
+    /// * **facet** — the band the candidate presents toward us
+    ///   ([`facet_band_seen`], off the contact's own plot),
     ///   which is the difference between a tank showing its rear and one showing
     ///   its front;
     /// * **health** — this unit's own, which is the same addend for every
@@ -1132,11 +1140,15 @@ impl Arena {
             if target.limits.wreck {
                 continue;
             }
-            let range = crate::arena::index::range_cm(&unit.pose, &target.pose);
+            // **16b cut F.3**: scored off the plot — the range to where this
+            // platform last saw the candidate, and the face it was showing then.
+            // A utility function that read the live pose would rank a target
+            // nobody can see by where it actually is.
+            let range = held.seen_at.range_from(&unit.pose);
             let range_permille = u32::try_from(range.saturating_mul(1_000) / reach)
                 .unwrap_or(u32::MAX)
                 .min(1_000);
-            let exposure = match facet_band(target, unit) {
+            let exposure = match facet_band_seen(&held.seen_at, unit) {
                 "rear" => EXPOSURE_REAR,
                 "front" => EXPOSURE_FRONT,
                 _ => EXPOSURE_FLANK,
@@ -1162,31 +1174,43 @@ impl Arena {
         best.map(|(_, target, contact)| (contact, target))
     }
 
-    /// The cell to stand in to hold `hold_cm` of range on `target` — the goal
+    /// **Where this unit's own contact says its target is** (16b cut F.3), or
+    /// `None` when it no longer holds it.
+    ///
+    /// The one place the controller turns a contact into a position, so every
+    /// state below reads the plot and none of them can reach past it to the unit.
+    fn plot_of(&self, id: ObjId, contact: ContactId) -> Option<SeenPose> {
+        self.contacts.resolve(id, contact).map(|held| held.seen_at)
+    }
+
+    /// The cell to stand in to hold `hold_cm` of range on `at` — the goal
     /// `Approach` drives to.
     ///
-    /// The point on the line from the target toward *here*, at the holding range.
-    /// A cell off the window or impassable falls back to the target's own cell,
+    /// The point on the line from the plot toward *here*, at the holding range.
+    /// A cell off the window or impassable falls back to the plot's own cell,
     /// and the path search's `unreachable` edge is what catches that.
-    fn stand_off_cell(&self, id: ObjId, target: ObjId, hold_cm: u64) -> Option<(u16, u16)> {
+    ///
+    /// **16b cut F.3** made `at` the contact's plot rather than the target's
+    /// object: an approach is toward the last known position, and a unit that
+    /// arrives there and finds nothing is a unit that has lost its contact.
+    fn stand_off_cell(&self, id: ObjId, at: &SeenPose, hold_cm: u64) -> Option<(u16, u16)> {
         let from = self.unit(id)?;
-        let to = self.unit(target)?;
-        let range = crate::arena::index::range_cm(&from.pose, &to.pose);
+        let range = at.range_from(&from.pose);
         let want = i64::try_from(hold_cm.max(1)).unwrap_or(i64::MAX);
         if range == 0 {
             return self.definition.terrain.cell_of(&from.pose);
         }
         let range = i64::try_from(range).unwrap_or(i64::MAX).max(1);
-        let dx = from.pose.x_cm.saturating_sub(to.pose.x_cm);
-        let dy = from.pose.y_cm.saturating_sub(to.pose.y_cm);
-        let x = to.pose.x_cm.saturating_add(dx.saturating_mul(want) / range);
-        let y = to.pose.y_cm.saturating_add(dy.saturating_mul(want) / range);
+        let dx = from.pose.x_cm.saturating_sub(at.x_cm);
+        let dy = from.pose.y_cm.saturating_sub(at.y_cm);
+        let x = at.x_cm.saturating_add(dx.saturating_mul(want) / range);
+        let y = at.y_cm.saturating_add(dy.saturating_mul(want) / range);
         let cell = i64::from(self.definition.terrain.cell_cm().max(1));
         let (Ok(cx), Ok(cy)) = (
             u16::try_from(x.div_euclid(cell)),
             u16::try_from(y.div_euclid(cell)),
         ) else {
-            return self.definition.terrain.cell_of(&to.pose);
+            return at.cell(&self.definition.terrain);
         };
         if self
             .definition
@@ -1196,7 +1220,7 @@ impl Arena {
         {
             Some((cx, cy))
         } else {
-            self.definition.terrain.cell_of(&to.pose)
+            at.cell(&self.definition.terrain)
         }
     }
 
@@ -1490,19 +1514,24 @@ impl Arena {
 /// changes. A band caps it at that band's ceiling, so `close` is a squad told to
 /// let the enemy come to it and `far` caps nothing, which is a commander saying
 /// "no restriction" without a fourth word.
-fn order_reach_cm(reach_cm: u32, order: Option<&Order>) -> u64 {
-    let reach = u64::from(reach_cm);
+fn order_reach_cm(unit: &UnitState, order: Option<&Order>) -> u64 {
+    let reach = u64::from(unit.weapon_reach_cm());
     match order.and_then(|order| order.constraints.max_range_band) {
-        Some(band) => reach.min(band.ceiling_cm(reach_cm)),
+        // 16b cut F.3: the band's ceiling is read against the authored bands of
+        // the weapon a bare `FIRE` fires, which is the same list the pilot's own
+        // band word is read against. The list is only built on this arm, so an
+        // unconstrained squad allocates nothing.
+        Some(band) => reach.min(band.ceiling_cm(&unit.fire_bands_cm())),
         None => reach,
     }
 }
 
 /// **The range `Approach` holds**, centimetres (16b cut N.2): doctrine's own
 /// `engage_band_permille` of the reach, capped by the order's band.
-fn band_hold_cm(reach_cm: u32, engage_band_permille: u32, order: Option<&Order>) -> u64 {
-    let doctrine = u64::from(reach_cm).saturating_mul(u64::from(engage_band_permille)) / 1_000;
-    doctrine.min(order_reach_cm(reach_cm, order))
+fn band_hold_cm(unit: &UnitState, engage_band_permille: u32, order: Option<&Order>) -> u64 {
+    let doctrine =
+        u64::from(unit.weapon_reach_cm()).saturating_mul(u64::from(engage_band_permille)) / 1_000;
+    doctrine.min(order_reach_cm(unit, order))
 }
 
 /// The per-unit rows, for [`crate::arena::hash::state_hash`] — the one reader

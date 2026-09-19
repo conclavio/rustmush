@@ -163,12 +163,19 @@ impl ArenaTerrain {
     /// is column 1, and `x_cm = 999` is column 0.
     #[must_use]
     pub fn cell_of(&self, pose: &Pose) -> Option<(u16, u16)> {
-        if pose.x_cm < 0 || pose.y_cm < 0 {
+        self.cell_at(pose.x_cm, pose.y_cm)
+    }
+
+    /// The same, from two coordinates rather than from a pose (16b cut F.3) —
+    /// what a [`SeenPose`] has and a [`Pose`] is not needed for.
+    #[must_use]
+    pub fn cell_at(&self, x_cm: i64, y_cm: i64) -> Option<(u16, u16)> {
+        if x_cm < 0 || y_cm < 0 {
             return None;
         }
         let cell = i64::from(self.cell_cm);
-        let x = u16::try_from(pose.x_cm / cell).ok()?;
-        let y = u16::try_from(pose.y_cm / cell).ok()?;
+        let x = u16::try_from(x_cm / cell).ok()?;
+        let y = u16::try_from(y_cm / cell).ok()?;
         if x >= self.width || y >= self.height {
             return None;
         }
@@ -1120,8 +1127,82 @@ impl Classification {
     }
 }
 
+/// **Where a target was, and how it was moving, at the sighting that a contact
+/// records** (16b cut F.3; doc 16 §3.6 read as the owner's principle that
+/// knowledge is earned and goes stale).
+///
+/// Five integers and not a [`Pose`]: a pose carries the driver's opaque posture
+/// blob, and what a plot needs is the three coordinates the one range function
+/// takes, the heading the facet band reads, and the speed the error cone's
+/// crossing term reads. All five are things a platform learns by *looking*, which
+/// is why the plot carries them rather than any reader asking the target. Copying
+/// five integers per refresh is the whole cost of the contact store knowing
+/// *where it saw something* rather than where that something now is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeenPose {
+    /// East, region centimetres.
+    pub x_cm: i64,
+    /// North, region centimetres.
+    pub y_cm: i64,
+    /// Height against the region datum, centimetres.
+    pub z_cm: i32,
+    /// Which way the target was facing, millidegrees clockwise from north.
+    pub heading_mdeg: u32,
+    /// How fast it was making along that heading, centimetres a second, negative
+    /// in reverse — the input to the advertised error cone's crossing term
+    /// (`crate::arena::resolution::Arena::resolve_seen`).
+    pub speed_cms: i32,
+}
+
+impl SeenPose {
+    /// The plot a unit makes, at this instant.
+    #[must_use]
+    pub const fn of(unit: &UnitState) -> SeenPose {
+        SeenPose {
+            x_cm: unit.pose.x_cm,
+            y_cm: unit.pose.y_cm,
+            z_cm: unit.pose.z_cm,
+            heading_mdeg: unit.pose.heading_mdeg,
+            speed_cms: unit.speed_cms,
+        }
+    }
+
+    /// The range from `pose` to this plot, centimetres — the same arithmetic
+    /// [`crate::arena::index::range_cm`] does over two poses, so a plot's range
+    /// and a true range are one function.
+    #[must_use]
+    pub fn range_from(&self, pose: &Pose) -> u64 {
+        crate::arena::index::range_between(
+            pose.x_cm, pose.y_cm, pose.z_cm, self.x_cm, self.y_cm, self.z_cm,
+        )
+    }
+
+    /// The bearing from `pose` to this plot, millidegrees clockwise from north.
+    #[must_use]
+    pub fn bearing_from(&self, pose: &Pose) -> u32 {
+        crate::arena::perception::bearing_of(
+            self.x_cm.saturating_sub(pose.x_cm),
+            self.y_cm.saturating_sub(pose.y_cm),
+        )
+    }
+
+    /// The window cell this plot is in, or `None` for a plot off the window.
+    #[must_use]
+    pub fn cell(&self, terrain: &ArenaTerrain) -> Option<(u16, u16)> {
+        terrain.cell_at(self.x_cm, self.y_cm)
+    }
+}
+
 /// One contact a viewer platform holds (doc 16 §3.6's contact lifecycle as
 /// vocabulary, in RAM).
+///
+/// **16b cut F.3 gave it its provenance and its plot.** Cut S.1 stored when the
+/// contact was last refreshed and nothing about *who* refreshed it or *where the
+/// target was*, and the two omissions cost the same thing: a contact that never
+/// expired (two meshed teammates refreshing each other's copy for ever) and a
+/// contact reported at the target's live pose (a tank tracked through a wall for
+/// the whole time-to-live). Both are answered here, in the store, rather than at
+/// every reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowContact {
     /// What is being held.
@@ -1130,8 +1211,84 @@ pub struct ShadowContact {
     pub class: Classification,
     /// Arena milliseconds at first detection.
     pub first_seen_ms: i64,
-    /// Arena milliseconds at the last refresh — the input to expiry.
+    /// Arena milliseconds at the last refresh — the input to expiry. Either this
+    /// platform's own sensors or a teammate's share set it, and a share never
+    /// raises it above the sharer's own sighting (16b cut F.3).
     pub last_seen_ms: i64,
+    /// **Where the target was at the sighting that set [`ShadowContact::last_seen_ms`]**
+    /// (16b cut F.3) — this platform's own, or the sharer's own as the share
+    /// carried it.
+    ///
+    /// Every reader of a contact's position reads this and never the target's
+    /// live pose: it is a plot, not a tether. While a target is in continuous view
+    /// the plot is at most one `sensors.pass_ms` old.
+    pub seen_at: SeenPose,
+    /// **This platform's OWN last sighting** (16b cut F.3): when its own sensors
+    /// saw the target and where the target was — or `None` for a copy that only
+    /// ever arrived over the mesh.
+    ///
+    /// It is what a share is allowed to be built from (doc 16 §2 W6: shared
+    /// contacts fan out only within comms range *of the platform that sees*), so a
+    /// mesh copy is never relayed onward and two teammates cannot keep one
+    /// another's copy alive after the last real sighting.
+    ///
+    /// **The stamp and the plot are one field** rather than two beside
+    /// [`ShadowContact::seen_at`], because a share hands over both and they have
+    /// to be the same sighting. Held apart, a platform whose own sighting is older
+    /// than a teammate's share would relay its own *time* against the teammate's
+    /// *place* — a second hop for the position, which is exactly what rule 1
+    /// exists to stop.
+    pub own_seen: Option<OwnSighting>,
+}
+
+/// **One platform's own sighting of a target** (16b cut F.3): the moment, and
+/// where the target was at it. See [`ShadowContact::own_seen`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnSighting {
+    /// Arena milliseconds at the sighting.
+    pub at_ms: i64,
+    /// Where the target stood, as this platform's own sensors took it.
+    pub plot: SeenPose,
+}
+
+impl ShadowContact {
+    /// **A contact this platform's own sensors have just taken** at `t_ms`, with
+    /// the target where it stood at that sighting (16b cut F.3).
+    #[must_use]
+    pub const fn sighted(
+        target: ObjId,
+        class: Classification,
+        t_ms: i64,
+        seen_at: SeenPose,
+    ) -> ShadowContact {
+        ShadowContact {
+            target,
+            class,
+            first_seen_ms: t_ms,
+            last_seen_ms: t_ms,
+            seen_at,
+            own_seen: Some(OwnSighting {
+                at_ms: t_ms,
+                plot: seen_at,
+            }),
+        }
+    }
+
+    /// **What this platform may put on the mesh**, or `None` when it has nothing
+    /// to say about this contact (16b cut F.3).
+    ///
+    /// Both of the cut's share rules, in the one place they are written, so
+    /// [`Arena::sensor_pass`]'s *is there anything to say* and
+    /// [`Arena::share_pass`]'s *what is there to say* cannot answer differently:
+    /// the contact is **classified** (an `unknown` smudge means nothing to
+    /// anybody else), and this platform's **own** sensors saw it inside the time
+    /// to live.
+    #[must_use]
+    pub fn shareable(&self, cutoff_ms: i64) -> Option<(Team, OwnSighting)> {
+        let team = self.class.team()?;
+        let own = self.own_seen.filter(|own| own.at_ms >= cutoff_ms)?;
+        Some((team, own))
+    }
 }
 
 /// **The one byte-identical refusal for a contact id a platform does not hold**
@@ -2413,9 +2570,12 @@ mod tests {
             assert!(state.ready_at_ms.is_empty());
             assert!(state.lock.is_none());
         }
-        // One scheduled event: the first position summary at `ledger.summary_ms`.
-        assert_eq!(arena.due.len(), 1);
-        assert_eq!(arena.due.next_t_ms(), Some(5_000));
+        // Three scheduled events: the first position summary at
+        // `ledger.summary_ms`, and — **16b cut F.3** — one sensor pass per unit,
+        // staggered at `id % pass_ms`. The pass is where a platform's contacts
+        // expire, so every platform has one whether or not it carries a sight.
+        assert_eq!(arena.due.len(), 3);
+        assert_eq!(arena.due.next_t_ms(), Some(4), "unit #4's own stagger");
         // And one ledger event: `match_started`, sequence 1.
         assert_eq!(arena.ledger.seq(), 1);
         assert!(arena.ledger.bytes_total() > 0);
@@ -2735,6 +2895,17 @@ mod tests {
         assert!(Waypoints::default().is_empty());
     }
 
+    /// A plot at `(x_cm, y_cm)`, facing north and standing still (16b cut F.3).
+    fn plot(x_cm: i64, y_cm: i64) -> SeenPose {
+        SeenPose {
+            x_cm,
+            y_cm,
+            z_cm: 0,
+            heading_mdeg: 0,
+            speed_cms: 0,
+        }
+    }
+
     #[test]
     fn the_shadow_contact_store_holds_refreshes_and_expires() {
         let viewer = ObjId(4);
@@ -2745,21 +2916,19 @@ mod tests {
         contacts.insert(
             viewer,
             first,
-            ShadowContact {
-                target: ObjId(9),
-                class: Classification::Unknown,
-                first_seen_ms: 1_000,
-                last_seen_ms: 1_000,
-            },
+            ShadowContact::sighted(ObjId(9), Classification::Unknown, 1_000, plot(0, 0)),
         );
         contacts.insert(
             viewer,
             second,
             ShadowContact {
-                target: ObjId(10),
-                class: Classification::Classified { team: Team::Blue },
-                first_seen_ms: 1_000,
                 last_seen_ms: 4_000,
+                ..ShadowContact::sighted(
+                    ObjId(10),
+                    Classification::Classified { team: Team::Blue },
+                    1_000,
+                    plot(0, 0),
+                )
             },
         );
         assert_eq!(contacts.len(), 2);

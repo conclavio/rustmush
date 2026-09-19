@@ -866,10 +866,12 @@ fn startup_then_released_in_one_burst_never_starts() {
     // schedule beside the position summary. A tank handed over **cold** stays cold —
     // `Withdraw` is a fallback for a tank that is running — which is what the rest of
     // this test asserts, unchanged.
+    // 16b cut F.3 adds one sensor pass per unit, which every platform now has
+    // because the pass is where its contacts expire.
     assert_eq!(
         arena.due.len(),
-        2,
-        "the position summary and the released tank's first reflex tick"
+        4,
+        "the position summary, the released tank's first reflex tick, two passes"
     );
 
     // Ten seconds of arena time later — `match.startup_ms` — it is still cold.
@@ -1486,5 +1488,177 @@ fn one_scripted_approach_at_three_cadences_is_one_detect_classify_lose_sequence(
             "the final state differs at {cadence} ms"
         );
         assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (i) rate independence across a break in line of sight (16b cut F.3)
+// ---------------------------------------------------------------------------
+
+/// The canopy's row: heavy woods all the way across, at cost 150 so a tank can
+/// drive through it and at an attenuation the five-cell sight cannot see past
+/// (the atlas charges 60 a cell of heavy woods against `max_attenuation` 40).
+const CANOPY_Y: u16 = 14;
+
+/// The same 64 by 64 window as [`definition`], with the canopy row painted in.
+fn canopy_definition() -> ArenaDefinition {
+    let mut definition = definition();
+    let mut cells: Vec<TerrainCell> = (0..SIDE)
+        .flat_map(|y| (0..SIDE).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let mut cell = definition.terrain.get(x, y).copied().unwrap_or_else(ground);
+            if y == CANOPY_Y {
+                cell.class = mush_atlas::TerrainClass::WoodsHeavy;
+                cell.move_cost = 150;
+            }
+            cell
+        })
+        .collect();
+    // The impassable band stays impassable where the canopy crosses it.
+    if let Some(cell) =
+        cells.get_mut(usize::from(CANOPY_Y) * usize::from(SIDE) + usize::from(BAND_X))
+    {
+        cell.move_cost = 0;
+    }
+    definition.terrain = ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the canopy window");
+    definition
+}
+
+/// An arena over [`canopy_definition`], otherwise [`arena_of`]'s.
+fn canopy_arena_of(units: Vec<CustodyUnit>) -> Arena {
+    let pilots = units
+        .iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit: unit.id,
+            pilot: ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    Arena::new(
+        CustodyOut {
+            definition: canopy_definition(),
+            units,
+            pilots,
+            resolution: tacsim::match_::stock_resolution(),
+            seed: 2_350,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the canopy arena")
+}
+
+/// **The scripted break**: start up, drive north through the canopy until the
+/// parked tank is in sight, back away behind the canopy until the contact is
+/// lost, and drive back through it to re-acquire.
+///
+/// Every beat is at a multiple of 5,000 ms, so it lands at the same arena time at
+/// all three cadences — the same rule [`script`] and [`approach`] follow.
+fn break_and_return() -> Vec<Beat> {
+    vec![
+        Beat {
+            t_ms: 0,
+            controls: Vec::new(),
+            intents: vec![intent(MOVER, IntentKind::Startup, 1)],
+        },
+        Beat {
+            t_ms: 10_000,
+            controls: Vec::new(),
+            intents: vec![
+                intent(MOVER, IntentKind::Heading { mdeg: 0 }, 2),
+                intent(MOVER, IntentKind::Speed { cms: 1_000 }, 3),
+            ],
+        },
+        Beat {
+            t_ms: 35_000,
+            controls: Vec::new(),
+            intents: vec![intent(MOVER, IntentKind::Speed { cms: -400 }, 4)],
+        },
+        Beat {
+            t_ms: 60_000,
+            controls: Vec::new(),
+            intents: vec![intent(MOVER, IntentKind::Speed { cms: 1_000 }, 5)],
+        },
+    ]
+}
+
+#[test]
+fn one_scripted_break_of_sight_at_three_cadences_is_one_lose_and_re_acquire_sequence() {
+    // **16b cut F.3's rate-independence lens.** The contact store now carries a
+    // plot and a provenance, and both are authoritative state folded into the
+    // per-substep hash — so a run in which a target is seen, is lost behind a
+    // canopy and is seen again has to produce one event list *and* one hash
+    // sequence at all three cadences, or the plot is being recorded against the
+    // pulse rather than against the arena timestamp the pass ran at.
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = canopy_arena_of(vec![
+            watcher(MOVER, Team::Red, centre(5, 5)),
+            watcher(PARKED, Team::Blue, centre(5, 17)),
+        ]);
+        let run = replay(&mut arena, cadence, 80_000, &break_and_return(), &quiet);
+        assert_eq!(
+            arena.now_ms, 80_000,
+            "cadence {cadence} ran to a different time"
+        );
+        runs.push((cadence, run));
+    }
+
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+
+    // The run is worth comparing: both platforms acquired, lost and re-acquired.
+    assert!(
+        first.count("detected") >= 4,
+        "the target was never re-acquired: {:?}",
+        first.kinds()
+    );
+    assert!(
+        first.count("lost") >= 2,
+        "the canopy never broke the track: {:?}",
+        first.kinds()
+    );
+    let lifecycle: Vec<&'static str> = first
+        .kinds()
+        .into_iter()
+        .filter_map(|encoded| {
+            ["detected", "lost"]
+                .into_iter()
+                .find(|word| encoded.contains(&format!("\"kind\":\"{word}\"")))
+        })
+        .collect();
+    let first_lost = lifecycle
+        .iter()
+        .position(|word| *word == "lost")
+        .unwrap_or_else(|| panic!("a loss: {lifecycle:?}"));
+    assert!(
+        lifecycle[first_lost..].contains(&"detected"),
+        "nothing was re-acquired after the loss: {lifecycle:?}"
+    );
+
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events,
+            first.events,
+            "the event list differs at {cadence} ms: {:?} against {:?}",
+            run.kinds(),
+            first.kinds()
+        );
+        assert_eq!(
+            run.hashes,
+            first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms ({} against {})",
+            run.hashes.len(),
+            first.hashes.len()
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the final state differs at {cadence} ms"
+        );
     }
 }

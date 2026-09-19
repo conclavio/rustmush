@@ -76,6 +76,17 @@ use crate::arena::state::{Arena, ContactId, DueKind, Power, UnitState, WeaponSum
 // The definition's two derived readings
 // ---------------------------------------------------------------------------
 
+/// **The weapon a bare `FIRE` fires** — the stock tank's cannon (doc 16 §3.7:
+/// *default cannon*); a unit that carries no component by this name falls back to
+/// its first weapon in component order.
+///
+/// **16b cut F.3 moved it here** from `crate::match_::cockpit`, which re-exports
+/// it under its old name. Three things now read against this weapon's authored
+/// bands and had to be one rule: the cockpit's `FIRE` with no argument, the band
+/// word a contact row prints, and the ceiling an order's `max_range_band` caps
+/// the reflex controller at.
+pub const DEFAULT_WEAPON: &str = "cannon";
+
 /// **One range band**, as the arena carries it (16b cut W.1; doc 16 §3.5 "Weapon
 /// definition": *range bands with `max_range_cm` and a per-band
 /// `dispersion_mrad`*).
@@ -102,6 +113,25 @@ impl WeaponSummary {
     #[must_use]
     pub const fn is_beam(&self) -> bool {
         self.muzzle_speed_cms == 0
+    }
+
+    /// **This weapon's band edges, outward**, centimetres (16b cut F.3) — what
+    /// `crate::match_::cockpit::range_band` and
+    /// `crate::deliberation::order::RangeBand::ceiling_cm` read a word against.
+    ///
+    /// A weapon that authored no bands answers **one** band at its own
+    /// [`WeaponSummary::max_range_cm`], which that field's own doc says is a shape
+    /// content may field. Answering an empty list would make the word `beyond` at
+    /// every range including point blank, and an ordered squad's engage ceiling
+    /// nought — the band useless in the opposite direction from the defect this
+    /// cut fixed. The empty list is reserved for a platform that carries nothing
+    /// that fires, where `beyond` is the honest word.
+    #[must_use]
+    pub fn bands_cm(&self) -> Vec<u32> {
+        if self.bands.is_empty() {
+            return vec![self.max_range_cm];
+        }
+        self.bands.iter().map(|band| band.max_range_cm).collect()
     }
 
     /// **The band a range falls in**, as a one-based index and the band itself
@@ -184,9 +214,8 @@ impl UnitState {
     }
 
     /// **The longest reach anything the unit carries has**, centimetres — the
-    /// number `crate::arena::step::Frame::weapon_reach_cm` carries and
-    /// `tempo.alert_range_cm` is derived from (16b §9). Zero for a unit that carries
-    /// no weapon, and then nothing is in range of it.
+    /// number `tempo.alert_range_cm` is derived from (16b §9). Zero for a unit
+    /// that carries no weapon, and then nothing is in range of it.
     #[must_use]
     pub fn weapon_reach_cm(&self) -> u32 {
         self.weapons
@@ -194,6 +223,29 @@ impl UnitState {
             .map(|weapon| weapon.max_range_cm)
             .max()
             .unwrap_or(0)
+    }
+
+    /// **The weapon a bare `FIRE` would fire** (16b cut F.3): [`DEFAULT_WEAPON`],
+    /// else the first in component order — the one rule, so the cockpit's choice,
+    /// the contact band's edges and an order's range cap cannot be three weapons.
+    #[must_use]
+    pub fn default_weapon(&self) -> Option<&WeaponSummary> {
+        self.weapons
+            .iter()
+            .find(|weapon| weapon.id.as_str() == DEFAULT_WEAPON)
+            .or_else(|| self.weapons.first())
+    }
+
+    /// **That weapon's authored band edges, outward**, centimetres (16b cut F.3)
+    /// — what `crate::match_::cockpit::range_band` and
+    /// `crate::deliberation::order::RangeBand::ceiling_cm` are both read against.
+    ///
+    /// Empty **only** for a platform that carries nothing that fires — see
+    /// [`WeaponSummary::bands_cm`] for the bandless weapon.
+    #[must_use]
+    pub fn fire_bands_cm(&self) -> Vec<u32> {
+        self.default_weapon()
+            .map_or_else(Vec::new, WeaponSummary::bands_cm)
     }
 }
 
@@ -209,13 +261,23 @@ impl UnitState {
 /// within one cell of the prediction, the line is clear*, and "the prediction" is
 /// [`Shot::aim_x_cm`] and [`Shot::aim_y_cm`] below.
 ///
-/// The predicted point is the **target's pose at acceptance**, which is doc 16
-/// §3.6's *the contact's position is what the platform knows*: the shadow contact
-/// store keeps no position of its own (it is a lifecycle, not a track), and a held
-/// contact was refreshed within `sensors.pass_ms` or it would have expired — so the
-/// target's pose at acceptance *is* the platform's knowledge of where it is, and a
-/// target that moves between the shot and the impact is exactly the case doc 16
-/// §3.5 makes a miss.
+/// The predicted point is the **target's pose at acceptance**, and that is
+/// physics rather than knowledge: a round is thrown at a tank and not at a plot,
+/// so it leaves the barrel on the line the tank is really on, and a target that
+/// moves between the shot and the impact is exactly the case doc 16 §3.5 makes a
+/// miss.
+///
+/// **It is deliberately not what the cockpit showed the pilot** (16b cut F.3).
+/// The contact store does hold a position of its own — `ShadowContact::seen_at`,
+/// the plot recorded at the sighting that last refreshed the contact — and every
+/// number a pilot reads off a contact is computed from it, including the chance
+/// `LOCK` and `WEAPONSTATUS` quote
+/// (`crate::arena::resolution::Arena::resolve_seen`). For a target that has moved
+/// since that sighting the two differ, which is what a stale track costs; while
+/// the target is in continuous view the plot is at most one `sensors.pass_ms` old
+/// and they agree. Cut S.1's justification for reading the target here — *a held
+/// contact was refreshed within `sensors.pass_ms` or it would have expired* — was
+/// false by a factor of `sensors.lost_after_passes`, and is not the reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shot {
     /// The shot's sequence within the match, from `1`, and the argument of its
@@ -312,6 +374,21 @@ pub struct FrameWeapon {
     /// [`crate::arena::resolution::LockAim`] already took — so what a pilot is
     /// shown is what a shot taken now would be drawn against.
     pub p_permille: Option<u32>,
+    /// **The weapon's authored band edges, outward** (16b cut F.3), centimetres —
+    /// the same list [`WeaponSummary::band_of`] walks.
+    ///
+    /// It is on the row because doc 16 §3.6's *range band* for a contact has to be
+    /// read against something a pilot can act on, and cut S.2 read it against the
+    /// longest reach the platform carried: thirds of the cannon's 3 km against a
+    /// sight that sees 600 m, so every contact that has ever existed printed
+    /// `close`. `crate::match_::cockpit::range_band` now reads the bands of the
+    /// weapon a bare `FIRE` would fire, which is the weapon the word is advice
+    /// about.
+    ///
+    /// Two `u32`s per weapon per pulse for a stock tank, and — for a weapon that
+    /// declares no band at all — one, at its own reach
+    /// ([`WeaponSummary::bands_cm`]).
+    pub bands_cm: Vec<u32>,
 }
 
 impl FrameWeapon {
@@ -478,8 +555,9 @@ impl Arena {
         if state.power != Power::Online {
             return Err(Refusal::PowerNotOnline);
         }
-        // Accepted. The predicted point and the range are the target's pose *now*,
-        // which is what the platform knows of it (doc 16 §3.6).
+        // Accepted. The predicted point and the range are the target's pose *now*
+        // — where the round is thrown, which is physics and not what the platform
+        // knows (16b cut F.3; the argument is on `Shot`).
         let Some(aim) = self.unit(target).map(|state| state.pose.clone()) else {
             // A contact held on a unit that has left the match: the platform's
             // knowledge is of something that is not there, and there is nothing to
@@ -572,6 +650,10 @@ impl Arena {
     /// per-weapon chance needs the target and the cover as well — and resolving
     /// the one trace per platform rather than per weapon is what keeps the cost
     /// where cut W.2's single platform-wide number left it.
+    ///
+    /// **16b cut F.3** made every target-side input of the chance come off the
+    /// aim's **plot** ([`Arena::resolve_seen`]), so a row is advice about what the
+    /// platform knows and cannot move with a target it has not sighted.
     #[must_use]
     pub fn frame_weapons(
         &self,
@@ -609,10 +691,18 @@ impl Arena {
                             dispersion_mrad: band.dispersion_mrad,
                         })
                     }),
-                    p_permille: aim.map(|aim| {
-                        self.resolve_shot(platform, aim.target, &weapon.id, aim.range_cm, aim.cover)
-                            .p_permille
-                    }),
+                    // **16b cut F.3**: `resolve_seen` and not `resolve_shot` —
+                    // what a pilot is shown is advice, and every target-side
+                    // input of it comes off the contact's plot. Read live, the
+                    // face and the crossing speed of a tank that has not been
+                    // sighted since it drove behind a building would still move
+                    // this number every pulse, and `FrameWeapon::same_as`
+                    // compares it, so the pilot would be pushed a frame each time
+                    // the hidden tank turned.
+                    p_permille: aim
+                        .map(|aim| self.resolve_seen(platform, aim, &weapon.id).p_permille),
+                    // 16b cut F.3: the edges, for the contact band.
+                    bands_cm: weapon.bands_cm(),
                 }
             })
             .collect()
@@ -622,7 +712,7 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::state::{Classification, ShadowContact, Team};
+    use crate::arena::state::{Classification, SeenPose, ShadowContact, Team};
     use crate::arena::test_support::{arena_of, cannon, pose, scout, tank};
 
     const RED: ObjId = ObjId(4);
@@ -643,12 +733,14 @@ mod tests {
         arena.contacts.insert(
             viewer,
             id,
-            ShadowContact {
+            ShadowContact::sighted(
                 target,
-                class: Classification::Classified { team: Team::Blue },
-                first_seen_ms: 0,
-                last_seen_ms: 0,
-            },
+                Classification::Classified { team: Team::Blue },
+                0,
+                // 16b cut F.3: the plot is where the target actually stands, so
+                // every range these fixtures assert is unchanged.
+                arena.unit(target).map(SeenPose::of).unwrap_or_default(),
+            ),
         );
         id
     }
@@ -677,6 +769,45 @@ mod tests {
         assert!(state.ammo.is_empty());
         assert_eq!(state.weapon_reach_cm(), 0);
         assert_eq!(state.weapon_ammo("cannon"), 0);
+    }
+
+    /// **16b cut F.3**: the band word and a squad order's engage ceiling are both
+    /// read against the fired weapon's band edges, so a weapon that declares a
+    /// reach and authors no bands must not answer an empty list. An empty one
+    /// makes `range_band` say `beyond` at point blank and
+    /// `RangeBand::ceiling_cm` nought — and a nought ceiling stops an ordered
+    /// reflex unit ever reaching `Engage` and puts its stand-off goal on the
+    /// target's own cell. The empty list belongs to a platform with nothing that
+    /// fires, and to nothing else.
+    #[test]
+    fn a_weapon_with_a_reach_and_no_bands_is_one_band_at_that_reach() {
+        use crate::deliberation::order::RangeBand;
+
+        let bandless = WeaponSummary {
+            bands: Vec::new(),
+            ..cannon()
+        };
+        assert_eq!(bandless.bands_cm(), vec![250_000]);
+        assert_eq!(cannon().bands_cm(), vec![150_000, 250_000]);
+
+        let mut arena = two_scouts();
+        if let Some(state) = arena.unit_mut(RED) {
+            state.weapons = vec![bandless];
+        }
+        let state = arena.unit(RED).unwrap_or_else(|| panic!("the red scout"));
+        let edges = state.fire_bands_cm();
+        assert_eq!(edges, vec![250_000]);
+        // Both consumers, at a range a tank really fights at.
+        assert_eq!(crate::match_::cockpit::range_band(4_000, &edges), "close");
+        assert_eq!(RangeBand::Effective.ceiling_cm(&edges), 250_000);
+        assert_ne!(RangeBand::Close.ceiling_cm(&edges), 0);
+
+        // And the empty list is still a platform that carries nothing that fires.
+        let bare = arena_of(vec![tank(RED, Team::Red, pose(1_500, 1_500))]);
+        let state = bare.unit(RED).unwrap_or_else(|| panic!("the bare tank"));
+        assert!(state.fire_bands_cm().is_empty());
+        assert_eq!(crate::match_::cockpit::range_band(0, &[]), "beyond");
+        assert_eq!(RangeBand::Effective.ceiling_cm(&[]), 0);
     }
 
     #[test]
@@ -878,8 +1009,13 @@ mod tests {
         // A lock inside the first band, and one past the last. **16b cut F.2**:
         // the aim carries the target and the cover as well as the range, because
         // each weapon resolves its own chance against them.
-        let aim = |range_cm: u64| crate::arena::resolution::LockAim {
+        // **16b cut F.3** put the plot on it too, because the advertised chance
+        // reads the face and the crossing speed off the sighting; here the plot is
+        // where the blue tank actually stands.
+        let plot = arena.unit(BLUE).map(SeenPose::of).unwrap_or_default();
+        let aim = move |range_cm: u64| crate::arena::resolution::LockAim {
             target: BLUE,
+            seen_at: plot,
             range_cm,
             cover: mush_atlas::Cover::None,
         };

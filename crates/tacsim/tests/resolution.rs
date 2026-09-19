@@ -88,8 +88,8 @@ use tacsim::arena::resolution::{BandProfile, Consequence, SectionProfile, UnitPr
 use tacsim::arena::rng::{DrawLabel, draw_contact_id, draw_permille};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    EndReason, EntryZone, Pilot, Power, ShadowContact, Side, Team, TerrainCell, TrackedRules,
-    WeaponSummary,
+    EndReason, EntryZone, OwnSighting, Pilot, Power, SeenPose, ShadowContact, Side, Team,
+    TerrainCell, TrackedRules, WeaponSummary,
 };
 use tacsim::arena::step::StepOutput;
 use tacsim::arena::weapons::WeaponBand;
@@ -642,6 +642,15 @@ fn warm(arena: &mut Arena, bytes: &mut Vec<u8>) -> i64 {
     wall
 }
 
+/// **Where `target` actually stands, as a contact's plot** (16b cut F.3).
+///
+/// These fixtures plant a contact by hand, and the plot they plant is the
+/// target's true pose — so every range and bearing they assert is the one they
+/// asserted before the contact store learned the difference.
+fn plot_of(arena: &Arena, target: ObjId) -> SeenPose {
+    arena.unit(target).map(SeenPose::of).unwrap_or_default()
+}
+
 /// Hand `viewer` a classified contact on `target` — the store written by hand, for
 /// the same reason `weapons.rs` writes it: a test about a *shot* must not fail for a
 /// reason about perception.
@@ -651,12 +660,12 @@ fn hold(arena: &mut Arena, viewer: ObjId, target: ObjId) -> ContactId {
     arena.contacts.insert(
         viewer,
         id,
-        ShadowContact {
+        ShadowContact::sighted(
             target,
-            class: Classification::Classified { team: Team::Blue },
-            first_seen_ms: now,
-            last_seen_ms: now,
-        },
+            Classification::Classified { team: Team::Blue },
+            now,
+            plot_of(arena, target),
+        ),
     );
     id
 }
@@ -1830,12 +1839,19 @@ fn scripted_arena() -> Arena {
         RED,
         contact,
         ShadowContact {
-            target: BLUE,
-            class: Classification::Classified { team: Team::Blue },
-            first_seen_ms: 0,
             // Far enough ahead that the pass's time-to-live never expires it: the
             // property under test is the shot's, not the sensor's.
             last_seen_ms: i64::MAX / 4,
+            own_seen: Some(OwnSighting {
+                at_ms: i64::MAX / 4,
+                plot: plot_of(&arena, BLUE),
+            }),
+            ..ShadowContact::sighted(
+                BLUE,
+                Classification::Classified { team: Team::Blue },
+                0,
+                plot_of(&arena, BLUE),
+            )
         },
     );
     arena
@@ -2224,12 +2240,12 @@ fn the_shooter_is_told_the_round_landed_and_the_victim_where_it_landed() {
         struck.contains("facet") && struck.contains("armour"),
         "{struck}"
     );
-    // Red is due south of blue, so the round arrives at the rear band; the hull
-    // and the turret share it 50/50 and either is a section of blue's own tank.
-    assert!(
-        struck.contains("hull") || struck.contains("turret"),
-        "{struck}"
-    );
+    // Red is due south of blue, so the round arrives at the rear band, whose
+    // fixture weights are hull 40, engine 30 and turret 30. The facet draw is keyed
+    // on the shot's own sequence against a fixed seed, so which of the three it
+    // finds is not a coin toss: it is the turret, and pinning the one section is
+    // what makes this assertion able to fail.
+    assert!(struck.contains("turret"), "{struck}");
 
     // **The observer rule, sentence by sentence.** Nothing in anything the victim
     // was told identifies or locates the shooter: not its object number, not the
@@ -2718,12 +2734,12 @@ fn two_locks_in_one_pulse_each_name_their_own_contact() {
     arena.contacts.insert(
         RED,
         second,
-        ShadowContact {
-            target: BLUE,
-            class: Classification::Classified { team: Team::Blue },
-            first_seen_ms: now,
-            last_seen_ms: now,
-        },
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            now,
+            plot_of(&arena, BLUE),
+        ),
     );
     let out = pulse(
         &mut arena,
@@ -3451,4 +3467,69 @@ mod money {
              the economy and a match is not a transaction"
         );
     }
+}
+
+/// **The advertised chance is read off the plot, and the shot off the tank**
+/// (16b cut F.3).
+///
+/// `LOCK`'s sentence and every `WEAPONSTATUS` row quote one number, and it is
+/// advice: every target-side input of it — the range, the cover, the face the
+/// target is showing and the speed it is crossing at — comes off the contact's
+/// own plot. Read live, a tank that turned or accelerated while nobody could see
+/// it would move that number every pulse, `FrameWeapon::same_as` would report the
+/// difference, and the pilot would be pushed a frame each time: an unsighted
+/// target's manoeuvre, read off a platform that has detected nothing since.
+#[test]
+fn the_advertised_chance_is_read_off_the_plot_and_the_shot_off_the_tank() {
+    let mut arena = duel();
+    let contact = hold(&mut arena, RED, BLUE);
+    if let Some(state) = arena.unit_mut(RED) {
+        state.lock = Some(contact);
+    }
+    // At the range the file's own pinned row uses — 1 km, where the rear's 350 cm
+    // is 3,500 µrad against a 4,000 µrad cone and the curve answers 300 — rather
+    // than the fixture's four cells, where both clamps swallow every difference.
+    let mut aim = arena
+        .lock_aim(RED)
+        .unwrap_or_else(|| panic!("the red tank has a lock"));
+    aim.range_cm = 100_000;
+    let advice = arena.resolve_seen(RED, &aim, "cannon");
+    assert_eq!(
+        (advice.band.as_str(), advice.error_urad, advice.p_permille),
+        ("rear", 4_000, 300),
+        "the plot has blue facing north and standing still"
+    );
+    let before = arena.frame_weapons(RED, Some(&aim));
+
+    // Blue swings east and accelerates across the line of fire. Nothing has
+    // sighted it since, so the plot — and everything read off it — is unmoved.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose.heading_mdeg = 90_000;
+        state.speed_cms = 1_500;
+    }
+    let after = arena.resolve_seen(RED, &aim, "cannon");
+    assert_eq!(
+        (after.band.as_str(), after.error_urad, after.p_permille),
+        (advice.band.as_str(), advice.error_urad, advice.p_permille),
+        "the advertised chance moved with a tank nobody has seen"
+    );
+    let rows = arena.frame_weapons(RED, Some(&aim));
+    assert!(
+        before
+            .iter()
+            .zip(&rows)
+            .all(|(was, now)| was.same_as(now) && now.p_permille == Some(300)),
+        "the pilot would have been pushed a frame for a manoeuvre they cannot see"
+    );
+
+    // And the fixture really can tell the two apart: the *shot* is resolved
+    // against the tank that is there, so its band and its cone both moved.
+    let taken = arena.resolve_shot(RED, BLUE, "cannon", aim.range_cm, aim.cover);
+    assert_ne!(taken.band.as_str(), "rear", "blue turned its flank");
+    assert!(
+        taken.error_urad > advice.error_urad,
+        "blue is crossing at 15 m/s: {} against {}",
+        taken.error_urad,
+        advice.error_urad
+    );
 }

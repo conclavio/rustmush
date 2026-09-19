@@ -66,9 +66,35 @@ use crate::arena::state::{ArenaTerrain, UnitState};
 /// can produce is about 362,000.
 #[must_use]
 pub fn range_cm(a: &Pose, b: &Pose) -> u64 {
+    range_between(a.x_cm, a.y_cm, a.z_cm, b.x_cm, b.y_cm, b.z_cm)
+}
+
+/// **The same range, from six coordinates rather than two poses** (16b cut F.3),
+/// for the one caller that has no pose to hand: a contact's plot
+/// ([`crate::arena::state::SeenPose`]) is four integers and not a pose, because a
+/// pose carries the driver's opaque posture blob.
+///
+/// [`range_cm`] is this function over two poses. One implementation, so a plot's
+/// range and a true range cannot be two arithmetics.
+#[must_use]
+pub fn range_between(
+    ax_cm: i64,
+    ay_cm: i64,
+    az_cm: i32,
+    bx_cm: i64,
+    by_cm: i64,
+    bz_cm: i32,
+) -> u64 {
+    let dx = i128::from(ax_cm) - i128::from(bx_cm);
+    let dy = i128::from(ay_cm) - i128::from(by_cm);
+    let dz = i128::from(az_cm) - i128::from(bz_cm);
+    let square = dx
+        .saturating_mul(dx)
+        .saturating_add(dy.saturating_mul(dy))
+        .saturating_add(dz.saturating_mul(dz));
     // A sum of squares is never negative, so `unsigned_abs` is the cast and not
     // a policy; `isqrt` floors, which makes the answer a whole centimetre.
-    u64::try_from(square_cm(a, b).unsigned_abs().isqrt()).unwrap_or(u64::MAX)
+    u64::try_from(square.unsigned_abs().isqrt()).unwrap_or(u64::MAX)
 }
 
 /// The **squared** separation of two poses, square centimetres, in `i128` for the

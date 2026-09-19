@@ -189,6 +189,21 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fnv1a64_update(hash, &[held.class.code()]);
         hash = fnv1a64_update(hash, &held.first_seen_ms.to_le_bytes());
         hash = fnv1a64_update(hash, &held.last_seen_ms.to_le_bytes());
+        // **16b cut F.3**: the plot and the provenance are authoritative state,
+        // folded exactly as the stamps beside them are. A replay whose share
+        // arrived from a different sighting, or whose plot is a metre away, must
+        // not compare equal — the plot is what every reader of a contact's
+        // position now reads, and the own sighting is what decides whether the
+        // mesh may carry it a hop further.
+        hash = fold_plot(hash, &held.seen_at);
+        match held.own_seen {
+            Some(own) => {
+                hash = fnv1a64_update(hash, &[1_u8]);
+                hash = fnv1a64_update(hash, &own.at_ms.to_le_bytes());
+                hash = fold_plot(hash, &own.plot);
+            }
+            None => hash = fnv1a64_update(hash, &[0_u8]),
+        }
     }
     hash = fnv1a64_update(hash, &[arena.clock.tempo().code()]);
     hash = fnv1a64_update(hash, &arena.now_ms.to_le_bytes());
@@ -196,6 +211,19 @@ pub fn state_hash(arena: &Arena) -> u64 {
     hash = fnv1a64_update(hash, &(arena.shots.len() as u64).to_le_bytes());
     hash = fnv1a64_update(hash, &arena.ledger.seq().to_le_bytes());
     hash
+}
+
+/// **One contact plot's five integers** (16b cut F.3), in field order.
+///
+/// A contact carries two of them — the plot every reader reads, and the plot of
+/// this platform's own last sighting — and they are folded by one function so
+/// they cannot fold differently.
+fn fold_plot(hash: u64, plot: &crate::arena::state::SeenPose) -> u64 {
+    let hash = fnv1a64_update(hash, &plot.x_cm.to_le_bytes());
+    let hash = fnv1a64_update(hash, &plot.y_cm.to_le_bytes());
+    let hash = fnv1a64_update(hash, &plot.z_cm.to_le_bytes());
+    let hash = fnv1a64_update(hash, &plot.heading_mdeg.to_le_bytes());
+    fnv1a64_update(hash, &plot.speed_cms.to_le_bytes())
 }
 
 #[cfg(test)]

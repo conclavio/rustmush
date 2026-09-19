@@ -547,3 +547,73 @@ fn the_ten_commodity_families_decode() {
         );
     }
 }
+
+/// **Which of the four band words the shipped content can actually print** (16b
+/// cut F.3).
+///
+/// `CONTACTS`' band is read against the authored bands of the weapon a bare
+/// `FIRE` fires (`cockpit::range_band`), and what a pilot *can* be shown is
+/// therefore a fact about two packs at once: the cannon's band edges and how far
+/// a sight can hold a contact. Cut S.2's band was read against the platform's
+/// longest reach and could only ever say `close`; this cut re-based it and the
+/// word now reaches `effective` — but not, on the content the game ships, `far`
+/// or `beyond`, because the cannon's inner band is 1.5 km and nothing can be held
+/// past 900 m (a 600 m sight plus one 300 m mesh hop).
+///
+/// That gap is **recorded here rather than argued here**: the derivation is cut
+/// F.3's brief's own decision, and whether the sight should reach further or the
+/// bands should sit closer is content, which is the owner's. What this test is
+/// for is that the gap cannot change silently — widen the sight, shorten the
+/// cannon's inner band, or give the tank a different default weapon, and this
+/// fails and somebody reads the note.
+#[test]
+fn the_band_word_the_shipped_content_can_print() {
+    use tacsim::match_::cockpit::{DEFAULT_WEAPON, range_band};
+
+    let catalog = Catalog::build_game(&[], "tacsim").expect("the shipped content binds");
+    let arena = catalog
+        .arenas
+        .values()
+        .next()
+        .expect("the proving ground is shipped");
+    let cell_cm = u64::from(arena.cell_cm);
+    // The furthest a contact can be held at: the widest shipped sight, plus one
+    // mesh hop off a teammate at the far edge of its own reach.
+    let furthest_cm = catalog
+        .sensors
+        .values()
+        .map(|sensor| {
+            u64::from(sensor.max_range_cells)
+                .saturating_add(u64::from(sensor.share_range_cells))
+                .saturating_mul(cell_cm)
+        })
+        .max()
+        .expect("the shipped sights");
+    assert_eq!(furthest_cm, 90_000, "a 600 m sight and a 300 m mesh hop");
+
+    // The weapon a bare `FIRE` fires, found the way `UnitState::default_weapon`
+    // finds it: by component name.
+    let bands: Vec<u32> = catalog
+        .weapons
+        .iter()
+        .find(|(id, _)| id.as_str().contains(DEFAULT_WEAPON))
+        .map(|(_, weapon)| weapon.bands.iter().map(|band| band.max_range_cm).collect())
+        .expect("the stock tank's cannon is shipped");
+    assert_eq!(bands, vec![150_000, 300_000], "the cannon's authored edges");
+
+    // Every range a real detection can be at, at the metre, and the words they
+    // produce. Both of the reachable words really are reachable — which is the
+    // half cut S.2 did not have — and each is reachable at a range two tanks on
+    // this map will routinely be at.
+    let words: std::collections::BTreeSet<&str> = (0..=furthest_cm)
+        .step_by(100)
+        .map(|range_cm| range_band(range_cm, &bands))
+        .collect();
+    assert_eq!(
+        words.into_iter().collect::<Vec<_>>(),
+        vec!["close", "effective"],
+        "the band vocabulary a pilot can see on the shipped proving ground"
+    );
+    assert_eq!(range_band(30_000, &bands), "close", "300 m");
+    assert_eq!(range_band(51_000, &bands), "effective", "510 m");
+}

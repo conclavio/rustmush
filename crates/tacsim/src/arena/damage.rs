@@ -182,7 +182,9 @@ pub fn is_wreck(unit: &mush_tactics::TacticalUnit) -> bool {
 /// section's consequences only on the **transition** to zero internals.
 ///
 /// This is the missing read: the sections the record calls `destroyed` (and the
-/// body it calls `wreck`) are walked once, in the unit's own section order, and
+/// body it calls `wreck`) are walked once, in **section-id order** — the order
+/// [`mush_tactics::TacticalUnit`]'s own ordered map holds them in, and not the
+/// order the pack authored them in — and
 /// every consequence they carry is put into force before the first pulse — exactly
 /// the consequences [`Arena::apply_consequence`] would have applied had the arena
 /// watched them happen. The two are deliberately the same vocabulary and the same
@@ -447,11 +449,38 @@ impl Arena {
         }
     }
 
-    /// Just the cover half of [`Arena::fire_line`] — what the cockpit's percentage
-    /// needs.
+    /// Just the cover half of [`Arena::fire_line`].
     #[must_use]
     pub fn fire_cover(&self, shooter: ObjId, target: ObjId) -> Cover {
         self.fire_line(shooter, target).1
+    }
+
+    /// **The cover a target would have at a cell it is not necessarily in** (16b
+    /// cut F.3) — what the cockpit's advertised percentage needs.
+    ///
+    /// The shot itself traces to where the target *is* (that is physics, and
+    /// [`Arena::fire_line`] is what it uses). The number the cockpit shows a pilot
+    /// is **advice**, and advice may only be computed from what the platform
+    /// knows, so it traces to the cell the contact was last seen in. A target that
+    /// has driven behind a building since the last sighting therefore still shows
+    /// the chance its plot implies, and the shot that follows finds the building
+    /// — which is the honest shape of a stale track and not a bug.
+    ///
+    /// The target's own eye height is used, because how tall a tank is is not
+    /// something a plot goes stale about.
+    #[must_use]
+    pub fn fire_cover_at(&self, shooter: ObjId, target: ObjId, cell: (u16, u16)) -> Cover {
+        self.fire_trace_at(shooter, target, cell)
+            .map_or(Cover::None, |trace| trace.target_cover)
+    }
+
+    /// **What a beam would lose on the way to a cell the target is not necessarily
+    /// in** (16b cut F.3), percent — [`Arena::fire_attenuation`]'s advice half, for
+    /// the cone [`crate::arena::resolution::Arena::resolve_seen`] advertises.
+    #[must_use]
+    pub fn fire_attenuation_at(&self, shooter: ObjId, target: ObjId, cell: (u16, u16)) -> u32 {
+        self.fire_trace_at(shooter, target, cell)
+            .map_or(0, |trace| trace.attenuation)
     }
 
     /// **What a beam loses on the way** (16b cut X.1; doc 16 §9 item 1:
@@ -478,9 +507,25 @@ impl Arena {
 
     /// The one walk `fire_line` and `fire_attenuation` are two readings of.
     fn fire_trace(&self, shooter: ObjId, target: ObjId) -> Option<mush_atlas::trace::CellTrace> {
-        let (from, to) = (self.unit(shooter)?, self.unit(target)?);
-        let (a, b) = (self.fire_eye(from)?, self.fire_eye(to)?);
-        Some(trace_cells(&self.definition.terrain, a, b))
+        let cell = self.definition.terrain.cell_of(&self.unit(target)?.pose)?;
+        self.fire_trace_at(shooter, target, cell)
+    }
+
+    /// The same walk, to a cell the target is not necessarily in (16b cut F.3) —
+    /// the one `fire_cover_at` and `fire_attenuation_at` are two readings of.
+    fn fire_trace_at(
+        &self,
+        shooter: ObjId,
+        target: ObjId,
+        cell: (u16, u16),
+    ) -> Option<mush_atlas::trace::CellTrace> {
+        let from = self.fire_eye(self.unit(shooter)?)?;
+        let at = self.unit(target)?;
+        let to = mush_atlas::trace::Eye {
+            cell,
+            height_cm: i32::try_from(at.sensor_height_cm).unwrap_or(i32::MAX),
+        };
+        Some(trace_cells(&self.definition.terrain, from, to))
     }
 
     /// One unit's eye, for a fire trace.
@@ -1567,12 +1612,17 @@ mod tests {
         arena.contacts.insert(
             BLUE,
             id,
-            crate::arena::state::ShadowContact {
-                target: RED,
-                class: crate::arena::state::Classification::Unknown,
-                first_seen_ms: 0,
-                last_seen_ms: 0,
-            },
+            crate::arena::state::ShadowContact::sighted(
+                RED,
+                crate::arena::state::Classification::Unknown,
+                0,
+                // 16b cut F.3: where the red tank actually stands, which is what
+                // every fixture that plants a contact by hand plants.
+                arena
+                    .unit(RED)
+                    .map(crate::arena::state::SeenPose::of)
+                    .unwrap_or_default(),
+            ),
         );
         arena.due.schedule(
             1_000,

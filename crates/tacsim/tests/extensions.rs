@@ -79,7 +79,7 @@ use tacsim::arena::intents::Refusal;
 use tacsim::arena::resolution::FULL_ATTENUATION;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, CustodyOut, CustodyUnit, EntryZone,
-    Pilot, Power, ShadowContact, Team, TerrainCell, UnitState, Waypoints,
+    Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, UnitState, Waypoints,
 };
 use tacsim::config::{ArenaConfig, LoadedPack, MatchConfig, SensorsConfig};
 use tacsim::definitions::unit::{HEAT_CELL, HEAT_PER_SHOT_CELL, HEAT_SINK_CELL};
@@ -438,15 +438,24 @@ fn duel(paint: &[(u16, u16, TerrainCell)]) -> Arena {
     arena.contacts.insert(
         RED,
         contact,
-        ShadowContact {
-            target: BLUE,
-            class: Classification::Classified { team: Team::Blue },
-            first_seen_ms: 0,
-            last_seen_ms: 0,
-        },
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot_of(&arena, BLUE),
+        ),
     );
     arena.resolve_lock(RED, contact).expect("the lock holds");
     arena
+}
+
+/// **Where `target` actually stands, as a contact's plot** (16b cut F.3).
+///
+/// These fixtures plant a contact by hand, and the plot they plant is the
+/// target's true pose — so every range and bearing they assert is the one they
+/// asserted before the contact store learned the difference.
+fn plot_of(arena: &Arena, target: mush_core::ObjId) -> SeenPose {
+    arena.unit(target).map(SeenPose::of).unwrap_or_default()
 }
 
 /// One cell value off a unit.
@@ -607,12 +616,12 @@ fn x1_a_beam_is_a_weapon_with_no_flight_time_and_its_impact_is_scheduled_at_now(
     direct.contacts.insert(
         RED,
         contact,
-        ShadowContact {
-            target: BLUE,
-            class: Classification::Classified { team: Team::Blue },
-            first_seen_ms: 0,
-            last_seen_ms: 0,
-        },
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot_of(&direct, BLUE),
+        ),
     );
     direct.resolve_lock(RED, contact).expect("the lock holds");
     let seq = direct

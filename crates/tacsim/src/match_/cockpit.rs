@@ -150,10 +150,11 @@ pub const STATION_ROLE: &str = "pilot";
 /// cockpit ranks like every other pilot billet in the tree.
 pub const STATION_PRIORITY: u16 = 2;
 
-/// The weapon `FIRE` takes when the pilot names none. The stock tank's cannon
-/// (doc 16 §3.7: *default cannon*); a unit that has no component by this name
-/// falls back to its first weapon in component order.
-pub const DEFAULT_WEAPON: &str = "cannon";
+/// The weapon `FIRE` takes when the pilot names none, re-exported from the arena
+/// (16b cut F.3 moved it there, because the arena's own band advice and the
+/// reflex controller's range caps are read against the same weapon's bands and
+/// there may be exactly one rule for which weapon that is).
+pub use crate::arena::weapons::DEFAULT_WEAPON;
 
 /// How many cells of the arena window one `VIEW` carries, across and up. The
 /// widest and tallest a line client prints (`mush_ansi::panel`'s own bounds), so
@@ -435,13 +436,24 @@ fn require_power(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
 /// platform's own heading, the range as one of [`range_band`]'s four words, and
 /// the age in whole seconds.
 ///
-/// Four things a pilot is deliberately **not** given, and each is the observer
-/// rule on this surface: the target's object number, its name, its exact range and
-/// its team when the contact is still `unknown`. The row carries the contact's
-/// last-seen **cell** because that is what `VIEW` draws a marker in, which is the
-/// map's own resolution and no finer.
+/// Three things a pilot is deliberately **not** given, and each is the observer
+/// rule on this surface: the target's object number, its name, and its team while
+/// the contact is still `unknown`. The row carries the contact's last-seen
+/// **cell** because that is what `VIEW` draws a marker in, which is the map's own
+/// resolution and no finer.
+///
+/// **16b cut F.3** changed what the numbers are *of*. Every figure here —
+/// bearing, range, band, cell — is read off the **plot** the arena recorded at
+/// the sighting that last refreshed the contact, so a row is what the platform
+/// knows and never where the target now is; and `age_ms` is the age of that
+/// sighting, which is how a pilot tells a live track from a dying one. It also
+/// adds the range in metres ([`ContactRow::range_m`]), because a band alone told
+/// a pilot nothing at all.
 #[must_use]
 pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
+    // 16b cut F.3: the bands of the weapon a bare `FIRE` would fire — the weapon
+    // the band word is advice about. Resolved once for the list.
+    let bands: &[u32] = fired_by_default(&frame.weapons).map_or(&[], |weapon| &weapon.bands_cm);
     frame
         .contacts
         .iter()
@@ -450,12 +462,40 @@ pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
             class: SmolStr::new(class_word(held.class)),
             bearing_deg: held.bearing_mdeg / 1_000,
             relative_deg: relative_mdeg(frame.pose.heading_mdeg, held.bearing_mdeg) / 1_000,
-            band: SmolStr::new(range_band(held.range_cm, frame.weapon_reach_cm)),
+            band: SmolStr::new(range_band(held.range_cm, bands)),
+            range_m: range_m_rounded(held.range_cm),
             age_ms: held.age_ms,
             cell: held.cell,
             friendly: held.class.team() == Some(frame.team),
         })
         .collect()
+}
+
+/// **How coarsely a contact's range is reported**, metres (16b cut F.3).
+///
+/// Doc 16 §3.6 gives `CONTACTS` a *range band* and no range, and cut S.2 read
+/// that strictly. In play it left a pilot with no distance information whatever:
+/// the band could only ever read `close` (see [`range_band`]), so from
+/// acquisition to kill every row said the same word whether the other tank was
+/// 600 m away or 40 m away.
+///
+/// A passive sight giving a coarse range is a **playtest-usability decision**,
+/// recorded here for the owner to revisit: it departs from doc 16 §3.6 in the
+/// direction of a pilot being able to act. The rounding is the whole of the
+/// coarseness and it lives in this one constant, so tightening or loosening it is
+/// one number.
+pub const CONTACT_RANGE_STEP_M: u64 = 50;
+
+/// A contact's range in metres, rounded to the nearest
+/// [`CONTACT_RANGE_STEP_M`] (16b cut F.3). Half a step rounds up.
+#[must_use]
+pub fn range_m_rounded(range_cm: u64) -> u64 {
+    let step = CONTACT_RANGE_STEP_M.max(1);
+    let metres = range_cm / 100;
+    metres
+        .saturating_add(step / 2)
+        .saturating_div(step)
+        .saturating_mul(step)
 }
 
 /// The word a class renders as: `unknown`, or the **side** the platform has
@@ -480,32 +520,46 @@ fn relative_mdeg(heading_mdeg: u32, bearing_mdeg: u32) -> u32 {
 }
 
 /// **The range band of a contact** (doc 16 §3.6: *range band*), read against the
-/// longest reach the platform itself carries ([`Frame::weapon_reach_cm`]).
+/// **authored bands of the weapon a bare `FIRE` would fire**
+/// ([`crate::arena::weapons::FrameWeapon::bands_cm`], outward, the same list
+/// `WeaponSummary::band_of` walks).
 ///
-/// A band and not a range, because a band is what a pilot can act on: the only
-/// question a contact's distance answers is *can I shoot it, nearly, or not at
-/// all*. The four words and their thirds of the platform's own reach:
+/// A word and not just a range, because the question a contact's distance answers
+/// is *can I shoot it, nearly, or not at all* — and that question is about a
+/// **weapon**, which is why the bands it is read against are the ones the weapon
+/// declares:
 ///
 /// | word | range |
 /// |---|---|
-/// | `close` | inside a third of the reach |
-/// | `effective` | inside the reach |
-/// | `far` | inside twice the reach |
-/// | `beyond` | further, **or the platform carries no weapon at all** |
+/// | `close` | inside a third of the innermost band, where the cone is tightest |
+/// | `effective` | inside the innermost band |
+/// | `far` | inside one of the outer bands |
+/// | `beyond` | past the last band, **or the platform carries nothing that fires** |
 ///
-/// The last clause is why a reach of zero is not a special case: a platform with
-/// nothing to shoot with has nothing in range, and `beyond` says exactly that.
+/// The last clause is why an empty band list is not a special case: a platform
+/// with nothing to shoot with has nothing in range, and `beyond` says so. It is
+/// reserved for exactly that — a weapon that declares a reach and authors no
+/// bands answers one band at its reach ([`crate::arena::state::WeaponSummary::bands_cm`]),
+/// so `beyond` never means *this weapon's content is thin*.
+///
+/// **16b cut F.3 replaced cut S.2's thirds of `Frame`'s `weapon_reach_cm`**, and
+/// deleted the field with it (its one reader was this function). That
+/// read the band against the *longest reach the platform carried*, which for a
+/// stock tank is the cannon's 3 km, so `close` covered everything inside 1 km —
+/// and the shipped sight cannot detect past 600 m, even with a mesh hop. Every
+/// contact that has ever existed in this game printed `close`, which inverted doc
+/// 16 §3.6's stated purpose for the band exactly.
 #[must_use]
-pub fn range_band(range_cm: u64, reach_cm: u32) -> &'static str {
-    let reach = u64::from(reach_cm);
-    if reach == 0 {
+pub fn range_band(range_cm: u64, bands_cm: &[u32]) -> &'static str {
+    let (Some(first), Some(last)) = (bands_cm.first(), bands_cm.last()) else {
         return "beyond";
-    }
-    if range_cm.saturating_mul(3) <= reach {
+    };
+    let (first, last) = (u64::from(*first), u64::from(*last));
+    if range_cm.saturating_mul(3) <= first {
         "close"
-    } else if range_cm <= reach {
+    } else if range_cm <= first {
         "effective"
-    } else if range_cm <= reach.saturating_mul(2) {
+    } else if range_cm <= last {
         "far"
     } else {
         "beyond"
@@ -526,7 +580,14 @@ pub struct ContactRow {
     pub relative_deg: u32,
     /// The range band's label ([`range_band`]).
     pub band: SmolStr,
-    /// How long it has been held, milliseconds of arena time.
+    /// **The range to the plot, metres**, rounded to [`CONTACT_RANGE_STEP_M`]
+    /// (16b cut F.3) — see [`range_m_rounded`] for why a passive sight reports one
+    /// at all.
+    pub range_m: u64,
+    /// **How stale the plot is**, milliseconds of arena time (16b cut F.3): now
+    /// less the sighting that last refreshed the contact, this platform's own or
+    /// the sharer's. Cut S.2 printed the hold time since first detection, which
+    /// carried no staleness signal at all.
     pub age_ms: i64,
     /// The cell it was last seen in, for `VIEW`'s marker (16b cut S.2).
     pub cell: Option<(u16, u16)>,
@@ -537,15 +598,19 @@ pub struct ContactRow {
 
 impl ContactRow {
     /// The line `CONTACTS` prints for this row.
+    ///
+    /// **16b cut F.3** put the range in it, between the band and the age:
+    /// `<id>  <class>  bearing 090° (rel 000°)  close  300 m  1 s`.
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "{}  {}  bearing {:03}° (rel {:03}°)  {}  {} s",
+            "{}  {}  bearing {:03}° (rel {:03}°)  {}  {} m  {} s",
             self.id,
             self.class,
             self.bearing_deg,
             self.relative_deg,
             self.band,
+            self.range_m,
             self.age_ms / 1_000
         )
     }
@@ -739,7 +804,15 @@ fn consequence_words(consequences: &[SmolStr]) -> String {
 /// pulse later are one string, and neither can drift. The prefix names the order,
 /// because a refusal that arrives a pulse after the pilot typed something has to
 /// say what it is about.
-fn refusal_line(
+///
+/// **Every [`Refusal`](crate::arena::intents::Refusal) variant is matched by
+/// name** (16b cut F.3). Cut F.2 ended the match with a catch-all that formatted
+/// the `thiserror` text, so a later cut that routed a new variant into phase 4
+/// would have shipped a pilot the sentence `FIRE refused. Refused: that unit
+/// already has as many actions queued as it may.` — lower-case, doubly prefixed,
+/// in nobody's voice. A new variant is now a compile error instead, which is a
+/// sentence somebody has to come and write.
+pub(crate) fn refusal_line(
     order: &str,
     refusal: crate::arena::intents::Refusal,
     weapon: Option<&str>,
@@ -747,10 +820,8 @@ fn refusal_line(
 ) -> String {
     use crate::arena::intents::Refusal;
     let said = match (refusal, detail) {
-        (Refusal::NoLock | Refusal::NoContact, _) => match refusal {
-            Refusal::NoContact => CockpitError::NoSuchContact.to_string(),
-            _ => CockpitError::NoLock.to_string(),
-        },
+        (Refusal::NoContact, _) => CockpitError::NoSuchContact.to_string(),
+        (Refusal::NoLock, _) => CockpitError::NoLock.to_string(),
         (Refusal::Cycling, RefusalDetail::Cycling { secs }) => {
             CockpitError::Cycling { secs }.to_string()
         }
@@ -759,7 +830,12 @@ fn refusal_line(
         (Refusal::Overheated, RefusalDetail::Overheated { heat, max }) => {
             CockpitError::Overheated { heat, max }.to_string()
         }
-        (Refusal::Overheated, _) => OVERHEATED.to_owned(),
+        // 16b cut F.3: a sentence, not the bare word. `OVERHEATED` is the column
+        // heading `WEAPONSTATUS` prints and the opener `CockpitError::Overheated`
+        // builds on, and a refusal staged before the heat cell was read has no
+        // numbers to put after it — so it says the half of that sentence that is
+        // still true rather than trailing off.
+        (Refusal::Overheated, _) => format!("{OVERHEATED}: let it cool."),
         (Refusal::PowerNotOnline, _) => CockpitError::PowerNotOnline.to_string(),
         (Refusal::NoWeapon, _) => {
             CockpitError::NoSuchWeapon(weapon.unwrap_or_default().to_owned()).to_string()
@@ -770,7 +846,12 @@ fn refusal_line(
         // wants to be told. One short sentence each, in the same voice.
         (Refusal::Wreck, _) => "Your tank is a wreck.".to_owned(),
         (Refusal::Unknown, _) => "That tank is no longer in the match.".to_owned(),
-        (other, _) => format!("Refused: {other}."),
+        (Refusal::Epoch, _) => "Your seat changed hands; try that again.".to_owned(),
+        (Refusal::Channel, _) => "That order does not travel on this station.".to_owned(),
+        (Refusal::QueueFull, _) => "Too many orders at once; try that again.".to_owned(),
+        (Refusal::MotionDisabled, _) => "Your tank cannot move.".to_owned(),
+        (Refusal::Linkdead, _) => "Your seat has gone linkdead.".to_owned(),
+        (Refusal::NotReflex, _) => "That tank has a pilot in it.".to_owned(),
     };
     format!("{} refused. {said}", order.to_uppercase())
 }
@@ -819,6 +900,18 @@ pub fn frame_lock(frame: &Frame) -> Option<ContactId> {
 /// coaxial during the cannon's cycle fired at 21 %; doc 16 §3.5 step 5 defines
 /// `p_permille` per shot, and the shot a bare `FIRE` takes is the cannon's. Each
 /// weapon's own chance is on its `WEAPONSTATUS` row.
+///
+/// **What it is computed from** (16b cut F.3): the locked contact's **plot** —
+/// where the platform last saw the target, and how it was facing and moving then
+/// — through `crate::arena::resolution::Arena::lock_aim`, which resolves the
+/// range and the cover, and
+/// `crate::arena::resolution::Arena::resolve_seen`, which reads the face and the
+/// crossing speed off the same sighting. So this sentence, every `WEAPONSTATUS`
+/// row's percentage and the contact row's own band are three readings of one plot
+/// and cannot be three numbers. The shot itself is resolved against where the
+/// target *is*, so for a target that has moved since the sighting the advertised
+/// chance and the chance the draw is compared against differ; that is what a
+/// stale track costs, and `resolve_seen` has the argument.
 #[must_use]
 pub fn lock_line(frame: &Frame) -> Option<String> {
     let contact = frame_lock(frame)?;
@@ -1754,6 +1847,14 @@ pub const FRAME_VERSION: u32 = 1;
 /// would fire* rather than the best of the platform's, and gave every weapon row
 /// its own `p_permille` and `percent`.
 ///
+/// **16b cut F.3** added `range_m` to each contact: the coarse range
+/// [`CONTACTS`](contacts) prints, metres rounded to [`CONTACT_RANGE_STEP_M`]. It
+/// also changed what every one of a contact's numbers is *of* — `bearing_deg`,
+/// `range_m`, `band` and `cell` are read off the **plot** the arena recorded at
+/// the sighting that last refreshed the contact, and `age_ms`/`age_s` are the age
+/// of that sighting rather than the hold time since first detection. A panel is
+/// therefore drawing what the platform knows, exactly as the line client is.
+///
 /// **16b cut F.2** also added `sections` — doc 16 §5's status block, one entry per
 /// section as `{ id, condition, internals, internals_max, facets[{ id, armor,
 /// armor_max }] }` — and `heat` as `{ heat, max, overheated }` or `null`, which
@@ -1779,6 +1880,9 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
                 "bearing_deg": row.bearing_deg,
                 "relative_deg": row.relative_deg,
                 "band": row.band.as_str(),
+                // 16b cut F.3: the coarse range, the same figure `CONTACTS`
+                // prints, so a panel and a line client read one number.
+                "range_m": row.range_m,
                 "age_ms": row.age_ms,
                 "age_s": row.age_ms / 1_000,
                 "cell": row.cell.map(|(x, y)| [x, y]),
@@ -2312,7 +2416,7 @@ fn cockpit_help(verb: &str) -> String {
             .to_owned(),
         "view" => "VIEW                the arena window around your platform, as a map.".to_owned(),
         "contacts" => "CONTACTS            what your platform holds: its opaque id, its class, \
-                       bearing, range band and age."
+                       bearing, range band, range and how old the plot is."
             .to_owned(),
         "lock" => {
             "LOCK <contact>      hold one of your contacts by the id CONTACTS prints.".to_owned()
@@ -2401,6 +2505,86 @@ mod tests {
         assert!(
             POWER_NOT_ONLINE.to_ascii_lowercase().contains(&word),
             "`{POWER_NOT_ONLINE}` does not contain `{word}`"
+        );
+    }
+
+    /// **Every refusal has a sentence, and the sentence is somebody's voice**
+    /// (16b cut F.3; F.2's judge).
+    ///
+    /// Cut F.2 ended [`refusal_line`]'s match with a catch-all that formatted the
+    /// `thiserror` text, so a later cut routing a new variant into phase 4 would
+    /// have shipped `FIRE refused. Refused: that unit already has as many actions
+    /// queued as it may.` The match is exhaustive now; this is the other half,
+    /// which is that each arm says something a pilot can read. The three the judge
+    /// named — `Overheated`, `Wreck`, `Unknown` — are included with the rest,
+    /// because a list that skips the awkward ones is the gap all over again.
+    #[test]
+    fn every_refusal_has_a_sentence_a_pilot_can_read() {
+        use crate::arena::perception::RefusalDetail;
+        for refusal in [
+            Refusal::Epoch,
+            Refusal::Channel,
+            Refusal::PowerNotOnline,
+            Refusal::QueueFull,
+            Refusal::Wreck,
+            Refusal::MotionDisabled,
+            Refusal::Linkdead,
+            Refusal::Unknown,
+            Refusal::NoContact,
+            Refusal::NoLock,
+            Refusal::Cycling,
+            Refusal::Empty,
+            Refusal::Overheated,
+            Refusal::NoWeapon,
+            Refusal::NotReflex,
+        ] {
+            let line = refusal_line("fire", refusal, Some("cannon"), RefusalDetail::None);
+            assert!(line.starts_with("FIRE refused. "), "{refusal:?}: {line}");
+            let said = line.trim_start_matches("FIRE refused. ");
+            assert!(!said.is_empty(), "{refusal:?} says nothing");
+            assert!(
+                !said.starts_with("Refused:"),
+                "{refusal:?} fell through to a catch-all: {line}"
+            );
+            assert!(said.ends_with('.'), "{refusal:?} is not a sentence: {line}");
+            let opener = said.chars().next().unwrap_or(' ');
+            assert!(
+                opener.is_ascii_uppercase(),
+                "{refusal:?} opens in lower case: {line}"
+            );
+        }
+    }
+
+    /// The three the judge named, in full, so their exact bytes are pinned.
+    #[test]
+    fn the_overheated_the_wreck_and_the_stray_unit_each_have_their_own_line() {
+        use crate::arena::perception::RefusalDetail;
+        assert_eq!(
+            refusal_line(
+                "fire",
+                Refusal::Overheated,
+                Some("laser"),
+                RefusalDetail::Overheated { heat: 60, max: 60 },
+            ),
+            format!(
+                "FIRE refused. {}",
+                CockpitError::Overheated { heat: 60, max: 60 }
+            )
+        );
+        // With no numbers behind it — a refusal staged before the cell was read —
+        // it falls back to the cockpit's own constant rather than inventing a
+        // nought that would read as "cold".
+        assert_eq!(
+            refusal_line("fire", Refusal::Overheated, None, RefusalDetail::None),
+            format!("FIRE refused. {OVERHEATED}: let it cool.")
+        );
+        assert_eq!(
+            refusal_line("fire", Refusal::Wreck, None, RefusalDetail::None),
+            "FIRE refused. Your tank is a wreck."
+        );
+        assert_eq!(
+            refusal_line("startup", Refusal::Unknown, None, RefusalDetail::None),
+            "STARTUP refused. That tank is no longer in the match."
         );
     }
 

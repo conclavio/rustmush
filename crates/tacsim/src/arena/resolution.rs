@@ -63,11 +63,10 @@ use mush_atlas::Cover;
 use mush_core::ObjId;
 use smol_str::SmolStr;
 
-use crate::arena::index::range_cm;
 use crate::arena::motion::{SIN_ONE, sin_fx};
-use crate::arena::perception::bearing_mdeg;
+use crate::arena::perception::bearing_of;
 use crate::arena::rng::{DrawLabel, draw, draw_permille, splitmix64};
-use crate::arena::state::{Arena, Side, UnitState};
+use crate::arena::state::{Arena, SeenPose, Side, UnitState};
 use crate::definitions::resolution::PERMILLE;
 
 // ---------------------------------------------------------------------------
@@ -269,13 +268,29 @@ const FULL_MDEG: u32 = 360_000;
 /// off the bow is a front hit, which is the coarse-but-legible reading doc 16 asks
 /// for (*no geometry is computed*).
 ///
-/// Two units in one cell (a range of zero) answer `front`: [`bearing_mdeg`] has no
+/// Two units in one cell (a range of zero) answer `front`: [`bearing_of`] has no
 /// bearing to give, and a point-blank shot at a unit's own cell is not a case the
 /// occupancy rule allows anyway.
 #[must_use]
 pub fn facet_band(target: &UnitState, shooter: &UnitState) -> &'static str {
-    let absolute = bearing_mdeg(&target.pose, &shooter.pose);
-    let relative = (absolute + FULL_MDEG).saturating_sub(target.pose.heading_mdeg) % FULL_MDEG;
+    facet_band_seen(&SeenPose::of(target), shooter)
+}
+
+/// **The same band, off a contact's plot rather than off the target** (16b cut
+/// F.3).
+///
+/// The resolution of a *shot* takes [`facet_band`], because a round strikes the
+/// tank that is there. The reflex controller's utility score and the chance the
+/// cockpit advertises ([`Arena::resolve_seen`]) take this one, because what side
+/// a target is showing is something a platform learns by looking and can be wrong
+/// about — which is why the plot carries the heading it was seen at.
+#[must_use]
+pub fn facet_band_seen(target: &SeenPose, shooter: &UnitState) -> &'static str {
+    let absolute = bearing_of(
+        shooter.pose.x_cm.saturating_sub(target.x_cm),
+        shooter.pose.y_cm.saturating_sub(target.y_cm),
+    );
+    let relative = (absolute + FULL_MDEG).saturating_sub(target.heading_mdeg) % FULL_MDEG;
     // The sectors are centred, so the half-sector is rotated away before the
     // division: 315_000..360_000 and 0..45_000 both land in sector 0.
     let sector = ((relative + QUARTER_MDEG / 2) % FULL_MDEG) / QUARTER_MDEG;
@@ -385,6 +400,51 @@ impl Arena {
         };
         let band = facet_band(at, from);
         let error_urad = self.error_urad(from, at, weapon, range_cm);
+        self.presented(at, band, error_urad, range_cm, cover)
+    }
+
+    /// **What the cockpit advertises** (16b cut F.3): the same three steps, over
+    /// the locked contact's **plot** instead of over the target.
+    ///
+    /// A hit chance a pilot is shown is *advice*, and advice may only be computed
+    /// from what the platform knows. Every target-side input is therefore read off
+    /// [`LockAim`]: the range and the cover that [`Arena::lock_aim`] already took
+    /// from the plot, and — this is the half [`Arena::resolve_shot`] cannot give —
+    /// the **face** the target was showing and the **speed** it was crossing at
+    /// when it was last seen. Read live, those two would move a pilot's displayed
+    /// percentage every pulse a hidden tank turned or accelerated, which is the
+    /// leak the whole cut exists to close, on the one surface that quotes a
+    /// number.
+    ///
+    /// The target's own **silhouette table** is still read off the unit: how wide
+    /// a tank's rear is is a fact about the machine and not about the sighting,
+    /// and the platform has classified it.
+    ///
+    /// The shot itself takes [`Arena::resolve_shot`], which is physics. For a
+    /// target that has moved since the sighting the two are deliberately different
+    /// numbers; while the target is in continuous view the plot is at most one
+    /// `sensors.pass_ms` old and they agree.
+    #[must_use]
+    pub fn resolve_seen(&self, shooter: ObjId, aim: &LockAim, weapon: &str) -> Resolution {
+        let (Some(from), Some(at)) = (self.unit(shooter), self.unit(aim.target)) else {
+            return Resolution::blind("front", MIN_ERROR_URAD, aim.cover);
+        };
+        let band = facet_band_seen(&aim.seen_at, from);
+        let error_urad = self.error_urad_seen(from, aim, weapon);
+        self.presented(at, band, error_urad, aim.range_cm, aim.cover)
+    }
+
+    /// **Doc 16 §3.5 steps 1 and 3**, once, for the three callers that differ only
+    /// in where the band and the cone came from (16b cut F.3 factored it out of
+    /// [`Arena::resolve_shot`]).
+    fn presented(
+        &self,
+        at: &UnitState,
+        band: &str,
+        error_urad: u32,
+        range_cm: u64,
+        cover: Cover,
+    ) -> Resolution {
         let Some(silhouette) = at.profile.band(band) else {
             // A unit whose content authored no silhouette for this band presents
             // nothing to it. Every cut-A and cut-S fixture is such a unit.
@@ -454,6 +514,54 @@ impl Arena {
         weapon: &str,
         range_cm: u64,
     ) -> u32 {
+        self.cone_urad(
+            shooter,
+            weapon,
+            range_cm,
+            lateral_cms(shooter, target),
+            || self.fire_attenuation(shooter.id, target.id),
+        )
+    }
+
+    /// **The same cone, off a contact's plot** (16b cut F.3) — the cone
+    /// [`Arena::resolve_seen`] advertises.
+    ///
+    /// Two of the five terms are about the target, and both are read off the
+    /// sighting: the speed it was crossing at, and — for a beam — the ground
+    /// between the shooter and the **cell it was last seen in**. Everything else
+    /// in the cone is a fact about the shooter, which a platform is never wrong
+    /// about.
+    fn error_urad_seen(&self, shooter: &UnitState, aim: &LockAim, weapon: &str) -> u32 {
+        self.cone_urad(
+            shooter,
+            weapon,
+            aim.range_cm,
+            lateral_seen_cms(shooter, &aim.seen_at),
+            || {
+                aim.seen_at
+                    .cell(&self.definition.terrain)
+                    .map_or(0, |cell| {
+                        self.fire_attenuation_at(shooter.id, aim.target, cell)
+                    })
+            },
+        )
+    }
+
+    /// The cone itself, once, for the two callers above: everything that is not
+    /// the target's crossing speed or the ground a beam crosses is the same
+    /// arithmetic either way (16b cut F.3).
+    ///
+    /// `attenuation` is a closure because it is a **trace**, and a direct-fire
+    /// weapon must not pay for one: the `is_beam` test below is still the whole of
+    /// what a stock shot pays for that term existing.
+    fn cone_urad(
+        &self,
+        shooter: &UnitState,
+        weapon: &str,
+        range_cm: u64,
+        lateral_cms: i32,
+        attenuation: impl FnOnce() -> u32,
+    ) -> u32 {
         let dispersion_mrad = shooter
             .weapon(weapon)
             .map(|summary| {
@@ -476,9 +584,7 @@ impl Arena {
             .weapon(weapon)
             .is_some_and(crate::arena::state::WeaponSummary::is_beam)
         {
-            let attenuation = self
-                .fire_attenuation(shooter.id, target.id)
-                .min(FULL_ATTENUATION);
+            let attenuation = attenuation().min(FULL_ATTENUATION);
             urad = urad.saturating_add(term_urad(
                 terms.beam_attenuation,
                 attenuation.saturating_mul(PERMILLE) / FULL_ATTENUATION,
@@ -490,7 +596,7 @@ impl Arena {
         ));
         urad = urad.saturating_add(term_urad(
             terms.target_lateral_speed,
-            speed_permille(lateral_cms(shooter, target)),
+            speed_permille(lateral_cms),
         ));
         urad = urad.saturating_add(term_urad(
             terms.gunnery,
@@ -577,34 +683,7 @@ impl Arena {
         let Some(at) = self.unit(target) else {
             return Resolution::blind(band, taken.error_urad, taken.cover);
         };
-        let Some(silhouette) = at.profile.band(band) else {
-            return Resolution::blind(band, taken.error_urad, taken.cover);
-        };
-        let scale = cover_permille(taken.cover);
-        let width = u64::from(silhouette.width_cm)
-            .saturating_mul(u64::from(scale))
-            .saturating_div(u64::from(PERMILLE));
-        let presented_width_cm = u32::try_from(width).unwrap_or(u32::MAX);
-        if presented_width_cm == 0 {
-            return Resolution::blind(band, taken.error_urad, taken.cover);
-        }
-        let angular_urad = u32::try_from(
-            u64::from(presented_width_cm)
-                .saturating_mul(1_000_000)
-                .saturating_div(range_cm.max(1)),
-        )
-        .unwrap_or(u32::MAX);
-        let (x_permille, p_permille) = self.hit_permille(angular_urad, taken.error_urad);
-        Resolution {
-            band: SmolStr::new(band),
-            presented_width_cm,
-            presented_area_cm2: width.saturating_mul(u64::from(silhouette.height_cm)),
-            angular_urad,
-            error_urad: taken.error_urad,
-            x_permille,
-            p_permille,
-            cover: taken.cover,
-        }
+        self.presented(at, band, taken.error_urad, range_cm, taken.cover)
     }
 
     /// **What the platform's own lock resolves against** (16b cut W.1's
@@ -617,33 +696,59 @@ impl Arena {
     /// shot taken now would be resolved at — cover and all — at the cost cut W.2's
     /// `lock_p_permille` already paid.
     ///
-    /// The range is `range_cm(shooter, target)`, which is the same function
-    /// [`crate::arena::step::Arena::frame_contacts`] takes a contact's range with,
-    /// so the band a weapon reports and the band the contact row prints cannot
-    /// disagree.
+    /// **16b cut F.3 moved it onto the contact's plot.** The range and the cover
+    /// are taken from where the platform last *saw* the target, exactly as
+    /// [`crate::arena::step::Arena::frame_contacts`] takes a contact's range and
+    /// cell, so the band a weapon reports, the percentage `LOCK` and
+    /// `WEAPONSTATUS` both quote, and the band the contact row prints are one
+    /// reading of one plot and cannot disagree.
+    ///
+    /// **It is advice, and advice is knowledge.** The shot that follows is
+    /// resolved against where the target *is*
+    /// (`crate::arena::weapons::Arena::fire`), so for a target that has moved
+    /// since the last sighting the displayed percentage and the percentage the
+    /// draw is compared against are different numbers. That is correct and
+    /// intended: a gunner reads a plot and the round flies at a tank. While a
+    /// target is in continuous view the plot is at most one `sensors.pass_ms` old
+    /// and the two agree.
     #[must_use]
     pub fn lock_aim(&self, platform: ObjId) -> Option<LockAim> {
         let state = self.unit(platform)?;
         let contact = state.lock?;
-        let target = self.contacts.resolve(platform, contact)?.target;
-        let at = self.unit(target)?;
+        let held = *self.contacts.resolve(platform, contact)?;
+        let target = held.target;
+        // Only that it is still in the match: the range and the cover below come
+        // off the plot.
+        let _ = self.unit(target)?;
         Some(LockAim {
             target,
-            range_cm: range_cm(&state.pose, &at.pose),
-            cover: self.fire_cover(platform, target),
+            seen_at: held.seen_at,
+            range_cm: held.seen_at.range_from(&state.pose),
+            cover: held
+                .seen_at
+                .cell(&self.definition.terrain)
+                .map_or(Cover::None, |cell| {
+                    self.fire_cover_at(platform, target, cell)
+                }),
         })
     }
 }
 
 /// **The lock, resolved once per pilot per pulse** (16b cut F.2), for every
 /// weapon's band and every weapon's chance to read off.
+///
+/// **16b cut F.3**: every field of it is a reading of the contact's **plot**, and
+/// the plot itself is carried so that the advertised chance
+/// ([`Arena::resolve_seen`]) can read the face and the crossing speed off it too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LockAim {
     /// What the locked contact is held on.
     pub target: ObjId,
-    /// The range to it, centimetres.
+    /// **Where the platform last saw it** (16b cut F.3), and how it was moving.
+    pub seen_at: SeenPose,
+    /// The range to the plot, centimetres.
     pub range_cm: u64,
-    /// What the ground it stands on gives it.
+    /// What the ground under the plot gives it.
     pub cover: Cover,
 }
 
@@ -678,8 +783,23 @@ fn speed_permille(speed_cms: i32) -> u32 {
 /// driving straight at or away from the shooter contributes nothing, which is the
 /// whole point of the term.
 fn lateral_cms(shooter: &UnitState, target: &UnitState) -> i32 {
-    let bearing = bearing_mdeg(&shooter.pose, &target.pose);
-    let across = (target.pose.heading_mdeg + FULL_MDEG).saturating_sub(bearing) % FULL_MDEG;
+    lateral_seen_cms(shooter, &SeenPose::of(target))
+}
+
+/// **The same crossing speed, off a contact's plot** (16b cut F.3): the heading
+/// and the speed the target was seen at, against the bearing to where it was seen.
+///
+/// The shot's cone takes [`lateral_cms`], because a round is thrown at a tank
+/// that is really moving. The cone the cockpit advertises takes this one: how
+/// fast a target is crossing is something a platform learns by watching it, and
+/// reading it live would move a pilot's displayed chance every time a tank they
+/// cannot see turned or accelerated.
+fn lateral_seen_cms(shooter: &UnitState, target: &SeenPose) -> i32 {
+    let bearing = bearing_of(
+        target.x_cm.saturating_sub(shooter.pose.x_cm),
+        target.y_cm.saturating_sub(shooter.pose.y_cm),
+    );
+    let across = (target.heading_mdeg + FULL_MDEG).saturating_sub(bearing) % FULL_MDEG;
     let scaled = i64::from(target.speed_cms)
         .saturating_mul(sin_fx(across))
         .saturating_div(SIN_ONE);

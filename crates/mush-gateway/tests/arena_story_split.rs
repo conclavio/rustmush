@@ -274,6 +274,21 @@ impl russh::client::Handler for AcceptAll {
     }
 }
 
+/// **Whether a line names a side as a word** (16b cut F.3).
+///
+/// The leak check forbids the substring `red` in a victim's own damage lines,
+/// and `starts_with("The ")` lets in every line that opens that way — so a
+/// sentence such as `The last match is cleared from the board.` would
+/// false-fail on `cleared`. A boundary test forbids the side's own name and
+/// nothing that merely spells it.
+fn names_side(line: &str, side: &str) -> bool {
+    line.match_indices(side).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at.saturating_add(side.len())..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}
+
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -715,12 +730,18 @@ async fn the_story_is_the_same_story_through_the_gateway() {
         .lines()
         .filter(|line| line.starts_with("Hit on the ") || line.starts_with("The "))
     {
-        for leak in [held.as_str(), "red", "bearing", "cannon", "°"] {
+        for leak in [held.as_str(), "bearing", "cannon", "°"] {
             assert!(
                 !line.contains(leak),
                 "a hit notice carried {leak:?} about the shooter: {line}"
             );
         }
+        // 16b cut F.3: the side is forbidden as a **word**, so a future sentence
+        // that happens to spell it (`cleared`) is not a false failure.
+        assert!(
+            !names_side(line, "red"),
+            "a hit notice named the shooter's side: {line}"
+        );
     }
 
     // The bystander stood in the lobby for the whole match: the announcements
