@@ -784,6 +784,27 @@ impl Engine {
             .and_then(|oracle| oracle.account_of(character))
     }
 
+    /// **Tell the installed oracle about a character the world has just made**
+    /// (16b cut F.4). `false` when no oracle is installed, when the
+    /// implementation cannot learn, or when the character is already claimed by
+    /// another account — the caller logs, and the character stays unmapped and
+    /// fails closed.
+    ///
+    /// The same `Arc` is behind `mush_sim::AccountOracle`, so one call is seen
+    /// by both readers.
+    pub fn link_account_character(&self, character: ObjId, account: crate::AccountId) -> bool {
+        self.account_identity
+            .as_ref()
+            .is_some_and(|oracle| oracle.link(character, account))
+    }
+
+    /// The other half: forget a destroyed or unlinked character (16b cut F.4).
+    pub fn unlink_account_character(&self, character: ObjId) -> bool {
+        self.account_identity
+            .as_ref()
+            .is_some_and(|oracle| oracle.unlink(character))
+    }
+
     /// Speak a relayed line as `actor` on the channel named `channel`
     /// (programme D4): the registered [`RelaySpeaker`](crate::RelaySpeaker)
     /// (comsys) runs membership, gag and speak-lock and marks the origin so the

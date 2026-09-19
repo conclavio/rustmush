@@ -49,14 +49,18 @@
 //!
 //! # Why the two accounts are seeded before the world task spawns
 //!
-//! `mush_server::accounts_identity::hydrate` builds the character → account map
-//! **once, at boot**, and nothing updates it afterwards; `SIM TEAM` fails closed on
-//! an unmapped character (doc 10 R3). A player who types `create` at the welcome
-//! screen therefore cannot claim a simulator slot until the next reboot. Every sim
-//! lens in this directory seeds its accounts before the engine is built for that
-//! reason and this one does too — the pilots still arrive through the front door,
-//! build their sheets with `+chargen`, and **walk** `ooc` → `simulator` → `red`/`blue`
-//! rather than being teleported.
+//! For speed, and nothing else. `mush_server::accounts_identity::hydrate` builds
+//! the character → account map at boot and, since **16b cut F.4**, the world task
+//! keeps it current: a player who types `create` at the welcome screen can claim a
+//! simulator slot straight away, which
+//! `crates/mushd/tests/front_door.rs` proves over real SSH and
+//! `crates/mush-gateway/tests/front_door_split.rs` proves through the split. This
+//! lens seeds its two accounts in the store before the engine is built because
+//! that is several seconds cheaper than registering them through the welcome
+//! screen, and what it is here to assert is the match, not the front door. The
+//! pilots still arrive through the front door, build their sheets with
+//! `+chargen`, and **walk** `ooc` → `simulator` → `red`/`blue` rather than being
+//! teleported.
 //!
 //! # Why the fight is frontal
 //!
@@ -76,7 +80,8 @@
 //! # Why the two tanks are re-posed before `SIM START`
 //!
 //! The shipped `arenas/proving_ground.json` musters red at cell column 6 and blue at
-//! column 249: 2.4 km apart against a `visual_mk1` that reaches 600 m, which is a
+//! column 249, both on row 97, the east-west road (16b cut F.4): 2.4 km apart
+//! against a `visual_mk1` that reaches 600 m, which is a
 //! minute of wall time spent proving that a tank can cross a map. So staff re-poses
 //! the two slot-1 tanks **62 cells apart** on the east-west road — just outside the
 //! sensor's own 60 cells at every signature factor, so the first `CONTACTS` is

@@ -97,6 +97,37 @@ pub trait AccountIdentity: Send + Sync {
     /// mapped (unknown, unmapped, or its account carries no id yet).
     fn account_of(&self, character: ObjId) -> Option<AccountId>;
 
+    /// **Record a character the world has just made** (16b cut F.4, the K6
+    /// point).
+    ///
+    /// The map is hydrated once at boot, so before this existed a character
+    /// created *after* boot was unmapped until the next restart and every
+    /// account policy failed closed on it — which is the right behaviour for an
+    /// unknown character and the wrong one for a character the world created a
+    /// millisecond ago. The one writer is the world task, in the same turn that
+    /// creates the Player, so the mapping exists before the reply leaves.
+    ///
+    /// `&self` because both readers hold the same `Arc<dyn AccountIdentity>`:
+    /// an implementation that can learn carries its own interior mutability.
+    /// The default cannot learn and says so, which keeps every fixed test
+    /// oracle honest rather than silently accepting a write it drops.
+    ///
+    /// Returns whether the mapping is now in place. A character already claimed
+    /// by a **different** account is a data-integrity fault: the implementation
+    /// must leave it unmapped (never overwrite) and answer `false`.
+    fn link(&self, character: ObjId, account: AccountId) -> bool {
+        let _ = (character, account);
+        false
+    }
+
+    /// **Forget a character** — the other half of [`AccountIdentity::link`], for
+    /// a character that is destroyed or unlinked from its account. Returns
+    /// whether a mapping was removed.
+    fn unlink(&self, character: ObjId) -> bool {
+        let _ = character;
+        false
+    }
+
     /// Whether two characters resolve to the **same** account. `None` if either
     /// is unknown — the caller must refuse, never assume "different".
     fn same_account(&self, a: ObjId, b: ObjId) -> Option<bool> {

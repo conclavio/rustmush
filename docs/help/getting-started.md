@@ -58,6 +58,12 @@ button opens the composer with the reply ready. Scroll to the top of the
 scene and "Load older history" pulls the lines you already saw back from
 the server's recent buffer.
 
+The simulator is through the east corridor out of the Welcome Hall: two
+sides fly stock tanks against each other on the proving ground, and none of
+it is part of the story. Type "simulator" from the hall, or read "help
+simulator" first.
+
 Where to go next: "help movement" and "help communication" cover daily
-life; "help building" starts you on making rooms of your own; "help
+life; "help chargen" builds your pilot; "help simulator" flies;
+"help building" starts you on making rooms of your own; "help
 rules-of-conduct" covers expectations for play.

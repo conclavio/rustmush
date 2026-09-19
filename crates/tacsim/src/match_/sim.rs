@@ -1,5 +1,5 @@
-//! **`SIM`, the lobby's one verb, and the gate that gives it a place** (16b cut
-//! K.1; doc 16 §3.7 "Verbs", §3.8 "Lifecycle").
+//! **`SIM`, the lobby's one verb** (16b cut K.1; doc 16 §3.7 "Verbs", §3.8
+//! "Lifecycle").
 //!
 //! ```text
 //! SIM TEAM red | blue     claim one slot on a side
@@ -20,22 +20,22 @@
 //! **same** [`Selector`] on the way in. There is one code path, not two
 //! spellings with two behaviours.
 //!
-//! # Why a gate and not a per-room verb
+//! # Why one global verb and not a per-room one
 //!
 //! There is no such thing as a verb that exists in one room: the command table
-//! is global. So `SIM` is registered globally and a [`CommandGate`] refuses it
+//! is global. So `SIM` is registered globally and **the handler** refuses it
 //! anywhere but the lobby, the red room and the blue room with one line —
 //! [`crate::match_::OUTSIDE_CENTRE`]. A player who types `SIM` in the bar is
 //! told where the simulator is, which is better than "Huh?", and the lobby's
 //! verbs are still contextual in the only sense that matters: outside the
-//! centre, they do nothing at all.
+//! centre, they do nothing at all. It was a `CommandGate` until **16b cut F.4**;
+//! the comment block above [`register`] says why it is not one any more.
 //!
 //! A pilot **inside a pod** counts as being in that pod's team room, because
 //! that is where cut K.2's `BOARD` leaves them and `SIM ABORT` is a
 //! participant's right from wherever they are (doc 16 §3.8). A world that has no
-//! centre at all — an OOC pack older than version 4 — gets no gate: the verb
-//! answers "This server has no simulator centre." rather than pointing down a
-//! corridor that is not there.
+//! centre at all — an OOC pack older than version 4 — answers "This server has
+//! no simulator centre." rather than pointing down a corridor that is not there.
 //!
 //! The three rooms are resolved at dispatch through the **content latch**, by
 //! the pack entry ids C.1 authored (`room.simulator_lobby`, `room.sim_red`,
@@ -55,13 +55,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::module::{ModError, Registrar, TickCadence};
-use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, Registry, SceneId, World};
+use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, SceneId};
 use smol_str::SmolStr;
 
 use crate::arena::state::Team;
 use crate::arena_bridge::NOTICE_CATEGORY;
-use crate::match_::centre;
-use crate::match_::lobby::{self, OUTSIDE_CENTRE, SimError};
+use crate::match_::lobby::{self, SimError};
 
 /// The tick that closes boarding.
 pub const BOARD_TICK: &str = "tacsim.board";
@@ -149,6 +148,17 @@ fn selector_of(ctx: &Ctx<'_>) -> Option<(Selector, String)> {
 /// Whatever the centre refused, as the one line the player sees.
 pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM STATUS";
+    // **Where before what** (16b cut F.4 residual). The deleted gate answered
+    // every spelling of the verb outside the centre with the one
+    // [`crate::match_::OUTSIDE_CENTRE`] line, and taking it away put the parser
+    // in front: `SIM wibble` printed the usage block and a bare `SIM TEAM` asked
+    // "Which side?" to somebody standing in the bar — the simulator explaining
+    // itself to a player who is nowhere near one, and a second spelling of a
+    // refusal that is supposed to have exactly one. The library's own selectors
+    // ask again inside their handlers, because `lobby` is a public surface and
+    // its guards are its own; this is what makes the ANSWER the same for every
+    // line the verb is given.
+    lobby::outside_centre(ctx.w, ctx.actor).map_err(refusal)?;
     let Some((selector, rest)) = selector_of(ctx) else {
         return Err(CmdError::msg(format!("Usage: {USAGE}")));
     };
@@ -170,8 +180,9 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Selector::Abort => lobby::abort(ctx).map_err(refusal),
         Selector::Status => {
             // A read, and the only selector that does not need the centre to be
-            // in any particular state — but it is still of the centre, so it is
-            // still refused outside it (the gate has already done that).
+            // in any particular state — but it is still of the centre, and the
+            // check at the top of this function is what refuses it outside one.
+            // `lobby::status_lines` has no location check of its own.
             let actor = ctx.actor;
             for row in lobby::status_lines(ctx.w) {
                 ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, row);
@@ -186,41 +197,41 @@ fn refusal(error: SimError) -> CmdError {
     CmdError::msg(error.to_string())
 }
 
-/// **The contextual gate** — `SIM` exists everywhere and means something in
-/// three rooms.
-pub struct SimGate;
-
-impl mush_core::CommandGate for SimGate {
-    fn check(
-        &self,
-        w: &World,
-        _reg: &Registry,
-        actor: ObjId,
-        verb: &str,
-        _line: &str,
-    ) -> Result<(), String> {
-        // The leading verb arrives with its switches stripped, so `SIM/STATUS`
-        // reaches this as `sim` like every other spelling.
-        if !verb.eq_ignore_ascii_case(SIM_VERB) {
-            return Ok(());
-        }
-        if centre::where_in_centre(w, actor).is_some() {
-            return Ok(());
-        }
-        // A world with no centre at all — an OOC pack older than version 4, or a
-        // composition without the content module — has no lobby to point at, so
-        // the gate stands aside and the verb answers the true thing ("This
-        // server has no simulator centre.") rather than sending a player down a
-        // corridor that is not there.
-        if centre::centre_rooms(w).is_none() {
-            return Ok(());
-        }
-        Err(OUTSIDE_CENTRE.to_owned())
-    }
-}
+// ---------------------------------------------------------------------------
+// Why there is no longer a `SIM` gate (16b cut F.4)
+// ---------------------------------------------------------------------------
+//
+// There was one, and it refused `SIM` anywhere but the centre. A command gate
+// runs at step 2 of `mush_core::cmd::dispatch`, **before** the alias stage and
+// before home, exits and the command table (step 5 is the exit match) — so the
+// gate ate every line whose first word was `sim`, including the `sim` alias the
+// OOC pack put on the Welcome Hall's own exit. A player read `Simulator Lobby
+// <SIM>` on the exit list, typed `sim`, and was told "The simulator is through
+// the lobby." while standing in front of it; the exit never matched.
+//
+// The word belongs to the verb, so version 5 of the pack takes `sim` off that
+// exit and off the two team rooms' return exits (where the opposite happened:
+// the gate stood aside inside the centre, the exit matched first, and a bare
+// `SIM` walked a pilot out of the room `BOARD` needs them in). But a gate that
+// can swallow any line beginning with its verb is a trap for the next piece of
+// content too, so the gate goes as well as the alias: [`sim_command`] refuses
+// with the same [`OUTSIDE_CENTRE`] sentence from inside the command table, where
+// an exit alias and a player's own alias both get their turn first.
+//
+// `BOARD` and the cockpit selectors keep a gate — theirs is contextual inside
+// the centre, which is work a handler cannot do — and cut F.4 gives it the same
+// stand-aside rule outside it.
 
 /// The boarding tick's body: one comparison, and nothing at all on a centre that
 /// is not boarding — **plus the boot pod sweep, once** (16b cut F.1).
+///
+/// The tick is registered whether or not the layer is on, and the two halves
+/// want opposite things of that (16b cut F.4). The **sweep** must still run with
+/// the layer off: a server restarted with `[tacsim].enabled` turned off is
+/// exactly where bodies are left shut in pods by the run before it, and nothing
+/// else lets them out. The **deadline** must not: it is the simulator driving
+/// itself on a server whose simulator is off, so `lobby::board_deadline` asks
+/// the layer first.
 fn board_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // The boot pass arms this and the first tick performs it: a pod is resolved
     // through the content latch, which is the content module's state and is
@@ -247,8 +258,9 @@ fn board_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     lobby::board_deadline(ctx, now_ms);
 }
 
-/// Register the lobby's surface on the **tacsim** module: the verb, the gate and
-/// the boarding tick.
+/// Register the lobby's surface on the **tacsim** module: the verb and the
+/// boarding tick. There is no command gate; 16b cut F.4 deleted it, and
+/// [`sim_command`] does the location check itself (see the block comment above).
 ///
 /// The `MatchBook` slot the centre lives on is
 /// [`crate::arena_bridge::register`]'s, registered beside the arena registry, so
@@ -278,14 +290,14 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    SIM STATUS          the centre: its state, its sides, its slots and its \
                    pods. Also the bare SIM.\n\
                    The switch spelling (SIM/STATUS) is the same command. All of it works in \
-                   the simulator lobby, the two team rooms and the pods, and nowhere else."
+                   the simulator lobby, the two team rooms and the pods; anywhere else every \
+                   spelling of SIM answers only where the simulator is."
                 .into(),
             ..CommandSpec::default()
         },
         Arc::new(sim_command),
     )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
-    reg.command_gate(Arc::new(SimGate));
     reg.tick(
         BOARD_TICK,
         TickCadence::Coarse(BOARD_TICK_PERIOD),

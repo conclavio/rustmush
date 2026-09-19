@@ -19,7 +19,10 @@
 //! 3. ask the world task to create the Player
 //!    ([`WorldHandle::create_player`]), which **waits for the store to
 //!    acknowledge the creation batch** (durable write-through);
-//! 4. link the character ([`ObjectStore::link_character`], atomic append).
+//! 4. link the character ([`ObjectStore::link_character`], atomic append), and
+//!    on failure take the mapping step 3 put in the server's live account
+//!    oracle back out again ([`ServiceReq::UnlinkPlayer`], 16b cut F.4), so the
+//!    orphan Player is an orphan on both sides.
 //!
 //! Only after all of that does the caller emit its confirmation output —
 //! the ack gate PLAN's write-through design requires. The store has no
@@ -42,6 +45,7 @@ use mush_config::accounts::{
     validate_password, verify_hash,
 };
 use mush_config::unix_now_s;
+use mush_core::ObjId;
 use mush_ipc::{CreatePlayerError, GatewayLink, ServiceReq, ServiceResp};
 use mush_store::{AccountRec, ObjectStore, StoreError};
 
@@ -193,15 +197,33 @@ impl Accounts {
 
     /// The shared tail of both creation flows: Player via the world task
     /// (ack-gated), then the atomic link.
+    ///
+    /// **16b cut F.4**: `account_id` is the account's immutable id, and it rides
+    /// on the request. The server inserts `character -> account` into its live
+    /// account oracle in the turn that creates the Player — before this
+    /// function's own `link_character` writes the store document the next boot
+    /// will re-derive the map from — so a character created after boot can use
+    /// an account-scoped surface straight away. `None` only when the id could
+    /// not be resolved at all; the character is then unmapped and fails closed.
     async fn create_and_link(
         &self,
         account: &str,
+        account_id: Option<mush_core::AccountId>,
         char_name: &str,
     ) -> Result<CharSummary, CreateErr> {
+        if account_id.is_none() {
+            tracing::error!(
+                account,
+                char_name,
+                "creating a character for an account with no resolvable id; it will be unmapped \
+                 until the next boot re-derives the account map"
+            );
+        }
         let id = match self
             .link
             .request(ServiceReq::CreatePlayer {
                 name: char_name.to_string(),
+                account: account_id,
             })
             .await
         {
@@ -239,8 +261,38 @@ impl Accounts {
                 // The Player exists but the account does not list it —
                 // recoverable by staff, never silent.
                 tracing::error!(account, %id, char_name, error = %e, "linking character failed");
+                // **16b cut F.4**: and the live oracle has to give the mapping
+                // back. The server inserted `character -> account` in the create
+                // turn against the document this write was going to make; with
+                // the document missing, a RAM mapping that outlived it would
+                // have the two halves disagree in the permissive direction until
+                // the next boot re-derives the map.
+                self.forget_character(account, id, char_name).await;
                 Err(CreateErr::Io(e.to_string()))
             }
+        }
+    }
+
+    /// Take a character back out of the server's live account oracle (16b cut
+    /// F.4), after the account document it was inserted against could not be
+    /// written. Best-effort and loud: a refusal leaves the mapping standing
+    /// until the next boot, and an operator is told which character it is.
+    async fn forget_character(&self, account: &str, id: ObjId, char_name: &str) {
+        match self
+            .link
+            .request(ServiceReq::UnlinkPlayer { character: id })
+            .await
+        {
+            Some(ServiceResp::UnlinkPlayer(_)) => {}
+            other => tracing::error!(
+                account,
+                %id,
+                char_name,
+                answer = ?other,
+                "the account oracle did not give the unlinked character back; it stays mapped in \
+                 the running server until the next boot re-derives the map from the account \
+                 documents"
+            ),
         }
     }
 }
@@ -322,11 +374,12 @@ impl AuthBackend for Accounts {
             run_blocking(move || hash_password(&password)).await??
         };
         let created = unix_now_s();
+        let account_id = mush_core::AccountId::mint(account, created).ok();
         let rec = AccountRec {
             // Mint the immutable id at creation from `(lowercased name,
             // created)` so a new account is mappable without a reboot; a mint
             // failure falls back to `None`, which the boot back-fill repairs.
-            id: mush_core::AccountId::mint(account, created).ok(),
+            id: account_id,
             name: account.to_string(),
             argon2_hash: hash,
             created,
@@ -339,7 +392,7 @@ impl AuthBackend for Accounts {
             Err(StoreError::AccountExists) => return Err(CreateErr::AccountExists),
             Err(e) => return Err(CreateErr::Io(e.to_string())),
         }
-        self.create_and_link(account, char_name).await
+        self.create_and_link(account, account_id, char_name).await
     }
 
     async fn create_character(
@@ -359,8 +412,18 @@ impl AuthBackend for Accounts {
             return Err(CreateErr::CharacterLimit);
         }
         self.require_name_free(char_name).await?;
-        self.create_and_link(account, char_name).await
+        self.create_and_link(account, account_id_of(&rec), char_name)
+            .await
     }
+}
+
+/// **One account record's immutable id** (16b cut F.4): the stored one, else
+/// minted from `(name, created)` — the same derivation
+/// `mush_server::accounts_identity::hydrate` uses, so a character linked at run
+/// time and the same character re-hydrated at the next boot resolve to one id.
+fn account_id_of(rec: &AccountRec) -> Option<mush_core::AccountId> {
+    rec.id
+        .or_else(|| mush_core::AccountId::mint(&rec.name, rec.created).ok())
 }
 
 #[cfg(test)]

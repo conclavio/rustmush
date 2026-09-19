@@ -13,7 +13,7 @@
 //! The proofs drive a **real** world task in the two states where the
 //! dispositions actually differ — gone, and holding a commit — and assert the
 //! two links answer *equal* values for every variant. The sample vector is
-//! checked against an exhaustive match, so a tenth `ServiceReq` variant fails
+//! checked against an exhaustive match, so an eleventh `ServiceReq` variant fails
 //! to compile here rather than being silently left out of the sweep.
 //!
 //! [`GatewayLink`]: mush_ipc::GatewayLink
@@ -388,17 +388,18 @@ fn boot(store: Arc<dyn ObjectStore>) -> PersistHandles {
 /// second half of the coverage gate — [`variant_name`] refuses to COMPILE when
 /// a variant is added, and this refuses to PASS when an arm is added there
 /// without a sample below.
-const SERVICE_REQ_VARIANTS: usize = 9;
+const SERVICE_REQ_VARIANTS: usize = 10;
 
 /// Name each variant through an exhaustive match.
 ///
-/// This is the durable half of the proof: adding a tenth `ServiceReq` arm in
+/// This is the durable half of the proof: adding an eleventh `ServiceReq` arm in
 /// `mush-ipc` makes this match non-exhaustive, so this file stops compiling
 /// until the new variant is named — and once named it must also be sampled in
 /// [`every_service_req`], or the count assertion there fails.
 fn variant_name(req: &ServiceReq) -> &'static str {
     match req {
         ServiceReq::CreatePlayer { .. } => "CreatePlayer",
+        ServiceReq::UnlinkPlayer { .. } => "UnlinkPlayer",
         ServiceReq::NameFree { .. } => "NameFree",
         ServiceReq::InInputContext { .. } => "InInputContext",
         ServiceReq::ConnectionReady { .. } => "ConnectionReady",
@@ -417,7 +418,9 @@ fn every_service_req() -> Vec<ServiceReq> {
     let samples = vec![
         ServiceReq::CreatePlayer {
             name: "parity-probe".to_string(),
+            account: None,
         },
+        ServiceReq::UnlinkPlayer { character: GOD },
         ServiceReq::NameFree {
             name: "parity-probe".to_string(),
         },

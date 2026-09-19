@@ -55,6 +55,19 @@ pub const NO_SUCH_SEAT: &str = "No such seat.";
 /// The one refusal for a crew surface a viewer holds no authority over.
 pub const NO_SUCH_CREW: &str = "No such crew.";
 
+/// **The one line a character the account oracle does not know is refused
+/// with** (16b cut F.4).
+///
+/// It used to say "your account is not mapped yet; reconnect and try again",
+/// from the days when the map was built once at boot and a character created
+/// after it was unmapped until the next restart. The map learns of a character
+/// in the world-task turn that creates it now, so reaching this means the
+/// character genuinely belongs to no account — a seeded `#1`, or an account
+/// document that does not name it — and reconnecting re-reads nothing. The line
+/// says what is true and promises no repair that exists.
+pub const NO_ACCOUNT_ON_RECORD: &str =
+    "This character has no account on record, so it cannot take a seat.";
+
 fn deny() -> CmdError {
     CmdError::msg("Permission denied.")
 }
@@ -441,7 +454,7 @@ fn seat_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // The account whose ONE foreground focus this seat will consume. `None` =
     // unknown = refuse, never a default (fail closed).
     let account = crate::seatstate::account_of(ctx, ctx.actor)
-        .ok_or_else(|| CmdError::msg("Your account is not mapped yet; reconnect and try again."))?;
+        .ok_or_else(|| CmdError::msg(NO_ACCOUNT_ON_RECORD))?;
     let actor = offer.fallback.holder;
     // K5: the SEED is the seat's own coordinates; the token itself is minted
     // server-side with a process nonce folded in, so it cannot be inverted from
@@ -588,7 +601,7 @@ fn seat_activate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // row must name the DRIVING account, and a mismatch refuses byte-identically
     // to a seat that never existed.
     let account = crate::seatstate::account_of(ctx, ctx.actor)
-        .ok_or_else(|| CmdError::msg("Your account is not mapped yet; reconnect and try again."))?;
+        .ok_or_else(|| CmdError::msg(NO_ACCOUNT_ON_RECORD))?;
     if !crate::seatstate::audit_is(ctx, grant.driver.0.as_str(), account) {
         return Err(no_seat());
     }
@@ -811,9 +824,7 @@ fn render_seat_error(error: SeatError) -> CmdError {
         SeatError::ChannelLeased { channel } => CmdError::msg(format!(
             "`{channel}` on that unit is under another controller's lease."
         )),
-        SeatError::UnmappedAccount => {
-            CmdError::msg("Your account is not mapped yet; reconnect and try again.")
-        }
+        SeatError::UnmappedAccount => CmdError::msg(NO_ACCOUNT_ON_RECORD),
         SeatError::OutOfReach => {
             CmdError::msg("That seat's console cannot be reached from where its crew stands.")
         }

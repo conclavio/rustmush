@@ -57,6 +57,21 @@ const COMMIT_PENDING: &str = "please retry in a moment";
 /// How many times a line is re-sent on that refusal before the test gives up.
 const RETRY_BUDGET: usize = 8;
 
+/// **The gateway's answer while the server half is not admitting connections
+/// yet** (`ConnectErr::WorldGone`, `crates/mush-gateway/src/bridge_common.rs`).
+///
+/// This rig starts the two halves independently and then waits on ONE signal:
+/// the gateway's `ssh_ready` oneshot, which fires when the SSH listener binds.
+/// Nothing in it waits for the server half to admit a connection. So the very
+/// first `connect` can land in that window and be refused with this sentence,
+/// and a rig that sent it once would then sit out its whole `STEP_TIMEOUT`. The
+/// first line is therefore re-sent for a few seconds while this exact sentence
+/// is the answer — a rig fix, not a product change, and nothing the lens
+/// asserts about custody is weakened.
+const WORLD_NOT_UP: &str = "Connection failed: the game is shutting down";
+/// How long the first login waits for the server half, in 200 ms steps.
+const ADMISSION_TRIES: usize = 25;
+
 // ---------------------------------------------------------------------------
 // The split rig — `restart_survival.rs`'s, because `crates/mush-gateway/tests`
 // has no shared support module and every file here carries its own.
@@ -303,6 +318,25 @@ impl Term {
         self.channel.data(&bytes[..]).await.expect("send line");
     }
 
+    /// Log in, waiting out a server half that is still booting. See
+    /// [`WORLD_NOT_UP`] for why this one line retries and no other does.
+    async fn connect_when_admitted(&mut self, account: &str, password: &str, connected: &str) {
+        for _ in 0..ADMISSION_TRIES {
+            let mark = self.mark();
+            self.send_line(&format!("connect {account} {password}"))
+                .await;
+            if self
+                .expect_one_of_after(mark, &[connected, WORLD_NOT_UP])
+                .await
+                == 0
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        panic!("the server half never admitted `{account}`");
+    }
+
     /// Run one line and wait for `needle` on the same span, retrying while the
     /// world answers the **transient** authoritative refusal.
     ///
@@ -424,9 +458,12 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
     .await;
 
     let (_handle, mut god) = play_client(ssh_addr).await;
-    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    god.connect_when_admitted(
+        "boss",
+        GM_PASSWORD,
+        "Connected as God (account boss, 1 connection).",
+    )
+    .await;
     god.expect("Limbo #0").await;
 
     // --- (1) the read crosses the boundary -------------------------------

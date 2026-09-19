@@ -28,6 +28,10 @@
 //!    boot, and leaves the tanks alone, because the reset is the boot pass's own
 //!    work and a deferred one would undo whatever staff had just done.
 //!
+//! **16b cut F.4** adds one more to the deadline's pair: with the layer off, the
+//! deadline drives nothing at all, because the tick that calls it is registered
+//! whether or not the simulator is on.
+//!
 //! That a reset tank can be **destroyed again** is
 //! `crates/tacsim/src/arena/damage.rs`'s
 //! `a_tank_wrecked_and_then_reset_can_be_wrecked_again`, which drives the same
@@ -712,6 +716,61 @@ fn the_board_deadline_emptying_a_side_frees_the_pod_for_a_different_pilot() {
         "the dropped match left the cockpit billet behind"
     );
     a_different_pilot_boards_red_pod_one(&mut rig, 2);
+}
+
+/// **With the layer off, the boarding deadline drives nothing** (16b cut F.4
+/// residual).
+///
+/// Every route INTO `Boarding` asks `lobby::require_layer` first, and the match
+/// book is RAM, so a running centre and a layer-off server cannot meet by
+/// themselves: `[tacsim].enabled` is read once at boot and a restart starts the
+/// centre `Idle`. What this test does by hand is therefore the only way to reach
+/// the state — the flag going out from under a centre that is mid-boarding — and
+/// it is worth pinning, because the boarding tick is registered unconditionally
+/// and was the one thing still driving the simulator on a server whose simulator
+/// is off: it would have dropped the unseated slots, ejected the seated pilot
+/// and announced an abort to a room where every `SIM` line answers only that the
+/// layer is off.
+///
+/// Its twin above — the same rig with the layer left on — is what proves the
+/// deadline still fires when it should.
+#[test]
+fn f4_with_the_layer_off_the_board_deadline_drives_nothing() {
+    let mut rig = Rig::boot(3);
+    one_aboard(&mut rig);
+    let red = rig.tank(tacsim::arena::state::Team::Red, 1);
+    let pod = rig.pod(0).expect("red pod 1 is locked to the first pilot");
+    let slots = rig.centre().slots.len();
+
+    // The layer goes out from under it. `TacsimStore::default()` is the shape a
+    // boot with `[tacsim].enabled = false` installs.
+    *rig.tw
+        .world_mut()
+        .module_state_mut::<TacsimStore>()
+        .expect("the tacsim slot") = TacsimStore::default();
+
+    rig.tick_to(120);
+
+    assert_eq!(
+        rig.state(),
+        MatchState::Boarding,
+        "the deadline ran on a server with the layer off"
+    );
+    assert_eq!(
+        rig.centre().slots.len(),
+        slots,
+        "the deadline dropped a slot on a server with the layer off"
+    );
+    assert_eq!(
+        rig.location(0),
+        Some(pod),
+        "the deadline ejected a pilot on a server with the layer off"
+    );
+    assert_eq!(
+        rig.billets(red).len(),
+        1,
+        "the deadline took the cockpit billet back on a server with the layer off"
+    );
 }
 
 #[test]

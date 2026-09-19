@@ -515,6 +515,19 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         return;
     };
     let obj = *obj;
+    // **16b cut F.4**: the account map's other half. A destroyed character is
+    // forgotten, so the id (never recycled) cannot answer an account question
+    // for a husk. The oracle behind this holder is the same instance the engine
+    // holds, so one call clears both readers; an unwired oracle and a character
+    // that was never mapped both answer `false` and cost one lookup.
+    if let Some(oracle) = ctx.w.module_state::<focus::AccountOracle>()
+        && oracle.unlink(obj)
+    {
+        tracing::info!(
+            character = obj.0,
+            "sim: a destroyed character left the account map"
+        );
+    }
     // E7c6: a destroyed carrier root drops its journey, so the seal lifts with
     // the husk and no ghost record keeps a dead subtree "under way".
     journey::on_root_destroyed(ctx, obj);

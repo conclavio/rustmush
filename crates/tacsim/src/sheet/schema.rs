@@ -52,7 +52,8 @@ pub const SECTION_STANDING: &str = "standing";
 
 /// The character's full name.
 pub const FIELD_NAME: &str = "name";
-/// The pilot's callsign — what the cockpit and the match ledger show.
+/// The pilot's callsign — what the NPC layer's capability profile names them
+/// by. Nothing in `arena/` or `match_/` reads it (16b cut F.4).
 pub const FIELD_CALLSIGN: &str = "callsign";
 /// One line of concept.
 pub const FIELD_CONCEPT: &str = "concept";

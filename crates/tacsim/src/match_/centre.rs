@@ -312,6 +312,26 @@ pub fn tank_for_slot(w: &World, team: Team, index: u8) -> Option<ObjId> {
     slot_object(w, CENTRE_ARENA, &slot)
 }
 
+/// **Whether the centre can start a match, for the boot log** (16b cut F.4).
+///
+/// `(the centre's three rooms resolve, how many of the arena's roster tanks are
+/// standing in this world)`. Both halves have to be true before two players can
+/// play: the rooms come with the starter area and the tanks come with the game's
+/// boot packs, which ride on `[tacsim].enabled`, so a world can easily have one
+/// and not the other — and the way that used to surface was `SIM START` refusing
+/// hours later, with advice nobody could act on. The composition root says it at
+/// boot instead.
+#[must_use]
+pub fn readiness(w: &World) -> (bool, usize) {
+    let rooms = centre_rooms(w).is_some();
+    let tanks = [Team::Red, Team::Blue]
+        .into_iter()
+        .flat_map(|team| (1..=PODS_PER_SIDE).map(move |index| (team, index)))
+        .filter(|(team, index)| tank_for_slot(w, *team, *index).is_some())
+        .count();
+    (rooms, tanks)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

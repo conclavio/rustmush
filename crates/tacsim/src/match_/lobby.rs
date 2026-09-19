@@ -54,7 +54,8 @@ use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
 use crate::match_::centre::{self, CENTRE_ARENA, CentreRoom, PODS_PER_SIDE};
 use crate::match_::{MatchBook, MatchOutcome, MatchState, Side};
 
-/// The one line the gate and every out-of-place `SIM` refuses with.
+/// The one line every out-of-place `SIM` refuses with. Until 16b cut F.4 a
+/// command gate said it; [`crate::match_::sim::sim_command`] says it now.
 pub const OUTSIDE_CENTRE: &str = "The simulator is through the lobby.";
 
 /// One claimed slot in the centre (doc 16 §3.8's `Selection`).
@@ -179,11 +180,30 @@ pub enum SimError {
     /// The tacsim layer did not compose.
     #[error("The arena is not available on this server.")]
     Unavailable,
-    /// The account oracle does not know this character (fail closed, doc 10 R3).
+    /// **The layer composed but is switched off** (16b cut F.4).
+    ///
+    /// The centre's rooms and pods come with the starter area, so they are here
+    /// whatever `[tacsim].enabled` says — but the arena, its domain and the eight
+    /// stock tanks are the game's own boot packs and ride on that flag. Before
+    /// this variant, two players could claim slots in such a centre and only
+    /// `SIM START` refused, with advice ("staff must re-apply the arena") that
+    /// named a thing no verb can do. The refusal belongs at the front instead.
     #[error(
-        "Your account is not mapped yet, so the simulator cannot hold a slot for you; reconnect, \
-         or ask staff to relink the character."
+        "The TacSim layer is off on this server, so the simulator has no arena and no tanks; \
+         staff must turn it on and restart."
     )]
+    LayerOff,
+    /// The account oracle does not know this character (fail closed, doc 10 R3).
+    ///
+    /// **16b cut F.4 made this sentence true.** It used to say "reconnect, or
+    /// ask staff to relink the character", and both were wrong: the map was
+    /// built once at boot, so reconnecting re-read nothing, and no staff verb
+    /// relinks. The map now learns of every character as it is created, so
+    /// reaching this means the character genuinely belongs to no account — a
+    /// seeded `#1`, or an account document that names it twice — and there is
+    /// nothing the player or staff can type to change that. So it says what is
+    /// true and promises no repair.
+    #[error("This character has no account on record, so the simulator cannot hold a slot for it.")]
     UnknownAccount,
     /// The account already holds a slot.
     #[error("You already hold {team} slot {index}. `SIM LEAVE` gives it up.")]
@@ -217,7 +237,19 @@ pub enum SimError {
     #[error("The {0} side has no pilots; a match takes at least one a side.")]
     EmptySide(&'static str),
     /// The centre's arena, or one of its units, is not in this world.
-    #[error("The simulator has no unit for {team} slot {index}; staff must re-apply the arena.")]
+    ///
+    /// **16b cut F.4 made the advice performable.** It used to say "staff must
+    /// re-apply the arena", and no staff verb can: the arena pack is a boot pack
+    /// and is deliberately not on the `@atlas/pack` shelf (doc 16 §3.3's tanks
+    /// are created once, by the centre's content, and the latch is what makes a
+    /// second boot make no ninth tank). The layer-off case now refuses earlier
+    /// with [`SimError::LayerOff`], so what is left here is K.1 deviation (1) —
+    /// a world that applied the arena before its roster existed, or one whose
+    /// tanks have since been destroyed — and the only repair is at boot.
+    #[error(
+        "The simulator has no unit for {team} slot {index}. The arena is applied at boot and no \
+         verb re-applies it; staff should read the server's boot log."
+    )]
     NoUnit {
         /// Which side.
         team: &'static str,
@@ -279,6 +311,26 @@ pub fn tank_of(w: &World, pod: ObjId) -> Option<ObjId> {
     centre::tank_of(w, pod)
 }
 
+/// **Refuse every lobby verb on a server with the layer switched off** (16b cut
+/// F.4).
+///
+/// First, and before anything reads the centre: the whole of what the lobby does
+/// ends in an arena that is not there, and a player who is going to be refused is
+/// owed the refusal at the word they typed rather than three verbs later. The
+/// `tacsim` module registers its verbs unconditionally so a disabled layer
+/// "refuses out loud rather than hiding a verb" (E5c deviation 1) — this is the
+/// half of that sentence the lobby did not have.
+pub(crate) fn require_layer(w: &World) -> Result<(), SimError> {
+    let store = w
+        .module_state::<crate::TacsimStore>()
+        .ok_or(SimError::Unavailable)?;
+    if store.enabled() {
+        Ok(())
+    } else {
+        Err(SimError::LayerOff)
+    }
+}
+
 /// The account behind a character, failing closed on the unknown.
 fn account_of(w: &World, actor: ObjId) -> Result<AccountId, SimError> {
     w.module_state::<mush_sim::AccountOracle>()
@@ -290,6 +342,20 @@ fn account_of(w: &World, actor: ObjId) -> Result<AccountId, SimError> {
 fn is_staff(w: &World, actor: ObjId) -> bool {
     mush_core::perm::has_power(w, actor, mush_core::Powers::SIM_ADMIN)
         || mush_core::perm::has_role(w, actor, mush_core::Role::Royalty)
+}
+
+/// **The `SIM STATUS` half of [`in_centre`]** (16b cut F.4): refuse an actor who
+/// is not standing in the centre, without naming which room they are in.
+///
+/// It exists because the read used to lean on the `SIM` command gate for this,
+/// and the gate is gone (see the comment above `sim::register`).
+///
+/// # Errors
+///
+/// [`SimError::NoCentre`] or [`SimError::OutsideCentre`], as the line the player
+/// sees.
+pub fn outside_centre(w: &World, actor: ObjId) -> Result<(), SimError> {
+    in_centre(w, actor).map(|_| ())
 }
 
 /// Refuse an actor who is not standing in the centre.
@@ -316,6 +382,7 @@ fn in_centre(w: &World, actor: ObjId) -> Result<CentreRoom, SimError> {
 /// [`SimError`], as the line the player sees.
 pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
     let actor = ctx.actor;
+    require_layer(ctx.w)?;
     in_centre(ctx.w, actor)?;
     let account = account_of(ctx.w, actor)?;
     let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
@@ -421,6 +488,7 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
 /// [`SimError`], as the line the player sees.
 pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     let actor = ctx.actor;
+    require_layer(ctx.w)?;
     in_centre(ctx.w, actor)?;
     let account = account_of(ctx.w, actor)?;
     let (team, index, seated) = {
@@ -543,6 +611,7 @@ fn settle_boarding(ctx: &mut Ctx<'_>) {
 /// [`SimError`], as the line the player sees.
 pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     let actor = ctx.actor;
+    require_layer(ctx.w)?;
     in_centre(ctx.w, actor)?;
     let staff = is_staff(ctx.w, actor);
     let account = match account_of(ctx.w, actor) {
@@ -840,6 +909,15 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
 /// Driven by the module's coarse tick, so it is a due world tick and not a timer
 /// inside the arena — there is no arena yet.
 pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
+    // **16b cut F.4 residual**: the layer, before the clock. Every route into
+    // `Boarding` asks [`require_layer`] first, so a centre on a server with the
+    // layer off is `Idle` and this would find nothing anyway — but the tick that
+    // calls it is registered unconditionally, and a deadline that ran the eject
+    // and abort machinery of a layer nobody can reach would be a second opinion
+    // about whether the simulator is on. There is one, and it is this.
+    if require_layer(ctx.w).is_err() {
+        return;
+    }
     let Some(match_id) = ({
         let Some(centre) = centre(ctx.w) else {
             return;
@@ -915,6 +993,7 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
 /// [`SimError`], as the line the player sees.
 pub fn abort(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     let actor = ctx.actor;
+    require_layer(ctx.w)?;
     in_centre(ctx.w, actor)?;
     let staff = is_staff(ctx.w, actor);
     let participant = centre(ctx.w).is_some_and(|centre| centre.slot_of_pilot(actor).is_some());
@@ -1103,6 +1182,12 @@ fn release_rows(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutco
 /// **`SIM STATUS`** — the centre, rendered (doc 16 §5).
 #[must_use]
 pub fn status_lines(w: &World) -> Vec<String> {
+    // **16b cut F.4**: the board of a centre that cannot run a match is a
+    // healthy-looking screen over nothing, which is how the layer-off world read
+    // as working right up to `SIM START`. The read says the true thing instead.
+    if let Err(error) = require_layer(w) {
+        return vec![error.to_string()];
+    }
     let Some(centre) = centre(w) else {
         return vec!["The arena is not available on this server.".to_owned()];
     };

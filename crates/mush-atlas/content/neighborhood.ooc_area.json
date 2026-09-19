@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.ooc_area",
-    "version": 4,
+    "version": 5,
     "kind": "neighborhood",
-    "digest": "12277cdd84b9d2ca0aae1a0727d46f63e80b08868db7522f1a88f67cc97f6abe",
+    "digest": "0218b87b4429dc60a4657d608f1446f87fe60e88df2871bd31f2bed39c67eb42",
     "requires": [
       {
         "id": "region.limbo",
@@ -142,7 +142,7 @@
         },
         "desc": "A bright hall with a scuffed floor and a hand-lettered sign: WELCOME TO THE LOT. Arrows point to the tutorial rooms east, the lounge south, and the simulator annexe at the end of the east corridor; a docent waits by the door. This is out of character: nothing said here is part of the story.",
         "details": {
-          "sign": "WELCOME TO THE LOT. Tutorial: east. Lounge: south. Simulator: SIM, down the east corridor. The bus: through the lounge and out. Type 'help getting-started' any time."
+          "sign": "WELCOME TO THE LOT. Tutorial: east. Lounge: south. Simulator: 'simulator', down the east corridor. The bus: through the lounge and out. Type 'help getting-started' any time, or 'help simulator' to fly."
         }
       }
     },
@@ -526,7 +526,7 @@
         "from": "room.welcome_hall",
         "to": "room.simulator_lobby",
         "names": [
-          "Simulator Lobby <SIM>;sim;simulator",
+          "Simulator Lobby <SIMULATOR>;simulator;annexe",
           "Welcome Hall <W>;w;hall;west"
         ],
         "portal": {
@@ -546,7 +546,7 @@
         "to": "room.sim_red",
         "names": [
           "Red Room <R>;r;red;north;n",
-          "Simulator Lobby <SIM>;sim;lobby;south;s"
+          "Simulator Lobby <LOBBY>;lobby;out;south;s"
         ],
         "portal": {
           "mode": "door"
@@ -560,7 +560,7 @@
         "to": "room.sim_blue",
         "names": [
           "Blue Room <B>;b;blue;south;s",
-          "Simulator Lobby <SIM>;sim;lobby;north;n"
+          "Simulator Lobby <LOBBY>;lobby;out;north;n"
         ],
         "portal": {
           "mode": "door"
@@ -609,10 +609,10 @@
       "def": {
         "name": "Simulator Selector",
         "room": "room.simulator_lobby",
-        "desc": "A console bolted to the lobby counter: two lit buttons, RED and BLUE, and a small screen reading STANDING BY. When the simulator opens, 'SIM TEAM red' or 'SIM TEAM blue' will claim a slot on that side and 'SIM STATUS' will say who holds one. The verbs are not built yet, so for now the screen is the whole of it.",
+        "desc": "A console bolted to the lobby counter: two lit buttons, RED and BLUE, and a small screen. 'SIM TEAM red' or 'SIM TEAM blue' claims a slot on that side, 'SIM STATUS' says who holds one, and 'SIM START' opens the pods once both sides have a pilot. 'help simulator' is the rest of it.",
         "details": {
-          "screen": "STANDING BY -- no match scheduled. SIM TEAM red|blue claims a slot when the verbs land; SIM LEAVE gives one back.",
-          "buttons": "Both lit, neither wired. Pressing one does nothing but click."
+          "screen": "SIM TEAM red|blue claims a slot. SIM LEAVE gives one back. SIM START opens the pods; SIM ABORT calls the match off. SIM STATUS is this screen, in words.",
+          "buttons": "Both lit. Pressing one does nothing but click: the sides are taken with SIM TEAM, not with a thumb."
         },
         "flags": [
           "sticky"
@@ -624,9 +624,9 @@
       "def": {
         "name": "Red Pod 1",
         "room": "room.sim_red",
-        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and RED 1 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 1 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
         "details": {
-          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
         },
         "interior": true
       }
@@ -636,9 +636,9 @@
       "def": {
         "name": "Red Pod 2",
         "room": "room.sim_red",
-        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and RED 2 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 2 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
         "details": {
-          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
         },
         "interior": true
       }
@@ -648,9 +648,9 @@
       "def": {
         "name": "Red Pod 3",
         "room": "room.sim_red",
-        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and RED 3 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 3 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
         "details": {
-          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
         },
         "interior": true
       }
@@ -660,9 +660,9 @@
       "def": {
         "name": "Red Pod 4",
         "room": "room.sim_red",
-        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and RED 4 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and RED 4 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
         "details": {
-          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
         },
         "interior": true
       }
@@ -672,9 +672,9 @@
       "def": {
         "name": "Blue Pod 1",
         "room": "room.sim_blue",
-        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and BLUE 1 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 1 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
         "details": {
-          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
         },
         "interior": true
       }
@@ -684,9 +684,9 @@
       "def": {
         "name": "Blue Pod 2",
         "room": "room.sim_blue",
-        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and BLUE 2 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 2 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
         "details": {
-          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
         },
         "interior": true
       }
@@ -696,9 +696,9 @@
       "def": {
         "name": "Blue Pod 3",
         "room": "room.sim_blue",
-        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and BLUE 3 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 3 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
         "details": {
-          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
         },
         "interior": true
       }
@@ -708,9 +708,9 @@
       "def": {
         "name": "Blue Pod 4",
         "room": "room.sim_blue",
-        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a blank panel, and BLUE 4 stencilled above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+        "desc": "A moulded shell about the size of a phone box: one hatch, one seat, a panel, and BLUE 4 stencilled above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
         "details": {
-          "panel": "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else."
+          "panel": "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them."
         },
         "interior": true
       }

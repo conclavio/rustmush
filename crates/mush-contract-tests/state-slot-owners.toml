@@ -331,9 +331,11 @@ reason = """
 16b cut W.3's story test (doc 16 §1's A1), performing the same post-composition
 wiring the four rows above perform and for the same reason, end to end: two
 pilots and a bystander walk in through the front door, and both a simulator slot
-and the cockpit focus belong to an ACCOUNT. The map `mush_server::boot` hydrates
-is boot-time and immutable, which is also why this lens seeds its accounts before
-the engine is built rather than creating them at the welcome screen.
+and the cockpit focus belong to an ACCOUNT. It seeds its accounts in the store
+before the engine is built because that is faster than registering three of them
+at the welcome screen; since 16b cut F.4 the map the boot hydrates also learns of
+every character the world makes afterwards, and `front_door.rs` is the lens for
+that.
 """
 
 [[site]]
@@ -501,6 +503,21 @@ default `mush_faction::FactionState`. Unowned for the same reason as the row
 above.
 """
 
+[[site]]
+path = "crates/mushd/tests/front_door.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut F.4's front-door lens, performing the same post-composition wiring every
+row above performs — `mush_server::boot` installs the hydrated map into this slot
+and into the engine, and a test that composes the roster by hand has to do it
+too. This one is the point of the file rather than a prerequisite of it: the map
+is hydrated from a store with NO accounts in it, and what the lens proves is that
+the world task's own insert reaches this same instance, so two people who
+register at the welcome screen after boot can each claim a simulator slot.
+"""
+
 # ---------------------------------------------------------------------------
 # Observed foreign writes (the census run)
 # ---------------------------------------------------------------------------
@@ -520,4 +537,5 @@ above.
 # that go around `Ctx` through `World::module_state_mut` (counted at 16b cut F.1,
 # which added two: the release half's own harness and its SSH lens, both wiring
 # the account oracle a boot would have hydrated; the figure this comment carried
-# before had drifted behind the rows the arena cuts added).
+# before had drifted behind the rows the arena cuts added. 16b cut F.4 added a
+# thirty-eighth, `front_door.rs`, for the same slot and the same reason).

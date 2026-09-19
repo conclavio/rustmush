@@ -1,6 +1,6 @@
 //! **C.1 (16b §8 cut C; doc 16 §3.7, §4)** — the simulator centre in the OOC
-//! pack: items that are interior spaces, and the pack's own step from version 3
-//! to version 4.
+//! pack: items that are interior spaces, and the pack's own steps from version 3
+//! to the shipped one.
 //!
 //! An `item` entry carrying `interior: true` is applied as a Thing a character
 //! can be placed *inside* — the two facts `@spatial/place/interior` looks for,
@@ -8,9 +8,19 @@
 //! pod is. A plain item is not one, and says so.
 //!
 //! The upgrade half drives the pack's own latch: a world already at
-//! `ooc_area@3` takes version 4 as an update that adds the simulator lobby, the
-//! red and blue rooms, their exits, the selector and the eight pods and moves
-//! nothing that was already standing; a fresh world lands all of it at once.
+//! `ooc_area@3` takes the shipped version as an update that adds the simulator
+//! lobby, the red and blue rooms, their exits, the selector and the eight pods
+//! and moves nothing that was already standing; a fresh world lands all of it at
+//! once.
+//!
+//! **16b cut F.4** adds the second step, and it is a different shape: version 5
+//! creates nothing at all. It rewrites the eleven strings that told the players
+//! the simulator was not built, corrects the Welcome Hall's sign, which sent
+//! them at the one word the `SIM` verb shadows, and takes `sim` off three exits
+//! so that verb can be typed. A world at version 4 has the old strings standing
+//! on real objects, so the upgrade has to *update* them in place — which is the
+//! one thing a create-only upgrade never proves, and a room `detail:` attribute
+//! (the sign) is a different kind of update from an item's `desc`.
 
 use std::collections::BTreeMap;
 
@@ -36,8 +46,8 @@ const PODS: [(&str, &str); 8] = [
     ("item.blue_pod_4", "Blue Pod 4"),
 ];
 
-/// The fifteen entries version 4 adds to version 3: three rooms, three exit
-/// rows (six exit objects) and nine items.
+/// The fifteen entries version 4 added to version 3, and the shipped pack still
+/// carries: three rooms, three exit rows (six exit objects) and nine items.
 const ADDED: [&str; 15] = [
     "room.simulator_lobby",
     "room.sim_red",
@@ -56,12 +66,26 @@ const ADDED: [&str; 15] = [
     "item.blue_pod_4",
 ];
 
+/// The version of `neighborhood.ooc_area` this tree ships. Read off the pack so
+/// the fixtures below cannot drift from it (16b cut F.4 moved it 4 -> 5).
+fn shipped_version() -> u32 {
+    parse_pack(starter::OOC_AREA_JSON)
+        .expect("the shipped pack parses")
+        .manifest()
+        .version()
+}
+
+/// The same number as a constant, for the fixtures that build a neighbouring
+/// version. Asserted against [`shipped_version`] by
+/// [`the_fixtures_track_the_shipped_version`].
+const SHIPPED_VERSION: u32 = 5;
+
 fn cid(s: &str) -> CanonicalId {
     CanonicalId::new(s).expect("a canonical id")
 }
 
 /// The lot's production shape plus the simulation, which is what holds an
-/// interior-space record. The shelf is always the shipped (version 4) packs:
+/// interior-space record. The shelf is always the shipped packs:
 /// that is what `@atlas/pack plan` reads.
 fn modules(boot_packs: Vec<String>, shelf: Vec<String>) -> Vec<Box<dyn GameModule>> {
     let mut appliers = Appliers::new();
@@ -95,22 +119,22 @@ fn shipped() -> Vec<String> {
         .collect()
 }
 
-/// A world with the whole shipped starter area, version 4, shelving `shelf`.
+/// A world with the whole shipped starter area, shelving `shelf`.
 fn lot_shelving(shelf: Vec<String>) -> TestWorld {
     TestWorld::with_modules(modules(shipped(), shelf))
 }
 
-/// A world with the whole shipped starter area, version 4.
+/// A world with the whole shipped starter area.
 fn lot() -> TestWorld {
     lot_shelving(shipped())
 }
 
-/// **Version 5 of the OOC pack**: nothing but the eight pods repainted, so the
-/// latch plans eight *updates* and `create_item` meets a pod that already
+/// **One version past the shipped one**: nothing but the eight pods repainted,
+/// so the latch plans eight *updates* and `create_item` meets a pod that already
 /// exists, is already an interior space, and already holds a pilot.
 fn ooc_repainted() -> String {
     let mut doc: Value = serde_json::from_str(starter::OOC_AREA_JSON).expect("the pack is json");
-    doc["manifest"]["version"] = Value::from(5);
+    doc["manifest"]["version"] = Value::from(SHIPPED_VERSION + 1);
     for (id, _) in PODS {
         doc["entries"][id]["def"]["desc"] =
             Value::String("Repainted, and otherwise the same shell.".to_string());
@@ -118,7 +142,7 @@ fn ooc_repainted() -> String {
     doc["manifest"]["digest"] = Value::String("0".repeat(64));
     let unsigned = serde_json::to_string(&doc).expect("json");
     let digest = parse_pack(&unsigned)
-        .expect("version 5 parses")
+        .expect("the repainted pack parses")
         .computed_digest()
         .expect("digests")
         .to_hex();
@@ -126,19 +150,19 @@ fn ooc_repainted() -> String {
     serde_json::to_string(&doc).expect("json")
 }
 
-/// **Version 3 of the OOC pack**, rebuilt from the shipped version 4 by taking
-/// the simulator centre back out: every entry [`ADDED`] names, the room budget
-/// back to 7, the version back to 3, the digest re-derived. (Version 3's bytes
-/// are not in the tree any more; this is the world an upgrade meets, built from
-/// the one source of truth so it cannot drift. The Welcome Hall's own text
-/// therefore matches version 4's, which is why the upgrade below plans one
-/// update and not two.)
+/// **Version 3 of the OOC pack**, rebuilt from the shipped one by taking the
+/// simulator centre back out: every entry [`ADDED`] names, the room budget back
+/// to 7, the version back to 3, the digest re-derived. (Version 3's bytes are
+/// not in the tree any more; this is the world an upgrade meets, built from the
+/// one source of truth so it cannot drift. The Welcome Hall's own text therefore
+/// matches the shipped one's, which is why the upgrade below plans one update
+/// and not two.)
 fn ooc_v3() -> String {
     let mut doc: Value = serde_json::from_str(starter::OOC_AREA_JSON).expect("the pack is json");
     doc["manifest"]["version"] = Value::from(3);
     if let Some(entries) = doc["entries"].as_object_mut() {
         for id in ADDED {
-            assert!(entries.remove(id).is_some(), "{id} is in version 4");
+            assert!(entries.remove(id).is_some(), "{id} is in the shipped pack");
         }
     }
     doc["entries"]["neighborhood"]["def"]["room_budget"]["maximum"] = Value::from(7);
@@ -318,10 +342,10 @@ fn a_pod_is_an_interior_a_character_can_be_placed_into_and_a_plain_item_is_not()
     );
 }
 
-// ---- C2: the pack from version 3 to version 4 --------------------------------
+// ---- C2: the pack from version 3 to the shipped one --------------------------
 
 #[test]
-fn version_four_lands_whole_on_a_fresh_world() {
+fn the_shipped_version_lands_whole_on_a_fresh_world() {
     let tw = lot();
     for room in ["Simulator Lobby", "Red Room", "Blue Room"] {
         named(&tw, ObjKind::Room, room);
@@ -373,7 +397,7 @@ fn version_four_lands_whole_on_a_fresh_world() {
 }
 
 #[test]
-fn version_four_upgrades_a_world_at_version_three_and_moves_nothing() {
+fn the_shipped_version_upgrades_a_world_at_version_three_and_moves_nothing() {
     // Region and the OOC area at version 3 only: the staff lobby requires
     // `ooc_area@4`, so it has no place on a world still at 3.
     let region = starter::SOURCES
@@ -448,7 +472,7 @@ fn version_four_upgrades_a_world_at_version_three_and_moves_nothing() {
         .latches
         .applied(&cid(starter::OOC_AREA_PACK))
         .expect("latched");
-    assert_eq!(latch.version(), 4);
+    assert_eq!(latch.version(), SHIPPED_VERSION);
     assert_eq!(latch.anomaly(), None);
 
     // And the atlas's own records grew by exactly the three rooms.
@@ -456,4 +480,297 @@ fn version_four_upgrades_a_world_at_version_three_and_moves_nothing() {
     for room in [lobby, red, blue] {
         assert!(atlas.records.roomgeo.contains_key(&room));
     }
+}
+
+// ---- F.4: the pack from version 4 to version 5 -------------------------------
+
+/// The six strings version 5 rewrote and the three exit alias lists it
+/// corrected, as version 4 carried them: `(shipped, version 4)`. Ten pairs for
+/// nine strings, because the pod description moved in two places and each pair
+/// has to be a substring `replace` can find on its own.
+///
+/// Built from the shipped bytes by putting the old text back, for the same
+/// reason [`ooc_v3`] is: version 4's file is not in the tree any more, and a
+/// fixture that is a copy drifts. Every string version 5 touched belongs here:
+/// one it omits is one the upgrade test silently stops proving, because the
+/// "version 4" world it starts from already carries the corrected text.
+const V4_TEXTS: [(&str, &str); 10] = [
+    (
+        "above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
+        "above the door. The hatch stands open. Boarding is not built yet; when it is, a pilot who holds a slot on this side climbs in here.",
+    ),
+    (
+        "one hatch, one seat, a panel, and",
+        "one hatch, one seat, a blank panel, and",
+    ),
+    (
+        "WELCOME TO THE LOT. Tutorial: east. Lounge: south. Simulator: 'simulator', down the east corridor. The bus: through the lounge and out. Type 'help getting-started' any time, or 'help simulator' to fly.",
+        "WELCOME TO THE LOT. Tutorial: east. Lounge: south. Simulator: SIM, down the east corridor. The bus: through the lounge and out. Type 'help getting-started' any time.",
+    ),
+    (
+        "The size of a place mat. Dark until the match starts, and then it is the tank: STATUS, VIEW, CONTACTS, and the orders that answer them.",
+        "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else.",
+    ),
+    (
+        "A console bolted to the lobby counter: two lit buttons, RED and BLUE, and a small screen. 'SIM TEAM red' or 'SIM TEAM blue' claims a slot on that side, 'SIM STATUS' says who holds one, and 'SIM START' opens the pods once both sides have a pilot. 'help simulator' is the rest of it.",
+        "A console bolted to the lobby counter: two lit buttons, RED and BLUE, and a small screen reading STANDING BY. When the simulator opens, 'SIM TEAM red' or 'SIM TEAM blue' will claim a slot on that side and 'SIM STATUS' will say who holds one. The verbs are not built yet, so for now the screen is the whole of it.",
+    ),
+    (
+        "SIM TEAM red|blue claims a slot. SIM LEAVE gives one back. SIM START opens the pods; SIM ABORT calls the match off. SIM STATUS is this screen, in words.",
+        "STANDING BY -- no match scheduled. SIM TEAM red|blue claims a slot when the verbs land; SIM LEAVE gives one back.",
+    ),
+    (
+        "Both lit. Pressing one does nothing but click: the sides are taken with SIM TEAM, not with a thumb.",
+        "Both lit, neither wired. Pressing one does nothing but click.",
+    ),
+    (
+        "Simulator Lobby <SIMULATOR>;simulator;annexe",
+        "Simulator Lobby <SIM>;sim;simulator",
+    ),
+    (
+        "Simulator Lobby <LOBBY>;lobby;out;south;s",
+        "Simulator Lobby <SIM>;sim;lobby;south;s",
+    ),
+    (
+        "Simulator Lobby <LOBBY>;lobby;out;north;n",
+        "Simulator Lobby <SIM>;sim;lobby;north;n",
+    ),
+];
+
+/// **Version 4 of the OOC pack**: the shipped bytes with the eleven strings cut
+/// F.4 rewrote put back, the version stepped down and the digest re-derived.
+fn ooc_v4() -> String {
+    let mut text = starter::OOC_AREA_JSON.to_string();
+    for (shipped, old) in V4_TEXTS {
+        assert!(
+            text.contains(shipped),
+            "the shipped pack no longer carries {shipped:?}; this fixture is stale"
+        );
+        text = text.replace(shipped, old);
+    }
+    let mut doc: Value = serde_json::from_str(&text).expect("the pack is json");
+    doc["manifest"]["version"] = Value::from(SHIPPED_VERSION - 1);
+    doc["manifest"]["digest"] = Value::String("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = parse_pack(&unsigned)
+        .expect("version 4 parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    doc["manifest"]["digest"] = Value::String(digest);
+    serde_json::to_string(&doc).expect("json")
+}
+
+/// The exit object whose `destination` is `to`, out of `from`'s exits.
+fn exit_from(tw: &TestWorld, from: ObjId, to: ObjId) -> ObjId {
+    tw.world()
+        .exits_of(from)
+        .iter()
+        .filter_map(|e| tw.world().get(*e))
+        .find(|e| e.destination == Some(to))
+        .unwrap_or_else(|| panic!("no exit from #{} to #{}", from.0, to.0))
+        .id
+}
+
+/// Whether an exit's name carries `alias` as one of its `;`-separated segments —
+/// which is exactly what `mush_core::commands::movement` matches a typed line
+/// against.
+fn has_alias(tw: &TestWorld, exit: ObjId, alias: &str) -> bool {
+    tw.world().get(exit).is_some_and(|o| {
+        o.name
+            .split(';')
+            .map(str::trim)
+            .any(|seg| seg.eq_ignore_ascii_case(alias))
+            || o.aliases.iter().any(|a| a.eq_ignore_ascii_case(alias))
+    })
+}
+
+/// The description one object carries, as `look` would read it.
+fn desc_of(tw: &TestWorld, obj: ObjId) -> String {
+    tw.world()
+        .attr(obj, "desc")
+        .and_then(|a| a.as_text().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// One of a pack entry's `details`, under the namespace the applier writes them
+/// in (`atlas:detail:<keyword>`). A room's detail is the one kind of string this
+/// upgrade rewrites that is not a `desc`.
+fn detail_of(tw: &TestWorld, obj: ObjId, keyword: &str) -> String {
+    tw.world()
+        .attr(obj, &format!("atlas:detail:{keyword}"))
+        .and_then(|a| a.as_text().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_fixtures_track_the_shipped_version() {
+    assert_eq!(
+        shipped_version(),
+        SHIPPED_VERSION,
+        "the OOC pack's version moved; the version-3 and version-4 fixtures in this \
+         file are built relative to it, so read them before re-pinning"
+    );
+}
+
+/// **The version-5 upgrade rewrites what is standing and creates nothing** (16b
+/// cut F.4).
+#[test]
+fn version_five_corrects_the_centres_texts_on_a_world_at_version_four() {
+    let region = starter::SOURCES
+        .first()
+        .map(|(_, j)| (*j).to_string())
+        .expect("the region pack");
+    let mut tw = TestWorld::with_modules(modules(vec![region, ooc_v4()], shipped()));
+
+    // The world at version 4: the centre is here, and it tells the players it is
+    // not. This is what the readiness review found in the first minute.
+    let hall = named(&tw, ObjKind::Room, "Welcome Hall");
+    let lobby = named(&tw, ObjKind::Room, "Simulator Lobby");
+    let red = named(&tw, ObjKind::Room, "Red Room");
+    let pod = named(&tw, ObjKind::Thing, "Red Pod 1");
+    assert!(
+        desc_of(&tw, pod).contains("not built yet"),
+        "the version-4 fixture must carry the stale text, or this proves nothing"
+    );
+    // The hall's sign is the room-`detail:` half, and it is the K5 text: it
+    // sends the player at the one word the `SIM` verb shadows.
+    assert!(
+        detail_of(&tw, hall, "sign").contains("Simulator: SIM,"),
+        "the version-4 fixture must carry the stale sign, or this proves nothing"
+    );
+    // The three exits that carried `sim`: into the lobby from the hall, and back
+    // into the lobby from each team room.
+    let blue = named(&tw, ObjKind::Room, "Blue Room");
+    for (from, to) in [(hall, lobby), (red, lobby), (blue, lobby)] {
+        let exit = exit_from(&tw, from, to);
+        assert!(
+            has_alias(&tw, exit, "sim"),
+            "version 4 shadowed the verb on this exit"
+        );
+    }
+
+    // Somebody is standing in the lobby, and the census is taken with them in it.
+    let alice = tw.spawn_player("Alice");
+    tw.world_mut()
+        .move_to(alice, lobby)
+        .expect("Alice walks in");
+    let before = census(&tw);
+
+    let (planned, applied) = replan(&mut tw, starter::OOC_AREA_PACK);
+    assert!(
+        planned.contains("0 create,"),
+        "version 5 adds no entry; it rewrites what is here:\n{planned}"
+    );
+    assert!(planned.contains("0 retire"), "{planned}");
+    assert!(
+        applied.contains("Applied neighborhood.ooc_area"),
+        "{applied}"
+    );
+    assert!(!applied.contains("STOPPED"), "{applied}");
+
+    // Every one of the eight pods now says what boarding really is, and none of
+    // them says the feature is missing.
+    for (_, name) in PODS {
+        let pod = named(&tw, ObjKind::Thing, name);
+        let desc = desc_of(&tw, pod);
+        assert!(!desc.contains("not built"), "{name}: {desc}");
+        assert!(desc.contains("BOARD"), "{name}: {desc}");
+        // A pilot inside a running match is located in the pod, so `look` reads
+        // this string with the hatch shut and the panel drawing contacts.
+        // Neither clause may say otherwise.
+        assert!(!desc.contains("blank panel"), "{name}: {desc}");
+        assert!(!desc.contains("hatch stands open"), "{name}: {desc}");
+    }
+    let selector = desc_of(&tw, named(&tw, ObjKind::Thing, "Simulator Selector"));
+    assert!(!selector.contains("not built"), "{selector}");
+    assert!(selector.contains("SIM START"), "{selector}");
+
+    // The room detail moved too, in place, on a room that kept its id.
+    let sign = detail_of(&tw, hall, "sign");
+    assert!(!sign.contains("Simulator: SIM,"), "the stale sign: {sign}");
+    assert!(sign.contains("'simulator'"), "{sign}");
+
+    // And `sim` is off all three exits, so the verb of that name can be typed in
+    // the hall and in both team rooms. The walking words are still there. The
+    // exits are re-resolved because an `exit` entry is remade, not edited.
+    let to_lobby = exit_from(&tw, hall, lobby);
+    let to_red = exit_from(&tw, lobby, red);
+    let back_to_lobby = exit_from(&tw, red, lobby);
+    for exit in [to_lobby, to_red, back_to_lobby] {
+        assert!(!has_alias(&tw, exit, "sim"), "an exit still eats `sim`");
+    }
+    assert!(has_alias(&tw, to_lobby, "simulator"));
+    assert!(has_alias(&tw, back_to_lobby, "lobby"));
+    assert!(has_alias(&tw, back_to_lobby, "out"));
+    assert!(has_alias(&tw, to_red, "red"));
+
+    // Nothing but the three exit entries changed identity. An `exit` entry is
+    // **remade** on an update (`AtlasApplier::update`: "their live state is
+    // nothing"), so its six objects get new ids; every room, item and character
+    // keeps its id, its name and where it is standing.
+    let after = census(&tw);
+    let is_exit = |row: &(ObjKind, String, Option<ObjId>)| row.0 == ObjKind::Exit;
+    for (id, was) in &before {
+        if is_exit(was) {
+            continue;
+        }
+        assert_eq!(
+            after.get(id),
+            Some(was),
+            "object #{id} moved or was renamed"
+        );
+    }
+    let exits_before = before.values().filter(|row| is_exit(row)).count();
+    let exits_after = after.values().filter(|row| is_exit(row)).count();
+    assert_eq!(exits_after, exits_before, "an exit was gained or lost");
+    assert_eq!(
+        after.values().filter(|row| !is_exit(row)).count(),
+        before.values().filter(|row| !is_exit(row)).count(),
+        "version 5 created or retired a room, an item or a character"
+    );
+    assert_eq!(tw.world().get(alice).and_then(|o| o.location), Some(lobby));
+
+    let content = tw.world().module_state::<ContentState>().expect("content");
+    let latch = content
+        .latches
+        .applied(&cid(starter::OOC_AREA_PACK))
+        .expect("latched");
+    assert_eq!(latch.version(), SHIPPED_VERSION);
+    assert_eq!(latch.anomaly(), None);
+}
+
+/// A fresh world lands version 5's texts whole, with no staff command at all.
+#[test]
+fn a_fresh_world_gets_the_corrected_texts_at_first_boot() {
+    let tw = lot();
+    for (_, name) in PODS {
+        let desc = desc_of(&tw, named(&tw, ObjKind::Thing, name));
+        assert!(!desc.contains("not built"), "{name}: {desc}");
+        assert!(!desc.contains("blank panel"), "{name}: {desc}");
+        assert!(!desc.contains("hatch stands open"), "{name}: {desc}");
+    }
+    let hall = named(&tw, ObjKind::Room, "Welcome Hall");
+    assert!(
+        !detail_of(&tw, hall, "sign").contains("Simulator: SIM,"),
+        "a fresh world's sign sends the player at the shadowed word"
+    );
+    let lobby = named(&tw, ObjKind::Room, "Simulator Lobby");
+    let red = named(&tw, ObjKind::Room, "Red Room");
+    let blue = named(&tw, ObjKind::Room, "Blue Room");
+    for (from, to) in [(hall, lobby), (red, lobby), (blue, lobby)] {
+        let exit = exit_from(&tw, from, to);
+        assert!(
+            !has_alias(&tw, exit, "sim"),
+            "a fresh world's exit eats `sim`"
+        );
+    }
+    let content = tw.world().module_state::<ContentState>().expect("content");
+    assert_eq!(
+        content
+            .latches
+            .applied(&cid(starter::OOC_AREA_PACK))
+            .map(mush_content::Applied::version),
+        Some(SHIPPED_VERSION)
+    );
 }

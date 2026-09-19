@@ -261,7 +261,7 @@ fn e7c5_f_unmapped_account_refuses_acquire() {
     // Locust also presents in field, so reach would pass; the ONLY refusal is
     // the unmapped account — it never defaults to "distinct" or "same".
     let t = err(&mut tw, ghost, &format!("+focus #{}/pilot", fx.locust.0));
-    assert!(t.contains("account is not mapped"), "{t}");
+    assert!(t.contains("no account on record"), "{t}");
     assert!(focus(&tw).is_empty());
 }
 
@@ -1558,5 +1558,81 @@ fn vf_d2_station_fallbacks_hydrate_at_boot() {
         restored,
         Some(fx.gunner),
         "the declared fallback is live in the RAM mirror after a reboot"
+    );
+}
+
+// ---- 16b cut F.4: the account map's destroy half ---------------------------
+
+/// An oracle that can be told to forget, which is what
+/// `mush_server::accounts_identity::AccountMap` is. `MapOracle` above cannot,
+/// so it would pass this lens whatever the observer did.
+struct LearningOracle(std::sync::RwLock<BTreeMap<ObjId, AccountId>>);
+
+impl AccountIdentity for LearningOracle {
+    fn account_of(&self, character: ObjId) -> Option<AccountId> {
+        self.0
+            .read()
+            .expect("the oracle's lock")
+            .get(&character)
+            .copied()
+    }
+    fn unlink(&self, character: ObjId) -> bool {
+        self.0
+            .write()
+            .expect("the oracle's lock")
+            .remove(&character)
+            .is_some()
+    }
+}
+
+/// **A destroyed character leaves the account map, through the observer that
+/// does it** (16b cut F.4).
+///
+/// The map's own `unlink` is unit-tested where it lives. What is only testable
+/// here is the wiring: `SimulationModule` subscribes `on_obj_destroyed`, that
+/// handler reaches the `AccountOracle` module-state slot, and the oracle behind
+/// that slot is the one the engine holds. Break any of the three and an ObjId —
+/// which is never recycled — goes on answering `account_of` for a husk, so the
+/// husk keeps counting toward "one slot per account" and `same_account` for the
+/// life of the process.
+#[test]
+fn f4_a_destroyed_character_is_forgotten_by_the_account_oracle() {
+    let mut tw = TestWorld::with_modules(vec![Box::new(SimulationModule::new())]);
+    let nicky = tw.spawn_player("Nicky");
+    let alt = tw.spawn_player("Alt");
+    let nick = AccountId::mint("Nick", 1).unwrap();
+    *tw.world_mut().module_state_mut::<AccountOracle>().unwrap() =
+        AccountOracle::new(Arc::new(LearningOracle(std::sync::RwLock::new(
+            BTreeMap::from([(nicky, nick), (alt, nick)]),
+        ))));
+    let oracle = |tw: &TestWorld, who: ObjId| {
+        tw.world()
+            .module_state::<AccountOracle>()
+            .expect("the oracle slot")
+            .account_of(who)
+    };
+    assert_eq!(oracle(&tw, nicky), Some(nick));
+    assert_eq!(oracle(&tw, alt), Some(nick));
+
+    // The programmatic kill the world task performs, then the event the
+    // module's backstop subscribes to.
+    tw.world_mut().destroy(nicky).expect("destroy");
+    let mut out = mush_core::Outbox::new();
+    let mut effects = mush_core::Effects::new();
+    tw.engine_mut().emit_world_event(
+        &mush_core::WorldEvent::ObjDestroyed { obj: nicky },
+        &mut out,
+        &mut effects,
+    );
+
+    assert_eq!(
+        oracle(&tw, nicky),
+        None,
+        "the husk must not answer an account question"
+    );
+    assert_eq!(
+        oracle(&tw, alt),
+        Some(nick),
+        "and the account's other character is untouched"
     );
 }

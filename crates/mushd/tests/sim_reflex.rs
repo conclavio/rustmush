@@ -25,7 +25,8 @@
 //!
 //! `Withdraw`'s goal is the unit's **own entry zone**, and the shipped
 //! `arenas/proving_ground.json` musters the red tanks *inside* it (column 6 of a
-//! zone sixteen cells deep). A tank that is already home has nowhere to withdraw
+//! zone sixteen cells deep, on row 97 since 16b cut F.4). A tank that is already
+//! home has nowhere to withdraw
 //! to and correctly does nothing, which would make test (1) assert a behaviour
 //! that is indistinguishable from the old one. So staff puts Red Tank 1 out in the
 //! middle of the window first, facing west — the same `@spatial/place/domain`
@@ -88,8 +89,9 @@ const BO: ObjId = ObjId(3);
 /// centimetres of the arena's own frame, facing west. See the module head.
 const PARKED_X_CM: i64 = 100_500;
 /// The row it is parked on — Red Tank 1's own, so the ground under it is the
-/// ground the pack authored for a tank to stand on.
-const PARKED_Y_CM: i64 = 118_500;
+/// ground the pack authored for a tank to stand on. 16b cut F.4 moved that row
+/// from 118 to 97, the east-west road.
+const PARKED_Y_CM: i64 = 97_500;
 /// Due west, millidegrees.
 const WEST_MDEG: u32 = 270_000;
 

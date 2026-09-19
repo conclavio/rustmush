@@ -603,3 +603,105 @@ async fn the_cockpit_verbs_are_contextual_and_the_window_is_a_map() {
     let seen = ask(&mut ada, "WEAPONSTATUS", "cannon").await;
     assert!(seen.contains("round(s)"), "{seen}");
 }
+
+// ---------------------------------------------------------------------------
+// (7) The gates stand aside outside the centre (16b cut F.4)
+// ---------------------------------------------------------------------------
+
+/// **A command gate runs before exits, so a gate that refuses everywhere eats
+/// content** (16b cut F.4).
+///
+/// `mush_core::cmd::dispatch` consults gates at step 2 and matches exits at step
+/// 5. `CockpitGate` refused `BOARD` anywhere but a team room, so the OOC tour
+/// bus's own exit — authored `Board the Bus <BUS>;bus;board` since the lot was
+/// written — answered "Boarding is through one of the simulator's team rooms."
+/// at the Bus Stop and did not move the player. The `SIM` gate did the same to
+/// the `sim` alias on the Welcome Hall's exit, and inside the team rooms the
+/// collision ran the other way: the gate stood aside, the back exit's own `sim`
+/// alias matched first, and a pilot who typed `SIM` to read the board walked out
+/// of the room `BOARD` needs them in.
+///
+/// Three lines, three rooms, one rule: outside the centre the gates decide
+/// nothing, and inside it they are what they were.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn board_takes_the_bus_outside_the_centre_and_sim_reads_the_board_inside_it() {
+    let server = boot("sim-cockpit-gates", Duration::from_secs(120)).await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    // (a) The tour bus. Ada stands at the Bus Stop and types the word the room's
+    // own exit list advertises.
+    let listing = ask(&mut god, "@find Bus Stop", "END OF LIST").await;
+    let stop = dbref_of(&listing, "Bus Stop");
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{stop}", ADA.0),
+        "Teleported",
+    )
+    .await;
+    say(&mut ada, "board", "Studio Tour Bus").await;
+    // And back off it, which is the alias the bus's own exit carries.
+    say(&mut ada, "off", "Bus Stop").await;
+
+    // The stand-aside is one early-out over all eleven verbs, not a `BOARD`
+    // special case, so the other ten are typed here too: out at the Bus Stop the
+    // gate decides nothing and the HANDLER says what the gate used to, word for
+    // word. `EXIT` is the one that is not obviously equivalent — the gate
+    // refused `NOT_IN_A_POD` outright, while `exit()` runs the abandonment
+    // guardrail first — so it is asserted, not assumed.
+    for verb in [
+        "STARTUP",
+        "HEADING 90",
+        "SPEED 20",
+        "VIEW",
+        "CONTACTS",
+        "LOCK 1",
+        "FIRE",
+        "WEAPONSTATUS",
+        "STATUS",
+    ] {
+        let seen = ask(&mut ada, verb, OUTSIDE_COCKPIT).await;
+        assert!(
+            seen.contains(OUTSIDE_COCKPIT),
+            "{verb} at the Bus Stop: {seen}"
+        );
+    }
+    let seen = ask(&mut ada, "EXIT", NOT_IN_A_POD).await;
+    assert!(seen.contains(NOT_IN_A_POD), "EXIT at the Bus Stop: {seen}");
+
+    // (b) Inside the centre the cockpit gate is unchanged: `BOARD` in the lobby
+    // is still refused with the sentence that says where boarding happens.
+    open_the_centre(&mut god, "Simulator Lobby").await;
+    let seen = ask(&mut ada, "BOARD", OUTSIDE_TEAM_ROOM).await;
+    assert!(seen.contains(OUTSIDE_TEAM_ROOM), "{seen}");
+
+    // And the one thing `help simulator` tells a newcomer to type in this room
+    // actually resolves. (`look selector` does not: the item carries no alias
+    // and `matchit` takes a whole `;`-segment or a segment prefix, which is why
+    // the topic names the console.)
+    let seen = ask(&mut ada, "look Simulator Selector", "console").await;
+    assert!(seen.contains("SIM TEAM red"), "{seen}");
+
+    // (c) A bare `SIM` in a team room reads the board instead of walking the
+    // pilot back to the lobby.
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    let seen = ask(&mut ada, "SIM", "Simulator centre:").await;
+    assert!(seen.contains("boarding"), "{seen}");
+    assert!(
+        !seen.contains("Simulator Lobby"),
+        "bare SIM walked the pilot out of the team room: {seen}"
+    );
+
+    // Which the next line proves outright: `BOARD` only works from in here.
+    say(&mut ada, "BOARD", "climb into").await;
+
+    // And the walking words the pack kept still walk.
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut bo, "lobby", "Simulator Lobby").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut bo, "BOARD", "climb into").await;
+}

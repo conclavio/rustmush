@@ -582,6 +582,67 @@ async fn split_build_engine_composes_the_tacsim_layer() {
     );
 }
 
+/// [`boot_fixture`] with the boot's own log captured at `INFO`.
+///
+/// The same device as `a_caller_supplied_store_says_the_archive_tier_is_ignored`
+/// below, at a lower level: the only observable of "the boot said so" is the log,
+/// so the log is what these read.
+async fn boot_saying(tag: &str, mutate: impl FnOnce(&mut Config)) -> (String, Fixture) {
+    let capture = Capture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(capture.clone())
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    let fx = boot_fixture(tag, mutate).await;
+    drop(guard);
+    (capture.text(), fx)
+}
+
+/// **The boot says which way the layer went, and whether the centre is ready**
+/// (16b cut F.4).
+///
+/// `[tacsim]` is `deny_unknown_fields`, but a section HEADER is not a key:
+/// `Config` ignores an unknown section, so `[tac_sim]` parses clean, boots the
+/// layer off, and used to say nothing at all — and the first symptom was `SIM
+/// START` refusing to a player, hours later. Both lines and the readiness line
+/// after them are the operator's only signal, and none of them is reachable from
+/// any other observable, so this reads the log.
+#[tokio::test]
+async fn the_boot_says_whether_the_simulator_is_there() {
+    let (said, fx) = boot_saying("tacsim-log-on", enable_tacsim).await;
+    assert!(
+        said.contains("tacsim enabled: the simulator's arena and its stock tanks apply at boot"),
+        "the layer went on and the boot must say so: {said}"
+    );
+    assert!(
+        said.contains("simulator centre ready: the arena is applied and its tanks are standing"),
+        "and then whether the centre is whole: {said}"
+    );
+    assert!(
+        said.contains("roster_tanks=8"),
+        "doc 16 §3.3's eight stock tanks, counted: {said}"
+    );
+    assert!(
+        !said.contains("NOT ready"),
+        "a whole centre must not warn: {said}"
+    );
+    drop(fx);
+
+    // The shipped default, and the mistyped-header case it stands in for.
+    let (said, fx) = boot_saying("tacsim-log-off", |cfg| cfg.tacsim.enabled = false).await;
+    assert!(
+        said.contains("tacsim disabled ([tacsim].enabled is false or the section is missing)"),
+        "the negative is the line an operator greps for: {said}"
+    );
+    assert!(
+        !said.contains("simulator centre ready") && !said.contains("simulator centre NOT ready"),
+        "with no layer there is no arena, so there is no readiness either way to report: {said}"
+    );
+    drop(fx);
+}
+
 /// …and once the seed is applied, a route the pack declares RESOLVES.
 ///
 /// This is the observable the split half lost. `TacsimRouteCatalog::resolve`

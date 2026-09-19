@@ -8,8 +8,8 @@
 //! needs-more-bytes, never a panic; and the version field must be present.
 
 use mush_core::{
-    ActionOfferId, ControlMsg as CoreControl, DisconnectKind, Inbound, ObjId, PerceivedRef,
-    ProjectedLegalAction, WorldCommand,
+    AccountId, ActionOfferId, ControlMsg as CoreControl, DisconnectKind, Inbound, ObjId,
+    PerceivedRef, ProjectedLegalAction, WorldCommand,
 };
 use mush_ipc::codec::{decode_frame, encode_frame_into};
 use mush_ipc::{
@@ -169,7 +169,19 @@ fn every_to_server() -> Vec<ToServer> {
         ToServer::Request {
             id: 100,
             req: ServiceReq::CreatePlayer {
+                // 16b cut F.4: the account rides on the create, so the id has to
+                // survive the encoding like every other field of the frame.
                 name: "Newbie".to_string(),
+                account: AccountId::mint("Nick", 1_700_000_000).ok(),
+            },
+        },
+        ToServer::Request {
+            // 16b cut F.4: the compensating half of the create. It is the only
+            // thing that keeps the live oracle and the account documents in step
+            // when the gateway's own link write fails, so it has to cross.
+            id: 107,
+            req: ServiceReq::UnlinkPlayer {
+                character: ObjId(99),
             },
         },
         ToServer::Request {
@@ -279,6 +291,14 @@ fn every_to_gateway() -> Vec<ToGateway> {
         ToGateway::Reply {
             id: 100,
             resp: ServiceResp::CreatePlayer(Err(CreatePlayerError::StoreUnavailable)),
+        },
+        ToGateway::Reply {
+            id: 107,
+            resp: ServiceResp::UnlinkPlayer(true),
+        },
+        ToGateway::Reply {
+            id: 107,
+            resp: ServiceResp::UnlinkPlayer(false),
         },
         ToGateway::Reply {
             id: 101,
@@ -407,7 +427,11 @@ fn every_to_gateway_variant_round_trips() {
 
 #[test]
 fn version_is_present_and_travels_in_hello() {
-    assert_eq!(IPC_VERSION, 5, "the boundary protocol version is pinned");
+    // 16b cut F.4: 6, because `ServiceReq::CreatePlayer` gained the account the
+    // character is being made for. A v5 gateway would create characters the
+    // server's account oracle never learns of, which is the trap that cut
+    // closed, so the two halves must be built together.
+    assert_eq!(IPC_VERSION, 6, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"

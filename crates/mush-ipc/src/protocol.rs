@@ -49,7 +49,12 @@ pub use mush_core::ControlMsg;
 /// decoding or behavioral incompatibility. Defaulted fields under the
 /// self-describing encoding can be additive, provided old peers remain safe.
 // Version 5 requires request epochs and account revocation controls.
-pub const IPC_VERSION: u32 = 5;
+// Version 6 (16b cut F.4) requires the account on `ServiceReq::CreatePlayer`: a
+// v5 gateway would create characters that the server's account oracle never
+// learns of, which is the K6 trap this cut closed, so the halves must match. The
+// same version adds `ServiceReq::UnlinkPlayer`, the compensating half of that
+// insert; it needs no further bump because no released peer has ever spoken 6.
+pub const IPC_VERSION: u32 = 6;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the
@@ -602,6 +607,32 @@ pub enum ServiceReq {
     CreatePlayer {
         /// The character name.
         name: String,
+        /// **The account the character is being made for** (16b cut F.4). The
+        /// server inserts `character -> account` into the live account oracle in
+        /// the same world-task turn that creates the Player, so the character can
+        /// use an account-scoped surface (`+focus`, `SIM TEAM`) before the reply
+        /// reaches the gateway — no restart, which was the recorded K6 trap.
+        ///
+        /// `None` only when the caller could not resolve the account's id at
+        /// all (a mint failure on a legacy record with no stored id). The
+        /// character is then left unmapped and every account policy fails closed
+        /// on it, exactly as before this cut; the server logs it.
+        account: Option<AccountId>,
+    },
+    /// **Take a character back out of the live account oracle** (16b cut F.4):
+    /// the compensating half of [`Self::CreatePlayer`]'s insert.
+    ///
+    /// The oracle learns `character -> account` in the turn that creates the
+    /// Player, before the reply leaves — but the store document a later boot
+    /// re-derives the map from is written by the *caller*, afterwards, and that
+    /// write can fail. When it does the caller sends this, so RAM and the
+    /// account documents agree again and the orphan Player fails closed on
+    /// every account-scoped surface exactly as it did before this cut.
+    ///
+    /// It is never a way to move a character between accounts: it only forgets.
+    UnlinkPlayer {
+        /// The character to forget.
+        character: ObjId,
     },
     /// Is this actor name (case-insensitive) currently unclaimed?
     NameFree {
@@ -778,6 +809,9 @@ pub enum ServiceResp {
     /// Result of a [`ServiceReq::CreatePlayer`]: the new id, or why creation
     /// failed.
     CreatePlayer(Result<ObjId, CreatePlayerError>),
+    /// Result of a [`ServiceReq::UnlinkPlayer`]: `true` = the oracle held that
+    /// character and has forgotten it.
+    UnlinkPlayer(bool),
     /// Result of a [`ServiceReq::NameFree`]: `true` = free.
     NameFree(bool),
     /// Result of a [`ServiceReq::InInputContext`]: `true` = inside a context.

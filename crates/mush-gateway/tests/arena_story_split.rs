@@ -31,9 +31,11 @@
 //! character the oracle does not know. So this rig hands **one** `InMemoryStore` to
 //! both halves and seeds it before either boots: the three accounts, and the world
 //! their characters live in, written through `mush_server::persist`'s own boot-batch
-//! path. That oracle is built **once, at boot** and never updated, which is why the
-//! pilots are seeded rather than created at the welcome screen — the same reason the
-//! in-process twin gives.
+//! path. That is a shortcut for speed, not a requirement: since **16b cut F.4** the
+//! oracle learns of a character in the world-task turn that creates it, so a
+//! welcome-screen `create` through this same boundary can claim a slot at once —
+//! which `crates/mush-gateway/tests/front_door_split.rs` is there to prove, and
+//! what is under test *here* is the match.
 //!
 //! # Why the two tanks start forty metres apart
 //!
@@ -68,6 +70,22 @@ const COMMIT_PENDING: &str = "please retry in a moment";
 const CONTROL_UNKNOWN: &str = "control state unknown";
 /// How many times a line is re-sent on a transient before the test gives up.
 const RETRY_BUDGET: usize = 40;
+
+/// **The gateway's answer while the server half is not admitting connections
+/// yet** (`ConnectErr::WorldGone`, `crates/mush-gateway/src/bridge_common.rs`).
+///
+/// This rig starts the two halves independently and then waits on ONE signal:
+/// the gateway's `ssh_ready` oneshot, which fires when the SSH listener binds.
+/// Nothing in it waits for the server half to admit a connection, and the
+/// server's own oneshot says only that its IPC socket is bound. So the very
+/// first `connect` can land in that window and be refused with this sentence,
+/// and a rig that sent it once would then sit out its whole `STEP_TIMEOUT` and
+/// fail a story it never got to tell. The first line is therefore re-sent for a
+/// few seconds while this exact sentence is the answer — a rig fix, not a
+/// product change; every assertion about the story itself is unchanged.
+const WORLD_NOT_UP: &str = "Connection failed: the game is shutting down";
+/// How long the first login waits for the server half, in 200 ms steps.
+const ADMISSION_TRIES: usize = 25;
 
 /// The two pilots and the bystander, seeded into the shared store's world before
 /// either half boots (see the module head), so their ids are known here.
@@ -439,10 +457,23 @@ async fn login(
     character: &str,
 ) -> (russh::client::Handle<AcceptAll>, Term) {
     let (handle, mut term) = play_client(addr).await;
-    term.send_line(&format!("connect {account} {password}"))
-        .await;
-    term.expect(&format!("Connected as {character}")).await;
-    (handle, term)
+    let connected = format!("Connected as {character}");
+    // See `WORLD_NOT_UP`: the rig has no barrier against the server half still
+    // booting, so the first line waits it out rather than failing the story.
+    for _ in 0..ADMISSION_TRIES {
+        let mark = term.mark();
+        term.send_line(&format!("connect {account} {password}"))
+            .await;
+        if term
+            .expect_one_of_after(mark, &[&connected, WORLD_NOT_UP])
+            .await
+            == 0
+        {
+            return (handle, term);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("the server half never admitted `{account}`");
 }
 
 /// The dbref `@find` printed beside `name`, as `<name>(#N)`.

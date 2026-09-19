@@ -17,12 +17,14 @@
 //! The shipped `arenas/proving_ground.json` musters red at cell column 6 and blue at
 //! column 249: 2.4 km apart, against a `visual_mk1` that reaches 600 m. Two tanks
 //! closing that at 54 kph is sixty seconds of real time, which is not a test — so
-//! staff puts the blue tank on **Red Tank 2's own authored cell**, four cells north of
+//! staff puts the blue tank on **Red Tank 4's own authored cell**, four cells south of
 //! Red Tank 1, and the match is fought there.
 //!
-//! That cell and the three between them are authored `Grass` at elevation zero (the
-//! pack's `field.q0_0` heightfield), so the line of sight is clear and the signature
-//! factor is the open-ground one: the detection this test waits for is the shipped
+//! That cell and the three between them are authored open ground — `Grass`, and the
+//! road band itself at row 96 — at one flat elevation (the pack's `field.q0_0`
+//! heightfield holds column 6 level from row 92 to row 102), so the line of sight is
+//! clear and the signature factor is the open-ground one: the detection this test
+//! waits for is the shipped
 //! sensor's own answer on the shipped ground, not a contrivance. `opening_pose`
 //! (16b cut T.3) is what carries the placement into the match: *the unit's own world
 //! pose when it is on the window and its cell is free*.
@@ -67,10 +69,12 @@ const BO: ObjId = ObjId(3);
 /// The one line a motion or fire order refuses with while the tank is cold.
 const POWER_NOT_ONLINE: &str = "Power not online";
 
-/// Where staff puts the blue tank: Red Tank 2's authored cell, four cells north of
+/// Where staff puts the blue tank: Red Tank 4's authored cell, four cells south of
 /// Red Tank 1's, in centimetres of the arena window's own frame (cell centre).
+/// 16b cut F.4 moved the muster into the ford's rows, so slot 4 is row 93 and not
+/// row 130.
 const BLUE_X_CM: i64 = 6_500;
-const BLUE_Y_CM: i64 = 122_500;
+const BLUE_Y_CM: i64 = 93_500;
 
 // ---------------------------------------------------------------------------
 // The rig
@@ -340,7 +344,7 @@ async fn open_the_centre(god: &mut Term) {
     .await;
 }
 
-/// Put the blue tank four cells north of the red one, on ground the pack authored.
+/// Put the blue tank four cells south of the red one, on ground the pack authored.
 /// See the module head for why.
 async fn muster_them_together(god: &mut Term) {
     let listing = ask(god, "@find Proving Ground", "END OF LIST").await;

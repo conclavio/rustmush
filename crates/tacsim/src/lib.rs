@@ -445,15 +445,22 @@ impl GameModule for TacsimRuleset {
             &self.cfg.match_,
             &self.cfg.sensors,
         )?;
-        // 16b cut K.1: the lobby — `SIM`, the gate that keeps it inside the
-        // three rooms C.1 authored, and the coarse tick that closes boarding.
-        // Registered unconditionally beside the rest, for the same reason: a
-        // disabled layer refuses out loud rather than hiding a verb, and the
-        // centre is content, not configuration.
+        // 16b cut K.1: the lobby — `SIM` and the coarse tick that closes
+        // boarding. Registered unconditionally beside the rest, for the same
+        // reason: a disabled layer refuses out loud rather than hiding a verb,
+        // and the centre is content, not configuration.
+        //
+        // **16b cut F.4 made that reason true of these verbs.** They registered
+        // unconditionally and then checked nothing, so with the layer off two
+        // players could claim slots in a centre with no arena behind it and only
+        // `SIM START` refused, naming a repair no verb can perform. Every lobby
+        // verb and `BOARD` now asks `lobby::require_layer` first.
         match_::sim::register(reg)?;
         // 16b cut K.2: the cockpit — `BOARD`, `EXIT`, doc 16 §3.7's nine
-        // selectors and the gate that makes all eleven contextual. Beside the
-        // lobby and for the same reason.
+        // selectors and the gate that makes all eleven contextual **inside the
+        // centre** (outside it, cut F.4 has the gate stand aside so ordinary
+        // exits and aliases still work). Beside the lobby and for the same
+        // reason.
         match_::cockpit::register(reg)?;
         Ok(())
     }

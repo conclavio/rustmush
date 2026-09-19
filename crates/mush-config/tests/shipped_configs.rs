@@ -4,15 +4,16 @@
 //! The failure mode these prove is the quiet one. Neither deployed box
 //! (`deploy/dev1`, `deploy/dev2`) writes `[log]`, `[store.archive]`, `[offers]`,
 //! `[resolution]`, `[discord]`, `[economy]`, `[weather]`, `[worldgen]`,
-//! `[onboarding]`, `[npc]` or `[tacsim]` — eleven
+//! `[onboarding]` or `[npc]` — ten
 //! sections — so each of those runs on a compiled-in default the operator never
 //! saw: no log files, no ledger archive tier, key directories nobody
 //! provisioned, and every character starting in Limbo `#0`. Nothing failed;
 //! nothing said so. `deploy/instance/mushd.toml.tmpl` is the answer, and it is
 //! only an answer while it stays complete — hence:
 //!
-//! - every one of the eleven is declared in the rendered file, with a value
-//!   that is demonstrably *not* the default it would have taken by omission;
+//! - every section in `REQUIRED_SECTIONS` — those ten, and every block added to
+//!   the list since — is declared in the rendered file, with a value that is
+//!   demonstrably *not* the default it would have taken by omission;
 //! - a `__PLACEHOLDER__` with no line in `instance.env` fails here rather than
 //!   installing a config with `__START_ROOM__` in it;
 //! - `[ipc].listen` cannot be the port `[store].redis_url` already holds — the
@@ -20,6 +21,12 @@
 //! - `[onboarding].start_room` is a seeded room, never `mush_core::LIMBO`;
 //! - and `mushd.toml.example` declares exactly the template's section set, so a
 //!   section added to one and forgotten in the other is a red test.
+//!
+//! **16b cut F.4** adds the two dev boxes themselves. Nothing here read them
+//! before — the template's completeness was checked and the files an operator
+//! actually boots were not — so `[tacsim]` could go missing from both and every
+//! gate stayed green. They are parsed here now, and held to the arena's own
+//! blocks and to the switch that instantiates the simulator.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -27,7 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use mush_config::config::{Config, ConfigError};
 
-/// The eleven sections absent from both boxes this template exists to fix.
+/// The ten sections absent from both boxes this template exists to fix.
 /// `[tacsim.recovery]` rides along as the sub-block `[tacsim]` gained after
 /// those boxes were written, and which `mushd.toml.example` had already drifted
 /// past; `[tacsim.economy]` and the eight combat blocks of 16b cut G are later
@@ -54,6 +61,8 @@ const REQUIRED_SECTIONS: &[&str] = &[
     "tacsim.arena.tempo",
     "tacsim.arena.intents",
     "tacsim.arena.ledger",
+    // 16b cut N.1 added the block and did not add the row; 16b cut F.4 did.
+    "tacsim.arena.reflex",
     "tacsim.match",
     "tacsim.sensors",
     "tacsim.resolution",
@@ -388,6 +397,54 @@ fn every_template_placeholder_is_a_shipped_instance_env_key() {
         assert!(
             unused.is_empty(),
             "{env_file} declares keys the template never uses: {unused:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The two dev boxes (16b cut F.4)
+// ---------------------------------------------------------------------------
+
+/// The deployed configurations nothing in this file used to read.
+const DEV_BOXES: &[&str] = &["deploy/dev1/mushd.toml", "deploy/dev2/mushd.toml"];
+
+/// **The boxes an operator actually boots parse, carry the combat arena's own
+/// blocks, and have the simulator switched on** (16b cut F.4).
+///
+/// The readiness review of 2026-09-18 booted `deploy/dev1` and found the
+/// simulator missing: the file wrote all five dotted `[tacsim.*]` blocks and no
+/// `[tacsim]` header at all, so the layer defaulted off, the arena and its eight
+/// tanks were never applied, and the first symptom was `SIM START` refusing.
+/// Every gate was green, because no gate read these files.
+#[test]
+fn the_dev_boxes_parse_and_run_the_simulator() {
+    let root = repo_root();
+    for relative in DEV_BOXES {
+        let path = root.join(relative);
+        let text = read(&path);
+        let declared: BTreeSet<String> = declared_sections(&text).into_iter().collect();
+        // The arena's blocks, doc 16 §7's Configuration paragraph: "the example,
+        // the instance template and both dev deployment files". The other
+        // required sections are deliberately absent from these boxes (see the
+        // module head); only the `[tacsim]` family is asserted here.
+        for section in REQUIRED_SECTIONS
+            .iter()
+            .filter(|section| section.starts_with("tacsim"))
+            // `[tacsim.recovery]` and `[tacsim.economy]` postdate both boxes and
+            // are the template's business; the arena's are the game's numbers.
+            .filter(|section| !matches!(**section, "tacsim.recovery" | "tacsim.economy"))
+        {
+            assert!(
+                declared.contains(*section),
+                "{relative}: [{section}] is missing; a box must not run the arena on \
+                 compiled-in numbers nobody read"
+            );
+        }
+        let cfg = Config::load(&path).unwrap_or_else(|e| panic!("{relative} does not parse: {e}"));
+        assert!(
+            cfg.tacsim.enabled,
+            "{relative}: [tacsim].enabled is false, so this box has no arena and no stock \
+             tanks and its simulator centre cannot start a match"
         );
     }
 }

@@ -98,8 +98,11 @@ impl TacsimChargen {
     }
 }
 
-/// `name` and `callsign` must both carry something: a match ledger with a blank
-/// callsign in it is a bug report, and the cockpit prints one every pulse.
+/// `name` and `callsign` must both carry something: the callsign is how
+/// [`agent_profile`](super::agent_profile) names a pilot to the NPC layer, and a
+/// filed sheet with a blank one is a bug report waiting to be written. (The
+/// cockpit does not print it — 16b cut F.4 corrected this comment and the
+/// `help chargen` sentence that repeated it.)
 fn identity_issues(doc: &SheetDoc) -> Vec<ChargenIssue> {
     let mut issues = Vec::new();
     for (field, label) in [(FIELD_NAME, "name"), (FIELD_CALLSIGN, "callsign")] {

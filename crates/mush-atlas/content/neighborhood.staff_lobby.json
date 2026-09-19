@@ -3,7 +3,7 @@
     "id": "neighborhood.staff_lobby",
     "version": 3,
     "kind": "neighborhood",
-    "digest": "917066723422338030b4aee5ea1d3f518cf5542de581ba134fbd521edeec80d6",
+    "digest": "fd86e03b014ac80299ce502c0eb063b0dd75b993730f2504d71d9c3d0f1c33ef",
     "requires": [
       {
         "id": "region.limbo",
@@ -11,7 +11,7 @@
       },
       {
         "id": "neighborhood.ooc_area",
-        "version": 4
+        "version": 5
       }
     ]
   },

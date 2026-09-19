@@ -1956,9 +1956,14 @@ pub async fn reader_loop(
 #[doc(hidden)]
 pub async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
     match req {
-        ServiceReq::CreatePlayer { name } => {
-            create_player_response(world.create_player(&name).await)
+        ServiceReq::CreatePlayer { name, account } => {
+            create_player_response(world.create_player(&name, account).await)
         }
+        ServiceReq::UnlinkPlayer { character } => match world.unlink_player(character).await {
+            Ok(forgotten) => ServiceResp::UnlinkPlayer(forgotten),
+            Err(WorldReadError::Busy) => ServiceResp::Busy,
+            Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+        },
         ServiceReq::NameFree { name } => match world.name_free(&name).await {
             Ok(free) => ServiceResp::NameFree(free),
             Err(WorldReadError::Busy) => ServiceResp::Busy,

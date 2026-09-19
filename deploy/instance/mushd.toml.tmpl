@@ -4,12 +4,14 @@
 # reads is written here with a real value, because a section left out is not
 # "unset": it is silently the compiled-in default, and an operator who never saw
 # the key cannot know which default they are running. The two boxes that predate
-# this template (deploy/dev1, deploy/dev2) omit THIRTEEN sections between them —
+# this template (deploy/dev1, deploy/dev2) omit TEN sections between them —
 # [log], [store.archive], [offers], [resolution], [discord], [economy],
-# [weather], [worldgen], [onboarding], [npc], [wod], [shadowrun], [tacsim] —
+# [weather], [worldgen], [onboarding], [npc] —
 # and so quietly run: no log files, no ledger archive tier, key directories
 # nobody provisioned, and characters starting in Limbo. New instances do not
-# inherit that. They render this.
+# inherit that. They render this. ([wod] and [shadowrun] were on that list until
+# 16b cut R deleted both rulesets; [tacsim] until 16b cut F.4 wrote it on both
+# dev boxes, which is what turns their simulator on.)
 #
 # RENDERING. The template is parameterised by an `instance.env` file of plain
 # `KEY=value` lines; rendering substitutes every `__KEY__` token with that key's
@@ -171,6 +173,11 @@ hydration_strikes_to_zero = 3
 # thing an operator gets wrong is not the packs, it is believing the layer is on
 # when the section was never written. An unreadable, oversized, unparseable or
 # digest-mismatched pack is a HARD BOOT ERROR NAMING THE FILE.
+#
+# 16b cut F.4: `enabled` is also what instantiates the SIMULATOR — the proving
+# ground, its domain and the eight stock tanks are the game's boot packs and ride
+# on this flag. Off, the centre's rooms and pods are still there (starter area)
+# and SIM refuses out loud; on, matches can run. The boot log says which.
 #
 # NOTE: [tacsim] is deny_unknown_fields — a typo here REFUSES the boot rather
 # than taking a default. That is deliberate: this is the only block whose keys

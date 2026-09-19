@@ -178,10 +178,10 @@ async fn world_task_fans_out_say_and_who() {
 async fn create_player_is_a_typed_world_message() {
     let sessions = Arc::new(SessionManager::new());
     let (world, join) = world_task::spawn(world_task::boot_engine(), sessions);
-    let id = world.create_player("Zoe").await.unwrap();
+    let id = world.create_player("Zoe", None).await.unwrap();
     assert!(id.0 > GOD.0);
     assert_eq!(
-        world.create_player("Zoe").await,
+        world.create_player("Zoe", None).await,
         Err(CreatePlayerErr::NameTaken)
     );
     drop(world);

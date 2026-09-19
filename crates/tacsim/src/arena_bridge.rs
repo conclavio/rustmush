@@ -1704,8 +1704,12 @@ pub fn register(
                    @arena/abort [<match>]              (staff) stop a match; its units check \
                    back in when the arena answers.\n\
                    @arena/reset                        (staff) return the simulator centre to \
-                   idle, releasing any slot or pod a finished or failed match left behind. \
-                   Idempotent; refused while a match is still checked out."
+                   idle: every slot and pod a finished or failed match left behind is \
+                   released, every pilot is out of their pod with the cockpit billet given \
+                   back, and every stock tank is put back at its spec and at its authored \
+                   muster cell. Idempotent, and says what it found; refused while a match is \
+                   still checked out. A player's own `SIM TEAM` does the same thing on a \
+                   finished centre, so two pilots need no staff for a rematch."
                 .into(),
             ..CommandSpec::default()
         },

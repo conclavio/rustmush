@@ -233,7 +233,8 @@ impl Rig {
         match_::pod_of(self.tw.world(), self.pilot(n))
     }
 
-    /// Move a pilot out of the centre entirely, so the gate can be seen to bite.
+    /// Move a pilot out of the centre entirely, so the out-of-place refusal can
+    /// be seen to bite.
     fn send_to_limbo(&mut self, n: usize) {
         let pilot = self.pilot(n);
         self.tw
@@ -622,14 +623,32 @@ async fn a_bystander_cannot_abort_and_staff_can() {
 }
 
 // ---------------------------------------------------------------------------
-// (6) The gate
+// (6) Where `SIM` works
+//
+// 16b cut F.4 deleted the command gate that used to answer this; `sim_command`
+// checks the location itself now, so the answers below are the verb's own.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sim_outside_the_centre_is_refused_with_one_line() {
     let mut rig = Rig::boot(1);
     rig.send_to_limbo(0);
-    for line in ["sim", "sim status", "sim team red", "sim/status"] {
+    // Every spelling, including the two that do not parse: with the gate gone,
+    // the verb's own location check has to run BEFORE the parser, or `sim
+    // wibble` answers with a usage block and a bare `sim team` asks "Which
+    // side?" to a player standing in Limbo.
+    for line in [
+        "sim",
+        "sim status",
+        "sim team red",
+        "sim/status",
+        "sim wibble",
+        "sim team",
+        "sim/team",
+        "sim start",
+        "sim leave",
+        "sim abort",
+    ] {
         let said = rig.say(0, line);
         assert!(
             said.contains(match_::OUTSIDE_CENTRE),
@@ -642,17 +661,23 @@ async fn sim_outside_the_centre_is_refused_with_one_line() {
             1,
             "exactly one line: {said}"
         );
+        for other in ["Usage:", "Which side?", "Simulator centre"] {
+            assert!(
+                !said.contains(other),
+                "`{line}` outside the centre also said `{other}`: {said}"
+            );
+        }
     }
     assert_eq!(rig.state(), MatchState::Idle, "and nothing was claimed");
 
-    // A world that HAS a centre is what the gate is for; a world without one
+    // A world that HAS a centre is what this refusal is for; a world without one
     // gets the true answer instead of a corridor that is not there.
     assert!(
         match_::centre_rooms(rig.tw.world()).is_some(),
-        "the rig's OOC pack is at version 4"
+        "the rig's OOC pack carries the centre"
     );
 
-    // A pilot **inside a pod** is in that pod's team room as far as the gate is
+    // A pilot **inside a pod** is in that pod's team room as far as the check is
     // concerned — which is the seat cut K.2's `BOARD` leaves them in, and the
     // one place `SIM ABORT` most needs to work from.
     let pod = match_::pod_object(rig.tw.world(), Team::Blue, 2).expect("blue pod 2");
@@ -794,5 +819,114 @@ async fn a_renamed_tank_is_still_its_slots_tank() {
         match_::tank_of(rig.tw.world(), pod),
         Some(tank),
         "the slot id is the identity, not the label"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The layer switch (16b cut F.4)
+// ---------------------------------------------------------------------------
+
+/// The shipped **off** shape: the module composes, the verbs register, and the
+/// game's own boot packs do not ride along — which is what
+/// `mush_server::boot::game_modules` does with `[tacsim].enabled = false`.
+///
+/// The centre's rooms and pods still exist: they are in the starter area, which
+/// is a different key. That is the whole trap this test is about.
+fn roster_with_the_layer_off() -> Vec<Box<dyn mush_core::GameModule>> {
+    use tacsim::composition as comp;
+
+    let llm = Arc::new(
+        mush_llm::LlmService::from_config(&mush_llm::LlmConfig::default())
+            .expect("a disabled LLM service composes"),
+    );
+    let onboarding = mush_core::OnboardingConfig::default();
+    let game = tacsim::GameEconomyConfig::default();
+    let cfg = TacsimConfig::default();
+    assert!(!cfg.enabled, "the documented default is off");
+    let mut mods = comp::server_modules_with(
+        mush_weather::WeatherConfig::default(),
+        mush_economy::EconomyConfig::default(),
+        mush_atlas::AtlasConfig::default(),
+        &onboarding,
+        &game,
+        comp::recovery_policy(&cfg.recovery),
+    );
+    mods.push(comp::worldgen_module_with(
+        Arc::clone(&llm),
+        mush_worldgen::WorldgenConfig::default(),
+    ));
+    mods.push(comp::npc_module_with(
+        comp::npc_agent_adapter(),
+        &mush_config::config::NpcCfg::default(),
+    ));
+    mods.push(comp::tacsim_module(cfg));
+    // `game_content` false: the starter area, and none of the game's packs.
+    mods.push(comp::content_module_with(true, false).expect("the content module composes"));
+    mods
+}
+
+/// **With the layer off, every lobby verb refuses at the word the player
+/// typed** (16b cut F.4).
+///
+/// Before this cut the verbs registered unconditionally and then checked
+/// nothing: two players in a centre with no arena behind it could both claim a
+/// slot, `SIM STATUS` rendered a healthy board, and only `SIM START` refused —
+/// with "staff must re-apply the arena", naming a repair no verb in the tree can
+/// perform. Every refusal below is the first thing the verb does.
+#[test]
+fn f4_with_the_layer_off_the_lobby_refuses_out_loud() {
+    const OFF: &str = "The TacSim layer is off on this server";
+
+    let mut tw = TestWorld::with_modules(roster_with_the_layer_off());
+    // The centre is here — rooms, pods and all — because it is starter-area
+    // content and not configuration.
+    let lobby = match_::centre_object(tw.world(), match_::LOBBY_ENTRY)
+        .expect("the OOC pack carries the simulator lobby whatever the layer says");
+    let red_room =
+        match_::centre_object(tw.world(), match_::RED_ROOM_ENTRY).expect("and the red room");
+    let pilot = tw.spawn_player("Pilot0");
+    tw.world_mut()
+        .move_to(pilot, lobby)
+        .expect("a player walks into the lobby");
+    let mut map = Accounts::default();
+    map.0.insert(
+        pilot,
+        AccountId::mint("account-off", 1).expect("an account id"),
+    );
+    *tw.world_mut()
+        .module_state_mut::<mush_sim::AccountOracle>()
+        .expect("the simulation is composed") = mush_sim::AccountOracle::new(Arc::new(map));
+
+    let said = |tw: &mut TestWorld, line: &str| -> String {
+        let events = tw.run(pilot, line);
+        tw.seen_by(&events, pilot).join("\n")
+    };
+
+    // The claim, which is where the old path let the player through.
+    let seen = said(&mut tw, "SIM TEAM red");
+    assert!(seen.contains(OFF), "SIM TEAM: {seen}");
+    // The board, which used to render an idle centre over nothing.
+    let seen = said(&mut tw, "SIM STATUS");
+    assert!(seen.contains(OFF), "SIM STATUS: {seen}");
+    // The other three selectors, each at its own first line.
+    for line in ["SIM LEAVE", "SIM START", "SIM ABORT"] {
+        let seen = said(&mut tw, line);
+        assert!(seen.contains(OFF), "{line}: {seen}");
+    }
+    // And boarding, from the room boarding happens in.
+    tw.world_mut()
+        .move_to(pilot, red_room)
+        .expect("a player walks into the red room");
+    let seen = said(&mut tw, "BOARD");
+    assert!(seen.contains(OFF), "BOARD: {seen}");
+
+    // Nothing was claimed on the way: the centre never left `Idle`.
+    assert_eq!(
+        match_::centre_of(tw.world()).map(|centre| centre.state),
+        Some(MatchState::Idle)
+    );
+    assert!(
+        match_::centre_of(tw.world()).is_some_and(|centre| centre.slots.is_empty()),
+        "a slot was claimed on a server with no arena"
     );
 }

@@ -331,8 +331,26 @@ pub enum WorldMsg {
     CreatePlayer {
         /// The character name.
         name: String,
+        /// **The account the character is being made for** (16b cut F.4). The
+        /// live account oracle learns `character -> account` in this same turn,
+        /// before the reply leaves, so nothing has to wait for a restart to use
+        /// an account-scoped surface. `None` only when the caller could not
+        /// resolve an account id at all; the character is then unmapped and
+        /// every account policy fails closed on it.
+        account: Option<mush_core::AccountId>,
         /// Where the result goes.
         reply: oneshot::Sender<Result<ObjId, CreatePlayerErr>>,
+    },
+    /// **Forget a character in the live account oracle** (16b cut F.4): the
+    /// compensating half of [`Self::CreatePlayer`]'s insert, sent by the caller
+    /// whose own account-document write then failed. It touches the oracle and
+    /// nothing else — no object, no store row — so it can be answered in any
+    /// world mode that still runs turns.
+    UnlinkPlayer {
+        /// The character to forget.
+        character: ObjId,
+        /// `true` = the oracle held it and no longer does.
+        reply: oneshot::Sender<Result<bool, WorldReadError>>,
     },
     /// Is this actor name (player index, case-insensitive) unclaimed?
     /// Used by account creation to pre-check the character name before the
@@ -989,7 +1007,14 @@ fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
         // answering `true` off a world it may not read.
         | WorldMsg::RecheckPrivilege { .. }
         | WorldMsg::RelaySpeak { .. } => IngressClass::WorldMutation,
-        WorldMsg::NameFree { .. }
+        // **16b cut F.4**: forgetting a character touches the account oracle and
+        // nothing else — no object, no store row, no tentative post-image — and
+        // its only effect is to make an account policy fail closed, which is
+        // always the safe direction. It is classed with the reads because that
+        // is the weakest class whose refusal is typed and transient; a caller
+        // refused mid-commit says so rather than retrying.
+        WorldMsg::UnlinkPlayer { .. }
+        | WorldMsg::NameFree { .. }
         | WorldMsg::InInputContext { .. }
         | WorldMsg::ConnectionReady { .. }
         | WorldMsg::LegalActions { .. } => IngressClass::WorldRead,
@@ -1176,14 +1201,24 @@ impl WorldHandle {
             .is_ok()
     }
 
-    /// Ask the world task to create a Player named `name`. Resolves only
-    /// after the creation batch is acknowledged by the store.
-    pub async fn create_player(&self, name: &str) -> Result<ObjId, CreatePlayerErr> {
+    /// Ask the world task to create a Player named `name` for `account`.
+    /// Resolves only after the creation batch is acknowledged by the store.
+    ///
+    /// **16b cut F.4**: `account` is inserted into the live account oracle in
+    /// the same turn the Player is created, so the character can claim a
+    /// simulator slot (and hold a focus) the moment it exists. `None` leaves it
+    /// unmapped and failing closed.
+    pub async fn create_player(
+        &self,
+        name: &str,
+        account: Option<mush_core::AccountId>,
+    ) -> Result<ObjId, CreatePlayerErr> {
         let (reply, rx) = oneshot::channel();
         if self
             .tx
             .send(WorldMsg::CreatePlayer {
                 name: name.to_string(),
+                account,
                 reply,
             })
             .await
@@ -1192,6 +1227,31 @@ impl WorldHandle {
             return Err(CreatePlayerErr::WorldGone);
         }
         rx.await.unwrap_or(Err(CreatePlayerErr::WorldGone))
+    }
+
+    /// **Forget a character in the live account oracle** (16b cut F.4).
+    ///
+    /// The undo of [`Self::create_player`]'s insert, for the caller whose own
+    /// account-document write then failed: the Player exists and is an orphan on
+    /// disk, so it must be an orphan in RAM too. `Ok(false)` means the oracle
+    /// did not hold it, which is the same end state.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldReadError::Busy`] mid-commit and [`WorldReadError::Unavailable`]
+    /// for a gone task. Either leaves the mapping standing until the next boot
+    /// re-derives the map from the account documents, so callers say so.
+    pub async fn unlink_player(&self, character: ObjId) -> Result<bool, WorldReadError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::UnlinkPlayer { character, reply })
+            .await
+            .is_err()
+        {
+            return Err(WorldReadError::Unavailable);
+        }
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
     }
 
     /// Whether an actor name is currently unclaimed.
@@ -4133,9 +4193,23 @@ async fn run(
                             }
                             StepOutcome::Continue
                         }
-                        WorldMsg::CreatePlayer { name, reply } => {
+                        WorldMsg::CreatePlayer {
+                            name,
+                            account,
+                            reply,
+                        } => {
                             match create_player(&mut engine, &name) {
                                 Ok(id) => {
+                                    // **16b cut F.4**: the account oracle learns
+                                    // of the character HERE, in the turn that
+                                    // made it and before the reply leaves, so a
+                                    // player who registers after boot can claim
+                                    // a simulator slot without a restart (the
+                                    // recorded K6 point). The map is RAM over
+                                    // the store's account documents, which the
+                                    // creating caller writes next; a boot
+                                    // re-derives it from those documents.
+                                    link_created_character(&engine, id, &name, account);
                                     // Tell module observers a Player now exists
                                     // (comsys auto-joins the default channel here).
                                     // Emitted BEFORE the flush so whatever the
@@ -4163,6 +4237,23 @@ async fn run(
                                     let _ = reply.send(Err(e));
                                 }
                             }
+                            StepOutcome::Continue
+                        }
+                        WorldMsg::UnlinkPlayer { character, reply } => {
+                            // **16b cut F.4**: the compensating half. The caller
+                            // could not write the account document the next boot
+                            // would re-derive this mapping from, so RAM has to
+                            // give it back or the two disagree in the permissive
+                            // direction until the next restart.
+                            let forgotten = engine.unlink_account_character(character);
+                            if forgotten {
+                                tracing::warn!(
+                                    %character,
+                                    "the account oracle forgot a character whose account document \
+                                     could not be written"
+                                );
+                            }
+                            let _ = reply.send(Ok(forgotten));
                             StepOutcome::Continue
                         }
                         WorldMsg::NameFree { name, reply } => {
@@ -5970,7 +6061,7 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
             };
             let _ = reply.send(Err(error));
         }
-        WorldMsg::NameFree { reply, .. } => {
+        WorldMsg::NameFree { reply, .. } | WorldMsg::UnlinkPlayer { reply, .. } => {
             let error = if reason == RefusalReason::CommitPending {
                 WorldReadError::Busy
             } else {
@@ -7771,6 +7862,18 @@ async fn account_of_actor(
     }
 }
 
+/// **One account record's immutable id** (16b cut F.4): the stored one, else
+/// minted from `(name, created)` — the same derivation
+/// [`crate::accounts_identity::hydrate`] uses, so a character linked at run time
+/// and the same character re-hydrated at the next boot resolve to one id.
+///
+/// `None` only when the mint itself fails, which leaves the character unmapped
+/// and failing closed (and logged by the caller).
+fn account_id_of(rec: &AccountRec) -> Option<mush_core::AccountId> {
+    rec.id
+        .or_else(|| mush_core::AccountId::mint(&rec.name, rec.created).ok())
+}
+
 /// The OpenSSH comment (everything after `type base64`), or a placeholder.
 fn ssh_comment(openssh: &str) -> &str {
     openssh
@@ -7912,9 +8015,13 @@ async fn run_del_sshkey(store: &dyn ObjectStore, actor: ObjId, which: &str) -> S
 /// link write then fails, a created-but-unlinked Player is left behind (the
 /// store has no account-delete yet). That is the SAME accepted, loudly-logged
 /// orphan window as `create_character` — no worse — and the pre-checks make it
-/// a genuine store failure, not a normal path. The confirmation is returned
-/// only after the link write returns (N3, ack-gated). The caller is NOT
-/// switched to the new character (N4): they keep playing their current one.
+/// a genuine store failure, not a normal path. **16b cut F.4** adds the one
+/// thing that window now needs: the create turn told the live account oracle
+/// about the character, so a failed link also sends
+/// [`WorldHandle::unlink_player`] and the orphan is an orphan on both sides.
+/// The confirmation is returned only after the link write returns (N3,
+/// ack-gated). The caller is NOT switched to the new character (N4): they keep
+/// playing their current one.
 async fn run_newchar(
     store: &dyn ObjectStore,
     world: &mpsc::WeakSender<WorldMsg>,
@@ -7956,7 +8063,11 @@ async fn run_newchar(
     }
     // (3) Create through the established server create path — durable + ack-gated,
     // and it emits ObjCreated (comsys auto-join) exactly like account creation.
-    let id = match world.create_player(name).await {
+    // **16b cut F.4**: the caller's own account id rides with it, so the alt is
+    // mapped to the SAME account before this reply prints — which is what makes
+    // "one slot per account" hold for an alt made mid-session, and what stops the
+    // alt being told its account is not on record.
+    let id = match world.create_player(name, account_id_of(&account)).await {
         Ok(id) => id,
         // The pre-check raced another create; no second Player is made (the world
         // create rejects the duplicate atomically) — so this never orphans.
@@ -7982,6 +8093,18 @@ async fn run_newchar(
                 account = %account.name, %id, name, error = %e,
                 "@newchar: Player created but linking to the account failed; Player left unlinked"
             );
+            // **16b cut F.4**: and the live oracle gives the mapping back, for
+            // the same reason `create_and_link` does — the document it was
+            // inserted against does not exist, so the alt must fail closed on
+            // every account policy the way an unlinked character always has.
+            match world.unlink_player(id).await {
+                Ok(_) => {}
+                Err(error) => tracing::error!(
+                    account = %account.name, %id, name, %error,
+                    "@newchar: the account oracle did not give the unlinked character back; it \
+                     stays mapped until the next boot re-derives the map"
+                ),
+            }
             format!(
                 "@newchar: created the character, but linking it to your account failed: {e}. \
                  Please contact staff."
@@ -8541,6 +8664,38 @@ fn create_player(engine: &mut Engine, name: &str) -> Result<ObjId, CreatePlayerE
         }
         Err(mush_core::WorldError::NameInUse(_)) => Err(CreatePlayerErr::NameTaken),
         Err(e) => Err(CreatePlayerErr::World(e.to_string())),
+    }
+}
+
+/// **Tell the account oracle about a character just created** (16b cut F.4).
+///
+/// One instance stands behind `Engine`'s oracle and `mush_sim::AccountOracle`,
+/// so this one call is what both readers see. Every outcome but success is
+/// logged at a level an operator will find, because the consequence is a
+/// character that fails closed on every account-scoped surface — and the player
+/// is told "your account has no record here", which is only a useful sentence if
+/// the log says why.
+fn link_created_character(
+    engine: &Engine,
+    id: ObjId,
+    name: &str,
+    account: Option<mush_core::AccountId>,
+) {
+    let Some(account) = account else {
+        tracing::error!(
+            %id,
+            name,
+            "created a character with no account id; it is unmapped and every account policy \
+             fails closed on it until the next boot re-derives the map"
+        );
+        return;
+    };
+    if !engine.link_account_character(id, account) {
+        tracing::error!(
+            %id,
+            name,
+            "the account oracle did not take the new character; it is unmapped and fails closed"
+        );
     }
 }
 
@@ -13941,6 +14096,7 @@ mod tests {
         assert_eq!(
             classify_world_msg(&WorldMsg::CreatePlayer {
                 name: "Newbie".to_string(),
+                account: None,
                 reply,
             }),
             IngressClass::WorldMutation
@@ -14090,6 +14246,7 @@ mod tests {
         let (reply, _rx) = oneshot::channel();
         assert!(!must_defer_behind_commit(&WorldMsg::CreatePlayer {
             name: "RetryMe".to_string(),
+            account: None,
             reply,
         }));
         assert!(must_defer_behind_commit(&WorldMsg::Inbound(
@@ -14339,6 +14496,70 @@ mod tests {
         }
     }
 
+    /// **The account map's two halves, through the real world task** (16b cut
+    /// F.4).
+    ///
+    /// The insert rides on `CreatePlayer` and must be visible before the create
+    /// reply lands — that is the whole of the K6 fix. The undo is
+    /// `UnlinkPlayer`, which the caller sends when the account document the
+    /// insert was made against could not be written: without it the running
+    /// server would hold a mapping that no boot could ever re-derive, and the
+    /// two halves would disagree in the permissive direction.
+    #[tokio::test]
+    async fn f4_the_account_map_learns_on_create_and_forgets_on_unlink() {
+        use mush_core::AccountIdentity;
+
+        let map = Arc::new(crate::accounts_identity::AccountMap::default());
+        let mut engine = Engine::new(World::new_minimal(), base_registry());
+        engine.set_account_identity(Arc::clone(&map) as Arc<dyn AccountIdentity>);
+        let handles = spawn_persist_with_gateway(engine, ServerDeps::in_memory(), |_| {
+            Arc::new(BlackholeGateway) as Gateway
+        });
+
+        let account = mush_core::AccountId::mint("Nick", 1).expect("a well-formed account id");
+        let nicky = handles
+            .handle
+            .create_player("Nicky", Some(account))
+            .await
+            .expect("the world created the character");
+        assert_eq!(
+            map.account_of(nicky),
+            Some(account),
+            "the create turn must have told the oracle before its reply left"
+        );
+
+        // The compensating undo, and its idempotence.
+        assert_eq!(handles.handle.unlink_player(nicky).await, Ok(true));
+        assert_eq!(
+            map.account_of(nicky),
+            None,
+            "an orphan on disk is an orphan in RAM"
+        );
+        assert_eq!(
+            handles.handle.unlink_player(nicky).await,
+            Ok(false),
+            "forgetting twice removes nothing"
+        );
+
+        // A create with no resolvable account id maps nothing and still works.
+        let ghost = handles
+            .handle
+            .create_player("Ghost", None)
+            .await
+            .expect("the world created the character");
+        assert_eq!(map.account_of(ghost), None);
+
+        assert!(
+            handles
+                .handle
+                .inbound(Inbound::Control(ControlMsg::Shutdown))
+                .await
+        );
+        handles.world_join.await.unwrap();
+        handles.writer_join.await.unwrap();
+        handles.outbox_join.await.unwrap();
+    }
+
     #[test]
     fn commit_pending_world_reads_are_typed_refusals_but_ordering_stays_live() {
         let pending = WorldMode::CommitPending {
@@ -14453,7 +14674,7 @@ mod tests {
                 .await
         );
         assert_eq!(
-            handle.create_player("BlockedPlayer").await,
+            handle.create_player("BlockedPlayer", None).await,
             Err(CreatePlayerErr::StoreUnavailable),
             "CreatePlayer must be refused in {mode:?}"
         );

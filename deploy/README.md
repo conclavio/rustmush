@@ -161,3 +161,108 @@ the recipe above, runs all three binaries' `--check-config` over what it
 produced, boots it against a throwaway store, and proves a typo'd
 `receipt_policy` is refused — so the templates cannot drift past the binaries
 that read them (`crates/mush-server/tests/provisioning_smoke.rs`).
+
+## The simulator centre
+
+One key turns the simulator on: **`[tacsim].enabled`**. The rendered instance
+takes it from `TACSIM_ENABLED` in `instance.env`; `deploy/dev1` and
+`deploy/dev2` write it out as `true`; `mushd.toml.example` ships it `false`,
+which is the documented default.
+
+What the key decides is the *arena*, not the rooms. The centre's lobby, its two
+team rooms and its eight pods come with the starter area (`[game].starter_area`)
+and are in the world either way. The proving ground, its domain and the eight
+stock tanks are the game's own boot packs and ride on this flag alone — so with
+it off the pods have nothing behind them, `SIM` refuses out loud, and no match
+can start. Turning it on drags in nothing else: no seed pack (`[tacsim].seeds`
+is its own key), no corridor, no ephemeris change and no economy change; those
+are read whether the layer is on or off (`crates/mush-server/src/boot.rs` hands
+the flag to exactly one call, `content_module_with`'s `game_content`, in
+`crates/tacsim/src/composition/mod.rs`).
+
+The boot log says which it got, every time, and then whether the centre is ready:
+
+```
+tacsim enabled: the simulator's arena and its stock tanks apply at boot
+simulator centre ready: the arena is applied and its tanks are standing roster_tanks=8
+```
+
+A `tacsim disabled (...)` line, or a `simulator centre NOT ready` warning, is the
+thing to grep for before anyone connects. Note that `[tacsim]` is
+`deny_unknown_fields` but a mistyped section **header** is not a key: `[tac_sim]`
+parses clean and boots the layer off, and that negative log line is the only
+symptom.
+
+### A fresh store is the supported path
+
+rustmush is pre-launch, so the supported way to get a working centre is a fresh
+world: `scripts/reset-instance.sh` (above), then boot with the layer on. First
+boot applies the starter packs and the game's two packs together and the centre
+is whole.
+
+This matters beyond the simulator: cut P deleted the legacy pose arm, so a store
+written before 2026-09-16 carries placements the current build cannot read and
+holds them to the recovery room.
+
+### An existing world takes a newer OOC pack by hand
+
+A shipped **boot** pack is applied only when the world holds no latch for it. A
+world latched at an older version is not upgraded at boot; it logs one line
+(`content: a newer version of a shipped pack is available; '@atlas/pack plan'
+shows the diff`) and carries on. So a world seeded before the current
+`neighborhood.ooc_area` needs staff to take the upgrade, **in this order**:
+
+```
+@atlas/pack plan neighborhood.ooc_area
+@atlas/pack apply <fingerprint>
+@atlas/pack plan neighborhood.staff_lobby
+@atlas/pack apply <fingerprint>
+```
+
+`plan` prints the fingerprint `apply` takes. The order is not optional:
+`neighborhood.staff_lobby` declares `requires neighborhood.ooc_area@<version>`
+and is refused while the OOC pack is behind. Entries the live world does not
+have are created; entries whose text moved are updated in place, and a room, an
+item or a character keeps its object id and where it is standing. (An *exit*
+entry is remade rather than edited — its live state is nothing — so its object
+id changes.)
+
+Do **not** reach for `@atlas/pack retire` to "start again": a retired latch is
+marked retired and the boot pass then skips that pack for ever.
+
+### The arena pack is not on the shelf
+
+`tacsim.pack.proving_ground` and `tacsim.proving_ground` are boot packs and are
+deliberately **not** on the `@atlas/pack` shelf: doc 16 §3.3's tanks are created
+once, by the centre's content, and the latch is what makes a second boot make no
+ninth tank. `@atlas/pack list` shows them under "Latched, not on the shelf" and
+no verb applies them. If a world has the centre's rooms but an empty roster, the
+repair is the config plus a restart, or a reset instance — not a staff command.
+
+A standing tank is adopted by **name** when the arena entry is applied, so a
+re-apply never makes a second Red Tank 1; it re-places the tank it finds on the
+cell the pack authors. And since 16b cut F.1 the boot pass resets every roster
+tank to its spec and to its authored cell on **every** boot, reading the slot out
+of the compiled definition rather than out of the latch — so a shipped change to
+the muster (16b cut F.4 moved it onto the ford road) reaches an existing world at
+its next restart with no pack upgrade at all.
+
+### The first staff login
+
+There is no scripted one. A fresh world seeds Limbo `#0` and God `#1`, and `#1`
+is linked to no account; `god` is a reserved account name, so it cannot be
+registered at the welcome screen. The one route that exists is the legacy
+one-time import: write `<DATA_DIR>/accounts.json` **before** the first boot,
+
+```json
+{"version": 1,
+ "accounts": [{"name": "boss",
+               "hash": "<argon2id PHC string>",
+               "characters": [{"id": 1, "name": "God"}]}]}
+```
+
+and the boot imports it, logs `M1 accounts.json imported`, and renames the file
+to `accounts.json.imported`. Nothing shipped produces the hash: make it with any
+argon2id tool that emits a PHC string (`$argon2id$v=19$m=...`). After that,
+`connect boss <password>` at the welcome screen is God, and ordinary players
+register themselves with `create <name> <password>`.

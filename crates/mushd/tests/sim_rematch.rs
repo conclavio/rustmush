@@ -76,16 +76,17 @@ const BO: ObjId = ObjId(3);
 const RED_TANK: &str = "Red Tank 1";
 const BLUE_TANK: &str = "Blue Tank 1";
 
-/// Where the pack musters them: column 6 and column 249, both on row 118
-/// (`content/arenas/proving_ground.json`). In whole metres, as `STATUS` prints
-/// them.
+/// Where the pack musters them: column 6 and column 249, both on row 97 — the
+/// east-west road, since 16b cut F.4 (`content/arenas/proving_ground.json`).
+/// In whole metres of easting, as `STATUS` prints them; the columns did not move
+/// with the rows.
 const RED_MUSTER_M: i64 = 65;
 const BLUE_MUSTER_M: i64 = 2_495;
 
-/// Where staff puts the blue tank for match one: Red Tank 2's own authored cell,
-/// four cells north of Red Tank 1's, in centimetres of the window's frame.
+/// Where staff puts the blue tank for match one: Red Tank 4's own authored cell,
+/// four cells south of Red Tank 1's, in centimetres of the window's frame.
 const BLUE_CLOSE_X_CM: i64 = 6_500;
-const BLUE_CLOSE_Y_CM: i64 = 122_500;
+const BLUE_CLOSE_Y_CM: i64 = 93_500;
 
 /// The cannon's authored load (`ammunition/he_105.json`).
 const LOAD: i64 = 40;
@@ -419,7 +420,7 @@ async fn tank_refs(god: &mut Term) -> (u32, u32) {
     (red, blue)
 }
 
-/// Put the blue tank four cells north of the red one, the way `sim_weapons.rs`
+/// Put the blue tank four cells south of the red one, the way `sim_weapons.rs`
 /// does.
 ///
 /// Test 1 uses it so a fight happens in a test's patience, and **before match one
@@ -451,9 +452,15 @@ async fn take_off(ada: &mut Term, bo: &mut Term) {
     ada.expect("Good hunting").await;
 }
 
-/// Walk one pilot from wherever they are back to the lobby.
+/// Walk one pilot from a team room back to the lobby.
+///
+/// `lobby`, not `sim`: 16b cut F.4 took the `sim` alias off the two team rooms'
+/// return exits, because a bare `SIM` in a team room walked the pilot out of the
+/// room `BOARD` needs them in instead of printing the status board. The word
+/// belongs to the verb, and this helper was one of the places that depended on
+/// it not doing.
 async fn back_to_the_lobby(term: &mut Term) {
-    say(term, "sim", "Simulator Lobby").await;
+    say(term, "lobby", "Simulator Lobby").await;
 }
 
 /// Bring power up, waiting for the arena to say it is online.

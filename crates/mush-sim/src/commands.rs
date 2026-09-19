@@ -1776,10 +1776,14 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )));
     }
     // The immutable account. `None` = unknown = refuse (never a default).
+    // **16b cut F.4 made this sentence true.** It used to say "focus is
+    // unavailable until you reconnect (staff: relink the character)", and both
+    // halves were wrong: the map was built once at boot, so reconnecting re-read
+    // nothing, and no staff verb relinks. The map learns of a character in the
+    // world-task turn that creates it now, so reaching this means the character
+    // genuinely belongs to no account and there is nothing to type.
     let account = account_oracle(ctx).account_of(ctx.actor).ok_or_else(|| {
-        CmdError::msg(
-            "Your account is not mapped yet; focus is unavailable until you reconnect (staff: relink the character).",
-        )
+        CmdError::msg("This character has no account on record, so focus is unavailable.")
     })?;
     // Ownership alone never satisfies control (invariant 5): a billet is required.
     if !holds_billet(ctx, ctx.actor, unit, &station) {

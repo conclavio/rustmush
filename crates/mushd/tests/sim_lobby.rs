@@ -136,9 +136,11 @@ async fn boot(tag: &str) -> Server {
         .expect("the staff account");
 
     let mut world = load_or_seed_world(&*store).await.expect("boot world");
-    // Three pilots on three accounts. Created before the task spawns, which is
-    // what fixes their ids and what lets the boot-hydrated account oracle see
-    // them: doc 10 R3's map is built once, at boot, from the store.
+    // Three pilots on three accounts, created before the task spawns, which is
+    // what fixes their ids and lets the boot hydration see them in one pass. It
+    // is a shortcut, not a requirement: since 16b cut F.4 the map learns of a
+    // character as the world makes it, so the front door does this too (see
+    // `crates/mushd/tests/front_door.rs`).
     for (id, name) in [(ADA, "Ada"), (BO, "Bo"), (CY, "Cy")] {
         let made = world
             .create(ObjKind::Player, name, GOD, Some(LIMBO))

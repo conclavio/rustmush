@@ -17,7 +17,7 @@
 //! every manifest in place; run without it — which is what CI does — to assert.
 //! The digests below still have to be updated by hand, which is the point.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mush_atlas::TerrainClass;
@@ -357,7 +357,7 @@ const DIGESTS: [(&str, &str); 9] = [
     ),
     (
         "tacsim.pack.proving_ground",
-        "4a479adb817b217aa17f64e71c6631ea27c427f5c833feb1b5e7139bc3a6c6f6",
+        "0ecc97a0922b2fef3d18fd2b510c2a17cdef1613de10ee56b9fce99520924160",
     ),
     (
         "tacsim.proving_ground",
@@ -616,4 +616,204 @@ fn the_band_word_the_shipped_content_can_print() {
     );
     assert_eq!(range_band(30_000, &bands), "close", "300 m");
     assert_eq!(range_band(51_000, &bands), "effective", "510 m");
+}
+
+/// **The muster is on the ford road, and a straight drive at the enemy reaches
+/// the ford** (16b cut F.4; arena pack version 2).
+///
+/// Version 1 mustered both sides on rows 118 to 130. The river runs down columns
+/// 62 to 66 and is `water_deep` — impassable to a tracked unit — everywhere but
+/// the ford's rows, so a pilot who pointed at the enemy and drove was stopped
+/// after about 550 m of grass, on their own bank, with the only crossing sixteen
+/// to twenty-eight rows away and outside `VIEW`'s twenty-row window. Both slot-1
+/// tanks did it, in opposite directions, and neither pilot could see why.
+///
+/// The first pass of this cut fixed that for slot 1 alone: rows 97, 93, 101 and
+/// 89 put slot 4 of each side back outside the ford band (92 to 102) and into
+/// the same trap, and only slot 1's run was asserted. The ford is eleven rows
+/// wide and the muster needs four, so **all eight** slots stand in it now, and
+/// the run asserted below is **every** slot's.
+///
+/// Every assertion below is read off the pack's own data rather than written
+/// down twice, and every slot is found by the id the roster keys on
+/// (`red_1` … `blue_4`) rather than by where it happens to sit in the array, so
+/// the next person who edits the map cannot put a muster back behind the river
+/// without this failing.
+#[test]
+fn the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford() {
+    let catalog = Catalog::build_game(&[], "tacsim").expect("the shipped content binds");
+    let arena = catalog
+        .arenas
+        .values()
+        .next()
+        .expect("the proving ground is shipped");
+    let table = mush_atlas::physics::LocomotionTable::shipped();
+    let passable = |x: u16, y: u16| table.passable(class_at(x, y).label(), "tracked", &[]);
+
+    // (1) Every slot cell is passable ground inside its own team's entry zone.
+    for tank in &arena.tanks {
+        let zone = arena
+            .entry_zones
+            .iter()
+            .find(|zone| zone.team == tank.team)
+            .unwrap_or_else(|| panic!("`{}` has no entry zone for its side", tank.id));
+        assert!(
+            tank.x >= zone.x0 && tank.x <= zone.x1 && tank.y >= zone.y0 && tank.y <= zone.y1,
+            "`{}` musters at {},{} outside its own {} entry zone",
+            tank.id,
+            tank.x,
+            tank.y,
+            tank.team.as_str()
+        );
+        assert!(
+            passable(tank.x, tank.y),
+            "`{}` musters on {:?}",
+            tank.id,
+            class_at(tank.x, tank.y)
+        );
+    }
+
+    // (2) No two slots share a cell, and no slot stands on a waypoint node — a
+    //     patrol that starts on top of its own first node has nowhere to go.
+    let mut cells: BTreeMap<(u16, u16), String> = BTreeMap::new();
+    for tank in &arena.tanks {
+        if let Some(other) = cells.insert((tank.x, tank.y), tank.id.to_string()) {
+            panic!("`{}` and `{other}` muster on the same cell", tank.id);
+        }
+        for node in &arena.waypoints.nodes {
+            assert!(
+                (node.x, node.y) != (tank.x, tank.y),
+                "`{}` musters on waypoint `{}`",
+                tank.id,
+                node.id
+            );
+        }
+    }
+
+    // (3) Every slot faces its opposite number along one row, and the straight
+    //     run along that row from one to the other is passable the whole way —
+    //     which is to say it reaches the river's one crossing and goes over it.
+    //     By id, never by array order: the roster binds `red_1` to red slot 1.
+    let slot = |id: &str| {
+        arena
+            .tanks
+            .iter()
+            .find(|tank| tank.id.as_str() == id)
+            .unwrap_or_else(|| panic!("`{id}` is not in the roster"))
+    };
+    for index in 1..=4_u8 {
+        let red = slot(&format!("red_{index}"));
+        let blue = slot(&format!("blue_{index}"));
+        assert_eq!(
+            red.y, blue.y,
+            "the two slot-{index} tanks do not face along one row"
+        );
+        assert!(
+            red.y >= FORD.0 && red.y <= FORD.1,
+            "slot {index} musters on row {}, outside the ford's rows {} to {}, so its straight \
+             run at the enemy ends at deep water",
+            red.y,
+            FORD.0,
+            FORD.1
+        );
+        for x in red.x..=blue.x {
+            assert!(
+                passable(x, red.y),
+                "slot {index}'s run along row {} is stopped at column {x} by {:?}",
+                red.y,
+                class_at(x, red.y)
+            );
+        }
+    }
+
+    // Slot 1 stands on the east-west road itself, which is what makes the
+    // opening approach a road march rather than a crawl over grass.
+    let red_one = slot("red_1");
+    assert!(
+        red_one.y >= ROAD_EW.0 && red_one.y <= ROAD_EW.1,
+        "slot 1 musters on row {}, which is not the east-west road",
+        red_one.y
+    );
+
+    // And no two slots of a side are on the same or an adjacent row, so a tank
+    // pulling away has a clear cell beside it.
+    for team in ["red", "blue"] {
+        let mut rows: Vec<u16> = (1..=4_u8)
+            .map(|index| slot(&format!("{team}_{index}")).y)
+            .collect();
+        rows.sort_unstable();
+        for pair in rows.windows(2) {
+            let (lower, upper) = (pair[0], pair[1]);
+            assert!(
+                upper.saturating_sub(lower) >= 2,
+                "the {team} muster puts rows {lower} and {upper} side by side"
+            );
+        }
+    }
+
+    // (4) Both muster nodes are inside their side's entry zone, on ground a tank
+    //     can stand on, and off every slot cell.
+    let node_of = |id: &str| {
+        arena
+            .waypoints
+            .nodes
+            .iter()
+            .find(|node| node.id.as_str() == id)
+            .unwrap_or_else(|| panic!("`{id}` is not in the graph"))
+    };
+    for (id, team) in [("muster_red", "red"), ("muster_blue", "blue")] {
+        let node = node_of(id);
+        let zone = arena
+            .entry_zones
+            .iter()
+            .find(|zone| zone.team.as_str() == team)
+            .unwrap_or_else(|| panic!("no {team} entry zone"));
+        assert!(
+            node.x >= zone.x0 && node.x <= zone.x1 && node.y >= zone.y0 && node.y <= zone.y1,
+            "`{id}` is at {},{} outside the {team} entry zone",
+            node.x,
+            node.y
+        );
+        assert!(
+            passable(node.x, node.y),
+            "`{id}` is on {:?}",
+            class_at(node.x, node.y)
+        );
+        assert!(
+            !arena
+                .tanks
+                .iter()
+                .any(|tank| (tank.x, tank.y) == (node.x, node.y)),
+            "`{id}` is on a slot's own cell"
+        );
+    }
+
+    // (5) And the graph is one graph: every node is reachable from `muster_red`,
+    //     which is where a red tank's `Patrol` starts. A muster node with no edge
+    //     is a tank that holds where it is for ever.
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut queue = vec!["muster_red"];
+    while let Some(node) = queue.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        for edge in &arena.waypoints.edges {
+            if edge[0].as_str() == node {
+                queue.push(edge[1].as_str());
+            } else if edge[1].as_str() == node {
+                queue.push(edge[0].as_str());
+            }
+        }
+    }
+    assert_eq!(
+        seen.len(),
+        arena.waypoints.nodes.len(),
+        "the waypoint graph is not connected from the red muster: reached {} of {}",
+        seen.len(),
+        arena.waypoints.nodes.len()
+    );
+    assert!(
+        seen.contains("muster_blue"),
+        "and the blue muster is not on it"
+    );
 }

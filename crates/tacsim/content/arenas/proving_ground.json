@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.proving_ground",
-    "version": 1,
+    "version": 2,
     "kind": "campaign_seed",
-    "digest": "4a479adb817b217aa17f64e71c6631ea27c427f5c833feb1b5e7139bc3a6c6f6",
+    "digest": "0ecc97a0922b2fef3d18fd2b510c2a17cdef1613de10ee56b9fce99520924160",
     "requires": []
   },
   "entries": {
@@ -54,8 +54,8 @@
             { "id": "ns_248", "x": 129, "y": 248 },
             { "id": "barn", "x": 106, "y": 194 },
             { "id": "compound", "x": 208, "y": 148 },
-            { "id": "muster_red", "x": 6, "y": 124 },
-            { "id": "muster_blue", "x": 249, "y": 124 }
+            { "id": "muster_red", "x": 6, "y": 105 },
+            { "id": "muster_blue", "x": 249, "y": 105 }
           ],
           "edges": [
             ["ew_008", "ew_032"],
@@ -86,16 +86,16 @@
           ]
         },
         "tanks": [
-          { "id": "red_1", "name": "Red Tank 1", "team": "red", "x": 6, "y": 118, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
-          { "id": "red_2", "name": "Red Tank 2", "team": "red", "x": 6, "y": 122, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
-          { "id": "red_3", "name": "Red Tank 3", "team": "red", "x": 6, "y": 126, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
-          { "id": "red_4", "name": "Red Tank 4", "team": "red", "x": 6, "y": 130, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
-          { "id": "blue_1", "name": "Blue Tank 1", "team": "blue", "x": 249, "y": 118, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
-          { "id": "blue_2", "name": "Blue Tank 2", "team": "blue", "x": 249, "y": 122, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
-          { "id": "blue_3", "name": "Blue Tank 3", "team": "blue", "x": 249, "y": 126, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
-          { "id": "blue_4", "name": "Blue Tank 4", "team": "blue", "x": 249, "y": 130, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" }
+          { "id": "red_1", "name": "Red Tank 1", "team": "red", "x": 6, "y": 97, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_2", "name": "Red Tank 2", "team": "red", "x": 6, "y": 95, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_3", "name": "Red Tank 3", "team": "red", "x": 6, "y": 99, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "red_4", "name": "Red Tank 4", "team": "red", "x": 6, "y": 93, "heading_mdeg": 90000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_1", "name": "Blue Tank 1", "team": "blue", "x": 249, "y": 97, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_2", "name": "Blue Tank 2", "team": "blue", "x": 249, "y": 95, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_3", "name": "Blue Tank 3", "team": "blue", "x": 249, "y": 99, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" },
+          { "id": "blue_4", "name": "Blue Tank 4", "team": "blue", "x": 249, "y": 93, "heading_mdeg": 270000, "unit": "tacsim.unit.line_tank" }
         ],
-        "note": "D-16-5 fixes the window: 256 by 256 cells at 1,000 cm, 2.56 km square. Everything else is cut C's. The region is offset to 20,000 m so the arena's own frame cannot touch the shipped lot's (region.limbo, 0 to 400 m) or the harness's (10,000 m). The entry zones are sixteen cells deep on each short side, which is 160 m of ground behind a tank at its start and about eleven seconds of reverse at 1,500 cm/s and 50 per cent. The four key spots are the four places the ground actually decides something: the ford across the river, the crossroads where the two roads meet, and the two built compounds. The waypoint graph is the two roads and four spurs, which is the smallest graph on which cut N's Patrol state can produce a route that is not a straight line."
+        "note": "D-16-5 fixes the window: 256 by 256 cells at 1,000 cm, 2.56 km square. The region is offset to 20,000 m so the arena's frame cannot touch the shipped lot's or the harness's. The entry zones are sixteen cells deep on each short side, 160 m of ground behind a tank at its start. The four key spots are where the ground decides something: the ford, the crossroads, the two compounds. The waypoint graph is the two roads and four spurs, the smallest graph on which Patrol makes a route that is not a straight line. VERSION 2 (16b cut F.4) moves the muster onto the ford. Version 1 mustered on rows 118 to 130, which the river cuts at columns 62 to 66, so a tank pointed at the enemy stopped at deep water 550 m out. The ford is rows 92 to 102: all eight slots stand in it, slot 1 on the east-west road at row 97 and the rest at 95, 99 and 93, a clear cell between each pair, so every tank can drive straight across. The muster nodes moved to row 105. The columns and the entry zones are unchanged."
       }
     }
   }

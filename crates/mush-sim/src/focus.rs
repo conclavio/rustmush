@@ -82,6 +82,16 @@ impl AccountOracle {
             .as_ref()
             .and_then(|oracle| oracle.all_accounts_distinct(characters))
     }
+
+    /// **Forget a character** (16b cut F.4). The destroy observer's half of the
+    /// map's upkeep; the link half is the world task's, through `Engine`. The
+    /// oracle behind this holder is the **same** `Arc` the engine holds, so
+    /// either surface writes the one map.
+    pub fn unlink(&self, character: mush_core::ObjId) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|oracle| oracle.unlink(character))
+    }
 }
 
 // ---- E7c5: B2 (the world-owned ephemeral focus) ----

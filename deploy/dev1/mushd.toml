@@ -46,15 +46,28 @@ max_characters = 3
 ic_ratio = 1
 ic_epoch = "2020-01-01 00:00"
 
-# --- The combat arena (16b cut G) --------------------------------------------
-# This box writes no [tacsim] header, so the layer itself stays off at its
-# default; a dotted header is a legal table on its own, and these five blocks are
-# written out because they are the game's numbers (doc 16 §7, values from 16b §9)
-# and a box should not run them as compiled-in defaults nobody read. All five are
-# deny_unknown_fields, so a mistyped key refuses the boot. Parsed and inert until
-# the cut that reads a field -- except [tacsim.sensors].max_signature_factor,
-# which the host converts to per mille at boot, so a negative, NaN or
-# unrepresentable factor refuses the boot naming that key.
+# --- The combat arena (16b cut G; the switch, 16b cut F.4) -------------------
+# [tacsim].enabled is what instantiates the simulator. With it on, the boot pass
+# appends the game's two content packs -- the proving ground's ground, and the
+# arena entry whose applier makes the muster room, its domain and the eight stock
+# tanks -- and nothing else: it drags in no seed pack ([tacsim].seeds is its own
+# key and is empty here), no corridor, no ephemeris change and no economy change,
+# all of which are read whether the layer is on or off
+# (crates/mush-server/src/boot.rs and crates/tacsim/src/composition/mod.rs, where
+# the flag reaches exactly one call, content_module_with's game_content).
+# With it OFF, the centre's rooms and pods still exist (they are in the starter
+# area) but there is no arena and no roster, so SIM refuses out loud and no match
+# can start. This box wants the simulator, so it is on.
+#
+# The six blocks below are written out because they are the game's numbers
+# (doc 16 §7, values from 16b §9) and a box should not run them as compiled-in
+# defaults nobody read. Every block is deny_unknown_fields, so a mistyped key
+# refuses the boot -- but a mistyped [tacsim] HEADER is not a key and parses
+# clean, so check the boot log: with the layer off the server says so in one line
+# naming the consequence for the simulator.
+[tacsim]
+enabled = true
+
 [tacsim.arena]
 max_catch_up_steps = 4
 # 16b cut N.2: the floor under one squad's deliberation requests, arena ms.

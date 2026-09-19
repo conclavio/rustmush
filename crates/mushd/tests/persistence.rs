@@ -211,7 +211,10 @@ async fn boot_round_trip(store: Arc<dyn ObjectStore>) {
 
     // Each command above crossed its exact commit barrier; player creation is
     // independently acknowledgement-gated too.
-    let nick = world.create_player("Nick").await.expect("create Nick");
+    let nick = world
+        .create_player("Nick", None)
+        .await
+        .expect("create Nick");
 
     // --- second boot: a fresh world hydrated from the store --------------
     let mut reloaded = load_or_seed_world(&*store).await.expect("reload");
@@ -360,7 +363,10 @@ async fn m5_module_round_trip(store: Arc<dyn ObjectStore>) {
 
     // Every prior mutation crossed its exact barrier; player creation is an
     // independently acknowledgement-gated final persistence probe.
-    world.create_player("Fence").await.expect("fence create");
+    world
+        .create_player("Fence", None)
+        .await
+        .expect("fence create");
 
     // --- second boot: rebuild from the store alone. ----------------------
     let (sessions2, handles2) = boot_module_rig(&store, &guard).await;
@@ -426,7 +432,10 @@ async fn economy_journal_round_trip(store: Arc<dyn ObjectStore>) {
     );
     // Every prior mutation crossed its exact barrier; player creation is an
     // independently acknowledgement-gated final persistence probe.
-    world.create_player("Fence").await.expect("fence create");
+    world
+        .create_player("Fence", None)
+        .await
+        .expect("fence create");
 
     // --- second boot: rebuild from the store alone. ----------------------
     let (sessions2, handles2) = boot_module_rig(&store, &guard).await;
@@ -740,7 +749,7 @@ async fn scene_archive_round_trip(store: Arc<dyn ObjectStore>) {
     // Every prior mutation crossed its exact barrier; player creation is an
     // independently acknowledgement-gated final persistence probe.
     world
-        .create_player("Archivist")
+        .create_player("Archivist", None)
         .await
         .expect("archivist create");
 
@@ -910,7 +919,10 @@ async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
     let world = handles.handle.clone();
     // The ack-gated create fires the ObjCreated observer (placed in the chargen
     // area, = Limbo here) and lands the creation batch in the store.
-    let nick = world.create_player("Nick").await.expect("create Nick");
+    let nick = world
+        .create_player("Nick", None)
+        .await
+        .expect("create Nick");
     // Connecting greets Nick and points at +chargen (the Connected hook).
     let mut nick_rx = attach_direct(&sessions, &world, 2, nick, "nick").await;
     assert!(
@@ -942,7 +954,10 @@ async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
     let job = parse_job_id(&text_of(&ev));
     // Every chargen action crossed its exact barrier; creation independently
     // proves the world remains writable after the submitted sheet/job commit.
-    world.create_player("Fence").await.expect("fence create");
+    world
+        .create_player("Fence", None)
+        .await
+        .expect("fence create");
 
     // --- reboot #1 (store alone): the sheet is Pending, unapproved. -------
     let reloaded = load_or_seed_world(&*store).await.expect("reload 1");
@@ -968,7 +983,10 @@ async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
     god_cmd(&world2, &format!("+job/approve {job}=Welcome aboard.")).await;
     expect_text(&mut god_rx, "approved").await;
     // Fence the approval's sheet-stamp write.
-    world2.create_player("Fence2").await.expect("fence2 create");
+    world2
+        .create_player("Fence2", None)
+        .await
+        .expect("fence2 create");
 
     // --- reboot #3 (store alone): the approval survived. -----------------
     let reloaded2 = load_or_seed_world(&*store).await.expect("reload 2");
@@ -1134,7 +1152,10 @@ async fn worldgen_round_trip(store: Arc<dyn ObjectStore>) {
     // Fence: an ack-gated create returns only once the strictly-ordered writer
     // has acknowledged its batch — so the draft's fire-and-forget batch (queued
     // before it) has certainly landed in the store.
-    world.create_player("Fence").await.expect("fence create");
+    world
+        .create_player("Fence", None)
+        .await
+        .expect("fence create");
 
     // --- second boot: rebuild from the store alone. ----------------------
     let mock2 = Arc::new(MockProvider::new("openrouter"));
@@ -1262,7 +1283,10 @@ async fn sheet_round_trip(store: Arc<dyn ObjectStore>) {
     let world = handles.handle.clone();
     let _god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
 
-    let nick = world.create_player("Nick").await.expect("create Nick");
+    let nick = world
+        .create_player("Nick", None)
+        .await
+        .expect("create Nick");
     // Staff-edit the sheet (@sheet/set is Royalty-gated; God qualifies). The
     // sheet is an attr on Nick's object, so these writes ride obj:* through.
     god_cmd_committed(&world, "@sheet/set Nick/callsign=Ladder").await;
@@ -1273,7 +1297,10 @@ async fn sheet_round_trip(store: Arc<dyn ObjectStore>) {
 
     // Every sheet edit crossed its exact barrier; creation independently
     // verifies the world remains writable afterward.
-    world.create_player("Fence").await.expect("fence create");
+    world
+        .create_player("Fence", None)
+        .await
+        .expect("fence create");
 
     // --- reboot: hydrate a fresh world from the store alone. --------------
     let reloaded = load_or_seed_world(&*store).await.expect("reload");
@@ -1782,7 +1809,7 @@ async fn store_failure_enters_read_only_and_recovery_exits() {
     expect_text(&mut god_rx, "Created: recovery-orb").await;
 
     // Everything (including the once-stuck doomed-orb batch) is persisted.
-    let nick = world.create_player("Probe").await.unwrap(); // ordering barrier
+    let nick = world.create_player("Probe", None).await.unwrap(); // ordering barrier
     let snapshot = store.load_world().await.unwrap().unwrap();
     for name in ["doomed-orb", "recovery-orb"] {
         assert!(
@@ -1806,7 +1833,7 @@ async fn closed_store_durable_ack_reports_failure() {
 
     // The store goes away (abnormal teardown) under a pending creation.
     flaky.set_mode(MODE_CLOSED);
-    let result = handles.handle.create_player("Ghost").await;
+    let result = handles.handle.create_player("Ghost", None).await;
     assert!(
         result.is_err(),
         "a dropped creation batch must not be confirmed: {result:?}"
@@ -1895,7 +1922,7 @@ async fn read_only_refuses_exit_aliases_and_creation() {
     expect_text(&mut god_rx, "committing another action").await;
 
     // Typed creation gets the equivalent retryable Busy result.
-    let err = world.create_player("Nope").await.unwrap_err();
+    let err = world.create_player("Nope", None).await.unwrap_err();
     assert_eq!(
         err,
         mushd::world_task::CreatePlayerErr::Busy,
@@ -1944,7 +1971,7 @@ async fn siteban_persists_updates_ipguard_and_clears() {
     expect_text(&mut god_rx, "Active sitebans:").await;
 
     // A mortal is refused by dispatch and nothing changes.
-    let nick = world.create_player("Nick").await.unwrap();
+    let nick = world.create_player("Nick", None).await.unwrap();
     let mut nick_rx = attach_direct(&sessions, &world, 2, nick, "nick").await;
     assert!(
         world
@@ -2227,7 +2254,10 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
 
     // Player creation is independently acknowledgement-gated after both
     // completion batches have landed.
-    world.create_player("Fence").await.expect("fence create");
+    world
+        .create_player("Fence", None)
+        .await
+        .expect("fence create");
 
     // --- second boot: rebuild from the store alone. ----------------------
     let (sessions2, handles2) = boot_npc_rig(&store, &guard, npc_service()).await;

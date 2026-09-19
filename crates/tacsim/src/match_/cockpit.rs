@@ -976,6 +976,10 @@ pub fn frame_weapons(frame: &Frame) -> Vec<WeaponRow> {
 /// [`CockpitError`], as the line the pilot sees.
 pub fn board(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    // **16b cut F.4**: the layer, first. A pod on a server with the layer off has
+    // no tank behind it, so boarding one can only end in a refusal further down
+    // the path; this is that refusal, said at the word the player typed.
+    lobby::require_layer(ctx.w)?;
     let Some(CentreRoom::Team(team)) = centre::where_in_centre(ctx.w, actor) else {
         return Err(CockpitError::OutsideTeamRoom);
     };
@@ -2310,11 +2314,43 @@ impl mush_core::CommandGate for CockpitGate {
         verb: &str,
         _line: &str,
     ) -> Result<(), String> {
+        // **16b cut F.4: the gate stands aside outside the centre.**
+        //
+        // A command gate runs at step 2 of `mush_core::cmd::dispatch`, before the
+        // alias stage and before home, exits and the command table — so a gate
+        // that refuses anywhere eats every line whose first word is its verb,
+        // wherever the player is standing. `BOARD` did: the OOC tour bus's own
+        // exit is named `Board the Bus <BUS>;bus;board`, and a newcomer at the Bus
+        // Stop who typed `board` was told "Boarding is through one of the
+        // simulator's team rooms." and did not move. `board`, `exit` and `status`
+        // are ordinary English and content will collide with them again.
+        //
+        // So outside the centre's rooms and pods this gate decides nothing and
+        // the line goes on to ordinary alias, exit and command matching. Inside
+        // it, every arm is what it was — and a cockpit verb that does reach its
+        // handler out there is refused by the handler with the same sentence
+        // (`cockpit_command` opens on `flying`), so nothing is admitted that was
+        // not admitted before.
+        //
+        // **The verb test comes first**, because `check` runs on EVERY dispatched
+        // line (twice on the alias path) while `where_in_centre` resolves the
+        // content latch up to eleven times — three rooms and then all eight pods.
+        // A gate asked about `look` must cost what it always cost: two string
+        // compares and a nine-element scan, and no world read at all.
+        let ours = verb.eq_ignore_ascii_case(BOARD_VERB)
+            || verb.eq_ignore_ascii_case(EXIT_VERB)
+            || COCKPIT_VERBS
+                .iter()
+                .any(|cockpit| verb.eq_ignore_ascii_case(cockpit));
+        if !ours {
+            return Ok(());
+        }
+        let standing = centre::where_in_centre(w, actor);
+        if standing.is_none() {
+            return Ok(());
+        }
         if verb.eq_ignore_ascii_case(BOARD_VERB) {
-            if centre::centre_rooms(w).is_none() {
-                return Ok(());
-            }
-            return match centre::where_in_centre(w, actor) {
+            return match standing {
                 Some(CentreRoom::Team(_)) => Ok(()),
                 _ => Err(OUTSIDE_TEAM_ROOM.to_owned()),
             };
@@ -2423,12 +2459,14 @@ fn cockpit_help(verb: &str) -> String {
         }
         "fire" => "FIRE [<weapon>]     shoot your lock; the cannon unless you name another weapon."
             .to_owned(),
+        // 16b cut F.2 gave both of these more to say, and a help line that
+        // undersells a surface is a pilot who never looks at it.
         "weaponstatus" => "WEAPONSTATUS        every weapon you carry: ready or cycling, its \
-                           rounds, and the range band of your lock."
+                           rounds, its own chance against your lock, and that lock's range band."
             .to_owned(),
-        _ => {
-            "STATUS              power, speed, heading, position and the arena's tempo.".to_owned()
-        }
+        _ => "STATUS              power, speed, heading, position, the arena's tempo, and your \
+              armour and internals section by section."
+            .to_owned(),
     }
 }
 

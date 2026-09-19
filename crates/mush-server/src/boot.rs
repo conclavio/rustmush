@@ -328,11 +328,22 @@ pub fn game_modules(
     // E7 cut 1: the TacSim layer, **after** the character ruleset. Its config was
     // read above, before the module list, for `[tacsim.recovery]`'s sake.
     let tacsim_enabled = tacsim.enabled;
+    // **16b cut F.4**: say it either way, and say what it means for the
+    // simulator. `[tacsim]` is `deny_unknown_fields`, but the section HEADER is
+    // not a key: `Config` ignores an unknown section, so `[tac_sim]` parses
+    // clean, boots the layer off and used to say nothing at all — and the first
+    // symptom was `SIM START` refusing hours later. The negative line is the
+    // one an operator greps for.
     if tacsim_enabled {
         tracing::info!(
             packs = tacsim.packs.len(),
             seeds = tacsim.seeds.len(),
-            "tacsim enabled"
+            "tacsim enabled: the simulator's arena and its stock tanks apply at boot"
+        );
+    } else {
+        tracing::info!(
+            "tacsim disabled ([tacsim].enabled is false or the section is missing): no arena and \
+             no stock tanks are applied, so the simulator centre cannot start a match"
         );
     }
     mods.push(modules::tacsim_module(tacsim));
@@ -531,6 +542,34 @@ pub async fn build_engine(
         tracing::warn!(%error, "boot: the ground driver's cell size did not apply");
     }
     modules::boot_modules(&mut engine, &**store).await?;
+    // **16b cut F.4**: the simulator's readiness, once — and here, because this
+    // is the first moment both halves of it are true or not. The centre's rooms
+    // arrive with the starter area's content latch and the tanks arrive with the
+    // game's boot packs, and both of those land inside the module boot pass
+    // above. An operator who reads one line at boot never has to discover a
+    // half-applied centre from a player's `SIM START`.
+    if config.tacsim.enabled {
+        let (rooms, tanks) = tacsim::match_::centre_readiness(&engine.world);
+        if rooms && tanks > 0 {
+            tracing::info!(
+                roster_tanks = tanks,
+                "simulator centre ready: the arena is applied and its tanks are standing"
+            );
+        } else if rooms {
+            tracing::warn!(
+                "simulator centre NOT ready: its rooms and pods are here but the arena's roster \
+                 is empty, so `SIM START` will refuse. A world seeded before the arena pack \
+                 existed needs the pack applied or the store reset (deploy/README.md)."
+            );
+        } else {
+            tracing::warn!(
+                roster_tanks = tanks,
+                "simulator centre NOT ready: this world has no centre rooms. An existing world \
+                 latched `neighborhood.ooc_area` below the shipped version; take the upgrade with \
+                 `@atlas/pack plan` and `@atlas/pack apply` (deploy/README.md)."
+            );
+        }
+    }
     // J5: the namespaces the nightly archive pass walks — every composed
     // module's. Only the booted engine knows the list, which is why the pass
     // is scheduled by the caller and not inside `open_store`.

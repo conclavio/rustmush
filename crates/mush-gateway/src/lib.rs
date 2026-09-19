@@ -3829,7 +3829,10 @@ mod tests {
 
         // A ServiceReq (CreatePlayer) is must-deliver: it enqueues synchronously
         // even over cap (a dropped ServiceReq would hang its oneshot — I1).
-        let fut = link.request(ServiceReq::CreatePlayer { name: "neo".into() });
+        let fut = link.request(ServiceReq::CreatePlayer {
+            name: "neo".into(),
+            account: None,
+        });
         assert!(matches!(rx.try_recv(), Ok(ToServer::Request { .. })));
         drop(fut); // never resolves (no reply); we only assert it enqueued.
 
