@@ -24,6 +24,10 @@
 //!    oracle back out again ([`ServiceReq::UnlinkPlayer`], 16b cut F.4), so the
 //!    orphan Player is an orphan on both sides.
 //!
+//! Steps 1 and 3 are the two requests that cross the boundary, and both wait out
+//! the world's one transient refusal rather than reporting it (16b cut F.4 follow-up):
+//! see [`COMMIT_RETRY_ATTEMPTS`].
+//!
 //! Only after all of that does the caller emit its confirmation output —
 //! the ack gate PLAN's write-through design requires. The store has no
 //! account deletion yet (a later milestone), so a world-side name conflict
@@ -39,6 +43,9 @@
 //! the import never runs twice.
 
 use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use mush_config::accounts::{
     burn_dummy_verify, hash_password, run_blocking, validate_account_name, validate_character_name,
@@ -52,6 +59,31 @@ use mush_store::{AccountRec, ObjectStore, StoreError};
 // The transport-agnostic account vocabulary lives in `mush-config`; re-export it
 // here so existing `…accounts::{CharSummary, CreateErr, …}` imports keep working.
 pub use mush_config::accounts::{CharSummary, CreateErr, RESERVED_NAMES};
+
+/// **Waiting out a commit** (16b cut F.4 follow-up).
+///
+/// The world refuses reads and new authoritative work with [`ServiceResp::Busy`]
+/// for as long as one commit is awaiting its exact durable receipt — the world
+/// loop's `RefusalReason::CommitPending` fan-out, `WorldMode::CommitPending`. It
+/// is a transient that says nothing at all about the request, and **boot is
+/// exactly when a registration meets it**: the world is committing the layers it
+/// has just built while the first player is typing `create` at the welcome
+/// screen. Reporting it there spends a typed password on a refusal the player
+/// can do nothing about but type the whole line again.
+///
+/// So the two requests the account flow sends are re-sent while that answer
+/// stands, bounded the way `bridge_common::delivery_barrier` bounds the same
+/// answer: a fixed number of re-sends inside one total deadline, after which the
+/// Busy is reported exactly as it was before. On an idle boundary the count binds
+/// first (forty re-sends, so about four seconds of waiting); the deadline is the
+/// backstop for a boundary whose own requests are slow, because a wedged world
+/// must never hold a welcome screen open.
+const COMMIT_RETRY_ATTEMPTS: usize = 40;
+/// How long the flow waits between re-sends.
+const COMMIT_RETRY_DELAY: Duration = Duration::from_millis(100);
+/// The whole budget, counted on tokio's clock so a paused-time test of it costs
+/// no wall clock.
+const COMMIT_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Result of a password check. Unknown account and wrong password are the
 /// same variant on purpose — the classic uniform login error (design 02
@@ -157,14 +189,48 @@ impl Accounts {
         }
     }
 
+    /// One request to the server half, re-sent while the world answers the
+    /// transient commit refusal (16b cut F.4 follow-up; see [`COMMIT_RETRY_ATTEMPTS`]).
+    ///
+    /// Only the two requests of the creation flow take this door, and both are
+    /// safe to re-send: [`ServiceReq::NameFree`] is an advisory read that touches
+    /// nothing, and a Busy answer to [`ServiceReq::CreatePlayer`] is documented
+    /// as refused **before touching world state**
+    /// (`mush_server::world_task::CreatePlayerErr::Busy`), so a re-send cannot
+    /// make two Players. Every other answer is handed straight back on the first
+    /// try — and so is a Busy that outlives the budget, so each caller's own
+    /// mapping of the answers is unchanged.
+    async fn request_past_commit(&self, req: ServiceReq) -> Option<ServiceResp> {
+        let deadline = Instant::now() + COMMIT_RETRY_TIMEOUT;
+        let mut answer = self.link.request(req.clone()).await;
+        let mut attempts = 1;
+        while matches!(answer, Some(ServiceResp::Busy)) && attempts < COMMIT_RETRY_ATTEMPTS {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            tokio::time::sleep(COMMIT_RETRY_DELAY.min(remaining)).await;
+            answer = self.link.request(req.clone()).await;
+            attempts += 1;
+        }
+        if matches!(answer, Some(ServiceResp::Busy)) {
+            tracing::warn!(
+                request = ?req,
+                attempts,
+                "the world stayed mid-commit across the whole retry budget; the request is \
+                 refused as busy"
+            );
+        }
+        answer
+    }
+
     /// Advisory name check with transport failures kept distinct from the
     /// authoritative "taken" answer. In particular, bounded IPC overload must
     /// not masquerade as `NameFree(false)` and leak into player-facing state as
     /// a false collision.
     async fn require_name_free(&self, char_name: &str) -> Result<(), CreateErr> {
         match self
-            .link
-            .request(ServiceReq::NameFree {
+            .request_past_commit(ServiceReq::NameFree {
                 name: char_name.to_string(),
             })
             .await
@@ -220,8 +286,7 @@ impl Accounts {
             );
         }
         let id = match self
-            .link
-            .request(ServiceReq::CreatePlayer {
+            .request_past_commit(ServiceReq::CreatePlayer {
                 name: char_name.to_string(),
                 account: account_id,
             })
@@ -424,6 +489,120 @@ impl AuthBackend for Accounts {
 fn account_id_of(rec: &AccountRec) -> Option<mush_core::AccountId> {
     rec.id
         .or_else(|| mush_core::AccountId::mint(&rec.name, rec.created).ok())
+}
+
+#[cfg(test)]
+mod commit_retry_tests {
+    //! **The creation flow waits out a commit** (16b cut F.4 follow-up).
+    //!
+    //! The lens for it is `crates/mush-gateway/tests/front_door_split.rs`, where
+    //! the world is genuinely mid-commit on the layers it has just booted while
+    //! the first `create` lands. These are the same thing in the small, with a
+    //! link that answers a chosen number of `Busy`s first — and on tokio's paused
+    //! clock, so the whole budget costs no wall clock.
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use futures::future::BoxFuture;
+    use mush_ipc::ToServer;
+    use mush_store::InMemoryStore;
+
+    /// A link that refuses the first `busies` requests as `Busy` and then
+    /// answers. Counts every request it was sent.
+    struct BusyLink {
+        busies: usize,
+        sent: AtomicUsize,
+        then: ServiceResp,
+    }
+
+    impl BusyLink {
+        fn new(busies: usize, then: ServiceResp) -> Arc<BusyLink> {
+            Arc::new(BusyLink {
+                busies,
+                sent: AtomicUsize::new(0),
+                then,
+            })
+        }
+    }
+
+    impl GatewayLink for BusyLink {
+        fn to_server(&self, _msg: ToServer) -> BoxFuture<'_, bool> {
+            Box::pin(async { false })
+        }
+
+        fn request(&self, _req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
+            let nth = self.sent.fetch_add(1, Ordering::Relaxed);
+            let answer = if nth < self.busies {
+                ServiceResp::Busy
+            } else {
+                self.then.clone()
+            };
+            Box::pin(async move { Some(answer) })
+        }
+    }
+
+    fn accounts_over(link: Arc<BusyLink>) -> Accounts {
+        Accounts::with_link(Arc::new(InMemoryStore::new()), link, 3)
+    }
+
+    /// A name check that meets a commit gets its real answer, not a refusal the
+    /// player would have to retype a whole `create` line for.
+    #[tokio::test(start_paused = true)]
+    async fn the_name_check_waits_for_the_commit_to_land() {
+        let link = BusyLink::new(3, ServiceResp::NameFree(true));
+        let accounts = accounts_over(Arc::clone(&link));
+
+        assert_eq!(accounts.require_name_free("Rowan").await, Ok(()));
+        assert_eq!(
+            link.sent.load(Ordering::Relaxed),
+            4,
+            "three refusals were re-sent, and the fourth request was answered"
+        );
+    }
+
+    /// The answers that are not the transient are still the first answer: no
+    /// re-send, and each caller's mapping of them is untouched.
+    #[tokio::test(start_paused = true)]
+    async fn an_answered_check_is_not_re_sent() {
+        for (answer, expected) in [
+            (
+                ServiceResp::NameFree(false),
+                Err(CreateErr::CharacterNameTaken),
+            ),
+            (
+                ServiceResp::Unavailable,
+                Err(CreateErr::World(CreatePlayerError::WorldGone.to_string())),
+            ),
+        ] {
+            let link = BusyLink::new(0, answer);
+            let accounts = accounts_over(Arc::clone(&link));
+
+            assert_eq!(accounts.require_name_free("Rowan").await, expected);
+            assert_eq!(link.sent.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    /// A world that never finishes committing must not hold the welcome screen
+    /// open: the budget ends, and the player gets the same busy refusal the flow
+    /// reported before there was a budget.
+    #[tokio::test(start_paused = true)]
+    async fn a_world_that_stays_mid_commit_is_still_reported_busy() {
+        let link = BusyLink::new(usize::MAX, ServiceResp::NameFree(true));
+        let accounts = accounts_over(Arc::clone(&link));
+
+        assert_eq!(
+            accounts.require_name_free("Rowan").await,
+            Err(CreateErr::World(
+                "the game server is busy; please try again shortly".to_string()
+            ))
+        );
+        assert_eq!(
+            link.sent.load(Ordering::Relaxed),
+            COMMIT_RETRY_ATTEMPTS,
+            "the attempt count bounds the re-sends"
+        );
+    }
 }
 
 #[cfg(test)]
