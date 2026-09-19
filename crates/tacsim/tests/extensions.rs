@@ -40,6 +40,15 @@
 //! held, unchanged, by the same observer outside it; a pod that is shut down or burnt
 //! out radiates nothing; and a field with no pod on it never scans for one.
 //!
+//! **X.5, ECCM** (doc 16 §9 item 5, D-16-18's fifth): a sensor row whose `emission`
+//! block is non-null — the *other* hook doc 16 §3.6 left null — fitted through a
+//! component role of its own to the sight the tank already has, and one subtraction
+//! and one addition on X.4's own fold before either of its terms is read. The
+//! observer inside the bubble holds the target it had lost, out to the recovery and
+//! no further; a filter rated against the pod exactly is the unjammed pass to the
+//! centimetre; a filter with no bubble on it, or one shot off its mount, is no
+//! filter at all; and it needs no power, because a filter radiates nothing.
+//!
 //! # What this file loads, and what it deliberately does not
 //!
 //! The three extension packs go through the **operator's** route —
@@ -153,6 +162,22 @@ const DIGESTS_ECM: [(&str, &str); 2] = [
 
 /// The pod's pack files, by their paths under `content/`.
 const PACK_FILES_ECM: [&str; 2] = ["sensors/ecm_mk1.json", "units/line_tank_ecm.json"];
+
+/// **The filter's digest pins** (16b cut X.5), the way X.1 pins the laser's: the
+/// filter's row, then the tank that carries it.
+const DIGESTS_ECCM: [(&str, &str); 2] = [
+    (
+        "tacsim.pack.eccm_mk1",
+        "4bf6842ee80f746b62d669680b0e32b941ca04f8b0bae2c6a940ede26f6d3de1",
+    ),
+    (
+        "tacsim.pack.line_tank_eccm",
+        "2f48fb1438a00ff4e4bcf67f0c8244e16701de3cb320b2ad2c6e7564a6f41c8a",
+    ),
+];
+
+/// The filter's pack files, by their paths under `content/`.
+const PACK_FILES_ECCM: [&str; 2] = ["sensors/eccm_mk1.json", "units/line_tank_eccm.json"];
 
 /// **The shipped sight's signature table, verbatim** (16b cut X.3).
 ///
@@ -2551,4 +2576,683 @@ fn sign(raw: &str) -> String {
         .expect("the pack digests")
         .to_hex();
     unsigned.replace(UNSIGNED, &signed)
+}
+
+// ---------------------------------------------------------------------------
+// X.5 — ECCM
+// ---------------------------------------------------------------------------
+
+/// A target cell the **recovered** reach does not quite reach: thirteen cells from
+/// [`WATCH_CELL`], 130 m, against the 121.5 m the authored filter buys back — and
+/// well inside the 540 m an unjammed Mk1 sight has.
+///
+/// It is the cell that makes *up to the recovery* a fact about a fixture rather
+/// than a sentence: one target range the filter recovers ([`MARK_CELL`], 100 m) and
+/// one it does not.
+const FAR_CELL: (u16, u16) = (8, 15);
+
+/// **What the filter authors** (`content/sensors/eccm_mk1.json`), so the arithmetic
+/// below is read off the content rather than restated by it: one Mk1 pod's whole
+/// attenuation cost.
+const ECCM_ATTENUATION_RECOVERY: u8 = 25;
+/// What it adds back to every target's signature factor, per mille — deliberately
+/// a part of what the pod took and not the whole of it.
+const ECCM_SIGNATURE_RECOVERY_PERMILLE: u32 = 75;
+
+/// What a filter rated against the Mk1 pod **exactly** would author: the whole of
+/// the signature floor the pod leaves, so the fold comes back to 1,000.
+const FULL_SIGNATURE_RECOVERY_PERMILLE: u32 = 1_000 - JAM_SIGNATURE_PERMILLE;
+
+/// The Mk1 sight's reach against a tank stopped on open ground **inside one Mk1
+/// bubble, with the authored filter fitted**: `54,000 × (150 + 75) / 1000`.
+const FILTERED_REACH_CM: u64 = 12_150;
+
+/// And with no filter: `54,000 × 150 / 1000`, which is X.4's own number.
+const JAMMED_REACH_CM: u64 = 8_100;
+
+/// The shipped content plus the filter and its tank (16b cut X.5).
+fn eccm_catalog() -> Catalog {
+    catalog_of(&content::extension_sources_of(&content::EXTENSIONS_ECCM))
+}
+
+/// **The shipped content plus X.4's pod and this cut's filter** (16b cut X.5).
+///
+/// What the acceptance needs, because the item's own sentence is about *the X.4
+/// observer*: the fixture fields X.4's jammer and this cut's filter, each from its
+/// own item's table, through the one operator route X.1 established. The count
+/// assertions above are still made against `EXTENSIONS_ECCM` alone, so no earlier
+/// item's statement of what its content adds is touched.
+fn pod_and_filter_catalog() -> Catalog {
+    let mut sources = content::extension_sources_of(&content::EXTENSIONS_ECM);
+    sources.extend(content::extension_sources_of(&content::EXTENSIONS_ECCM));
+    catalog_of(&sources)
+}
+
+/// The filter the content authors, as the arena carries it.
+fn authored_filter() -> tacsim::arena::perception::Eccm {
+    tacsim::arena::perception::Eccm {
+        attenuation_recovery: ECCM_ATTENUATION_RECOVERY,
+        signature_recovery_permille: ECCM_SIGNATURE_RECOVERY_PERMILLE,
+    }
+}
+
+/// One Mk1 pod's jamming, as the fold hands it to the two terms.
+fn mk1_jamming() -> tacsim::arena::perception::Jamming {
+    tacsim::arena::perception::Jamming {
+        attenuation_cost: u32::from(JAM_ATTENUATION_COST),
+        signature_permille: JAM_SIGNATURE_PERMILLE,
+    }
+}
+
+/// **The extension changes nothing about the stock game** — doc 16 §9's own rule,
+/// asserted for the filter as X.1 asserts it for the laser.
+///
+/// The last assertions are this cut's own, and they are about a *code* change rather
+/// than a content one: `SensorDef::emission` stopped being an opaque `Option<Value>`
+/// and became a typed hook, and what keeps every shipped sight's payload — and
+/// therefore its `DefinitionRef`, and therefore every persisted unit that points at
+/// one — exactly where it was is that a `None` still serialises as
+/// `"emission": null`. The row's whole key set is pinned again here, for the same
+/// reason X.4 pinned it: a field added to the row moves every sight's digest.
+#[test]
+fn x5_the_eccm_content_loads_beside_the_stock_game_without_moving_it() {
+    if writing() {
+        for relative in PACK_FILES_ECCM {
+            resign(relative);
+        }
+        return;
+    }
+
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    assert_eq!(stock.weapons.len(), 2, "the cannon and the coaxial");
+    assert_eq!(stock.specs.len(), 1, "one unit schema");
+    assert_eq!(stock.sensors.len(), 1, "one sight");
+
+    let pinned: std::collections::BTreeMap<&str, &str> = DIGESTS_ECCM.into_iter().collect();
+    for (name, json) in content::EXTENSIONS_ECCM {
+        let pack = tacsim::pack::load_pack(json)
+            .unwrap_or_else(|error| panic!("{name} does not verify: {error}"));
+        let id = pack.manifest().id().to_string();
+        assert_eq!(
+            pinned.get(id.as_str()).copied(),
+            Some(pack.manifest().digest().to_hex().as_str()),
+            "{id}'s digest moved; re-review the content and re-pin it"
+        );
+    }
+    assert_eq!(pinned.len(), content::EXTENSIONS_ECCM.len());
+
+    // With them loaded: one more sensor row, one more unit schema, and not one thing
+    // else — no weapon, no ammunition, no arena, and no second pod.
+    let both = eccm_catalog();
+    assert_eq!(both.sensors.len(), 2, "the Mk1 sight and the filter");
+    assert_eq!(both.specs.len(), 2, "the line tank and its ECCM variant");
+    assert_eq!(both.units.len(), 2, "and the tactics catalog carries both");
+    assert_eq!(
+        both.weapons.len(),
+        2,
+        "the ECCM tank carries the shipped guns and authors none of its own"
+    );
+    assert_eq!(both.arenas.len(), 1, "the extension adds no arena");
+    for (id, reference) in &stock.references {
+        assert_eq!(
+            both.references.get(id),
+            Some(reference),
+            "{id} moved when the extension loaded; a persisted unit points at it"
+        );
+    }
+
+    // The tank's identity, where X.2 pinned it, across a change to the *sensor*
+    // row's type — which the tank's own payload carries a reference to.
+    let tank = CanonicalId::new(content::LINE_TANK).expect("a canonical id");
+    assert_eq!(
+        stock
+            .references
+            .get(&tank)
+            .map(|reference| reference.digest().to_hex())
+            .as_deref(),
+        Some(LINE_TANK_DIGEST),
+        "the shipped tank's definition moved; a persisted unit needs a migration"
+    );
+
+    // And the shipped sight's row, key for key: `emission` is still the null hook doc
+    // 16 §3.6 requires of a row that is neither a pod nor a filter, and it still
+    // serialises as `null` now that it has a type.
+    let sight = stock
+        .sensors
+        .get(&CanonicalId::new("tacsim.sensor.visual_mk1").expect("a canonical id"))
+        .expect("the shipped sight");
+    assert!(sight.emission.is_none() && sight.jamming.is_none());
+    assert!(sight.eccm().is_none(), "the shipped sight filters nothing");
+    let json = serde_json::to_value(sight).expect("the row serialises");
+    let row = json.as_object().expect("a row is an object");
+    assert!(
+        row.get("emission").is_some_and(serde_json::Value::is_null),
+        "a sight with no filter block no longer serialises as null"
+    );
+    assert!(row.get("jamming").is_some_and(serde_json::Value::is_null));
+    let keys: Vec<&str> = row.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        [
+            "classify_after_ms",
+            "emission",
+            "jamming",
+            "label",
+            "max_attenuation",
+            "max_range_cells",
+            "note",
+            "sees_wrecks",
+            "share_range_cells",
+            "signature",
+        ],
+        "the sensor row's shape moved; every shipped sight's digest moved with it"
+    );
+    // The signature table X.3 pinned is untouched by this cut as well.
+    assert_eq!(
+        serde_json::to_string(&sight.signature).expect("the table serialises"),
+        VISUAL_MK1_SIGNATURE
+    );
+}
+
+/// **The filter is a sensor row whose `emission` is non-null** (doc 16 §3.6's other
+/// hook), reaching the arena as cells on the component that carries it.
+///
+/// And fitting one does not change what the tank *sees* with: `sensor_profile` reads
+/// the first `sensor` mount, the filter is an `eccm` mount, and the ECCM tank looks
+/// out of the same Mk1 sight the stock tank does. Nor does it make the tank a
+/// jammer: a field of filters and no pod never scans for one.
+#[test]
+fn x5_the_filter_is_a_sensor_row_whose_emission_block_is_non_null() {
+    let catalog = eccm_catalog();
+    let row = catalog
+        .sensors
+        .get(&CanonicalId::new(content::ECCM_MK1).expect("a canonical id"))
+        .expect("the filter's row");
+    let authored = tacsim::definitions::sensor::EccmDef {
+        attenuation_recovery: ECCM_ATTENUATION_RECOVERY,
+        signature_recovery_permille: ECCM_SIGNATURE_RECOVERY_PERMILLE,
+    };
+    assert_eq!(
+        row.emission,
+        Some(tacsim::definitions::sensor::EmissionHook::Eccm(authored)),
+        "doc 16 §9 item 5: the `emission` field becomes non-null"
+    );
+    assert_eq!(row.eccm(), Some(&authored));
+    assert!(row.jamming.is_none(), "the filter jams nobody");
+
+    // The cells, decoded at check-out onto the arena's own unit.
+    let arena = jam_field(
+        &catalog,
+        content::LINE_TANK_ECCM,
+        WATCH_CELL,
+        MARK_CELL,
+        None,
+        &[],
+    );
+    assert_eq!(
+        arena.unit(RED).and_then(|state| state.eccm),
+        Some(authored_filter()),
+        "the ECCM tank carries the filter it authors"
+    );
+    assert_eq!(
+        arena.unit(BLUE).and_then(|state| state.eccm),
+        None,
+        "a stock tank carries no filter"
+    );
+    assert_eq!(
+        arena.unit(RED).and_then(|state| state.jammer),
+        None,
+        "the filter is not a pod"
+    );
+    assert_eq!(
+        arena.jam_radius_cm, 0,
+        "a field with a filter and no pod still never scans for one"
+    );
+
+    // The filter is not a sight: the ECCM tank looks out of the Mk1 visual row, and
+    // its own row's floor numbers reach nothing.
+    let looking = arena
+        .unit(RED)
+        .and_then(|state| state.sensor.as_ref())
+        .expect("the ECCM tank sees with something");
+    assert_eq!(
+        (looking.max_range_cells, looking.max_attenuation),
+        (60, 40),
+        "fitting a filter changed what the tank sees with"
+    );
+
+    // The two terms, as arithmetic, on their own — X.4's fold, recovered.
+    let jam = mk1_jamming();
+    assert_eq!(
+        jam.recovered(None),
+        jam,
+        "a fold with no filter on it is the fold X.4 left"
+    );
+    assert_eq!(
+        jam.recovered(Some(authored_filter())),
+        tacsim::arena::perception::Jamming {
+            attenuation_cost: 0,
+            signature_permille: JAM_SIGNATURE_PERMILLE + ECCM_SIGNATURE_RECOVERY_PERMILLE,
+        }
+    );
+    let filtered = jam.recovered(Some(authored_filter()));
+    assert_eq!(filtered.budget(40), 40, "the pod's whole 25 bought back");
+    assert_eq!(
+        filtered.scale(EYE_REACH_CM),
+        FILTERED_REACH_CM,
+        "81 m of reach becomes 121 m"
+    );
+
+    // And a filter can never see *better* than no bubble at all: the cost floors at
+    // zero and the fraction ceilings at 1,000, so an absurdly over-rated filter is
+    // the unjammed pass and nothing more.
+    let over = jam.recovered(Some(tacsim::arena::perception::Eccm {
+        attenuation_recovery: 100,
+        signature_recovery_permille: 1_000,
+    }));
+    assert_eq!(over.budget(40), 40);
+    assert_eq!(
+        over.scale(EYE_REACH_CM),
+        EYE_REACH_CM,
+        "a filter lengthened a sight past its own reach"
+    );
+}
+
+/// **The acceptance** (doc 16 §9 item 5): X.4's observer, standing in X.4's bubble,
+/// **holds the target again** once it carries a filter — out to the recovery and no
+/// further.
+///
+/// The same fixture X.4's acceptance loses its target in: ten cells of open ground,
+/// 100 m, with the Mk1 pod parked halfway between. The Mk1 sight reaches 54,000 cm
+/// against a tank stopped on `ground`, the pod leaves 8,100 of it, and the filter
+/// gives back 75 per mille of the floor — 12,150 cm — so the target at 10,000 cm is
+/// back on the scope and the same target at 13,000 cm is not. Which is *up to the
+/// recovery*: ECCM buys back some of the range ECM took, never all of it.
+///
+/// Then the last row of the table, and the other half of the item's own sentence: a
+/// filter rated against this pod **exactly** — the whole 850 the pod leaves — reaches
+/// 13,000 cm as well, because `scale` of 1,000 per mille is the identity. A fully
+/// rated filter is the unjammed pass.
+#[test]
+fn x5_the_filter_holds_the_jammed_target_again_up_to_the_recovery() {
+    let catalog = pod_and_filter_catalog();
+    let jammed = |watcher: &str, target: (u16, u16)| {
+        jam_field(&catalog, watcher, WATCH_CELL, target, Some(POD_CELL), &[])
+    };
+
+    // The reaches the table below is an assertion about, from the content's own
+    // numbers rather than from prose.
+    assert_eq!(mk1_jamming().scale(EYE_REACH_CM), JAMMED_REACH_CM);
+    assert!(
+        JAMMED_REACH_CM < 10_000
+            && (10_000..13_000).contains(&FILTERED_REACH_CM)
+            && 13_000 < EYE_REACH_CM,
+        "the fixture's three ranges no longer tell the three reaches apart"
+    );
+
+    // X.4's own row: jammed, the target 100 m out is gone.
+    assert!(
+        !holds(&mut jammed(content::LINE_TANK, MARK_CELL)),
+        "the observer inside the bubble still held a target 100 m out"
+    );
+    // This cut's row: the same bubble, the same target, a filter on the observer.
+    assert!(
+        holds(&mut jammed(content::LINE_TANK_ECCM, MARK_CELL)),
+        "the filter bought nothing back: the jammed target is still gone"
+    );
+    // Up to the recovery and no further: 130 m is past the 121.5 m it buys.
+    assert!(
+        !holds(&mut jammed(content::LINE_TANK_ECCM, FAR_CELL)),
+        "the filter recovered more than it authors"
+    );
+    // And 130 m is well inside an unjammed sight, so the fixture is about the bubble.
+    assert!(
+        holds(&mut jam_field(
+            &catalog,
+            content::LINE_TANK,
+            WATCH_CELL,
+            FAR_CELL,
+            None,
+            &[]
+        )),
+        "a target 130 m out was lost with no pod on the field at all"
+    );
+
+    // Full recovery is the unjammed reach: the same field, the same pod, a filter
+    // rated against it exactly. Set on the checked-out unit rather than authored as a
+    // second content row, because doc 16 §9 item 5 asks for one filter and the point
+    // of the authored one is that it is *partial*.
+    let mut full = jammed(content::LINE_TANK_ECCM, FAR_CELL);
+    if let Some(state) = full.unit_mut(RED) {
+        state.eccm = Some(tacsim::arena::perception::Eccm {
+            attenuation_recovery: JAM_ATTENUATION_COST,
+            signature_recovery_permille: FULL_SIGNATURE_RECOVERY_PERMILLE,
+        });
+    }
+    assert_eq!(
+        mk1_jamming()
+            .recovered(full.unit(RED).and_then(|state| state.eccm))
+            .scale(EYE_REACH_CM),
+        EYE_REACH_CM,
+        "a filter rated against the pod exactly is not the unjammed reach"
+    );
+    assert!(
+        holds(&mut full),
+        "a fully rated filter lost a target an unjammed sight holds"
+    );
+}
+
+/// **The budget half, on its own** (doc 16 §9 item 5 against §9 item 4's *adds to
+/// the observer's `max_attenuation` budget*), with the pod on the other team's hull.
+///
+/// A belt of light woods on the line and a target four cells out, which is well
+/// inside what even the unfiltered jamming leaves of the reach — so step 3 passes,
+/// the trace is walked, and the only thing that can refuse the detection is step 2's
+/// budget: the pod takes the Mk1 sight's 40 down to 15, which the belt's 25 defeats,
+/// and the filter buys the whole 25 back.
+///
+/// The counters say the scan ran the same number of times either way: what the filter
+/// changes is the arithmetic on the fold, never the walk that collects it.
+#[test]
+fn x5_the_filter_buys_back_the_observers_attenuation_budget() {
+    let catalog = pod_and_filter_catalog();
+    let belt = [(8_u16, 4_u16, woods())];
+    for (watcher, held, what) in [
+        (content::LINE_TANK, 0, "a stock sight in the bubble"),
+        (content::LINE_TANK_ECCM, 2, "a filtered sight in the bubble"),
+    ] {
+        let mut arena = jam_field(
+            &catalog,
+            watcher,
+            WATCH_CELL,
+            NEAR_CELL,
+            Some(POD_CELL),
+            &belt,
+        );
+        let counters = jam_pass(&mut arena, RED, 1, 0);
+        assert_eq!(
+            counters.candidates, 2,
+            "{what}: the target and the pod's tank are the candidates"
+        );
+        assert_eq!(
+            counters.traces, 2,
+            "{what}: a trace was not walked, so the range test culled a candidate and this is \
+             not a test about the budget after all"
+        );
+        assert_eq!(
+            counters.detected, held,
+            "{what} answered the wrong way through one belt of light woods"
+        );
+        assert_eq!(
+            counters.jam_checks, 3,
+            "{what}: the scan looked at the wrong number of units"
+        );
+    }
+}
+
+/// **An observer no bubble reaches is the same observer with the filter and
+/// without** (16b cut X.5), which is what makes the term invisible where it has
+/// nothing to subtract from.
+///
+/// Two readings of *nothing else changes*, and both are counter-identity rather than
+/// prose: the observer stepped out of the radius while the pod still radiates, and a
+/// field with no pod on it at all — where `jam_radius_cm` is zero and the scan never
+/// touches the index.
+#[test]
+fn x5_an_observer_outside_every_bubble_is_identical_with_the_filter_and_without() {
+    let catalog = pod_and_filter_catalog();
+    let run = |watcher: &str, pod: Option<(u16, u16)>| {
+        let mut arena = jam_field(&catalog, watcher, OUTSIDE_CELL, MARK_CELL, pod, &[]);
+        let mut total = tacsim::arena::perception::PerceptionCounters::default();
+        for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000)] {
+            total.absorb(&jam_pass(&mut arena, RED, seq, t_ms));
+        }
+        let id = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+        (
+            total,
+            arena.contacts.resolve(RED, id).map(|held| held.class),
+        )
+    };
+
+    // Outside the radius, with the pod live: the pod's bubble reaches neither the
+    // observer nor its arithmetic, so the filter has nothing to give back.
+    let stock = run(content::LINE_TANK, Some(POD_CELL));
+    let filtered = run(content::LINE_TANK_ECCM, Some(POD_CELL));
+    assert_eq!(stock, filtered, "the filter moved a pass no bubble reaches");
+    assert_eq!(
+        stock.0.jam_checks, 3,
+        "one unit on three passes: the scan looked at the observer alone, because the pod is 70 m \
+         away and its bubble is 60 m wide"
+    );
+    assert!(stock.1.is_some(), "the fixture held its target at all");
+
+    // And with no pod anywhere: the scan never runs, for either observer.
+    let bare_stock = run(content::LINE_TANK, None);
+    let bare_filtered = run(content::LINE_TANK_ECCM, None);
+    assert_eq!(
+        bare_stock, bare_filtered,
+        "the filter moved a pass on a field with no jammer on it"
+    );
+    assert_eq!(
+        bare_stock.0.jam_checks, 0,
+        "a field with no pod scanned for one"
+    );
+}
+
+/// **A filter recovers while it is still there, and does not need power** (16b cut
+/// X.5).
+///
+/// The two halves of the rule, and they answer differently on purpose:
+///
+/// - **shot off its mount** — the `condition` cell of the filter's own component at
+///   zero, which is the one thing that stops a filter working. The tank is then the
+///   stock tank of X.4's acceptance and loses the same target.
+/// - **shut down** — a pod is an emitter and a hull that has not started up radiates
+///   nothing (X.4 asserts that), but a filter emits nothing at all: it discriminates
+///   in the sight's own returns, and this module's rule is that optics are optics. A
+///   cold tank with an intact sight and an intact filter holds what a warm one does.
+#[test]
+fn x5_a_filter_shot_off_its_mount_recovers_nothing_and_a_cold_one_recovers_everything() {
+    let catalog = pod_and_filter_catalog();
+
+    // The filter's own `condition` cell, taken to zero before check-out — the way
+    // `arena::resolution`'s own test dims a sight.
+    let mut units = vec![
+        unit_of(
+            &catalog,
+            content::LINE_TANK_ECCM,
+            RED,
+            Team::Red,
+            WATCH_CELL,
+        ),
+        unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, MARK_CELL),
+        unit_of(&catalog, content::LINE_TANK_ECM, POD, Team::Blue, POD_CELL),
+    ];
+    let addr = mush_tactics::CellAddr::Component {
+        component: mush_tactics::ComponentId::new("eccm_pod").expect("a component id"),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::CONDITION_CELL)
+            .expect("a cell id"),
+    };
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetCell { addr, value: 0 }],
+        None,
+        None,
+    )
+    .expect("a one-op plan");
+    let shot = units.first_mut().expect("the observer");
+    let (post, _) = mush_tactics::apply(&shot.unit, &plan, 0).expect("the filter is shot off");
+    shot.unit = post;
+
+    let mut gone = arena_of(&catalog, units, &[]);
+    for id in [RED, POD] {
+        if let Some(state) = gone.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    assert_eq!(
+        gone.unit(RED).and_then(|state| state.eccm),
+        None,
+        "a filter whose component is gone is still a filter"
+    );
+    assert!(
+        !holds(&mut gone),
+        "a tank whose filter is gone saw through the bubble anyway"
+    );
+
+    // Power: the filter is not an emitter, so a cold hull still filters.
+    let mut cold = jam_field(
+        &catalog,
+        content::LINE_TANK_ECCM,
+        WATCH_CELL,
+        MARK_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    if let Some(state) = cold.unit_mut(RED) {
+        state.power = Power::Off;
+    }
+    assert_eq!(
+        cold.unit(RED).and_then(|state| state.eccm),
+        Some(authored_filter()),
+        "the cold tank's filter was read away with its power"
+    );
+    assert!(
+        holds(&mut cold),
+        "a filter stopped working when its hull shut down, and a filter emits nothing"
+    );
+}
+
+/// **A stock fixture's pass is counter-identical when the extension loads** (16b §8
+/// cut X: *the story test and the harness unchanged before and after each*), which is
+/// the cost claim as well as the behaviour one.
+///
+/// Two stock tanks, the same window, the same seed, four passes each way: the same
+/// passes, candidates, traces, cell probes, detections and classifications, the same
+/// `jam_checks` of zero, and the same contact held at the end.
+#[test]
+fn x5_a_stock_fixtures_pass_is_counter_identical_when_the_extension_loads() {
+    let run_pair = |catalog: &Catalog| {
+        let mut arena = jam_field(
+            catalog,
+            content::LINE_TANK,
+            WATCH_CELL,
+            MARK_CELL,
+            None,
+            &[],
+        );
+        let mut total = tacsim::arena::perception::PerceptionCounters::default();
+        for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+            for observer in [RED, BLUE] {
+                total.absorb(&jam_pass(&mut arena, observer, seq, t_ms));
+            }
+        }
+        let id = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+        let held = arena.contacts.resolve(RED, id).copied();
+        (total, held)
+    };
+    let stock = run_pair(&catalog_of(&[]));
+    let with_eccm = run_pair(&eccm_catalog());
+    assert_eq!(
+        stock.0, with_eccm.0,
+        "the extension moved a stock fixture's perception cost"
+    );
+    assert_eq!(
+        stock.1.map(|held| held.class),
+        with_eccm.1.map(|held| held.class),
+        "the extension moved what a stock fixture sees"
+    );
+    assert!(stock.0.traces > 0, "the fixture traced at all");
+    assert_eq!(stock.0.jam_checks, 0, "a field with no pod scanned for one");
+}
+
+/// **Every one of the filter's refusals, by name** (16b cut X.5), the way cut S.1's
+/// signature rows, cut X.3's thermal band and cut X.4's pod are refused.
+///
+/// The bounds are re-run on the row where every other sensor bound is, and the
+/// cross-reference — a mount fitted to a row with no filter block — is checked where
+/// cut X.4 checks a pod radiating a sight: at bind time, because the two are authored
+/// in different files and neither can check the other alone.
+///
+/// The last two cases are the ones that shape the hook's *type*. Doc 16 §3.6's hook
+/// has to refuse a value of the wrong shape **naming `emission`** —
+/// `tests/definitions.rs` pins exactly that, and it is a test this cut may not edit —
+/// so the refusal has to come from `SensorDef::check` and not from `serde`, whose own
+/// message names the offending inner key and no path to it. That is why `emission` is
+/// an untagged pair rather than a bare `Option<EccmDef>`: the decode stays total and
+/// the refusal stays where it was. Both halves of that are asserted here.
+#[test]
+fn x5_a_filter_past_its_bounds_and_a_filter_fitted_to_a_sight_are_both_refused() {
+    let pack: serde_json::Value =
+        serde_json::from_str(content::ECCM_MK1_JSON).expect("the pack is json");
+    let def = pack
+        .pointer("/entries/tacsim.sensor.eccm_mk1/def")
+        .expect("the filter's entry")
+        .clone();
+    let row: tacsim::definitions::SensorDef =
+        serde_json::from_value(def.clone()).expect("the authored row decodes");
+    row.check("authored").expect("the authored row is valid");
+
+    for (pointer, value, needle) in [
+        (
+            "/emission/attenuation_recovery",
+            serde_json::json!(101),
+            "attenuation_recovery",
+        ),
+        (
+            "/emission/signature_recovery_permille",
+            serde_json::json!(1_001),
+            "signature_recovery_permille",
+        ),
+        // A block that recovers nothing is refused the way a `jamming` block with a
+        // zero radius is: an inert component is a component that does nothing for a
+        // whole match, silently.
+        ("/emission", serde_json::json!({}), "recovers nothing"),
+        // And the shape rule, which is the pinned one.
+        (
+            "/emission",
+            serde_json::json!({ "band": "radar" }),
+            "emission",
+        ),
+    ] {
+        let mut spoiled = def.clone();
+        *spoiled
+            .pointer_mut(pointer)
+            .expect("the authored row carries the pointer") = value;
+        let row: tacsim::definitions::SensorDef =
+            serde_json::from_value(spoiled).expect("the spoiled row still decodes");
+        let refused = row.check("spoiled").expect_err("the bound is re-run");
+        assert!(refused.to_string().contains(needle), "{refused}");
+    }
+
+    // The other half of that last case: `serde`'s own refusal for the same value names
+    // the key inside the hook and never the hook, which is the whole reason the hook is
+    // typed the way it is.
+    let bare = serde_json::from_value::<tacsim::definitions::sensor::EccmDef>(
+        serde_json::json!({ "band": "radar" }),
+    )
+    .expect_err("a foreign shape is not a filter");
+    assert!(
+        bare.to_string().contains("band") && !bare.to_string().contains("emission"),
+        "{bare}"
+    );
+
+    // And a filter fitted to a sight: the ECCM tank with its filter pointed at the Mk1
+    // visual row, which declares no `emission` and would have recovered nothing for a
+    // whole match.
+    let bad = content::LINE_TANK_ECCM_JSON.replace(
+        "\"sensor\": \"tacsim.sensor.eccm_mk1\"",
+        "\"sensor\": \"tacsim.sensor.visual_mk1\"",
+    );
+    let operator = vec![LoadedPack {
+        pack: tacsim::pack::load_pack(&sign(&bad))
+            .expect("an unsigned pack is not what is under test"),
+        source: "<spoiled>".to_owned(),
+    }];
+    let refused = Catalog::build_game(&operator, tacsim::NS)
+        .expect_err("a filter fitted to a sight is refused at bind");
+    let text = refused.to_string();
+    assert!(
+        text.contains("eccm_pod") && text.contains("emission"),
+        "{text}"
+    );
 }

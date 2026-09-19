@@ -195,6 +195,24 @@ pub const JAM_ATTENUATION_CELL: &str = "jam_attenuation_cost";
 /// X.4), beside the other two on the same component.
 pub const JAM_SIGNATURE_CELL: &str = "jam_signature_permille";
 
+/// **What a filter buys back of an observer's attenuation budget**, on the atlas's
+/// 0-to-100 scale, on the *filter's* component (16b cut X.5; doc 16 §9 item 5).
+///
+/// Laid down only for a [`ComponentRole::Eccm`] component, whose sensor row carries
+/// an [`crate::definitions::sensor::EccmDef`] — so every unit the game ships carries
+/// no such cell and is byte-identical to what it was. The two ECCM cells take the
+/// route cut X.1's `heat_per_shot`, cut X.3's thermal band and cut X.4's three jam
+/// cells take, for the reason [`JAM_RADIUS_CELL`] gives.
+///
+/// The cell's `max` is the whole of the budget a bubble can eat, so a later cut can
+/// *degrade* a filter the way a hit degrades a sight's [`CONDITION_CELL`], with no
+/// new seam.
+pub const ECCM_ATTENUATION_CELL: &str = "eccm_attenuation_recovery";
+
+/// **What it adds back to a target's signature factor**, per mille (16b cut X.5),
+/// beside [`ECCM_ATTENUATION_CELL`] on the same component.
+pub const ECCM_SIGNATURE_CELL: &str = "eccm_signature_recovery_permille";
+
 /// The condition a section, and a component, is born in.
 pub const INTACT: &str = "intact";
 
@@ -377,6 +395,22 @@ pub enum ComponentRole {
         /// The sensor row whose `jamming` block this pod radiates — an entry id,
         /// checked at load, and refused at bind time if the row carries no
         /// `jamming`.
+        sensor: CanonicalId,
+    },
+    /// **A counter-jamming filter** (16b cut X.5; doc 16 §9 item 5): a `condition`
+    /// cell and the two ECCM cells, from the `emission` block of the sensor row it
+    /// names.
+    ///
+    /// A role of its own rather than a second [`ComponentRole::Sensor`], for the
+    /// reason [`ComponentRole::Ecm`] is one: a filter is not something the unit
+    /// *sees with* — it is fitted to the sight the unit already has — and a second
+    /// sensor mount would shadow that sight or not, depending on which was authored
+    /// first. It names a sensor row all the same, because doc 16 §3.6 puts
+    /// `emission` on that row and this cut does not move it.
+    Eccm {
+        /// The sensor row whose `emission` block this filter applies — an entry id,
+        /// checked at load, and refused at bind time if the row carries no filter
+        /// block.
         sensor: CanonicalId,
     },
     /// The power plant: a capability with a named state set (doc 16 §3.3
@@ -602,12 +636,15 @@ impl UnitSpec {
     }
 
     /// Every sensor definition this unit names, in component order — the sights it
-    /// sees with **and** (16b cut X.4) the rows its jamming pods radiate, because
-    /// what this iterator is for is the reference check at load and a pod's row is
-    /// a reference like any other.
+    /// sees with, (16b cut X.4) the rows its jamming pods radiate and (16b cut X.5)
+    /// the rows its filters apply, because what this iterator is for is the
+    /// reference check at load and a pod's or a filter's row is a reference like any
+    /// other.
     pub fn sensors(&self) -> impl Iterator<Item = &CanonicalId> {
         self.components.iter().filter_map(|c| match &c.role {
-            ComponentRole::Sensor { sensor, .. } | ComponentRole::Ecm { sensor } => Some(sensor),
+            ComponentRole::Sensor { sensor, .. }
+            | ComponentRole::Ecm { sensor }
+            | ComponentRole::Eccm { sensor } => Some(sensor),
             _ => None,
         })
     }
@@ -1328,6 +1365,64 @@ pub fn bind(
                     // disagree.
                     (
                         serde_json::json!({ "role": "ecm", "sensor": sensor.as_str() }),
+                        vec![sensor_ref.clone()],
+                        cells,
+                    )
+                }
+                // **16b cut X.5**: the counter-jamming filter (doc 16 §9 item 5).
+                // Its two numbers are the sensor row's `emission` block, laid down
+                // as cells for the reason the pod's three are, and beside the
+                // `condition` cell that says whether the filter is still there —
+                // which is what the arena reads to decide that it counts.
+                ComponentRole::Eccm { sensor } => {
+                    let def = cx.sensors.get(sensor).ok_or_else(|| {
+                        DefinitionError::reference(name, "sensor", sensor.as_str())
+                    })?;
+                    let sensor_ref = cx.sensor_refs.get(sensor).ok_or_else(|| {
+                        DefinitionError::reference(name, "sensor", sensor.as_str())
+                    })?;
+                    // A filter fitted to a row with no `emission` block recovers
+                    // nothing, and would do it silently for a whole match — the
+                    // same failure cut X.4's pod has, checked in the same place and
+                    // for the same reason: the two are authored in different files
+                    // and neither can check the other alone.
+                    let eccm = def.eccm().ok_or_else(|| {
+                        DefinitionError::value(
+                            name,
+                            format!(
+                                "component `{}` is an `eccm` filter fitted to `{}`, which \
+                                 declares no `emission`",
+                                component.id, sensor
+                            ),
+                        )
+                    })?;
+                    let cells = vec![
+                        CellSpec {
+                            id: tactics_id!(name, "cell", CONDITION_CELL, CellId)?,
+                            min: 0,
+                            max: MAX_CONDITION,
+                            init: MAX_CONDITION,
+                        },
+                        CellSpec {
+                            id: tactics_id!(name, "cell", ECCM_ATTENUATION_CELL, CellId)?,
+                            min: 0,
+                            max: i64::from(MAX_ATTENUATION_COST),
+                            init: i64::from(eccm.attenuation_recovery),
+                        },
+                        CellSpec {
+                            id: tactics_id!(name, "cell", ECCM_SIGNATURE_CELL, CellId)?,
+                            min: 0,
+                            max: i64::from(MAX_SIGNATURE_PERMILLE),
+                            init: i64::from(eccm.signature_recovery_permille),
+                        },
+                    ];
+                    // The block is **not** copied into the payload, for the reason
+                    // cut X.4's is not: a filter's two numbers are the *sensor
+                    // row's*, and that row is `sensor_ref` — a reference carrying
+                    // its own digest. Change the block and the row's digest moves,
+                    // so this component's does, so the unit's does.
+                    (
+                        serde_json::json!({ "role": "eccm", "sensor": sensor.as_str() }),
                         vec![sensor_ref.clone()],
                         cells,
                     )

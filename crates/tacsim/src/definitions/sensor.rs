@@ -12,15 +12,22 @@
 //!
 //! "Present and null" is load-bearing and is the reason both are `Option`s
 //! without a serde default: a row that simply omits one is refused by the
-//! decoder for a missing field, and a row that fills one the reading cut has not
-//! landed yet is refused by [`SensorDef::check`] naming the hook and the cut that
-//! owns it.
+//! decoder for a missing field, so a sight cannot quietly stop writing the two
+//! `null`s its digest was taken over. Both cuts have now landed, and each hook is
+//! refused by [`SensorDef::check`] — naming the hook — where it holds something
+//! its own cut cannot read.
 //!
 //! **16b cut X.4 is that cut for `jamming`** (doc 16 §9 item 4: *the `jamming`
 //! field becomes non-null*). It is now a typed [`JammingDef`] rather than an
 //! opaque `Value`, and a row that fills it is a **jammer**: the pod of doc 16 §2
-//! W1, which is why sensor ranges in this game are short. `emission` stays
-//! present and null and is refused as before; the cut that reads it is §9 item 5.
+//! W1, which is why sensor ranges in this game are short.
+//!
+//! **16b cut X.5 is that cut for `emission`** (doc 16 §9 item 5: *a component
+//! that subtracts from that term*). A row that fills it carries an [`EccmDef`]
+//! and is a **filter**: what an observer standing in a bubble buys back of what
+//! the bubble took. The hook keeps its name — doc 16 §3.6's own — and keeps its
+//! refusal: a value of any other shape still refuses naming `emission`, which is
+//! what [`EmissionHook::Unread`] is for.
 
 use mush_atlas::TerrainClass;
 use serde::{Deserialize, Serialize};
@@ -263,6 +270,149 @@ impl JammingDef {
     }
 }
 
+/// **What a counter-jamming filter buys back of what a bubble took** (16b cut
+/// X.5; doc 16 §9 item 5: *a component that subtracts from that term*).
+///
+/// The `emission` hook doc 16 §3.6 left null, filled. Two integers, each the
+/// inverse of one of [`JammingDef`]'s:
+///
+/// | field | what it undoes |
+/// |---|---|
+/// | [`EccmDef::attenuation_recovery`] | [`JammingDef::attenuation_cost`], subtracted from the summed cost |
+/// | [`EccmDef::signature_recovery_permille`] | [`JammingDef::signature_permille`], added back to the surviving fraction |
+///
+/// # Whose component it is
+///
+/// **The observer's.** A pod degrades the band around itself and the cost is paid
+/// by whoever looks from inside it (see [`JammingDef`]); a filter is carried by
+/// the looker and recovers part of that cost for that looker alone. It is not a
+/// counter-*bubble*: it does nothing for a teammate standing beside it, and there
+/// is no radius on it at all.
+///
+/// # It can never see better than no bubble
+///
+/// Both recoveries are bounded by the term they undo at apply time, not by
+/// content: the cost floors at zero and the fraction ceilings at
+/// [`MAX_SIGNATURE_PERMILLE`] ([`crate::arena::perception::Jamming::recovered`]).
+/// So an observer with a filter and no bubble on it is *bit-identical* to one
+/// without, and a fully rated filter is bit-identical to an unjammed pass — which
+/// is the whole of what "subtracts from that term" is allowed to mean.
+///
+/// # Why it is authored under `emission` and not under a key of its own
+///
+/// Because doc 16 §3.6 names two hooks on this row, `emission` and `jamming`, and
+/// §9 item 5 is the cut that reads the first of them — this module's head has said
+/// so since cut X.4. A key of its own would be a **new field** on [`SensorDef`],
+/// which cut X cannot have for the reason [`ThermalSignature`] gives: the struct is
+/// built as an exhaustive literal by tests this cut may not edit. `emission` is a
+/// field the row already has, every literal in the tree writes `None` for it, and a
+/// `None` still serialises as `null` — so no shipped sight's bytes, and no persisted
+/// unit's reference, moves.
+///
+/// # Both columns default to zero
+///
+/// Unlike [`JammingDef::signature_permille`], whose neutral value is the ceiling,
+/// a filter's neutral value is *nothing recovered* — so a row may author either
+/// column alone, and a row that authors neither recovers nothing and is refused by
+/// [`EccmDef::check`] the way a `jamming` block with a zero radius is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EccmDef {
+    /// What an observer carrying this filter takes back off the summed
+    /// `attenuation_cost` of the bubbles it stands in (doc 16 §3.6 step 2), on the
+    /// atlas's 0-to-100 scale. The recovered cost floors at zero, so the budget is
+    /// never *better* than the sensor's own.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attenuation_recovery: u8,
+    /// What it adds back to the surviving fraction of every target's signature
+    /// factor (doc 16 §3.6 step 3), per mille. **Additive on whatever the bubbles
+    /// left**, and capped at [`MAX_SIGNATURE_PERMILLE`]: against one pod that left
+    /// 150 a recovery of 75 is 225, and against two that left 22 it is 97, which is
+    /// what a filter is for — it is worth most where the noise is worst.
+    #[serde(default, skip_serializing_if = "is_zero_permille")]
+    pub signature_recovery_permille: u32,
+}
+
+/// Whether an authored recovery is the default, so an unauthored one is not
+/// written back out.
+fn is_zero_permille(value: &u32) -> bool {
+    *value == 0
+}
+
+impl EccmDef {
+    /// Re-run every bound.
+    ///
+    /// `owner` is the hook the block was authored under, so the message names the
+    /// key an author would go and look for — which for a row is `emission`.
+    ///
+    /// # Errors
+    ///
+    /// [`DefinitionError::Value`] naming the entry, the hook and the column.
+    pub fn check(&self, entry: &str, owner: &str) -> Result<(), DefinitionError> {
+        if self.attenuation_recovery == 0 && self.signature_recovery_permille == 0 {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "`{owner}` recovers nothing: a filter authors an \
+                     `attenuation_recovery`, a `signature_recovery_permille`, or both (a row \
+                     that counters nothing authors no `{owner}` block at all)"
+                ),
+            ));
+        }
+        if self.attenuation_recovery > MAX_ATTENUATION_COST {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "`{owner}.attenuation_recovery` is 0 to {MAX_ATTENUATION_COST} (the \
+                     atlas's own scale); {} is not",
+                    self.attenuation_recovery
+                ),
+            ));
+        }
+        if self.signature_recovery_permille > MAX_SIGNATURE_PERMILLE {
+            return Err(DefinitionError::value(
+                entry,
+                format!(
+                    "`{owner}.signature_recovery_permille` is {}, past \
+                     {MAX_SIGNATURE_PERMILLE}: a filter gives back what a jammer took and \
+                     never more",
+                    self.signature_recovery_permille
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// **What a row's `emission` hook holds** (16b cut X.5), which is doc 16 §9 item
+/// 5's block and nothing else.
+///
+/// # Why the hook is not simply an `Option<EccmDef>`
+///
+/// Because of *how* a value of the wrong shape has to be refused. Doc 16 §3.6's
+/// "present and null" rule is enforced by [`SensorDef::check`] naming the hook, and
+/// `crates/tacsim/tests/definitions.rs` pins that refusal by putting
+/// `{"band": "radar"}` in a shipped sight's `emission` and asserting the message
+/// names **`emission`** — a test cut X may not edit. A bare `Option<EccmDef>` moves
+/// that refusal out of `check` and into `serde`, whose message for an adjacently
+/// tagged entry names the offending *inner* key and no path to it, so the pinned
+/// assertion would fail on a message that no longer says which hook was wrong.
+///
+/// The untagged pair keeps the decode total and the refusal where the test (and an
+/// author reading it) expects it: anything that is not an [`EccmDef`] lands in
+/// [`EmissionHook::Unread`] and `check` refuses it by name.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EmissionHook {
+    /// **The filter block** (16b cut X.5): `attenuation_recovery` and
+    /// `signature_recovery_permille`, each optional and each defaulting to zero.
+    Eccm(EccmDef),
+    /// Anything else the hook was filled with, kept only so that
+    /// [`SensorDef::check`] can refuse it naming `emission` rather than leaving
+    /// `serde` to refuse it naming one of its keys. Nothing reads it.
+    Unread(serde_json::Value),
+}
+
 /// One sensor (doc 16 §3.6).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -289,9 +439,12 @@ pub struct SensorDef {
     /// **The comms reach** a classified contact is shared along (doc 16 §3.6
     /// step 5, W6), in cells; 16b §9 pins 30. Zero shares nothing.
     pub share_range_cells: u16,
-    /// **The remaining hook** (doc 16 §3.6 last line, §9). Present and null until
-    /// the cut that reads it lands (§9 item 5).
-    pub emission: Option<serde_json::Value>,
+    /// **What this row counters** (doc 16 §3.6 last line, §9 item 5), or `None` for
+    /// every row that is a sight or a pod rather than a filter — which is every row
+    /// the game ships, and the reason a shipped sight's payload is still the bytes
+    /// it was: a `None` serialises as `"emission": null`, the byte the shipped
+    /// sights' digests were taken over (16b cut X.5).
+    pub emission: Option<EmissionHook>,
     /// **What this row jams** (doc 16 §3.6 last line, §9 item 4), or `None` for
     /// every row that is a sight rather than a pod — which is every row the game
     /// ships, and the reason a shipped sight's payload is the bytes it was (16b
@@ -303,8 +456,23 @@ pub struct SensorDef {
 }
 
 impl SensorDef {
-    /// Re-run every bound: `emission`'s nullity, and (16b cut X.4) `jamming`'s
-    /// three numbers where a row carries them.
+    /// **The filter block this row carries** (16b cut X.5), or `None` for a row
+    /// whose `emission` hook is null — every row the game ships.
+    ///
+    /// A hook filled with something that is not a filter answers `None` here and is
+    /// refused by [`SensorDef::check`], so nothing downstream ever sees it: the
+    /// catalog refuses the pack before a mount can read this.
+    #[must_use]
+    pub fn eccm(&self) -> Option<&EccmDef> {
+        match &self.emission {
+            Some(EmissionHook::Eccm(eccm)) => Some(eccm),
+            Some(EmissionHook::Unread(_)) | None => None,
+        }
+    }
+
+    /// Re-run every bound: (16b cut X.5) `emission`'s two numbers where a row
+    /// carries a filter and its refusal where it carries anything else, and (16b
+    /// cut X.4) `jamming`'s three numbers where a row carries them.
     ///
     /// # Errors
     ///
@@ -377,12 +545,21 @@ impl SensorDef {
                 }
             }
         }
-        if self.emission.as_ref().is_some_and(|value| !value.is_null()) {
-            return Err(DefinitionError::value(
-                entry,
-                "`emission` is the remaining hook of doc 16 §9 and is null until the cut that \
-                 reads it lands (item 5); a value here configures nothing",
-            ));
+        // **16b cut X.5**: and `emission` is read (doc 16 §9 item 5), so a filter
+        // block is bounded where every other sensor bound is re-run and anything
+        // else is still refused naming the hook — which is the refusal
+        // `tests/definitions.rs` pins.
+        match &self.emission {
+            None => {}
+            Some(EmissionHook::Eccm(eccm)) => eccm.check(entry, "emission")?,
+            Some(EmissionHook::Unread(_)) => {
+                return Err(DefinitionError::value(
+                    entry,
+                    "`emission` is doc 16 §9 item 5's hook and holds a filter block — \
+                     `attenuation_recovery`, `signature_recovery_permille`, or both — and \
+                     nothing else; a value of another shape configures nothing",
+                ));
+            }
         }
         // **16b cut X.4**: and `jamming` is read, so it is bounded rather than
         // refused (doc 16 §9 item 4).

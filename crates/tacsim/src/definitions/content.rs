@@ -222,6 +222,33 @@ pub const EXTENSIONS_ECM: [(&str, &str); 2] = [
     ),
 ];
 
+/// `crates/tacsim/content/sensors/eccm_mk1.json` (16b cut X.5).
+pub const ECCM_MK1_JSON: &str = include_str!("../../content/sensors/eccm_mk1.json");
+/// `crates/tacsim/content/units/line_tank_eccm.json` (16b cut X.5).
+pub const LINE_TANK_ECCM_JSON: &str = include_str!("../../content/units/line_tank_eccm.json");
+
+/// The counter-jamming filter doc 16 §9 item 5 asks for — a `sensor` row whose
+/// `emission` block is non-null, which is the hook doc 16 §3.6 names.
+pub const ECCM_MK1: &str = "tacsim.sensor.eccm_mk1";
+
+/// The unit that carries it.
+pub const LINE_TANK_ECCM: &str = "tacsim.unit.line_tank_eccm";
+
+/// **Doc 16 §9 item 5's content, in `requires` order** (16b cut X.5): the filter and
+/// the tank that carries it.
+///
+/// A table of its **own** beside the four before it, for the reason
+/// [`EXTENSIONS_BIPED`] gives: each item's acceptance states the whole of what its
+/// own content adds to the catalog — here one sensor row and one unit schema, and no
+/// weapon and no pod — and no later item may move an earlier one's count.
+pub const EXTENSIONS_ECCM: [(&str, &str); 2] = [
+    ("tacsim/content/sensors/eccm_mk1.json", ECCM_MK1_JSON),
+    (
+        "tacsim/content/units/line_tank_eccm.json",
+        LINE_TANK_ECCM_JSON,
+    ),
+];
+
 /// The extension packs as sources [`crate::verify_sources`] reads exactly as it
 /// reads an operator's.
 #[must_use]

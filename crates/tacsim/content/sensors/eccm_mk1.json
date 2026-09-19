@@ -1,0 +1,29 @@
+{
+  "manifest": {
+    "id": "tacsim.pack.eccm_mk1",
+    "version": 1,
+    "kind": "rules_definition",
+    "digest": "4bf6842ee80f746b62d669680b0e32b941ca04f8b0bae2c6a940ede26f6d3de1",
+    "requires": []
+  },
+  "entries": {
+    "tacsim.sensor.eccm_mk1": {
+      "kind": "sensor",
+      "def": {
+        "label": "Mk1 ECCM filter",
+        "max_range_cells": 1,
+        "max_attenuation": 0,
+        "classify_after_ms": 0,
+        "sees_wrecks": false,
+        "share_range_cells": 0,
+        "signature": [],
+        "emission": {
+          "attenuation_recovery": 25,
+          "signature_recovery_permille": 75
+        },
+        "jamming": null,
+        "note": "Doc 16 section 9 item 5's filter, and the whole of it is the emission block: this row is a filter and not a sight, so nothing mounts it with role sensor and the arena never reads the six detection fields above. They are the schema's floor, exactly as the Mk1 pod's row leaves them. attenuation_recovery 25 is one Mk1 pod's whole cost: an eye inside one bubble keeps the whole 40 of the Mk1 sight's budget and sees through the belt of light woods it saw through before, and inside two bubbles it keeps 15. signature_recovery_permille 75 is ADDITIVE on whatever the bubbles left, which is what makes a filter worth most where the noise is worst: against the Mk1 pod's 150 it is 225, so the Mk1 sight's 540 m against a tank stopped on open ground goes from 81 m back to 121 m, and against two stacked pods' 22 it is 97. It is deliberately NOT a full recovery: a filter rated against this pod exactly would author 850, and the point of 75 is that ECCM buys back some of the range ECM took and never all of it."
+      }
+    }
+  }
+}

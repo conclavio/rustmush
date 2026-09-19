@@ -107,6 +107,29 @@
 //! `jam_radius_cm`), and a match in which nothing carries a pod — every match the
 //! game ships — never looks: the radius is zero and the whole term is skipped, so
 //! the arithmetic above is bit-identical to the arithmetic before this cut.
+//!
+//! # ECCM (16b cut X.5; doc 16 §9 item 5)
+//!
+//! *A component that subtracts from that term.* A **filter** is carried by the
+//! observer, and before either of the two terms above is read, the fold the observer
+//! is standing in loses what its own filter recovers ([`Jamming::recovered`]): the
+//! summed cost loses the filter's `attenuation_recovery`, floored at zero, and the
+//! surviving signature fraction gains its `signature_recovery_permille`, capped at
+//! [`FULL_SIGNATURE_PERMILLE`].
+//!
+//! Two properties make it an *inverse* of the ECM term rather than a second term:
+//!
+//! - **it can never see better than no bubble at all** — the cost floors where the
+//!   sensor's own budget is and the fraction ceilings where the unjammed reach is, so
+//!   a fully rated filter is the unjammed pass to the centimetre and an
+//!   over-rated one is nothing more; and
+//! - **it is invisible without a bubble** — the recovery is applied inside
+//!   [`Arena::jamming_at`]'s `Option`, so an observer nothing is jamming runs the
+//!   arithmetic it ran before this cut, filter or no filter.
+//!
+//! A filter is **not** an emitter, which is why — unlike a pod — it needs no power
+//! (see [`Eccm::read`]); what it does need is to still be there, and its component's
+//! `condition` is read for that at check-out.
 
 use mush_atlas::TerrainClass;
 use mush_atlas::trace::{Eye, Sight, trace_cells};
@@ -313,6 +336,77 @@ impl Jammer {
     }
 }
 
+/// **The counter-jamming filter one unit carries** (16b cut X.5; doc 16 §9 item 5:
+/// *a component that subtracts from that term*), as the arena carries it.
+///
+/// The arena's own copy of `crate::definitions::sensor::EccmDef`, read once at
+/// check-out off the cells the `TacticalUnit` already carries — the route cut X.1's
+/// heat, cut X.3's thermal band and cut X.4's pod take, for the reason
+/// [`ThermalSignature`] gives. `None` for every unit the game ships.
+///
+/// It sits on the **observer**: what it recovers, it recovers for the unit carrying
+/// it and for nothing else on the field (see [`Jamming::recovered`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Eccm {
+    /// What it takes back off the summed cost against the observer's
+    /// `max_attenuation`, on the atlas's 0-to-100 scale.
+    pub attenuation_recovery: u8,
+    /// What it adds back to the surviving fraction of a target's signature factor,
+    /// per mille.
+    pub signature_recovery_permille: u32,
+}
+
+impl Eccm {
+    /// **Read one unit's filter off its cells** (16b cut X.5), or `None` for a unit
+    /// carrying no [`ECCM_ATTENUATION_CELL`] — every stock unit.
+    ///
+    /// The component is **found** rather than derived, exactly as [`Jammer::read`]
+    /// finds the pod: a unit that somehow mounted two filters reads the first one in
+    /// component order that is still there.
+    ///
+    /// **A filter must still be there to count**: the same component's
+    /// [`CONDITION_CELL`] has to be above zero, which is the one thing that can stop
+    /// a filter working. It needs **no power**, and that is deliberate — a pod is an
+    /// *emitter* and a hull that has not started up radiates nothing (see
+    /// [`Arena::jamming_at`]), while a filter radiates nothing at all: it
+    /// discriminates signal from noise in the sight's own returns, so it follows the
+    /// sight, and this module's head says optics are optics. A cold tank with an
+    /// intact sight and an intact filter sees exactly what a warm one does.
+    ///
+    /// [`ECCM_ATTENUATION_CELL`]: crate::definitions::unit::ECCM_ATTENUATION_CELL
+    /// [`CONDITION_CELL`]: crate::definitions::unit::CONDITION_CELL
+    #[must_use]
+    pub fn read(unit: &TacticalUnit) -> Option<Eccm> {
+        let attenuation =
+            mush_tactics::CellId::new(crate::definitions::unit::ECCM_ATTENUATION_CELL).ok()?;
+        let signature =
+            mush_tactics::CellId::new(crate::definitions::unit::ECCM_SIGNATURE_CELL).ok()?;
+        let condition = mush_tactics::CellId::new(crate::definitions::unit::CONDITION_CELL).ok()?;
+        unit.components().find_map(|(component, _)| {
+            let at = |cell: &mush_tactics::CellId| {
+                let addr = mush_tactics::CellAddr::Component {
+                    component: component.clone(),
+                    cell: cell.clone(),
+                };
+                u32::try_from(unit.cell(&addr)?.current.max(0)).ok()
+            };
+            let recovery = at(&attenuation)?;
+            let permille = at(&signature)?;
+            // A filter that has been shot off its mount is not a filter. The
+            // `condition` cell is laid beside the two above by `bind`, so a
+            // component that carries them and no condition is a rig nothing can
+            // author; `?` treats it as no filter either way.
+            if at(&condition)? == 0 {
+                return None;
+            }
+            Some(Eccm {
+                attenuation_recovery: u8::try_from(recovery).unwrap_or(u8::MAX),
+                signature_recovery_permille: permille.min(FULL_SIGNATURE_PERMILLE),
+            })
+        })
+    }
+}
+
 /// **What the pods one observer is standing among do to its pass** (16b cut X.4;
 /// doc 16 §9 item 4), accumulated once per pass by [`Arena::jamming_at`].
 ///
@@ -339,6 +433,41 @@ pub struct Jamming {
 }
 
 impl Jamming {
+    /// **What is left of this jamming once the observer's own filter has taken its
+    /// share** (16b cut X.5; doc 16 §9 item 5: *a component that subtracts from that
+    /// term*), applied to the fold before either of the two terms is read.
+    ///
+    /// One subtraction and one addition, each the inverse of the fold's own
+    /// arithmetic:
+    ///
+    /// - `attenuation_cost` loses `attenuation_recovery`, **saturating at zero**, so
+    ///   the recovered budget is never wider than the sensor's own
+    ///   ([`Jamming::budget`] subtracts from `max_attenuation`);
+    /// - `signature_permille` gains `signature_recovery_permille`, **capped at**
+    ///   [`FULL_SIGNATURE_PERMILLE`], so the recovered reach is never longer than the
+    ///   unjammed one ([`Jamming::scale`] of `1000` is the identity).
+    ///
+    /// `None` — every unit the game ships — returns the fold untouched, which is what
+    /// makes a pass with no filter on it bit-identical to the pass cut X.4 left. A
+    /// filter with **no bubble** never reaches here at all: [`Arena::jamming_at`]
+    /// answers `None` and the whole term is skipped, so a filter is not a thing that
+    /// can be detected by its effect on an unjammed pass.
+    #[must_use]
+    pub fn recovered(self, eccm: Option<Eccm>) -> Jamming {
+        let Some(eccm) = eccm else {
+            return self;
+        };
+        Jamming {
+            attenuation_cost: self
+                .attenuation_cost
+                .saturating_sub(u32::from(eccm.attenuation_recovery)),
+            signature_permille: self
+                .signature_permille
+                .saturating_add(eccm.signature_recovery_permille)
+                .min(FULL_SIGNATURE_PERMILLE),
+        }
+    }
+
     /// **The observer's step 2 budget under this much jamming** (doc 16 §9 item 4:
     /// *adds to the observer's `max_attenuation` budget* consumed), floored at
     /// zero: a budget of zero accepts a `Clear` line and nothing else, which is a
@@ -595,7 +724,14 @@ impl Arena {
         // shortened by the factor: doc 16 §3.2's rule is that the cull never decides
         // membership, and the jam culls where every other signature term culls, in
         // step 3.
-        let jam = self.jamming_at(&watcher.pose, counters);
+        // **16b cut X.5**: and the observer's own filter takes its share back out of
+        // that fold before either term is read (doc 16 §9 item 5). It is inside the
+        // `map` and not a branch of its own, because a filter with no bubble on it
+        // has nothing to subtract from: an observer standing outside every bubble is
+        // the same observer with the filter and without it, to the centimetre.
+        let jam = self
+            .jamming_at(&watcher.pose, counters)
+            .map(|jam| jam.recovered(watcher.eccm));
         let attenuation = jam.map_or(sensor.max_attenuation, |jam| {
             jam.budget(sensor.max_attenuation)
         });

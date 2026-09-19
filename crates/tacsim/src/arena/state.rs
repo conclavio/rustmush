@@ -26,7 +26,7 @@ use crate::arena::clock::Clock;
 use crate::arena::index::SpatialIndex;
 use crate::arena::intents::Intent;
 use crate::arena::ledger::{EventKind, Ledger};
-use crate::arena::perception::{FrameNotice, Jammer, SensorProfile, ThermalSignature};
+use crate::arena::perception::{Eccm, FrameNotice, Jammer, SensorProfile, ThermalSignature};
 use crate::arena::resolution::UnitProfile;
 use crate::arena::step::FrameSlots;
 use crate::arena::weapons::{Shot, WeaponBand};
@@ -946,6 +946,18 @@ pub struct UnitState {
     /// row is not: it is a fact about the unit's fit that nothing in a match moves,
     /// and what a pod *does* shows up in the contacts the hash already folds.
     pub jammer: Option<Jammer>,
+    /// **The counter-jamming filter it carries** (16b cut X.5; doc 16 §9 item 5), or
+    /// `None` for a unit that mounts none — every stock unit, so a stock pass runs
+    /// the arithmetic cut X.4 left it.
+    ///
+    /// Read off the cells at check-out for the reason [`ThermalSignature`] is, and
+    /// left out of [`crate::arena::hash::state_hash`] for the reason `jammer` is: it
+    /// is a fact about the unit's fit that nothing in a match moves, and what a
+    /// filter *does* shows up in the contacts the hash already folds.
+    ///
+    /// It matters only to **this** unit's own pass: a filter is carried by the
+    /// observer and recovers nothing for anybody standing beside it.
+    pub eccm: Option<Eccm>,
     /// What it shoots with — the definition rows, in component order.
     ///
     /// **16b cut W.2 made it mutable in one way and one only**: doc 16 §3.3's
@@ -1887,6 +1899,10 @@ impl Arena {
             // **16b cut X.4**: the jamming pod, likewise — and the window's own
             // cell size applied here, once, so the pass compares centimetres.
             let jammer = Jammer::read(&unit.unit, definition.terrain.cell_cm());
+            // **16b cut X.5**: the counter-jamming filter, likewise — and `None`
+            // when its component has been shot off, which is the one thing that
+            // stops a filter working.
+            let eccm = Eccm::read(&unit.unit);
             states.push(UnitState {
                 id: unit.id,
                 team: unit.team,
@@ -1905,6 +1921,7 @@ impl Arena {
                 sensor: unit.sensor,
                 thermal,
                 jammer,
+                eccm,
                 // 16b cut W.1: the two live cells, one row per weapon, laid down
                 // here so that every later lookup is a read of a complete table.
                 // A weapon id declared twice on one unit keeps one row, which is
