@@ -1167,6 +1167,7 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
             channel: Channel::Helm,
             epoch: 2,
             state: ControlState::Released,
+            pilot: None,
         }],
         &[],
     );
@@ -1202,6 +1203,7 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
             channel: Channel::Helm,
             epoch: 3,
             state: ControlState::Live,
+            pilot: None,
         }],
         &[],
     );

@@ -279,17 +279,53 @@ pub fn reset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
              and only the check-in gives them back.",
         ));
     }
-    let changed = super::lobby::reset(ctx);
+    let outcome = super::lobby::reset(ctx);
     let actor = ctx.actor;
     ctx.out.sys_to_actor(
         actor,
         crate::arena_bridge::NOTICE_CATEGORY,
-        if changed {
+        if outcome.changed() {
             "The simulator centre is reset; its slots and pods are free."
         } else {
             "The simulator centre is already idle; nothing changed."
         },
     );
+    // **16b cut F.1**: and what it actually found. The sweep now runs even on an
+    // already-idle centre — which is exactly the state a restart mid-match leaves
+    // behind, with a body still in a pod and a billet still held — so the verb has
+    // to be able to say "idle, and I freed two pods" rather than "nothing
+    // changed".
+    if !outcome.ejected.is_empty() {
+        let line = format!(
+            "{} pod(s) opened and {} cockpit billet(s) given back.",
+            outcome.ejected.bodies.len(),
+            outcome.ejected.seats.len()
+        );
+        ctx.out
+            .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
+    }
+    if outcome.tanks.changed() {
+        let line = format!(
+            "{} tank(s) back at spec, {} back at muster.",
+            outcome.tanks.restored.len(),
+            outcome.tanks.remustered.len()
+        );
+        ctx.out
+            .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
+    }
+    for (unit, why) in &outcome.tanks.failed {
+        let line = format!("#{} could not be reset: {why}", unit.0);
+        ctx.out
+            .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
+    }
+    for unit in &outcome.tanks.deployed {
+        let line = format!(
+            "#{} is still deployed and was left alone; `@arena/abort` its match first.",
+            unit.0
+        );
+        ctx.out
+            .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
+    }
     Ok(())
 }
 

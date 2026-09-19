@@ -1327,6 +1327,7 @@ mod tests {
                 channel: Channel::Helm,
                 epoch: 2,
                 state: ControlState::Released,
+                pilot: None,
             }],
             &[startup()],
         );

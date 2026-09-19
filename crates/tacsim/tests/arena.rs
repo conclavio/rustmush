@@ -453,6 +453,7 @@ fn script() -> Vec<Beat> {
                 channel: Channel::Helm,
                 epoch: 1,
                 state: ControlState::Linkdead,
+                pilot: None,
             }],
             intents: Vec::new(),
         },
@@ -562,6 +563,105 @@ fn one_scripted_log_at_three_cadences_is_one_event_list_and_one_hash_sequence() 
         // the three runs were not the same run.
         assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
     }
+}
+
+// ---------------------------------------------------------------------------
+// (a2) a released seat mid-run: 16b cut F.1
+// ---------------------------------------------------------------------------
+
+/// The seated pilot of `MOVER`, as [`arena_of`] hands the roster over.
+const MOVER_PILOT: ObjId = ObjId(1_000);
+
+/// [`script`] with the 40,000 ms beat turned from `Linkdead` into **`Released`**,
+/// naming the pilot who left (16b cut F.1).
+fn released_script() -> Vec<Beat> {
+    let mut beats = script();
+    if let Some(beat) = beats.last_mut() {
+        beat.controls = vec![Control {
+            unit: MOVER,
+            channel: Channel::Helm,
+            epoch: 1,
+            state: ControlState::Released,
+            pilot: Some(MOVER_PILOT),
+        }];
+    }
+    beats
+}
+
+/// **A `Released` mid-run is rate-independent, and changes no other unit** (16b
+/// cut F.1; doc 16 §3.1 "Rate independence", §3.6).
+///
+/// Cut F.1 made `Released` do two new things — take the pilot off the arena's
+/// frame roster and forget their remembered frame — and both of them happen
+/// inside `apply_control`, at a pulse boundary, off a message the world sends.
+/// This is the proof that neither leaked into the model: one script at three
+/// cadences is one event list, one per-substep hash sequence and one final state,
+/// and the parked tank on the other side ends exactly where the `Linkdead` run
+/// leaves it.
+#[test]
+fn a_released_seat_mid_run_is_one_event_list_at_three_cadences_and_moves_nobody_else() {
+    let quiet = |_: i64| Tempo::Quiet;
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = scripted_arena();
+        assert_eq!(arena.pilots.len(), 2, "one seated pilot per unit");
+        let run = replay(&mut arena, cadence, 60_000, &released_script(), &quiet);
+        // The control reached the arena, and the pilot is off the roster.
+        assert!(
+            !arena.pilots.iter().any(|seat| seat.pilot == MOVER_PILOT),
+            "the released pilot is still on the frame roster at {cadence} ms"
+        );
+        assert!(
+            arena.pilots.iter().any(|seat| seat.unit == PARKED),
+            "and the other tank's pilot is not, at {cadence} ms"
+        );
+        // And the arena builds them no further frame: one more pulse, and the
+        // released pilot is not among the slots it addresses.
+        let out = arena.step(60_000 + cadence, &[], &[]);
+        assert!(
+            !out.frames.iter().any(|(pilot, _)| *pilot == MOVER_PILOT),
+            "a frame was built for a pilot who left, at {cadence} ms"
+        );
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events,
+            first.events,
+            "the event list differs at {cadence} ms: {:?} against {:?}",
+            run.kinds(),
+            first.kinds()
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the final state differs at {cadence} ms"
+        );
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+    // **No other unit's outcome moved.** The reference is the same script with the
+    // same beat as a `Linkdead`, which is the control that changes nothing about
+    // who is flying: the parked tank ends identically either way.
+    let mut reference = scripted_arena();
+    let linkdead = replay(&mut reference, 1_000, 60_000, &script(), &quiet);
+    let parked_of = |run: &Replay| {
+        run.finals
+            .iter()
+            .find(|(id, ..)| *id == PARKED)
+            .copied()
+            .expect("the parked tank")
+    };
+    assert_eq!(
+        parked_of(first),
+        parked_of(&linkdead),
+        "releasing one seat moved the other side's tank"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -746,6 +846,7 @@ fn startup_then_released_in_one_burst_never_starts() {
             channel: Channel::Helm,
             epoch: 2,
             state: ControlState::Released,
+            pilot: None,
         }],
         &[intent(MOVER, IntentKind::Startup, 1)],
     );

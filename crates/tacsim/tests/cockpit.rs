@@ -54,7 +54,11 @@ fn config() -> TacsimConfig {
 /// tanks) on. The character sheet is left out for the reason
 /// `match_lifecycle.rs` leaves it out: its chargen payload handler cannot be
 /// registered twice in one process.
-fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
+///
+/// `cfg` is a parameter rather than [`config`] itself because one test wants a
+/// startup window of its own; see
+/// `an_order_while_power_is_coming_up_says_it_is_still_starting`.
+fn roster_with(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
     let llm = Arc::new(
@@ -63,7 +67,6 @@ fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
     );
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let cfg = config();
     let mut mods = comp::server_modules_with(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
@@ -104,7 +107,11 @@ struct Rig {
 
 impl Rig {
     fn boot(pilots: usize) -> Rig {
-        let mut tw = TestWorld::with_modules(roster());
+        Rig::boot_with(pilots, config())
+    }
+
+    fn boot_with(pilots: usize, cfg: TacsimConfig) -> Rig {
+        let mut tw = TestWorld::with_modules(roster_with(cfg));
         let lobby = match_::centre_object(tw.world(), match_::LOBBY_ENTRY)
             .expect("the OOC pack at version 4 carries the simulator lobby");
         let mut map = Accounts::default();
@@ -318,7 +325,15 @@ impl Rig {
     /// connections to drop, and the SSH lens (`mushd/tests/sim_cockpit.rs`) is
     /// where a real line is really cut; this is the unit-level proof that the
     /// hook is wired to the arena at all.
-    fn fire_conn(&mut self, who: ObjId, transition: mush_core::ConnTransition) {
+    ///
+    /// Answers **what the hook emitted**, because the hook's outbox is this
+    /// function's own and a caller that cannot read it can say nothing about the
+    /// lines a reconnect prints.
+    fn fire_conn(
+        &mut self,
+        who: ObjId,
+        transition: mush_core::ConnTransition,
+    ) -> Vec<(Audience, OutputEvent)> {
         let mut out = mush_core::Outbox::new();
         let engine = self.tw.engine_mut();
         mush_core::module::fire_conn_hook(
@@ -331,6 +346,18 @@ impl Rig {
                 mush_core::action_state::DetachedTypedState::Test,
             ),
         );
+        out.take()
+    }
+
+    /// The arena's epoch mirror for one channel of one unit — the observable
+    /// behind every `Control` the world sends, because `send_control` raises it
+    /// before it offers the message.
+    fn epoch(&self, unit: ObjId, channel: Channel) -> u64 {
+        self.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.epoch_of(unit, channel))
+            .unwrap_or_default()
     }
 
     /// Run one read against a `Ctx` built the way `mushd`'s own end-to-end tests
@@ -487,6 +514,96 @@ async fn every_cockpit_verb_is_refused_with_one_line_where_it_means_nothing() {
     rig.say(0, "board");
     let said = rig.say(0, "board");
     assert!(said.contains("already in your pod"), "{said}");
+}
+
+/// **The window between `BOARD` and the trigger says what it is** (16b cut F.1).
+///
+/// The K row's deviation 13 records the mechanism: the cockpit gate needs a
+/// deployed unit, and nothing is deployed until the last pilot boards. What the
+/// first pilot to board was *told* was `OUTSIDE_COCKPIT` — the sentence for a
+/// lost seat — after a `BOARD` line that had just instructed them to type
+/// `STARTUP`. In a two-player hand test one pilot always boards first, so this
+/// fired on the very first run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn between_board_and_the_trigger_the_panel_says_it_is_waiting() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    let said = rig.say(0, "board");
+    assert!(
+        said.contains("The panel wakes when every pilot is seated"),
+        "BOARD still promises a panel that is about to refuse: {said}"
+    );
+    assert!(
+        !said.contains("STARTUP"),
+        "and it no longer names a verb that is refused: {said}"
+    );
+    assert!(
+        said.contains("leaving abandons the tank for the rest of it"),
+        "and it says what EXIT costs once the match runs: {said}"
+    );
+    for verb in cockpit::COCKPIT_VERBS {
+        let said = rig.say(0, verb);
+        assert!(
+            said.contains(cockpit::NOT_STARTED_YET),
+            "{verb} between BOARD and the trigger: {said}"
+        );
+        assert!(
+            !said.contains(cockpit::OUTSIDE_COCKPIT),
+            "{verb} is still answered as a fault: {said}"
+        );
+    }
+    // A pilot who holds no seat at all still gets the other sentence.
+    let said = rig.say(1, "startup");
+    assert!(said.contains(cockpit::OUTSIDE_COCKPIT), "{said}");
+}
+
+/// **A tank that is already starting up is told to wait** (16b cut F.1; doc 16
+/// §3.3 "Startup").
+///
+/// The window under test is `match.startup_ms` wide, so this test gets **its own
+/// configuration** with a long one rather than the file's 200 ms: at the shared
+/// value a descheduled test task, or one `pump` that drains the `Off`, `Starting`
+/// and `Online` frames together, steps straight over the window and the test
+/// fails against correct code. Ten seconds of arena time is not a slower test —
+/// nothing here waits for power to finish — it is a window wide enough that
+/// losing the race is a real defect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_order_while_power_is_coming_up_says_it_is_still_starting() {
+    let mut cfg = config();
+    cfg.match_.startup_ms = 10_000;
+    let mut rig = Rig::boot_with(2, cfg);
+    rig.fly().await;
+    let said = rig.say(0, "heading 90");
+    assert!(
+        said.contains(cockpit::POWER_NOT_ONLINE),
+        "a cold tank: {said}"
+    );
+    rig.say(0, "startup");
+    assert!(rig.frame_for(0).await, "the arena never answered");
+    // Between the accepted `STARTUP` and `match.startup_ms`, the answer is the
+    // other one — the pilot has already done the thing the cold refusal asks for.
+    for _ in 0..200 {
+        rig.pump();
+        let said = rig.say(0, "heading 90");
+        if said.contains(cockpit::POWER_STARTING) {
+            assert!(
+                !said.contains(cockpit::POWER_NOT_ONLINE),
+                "and not both: {said}"
+            );
+            return;
+        }
+        if said.contains("Steering to 90") {
+            panic!(
+                "power came online inside a ten-second startup, so the window was never the \
+                 cockpit's to report"
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    panic!("the cockpit never reported a starting tank");
 }
 
 // ---------------------------------------------------------------------------
@@ -817,6 +934,195 @@ async fn exit_gives_the_seat_back_and_stands_the_pilot_in_the_team_room() {
     // And the cockpit verbs mean nothing again.
     let said = rig.say(0, "status");
     assert!(said.contains(cockpit::OUTSIDE_COCKPIT), "{said}");
+}
+
+/// **`EXIT` mid-match stops the leak** (16b cut F.1; doc 16 §11's N.1
+/// amendment, §3.6).
+///
+/// The 2026-09-18 review found two things behind the one-way leave, and this is
+/// the witness for both:
+///
+/// * **the frames.** `Arena::pilots` was fixed at check-out and nothing pruned
+///   it, so the arena went on building a `Frame` for a pilot who had given the
+///   seat up — pose, heading, the weapons table and every contact's cell, for a
+///   tank the reflex controller was driving. The world's own mirror of that is
+///   `ArenaRegistry::last_frame`, written by `on_frames` for every pilot the
+///   arena addresses: drained to nothing at `EXIT` and *still* nothing after a
+///   window of pulses is the statement that the arena addressed them no more.
+/// * **the binding.** `ArenaRegistry::pilots` survived `EXIT` too, so a reconnect
+///   fired `Control { Live }` off the stale row and took the tank back off the
+///   controller with nobody in the cockpit. Two witnesses, because the binding
+///   being gone and no control being sent are two facts: the registry answers no
+///   seat, and the arena's **epoch mirror does not move** across a `Connected`
+///   and a `Revived` — a control cannot reach the arena without `send_control`
+///   raising it first.
+///
+/// The arena-side half — that `StepOutput::frames` carries no row for a released
+/// pilot, at three cadences — is `crates/tacsim/tests/arena.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exit_mid_match_takes_the_pilot_off_the_frame_roster_and_off_the_binding() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    let tank = rig.tank(0);
+    // The arena is talking to this pilot before they leave, so the assertion
+    // below is about a stream that existed.
+    assert!(
+        rig.frame_for(0).await,
+        "the arena never sent the pilot a frame at all"
+    );
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.seat_of_pilot(pilot)),
+        Some((rig.centre().match_id.expect("a running match"), tank)),
+        "the check-out bound the pilot"
+    );
+
+    rig.say(0, "exit");
+
+    // Drain everything the arena had already queued, and give it many pulses to
+    // apply the `Released` — after this window nothing new can be in flight.
+    for _ in 0..80 {
+        rig.pump();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let settled = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.last_frame(pilot))
+        .cloned();
+    // The second window: whatever the ex-pilot's slot held after the first one is
+    // what it still holds, because the arena builds them nothing.
+    for _ in 0..80 {
+        rig.pump();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let later = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.last_frame(pilot))
+        .cloned();
+    assert!(
+        settled.is_none(),
+        "EXIT left the ex-pilot's frame mirror in place"
+    );
+    assert!(
+        later.is_none(),
+        "the arena sent the ex-pilot another frame after they left"
+    );
+
+    // The binding is gone, so a reconnect resolves no seat and sends no `Live`.
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.seat_of_pilot(pilot)),
+        None,
+        "the ex-pilot is still bound to the match"
+    );
+    // **And a reconnect sends no `Control { Live }`.** The observable is the
+    // arena's own epoch mirror: `send_control` raises `(unit, channel)` before it
+    // offers the message, so a `connected`/`revived` that resolved the stale
+    // binding and called `control_all_channels(.., Live, ..)` would raise all
+    // three by one. Unchanged across both transitions is the statement that no
+    // control was sent at all — the same number
+    // `linkdead_onset_and_revival_raise_the_arenas_epoch_without_releasing_the_seat`
+    // reads the other way round. The hook's own lines are read too, from the
+    // outbox `fire_conn` hands back, because the reclaim line is what a person
+    // would have seen.
+    let before: Vec<u64> = Channel::ALL.iter().map(|c| rig.epoch(tank, *c)).collect();
+    let mut events = rig.fire_conn(pilot, mush_core::ConnTransition::Connected);
+    events.extend(rig.fire_conn(pilot, mush_core::ConnTransition::Revived));
+    let said = rig.tw.seen_by(&events, pilot).join("\n");
+    let after: Vec<u64> = Channel::ALL.iter().map(|c| rig.epoch(tank, *c)).collect();
+    assert_eq!(
+        after, before,
+        "a reconnect sent the arena a control off a binding that was given up"
+    );
+    assert!(
+        !said.contains("back at your station"),
+        "a reconnect reclaimed a seat that was given up: {said}"
+    );
+    // And the centre says so: the slot is `left`, not `seated`.
+    let said = rig.say(0, "sim status");
+    let red_row = said
+        .lines()
+        .find(|line| line.trim_start().starts_with("red:"))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        red_row.contains(", left"),
+        "SIM STATUS still calls the ex-pilot seated: {said}"
+    );
+    assert!(
+        !red_row.contains(", seated"),
+        "SIM STATUS still calls the ex-pilot seated: {said}"
+    );
+    // And the pilot who stayed is still seated, so `left` is a fact about one
+    // slot and not a word the renderer started printing everywhere.
+    assert!(
+        said.lines()
+            .any(|line| line.trim_start().starts_with("blue:") && line.contains(", seated")),
+        "{said}"
+    );
+}
+
+/// **A pilot who QUITs is `left` too, and not `seated`** (16b cut F.1; doc 16
+/// §3.8's "Disconnects").
+///
+/// `EXIT` is the route a reviewer thinks of and the rarest one in a playtest.
+/// `SeatFacts::disconnected` — a clean `QUIT`, and the linkdead grace running out
+/// — sends the **same** `Control { Released }` naming the same pilot, and since
+/// this cut it does everything `EXIT` does to their standing: the arena drops
+/// them from its frame roster, the registry drops the binding, and a relogin
+/// takes nothing back. So `SIM STATUS` must not go on calling them `seated`
+/// either, and the flag is written where the release is decided rather than in
+/// one verb.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pilot_whose_session_ends_mid_match_is_left_on_the_board_too() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    assert!(
+        rig.centre()
+            .slot_of_pilot(pilot)
+            .is_some_and(|slot| slot.is_seated() && !slot.left),
+        "the slot starts seated and present"
+    );
+
+    rig.fire_conn(pilot, mush_core::ConnTransition::Disconnected);
+
+    assert_eq!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.seat_of_pilot(pilot)),
+        None,
+        "a QUIT left the pilot bound to the match"
+    );
+    let said = rig.say(1, "sim status");
+    let red_row = said
+        .lines()
+        .find(|line| line.trim_start().starts_with("red:"))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        red_row.contains(", left"),
+        "SIM STATUS calls a pilot who quit mid-match seated: {said}"
+    );
+    assert!(
+        !red_row.contains(", seated"),
+        "SIM STATUS calls a pilot who quit mid-match seated: {said}"
+    );
+    assert!(
+        said.lines()
+            .any(|line| line.trim_start().starts_with("blue:") && line.contains(", seated")),
+        "and the pilot who stayed is still seated: {said}"
+    );
 }
 
 /// **Doc 16 §3.8: the pods are released with the seats.** A pilot who never

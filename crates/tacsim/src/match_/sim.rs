@@ -220,8 +220,29 @@ impl mush_core::CommandGate for SimGate {
 }
 
 /// The boarding tick's body: one comparison, and nothing at all on a centre that
-/// is not boarding.
+/// is not boarding — **plus the boot pod sweep, once** (16b cut F.1).
 fn board_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
+    // The boot pass arms this and the first tick performs it: a pod is resolved
+    // through the content latch, which is the content module's state and is
+    // still empty while this module's `on_world_loaded` runs (see
+    // `crate::match_::MatchBook::arm_boot_sweep`). The stock-tank reset needs no
+    // latch and is done inside the boot pass itself, where nothing can race it.
+    // Once per boot, and on a clean world it finds nothing at all.
+    let owed = ctx
+        .w
+        .module_state_mut::<crate::match_::MatchBook>()
+        .is_some_and(crate::match_::MatchBook::take_boot_sweep);
+    if owed {
+        let ejected = crate::match_::cockpit::eject_all(ctx);
+        if !ejected.is_empty() {
+            tracing::warn!(
+                bodies = ejected.bodies.len(),
+                seats = ejected.seats.len(),
+                "tacsim: a restart left pilots in the simulator's pods; they are out and the \
+                 cockpit billets are given back"
+            );
+        }
+    }
     let now_ms = ctx.w.now().saturating_mul(1_000);
     lobby::board_deadline(ctx, now_ms);
 }

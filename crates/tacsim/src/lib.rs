@@ -520,9 +520,6 @@ fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::V
     }
 
     let restored = mush_tactics::custody::take_boot_restored(ctx.w);
-    if restored.is_empty() {
-        return;
-    }
     let mut by_match: std::collections::BTreeMap<u64, Vec<mush_core::ObjId>> =
         std::collections::BTreeMap::new();
     for (unit, marker) in restored {
@@ -538,6 +535,52 @@ fn boot_matches(ctx: &mut ModuleCtx<'_>, kv: &[(smol_str::SmolStr, serde_json::V
              from their check-out snapshots and the match is recorded aborted(restart)."
         );
         match_::write_restart_abort(ctx, crate::arena_task::MatchId(match_id), &units);
+    }
+
+    // **16b cut F.1**: and then the centre itself, whether or not any marker was
+    // found.
+    //
+    // A restart mid-match leaves the centre `Idle` by construction — the match
+    // book is RAM — but the two things `BOARD` wrote are **durable**: the body is
+    // placed inside the pod (`place_interior`) and the cockpit billet is on the
+    // tank's `assignment:<unit>` document. Boot released the seat *narrowing* of
+    // a marked unit and nothing else, so two players came back to find themselves
+    // standing in dark pods, and the staff repair the design pointed at
+    // (`@arena/reset`) returned on its own first line because the centre already
+    // looked idle.
+    //
+    // The **tank reset** belongs to the same boot, because doc 16 §3.3's *every
+    // `Idle` transition* includes the one a reboot performs: a server that
+    // stopped between a match's damage and its next reset would otherwise come
+    // back with last night's wreck still on the board.
+    //
+    // It happens **here, inside the boot pass**, and not on a later tick. Every
+    // fact it needs is already in hand — this module's own roster document and
+    // its own definitions, installed on the state slot a few lines above, and
+    // `mush-sim`'s placements and `mush-tactics`' unit records, whose modules are
+    // composed before this one — and a reset that happened a second later would
+    // silently undo whatever anybody did to a tank in that second. That is not
+    // hypothetical: the arena story's own opening is staff re-posing the two
+    // slot-1 tanks nose to nose, and through the gateway that command lands
+    // inside the first tick period, so a deferred reset put both tanks back on
+    // their authored cells 2.4 km apart and the two never saw each other. Boot
+    // finishes before the front door serves a line; a tick does not.
+    let tanks = match_::reset_stock_tanks(ctx);
+    if tanks.changed() {
+        tracing::info!(
+            restored = tanks.restored.len(),
+            remustered = tanks.remustered.len(),
+            "tacsim: the simulator's stock tanks are back at their spec and at muster"
+        );
+    }
+
+    // The **pod sweep** cannot come with it: a pod is resolved through the
+    // content latch, which is the content module's state and is still empty
+    // while this runs. So that half alone is armed and the module's own tick
+    // performs it — see [`match_::MatchBook::arm_boot_sweep`], which says why
+    // that window is not the one above.
+    if let Some(book) = ctx.w.module_state_mut::<match_::MatchBook>() {
+        book.arm_boot_sweep();
     }
 }
 

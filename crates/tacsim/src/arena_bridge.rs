@@ -591,6 +591,24 @@ impl ArenaRegistry {
         self.pilots.get(&pilot).copied()
     }
 
+    /// **Forget one pilot's seat** (16b cut F.1) — the undo of [`bind_pilot`],
+    /// and the remembered frame with it.
+    ///
+    /// Until this cut the binding was written at check-out and removed only by
+    /// [`ArenaRegistry::untrack`], so a pilot who typed `EXIT` in the first minute
+    /// of a match stayed bound for the rest of it: a reconnect fired
+    /// `Control { Live }` off that stale row and handed the tank back to
+    /// `Controller::Pilot` with nobody in the cockpit — no seat, no focus, no
+    /// body in the pod, and the reflex withdrawal cancelled. [`send_control`]
+    /// calls this on every `Released` that names its pilot, so the binding lasts
+    /// exactly as long as the seat does.
+    ///
+    /// Answers whether a binding went.
+    pub fn unbind_pilot(&mut self, pilot: ObjId) -> bool {
+        self.last_frames.remove(&pilot);
+        self.pilots.remove(&pilot).is_some()
+    }
+
     /// Publish one `(unit, channel)` epoch into the mirror — cut T.3 seeds it at
     /// check-out with the epochs it hands the arena in `CustodyOut::pilots`.
     /// Never lowers, for the same reason the arena's own table never does.
@@ -932,6 +950,21 @@ pub fn forward_intent(
 /// on stamping orders with the old epoch. The arena then refuses everything on
 /// that channel, which is the fail-closed direction.
 ///
+/// **16b cut F.1**: `pilot` is whose seat changed, when the world knows. A
+/// `Released` that names one is the world's statement that this person is out of
+/// that cockpit, and it does three things nothing else did: the arena drops them
+/// from its frame roster ([`crate::arena::state::Arena::drop_pilot`]), so no
+/// further frame or contact notice is built for them; the registry's own
+/// `pilot → (match, unit)` binding goes, so a later reconnect of that account
+/// fires no `Control { Live }` and takes nothing back from the controller; and
+/// the centre's slot is marked `left`
+/// ([`crate::match_::lobby::slot_left`]), so `SIM STATUS` stops calling somebody
+/// standing in the team room `seated`. All three are here, and not in `EXIT`,
+/// because `EXIT` is only one of the three routes to a `Released` — a `QUIT` and
+/// the linkdead grace running out are the others, and they reach a pilot's
+/// standing identically. `None` is a control the world cannot attribute and
+/// changes none of them.
+///
 /// # Errors
 ///
 /// [`ControlRefusal`]: no such match, or a task that will not take it.
@@ -940,6 +973,7 @@ pub fn send_control(
     unit: ObjId,
     channel: Channel,
     state: ControlState,
+    pilot: Option<ObjId>,
 ) -> Result<(), ControlRefusal> {
     let (match_id, control, tasks) = {
         let registry = ctx
@@ -950,6 +984,14 @@ pub fn send_control(
             .match_of_unit(unit)
             .ok_or(ControlRefusal::NoMatch)?;
         let epoch = registry.bump_epoch(unit, channel);
+        // The world side of the same sentence, done here so that every route to a
+        // released seat — `EXIT`, the lobby's sweep, the linkdead grace running
+        // out — unbinds the pilot, and not only the one verb a reviewer thought of.
+        if state == ControlState::Released
+            && let Some(pilot) = pilot
+        {
+            registry.unbind_pilot(pilot);
+        }
         (
             match_id,
             Control {
@@ -957,10 +999,19 @@ pub fn send_control(
                 channel,
                 epoch,
                 state,
+                pilot,
             },
             registry.tasks.clone(),
         )
     };
+    // The centre's own half of the same sentence, outside the registry's borrow.
+    // Idempotent: three channels release one seat, and the second and third find
+    // the slot already marked.
+    if state == ControlState::Released
+        && let Some(pilot) = pilot
+    {
+        crate::match_::lobby::slot_left(ctx, pilot);
+    }
     tasks
         .offer(match_id, ArenaMsg::Control(control))
         .map_err(|_| ControlRefusal::Gone)
@@ -1000,9 +1051,9 @@ pub fn send_stop(
 /// revival (see [`SeatFacts`]). `BOARD` and `EXIT` are cut K.2's verbs and call
 /// [`send_control`] directly, on the same world task, right beside
 /// `request_seat_activation`.
-fn control_all_channels(ctx: &mut Ctx<'_>, unit: ObjId, state: ControlState) {
+fn control_all_channels(ctx: &mut Ctx<'_>, unit: ObjId, state: ControlState, pilot: ObjId) {
     for channel in Channel::ALL {
-        if let Err(error) = send_control(ctx, unit, channel, state) {
+        if let Err(error) = send_control(ctx, unit, channel, state, Some(pilot)) {
             tracing::debug!(%unit, channel = channel.as_str(), %error, "arena control not delivered");
         }
     }
@@ -1447,7 +1498,7 @@ impl SeatFacts {
 impl mush_core::EventHook for SeatFacts {
     fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
-            control_all_channels(ctx, unit, ControlState::Live);
+            control_all_channels(ctx, unit, ControlState::Live, actor);
         }
     }
 
@@ -1458,7 +1509,7 @@ impl mush_core::EventHook for SeatFacts {
     /// queued under the dead line survives the reclaim.
     fn revived(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
-            control_all_channels(ctx, unit, ControlState::Live);
+            control_all_channels(ctx, unit, ControlState::Live, actor);
             // And the pilot is told, because the one thing they cannot see from
             // inside a pod is what happened while they were not there: the tank
             // held the last heading and speed they gave it and fired nothing.
@@ -1477,13 +1528,13 @@ impl mush_core::EventHook for SeatFacts {
     /// Not a release: the tank keeps steering and stops shooting.
     fn linkdead(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
-            control_all_channels(ctx, unit, ControlState::Linkdead);
+            control_all_channels(ctx, unit, ControlState::Linkdead, actor);
         }
     }
 
     fn disconnected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {
         if let Some(unit) = SeatFacts::seated_unit(ctx, actor) {
-            control_all_channels(ctx, unit, ControlState::Released);
+            control_all_channels(ctx, unit, ControlState::Released, actor);
         }
     }
 }

@@ -74,6 +74,10 @@ const OUTSIDE_TEAM_ROOM: &str = "Boarding is through one of the simulator's team
 const NOT_IN_A_POD: &str = "You are not in a pod.";
 /// The one line a motion order refuses with while the tank is cold.
 const POWER_NOT_ONLINE: &str = "Power not online";
+/// The same refusal once `STARTUP` has been accepted and the ten seconds are
+/// running (16b cut F.1): a pilot who has already asked is told to wait, not told
+/// to ask again.
+const POWER_STARTING: &str = "Power is still coming up";
 
 // ---------------------------------------------------------------------------
 // The rig
@@ -461,7 +465,7 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
         let mark = ada.mark();
         ada.send_line("HEADING 90").await;
         if ada
-            .expect_one_of_after(mark, &["Steering to 90", POWER_NOT_ONLINE])
+            .expect_one_of_after(mark, &["Steering to 90", POWER_NOT_ONLINE, POWER_STARTING])
             .await
             == 0
         {

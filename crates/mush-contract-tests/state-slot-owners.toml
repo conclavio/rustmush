@@ -337,6 +337,32 @@ the engine is built rather than creating them at the welcome screen.
 """
 
 [[site]]
+path = "crates/tacsim/tests/reset.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut F.1's release half, for the same reason the three `tacsim/tests` rows
+above give: every claim in the file starts from a pilot who really BOARDed, and
+`mush_sim::request_seat_activation` consumes the ACCOUNT's one foreground focus
+and fails closed on an unmapped character. A stranded cockpit billet is the thing
+under test, so a harness with no oracle would prove nothing but that the oracle
+is unwired.
+"""
+
+[[site]]
+path = "crates/mushd/tests/sim_rematch.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut F.1's SSH lens (a rematch with no staff, and a restart mid-match through
+the lobby), performing the same post-composition wiring `arena_story.rs` performs
+above and for the same reason: two players hold slots, board and play again, and
+a simulator slot belongs to an ACCOUNT.
+"""
+
+[[site]]
 path = "crates/mush-propagation/tests/e7c11.rs"
 accessor = "World::module_state_mut"
 slot = "FocusState"
@@ -490,6 +516,8 @@ above.
 #
 # So WS03-S14's refusal, now live, broke nothing that runs today. This list must
 # stay EMPTY: a pair here is a write that is REFUSED rather than excused, and the
-# test says so. What the refusal does not reach is the 29 `[[site]]` rows above
-# that go around `Ctx` through `World::module_state_mut` (the count had drifted
-# from the census's own 25 to 27 before 16b cut K.2 added the cockpit's two).
+# test says so. What the refusal does not reach is the 37 `[[site]]` rows above
+# that go around `Ctx` through `World::module_state_mut` (counted at 16b cut F.1,
+# which added two: the release half's own harness and its SSH lens, both wiring
+# the account oracle a boot would have hydrated; the figure this comment carried
+# before had drifted behind the rows the arena cuts added).

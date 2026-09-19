@@ -623,6 +623,23 @@ impl Power {
 /// §3.2 "Line of sight": *`sensor_height_cm` (new field; 150 by default)*).
 pub const DEFAULT_SENSOR_HEIGHT_CM: u32 = 150;
 
+/// **The rounds one weapon's own `ammo` cell carries** (16b cut F.1), or `None`
+/// when the unit declares no such cell.
+///
+/// The mirror of [`crate::arena::damage::Arena::returned_units`]'s fold: that
+/// writes the arena's live count back into `component/<weapon>/ammo` at check-in,
+/// and this reads it at check-out, so a match opens on the magazine the last one
+/// left. Negative values cannot occur (a cell is bounded) and are floored at zero
+/// rather than wrapping.
+fn rounds_on_record(unit: &mush_tactics::TacticalUnit, weapon: &SmolStr) -> Option<u32> {
+    let addr = mush_tactics::CellAddr::Component {
+        component: mush_tactics::ComponentId::new(weapon.as_str()).ok()?,
+        cell: mush_tactics::CellId::new(crate::definitions::unit::AMMO_CELL).ok()?,
+    };
+    let held = unit.cell(&addr)?;
+    Some(u32::try_from(held.current.max(0)).unwrap_or(u32::MAX))
+}
+
 /// **What a unit does with heat** (16b cut X.1; doc 16 §9 item 1: *a `heat` cell
 /// and dissipation appear on the unit*).
 ///
@@ -1903,6 +1920,19 @@ impl Arena {
             // when its component has been shot off, which is the one thing that
             // stops a filter working.
             let eccm = Eccm::read(&unit.unit);
+            // **16b cut F.1** (doc 16 §3.1 "Custody"): the match opens on the unit
+            // the world hands over, and that unit's own record may already say it
+            // is a wreck, has lost a track or has had its turret shot off. Until
+            // this cut every match opened at `MotionLimits::default()`, so a hulk
+            // drove and shot and could never be killed again; this reads the
+            // consequences off the record and puts them in force before pulse one.
+            let entry = crate::arena::damage::entry_consequences(&unit.unit, &unit.profile);
+            let weapons: Vec<WeaponSummary> = unit
+                .weapons
+                .into_iter()
+                .filter(|weapon| entry.carries(&weapon.mount_section))
+                .collect();
+            let weapons_left = weapons.len();
             states.push(UnitState {
                 id: unit.id,
                 team: unit.team,
@@ -1912,13 +1942,19 @@ impl Arena {
                 desired_speed_cms: 0,
                 power: Power::Off,
                 mobility: unit.mobility,
-                limits: MotionLimits::default(),
+                limits: entry.limits,
                 sensor_height_cm: if unit.sensor_height_cm == 0 {
                     DEFAULT_SENSOR_HEIGHT_CM
                 } else {
                     unit.sensor_height_cm
                 },
-                sensor: unit.sensor,
+                // A wreck sees nothing (`Arena::destroy_unit`'s own rule), so one
+                // that arrives as a wreck sees nothing either.
+                sensor: if entry.limits.wreck {
+                    None
+                } else {
+                    unit.sensor
+                },
                 thermal,
                 jammer,
                 eccm,
@@ -1926,17 +1962,27 @@ impl Arena {
                 // here so that every later lookup is a read of a complete table.
                 // A weapon id declared twice on one unit keeps one row, which is
                 // the same thing the component table itself is.
-                ready_at_ms: unit
-                    .weapons
+                ready_at_ms: weapons
                     .iter()
                     .map(|weapon| (weapon.id.clone(), 0_i64))
                     .collect(),
-                ammo: unit
-                    .weapons
+                // **16b cut F.1**: the rounds the unit's own `ammo` cell carries,
+                // not the catalog's full load. A tank that checked in with 31
+                // rounds checks out with 31. The authored load is the fallback for
+                // a unit whose record declares no such cell at all — every fixture
+                // arena in this crate, and any content whose weapon keeps its
+                // ammunition somewhere else.
+                ammo: weapons
                     .iter()
-                    .map(|weapon| (weapon.id.clone(), weapon.count_per_load))
+                    .map(|weapon| {
+                        (
+                            weapon.id.clone(),
+                            rounds_on_record(&unit.unit, &weapon.id)
+                                .unwrap_or(weapon.count_per_load),
+                        )
+                    })
                     .collect(),
-                weapons: unit.weapons,
+                weapons,
                 profile: unit.profile,
                 // Doc 16 §3.5 step 2: *every stock rating is 1 through the
                 // `PilotProfile` seam*, which is also the sheet's own floor, so a
@@ -1953,7 +1999,11 @@ impl Arena {
                 lock: None,
                 blocked: false,
                 linkdead: false,
-                disabled: false,
+                // **16b cut F.1**: doc 16 §3.8's *disabled — no weapons and no
+                // motion* is a fact about the unit, so a unit that arrives that
+                // way arrives disabled. A wreck is past disabled and is never
+                // journalled both (`Arena::settle_disabled`'s own rule).
+                disabled: !entry.limits.wreck && weapons_left == 0 && entry.limits.motion_disabled,
                 shots_fired: 0,
                 hits: 0,
             });
@@ -2136,6 +2186,31 @@ impl Arena {
             .binary_search_by_key(&id, |state| state.id)
             .ok()?;
         self.units.get_mut(index)
+    }
+
+    /// **Take one pilot off the frame roster** (16b cut F.1; doc 16 §3.6).
+    ///
+    /// The roster is what [`Arena::frames`] walks, so a pilot dropped from it is
+    /// built no further frame and told no further notice. Keyed on the **pair**:
+    /// a pilot who left `unit` is not a co-pilot still sitting in it, and a tank
+    /// with two seats loses only the seat that went.
+    ///
+    /// The remembered frame goes with the row, so a pilot the world later seats
+    /// again is sent a whole frame rather than compared against one from a life
+    /// they no longer have. Nothing else in the arena reads the roster — it is not
+    /// folded into [`crate::arena::hash::state_hash`], which is what keeps this
+    /// invisible to the cross-tempo property — so this is the whole of the drop.
+    ///
+    /// Idempotent. Answers whether a row went.
+    pub fn drop_pilot(&mut self, pilot: ObjId, unit: ObjId) -> bool {
+        let before = self.pilots.len();
+        self.pilots
+            .retain(|seat| !(seat.pilot == pilot && seat.unit == unit));
+        let dropped = self.pilots.len() != before;
+        if dropped && !self.pilots.iter().any(|seat| seat.pilot == pilot) {
+            self.last_frames.remove(&pilot);
+        }
+        dropped
     }
 
     /// **The hash one discrete action's ledger line carries** (16b cut W.1):

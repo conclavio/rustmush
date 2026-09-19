@@ -170,6 +170,96 @@ pub fn is_wreck(unit: &mush_tactics::TacticalUnit) -> bool {
         .any(|(_, section)| section.condition.as_str() == WRECK_CONDITION)
 }
 
+/// **What a unit's own record already says about it, at check-out** (16b cut
+/// F.1; doc 16 §3.1 "Custody": *`snapshot` is the unit's cells*).
+///
+/// Custody hands the arena a `TacticalUnit` and the arena used to open every match
+/// with [`MotionLimits::default()`](crate::arena::state::MotionLimits) — no wreck,
+/// no disabled motion, no lost track — however the record read. A tank whose left
+/// track had been shot off in a previous match, or by a staff `@unit/damage`, drove
+/// at full speed and turned both ways; a tank whose hull was a wreck started up and
+/// fought, and could never be wrecked again because [`Arena::plan_hit`] fires a
+/// section's consequences only on the **transition** to zero internals.
+///
+/// This is the missing read: the sections the record calls `destroyed` (and the
+/// body it calls `wreck`) are walked once, in the unit's own section order, and
+/// every consequence they carry is put into force before the first pulse — exactly
+/// the consequences [`Arena::apply_consequence`] would have applied had the arena
+/// watched them happen. The two are deliberately the same vocabulary and the same
+/// rules, including `slow`'s "name the surviving percentage" and
+/// `disable_motion_when_all_of`'s pair rule.
+///
+/// The caller ([`crate::arena::state::Arena::new`]) applies the two halves this
+/// cannot: the weapons of a [`Consequence::RemoveWeapons`] section (and of a wreck)
+/// leave the table, and a unit with no weapons and no motion opens `disabled`.
+#[must_use]
+pub fn entry_consequences(
+    unit: &mush_tactics::TacticalUnit,
+    profile: &crate::arena::resolution::UnitProfile,
+) -> EntryConsequences {
+    let mut entry = EntryConsequences::default();
+    let destroyed: Vec<&str> = unit
+        .sections()
+        .filter(|(_, state)| {
+            state.condition.as_str() == DESTROYED || state.condition.as_str() == WRECK_CONDITION
+        })
+        .map(|(id, _)| id.as_str())
+        .collect();
+    // A wreck is the mark itself, whether or not its hull's own consequence list
+    // survived the content edit that wrote it: `is_wreck` is the predicate doc 16
+    // §3.3 names and this honours it directly.
+    if is_wreck(unit) {
+        entry.limits.wreck = true;
+        entry.limits.motion_disabled = true;
+    }
+    for section in &destroyed {
+        let Some(row) = profile.section(section) else {
+            continue;
+        };
+        for consequence in &row.consequences {
+            match consequence {
+                Consequence::DestroyUnit => {
+                    entry.limits.wreck = true;
+                    entry.limits.motion_disabled = true;
+                }
+                Consequence::Slow { percent } => {
+                    entry.limits.slow_pct = entry.limits.slow_pct.min((*percent).clamp(1, 100));
+                }
+                Consequence::NoTurnToward { side } => entry.limits.no_turn_toward = Some(*side),
+                Consequence::DisableMotion => entry.limits.motion_disabled = true,
+                Consequence::DisableMotionWhenAllOf { sections } => {
+                    if !sections.is_empty()
+                        && sections
+                            .iter()
+                            .all(|want| destroyed.iter().any(|gone| *gone == want.as_str()))
+                    {
+                        entry.limits.motion_disabled = true;
+                    }
+                }
+                Consequence::RemoveWeapons { section } => entry.disarmed.push(section.clone()),
+            }
+        }
+    }
+    entry
+}
+
+/// What [`entry_consequences`] found on a unit's record (16b cut F.1).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EntryConsequences {
+    /// The motion limits the match opens with.
+    pub limits: crate::arena::state::MotionLimits,
+    /// The sections whose weapons are already gone, in the order they were read.
+    pub disarmed: Vec<SmolStr>,
+}
+
+impl EntryConsequences {
+    /// Whether a weapon mounted on `section` is still on the platform.
+    #[must_use]
+    pub fn carries(&self, section: &str) -> bool {
+        !self.limits.wreck && !self.disarmed.iter().any(|gone| gone.as_str() == section)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The impact
 // ---------------------------------------------------------------------------
@@ -730,8 +820,15 @@ impl Arena {
                         .retain(|weapon| weapon.mount_section != *section);
                     for id in going {
                         state.ready_at_ms.remove(&id);
-                        state.ammo.remove(&id);
                     }
+                    // **16b cut F.1**: the rounds STAY. `ammo` is not the weapon
+                    // table — it is the arena's record of how many rounds that
+                    // barrel has left, and [`Arena::returned_units`] is what
+                    // carries it home to the unit's own `ammo` cell. Dropping the
+                    // row made a turret shot off at round twelve check in with a
+                    // full magazine, which is a lie about the match in the one
+                    // document that outlives it. The weapon cannot fire either
+                    // way: `weapons` is what `FIRE` resolves against.
                 }
             }
         }
@@ -796,7 +893,10 @@ impl Arena {
             state.lock = None;
             state.weapons.clear();
             state.ready_at_ms.clear();
-            state.ammo.clear();
+            // **16b cut F.1**: the rounds stay, for the reason `RemoveWeapons`
+            // gives above — a destroyed tank checked in with a full magazine
+            // although it had fired all match, because the one record of what it
+            // spent was thrown away here.
             state.sensor = None;
         }
         self.contacts.clear_viewer(target);
@@ -962,7 +1062,7 @@ impl Arena {
 mod tests {
     use super::*;
     use crate::arena::state::Team;
-    use crate::arena::test_support::{arena_of, line_tank, pose};
+    use crate::arena::test_support::{arena_of, line_tank, line_tank_unit, pose};
 
     const RED: ObjId = ObjId(4);
     const BLUE: ObjId = ObjId(9);
@@ -1141,6 +1241,218 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // 16b cut F.1: what a unit's own record says at check-out
+    // -----------------------------------------------------------------------
+
+    /// One plan against a fixture unit, applied.
+    fn apply_ops(
+        unit: &mush_tactics::TacticalUnit,
+        ops: Vec<UnitMutationOp>,
+    ) -> mush_tactics::TacticalUnit {
+        let plan = UnitMutationPlan::new(ops, None, Some(SmolStr::new_static("test")))
+            .unwrap_or_else(|_| panic!("the fixture plan fits"));
+        let (post, _) = mush_tactics::apply(unit, &plan, 0)
+            .unwrap_or_else(|error| panic!("the fixture plan applies: {error}"));
+        post
+    }
+
+    /// One record checked out into a duel, and the arena it makes of it.
+    fn enter_with(record: mush_tactics::TacticalUnit) -> Arena {
+        let mut custody = line_tank(BLUE, Team::Blue, pose(1_500, 2_500));
+        custody.unit = record;
+        arena_of(vec![line_tank(RED, Team::Red, pose(1_500, 1_500)), custody])
+    }
+
+    /// What a record becomes when the match opens on it.
+    fn enter(record: mush_tactics::TacticalUnit) -> UnitState {
+        enter_with(record)
+            .unit(BLUE)
+            .cloned()
+            .unwrap_or_else(|| panic!("the mutated unit is in the arena"))
+    }
+
+    /// One plan against a fixture unit, applied and checked out.
+    fn mutate(unit: &mush_tactics::TacticalUnit, ops: Vec<UnitMutationOp>) -> UnitState {
+        enter(apply_ops(unit, ops))
+    }
+
+    #[test]
+    fn a_unit_whose_record_says_wreck_enters_the_match_as_one() {
+        let fixture = line_tank_unit(BLUE);
+        let state = mutate(
+            &fixture,
+            vec![UnitMutationOp::SetSectionCondition {
+                section: SectionId::new(HULL_SECTION).expect("a section"),
+                condition: ConditionId::new(WRECK_CONDITION).expect("a condition"),
+            }],
+        );
+        // Before this cut every match opened at `MotionLimits::default()`, so the
+        // hulk drove, saw and shot — and could never be wrecked again, because
+        // `plan_hit` fires a section's consequences only on the transition to
+        // zero.
+        assert!(
+            state.limits.wreck,
+            "a wrecked record entered as a live tank"
+        );
+        assert!(state.limits.motion_disabled);
+        assert!(state.weapons.is_empty(), "a wreck carries no weapon");
+        assert!(state.sensor.is_none(), "and sees nothing");
+        assert!(!state.disabled, "a wreck is past disabled, never both");
+    }
+
+    #[test]
+    fn a_unit_whose_track_is_gone_enters_slowed_and_unable_to_turn_that_way() {
+        let fixture = line_tank_unit(BLUE);
+        let state = mutate(
+            &fixture,
+            vec![UnitMutationOp::SetSectionCondition {
+                section: SectionId::new("left_track").expect("a section"),
+                condition: ConditionId::new(DESTROYED).expect("a condition"),
+            }],
+        );
+        assert_eq!(state.limits.slow_pct, 50, "the track's `slow(50)`");
+        assert_eq!(
+            state.limits.no_turn_toward,
+            Some(crate::arena::state::Side::Left),
+            "and its `no_turn_toward(left)`"
+        );
+        assert!(!state.limits.wreck && !state.limits.motion_disabled);
+        assert_eq!(state.weapons.len(), 1, "it still has its gun");
+    }
+
+    #[test]
+    fn a_unit_whose_turret_is_gone_enters_disarmed_and_a_dead_engine_makes_it_disabled() {
+        let fixture = line_tank_unit(BLUE);
+        let gone = |name: &str| UnitMutationOp::SetSectionCondition {
+            section: SectionId::new(name).expect("a section"),
+            condition: ConditionId::new(DESTROYED).expect("a condition"),
+        };
+        let state = mutate(&fixture, vec![gone("turret")]);
+        assert!(state.weapons.is_empty(), "the turret took the gun with it");
+        assert!(!state.disabled, "it can still drive");
+        let state = mutate(&fixture, vec![gone("turret"), gone("engine")]);
+        assert!(
+            state.limits.motion_disabled,
+            "the engine's `disable_motion`"
+        );
+        assert!(
+            state.disabled,
+            "no weapons and no motion is doc 16 §3.8's disabled"
+        );
+    }
+
+    #[test]
+    fn a_unit_enters_with_the_rounds_its_own_record_carries() {
+        let fixture = line_tank_unit(BLUE);
+        let addr = CellAddr::Component {
+            component: mush_tactics::ComponentId::new("cannon").expect("a component"),
+            cell: mush_tactics::CellId::new(crate::definitions::unit::AMMO_CELL).expect("a cell"),
+        };
+        let state = mutate(&fixture, vec![UnitMutationOp::SetCell { addr, value: 31 }]);
+        assert_eq!(
+            state.ammo.get("cannon").copied(),
+            Some(31),
+            "a tank that enters with 31 rounds used to be handed the catalog's 40"
+        );
+    }
+
+    /// **A tank wrecked in match one, reset, can be wrecked again in match two**
+    /// (16b cut F.1; doc 16 §3.3) — the whole reason the cut exists, end to end
+    /// in one function and with no wall clock in it.
+    ///
+    /// The readiness review's symptom was the second half of this: a hull carried
+    /// into match two at zero internals absorbed fourteen rounds without the match
+    /// ending, because [`Arena::plan_hit`] fires a section's consequences only on
+    /// the **transition** to zero. Nothing bound "the reset makes the record equal
+    /// to a fresh instantiation" to "and therefore the destroy consequence fires
+    /// again"; this is that binding, and the wrecked leg is the control that shows
+    /// the difference is the reset's and not the fixture's.
+    #[test]
+    fn a_tank_wrecked_and_then_reset_can_be_wrecked_again() {
+        let spec = line_tank_unit(BLUE);
+        // (1) Match one: the hull through its internals, by the plan the arena
+        //     itself builds for that hit, committed to the record the way a
+        //     check-in commits one.
+        let (_, ops) = duel()
+            .plan_hit(BLUE, "hull", "front", 600)
+            .unwrap_or_else(|| panic!("a hull hit plans"));
+        let wrecked = apply_ops(&spec, ops);
+        assert!(is_wreck(&wrecked), "match one did not leave a wreck");
+
+        // (2) Match two on the UNRESET record: it enters as a wreck, and the very
+        //     same hit now carries no consequence at all — the transition it
+        //     needs has already happened.
+        let held = enter_with(wrecked.clone());
+        assert!(
+            held.unit(BLUE).is_some_and(|state| state.limits.wreck),
+            "a wrecked record entered as a live tank"
+        );
+        let (struck, _) = held
+            .plan_hit(BLUE, "hull", "front", 600)
+            .unwrap_or_else(|| panic!("a hull hit plans"));
+        assert!(
+            struck.consequences.is_empty(),
+            "a spent hull cannot be destroyed a second time — the defect: {:?}",
+            struck.consequences
+        );
+
+        // (3) The reset, as `lobby::reset` performs it: one plan back to the
+        //     unit's own spec.
+        let plan = crate::match_::spec_plan(&wrecked, &spec)
+            .unwrap_or_else(|| panic!("the reset had nothing to do on a wreck"));
+        let after = apply_ops(&wrecked, plan.ops().to_vec());
+        assert_eq!(
+            crate::match_::spec_plan(&after, &spec),
+            None,
+            "the reset left something to do"
+        );
+
+        // (4) And match two on the reset record is a match: it opens whole, and
+        //     the same hit destroys it again.
+        let state = enter(after.clone());
+        assert_eq!(
+            state.limits,
+            crate::arena::state::MotionLimits::default(),
+            "the reset tank did not open whole"
+        );
+        assert!(!state.weapons.is_empty(), "and it carries its gun again");
+        let mut arena = enter_with(after.clone());
+        // **A hit in match two moves armour.** The reset put the hull's front
+        // facet back at its initial value, so the round has armour to spend — the
+        // other half of the readiness review's symptom, where the second match's
+        // rounds landed on cells already at their floor and journalled nothing.
+        let front = armor("hull", "front");
+        let before = after
+            .cell(&front)
+            .map(|scalar| scalar.current)
+            .unwrap_or_else(|| panic!("the reset tank has hull front armour"));
+        assert!(before > 0, "the reset left the hull's armour spent");
+        let (struck, ops) = arena
+            .plan_hit(BLUE, "hull", "front", 600)
+            .unwrap_or_else(|| panic!("a hull hit plans"));
+        assert!(
+            ops.iter().any(
+                |op| matches!(op, UnitMutationOp::SetCell { addr, value } if *addr == front && *value < before)
+            ),
+            "the hit moved no armour: {ops:?}"
+        );
+        assert_eq!(struck.armor_left, 0, "and spent all of it");
+        assert_eq!(
+            struck.consequences,
+            vec![Consequence::DestroyUnit],
+            "the reset tank cannot be killed again"
+        );
+        // And the consequence really lands.
+        let mut journal: Vec<Notice> = Vec::new();
+        arena.apply_consequence(BLUE, &Consequence::DestroyUnit, 0, &mut journal);
+        assert!(
+            arena.unit(BLUE).is_some_and(|state| state.limits.wreck),
+            "the destroy consequence did not wreck it"
+        );
+        assert_eq!(arena.eliminated(), Some(Some(Team::Red)));
+    }
+
     #[test]
     fn a_turret_takes_its_weapons_with_it_and_an_immobile_disarmed_tank_is_disabled() {
         let mut arena = duel();
@@ -1159,7 +1471,15 @@ mod tests {
             &mut journal,
         );
         let state = arena.unit(BLUE).unwrap_or_else(|| panic!("blue"));
-        assert!(state.weapons.is_empty() && state.ammo.is_empty());
+        assert!(state.weapons.is_empty() && state.ready_at_ms.is_empty());
+        // **16b cut F.1**: the ROUNDS stay. `ammo` is the arena's record of what
+        // that barrel has left and `returned_units` is what carries it home to the
+        // unit's own cell — a turret shot off at round twelve used to check in
+        // with a full magazine.
+        assert!(
+            !state.ammo.is_empty(),
+            "the rounds the turret had left are still on the record"
+        );
         // Not disabled yet: it can still drive.
         arena.settle_disabled(BLUE, 0, &mut journal);
         assert_eq!(arena.unit(BLUE).map(|state| state.disabled), Some(false));

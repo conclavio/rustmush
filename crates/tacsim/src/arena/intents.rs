@@ -84,6 +84,16 @@ pub struct Control {
     pub epoch: u64,
     /// What the seat is.
     pub state: ControlState,
+    /// **Whose seat it is** (16b cut F.1), when the world knows.
+    ///
+    /// The epoch table is keyed on `(unit, channel)` and needs no pilot; the
+    /// **frame roster** does. A doc 16 §3.7 cockpit carries all three channels,
+    /// and two pilots may sit in one tank (`Arena::frames` says so), so a
+    /// `Released` that dropped *the unit's* pilots would silence a co-pilot who
+    /// never left. This names the one who did, and `None` is a control the world
+    /// cannot attribute — a lease revocation, a fixture — which changes no
+    /// roster.
+    pub pilot: Option<ObjId>,
 }
 
 /// **One order** (doc 16 §3.1's `Intent`).
@@ -333,6 +343,16 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
     // it back, forgetting the machine. `Linkdead` changes nothing.
     match c.state {
         ControlState::Released => {
+            // **16b cut F.1**: the seat is gone, so the arena stops building that
+            // pilot a frame. Until this cut `Arena::pilots` was fixed at check-out
+            // and nothing ever pruned it, so a pilot who typed `EXIT` in the first
+            // minute went on reading contact notices and keyframes — pose, weapons,
+            // every contact's cell — for a tank the reflex controller was driving.
+            // Doc 16 §3.6 is written about what *a pilot* sees; that person is not
+            // one any more. Idempotent: `Released` arrives once per channel.
+            if let Some(pilot) = c.pilot {
+                arena.drop_pilot(pilot, c.unit);
+            }
             arena.set_controller(c.unit, Controller::Reflex, ReflexState::Withdraw);
         }
         ControlState::Live => {
@@ -839,6 +859,7 @@ mod tests {
                 channel: Channel::Helm,
                 epoch: 1,
                 state: ControlState::Linkdead,
+                pilot: None,
             },
         );
         assert_eq!(arena.unit(RED).map(|state| state.linkdead), Some(true));
@@ -875,6 +896,7 @@ mod tests {
                 channel: Channel::Helm,
                 epoch: 1,
                 state: ControlState::Live,
+                pilot: None,
             },
         );
         assert_eq!(arena.unit(RED).map(|state| state.linkdead), Some(false));
@@ -903,6 +925,7 @@ mod tests {
                 channel: Channel::Helm,
                 epoch: 2,
                 state: ControlState::Released,
+                pilot: None,
             },
         );
         assert_eq!(
@@ -935,6 +958,7 @@ mod tests {
                 channel: Channel::Helm,
                 epoch: 2,
                 state: ControlState::Released,
+                pilot: None,
             },
         );
         assert!(arena.pending.is_empty(), "the queued STARTUP is gone");
@@ -974,6 +998,7 @@ mod tests {
                 channel: Channel::Sensors,
                 epoch: 9,
                 state: ControlState::Live,
+                pilot: None,
             },
         );
         assert_eq!(arena.pending.get(&RED).map(VecDeque::len), Some(2));
@@ -985,6 +1010,7 @@ mod tests {
                 channel: Channel::Fire,
                 epoch: 2,
                 state: ControlState::Live,
+                pilot: None,
             },
         );
         assert_eq!(
@@ -1003,6 +1029,7 @@ mod tests {
                 channel: Channel::Helm,
                 epoch: 0,
                 state: ControlState::Live,
+                pilot: None,
             },
         );
         assert_eq!(arena.epochs.current(RED, Channel::Helm), 1);
@@ -1019,6 +1046,7 @@ mod tests {
                 channel: Channel::Helm,
                 epoch: 5,
                 state: ControlState::Released,
+                pilot: None,
             },
         );
         assert_eq!(arena.epochs.current(ObjId(77), Channel::Helm), 5);

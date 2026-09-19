@@ -190,6 +190,17 @@ pub const NOT_IN_A_POD: &str = "You are not in a pod.";
 /// A cockpit verb typed by somebody who is not flying anything.
 pub const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit.";
 
+/// **A cockpit verb typed between `BOARD` and the trigger** (16b cut F.1).
+///
+/// The K row's deviation 13 records the mechanism — the gate needs a deployed
+/// unit, and nothing is deployed until every pilot is seated — but the pilot was
+/// shown [`OUTSIDE_COCKPIT`], which is the sentence for a lost seat or a stray
+/// `+focus`, while sitting in the cockpit with the hatch shut. This is the
+/// sentence for the one case that is not a fault: the pilot holds the seat, the
+/// match has simply not started.
+pub const NOT_STARTED_YET: &str =
+    "The panel is dark until the match starts; the simulator is still waiting for the other pods.";
+
 /// **The one line a motion or fire order refuses with while the tank is cold**
 /// (doc 16 §3.3 "Startup").
 ///
@@ -198,6 +209,14 @@ pub const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit
 /// below pins it to contain [`crate::arena::intents::Refusal::PowerNotOnline`]'s
 /// own word, so the early refusal and the late one can never drift apart.
 pub const POWER_NOT_ONLINE: &str = "Power not online: STARTUP first.";
+
+/// **The line a motion or fire order refuses with while power is coming up**
+/// (16b cut F.1; doc 16 §3.3 "Startup": *`STARTUP` sets `power` to `starting`*).
+///
+/// [`POWER_NOT_ONLINE`] told a pilot who had already typed `STARTUP` to type it
+/// again, for the ten seconds the sequence takes. The tank is doing exactly what
+/// it was asked to; the only useful thing to say is *wait*.
+pub const POWER_STARTING: &str = "Power is still coming up; hold on.";
 
 /// **The one line `FIRE` refuses with for want of a lock** (doc 16 §3.7: *no
 /// lock*).
@@ -244,6 +263,10 @@ pub enum CockpitError {
     /// A cockpit verb was typed by somebody with no deployed station.
     #[error("{OUTSIDE_COCKPIT}")]
     OutsideCockpit,
+    /// A cockpit verb was typed by a seated pilot whose match has not started
+    /// (16b cut F.1).
+    #[error("{NOT_STARTED_YET}")]
+    NotStartedYet,
     /// The tacsim layer did not compose.
     #[error("The arena is not available on this server.")]
     Unavailable,
@@ -283,6 +306,9 @@ pub enum CockpitError {
     /// Power is not online (doc 16 §3.3).
     #[error("{POWER_NOT_ONLINE}")]
     PowerNotOnline,
+    /// Power is coming up (16b cut F.1; doc 16 §3.3 "Startup").
+    #[error("{POWER_STARTING}")]
+    PowerStarting,
     /// No lock (doc 16 §3.7).
     #[error("{NO_LOCK}")]
     NoLock,
@@ -366,6 +392,13 @@ fn pod_of_body(w: &World, actor: ObjId) -> Option<ObjId> {
     centre::pod_slot(w, at).map(|_| at)
 }
 
+/// **Whether an actor's body is inside one of the centre's pods** (16b cut F.1),
+/// for a caller that has no other reason to know which one.
+#[must_use]
+pub fn in_a_pod(w: &World, actor: ObjId) -> bool {
+    pod_of_body(w, actor).is_some()
+}
+
 /// The last frame the arena sent that pilot.
 fn last_frame(w: &World, pilot: ObjId) -> Option<CockpitFrame> {
     w.module_state::<ArenaRegistry>()
@@ -381,10 +414,13 @@ fn power_of(w: &World, pilot: ObjId) -> Power {
 
 /// Refuse a motion or fire order while the tank is cold.
 fn require_power(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
-    if power_of(w, pilot) == Power::Online {
-        return Ok(());
+    // **16b cut F.1**: a tank that is already starting up is told to wait, not
+    // told to do the thing it is doing.
+    match power_of(w, pilot) {
+        Power::Online => Ok(()),
+        Power::Starting => Err(CockpitError::PowerStarting),
+        Power::Off => Err(CockpitError::PowerNotOnline),
     }
-    Err(CockpitError::PowerNotOnline)
 }
 
 /// **The contacts the platform holds**, as a pilot is told about them (doc 16
@@ -720,10 +756,34 @@ pub fn board(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     // idempotent restatement doc 16 §3.7 names, and it costs one recompute.
     mush_sim::links::refresh_actor_links(ctx.w, actor);
 
-    let pilot_line = format!(
-        "You climb into {} and the panel wakes: STARTUP, then HEADING and SPEED. EXIT to get out.",
-        display_name(ctx.w, pod)
-    );
+    // **16b cut F.1**: what this used to say was "the panel wakes: STARTUP,
+    // then HEADING and SPEED" — and every one of those verbs is refused until
+    // the last pilot boards, because nothing is deployed until the trigger
+    // fires. The first pilot to board always typed `STARTUP` and was told they
+    // were not at the station of a deployed unit. So the line says what is
+    // actually true: the panel waits for the other pods, or for the deadline,
+    // and leaving once the match is running is final.
+    let waiting = lobby::centre(ctx.w)
+        .and_then(|centre| centre.board_deadline_ms)
+        .map(|deadline| {
+            deadline
+                .saturating_sub(ctx.w.now().saturating_mul(1_000))
+                .max(0)
+                / 1_000
+        });
+    let pilot_line = match waiting {
+        Some(secs) => format!(
+            "You climb into {}. The panel wakes when every pilot is seated, or in {secs} \
+             second(s). EXIT to get out — once the match is running, leaving abandons the tank \
+             for the rest of it.",
+            display_name(ctx.w, pod)
+        ),
+        None => format!(
+            "You climb into {}. The panel wakes when every pilot is seated. EXIT to get out — \
+             once the match is running, leaving abandons the tank for the rest of it.",
+            display_name(ctx.w, pod)
+        ),
+    };
     let room_line = format!(
         "{} climbs into {}.",
         display_name(ctx.w, actor),
@@ -781,47 +841,15 @@ pub fn exit(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
         .filter(|(_, held)| *held == station)
         .map(|(unit, _)| unit)
         .collect();
+    // 16b cut F.1: whether this is the one-way leave of doc 16 §11's N.1
+    // amendment, read before the seat goes.
+    let running = lobby::centre(ctx.w).is_some_and(|centre| centre.state == MatchState::Running);
 
-    // (1) The arena hears first.
+    // (1) and (2): the arena hears first, then the seat is stood down and the
+    // billet given back — all of it through [`hand_seat_back`], the one way this
+    // crate lets a cockpit seat go.
     for unit in &seats {
-        for channel in Channel::ALL {
-            if let Err(error) = send_control(ctx, *unit, channel, ControlState::Released) {
-                tracing::debug!(
-                    unit = %unit,
-                    channel = channel.as_str(),
-                    %error,
-                    "tacsim: EXIT could not tell the arena the seat is released"
-                );
-            }
-        }
-    }
-    // (2) The seat: stood down through the one seam that took it (the narrowing
-    // cleared, the focus relinquished, the fallback fired), and then **given
-    // back** — a stand-down deliberately leaves the billet where it is, which is
-    // right for an NPC's own station and wrong for a pod lent for one match.
-    for unit in &seats {
-        if let Err(error) = mush_sim::request_seat_activation(
-            ctx,
-            &mush_sim::SeatRequest::Release {
-                unit: *unit,
-                station: station.clone(),
-                npc: actor,
-            },
-        ) {
-            tracing::debug!(
-                unit = %unit,
-                %error,
-                "tacsim: EXIT could not stand the cockpit seat down"
-            );
-        }
-        if let Err(error) = mush_sim::vacate_station(ctx, *unit, &station, actor) {
-            tracing::error!(
-                unit = %unit,
-                %error,
-                "tacsim: a cockpit billet could not be given back; the next pilot of that pod \
-                 will be refused and staff must @spatial/unassign it"
-            );
-        }
+        hand_seat_back(ctx, *unit, &station, actor, true);
     }
     // (3) The body. The pod is an unanchored interior space, so there is no
     // domain to `egress` onto: the placement is released where it stands and the
@@ -829,7 +857,23 @@ pub fn exit(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     if let Some(room) = room {
         put_out(ctx, actor, room);
     }
-    let line = format!("You climb out of {}.", display_name(ctx.w, pod));
+    // **16b cut F.1**: during `Running` this is final (doc 16 §11's N.1
+    // amendment: *a released seat hands the tank to the reflex controller and the
+    // pilot cannot reclaim it*), and the pilot is told so in the same breath
+    // rather than discovering it when `BOARD` refuses. No confirmation step: the
+    // verb does what it says, and what it says is now the whole truth.
+    let line = match (running, seats.first()) {
+        (true, Some(unit)) => format!(
+            "You climb out of {}. {} is on its own for the rest of the match; you cannot take it \
+             back.",
+            display_name(ctx.w, pod),
+            display_name(ctx.w, *unit)
+        ),
+        _ => format!("You climb out of {}.", display_name(ctx.w, pod)),
+    };
+    // The slot itself was marked `left` by [`hand_seat_back`]'s own `Released`
+    // above, in [`crate::arena_bridge::send_control`], where every route to a
+    // released seat passes — not here, because `EXIT` is only one of them.
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
     if let Some(room) = room {
         let text = format!(
@@ -876,26 +920,192 @@ fn put_out(ctx: &mut Ctx<'_>, actor: ObjId, room: ObjId) {
     });
 }
 
-/// **Open every pod and stand whoever is in it in the team room** (doc 16 §3.8:
-/// *seats, leases, focus and pods released atomically*).
+/// **What one sweep gave back** (16b cut F.1).
 ///
-/// The lobby's half of an ended match releases the **slots** and the pods' locks,
-/// which are rows on a state slot; this is the other half of "released", the one
-/// `BOARD` created: a body inside a Thing. A pilot left in a dark pod after the
-/// match is over is not stuck — `EXIT` still works from there — but the centre
-/// said the pods were free and they were not.
+/// Two lists rather than two counts, because the caller that reports to a
+/// staffer wants to name what it found and the caller that decides whether
+/// anything changed wants to ask one question.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EjectReport {
+    /// The bodies taken out of a pod, in pod order.
+    pub bodies: Vec<ObjId>,
+    /// The cockpit billets given back, as `(tank, pilot)`, in pod order.
+    pub seats: Vec<(ObjId, ObjId)>,
+}
+
+impl EjectReport {
+    /// Whether the sweep found nothing at all — which is what an idle centre and
+    /// a second `@arena/reset` both answer.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bodies.is_empty() && self.seats.is_empty()
+    }
+
+    /// Fold one pod's findings into the whole.
+    fn merge(&mut self, other: EjectReport) {
+        self.bodies.extend(other.bodies);
+        self.seats.extend(other.seats);
+    }
+}
+
+/// **Give one cockpit seat back** (16b cut F.1) — the one way, wherever a seat
+/// has to be let go.
 ///
-/// Idempotent, and keyed on the **pods** rather than on the slots, so it is
-/// equally the repair a staff `@arena/reset` performs on a centre some earlier
-/// failure left with somebody aboard. Answers how many it opened.
-pub(crate) fn disembark_all(ctx: &mut Ctx<'_>) -> usize {
-    let pods: Vec<(ObjId, Option<ObjId>)> = centre::POD_ENTRIES
+/// Three steps, and the order is `EXIT`'s because `EXIT`'s was right:
+///
+/// 1. `Control { Released }` on all three channels, which raises the arena's
+///    epoch and **purges whatever that seat had queued** — the reason a pilot who
+///    types `FIRE` and `EXIT` in one burst fires nothing — and, since this cut,
+///    takes the pilot off the arena's frame roster and off the registry's pilot
+///    binding ([`send_control`]);
+/// 2. the seat, stood down through the one seam that took it (the narrowing
+///    cleared, the focus relinquished, the station's fallback fired);
+/// 3. the **billet**, given back. A stand-down deliberately leaves the billet
+///    where it is, which is right for an NPC's own station and wrong for a pod
+///    lent for one match: the billet *is* the loan, and one left behind is the
+///    next pilot's `StationHeld`.
+///
+/// `by_pilot` is whose choice it was. `Release` and `Revoke` reach one
+/// `stand_down` in `mush-sim`; the variant is the statement, and a sweep after an
+/// abort or at boot must use the one that does not require the absent driver's
+/// account to still resolve.
+///
+/// Answers whether the billet went, which is the half that strands a pod.
+pub(crate) fn hand_seat_back(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    station: &mush_sim::StationId,
+    actor: ObjId,
+    by_pilot: bool,
+) -> bool {
+    for channel in Channel::ALL {
+        if let Err(error) = send_control(ctx, unit, channel, ControlState::Released, Some(actor)) {
+            tracing::debug!(
+                %unit,
+                channel = channel.as_str(),
+                %error,
+                "tacsim: a released cockpit seat could not be announced to the arena"
+            );
+        }
+    }
+    let request = if by_pilot {
+        mush_sim::SeatRequest::Release {
+            unit,
+            station: station.clone(),
+            npc: actor,
+        }
+    } else {
+        mush_sim::SeatRequest::Revoke {
+            unit,
+            station: station.clone(),
+            npc: actor,
+        }
+    };
+    if let Err(error) = mush_sim::request_seat_activation(ctx, &request) {
+        tracing::debug!(
+            %unit,
+            %error,
+            "tacsim: a cockpit seat did not stand down"
+        );
+    }
+    match mush_sim::vacate_station(ctx, unit, station, actor) {
+        // `false` is "there was no billet to give back", which is the answer a
+        // second sweep gets and is not a failure.
+        Ok(vacated) => vacated,
+        Err(error) => {
+            tracing::error!(
+                %unit,
+                %error,
+                "tacsim: a cockpit billet could not be given back; the next pilot of that pod \
+                 will be refused and staff must @spatial/unassign it"
+            );
+            false
+        }
+    }
+}
+
+/// Every actor holding the cockpit billet on `unit`, given it back (16b cut
+/// F.1).
+fn hand_back_seats_of_unit(ctx: &mut Ctx<'_>, unit: ObjId) -> EjectReport {
+    let Some(station) = station_id() else {
+        return EjectReport::default();
+    };
+    let held: Vec<ObjId> = ctx
+        .w
+        .module_state::<mush_sim::SpatialState>()
+        .and_then(|state| state.assignments.get(&unit))
+        .map(|host| {
+            host.seats
+                .iter()
+                .filter(|(at, _)| **at == station)
+                .map(|(_, seat)| seat.actor)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut report = EjectReport::default();
+    for actor in held {
+        if hand_seat_back(ctx, unit, &station, actor, false) {
+            report.seats.push((unit, actor));
+        }
+    }
+    report
+}
+
+/// Every cockpit billet one actor holds, given back (16b cut F.1).
+fn hand_back_seats_of_actor(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
+    let Some(station) = station_id() else {
+        return EjectReport::default();
+    };
+    let units: Vec<ObjId> = seats_of(ctx.w, actor)
+        .into_iter()
+        .filter(|(_, held)| *held == station)
+        .map(|(unit, _)| unit)
+        .collect();
+    let mut report = EjectReport::default();
+    for unit in units {
+        if hand_seat_back(ctx, unit, &station, actor, false) {
+            report.seats.push((unit, actor));
+        }
+    }
+    report
+}
+
+/// **Open every pod, give back every cockpit billet, and stand whoever is
+/// inside in the team room** (16b cut F.1; doc 16 §3.8: *seats, leases, focus and
+/// pods released atomically*).
+///
+/// This replaces cut K.2's `disembark_all`, which did the **body** half alone.
+/// That was the bug the 2026-09-18 review found in four shapes at once: an abort
+/// during `Boarding`, the board deadline emptying a side, a `SIM LEAVE` by a
+/// seated pilot and a restart mid-match all left the persisted `assignment:<tank>`
+/// billet behind, and `@arena/reset` then moved the body out without it — after
+/// which the pilot could not even `EXIT`, and the next pilot of that pod was
+/// refused `StationHeld` forever. A sweep that opens a hatch and leaves the seat
+/// held is not a release.
+///
+/// Keyed on the **pods** and on their tanks rather than on the centre's slots, so
+/// it is equally the repair a staff `@arena/reset` performs on a centre some
+/// earlier failure left with somebody aboard, and the boot pass's answer to a
+/// restart. Idempotent, and fallible per pod without failing the others.
+pub(crate) fn eject_all(ctx: &mut Ctx<'_>) -> EjectReport {
+    let pods: Vec<(ObjId, Option<ObjId>, Option<ObjId>)> = centre::POD_ENTRIES
         .iter()
         .filter_map(|(team, index, _)| centre::pod_object(ctx.w, *team, *index))
-        .map(|pod| (pod, ctx.w.get(pod).and_then(|object| object.location)))
+        .map(|pod| {
+            (
+                pod,
+                ctx.w.get(pod).and_then(|object| object.location),
+                centre::tank_of(ctx.w, pod),
+            )
+        })
         .collect();
-    let mut opened: usize = 0;
-    for (pod, room) in pods {
+    let mut report = EjectReport::default();
+    for (pod, room, tank) in pods {
+        // The billets on the pod's own tank, whether or not anybody is still
+        // sitting in the pod: the two halves are stranded independently.
+        if let Some(tank) = tank {
+            report.merge(hand_back_seats_of_unit(ctx, tank));
+        }
         let Some(room) = room else {
             continue;
         };
@@ -912,13 +1122,38 @@ pub(crate) fn disembark_all(ctx: &mut Ctx<'_>) -> usize {
             {
                 continue;
             }
+            // A pilot who wandered into somebody else's pod still holds their own
+            // tank's billet; the pod's tank alone would not find it.
+            report.merge(hand_back_seats_of_actor(ctx, body));
             put_out(ctx, body, room);
             let line = format!("The hatch of {} swings open.", display_name(ctx.w, pod));
             ctx.out.sys_to_actor(body, NOTICE_CATEGORY, line);
-            opened = opened.saturating_add(1);
+            report.bodies.push(body);
         }
     }
-    opened
+    report
+}
+
+/// **The per-pilot form of [`eject_all`]** (16b cut F.1): one pilot's cockpit
+/// billet given back and one pilot's body put out of whatever pod it is in.
+///
+/// `SIM LEAVE` by a seated pilot is what wants it — dropping the slot while the
+/// pilot sits in the pod holding the tank's billet is what made the pod
+/// unboardable for the next crew — and so is any other place that has one person
+/// in hand rather than a centre.
+pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
+    let mut report = hand_back_seats_of_actor(ctx, actor);
+    let Some(pod) = pod_of_body(ctx.w, actor) else {
+        return report;
+    };
+    let Some(room) = ctx.w.get(pod).and_then(|object| object.location) else {
+        return report;
+    };
+    put_out(ctx, actor, room);
+    let line = format!("The hatch of {} swings open.", display_name(ctx.w, pod));
+    ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    report.bodies.push(actor);
+    report
 }
 
 // ---------------------------------------------------------------------------
@@ -1681,9 +1916,32 @@ impl mush_core::CommandGate for CockpitGate {
             .any(|cockpit| verb.eq_ignore_ascii_case(cockpit))
             && flying(w, actor).is_none()
         {
-            return Err(OUTSIDE_COCKPIT.to_owned());
+            // **16b cut F.1**: the third arm. A pilot who holds a cockpit billet
+            // on a tank nothing has deployed yet is not somebody who has lost
+            // their seat — they are sitting in it, waiting — and the sentence for
+            // a fault is the wrong one to hand them.
+            return Err(waiting_to_start(w, actor).to_owned());
         }
         Ok(())
+    }
+}
+
+/// Which of the two "you are not flying" lines one actor is owed (16b cut F.1).
+///
+/// [`NOT_STARTED_YET`] for somebody who holds a cockpit billet on a tank the
+/// centre has not deployed yet, [`OUTSIDE_COCKPIT`] for everybody else. The
+/// billet rather than the focus, for the same reason `EXIT` reads the billet: a
+/// pilot who typed `+focus` at something else still holds the seat.
+fn waiting_to_start(w: &World, actor: ObjId) -> &'static str {
+    let seated = station_id().is_some_and(|station| {
+        seats_of(w, actor)
+            .into_iter()
+            .any(|(unit, held)| held == station && !mush_sim::deployed::is_deployed(w, unit))
+    });
+    if seated {
+        NOT_STARTED_YET
+    } else {
+        OUTSIDE_COCKPIT
     }
 }
 
@@ -1710,7 +1968,7 @@ fn refusal(error: CockpitError) -> CmdError {
 /// answers the same way to somebody who is not flying.
 fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError> {
     let Some((unit, _station)) = flying(ctx.w, ctx.actor) else {
-        return Err(CmdError::msg(OUTSIDE_COCKPIT));
+        return Err(CmdError::msg(waiting_to_start(ctx.w, ctx.actor)));
     };
     let rest = ctx.args.raw().trim().to_owned();
     let outcome = match verb {
@@ -1792,9 +2050,13 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: EXIT_VERB.into(),
             shape: ArgShape::Raw,
+            // 16b cut F.1: and the sentence that was missing — doc 16 §11's N.1
+            // amendment is that a released seat cannot be retaken, and a pilot
+            // who reads the help before typing the word deserves to know it.
             help: "EXIT                climb out of the pod you are in: the seat, its control \
                    lease and your focus are released, and a match still boarding stops waiting \
-                   for you."
+                   for you. Once the match is RUNNING this is final: the tank goes to its \
+                   autopilot for the rest of the match and you cannot board again."
                 .into(),
             ..CommandSpec::default()
         },

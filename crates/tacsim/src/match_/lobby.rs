@@ -73,6 +73,19 @@ pub struct Slot {
     pub pod: Option<ObjId>,
     /// The unit seated in it, once cut K.2's `BOARD` reports one.
     pub unit: Option<ObjId>,
+    /// **Whether this pilot is out of their cockpit for good** (16b cut F.1).
+    ///
+    /// A seat given up during `Running` is one-way (doc 16 §11's N.1 amendment):
+    /// the tank goes to the reflex controller and the seat cannot be retaken. The
+    /// slot stays on the board because the result record names its pilot, but
+    /// `SIM STATUS` said `seated` about somebody standing in the team room, which
+    /// is the one fact a spectator most wants right.
+    ///
+    /// Written by [`slot_left`], from the one place every route to a
+    /// `Control { Released }` passes through — `EXIT`, a `QUIT` and the linkdead
+    /// grace running out all reach it, and the last two reach it more often in a
+    /// playtest than the first.
+    pub left: bool,
 }
 
 impl Slot {
@@ -307,6 +320,49 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
     let account = account_of(ctx.w, actor)?;
     let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
     let cap = slots_per_side(&match_cfg);
+    // **16b cut F.1**: the first claim on a **terminal** centre clears the board.
+    //
+    // The K row's deviation 3 keeps the outcome on the centre after a check-in so
+    // `SIM STATUS` can say how the last match went, with `@arena/reset` the way
+    // back to `Idle`. That is still what happens — right up to the moment
+    // somebody wants to play again, and on a fresh world there is no front door
+    // to a staff character at all, so two players alone could not start a second
+    // match. Claiming a slot *is* the statement that the last match has been
+    // read, so the claim performs the staff verb's own reset (the seat sweep, the
+    // stock tanks back at spec and at muster, the centre to `Idle`) and then
+    // claims. `@arena/reset` stays, staff-only and idempotent, for a centre
+    // nobody is claiming into.
+    if centre(ctx.w).is_some_and(|centre| centre.state.is_terminal()) {
+        let outcome = reset(ctx);
+        // **The line says only what the report says.** A tank the reset skipped
+        // (still carrying a `deployed` marker) or could not write is one the next
+        // match will fight on as it stands, and `@arena/reset` — the one surface
+        // that names those rows — is behind a staff login these two players may
+        // not have. So the claim never promises "back at muster" over a report
+        // that does not, and when something is stuck it says so in a plain line
+        // rather than leaving them to discover it as an unexplained loss.
+        let stuck = outcome.tanks.deployed.len() + outcome.tanks.failed.len();
+        if outcome.changed() {
+            announce(
+                ctx,
+                if stuck == 0 {
+                    "The last match is cleared from the board and the tanks are back at muster."
+                        .to_owned()
+                } else {
+                    "The last match is cleared from the board.".to_owned()
+                },
+            );
+        }
+        if stuck > 0 {
+            announce(
+                ctx,
+                format!(
+                    "{stuck} tank(s) could not be put back and will fight the next match as they \
+                     stand; ask staff to look at the simulator."
+                ),
+            );
+        }
+    }
     let index = {
         let book = ctx
             .w
@@ -338,6 +394,7 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
             pilot: actor,
             pod: None,
             unit: None,
+            left: false,
         });
         if !centre.leads.iter().any(|(side, _)| *side == team) {
             centre.leads.push((team, account));
@@ -366,7 +423,7 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     let actor = ctx.actor;
     in_centre(ctx.w, actor)?;
     let account = account_of(ctx.w, actor)?;
-    let (team, index) = {
+    let (team, index, seated) = {
         let book = ctx
             .w
             .module_state_mut::<MatchBook>()
@@ -400,8 +457,21 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         if centre.slots.is_empty() {
             *centre = Centre::default();
         }
-        (held.team, held.index)
+        (held.team, held.index, held.is_seated())
     };
+    // **16b cut F.1**: the seat goes with the slot.
+    //
+    // `EXIT` and `SIM LEAVE` were exact opposites and each kept half of what the
+    // other gave back: `EXIT` released the seat and kept the slot, `SIM LEAVE`
+    // dropped the slot and kept the seat — and a pilot who typed `SIM LEAVE` from
+    // inside their pod (the centre counts a pod as its team room, so it is
+    // accepted there) was left sitting in a pod holding a tank's billet with no
+    // slot to give it back. The next pilot of that pod was then refused
+    // `StationHeld`, and after the next reset moved the body out, `EXIT` itself
+    // answered "You are not in a pod." Giving up the slot gives up the seat.
+    if seated || crate::match_::cockpit::in_a_pod(ctx.w, actor) {
+        crate::match_::cockpit::eject_pilot(ctx, actor);
+    }
     let name = display_name(ctx.w, actor);
     announce(
         ctx,
@@ -641,6 +711,40 @@ pub fn slot_vacated(ctx: &mut Ctx<'_>, match_id: MatchId, pilot: ObjId) -> Resul
     Ok(())
 }
 
+/// **Mark one pilot's slot as out of its cockpit for good** (16b cut F.1).
+///
+/// [`Slot::left`] is what stops `SIM STATUS` calling somebody standing in the
+/// team room `seated`, and it belongs **where the release is decided**, not in
+/// `EXIT`. `EXIT` is one of three routes to the same `Control { Released }`: the
+/// others are a `QUIT` (`SeatFacts::disconnected`) and the linkdead grace running
+/// out, and both reach the pilot's standing in exactly the same way — the arena
+/// drops them from its frame roster, the registry drops their binding, and a
+/// relogin sends no `Live`. So [`crate::arena_bridge::send_control`] calls this
+/// for every `Released` that names a pilot, and the two paths nobody thought of
+/// are marked by the same line as the one that was.
+///
+/// Only during `Running`: a seat given up while the centre is `Boarding` is not
+/// final (the pilot may board again), and [`slot_vacated`] is that story.
+///
+/// Answers whether a slot moved, which is nothing anybody prints — it is here so
+/// the caller pays for no borrow it does not need.
+pub(crate) fn slot_left(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
+    let Some(book) = ctx.w.module_state_mut::<MatchBook>() else {
+        return false;
+    };
+    let centre = book.centre_mut();
+    if centre.state != MatchState::Running {
+        return false;
+    }
+    match centre.slots.iter_mut().find(|slot| slot.pilot == pilot) {
+        Some(slot) if !slot.left => {
+            slot.left = true;
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Fire the check-out with whatever is seated (doc 16 §3.8's
 /// `Boarding → Running`).
 fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
@@ -848,24 +952,60 @@ pub fn abort(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     Ok(())
 }
 
+/// **What one reset did** (16b cut F.1).
+#[derive(Clone, Debug, Default)]
+pub struct ResetOutcome {
+    /// Whether the centre was already `Idle` when the reset ran.
+    pub was_idle: bool,
+    /// The pods opened and the billets given back.
+    pub ejected: crate::match_::cockpit::EjectReport,
+    /// The stock tanks put back at their spec and at their authored slot.
+    pub tanks: crate::match_::ResetReport,
+}
+
+impl ResetOutcome {
+    /// Whether anything at all changed — what lets `@arena/reset` say "nothing
+    /// changed" on a second run rather than pretending it did something.
+    #[must_use]
+    pub fn changed(&self) -> bool {
+        !self.was_idle || !self.ejected.is_empty() || self.tanks.changed()
+    }
+}
+
 /// **The reset to `Idle`** — idempotent, and re-runnable by staff as
 /// `@arena/reset` (doc 16 §3.8).
 ///
-/// Answers whether anything changed, which is what lets the verb say "nothing
-/// changed" on a second run rather than pretending it did something.
-pub fn reset(ctx: &mut Ctx<'_>) -> bool {
-    let idle = centre(ctx.w).is_some_and(|centre| *centre == Centre::default());
-    if idle {
-        return false;
+/// The **one funnel** the centre returns to `Idle` through, and therefore the one
+/// place doc 16 §3.3's *at every `Idle` transition each is reset to its
+/// `UnitSpec`* can live. Three things, in this order:
+///
+/// 1. the **seat sweep**, before anything else and **before the already-idle
+///    early return**. A restart leaves the centre `Idle` by construction (the
+///    match book is RAM) while a body is still standing in a pod and a billet is
+///    still held on its tank, and the old `reset` returned on the first line in
+///    exactly that case — so the staff repair the design pointed at was a no-op
+///    on the one path that most needed it;
+/// 2. the **tank reset** ([`crate::match_::reset_stock_tanks`]), which is what
+///    makes a second match a second match rather than a fight between last
+///    match's wreck and last match's survivor;
+/// 3. the centre's own rows, when it was not already idle.
+///
+/// Answers [`ResetOutcome`], so a caller can say what it freed.
+pub fn reset(ctx: &mut Ctx<'_>) -> ResetOutcome {
+    let was_idle = centre(ctx.w).is_some_and(|centre| *centre == Centre::default());
+    let ejected = crate::match_::cockpit::eject_all(ctx);
+    let tanks = crate::match_::reset_stock_tanks(ctx);
+    if !was_idle {
+        release_rows(ctx, MatchState::Idle, None);
+        if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+            *book.centre_mut() = Centre::default();
+        }
     }
-    // 16b cut K.2: and the repair half of the same thing — a centre an earlier
-    // failure left with somebody aboard has its hatches opened here.
-    crate::match_::cockpit::disembark_all(ctx);
-    release(ctx, MatchState::Idle, None);
-    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
-        *book.centre_mut() = Centre::default();
+    ResetOutcome {
+        was_idle,
+        ejected,
+        tanks,
     }
-    true
 }
 
 /// **The centre's half of an ended match** — called from
@@ -886,8 +1026,8 @@ pub(crate) fn on_match_finished(ctx: &mut Ctx<'_>, match_id: MatchId, outcome: M
         _ => MatchState::Ended,
     };
     // 16b cut K.2: the pods have bodies in them now, and "released" has to mean
-    // the hatches as well as the rows.
-    crate::match_::cockpit::disembark_all(ctx);
+    // the hatches as well as the rows — which is [`release`]'s own first half
+    // since 16b cut F.1.
     release(ctx, state, Some(outcome));
     announce(
         ctx,
@@ -916,8 +1056,32 @@ pub(crate) fn adopt(ctx: &mut Ctx<'_>, match_id: MatchId) {
     }
 }
 
-/// Drop every slot and pod and move the centre to `state`.
-fn release(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutcome>) {
+/// **Release everything the centre holds and move it to `state`.**
+///
+/// **16b cut F.1 gave it the seat half.** Before this cut `release` cleared four
+/// fields on a struct, and every pre-`Running` end — an abort from `Boarding`,
+/// the board deadline emptying a side, a check-out that refused at the trigger —
+/// went through it and left the pilot sitting in the pod with the tank's billet
+/// in hand and the account's focus on it. Doc 16 §3.8's *an abort from
+/// `Selection` or `Boarding` releases slots and pods only* was written before
+/// `BOARD` made a real seat during `Boarding` (cut K.2), and a pod with somebody
+/// in it is not released.
+///
+/// The sweep runs **first**, so the pilot is standing in the team room by the
+/// time the caller announces why.
+fn release(
+    ctx: &mut Ctx<'_>,
+    state: MatchState,
+    outcome: Option<MatchOutcome>,
+) -> crate::match_::cockpit::EjectReport {
+    let ejected = crate::match_::cockpit::eject_all(ctx);
+    release_rows(ctx, state, outcome);
+    ejected
+}
+
+/// Drop every slot and pod and move the centre to `state` — the **row** half of
+/// [`release`], which [`reset`] calls on its own because it has already swept.
+fn release_rows(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutcome>) {
     if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
         let centre = book.centre_mut();
         centre.slots.clear();
@@ -966,7 +1130,15 @@ pub fn status_lines(w: &World) -> Vec<String> {
                 Some(pod) => format!(", pod {}", display_name(w, pod)),
                 None => String::new(),
             };
-            let seated = if slot.is_seated() { ", seated" } else { "" };
+            // 16b cut F.1: `left` outranks `seated` — the slot still carries the
+            // unit it was seated on, and the pilot is not in it.
+            let seated = if slot.left {
+                ", left"
+            } else if slot.is_seated() {
+                ", seated"
+            } else {
+                ""
+            };
             pilots.push(format!(
                 "{}: {}{pod}{seated}",
                 slot.index,
@@ -987,6 +1159,12 @@ pub fn status_lines(w: &World) -> Vec<String> {
     }
     if let Some(arena_ms) = centre.match_id.and_then(|match_id| arena_ms(w, match_id)) {
         rows.push(format!("  arena time {arena_ms} ms"));
+    }
+    // **16b cut F.1**: the way out of a terminal centre, said where somebody
+    // reads it. The board still carries the last outcome above; this is the one
+    // line that says the board is not a dead end.
+    if centre.state.is_terminal() {
+        rows.push("  `SIM TEAM red` or `SIM TEAM blue` opens the next match.".to_owned());
     }
     rows
 }
@@ -1075,6 +1253,7 @@ mod tests {
             pilot: ObjId(u32::from(who)),
             pod: None,
             unit: None,
+            left: false,
         }
     }
 

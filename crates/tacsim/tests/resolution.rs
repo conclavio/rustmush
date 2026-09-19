@@ -1510,7 +1510,14 @@ fn a_turret_shot_off_takes_the_weapons_and_an_immobile_disarmed_tank_is_disabled
         state.weapons.is_empty(),
         "the turret went and took the gun with it"
     );
-    assert!(state.ammo.is_empty() && state.ready_at_ms.is_empty());
+    assert!(state.ready_at_ms.is_empty());
+    // **16b cut F.1**: the rounds the gun still had are kept, because
+    // `Arena::returned_units` is what folds them back into the unit's own `ammo`
+    // cell at check-in — a barrel shot off half-empty used to come back full.
+    assert!(
+        !state.ammo.is_empty(),
+        "the gone gun's rounds are still on the record for the check-in"
+    );
     assert!(
         !state.limits.wreck,
         "and it is not a wreck: it can still drive"
@@ -1885,6 +1892,14 @@ fn the_returned_units_carry_their_cells_their_poses_and_their_outcomes() {
         state.hits = 2;
         state.ammo.insert(SmolStr::new("cannon"), 35);
     }
+    // **16b cut F.1**: and the unit about to be destroyed has fired too. Before
+    // this cut `destroy_unit` cleared the `ammo` table, so a tank killed at round
+    // twelve checked in with a full magazine — the readiness review found exactly
+    // that on the real binary. Both sides of this test carry spent rounds now, so
+    // the wreck's half is a claim and not an accident of the fixture.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.ammo.insert(SmolStr::new("cannon"), 12);
+    }
     arena.destroy_unit(BLUE, 1_000, &mut journal);
     let returned: Vec<UnitReturn> = arena.returned_units();
     assert_eq!(returned.len(), 2);
@@ -1916,6 +1931,13 @@ fn the_returned_units_carry_their_cells_their_poses_and_their_outcomes() {
         cell: CellId::new("ammo").expect("a cell"),
     };
     assert_eq!(red.cells.cell(&ammo).map(|cell| cell.current), Some(35));
+    // For the wreck too: a destroyed tank's rounds are the check-in's evidence,
+    // exactly as the survivor's are.
+    assert_eq!(
+        blue.cells.cell(&ammo).map(|cell| cell.current),
+        Some(12),
+        "the destroyed tank checked in with a magazine it had already spent"
+    );
 
     // And the plan the world applies is the **diff** against the unit it still
     // holds: nothing for a unit that did not change, and exactly the cells,

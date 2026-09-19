@@ -622,7 +622,12 @@ async fn drive(term: &mut Term, heading: u32) {
         if term
             .expect_one_of_after(
                 mark,
-                &[&format!("Steering to {heading}"), "Power not online"],
+                &[
+                    &format!("Steering to {heading}"),
+                    "Power not online",
+                    // 16b cut F.1: the same refusal while the startup is running.
+                    "Power is still coming up",
+                ],
             )
             .await
             == 0

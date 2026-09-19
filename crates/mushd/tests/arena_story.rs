@@ -710,6 +710,8 @@ async fn drive(term: &mut Term, heading: u32) {
                 &[
                     &format!("Steering to {heading}"),
                     "Power not online",
+                    // 16b cut F.1: the same refusal while the startup is running.
+                    "Power is still coming up",
                     COMMIT_PENDING,
                     CONTROL_UNKNOWN,
                 ],

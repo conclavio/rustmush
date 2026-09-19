@@ -293,4 +293,13 @@ today, cut K's `SIM START` next); the code and the document are the tactics \
 crate's, and tacsim never spells a tactics key itself. The same two functions \
 called from the tactics boot pass write their own namespace and never consult \
 this row.
+
+16b cut F.1 adds the second governed crossing, which is not a custody \
+transition: mush_tactics::module::apply_plan writes a whole `unit:<obj>` record \
+through the tactics crate's own encoder, and tacsim::match_::reset's \
+stock-tank reset is its second caller — reached from `@arena/reset`, from a \
+player's `SIM TEAM` on a terminal centre and from this module's own boot pass, \
+all under the tacsim module identity. Doc 16 section 3.3 asks for that reset \
+"by one UnitMutationPlan", so the write is a plan through the same seam \
+`@unit/damage` takes, and tacsim still spells no tactics key.
 """

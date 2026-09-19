@@ -73,6 +73,16 @@ impl MatchState {
         matches!(self, MatchState::Boarding)
     }
 
+    /// **Whether this state is an end** (16b cut F.1) — the three states doc 16
+    /// §3.8 draws the `→ Idle` edge out of, and the ones a claim resets through.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            MatchState::Ended | MatchState::Aborted | MatchState::Void
+        )
+    }
+
     /// Whether this state may become `Aborted` — every state before an end can,
     /// and one before `Running` has no custody to return.
     #[must_use]

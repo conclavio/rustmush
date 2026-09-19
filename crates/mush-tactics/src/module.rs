@@ -56,7 +56,7 @@ use serde_json::json;
 use smol_str::SmolStr;
 
 use crate::unit::{
-    self, TacticalUnit, UnitCatalog, UnitMutationOp, UnitMutationPlan, UnitSpec,
+    self, Journal, TacticalUnit, UnitCatalog, UnitMutationOp, UnitMutationPlan, UnitSpec,
     decode_legacy_unit_v1,
 };
 use crate::view;
@@ -2424,8 +2424,12 @@ fn boot_units(
             Err(error) => tracing::error!(
                 unit = %object,
                 %error,
+                // 16b cut F.1: say what the operator can actually do. No verb
+                // clears a marker; this pass is the only thing that does, so the
+                // remedy is another run of it — restart the server half.
                 "tactics: a deployed unit's restored snapshot would not encode at boot; the \
-                 marker is left on the record for a staff repair"
+                 marker stays on the record and this boot pass is the only thing that clears \
+                 one, so the unit is stuck until the server is restarted again"
             ),
         }
     }
@@ -2562,7 +2566,7 @@ fn cmd_unit(
     } else if ctx.switches.has("show") {
         unit_show(ctx)
     } else if ctx.switches.has("damage") {
-        unit_damage(feed, vitals, current_record_definition, ctx)
+        unit_damage(feed, vitals, ctx)
     } else if ctx.switches.has("remove") {
         unit_remove(feed, vitals, ctx)
     } else {
@@ -2613,6 +2617,58 @@ fn unit_ineligible(ctx: &Ctx<'_>, obj: ObjId) -> Option<String> {
                 display_name(ctx.w, obj)
             )
         })
+}
+
+/// **Apply one mutation plan to a persisted unit** — the body of
+/// `@unit/damage`, callable without a command line (16b cut F.1).
+///
+/// The one write path for a plan against a standing unit: `unit::apply` (refuse,
+/// never clamp), the mobility settle, the encode-before-you-mutate rule, the
+/// governed document write and the RAM row. What it deliberately does **not** do
+/// is the two things that are a *command*'s: the panel fan-out and the sentence.
+/// `@unit/damage` does those after it with the [`Journal`] this hands back, and
+/// so may any other caller that has a viewer.
+///
+/// A **deployed** unit is refused (16b cut T.3): while a match runs the arena is
+/// the single writer for that unit's cells, and [`crate::custody::check_in`] is
+/// the only door back. That refusal is what makes this seam safe to offer the
+/// game crate, whose `tacsim::match_::reset_stock_tanks` is the second caller.
+///
+/// The record schema is read from [`UnitStore::record_definition`], which
+/// `register` installs, for the same reason [`crate::custody`] reads it there: a
+/// caller outside this crate has no handle on the module.
+///
+/// # Errors
+///
+/// A message naming what refused: not a unit, deployed, an owner whose
+/// definitions are frozen, a plan `apply` refused, or a record that will not
+/// encode. **Nothing is written on any of them.**
+pub fn apply_plan(
+    ctx: &mut Ctx<'_>,
+    obj: ObjId,
+    plan: &UnitMutationPlan,
+) -> Result<(TacticalUnit, Journal), String> {
+    mush_sim::deployed::refuse_if_deployed(ctx.w, obj).map_err(|error| error.to_string())?;
+    let record_definition = ctx
+        .w
+        .module_state::<UnitStore>()
+        .and_then(|store| store.record_definition.clone())
+        .ok_or_else(|| "the tactics record schema is not installed".to_string())?;
+    let unit = ctx
+        .w
+        .module_state::<UnitStore>()
+        .and_then(|store| store.units.get(&obj).cloned())
+        .ok_or_else(|| "It is not a tactical unit.".to_string())?;
+    require_unit_ready(ctx.reg, &unit).map_err(|error| error.to_string())?;
+    let now = ctx.w.now();
+    let (mut post, journal) = unit::apply(&unit, plan, now).map_err(|error| error.to_string())?;
+    post.settle_mobility(now);
+    let (document, payload_digest) = encode_unit_document(&record_definition, &post, None)?;
+    persist_unit_document(ctx, obj, document);
+    if let Some(store) = ctx.w.module_state_mut::<UnitStore>() {
+        store.update_active(post.clone(), payload_digest);
+    }
+    Ok((post, journal))
 }
 
 /// **Make `obj` a tactical unit from `spec`** — the body of `@unit/create`,
@@ -2811,7 +2867,6 @@ fn unit_recovery(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn unit_damage(
     feed: &PanelFeedHandle,
     vitals: &PanelFeedHandle,
-    current_record_definition: &DefinitionRef,
     ctx: &mut Ctx<'_>,
 ) -> Result<(), CmdError> {
     let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
@@ -2833,15 +2888,11 @@ fn unit_damage(
         ));
     }
     let now = ctx.w.now();
-    let unit = ctx
-        .w
-        .module_state::<UnitStore>()
-        .and_then(|s| s.units.get(&obj).cloned())
-        .ok_or_else(|| CmdError::msg("It is not a tactical unit."))?;
-    require_unit_ready(ctx.reg, &unit)?;
-    let (mut post, journal) =
-        unit::apply(&unit, &plan, now).map_err(|e| CmdError::msg(e.to_string()))?;
-    post.settle_mobility(now);
+    // 16b cut F.1: one write path for a plan against a standing unit, shared with
+    // the game crate's stock-tank reset. Everything below this line is the
+    // *command*'s half — the receipt and the fan-out — which `apply_plan` leaves
+    // to its caller.
+    let (post, journal) = apply_plan(ctx, obj, &plan).map_err(CmdError::msg)?;
     let (from, to, n) = (
         journal.from_revision,
         journal.to_revision,
@@ -2853,13 +2904,6 @@ fn unit_damage(
     let delta = view::journal_frame(ctx.w, &journal);
     let vitals_frame =
         view::UnitView::of(ctx.w, obj, &view::UnitSource::Active(&post), now).vitals_value();
-    let (document, payload_digest) =
-        encode_unit_document(current_record_definition, &post, None).map_err(CmdError::msg)?;
-    persist_encoded_unit(ctx.out, obj, document);
-    ctx.w
-        .module_state_mut::<UnitStore>()
-        .expect("unit store")
-        .update_active(post, payload_digest);
     // D-I8-2 (as folded): the after-action DELTA reaches the staffer FIRST,
     // then every connected viewer stationed on the unit, then the unit's own
     // object when it is connected (a player or NPC unit); the VITALS keyframe

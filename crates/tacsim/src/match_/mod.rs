@@ -55,6 +55,9 @@ pub mod centre;
 pub mod cockpit;
 pub mod lobby;
 mod record;
+/// 16b cut F.1: **the stock-tank reset** — doc 16 §3.3's *at every `Idle`
+/// transition each is reset to its `UnitSpec` by one `UnitMutationPlan`*.
+pub mod reset;
 pub mod sim;
 mod verbs;
 
@@ -71,12 +74,13 @@ pub use centre::{
     tank_for_slot, tank_of, where_in_centre,
 };
 pub use cockpit::{
-    BOARD_VERB, COCKPIT_VERBS, CockpitError, CockpitGate, EXIT_VERB, NO_LOCK, NO_SUCH_CONTACT,
-    NOT_IN_A_POD, OUTSIDE_COCKPIT, OUTSIDE_TEAM_ROOM, POWER_NOT_ONLINE, STATION,
-    board as cockpit_board, exit as cockpit_exit, flying,
+    BOARD_VERB, COCKPIT_VERBS, CockpitError, CockpitGate, EXIT_VERB, EjectReport, NO_LOCK,
+    NO_SUCH_CONTACT, NOT_IN_A_POD, NOT_STARTED_YET, OUTSIDE_COCKPIT, OUTSIDE_TEAM_ROOM,
+    POWER_NOT_ONLINE, POWER_STARTING, STATION, board as cockpit_board, exit as cockpit_exit,
+    flying,
 };
 pub use lobby::{
-    Centre, OUTSIDE_CENTRE, SimError, Slot, abort as sim_abort, board_deadline,
+    Centre, OUTSIDE_CENTRE, ResetOutcome, SimError, Slot, abort as sim_abort, board_deadline,
     centre as centre_of, claim, leave, pilot_of, pod_of, reset as reset_centre, slot_seated,
     slot_vacated, slots_per_side, start as sim_start, status_lines,
 };
@@ -84,6 +88,7 @@ pub use record::{
     MatchOutcome, MatchRecord, MatchState, PoseNumbers, TeamRoster, UnitOutcome, UnitResult,
     match_id_of_key, result_key, write_restart_abort,
 };
+pub use reset::{RESET_CAUSE, ResetReport, reset_stock_tanks, spec_plan};
 pub use sim::{SIM_VERB, Selector, SimGate, sim_command};
 pub use verbs::{ArenaVerbError, arena_command, register_switches, state_word};
 
@@ -133,6 +138,9 @@ pub struct MatchBook {
     /// and a match record are two halves of one story: the centre names the
     /// match it is holding and a check-in has to release both in one action.
     centre: lobby::Centre,
+    /// **16b cut F.1** — whether this boot still owes the centre its pod sweep.
+    /// See [`MatchBook::arm_boot_sweep`].
+    boot_sweep: bool,
 }
 
 impl MatchBook {
@@ -140,6 +148,39 @@ impl MatchBook {
     #[must_use]
     pub fn new() -> MatchBook {
         MatchBook::default()
+    }
+
+    /// **Owe the centre its pod sweep, at the first tick of this boot** (16b cut
+    /// F.1).
+    ///
+    /// The work is [`cockpit::eject_all`], and it starts from the centre's eight
+    /// **pods** — which are resolved through the **content latch**
+    /// (`mush_atlas::travel::latched_object`). The latch is the content module's
+    /// own state, and the content module is composed *after* this one, so at
+    /// `on_world_loaded` time it is still empty: a sweep run there finds no pods
+    /// at all, however many bodies are stranded in them.
+    ///
+    /// So the boot pass arms this and the module's own 1 s tick performs it,
+    /// once, by which time every module's `on_world_loaded` has run.
+    ///
+    /// **The stock-tank reset is not armed with it.** It needs no latch — the
+    /// roster document and the definitions are this module's own state and
+    /// `mush-sim` and `mush-tactics` are composed before it — so it runs inside
+    /// the boot pass itself (`boot_matches`). That distinction is the
+    /// whole of the difference between a window that matters and one that does
+    /// not: the reset **writes** to every roster tank's record and placement, so
+    /// a deferred one undoes a staff `@spatial/place` typed in the first second
+    /// of a boot, which is precisely how the arena story opens. This sweep only
+    /// takes back what `BOARD` put in a pod, and `BOARD` fails closed on the
+    /// control-lease mirror until that same 1 Hz projection has been read once,
+    /// so there is nothing of anybody's to take.
+    pub fn arm_boot_sweep(&mut self) {
+        self.boot_sweep = true;
+    }
+
+    /// Take the boot sweep, once. A second caller gets `false`.
+    pub fn take_boot_sweep(&mut self) -> bool {
+        std::mem::take(&mut self.boot_sweep)
     }
 
     /// Adopt the persisted counter at boot. Never lowers: a result document that
@@ -593,8 +634,12 @@ fn roll_back(ctx: &mut Ctx<'_>, match_id: MatchId, units: &[ObjId]) {
             tracing::error!(
                 %unit,
                 %error,
-                "tacsim: a rolled-back check-out could not be undone; the unit keeps its marker \
-                 and staff must clear it"
+                // 16b cut F.1: no verb clears a marker — `@arena` registers
+                // status, start, intent, abort and reset and none of them touch
+                // one — so the only honest advice is the one thing that does.
+                "tacsim: a rolled-back check-out could not be undone; the unit keeps its marker, \
+                 and the boot reconciliation is the only thing that clears one, so it stays \
+                 unusable until the server half is restarted"
             );
         }
     }
@@ -832,8 +877,16 @@ pub fn returned_plan(
 /// `mush_tactics::apply`, the final pose through `mush_sim::place`, both in this
 /// same authoritative action; a unit that no longer exists is journalled
 /// `custody_lost` and skipped, **never failing the others**. Then the marker is
-/// cleared (the same write as the cells), the tank is reset, the seats and focus
-/// are released, the match is untracked and the result document is written.
+/// cleared (the same write as the cells), the seats and focus are released, the
+/// match is untracked and the result document is written.
+///
+/// **The tank is not reset here** (16b cut F.1, a recorded deviation from doc 16
+/// §3.3's *at check-in and at every `Idle` transition*). What a check-in commits
+/// is the match's **evidence**: doc 16 §1's acceptance reads the loser's wreck
+/// with `@unit/show` afterwards and the result document points at it, and the
+/// terminal centre shows the outcome until somebody clears it. The reset happens
+/// on the way **into** `Idle` and at boot — [`crate::match_::reset_stock_tanks`],
+/// through [`lobby::reset`], which is the one funnel for that transition.
 ///
 /// Idempotent: a second call on the same match finds no live record and answers
 /// `false`, having written nothing.
@@ -892,7 +945,11 @@ pub fn finish(
                     %unit,
                     match_id = match_id.0,
                     %error,
-                    "tacsim: a unit could not be checked in; its marker is left for a staff repair"
+                    // 16b cut F.1: see `roll_back` — a marker is cleared by the
+                    // boot reconciliation and by nothing else.
+                    "tacsim: a unit could not be checked in; its marker stays on the record, and \
+                     the boot reconciliation is the only thing that clears one, so it stays \
+                     unusable until the server half is restarted"
                 );
                 results.push(UnitResult::lost(unit));
                 continue;
@@ -1022,34 +1079,14 @@ fn release_seat(ctx: &mut Ctx<'_>, unit: ObjId) {
         })
         .unwrap_or_default();
     for (station, actor) in seats {
-        if let Err(error) = mush_sim::request_seat_activation(
-            ctx,
-            &mush_sim::SeatRequest::Revoke {
-                unit,
-                station: station.clone(),
-                npc: actor,
-            },
-        ) {
-            tracing::debug!(
-                %unit,
-                station = station.as_str(),
-                %error,
-                "tacsim: a cockpit seat did not stand down at check-in"
-            );
-        }
-        // **16b cut K.2.** A stand-down clears the narrowing and keeps the
-        // billet, which is right for an NPC's own station and wrong for a pod
-        // lent for one match: the billet IS the loan, and one left behind is the
-        // next pilot's `StationHeld`. Doc 16 §3.8's "seats … released
-        // atomically" is this line as much as the one above it.
-        if let Err(error) = mush_sim::vacate_station(ctx, unit, &station, actor) {
-            tracing::error!(
-                %unit,
-                station = station.as_str(),
-                %error,
-                "tacsim: a cockpit billet could not be given back at check-in"
-            );
-        }
+        // **16b cut F.1**: through [`cockpit::hand_seat_back`], which is the one
+        // way this crate lets a cockpit seat go — the arena told first (so the
+        // pilot leaves its frame roster and the registry's pilot binding), then
+        // the stand-down, then the **billet**. Before this cut there were two
+        // ways: `EXIT`'s, which told the arena, and this one, which did not, and
+        // a pilot released by a check-in kept their binding until `untrack` a few
+        // lines later.
+        cockpit::hand_seat_back(ctx, unit, &station, actor, false);
     }
 }
 

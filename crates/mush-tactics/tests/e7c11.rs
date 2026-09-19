@@ -59,6 +59,13 @@ fn vf_g4_the_unit_store_writer_census_is_pinned() {
     assert_eq!(
         sites,
         vec![
+            // 16b cut F.1: `@unit/damage`'s body became the public `apply_plan`,
+            // for the same reason cut C.2 hoisted `create_unit` — a caller with
+            // no command line (the game crate's stock-tank reset, doc 16 §3.3)
+            // goes through the *same* writer rather than a second one. The site
+            // moved out of `unit_damage` and the census did not grow: still four
+            // production writers beyond boot, and still no second lane.
+            "apply_plan".to_owned(),
             "boot_units".to_owned(),
             // 16b cut C.2: `@unit/create`'s body became the public
             // `create_unit`, so a caller with no command line — the arena
@@ -70,8 +77,8 @@ fn vf_g4_the_unit_store_writer_census_is_pinned() {
             // The `WorldEvent::ObjDestroyed` hook: `hold_active` / `remove_active`
             // / `update_active`, with `&mut Ctx` and NO `ActionTxn`.
             "on_obj_destroyed".to_owned(),
-            // §4.1's "three legacy commands".
-            "unit_damage".to_owned(),
+            // §4.1's "three legacy commands" (`unit_damage`'s site is
+            // `apply_plan` above since 16b cut F.1).
             "unit_remove".to_owned(),
         ],
         "L3's synchronous writers — four production writers beyond boot, one of \
