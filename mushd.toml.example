@@ -158,7 +158,9 @@ starter_area = true                # (S1) apply the shipped starter area — the
 # are the game's own boot packs and ride on this flag alone — so with it false
 # the pods are a set with nothing behind them, and SIM says so rather than
 # letting two players claim slots in a centre that cannot start. Turn it on and
-# restart to run matches; the shipped dev boxes (deploy/dev1, deploy/dev2) do.
+# restart to run matches; the shipped dev boxes do — dev1 through
+# `TACSIM_ENABLED=true` in deploy/dev1/instance.env, dev2 through this key in
+# its own deploy/dev2/mushd.toml.
 enabled = false
 # Content packs, read HOST-SIDE at boot. Each entry is a .json pack file or a
 # directory searched for *.json in sorted order. A file that cannot be read, is
@@ -511,7 +513,9 @@ reasoning = "off"
 # --- Concurrency -----------------------------------------------------------
 [llm.concurrency]
 max_interactive = 8                # dialogue + single-room worldgen in flight
+max_interactive_queued = 32        # waiters behind them; beyond this: overloaded
 max_background = 3                 # batch gen / summarization / ambience
+max_background_queued = 12         # ditto, for the background lane
 
 # --- Budgets (daily, UTC rollover) -----------------------------------------
 # Every layer that applies must pass a pre-call check; any layer may cap

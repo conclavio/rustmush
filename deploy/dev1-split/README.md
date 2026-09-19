@@ -8,9 +8,20 @@ never a disconnect. As of **M16d this holds for WEB (WebSocket) players too**,
 not just SSH: the gateway now serves the web client (HTTPS :6790) itself.
 
 It is a **drop-in alternative to `deploy/dev1`** for the *same* instance: same
-Redis (6788), same `mushd.toml`, same SSH port (6789), same web port (6790),
-same data/TLS/env. You run **one or the other**, not both (they share the SSH
-and web ports).
+Redis (6788), same `instance.env` and so the same rendered `mushd.toml`, same
+SSH port (6789), same web port (6790), same data/TLS/env. You run **one or the
+other**, not both (they share the SSH and web ports).
+
+**The config is rendered, not hand-written** (16b cut F.5). `deploy/dev1` no
+longer carries a `mushd.toml`; it carries
+[`instance.env`](../dev1/instance.env), and both deploy scripts install a copy
+of it at `/opt/rustmush/dev1/instance.env` with `EXTERNAL_IP` resolved, then
+render `/opt/rustmush/dev1/mushd.toml` from
+[`../instance/mushd.toml.tmpl`](../instance/mushd.toml.tmpl) with
+[`../instance/render.sh`](../instance/render.sh). The render is preflighted with
+`mush-gateway --check-config` **and** `mush-server --check-config` before this
+script starts or reloads anything, and nothing is installed if either refuses —
+so a bad config is a failed deploy, not a crash-looping unit.
 
 ## How it differs from the all-in-one
 
@@ -48,7 +59,7 @@ exist). Ship the current tree + build BOTH binaries + run this deploy:
 
 ```bash
 VPS=root@conclav.io ; KEY=./hostinger
-# ship the committed source (adds this dir + the [ipc] port in mushd.toml)
+# ship the committed source (adds this dir + dev1/instance.env + the template)
 git archive HEAD | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build'
 # build the TWO split binaries (release). The gateway serves the web client
 # (HTTPS :6790) now, so it needs --features tls to terminate TLS from the on-disk
@@ -101,9 +112,11 @@ Copy this dir, then in the copies:
   the two instances' IPC sockets do not share a dir;
 - in `deploy.sh` set `ROOT=/opt/rustmush/dev2`, `DEV1=$SELF/../dev2`, the
   redis port (6791), and the unit names;
-- give the instance its **own** `[ipc].listen` **unix socket path** in its
-  `mushd.toml` inside that RuntimeDirectory (dev1 uses
+- give the instance its **own** `IPC_SOCKET` **unix socket path** in its
+  `instance.env`, inside that RuntimeDirectory (dev1 uses
   `/run/rustmush/dev1.sock`; a dev2-split would use e.g.
   `/run/rustmush-dev2/dev2.sock`) so two split instances on one box do not
   collide on the boundary socket. The unix socket keeps the unauthenticated
   boundary reachable only by the service user (see `../../docs/ops.md`).
+  A dev2-split needs `deploy/dev2` to have an `instance.env` at all, which it
+  does not yet — converting it is the first step, not an afterthought.

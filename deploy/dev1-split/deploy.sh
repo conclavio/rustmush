@@ -3,7 +3,8 @@
 # it. Run as root. The split runs ONE service — dev1mush-gateway — which owns the
 # SSH + WEB connections and spawns + supervises the mush-server child; a redeploy
 # SIGHUPs the gateway to restart ONLY the server child, so no player is dropped
-# (M16c/M16d). It reuses dev1's Redis (6788), config, TLS, and env from ../dev1.
+# (M16c/M16d). It reuses dev1's Redis (6788), instance.env, TLS, and env from
+# ../dev1.
 #
 # Idempotent: safe to re-run for a redeploy. On a redeploy it does the
 # hold-the-connections HOT restart (reload, not restart) — see step 9.
@@ -18,7 +19,8 @@ set -euo pipefail
 ROOT=/opt/rustmush/dev1
 BUILD=$ROOT/build
 SELF="$(cd "$(dirname "$0")" && pwd)"    # .../build/deploy/dev1-split
-DEV1="$SELF/../dev1"                      # shared redis/toml/cert setup
+DEV1="$SELF/../dev1"                      # shared redis/instance.env/cert setup
+INSTANCE_DIR="$SELF/../instance"          # the shared template + render.sh
 
 echo "== rustmush dev1 SPLIT (hot-restart) deploy =="
 
@@ -28,21 +30,66 @@ if ! id mush >/dev/null 2>&1; then
   echo "created system user 'mush'"
 fi
 
-# 2. Directories (same tree the all-in-one uses). /var/log/redis stays redis-owned.
-mkdir -p "$ROOT/data" "$ROOT/tls" /var/lib/redis-dev1mush /var/log/redis /run/redis-dev1mush
+# 2. Directories (same tree the all-in-one uses, provisioned the same way —
+# every path the RENDERED config writes to, owned by the unit's User=, rather
+# than created on first boot with whatever umask the unit happened to have):
+#   data/                 [server].data_dir
+#   data/logs/            [log].file = true writes daily-rotating copies here
+#                         (gateway.log and server.log — one per half)
+#   data/archive/         [store.archive].dir, the J5 ledger tier — this holds
+#                         MONEY; back it up with the store, not instead of it
+#   data/offer-keys/      [offers].key_dir   — K5 offer signing, mode 0700
+#   data/resolution-keys/ [resolution].key_dir — K4 resolution RNG, mode 0700
+# All of them are under $ROOT, which is the unit's one `ReadWritePaths=` entry;
+# the IPC socket's /run/rustmush comes from the unit's `RuntimeDirectory=`.
+# /var/log/redis stays redis-owned.
+install -d -o mush -g mush -m 0750 "$ROOT" "$ROOT/data" "$ROOT/data/logs" "$ROOT/data/archive" "$ROOT/tls"
+install -d -o mush -g mush -m 0700 "$ROOT/data/offer-keys" "$ROOT/data/resolution-keys"
+mkdir -p /var/lib/redis-dev1mush /var/log/redis /run/redis-dev1mush
 chown redis:redis /var/lib/redis-dev1mush /run/redis-dev1mush /var/log/redis
 
 # 3. Redis config + unit (reused verbatim from the all-in-one instance).
 install -m 640 -o redis -g redis "$DEV1/redis-dev1mush.conf" /etc/redis/redis-dev1mush.conf
 install -m 644 "$DEV1/redis-dev1mush.service" /etc/systemd/system/redis-dev1mush.service
 
-# 4. Resolve the EXTERNAL IPv4 and render mushd.toml (the same file the all-in-one
-#    uses; its [ipc] boundary is a unix socket in /run/rustmush and needs no
-#    substitution — the RuntimeDirectory in the gateway unit provides that dir).
+# 4. Resolve the EXTERNAL IPv4 (source IP of the default route — the public
+#    interface, NOT the tailscale address), install dev1's instance.env with
+#    that address written into it, and render mushd.toml from the shared
+#    template. Same file, same recipe, same result as the all-in-one: the two
+#    shapes differ in which binaries read the config, never in the config.
+#
+#    The committed instance.env carries `EXTERNAL_IP=auto`: the box's address is
+#    not a fact about the repository. The INSTALLED copy is the resolved one,
+#    and it is the file a re-render reads and the one
+#    `scripts/reset-instance.sh /opt/rustmush/dev1/instance.env --yes` is
+#    pointed at. ([ipc].listen is a unix socket under /run/rustmush and needs no
+#    substitution — the gateway unit's RuntimeDirectory provides that dir.)
 EXT_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' | head -1)"
 if [ -z "${EXT_IP:-}" ]; then echo "FATAL: could not resolve external IP" >&2; exit 1; fi
 echo "external IP: $EXT_IP  (ssh :6789, ipc unix /run/rustmush/dev1.sock)"
-sed "s/__EXTERNAL_IP__/$EXT_IP/g" "$DEV1/mushd.toml" > "$ROOT/mushd.toml"
+#
+#    Staged the way render.sh stages the config it produces: the installed
+#    instance.env is what `scripts/reset-instance.sh` is pointed at, and a shell
+#    redirection truncates its target before `sed` has read a byte — so a ship
+#    that left $DEV1/instance.env behind, or a full disk, would replace a good
+#    file with an empty one. Write beside it, verify, then move.
+sed "s|^EXTERNAL_IP=.*|EXTERNAL_IP=$EXT_IP|" "$DEV1/instance.env" > "$ROOT/instance.env.new"
+if ! grep -q "^EXTERNAL_IP=$EXT_IP\$" "$ROOT/instance.env.new"; then
+  echo "FATAL: $DEV1/instance.env has no EXTERNAL_IP line to resolve" >&2
+  rm -f "$ROOT/instance.env.new"; exit 1
+fi
+mv "$ROOT/instance.env.new" "$ROOT/instance.env"
+
+# The render is deploy/instance/render.sh — one copy of the sed loop and the
+# completeness check for every box. It also runs BOTH split halves over the
+# result with `--check-config` (the gateway reads the shared set plus the
+# boundary; the server half is the one that dies on [tacsim] and the archive
+# window, and it is the one nobody starts by hand) and fails HERE if either
+# refuses — before the gateway is started or reloaded, and leaving the live
+# mushd.toml alone.
+bash "$INSTANCE_DIR/render.sh" \
+  "$ROOT/instance.env" "$INSTANCE_DIR/mushd.toml.tmpl" "$ROOT/mushd.toml" \
+  "$BUILD/target/release/mush-gateway" "$BUILD/target/release/mush-server"
 
 # 5. TLS cert — the gateway serves the web client (HTTPS :6790) and terminates
 #    TLS from this cert/key (M16d; gateway built with --features tls).
@@ -63,7 +110,9 @@ fi
 # 7. The gateway unit.
 install -m 644 "$SELF/dev1mush-gateway.service" /etc/systemd/system/dev1mush-gateway.service
 
-# 8. Ownership: whole tree is the mush user's EXCEPT the key file (root:mush 640).
+# 8. Ownership: whole tree is the mush user's EXCEPT the key file (root:mush
+#    640). `chown -R` does not touch modes, so the two 0700 key directories
+#    provisioned in step 2 stay 0700.
 chown -R mush:mush "$ROOT"
 if [ -f "$ROOT/dev1.env" ]; then chown root:mush "$ROOT/dev1.env"; chmod 640 "$ROOT/dev1.env"; fi
 

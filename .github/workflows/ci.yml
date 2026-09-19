@@ -127,36 +127,59 @@ jobs:
       - name: Build the three binaries a deploy installs
         run: cargo build -p mushd -p mush-server -p mush-gateway
       # The SHELL half of the same claim. The Rust test above mirrors the
-      # substitution rule; this is the recipe itself — the loop an operator
-      # copies out of deploy/README.md — so the shell and the test cannot drift
-      # apart about what a rendered config is.
-      - name: Render the shipped instance with the deploy's own sed recipe
+      # substitution rule; this runs the recipe itself —
+      # `deploy/instance/render.sh`, the very script both dev1 deploy scripts
+      # call — over EVERY shipped instance.env, with all three binaries'
+      # `--check-config` run over each render by the script itself. So the test,
+      # the documented recipe and the script a box actually executes cannot
+      # drift apart about what a rendered config is, or about whether the
+      # binaries accept it.
+      - name: Render every shipped instance with the deploy's own render.sh
         run: |
           set -euo pipefail
           mkdir -p rendered
-          for env_file in instance.env.example; do
-            out="rendered/${env_file%.example}.toml"
-            while IFS='=' read -r k v; do
-              case "$k" in ''|'#'*) continue;; esac
-              printf 's|__%s__|%s|g\n' "$k" "$v"
-            done < "deploy/instance/$env_file" > rendered/render.sed
-            sed -f rendered/render.sed deploy/instance/mushd.toml.tmpl > "$out"
-            # deploy/README.md's completeness check, spelled as an `if` rather
-            # than `grep ... && { ...; }`: this step runs under `bash -e`, where
-            # a grep that correctly finds nothing would end the step.
-            if grep -n '^[^#]*__' "$out"; then
-              echo "INCOMPLETE $env_file"
+          render() {
+            # dev1 commits `EXTERNAL_IP=auto` — a deploy-time marker, not an
+            # address — and its deploy scripts rewrite that line with the box's
+            # resolved IPv4 into the INSTALLED copy before rendering. Do exactly
+            # that, with a documentation address (RFC 5737 TEST-NET-3). An env
+            # that already names an address is copied unchanged.
+            sed 's|^EXTERNAL_IP=auto$|EXTERNAL_IP=203.0.113.10|' "$1" > "rendered/$2.env"
+            bash deploy/instance/render.sh \
+              "rendered/$2.env" deploy/instance/mushd.toml.tmpl "rendered/$2.toml" \
+              ./target/debug/mush-gateway ./target/debug/mush-server ./target/debug/mushd
+            # The marker must never survive into a config a server reads:
+            # `[ssh].listen = "auto:6789"` binds nothing and no preflight
+            # refuses it, so the symptom would be a box up and answering on no
+            # port. (Comment lines are exempt, the same rule render.sh's own
+            # completeness grep applies.)
+            if grep -n '^[^#]*\bauto\b' "rendered/$2.toml"; then
+              echo "the deploy-time EXTERNAL_IP marker reached rendered/$2.toml"
               exit 1
             fi
-          done
-      - name: All three binaries preflight both rendered instances
+          }
+          render deploy/instance/instance.env.example reference
+          render deploy/dev1/instance.env dev1
+      # The marker's own negative control. The step above renders from a COPY
+      # with the address already resolved, exactly as a deploy does, so on its
+      # own it can only say yes — and the case the rule exists for is a hand
+      # re-render straight from the COMMITTED file, with no deploy script in the
+      # loop, which is what this runs. render.sh must refuse it and leave
+      # nothing behind: `[ssh].listen = "auto:6789"` passes every
+      # `--check-config` there is and binds no port.
+      - name: ...and an unresolved EXTERNAL_IP marker is refused before install
         run: |
           set -euo pipefail
-          for out in rendered/*.toml; do
-            ./target/debug/mush-gateway --check-config --config "$out"
-            ./target/debug/mush-server --check-config --config "$out"
-            ./target/debug/mushd --check-config --config "$out"
-          done
+          if bash deploy/instance/render.sh \
+               deploy/dev1/instance.env deploy/instance/mushd.toml.tmpl \
+               rendered/unresolved.toml ./target/debug/mush-server; then
+            echo 'render.sh accepted EXTERNAL_IP=auto: that box answers on no port'
+            exit 1
+          fi
+          if [ -e rendered/unresolved.toml ] || [ -e rendered/unresolved.toml.new ]; then
+            echo 'render.sh refused the render but left a file to be installed'
+            exit 1
+          fi
       # The negative control, at the level this job spends. Without it every
       # step above is a check that can only ever say yes. `receipt_policy` is
       # the value it is written against because it is the one that used to be
@@ -164,8 +187,8 @@ jobs:
       - name: ...and a typo'd receipt_policy is refused by all three
         run: |
           set -euo pipefail
-          sed 's/receipt_policy = "applied"/receipt_policy = "aplied"/' rendered/instance.env.toml > rendered/broken.toml
-          if diff -q rendered/instance.env.toml rendered/broken.toml > /dev/null; then
+          sed 's/receipt_policy = "applied"/receipt_policy = "aplied"/' rendered/reference.toml > rendered/broken.toml
+          if diff -q rendered/reference.toml rendered/broken.toml > /dev/null; then
             echo 'the template no longer writes receipt_policy = "applied": this control tampers with nothing'
             exit 1
           fi
@@ -177,11 +200,18 @@ jobs:
           done
       # The disposable-store remedy this step also ships. It cannot be RUN here
       # (it stops a systemd unit, flushes a Redis and rewrites a data dir as
-      # root), so what CI holds is that it stays well-formed and clean.
-      - name: The instance reset script is well-formed
+      # root), so what CI holds is that it stays well-formed and clean. The
+      # render and the two dev1 deploy scripts are parsed for the same reason —
+      # they run as root on a box nobody wants to debug at 2am — but only
+      # `bash -n`: they have never been through `shellcheck`, and a gate is
+      # added with its findings fixed, not with a backlog attached.
+      - name: The instance reset and deploy scripts are well-formed
         run: |
           bash -n scripts/reset-instance.sh
           shellcheck scripts/reset-instance.sh
+          bash -n deploy/instance/render.sh
+          bash -n deploy/dev1/deploy.sh
+          bash -n deploy/dev1-split/deploy.sh
 
   kernel-contracts:
     name: K8 kernel contracts

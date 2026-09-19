@@ -1371,7 +1371,13 @@ binary depends on both halves and supplies the in-process glue. (`cargo tree -p
 mush-gateway` / `-p mush-server` are the regression check for this split.)
 
 Both read the **same `mushd.toml`** — each its own relevant sections plus the
-shared `[ipc]` one. Point both at the **same Redis** (`[store].redis_url`): the
+shared `[ipc]` one. On a deployed box that file is **rendered, not written**:
+`deploy/instance/render.sh` substitutes the box's `instance.env` into
+`deploy/instance/mushd.toml.tmpl` and then runs both halves' own
+`--check-config` over the result, so a config either half would refuse fails the
+deploy instead of the boot. dev1 is rendered from `deploy/dev1/instance.env`;
+dev2 still ships a hand-written `deploy/dev2/mushd.toml`.
+Point both at the **same Redis** (`[store].redis_url`): the
 gateway touches only `account:*` / `token:*` / `ban:*`, the server owns
 `obj:*` / `mod:*` / `meta:*`, so a shared instance is correct — and required,
 e.g. for `@newpassword` (the server reads the account records the gateway

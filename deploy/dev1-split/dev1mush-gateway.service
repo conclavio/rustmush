@@ -1,5 +1,5 @@
 [Unit]
-Description=rustmush dev1 (oWoD) — forked GATEWAY (hot-restartable server) — SSH 6789 + web 6790
+Description=rustmush dev1 (TacSim) — forked GATEWAY (hot-restartable server) — SSH 6789 + web 6790
 After=network-online.target redis-dev1mush.service
 Wants=network-online.target
 Requires=redis-dev1mush.service
@@ -55,6 +55,12 @@ RuntimeDirectoryMode=0750
 # /run/rustmush IPC socket (provided by RuntimeDirectory above). PrivateTmp is
 # shared with the spawned server child (same unit / cgroup), which is correct —
 # both halves see the same private tmp.
+#
+# Every path the RENDERED mushd.toml writes to is inside the one ReadWritePaths
+# tree: the data dir and, under it, logs/ (gateway.log + server.log), archive/
+# (the J5 ledger tier), offer-keys/, resolution-keys/ and quarantine/ — all
+# provisioned by deploy.sh. The only write OUTSIDE it is the boundary socket,
+# and that is what RuntimeDirectory above is for.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

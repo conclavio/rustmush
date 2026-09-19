@@ -3,22 +3,27 @@
 # This is the whole surface, not the interesting half. Every section the server
 # reads is written here with a real value, because a section left out is not
 # "unset": it is silently the compiled-in default, and an operator who never saw
-# the key cannot know which default they are running. The two boxes that predate
-# this template (deploy/dev1, deploy/dev2) omit TEN sections between them —
+# the key cannot know which default they are running. The one box that still
+# predates this template (deploy/dev2) omits TEN sections —
 # [log], [store.archive], [offers], [resolution], [discord], [economy],
 # [weather], [worldgen], [onboarding], [npc] —
-# and so quietly run: no log files, no ledger archive tier, key directories
+# and so quietly runs: no log files, no ledger archive tier, key directories
 # nobody provisioned, and characters starting in Limbo. New instances do not
 # inherit that. They render this. ([wod] and [shadowrun] were on that list until
 # 16b cut R deleted both rulesets; [tacsim] until 16b cut F.4 wrote it on both
-# dev boxes, which is what turns their simulator on.)
+# dev boxes, which is what turns their simulator on. deploy/dev1 was the other
+# box on that list until 16b cut F.5 deleted its hand-written config and gave it
+# a deploy/dev1/instance.env instead.)
 #
 # RENDERING. The template is parameterised by an `instance.env` file of plain
 # `KEY=value` lines; rendering substitutes every `__KEY__` token with that key's
 # value, and nothing else. That is the entire mechanism — it is a `sed`, not a
 # template language, so the shell that deploys and the test that checks the
 # shipped files cannot disagree about what a rendered config is. There is ONE
-# recipe, and it is this one:
+# recipe, it is executable as `deploy/instance/render.sh <instance.env>
+# <template> <out> [binary ...]` (which both deploy scripts and CI's
+# provisioning job call, and which additionally preflights the result with each
+# named binary's own `--check-config`), and it is this:
 #
 #   while IFS='=' read -r k v; do
 #     case "$k" in ''|'#'*) continue;; esac
@@ -45,10 +50,14 @@ name = "__INSTANCE_TITLE__"
 data_dir = "__DATA_DIR__"
 help_dir = "__BUILD_DIR__/docs/help"
 
-# Structured logging. `format = "json"` is the prod choice: journald keeps the
-# lines either way, but only JSON survives a log shipper intact. `file = true`
-# writes daily-rotating copies under <data_dir>/logs/ so a box whose journal is
-# volatile still has yesterday.
+# Structured logging. `format` is `pretty` or `json` and nothing else (anything
+# else degrades to `pretty` with a warning rather than refusing the boot).
+# `json` is the choice for a box with a log shipper: journald keeps the lines
+# either way, but only JSON survives a shipper intact. A box with no shipper,
+# whose operator reads `journalctl` by eye, renders `pretty` instead — which is
+# what deploy/dev1 does. `file = true` writes daily-rotating copies under
+# <data_dir>/logs/ (one file per half of the split) so a box whose journal is
+# volatile still has yesterday; the deploy provisions that directory.
 [log]
 level = "__LOG_LEVEL__"
 format = "__LOG_FORMAT__"
@@ -308,6 +317,13 @@ max_ledger_bytes = 67108864
 # rooms you get for free. After first boot, check with `@find` / `look #2` as
 # God, or `examine #3`; a missing id lands new characters nowhere. WS25-S5 is
 # where the seed itself grows a start room and a chargen area.
+#
+# The ONE instance that may render `0` for both is a box that deliberately wants
+# no gate at all: `chargen_required = false` with both rooms Limbo is
+# `mush_core::OnboardingConfig`'s documented all-default no-op — the gate always
+# passes, the hook never fires, the spawn move is a no-op — and it is a sane
+# choice on a box with no approval staff whose starter area hangs straight off
+# Limbo. deploy/dev1 is that box, and says so in its instance.env.
 [onboarding]
 chargen_required = __CHARGEN_REQUIRED__
 start_room = __START_ROOM__
@@ -441,8 +457,16 @@ timeout_s = 30
 reasoning = "off"
 
 [llm.concurrency]
+# Four caps, not two: the in-flight pair and the WAITER pair behind them. A call
+# beyond active-plus-queued fails fast as overloaded rather than joining an
+# unbounded semaphore queue, so the queued caps are what decide whether a player
+# waiting on an NPC line is told no or waits for ever. They are written out here
+# for the same reason every other section is — a key nobody saw is a key nobody
+# chose — and they carry mush_llm::ConcurrencyConfig's own defaults.
 max_interactive = 8
+max_interactive_queued = 32
 max_background = 3
+max_background_queued = 12
 
 [llm.budgets]
 global = { tokens = 5_000_000, cost_usd = 5.0 }

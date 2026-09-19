@@ -15,22 +15,31 @@ on ports **6791** (redis) / **6792** (ssh) / **6793** (https), `/opt/rustmush/de
 
 ## A new instance: render the template, do not copy a box
 
-`dev1/mushd.toml` and `dev2/mushd.toml` predate [`instance/`](instance/) and omit
-**eleven** sections between them — `[log]`, `[store.archive]`, `[offers]`,
-`[resolution]`, `[discord]`, `[economy]`, `[weather]`, `[worldgen]`,
-`[onboarding]`, `[npc]`, `[tacsim]` — so each of those
-runs on a compiled-in default nobody chose: no log files, no ledger archive
-tier, key directories nobody provisioned, and every character starting in Limbo
-`#0`. Copying one of them inherits all of that silently.
+`dev2/mushd.toml` predates [`instance/`](instance/) and omits **ten** sections —
+`[log]`, `[store.archive]`, `[offers]`, `[resolution]`, `[discord]`,
+`[economy]`, `[weather]`, `[worldgen]`, `[onboarding]`, `[npc]` — so each of
+those runs on a compiled-in default nobody chose: no log files, no ledger
+archive tier, key directories nobody provisioned, and every character starting
+in Limbo `#0`. Copying it inherits all of that silently. (`dev1/mushd.toml` was
+the other such file until 16b cut F.5 deleted it: dev1 renders the template now,
+from [`dev1/instance.env`](dev1/instance.env).)
 
 A new instance renders [`instance/mushd.toml.tmpl`](instance/mushd.toml.tmpl)
 instead. It carries every section with a real value, and it is parameterised by
 an `instance.env` of plain `KEY=value` lines — copy
 [`instance/instance.env.example`](instance/instance.env.example), edit it, and
-substitute:
+render:
 
 ```bash
 cp deploy/instance/instance.env.example instance.env && $EDITOR instance.env
+bash deploy/instance/render.sh instance.env deploy/instance/mushd.toml.tmpl mushd.toml \
+  target/release/mushd            # or mush-gateway + mush-server, for the split
+```
+
+[`instance/render.sh`](instance/render.sh) is the ONE render, and both deploy
+scripts and CI's provisioning job call it. It is a `sed` and nothing more:
+
+```bash
 while IFS='=' read -r k v; do
   case "$k" in ''|'#'*) continue;; esac
   printf 's|__%s__|%s|g\n' "$k" "$v"
@@ -49,34 +58,64 @@ header spells the mechanism out with `__KEY__` tokens; that is exactly the rule
 the test applies, so the shell and the test cannot disagree about what a
 complete render is.
 
+Every argument after the output path names a binary whose own `--check-config`
+is run over the render — `mushd` for the all-in-one, `mush-gateway` **and**
+`mush-server` for the split. Nothing is installed until all of them pass: the
+render lands on `<out>.new` and is moved into place only when it is complete
+and preflighted, so a redeploy with a broken `instance.env` leaves the live
+config alone and starts nothing. A binary that is not built yet is skipped with
+a note (the first deploy of a box renders before it compiles).
+
 Ship **both** files to the box and keep them together —
 `/opt/rustmush/<name>/mushd.toml` beside `/opt/rustmush/<name>/instance.env`.
 `git archive HEAD` carries the template, never your edited `instance.env`, so
 the edited one is `scp`'d up alongside the config it produced; it is the input
 a re-render reads, and the file `scripts/reset-instance.sh` below is pointed at.
+(dev1 is the exception that proves the rule: its `instance.env` **is**
+committed, because it holds no secret and its one box-specific value —
+`EXTERNAL_IP=auto` — is resolved by its deploy script when it writes the
+installed copy.)
 
 `START_ROOM` / `START_ROOM_UNAPPROVED` name object ids that must EXIST in the
 world you boot. A fresh store seeds only Limbo `#0` and God `#1`, so `#2`/`#3`
 are the ids the instance's own seed — the rooms you dig before opening — will
 take, not rooms you get for free. Check them after first boot (`look #2`,
 `examine #3` as God) before letting anyone connect; WS25-S5 is where the seed
-grows those rooms itself.
+grows those rooms itself. A box that wants **no** gate at all renders `0` for
+both instead, with `CHARGEN_REQUIRED=false`: that is
+`mush_core::OnboardingConfig`'s documented all-default no-op, and it is the
+right answer on a box with no approval staff whose starter area hangs straight
+off Limbo (`#0` has the `ooc` exit into the OOC Area, and the Welcome Hall has
+the door into the Simulator Lobby). dev1 is that box.
 
-`crates/mush-config/tests/shipped_configs.rs` renders both shipped `instance.env`
-files on every build and asserts the sections are all there, the start rooms are
-not Limbo, `[ipc].listen` cannot be the store's port, and `mushd.toml.example`
-declares the same section set — so the shipped example and the shipped
-deployment cannot drift apart.
+`crates/mush-config/tests/shipped_configs.rs` renders every shipped
+`instance.env` on every build and asserts the sections are all there,
+`[ipc].listen` cannot be the store's port, each box's `[log].format` is the one
+it chose, each box's onboarding is the shape it chose, the rendered `[ssh]` and
+`[web]` listeners parse as addresses, and `mushd.toml.example` declares the same
+section set — so the shipped example and the shipped deployments cannot drift
+apart.
+
+Be precise about which gate holds dev1's `EXTERNAL_IP=auto`, because it is not
+that test. The test renders the way the DEPLOY does, marker already resolved to
+a documentation address, and then asserts no *other* value is the literal
+marker; what keeps the real box honest is the deploy script's
+`grep -q "^EXTERNAL_IP=$EXT_IP$"` over the file it just wrote (a committed env
+with no `EXTERNAL_IP=` line is a FATAL there, not a silent pass-through) and
+`render.sh`'s own refusal of a live `auto` in anything it rendered — which is
+the one that catches a hand re-render from the committed file, where no deploy
+script and no test is in the loop.
 
 Pick fresh ports per instance, and rename the units (`<name>mush.service`,
 `redis-<name>mush.service`) from `dev1/`'s.
 
 Each instance can run one of **two ways**:
 
-- **all-in-one `mushd`** (the default, `dev1/` + `dev2/`) — one process serving
-  SSH + the web client; a deploy = `systemctl restart`, which drops connections
-  briefly.
-- **split, hot-restartable** ([`dev1-split/`](dev1-split/), M16c/M16d) — a
+- **all-in-one `mushd`** (the default; what `dev2/` runs, and what `dev1/`'s own
+  `deploy.sh` still installs if you choose it) — one process serving SSH + the
+  web client; a deploy = `systemctl restart`, which drops connections briefly.
+- **split, hot-restartable** ([`dev1-split/`](dev1-split/), M16c/M16d — and what
+  dev1 actually runs) — a
   `mush-gateway` owns the SSH **and web** connections and supervises a
   `mush-server` child; a deploy = `systemctl reload` → SIGHUP, which restarts
   only the server child while **holding every SSH AND web connection** (players
@@ -94,6 +133,13 @@ is not enough for external reachability).
 
 The dev box is Windows with no git remote; ship the committed tree + the
 locally-built web bundle, build the release binary on the VPS, then configure.
+
+**dev1 runs the SPLIT shape**, so the walkthrough that matches the box as it
+stands is [`dev1-split/README.md`](dev1-split/README.md) — two binaries, one
+`dev1mush-gateway` unit, and a redeploy that holds connections. The all-in-one
+recipe below is the same instance run the other way; both render the same
+`mushd.toml` from the same `dev1/instance.env`, and you run one or the other,
+never both.
 
 ```bash
 VPS=root@conclav.io ; KEY=./hostinger
@@ -115,17 +161,38 @@ ssh -i $KEY $VPS 'bash /opt/rustmush/dev1/build/deploy/dev1/deploy.sh'
 
 ## Redeploy (new commit)
 
+**dev1 runs the split**, so this is the split's redeploy — two binaries, and
+`deploy/dev1-split/deploy.sh` rather than a bare `systemctl`:
+
 ```bash
 git archive HEAD | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build'
 npm --prefix web run build && tar -c -C web dist | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build/web'
-ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build && ~/.cargo/bin/cargo build --release -p mushd --features tls && systemctl restart dev1mush'
+ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build && ~/.cargo/bin/cargo build --release -p mush-gateway --features tls && ~/.cargo/bin/cargo build --release -p mush-server'
+ssh -i $KEY $VPS 'bash /opt/rustmush/dev1/build/deploy/dev1-split/deploy.sh'
 ```
+
+The deploy script is the redeploy because the config is rendered: it re-resolves
+the external IP, rewrites `instance.env`, **re-renders `mushd.toml`** from the
+shipped template and preflights it with both halves before it touches the unit,
+then `reload`s the already-running gateway — the hot restart that holds every
+SSH and web connection. `systemctl reload dev1mush-gateway` on its own is the
+faster form when nothing in the config or the template moved
+([`dev1-split/README.md`](dev1-split/README.md)).
+
+Do **not** reach for `systemctl restart dev1mush` here. That is the ALL-IN-ONE
+unit, which the split deploy disabled but left installed: starting it puts a
+second process on 6789/6790 that the gateway already holds, so it fails to bind
+and `Restart=on-failure` loops it every five seconds — and, because no deploy
+script ran, the config it would have run on was never re-rendered. On a box
+running the all-in-one instead (dev2's shape), the equivalent line is
+`cargo build --release -p mushd --features tls && bash …/deploy/dev1/deploy.sh`,
+which likewise re-renders before it restarts.
 
 ## Operate
 
 ```bash
-systemctl status dev1mush redis-dev1mush
-journalctl -u dev1mush -f
+systemctl status dev1mush-gateway redis-dev1mush
+journalctl -u dev1mush-gateway -f        # gateway + its server child share this journal
 redis-cli -p 6788 info keyspace          # prod data (NOT the dev 6379)
 ```
 
@@ -144,7 +211,7 @@ flushed; the data dir kept, so the quarantine spool and the key rings outlive
 the world they belonged to). It is scripted instead:
 
 ```bash
-sudo scripts/reset-instance.sh /opt/rustmush/dev3/instance.env --yes
+sudo scripts/reset-instance.sh /opt/rustmush/dev1/instance.env --yes
 ```
 
 It stops the instance's unit (either shape — `<name>mush.service` or the split
@@ -153,21 +220,46 @@ It stops the instance's unit (either shape — `<name>mush.service` or the split
 starts the unit again. The rendered `mushd.toml` is not touched: the config is
 the thing you keep. After a reset the world is a fresh seed — Limbo `#0` and God
 `#1` — so re-dig `START_ROOM` / `START_ROOM_UNAPPROVED` before letting anyone
-connect. The script READS `instance.env` with the same loop the render recipe
-uses; it never sources it.
+connect (on dev1 there is nothing to re-dig: both are `0`, and the starter area
+is re-applied on the next boot). The script READS `instance.env` with the same
+loop the render recipe uses; it never sources it.
 
-CI's `Instance provisioning acceptance` job renders the shipped instance with
-the recipe above, runs all three binaries' `--check-config` over what it
-produced, boots it against a throwaway store, and proves a typo'd
-`receipt_policy` is refused — so the templates cannot drift past the binaries
-that read them (`crates/mush-server/tests/provisioning_smoke.rs`).
+This needs an `instance.env` on the box, which is what a **rendered** instance
+has: dev1's deploy scripts write `/opt/rustmush/dev1/instance.env` every time
+they run, so the line above is the reset for dev1 as written. dev2 still ships a
+hand-written `mushd.toml` and has no `instance.env`, so it has no scripted
+reset until it is converted.
+
+**The first time**, the two steps are ordered: `deploy.sh` is what puts
+`instance.env` on the box, so it runs first, and the reset runs after it —
+
+```bash
+ssh -i $KEY $VPS 'bash /opt/rustmush/dev1/build/deploy/dev1-split/deploy.sh'
+ssh -i $KEY $VPS 'bash /opt/rustmush/dev1/build/scripts/reset-instance.sh \
+                    /opt/rustmush/dev1/instance.env --yes'
+```
+
+— which is the right order anyway on a box whose world predates the current
+build: the deploy comes up on the old store, the reset flushes it and restarts
+onto a fresh seed, and that fresh boot is the one that applies the starter area
+and the simulator's two packs together (see *A fresh store is the supported
+path* below).
+
+CI's `Instance provisioning acceptance` job renders every shipped instance with
+`deploy/instance/render.sh` — the script the deploy itself calls — runs all
+three binaries' `--check-config` over what it produced, boots the reference one
+against a throwaway store, and proves a typo'd `receipt_policy` is refused — so
+the templates cannot drift past the binaries that read them
+(`crates/mush-server/tests/provisioning_smoke.rs`).
 
 ## The simulator centre
 
-One key turns the simulator on: **`[tacsim].enabled`**. The rendered instance
-takes it from `TACSIM_ENABLED` in `instance.env`; `deploy/dev1` and
-`deploy/dev2` write it out as `true`; `mushd.toml.example` ships it `false`,
-which is the documented default.
+One key turns the simulator on: **`[tacsim].enabled`**. A rendered instance
+takes it from `TACSIM_ENABLED` in `instance.env`, which both
+[`instance/instance.env.example`](instance/instance.env.example) and
+[`dev1/instance.env`](dev1/instance.env) set to `true`; hand-written
+`deploy/dev2/mushd.toml` writes the key out as `true` directly;
+`mushd.toml.example` ships it `false`, which is the documented default.
 
 What the key decides is the *arena*, not the rooms. The centre's lobby, its two
 team rooms and its eight pods come with the starter area (`[game].starter_area`)

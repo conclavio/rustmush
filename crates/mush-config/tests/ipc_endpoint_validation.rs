@@ -162,8 +162,16 @@ fn a_unix_socket_endpoint_is_accepted_silently() {
     );
 }
 
-/// Parse a shipped deploy config the way `deploy.sh` installs it and run it
-/// through the same validation the binaries do.
+/// Parse a HAND-WRITTEN shipped deploy config the way `deploy.sh` installs it
+/// and run it through the same validation the binaries do.
+///
+/// 16b cut F.5: dev1 no longer has one. It renders
+/// `deploy/instance/mushd.toml.tmpl` from `deploy/dev1/instance.env`, and the
+/// same claim about its boundary is made over the RENDERED config by
+/// `shipped_configs.rs::the_template_never_points_the_boundary_at_the_store`,
+/// which is where every rendered instance is held to it. dev2 is the one box
+/// left with a file somebody typed, and it is the one that motivated this test
+/// in the first place (its own Redis is on the unset default's 6791).
 fn validate_shipped(instance: &str) {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -212,8 +220,7 @@ fn explain_refusal(instance: &str, cfg: &Config, e: &ConfigError) {
 }
 
 #[test]
-fn the_shipped_dev1_and_dev2_configs_validate() {
+fn the_shipped_hand_written_config_validates() {
     let _serial = serialized();
-    validate_shipped("dev1");
     validate_shipped("dev2");
 }

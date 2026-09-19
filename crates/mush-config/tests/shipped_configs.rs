@@ -1,10 +1,10 @@
 //! WS25-S3: the shipped instance template renders a WHOLE config, and the
 //! shipped example cannot drift away from it.
 //!
-//! The failure mode these prove is the quiet one. Neither deployed box
-//! (`deploy/dev1`, `deploy/dev2`) writes `[log]`, `[store.archive]`, `[offers]`,
-//! `[resolution]`, `[discord]`, `[economy]`, `[weather]`, `[worldgen]`,
-//! `[onboarding]` or `[npc]` — ten
+//! The failure mode these prove is the quiet one. A deployed box that predates
+//! the template (`deploy/dev2`) writes no `[log]`, `[store.archive]`,
+//! `[offers]`, `[resolution]`, `[discord]`, `[economy]`, `[weather]`,
+//! `[worldgen]`, `[onboarding]` or `[npc]` — ten
 //! sections — so each of those runs on a compiled-in default the operator never
 //! saw: no log files, no ledger archive tier, key directories nobody
 //! provisioned, and every character starting in Limbo `#0`. Nothing failed;
@@ -18,23 +18,33 @@
 //!   installing a config with `__START_ROOM__` in it;
 //! - `[ipc].listen` cannot be the port `[store].redis_url` already holds — the
 //!   WS08-S13 refusal, exercised over the real template rather than a fixture;
-//! - `[onboarding].start_room` is a seeded room, never `mush_core::LIMBO`;
+//! - each box's `[onboarding]` is the shape that box CHOSE, which is not the
+//!   same shape for all of them (see [`Onboarding`]);
+//! - the deploy-time `EXTERNAL_IP` marker is substituted before a render and is
+//!   in nothing after one — and, so that rule is not a check on itself, the
+//!   unresolved render really does produce listeners nothing can bind;
 //! - and `mushd.toml.example` declares exactly the template's section set, so a
 //!   section added to one and forgotten in the other is a red test.
 //!
-//! **16b cut F.4** adds the two dev boxes themselves. Nothing here read them
+//! **16b cut F.4** added the two dev boxes themselves. Nothing here read them
 //! before — the template's completeness was checked and the files an operator
 //! actually boots were not — so `[tacsim]` could go missing from both and every
-//! gate stayed green. They are parsed here now, and held to the arena's own
-//! blocks and to the switch that instantiates the simulator.
+//! gate stayed green.
+//!
+//! **16b cut F.5** moved dev1 off its hand-written config entirely: it renders
+//! the template from `deploy/dev1/instance.env` like any other instance, and so
+//! it joins [`SHIPPED`] rather than the hand-written list. dev2 is the one box
+//! still on a file of its own, and it is still parsed here and still held to the
+//! arena's blocks and to the switch that instantiates the simulator.
 
 use std::collections::BTreeSet;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use mush_config::config::{Config, ConfigError};
+use mush_config::config::{Config, ConfigError, LogFormat};
 
-/// The ten sections absent from both boxes this template exists to fix.
+/// The ten sections absent from the box this template exists to fix.
 /// `[tacsim.recovery]` rides along as the sub-block `[tacsim]` gained after
 /// those boxes were written, and which `mushd.toml.example` had already drifted
 /// past; `[tacsim.economy]` and the eight combat blocks of 16b cut G are later
@@ -69,6 +79,74 @@ const REQUIRED_SECTIONS: &[&str] = &[
     "tacsim.harness",
 ];
 
+/// What a box's `[onboarding]` block is FOR. The shipped instances deliberately
+/// differ here, so "the start rooms are not Limbo" cannot be one rule for all of
+/// them — it is the REFERENCE instance's rule, and a box with the other shape
+/// gets the assertion that matches its own design instead.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Onboarding {
+    /// The reference instance: chargen is gated behind staff approval, and the
+    /// two start rooms are rooms the operator digs before opening. Neither may
+    /// be Limbo — the bootstrap room seeded beside God, reserved from housing,
+    /// and not a place to open a game — and they may not be the same room, or
+    /// the gate holds unapproved characters nowhere.
+    Gated,
+    /// No gate at all: `chargen_required = false` with BOTH rooms Limbo. This
+    /// is not a half-configured `Gated` — it is `mush_core::OnboardingConfig`'s
+    /// all-default form, written up in `crates/mush-core/src/onboarding.rs` as
+    /// "the gate always passes, the hook never fires, the spawn move is a no-op,
+    /// and approval moves no one — exactly the pre-onboarding behaviour". It is
+    /// the right answer on a box with no approval staff whose starter area hangs
+    /// straight off Limbo, which is dev1.
+    Open,
+}
+
+/// One shipped `instance.env`, and the claims that are ITS rather than the
+/// template's. A knob a box is free to choose does not belong in a rule applied
+/// to every box; it belongs here, next to the box that chose it.
+struct ShippedInstance {
+    /// The env file, relative to the repository root.
+    env: &'static str,
+    /// The `[log].format` this box renders, and it must be one
+    /// `mush_config::config::LogCfg::format` actually knows: an unrecognised
+    /// value degrades to `pretty` with a line on stderr rather than refusing the
+    /// boot, so a typo here is a box that is not logging the way its operator
+    /// believes. `json` is for a box with a log shipper; `pretty` is for a box
+    /// whose operator reads `journalctl` by eye.
+    log_format: &'static str,
+    /// The onboarding shape this box chose.
+    onboarding: Onboarding,
+}
+
+/// The shipped parameterisations. 16b cut R-b: one game — the Shadowrun env left
+/// with its ruleset, and the disabled-`[tacsim]` branch it used to exercise is
+/// rendered by `mush-server`'s `provisioning_smoke` from the reference env with
+/// `TACSIM_ENABLED` overridden. 16b cut F.5 added dev1, the first DEPLOYED box
+/// to be a render rather than a hand-written file.
+const SHIPPED: &[ShippedInstance] = &[
+    ShippedInstance {
+        env: "deploy/instance/instance.env.example",
+        log_format: "json",
+        onboarding: Onboarding::Gated,
+    },
+    ShippedInstance {
+        env: "deploy/dev1/instance.env",
+        log_format: "pretty",
+        onboarding: Onboarding::Open,
+    },
+];
+
+/// The value `EXTERNAL_IP` carries in a committed `instance.env` that resolves
+/// its address at deploy time. It is a MARKER, not an address: both dev1 deploy
+/// scripts rewrite the whole line with the source IP of the box's default route
+/// before they render, because the box's address is not a fact about the
+/// repository and a committed address is one nobody notices has gone stale.
+const DEPLOY_TIME_MARKER: &str = "auto";
+
+/// What a test substitutes where the deploy substitutes the real address — RFC
+/// 5737 TEST-NET-3, which is documentation-only and routes nowhere.
+const DOCUMENTATION_IP: &str = "203.0.113.10";
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
@@ -94,9 +172,10 @@ fn declared_sections(text: &str) -> Vec<String> {
 }
 
 /// The part of a line the deploy's completeness check looks at: everything
-/// before the first `#`. `grep -n '^[^#]*__'` in deploy/README.md and in the
-/// template's own header IS this function; every placeholder rule below goes
-/// through it so the shell and the test cannot drift apart.
+/// before the first `#`. `grep -n '^[^#]*__'` in deploy/README.md, in the
+/// template's own header and in `deploy/instance/render.sh` IS this function;
+/// every placeholder rule below goes through it so the shell and the test cannot
+/// drift apart.
 fn live(line: &str) -> &str {
     line.split('#').next().unwrap_or("")
 }
@@ -121,12 +200,21 @@ fn render(template: &str, env: &[(String, String)]) -> String {
     out
 }
 
-/// Render `instance` and hand back the rendered text alongside the parsed
-/// config, having first proved the render was complete.
-fn rendered_instance(env_file: &str) -> (String, Config) {
+/// Render one shipped instance and hand back the rendered text alongside the
+/// parsed config, having first proved the render was complete.
+fn rendered_instance(instance: &ShippedInstance) -> (String, Config) {
     let root = repo_root();
+    let env_file = instance.env;
     let template = read(&root.join("deploy/instance/mushd.toml.tmpl"));
-    let env = parse_env(&read(&root.join("deploy/instance").join(env_file)));
+    let mut env = parse_env(&read(&root.join(env_file)));
+
+    // The deploy's own first step, in one line: the address is resolved into
+    // the installed copy of instance.env, and only then is anything rendered.
+    for (key, value) in &mut env {
+        if key == "EXTERNAL_IP" && value == DEPLOY_TIME_MARKER {
+            *value = DOCUMENTATION_IP.to_string();
+        }
+    }
     let text = render(&template, &env);
 
     // A key in the template with no line in instance.env would otherwise
@@ -146,6 +234,20 @@ fn rendered_instance(env_file: &str) -> (String, Config) {
         "{env_file} leaves placeholders unrendered: {leftovers:?}"
     );
 
+    // ...and the deploy-time marker is not a placeholder the grep above can
+    // see, so it gets its own rule. `auto` reaching a rendered config means
+    // `[ssh].listen = "auto:6789"`, which no preflight refuses — the symptom
+    // would be a box that comes up and answers on no port at all.
+    let stragglers: Vec<&str> = text
+        .lines()
+        .filter(|l| live(l).contains(DEPLOY_TIME_MARKER))
+        .collect();
+    assert!(
+        stragglers.is_empty(),
+        "{env_file}: the deploy-time marker {DEPLOY_TIME_MARKER:?} reached the \
+         rendered config: {stragglers:?}"
+    );
+
     // One directory per CALL, not per process: these tests run as parallel
     // threads in a single binary and three of them render the same env file, so
     // a path keyed only on the file name would have one thread deleting the
@@ -156,7 +258,7 @@ fn rendered_instance(env_file: &str) -> (String, Config) {
     static RENDER: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "mush-tmpl-{}-{}-{}",
-        env_file.replace('.', "_"),
+        env_file.replace(['/', '\\', '.'], "_"),
         std::process::id(),
         RENDER.fetch_add(1, Ordering::Relaxed)
     ));
@@ -176,16 +278,11 @@ fn rendered_instance(env_file: &str) -> (String, Config) {
     (text, cfg)
 }
 
-/// The shipped parameterisation. 16b cut R-b: one game, one env — the Shadowrun
-/// env left with its ruleset, and the disabled-`[tacsim]` branch it used to
-/// exercise is rendered by `mush-server`'s `provisioning_smoke` from this one env
-/// with `TACSIM_ENABLED` overridden.
-const SHIPPED_ENVS: &[&str] = &["instance.env.example"];
-
 #[test]
 fn the_template_declares_every_section_the_deployed_boxes_lack() {
-    for env_file in SHIPPED_ENVS {
-        let (text, cfg) = rendered_instance(env_file);
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let (text, cfg) = rendered_instance(instance);
         let declared: BTreeSet<String> = declared_sections(&text).into_iter().collect();
         for section in REQUIRED_SECTIONS {
             assert!(
@@ -204,10 +301,31 @@ fn the_template_declares_every_section_the_deployed_boxes_lack() {
             cfg.log.file,
             "{env_file}: [log].file must be on (rotated copies survive a volatile journal)"
         );
-        assert_eq!(cfg.log.format, "json", "{env_file}: [log].format");
         assert_ne!(
-            cfg.log.format, defaults.log.format,
+            cfg.log.file, defaults.log.file,
             "{env_file}: [log] is the default block again"
+        );
+        // The FORMAT is the box's to choose — `json` for a box with a log
+        // shipper, `pretty` for a box read by eye — so it is asserted against
+        // that box's declared choice rather than against one global value. What
+        // is NOT the box's to choose is whether the value means anything:
+        // `LogCfg::format` recognises exactly two strings and degrades anything
+        // else to `Pretty` with a line on stderr, which is a box logging in a
+        // format its operator did not pick.
+        assert_eq!(
+            cfg.log.format, instance.log_format,
+            "{env_file}: [log].format is not the format this box chose"
+        );
+        let intended = match instance.log_format {
+            "json" => LogFormat::Json,
+            "pretty" => LogFormat::Pretty,
+            other => panic!("{env_file}: {other:?} is not a format LogCfg::format knows"),
+        };
+        assert_eq!(
+            cfg.log.format(),
+            intended,
+            "{env_file}: [log].format does not survive LogCfg::format, so this \
+             box is logging in a format nobody chose"
         );
         assert!(
             cfg.store.archive.enabled,
@@ -259,10 +377,104 @@ fn the_template_declares_every_section_the_deployed_boxes_lack() {
     }
 }
 
+/// The listeners a rendered instance advertises are ADDRESSES. This is the
+/// other half of the deploy-time-marker rule: `rendered_instance` proves the
+/// marker is gone, and this proves what replaced it is something a socket can
+/// be bound to — neither `[ssh].listen` nor `[web].listen` is on any preflight
+/// list, so a bad one is found by a box that comes up serving nothing.
+#[test]
+fn the_rendered_listeners_are_addresses() {
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let (_, cfg) = rendered_instance(instance);
+        cfg.ssh
+            .listen
+            .parse::<SocketAddr>()
+            .unwrap_or_else(|e| panic!("{env_file}: [ssh].listen {:?}: {e}", cfg.ssh.listen));
+        let web = cfg
+            .web
+            .get("listen")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("{env_file}: [web].listen is missing"));
+        web.parse::<SocketAddr>()
+            .unwrap_or_else(|e| panic!("{env_file}: [web].listen {web:?}: {e}"));
+    }
+}
+
+/// The marker rule inside [`rendered_instance`] is a check on a substitution
+/// that has already happened, so on its own it can only ever say yes. This is
+/// the negative control for it: render a committed env VERBATIM — the way a
+/// hand re-render on the box does, with no deploy script resolving the line
+/// first — and watch `auto` land in the listeners.
+///
+/// What that proves is why the marker is guarded in three places and not one.
+/// `[ssh].listen` and `[web].listen` are on no `--check-config` list, so the
+/// unresolved render passes every preflight and installs a box that comes up
+/// and answers on no port. The gates that actually stop it are the deploy
+/// scripts' `grep -q "^EXTERNAL_IP=$EXT_IP$"` over the env they just wrote and
+/// `deploy/instance/render.sh`'s refusal of a live `auto` in what it rendered;
+/// this test is what stops the marker quietly ceasing to be load-bearing (an
+/// `EXTERNAL_IP` that stopped feeding the listeners would make all three checks
+/// vacuous and nothing else would notice).
+#[test]
+fn the_unresolved_deploy_time_marker_reaches_the_listeners() {
+    let root = repo_root();
+    let template = read(&root.join("deploy/instance/mushd.toml.tmpl"));
+    let mut boxes_with_a_marker = 0;
+
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let env = parse_env(&read(&root.join(env_file)));
+        if !env
+            .iter()
+            .any(|(k, v)| k == "EXTERNAL_IP" && v == DEPLOY_TIME_MARKER)
+        {
+            continue;
+        }
+        boxes_with_a_marker += 1;
+
+        let text = render(&template, &env);
+        let listeners: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| live(l).contains(DEPLOY_TIME_MARKER))
+            .filter(|l| live(l).trim_start().starts_with("listen"))
+            .collect();
+        assert!(
+            listeners.len() >= 2,
+            "{env_file}: rendering the committed env unresolved should put \
+             {DEPLOY_TIME_MARKER:?} in both listeners, so that the deploy's \
+             substitution and render.sh's refusal have something to be about; \
+             it put it in {listeners:?}"
+        );
+        for listener in listeners {
+            let value = listener
+                .split_once('=')
+                .expect("a listen line is a key = value")
+                .1
+                .trim()
+                .trim_matches('"');
+            assert!(
+                value.parse::<SocketAddr>().is_err(),
+                "{env_file}: {value:?} binds, so the marker is an address after \
+                 all and this control proves nothing"
+            );
+        }
+    }
+
+    assert!(
+        boxes_with_a_marker > 0,
+        "no shipped instance.env carries EXTERNAL_IP={DEPLOY_TIME_MARKER:?} any \
+         more, so the marker rule in rendered_instance guards nothing — drop it \
+         with this test or restore the box that used it"
+    );
+}
+
 #[test]
 fn the_template_never_points_the_boundary_at_the_store() {
-    for env_file in SHIPPED_ENVS {
-        let (_, cfg) = rendered_instance(env_file);
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let (_, cfg) = rendered_instance(instance);
 
         // The shipped form is a per-instance Unix socket, which has no port to
         // collide with at all. Off Unix that path cannot even parse, and that
@@ -302,28 +514,72 @@ fn the_template_never_points_the_boundary_at_the_store() {
     }
 }
 
+/// Each box starts characters where it MEANT to, which is not the same place on
+/// every box.
+///
+/// The reference instance gates chargen and starts characters in two dug rooms,
+/// and for it "not Limbo" is the rule: Limbo is the bootstrap room seeded beside
+/// God, reserved from housing, and not a place to open a game. dev1 (16b cut
+/// F.5) is deliberately the other shape — no gate, both rooms Limbo — which is
+/// NOT the rule waived but a different rule applied: that exact combination is
+/// `mush_core::OnboardingConfig`'s documented all-default no-op, and it is what
+/// a box with no approval staff wants when its starter area hangs straight off
+/// Limbo (`#0` carries the `ooc` exit into the OOC Area, whose Welcome Hall has
+/// the door into the Simulator Lobby). Asserting it here is what stops that
+/// choice decaying into a half-configured gate: a `chargen_required = true` on
+/// dev1 with both rooms still `0` would hold every new character in Limbo on
+/// the chargen command set with nobody to approve them, and no other gate reads
+/// these keys.
 #[test]
-fn the_template_starts_characters_in_a_seeded_room_not_limbo() {
-    for env_file in SHIPPED_ENVS {
-        let (_, cfg) = rendered_instance(env_file);
-        assert_ne!(
-            cfg.onboarding.start_room_id(),
-            mush_core::LIMBO,
-            "{env_file}: [onboarding].start_room is Limbo — the bootstrap room \
-             seeded beside God, reserved from housing, and not a place to open \
-             a game"
-        );
-        assert_ne!(
-            cfg.onboarding.start_room_unapproved_id(),
-            mush_core::LIMBO,
-            "{env_file}: [onboarding].start_room_unapproved falls back to Limbo"
-        );
-        assert_ne!(
-            cfg.onboarding.start_room_unapproved_id(),
-            cfg.onboarding.start_room_id(),
-            "{env_file}: the chargen area and the live start room are the same \
-             room, so the gate holds unapproved characters nowhere"
-        );
+fn the_shipped_instances_start_characters_where_they_meant_to() {
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let (_, cfg) = rendered_instance(instance);
+        match instance.onboarding {
+            Onboarding::Gated => {
+                assert!(
+                    cfg.onboarding.chargen_required,
+                    "{env_file}: a gated instance must actually gate"
+                );
+                assert_ne!(
+                    cfg.onboarding.start_room_id(),
+                    mush_core::LIMBO,
+                    "{env_file}: [onboarding].start_room is Limbo — the bootstrap room \
+                     seeded beside God, reserved from housing, and not a place to open \
+                     a game"
+                );
+                assert_ne!(
+                    cfg.onboarding.start_room_unapproved_id(),
+                    mush_core::LIMBO,
+                    "{env_file}: [onboarding].start_room_unapproved falls back to Limbo"
+                );
+                assert_ne!(
+                    cfg.onboarding.start_room_unapproved_id(),
+                    cfg.onboarding.start_room_id(),
+                    "{env_file}: the chargen area and the live start room are the same \
+                     room, so the gate holds unapproved characters nowhere"
+                );
+            }
+            Onboarding::Open => {
+                assert!(
+                    !cfg.onboarding.chargen_required,
+                    "{env_file}: both start rooms are Limbo, so a gate here holds new \
+                     characters in the bootstrap room with nobody to approve them"
+                );
+                assert_eq!(
+                    cfg.onboarding.start_room_id(),
+                    mush_core::LIMBO,
+                    "{env_file}: an ungated box names Limbo deliberately; any other id \
+                     is a room this world does not seed"
+                );
+                assert_eq!(
+                    cfg.onboarding.start_room_unapproved_id(),
+                    mush_core::LIMBO,
+                    "{env_file}: the unapproved room must be Limbo too — the all-default \
+                     no-op is both rooms, not one"
+                );
+            }
+        }
     }
 }
 
@@ -385,8 +641,9 @@ fn every_template_placeholder_is_a_shipped_instance_env_key() {
     }
     assert!(!used.is_empty(), "the template is not parameterised at all");
 
-    for env_file in SHIPPED_ENVS {
-        let env = parse_env(&read(&root.join("deploy/instance").join(env_file)));
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let env = parse_env(&read(&root.join(env_file)));
         let keys: BTreeSet<String> = env.into_iter().map(|(k, _)| k).collect();
         let missing: Vec<_> = used.difference(&keys).collect();
         let unused: Vec<_> = keys.difference(&used).collect();
@@ -402,14 +659,16 @@ fn every_template_placeholder_is_a_shipped_instance_env_key() {
 }
 
 // ---------------------------------------------------------------------------
-// The two dev boxes (16b cut F.4)
+// The hand-written dev box (16b cut F.4; narrowed to dev2 by 16b cut F.5)
 // ---------------------------------------------------------------------------
 
-/// The deployed configurations nothing in this file used to read.
-const DEV_BOXES: &[&str] = &["deploy/dev1/mushd.toml", "deploy/dev2/mushd.toml"];
+/// The deployed configuration nothing in this file used to read. dev1 left this
+/// list when it became a render (16b cut F.5) and is covered by [`SHIPPED`]
+/// above; dev2 is the one box still booting a file somebody typed.
+const HAND_WRITTEN_BOXES: &[&str] = &["deploy/dev2/mushd.toml"];
 
-/// **The boxes an operator actually boots parse, carry the combat arena's own
-/// blocks, and have the simulator switched on** (16b cut F.4).
+/// **The box an operator actually boots parses, carries the combat arena's own
+/// blocks, and has the simulator switched on** (16b cut F.4).
 ///
 /// The readiness review of 2026-09-18 booted `deploy/dev1` and found the
 /// simulator missing: the file wrote all five dotted `[tacsim.*]` blocks and no
@@ -417,20 +676,20 @@ const DEV_BOXES: &[&str] = &["deploy/dev1/mushd.toml", "deploy/dev2/mushd.toml"]
 /// tanks were never applied, and the first symptom was `SIM START` refusing.
 /// Every gate was green, because no gate read these files.
 #[test]
-fn the_dev_boxes_parse_and_run_the_simulator() {
+fn the_hand_written_dev_box_parses_and_runs_the_simulator() {
     let root = repo_root();
-    for relative in DEV_BOXES {
+    for relative in HAND_WRITTEN_BOXES {
         let path = root.join(relative);
         let text = read(&path);
         let declared: BTreeSet<String> = declared_sections(&text).into_iter().collect();
         // The arena's blocks, doc 16 §7's Configuration paragraph: "the example,
         // the instance template and both dev deployment files". The other
-        // required sections are deliberately absent from these boxes (see the
+        // required sections are deliberately absent from this box (see the
         // module head); only the `[tacsim]` family is asserted here.
         for section in REQUIRED_SECTIONS
             .iter()
             .filter(|section| section.starts_with("tacsim"))
-            // `[tacsim.recovery]` and `[tacsim.economy]` postdate both boxes and
+            // `[tacsim.recovery]` and `[tacsim.economy]` postdate the box and
             // are the template's business; the arena's are the game's numbers.
             .filter(|section| !matches!(**section, "tacsim.recovery" | "tacsim.economy"))
         {
