@@ -4,7 +4,7 @@
 //! Everything cut T.2 claims about the world side is a claim about the *loop*:
 //! that the arena's egress is drained once per iteration without blocking, that
 //! each message re-enters as a world command with a `Ctx`, that a frame leaves as
-//! a `tacsim.frame` keyframe through the loop's ordinary output path addressed as
+//! an `arena.cockpit` keyframe through the loop's ordinary output path addressed as
 //! `SendTarget::Char`, and that a chunk lands in `log:match.<id>` under the
 //! tacsim module's own namespace with its acknowledgement going back to the arena.
 //! None of that can be shown by calling a function: it is shown by starting the
@@ -70,7 +70,7 @@ struct RecordingGateway {
 }
 
 impl RecordingGateway {
-    /// Every `tacsim.frame` keyframe, with the target it went to.
+    /// Every `arena.cockpit` keyframe, with the target it went to.
     fn frames(&self) -> Vec<(SendTarget, serde_json::Value)> {
         self.sent
             .lock()
@@ -396,7 +396,7 @@ async fn a_running_arenas_frames_reach_its_pilot_and_its_chunks_land_in_the_matc
         "the match is in the shared table"
     );
 
-    // ---- (a) the frames reach the pilot as `tacsim.frame` keyframes ----
+    // ---- (a) the frames reach the pilot as `arena.cockpit` keyframes ----
     until(Duration::from_secs(5), "a cockpit frame", || {
         !gateway.frames().is_empty()
     })

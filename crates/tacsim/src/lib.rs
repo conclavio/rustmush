@@ -90,7 +90,7 @@ pub mod arena;
 /// The registry of running matches, the three routing functions the cockpit verbs
 /// call ([`arena_bridge::forward_intent`], [`arena_bridge::send_control`],
 /// [`arena_bridge::send_stop`]), and the handling of everything the arena sends
-/// back: frames as keyframes on the `tacsim.frame` feed, chunks appended to
+/// back: frames as keyframes on the `arena.cockpit` feed, chunks appended to
 /// `log:match.<id>` on the world's own writer lane, the lag notice and the end.
 pub mod arena_bridge;
 /// 16b cut T.2: **one running match, as a task** (doc 16 §3.1 "The arena core is
@@ -432,7 +432,9 @@ impl GameModule for TacsimRuleset {
         for descriptor in &catalog.descriptors {
             reg.definition(descriptor.clone())?;
         }
-        // 16b cut T.2: the arena's world side — the `tacsim.frame` feed, the
+        // 16b cut T.2: the arena's world side — the `arena.cockpit` and
+        // `arena.map` feeds (16b cut Q.3 named the first for doc 16 and added the
+        // second), the
         // egress re-entry handler, the two seat facts the kernel publishes, the
         // `ArenaRegistry` slot and `@arena`. Registered unconditionally, for the
         // same reason the pack verbs are (E5c deviation 1): a disabled layer

@@ -54,7 +54,7 @@ use futures::{SinkExt, StreamExt};
 use mush_core::module::GameModule;
 use mush_core::{Engine, GOD, LIMBO, ObjId, ObjKind};
 use mush_llm::{LlmProvider, LlmService, MockProvider};
-use mush_proto::{ClientCommand, Envelope, OutputEvent};
+use mush_proto::{ClientCommand, Envelope, OutputEvent, Query};
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
 use mush_testkit::text_of;
@@ -540,6 +540,103 @@ async fn look_web(ws: &mut Ws) -> String {
         }
     }
     panic!("the web client never answered the sentinel")
+}
+
+// ---------------------------------------------------------------------------
+// The two arena feeds, as a structured client sees them (16b cut Q.3)
+// ---------------------------------------------------------------------------
+
+/// The cockpit feed, as doc 16 §5 names it. Spelled out rather than imported,
+/// for the reason [`NO_SUCH_CONTACT`] is: this is a test over a real wire.
+const COCKPIT_FEED: &str = "arena.cockpit";
+/// The terrain feed, which is only ever the answer to a query.
+const MAP_FEED: &str = "arena.map";
+
+/// What either feed answers somebody who is not flying.
+fn unseated(feed: &str) -> Value {
+    match feed {
+        MAP_FEED => json!({
+            "schema": {
+                "id": "arena.map",
+                "version": 1,
+                "shape": "terrain",
+                "retain": "latest",
+            },
+            "seated": false,
+        }),
+        _ => json!({
+            "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+            "seated": false,
+        }),
+    }
+}
+
+/// One `PanelSubscribe` over a real socket, answered by the registered query
+/// handler and correlated by `id`.
+async fn panel_query(ws: &mut Ws, id: u64, feed: &str) -> Value {
+    let request = ClientCommand::Req {
+        id,
+        q: Query::PanelSubscribe { feed: feed.into() },
+    };
+    ws.send(Message::Text(
+        serde_json::to_string(&request)
+            .expect("a request encodes")
+            .into(),
+    ))
+    .await
+    .expect("the socket takes a request");
+    for _ in 0..400 {
+        let env = recv_env(ws).await;
+        let OutputEvent::Reply {
+            id: answered,
+            event,
+        } = &env.event
+        else {
+            continue;
+        };
+        if *answered != id {
+            continue;
+        }
+        match event.as_ref() {
+            OutputEvent::Panel {
+                feed: answered_feed,
+                data,
+                ..
+            } => {
+                assert_eq!(answered_feed.as_str(), feed, "answered on its own feed");
+                return data.clone();
+            }
+            other => panic!("a {feed} subscribe must answer a keyframe, got {other:?}"),
+        }
+    }
+    panic!("no reply {id} for {feed}")
+}
+
+/// The next `arena.cockpit` keyframe this socket is **pushed**, which is the
+/// per-pulse frame the arena builds for this pilot.
+///
+/// The app-level keepalive is answered along the way: this is the one reader in
+/// the file that may wait longer than `ping_interval_ms` without the test
+/// sending anything, and an unanswered ping closes the socket.
+async fn pushed_cockpit(ws: &mut Ws) -> Value {
+    for _ in 0..600 {
+        let env = recv_env(ws).await;
+        match &env.event {
+            OutputEvent::Panel { feed, data, .. } if feed.as_str() == COCKPIT_FEED => {
+                return data.clone();
+            }
+            OutputEvent::Ping { nonce } => {
+                let pong = ClientCommand::Pong { nonce: *nonce };
+                ws.send(Message::Text(
+                    serde_json::to_string(&pong).expect("a pong encodes").into(),
+                ))
+                .await
+                .expect("the socket takes a pong");
+            }
+            _ => {}
+        }
+    }
+    panic!("the arena never pushed a cockpit frame")
 }
 
 /// Open a web session for an existing account and drain its entry stream.
@@ -1314,6 +1411,205 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
 // The shooting (16b cut W.3)
 // ---------------------------------------------------------------------------
 
+/// **The two arena feeds are the observer rule too** (16b cut Q.3; doc 16 §5).
+///
+/// Cut Q.3 gave the cockpit a second feed and a pull, and a panel client reads
+/// the *payload* rather than the sentence a terminal prints — so the assertions
+/// the rest of this file makes about text have to be made about JSON as well,
+/// over the real composition, through a real socket.
+///
+/// Three witnesses, each asked the same two questions:
+///
+/// | witness | seat | what they may have |
+/// |---|---|---|
+/// | Ada | the pilot, before her sensors have found anything | her own tank, and nothing about Bo's |
+/// | Cy | a mortal bystander in the muster room | `seated: false` on both feeds |
+/// | God | a staffer, who is not flying either | `seated: false` on both feeds |
+///
+/// Ada's socket is a **second connection on her own session** — she is on SSH
+/// too — which is exactly how a player runs the web client beside a terminal, and
+/// is what lets the pushed per-pulse frame be captured at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn neither_arena_feed_tells_a_panel_client_about_a_unit_it_has_not_found() {
+    let server = boot("observer-feeds").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, _cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+
+    let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
+    close_the_gap(&mut god, red, blue, domain).await;
+
+    // Ada's panel client, beside her terminal, opened **before** she boards: the
+    // arena sends a frame when the numbers change, and a cold tank standing
+    // still changes nothing after the opening pulse, so a client that attached
+    // afterwards would wait for ever. (A real one asks — see the query below —
+    // which is the whole reason the resync handlers exist.)
+    let mut ada_web = web_session(&server, "ada", PILOT_PASSWORD, "Ada").await;
+    take_off(&mut ada, &mut bo).await;
+
+    // The two tanks are 70 cells apart and neither has moved, so nothing is held
+    // by anybody.
+    let cockpit = pushed_cockpit(&mut ada_web).await;
+    let map = panel_query(&mut ada_web, 601, MAP_FEED).await;
+
+    // (a) The pushed cockpit frame is her own tank and the scope it holds, which
+    // is nothing.
+    assert_eq!(
+        cockpit.get("contacts"),
+        Some(&json!([])),
+        "an empty scope, before detection: {cockpit}"
+    );
+    assert_eq!(
+        cockpit.get("callsign").and_then(Value::as_str),
+        Some("RA"),
+        "her own public name is hers to have: {cockpit}"
+    );
+    assert_eq!(
+        cockpit.get("unit").and_then(Value::as_u64),
+        Some(u64::from(red)),
+        "and her own tank's object number, which is her own tank: {cockpit}"
+    );
+
+    // (b) The map is the ground, whole, and names no unit at all — not even her.
+    assert!(
+        map.get("units").is_none(),
+        "the map carries no `units` key by construction: {map}"
+    );
+    assert!(
+        map.get("you").is_none(),
+        "nor the asker's own marker: {map}"
+    );
+    assert!(
+        map.get("rows")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| !rows.is_empty()),
+        "but it IS the ground: {map}"
+    );
+
+    // (c) Neither payload says one word about the tank she has not found: not
+    // its object number, not its name, not its pilot's name, not its callsign.
+    for (what, payload) in [("the cockpit frame", &cockpit), ("the map", &map)] {
+        let whole = payload.to_string();
+        names_nothing(&whole, red, blue, what);
+        no_sixteen_digit_word(&whole, what);
+        for leak in ["Bo", "\"BA\"", "Ada"] {
+            assert!(!whole.contains(leak), "{what} leaked {leak:?}:\n{whole}");
+        }
+    }
+    // `names_nothing` also refuses `#{red}` and `Red Tank 1`, so the two
+    // assertions above are the whole rule on these two surfaces: a frame names
+    // its own unit by the bare number it carries in `unit`, and never by a dbref
+    // or a name.
+
+    // (d) A mortal bystander and a staffer ask the same two questions and are
+    // told the one thing that is theirs: they are not flying. Nothing about the
+    // match, its ground, or whether one is running at all.
+    for (who, account) in [("the bystander", "cy"), ("the staffer", "boss")] {
+        let password = if account == "boss" {
+            GM_PASSWORD
+        } else {
+            PILOT_PASSWORD
+        };
+        let character = if account == "boss" { "God" } else { "Cy" };
+        let mut ws = web_session(&server, account, password, character).await;
+        assert_eq!(
+            panel_query(&mut ws, 610, MAP_FEED).await,
+            unseated(MAP_FEED),
+            "{who} asked for the map"
+        );
+        assert_eq!(
+            panel_query(&mut ws, 611, COCKPIT_FEED).await,
+            unseated(COCKPIT_FEED),
+            "{who} asked for the cockpit"
+        );
+    }
+}
+
+/// **The retain marker is one contract spelled in two crates** (16b cut Q.3).
+///
+/// The producer is `tacsim::match_::cockpit::RETAIN_LATEST` and the consumer is
+/// `mush_session::RETAIN_LATEST`; the game crate does not depend on the
+/// gateway's session manager, so the string — and the `schema.retain` path it
+/// sits at — is the whole of what ties them. Either suite alone stays green
+/// through a rename of its own constant, and production quietly stops
+/// coalescing: two keyframes a second put a 512-entry resume ring back to
+/// holding about four minutes of cockpit and nothing else.
+///
+/// `mushd` is a crate that sees both, so this is where they are held to each
+/// other — by the string, and by driving payloads the game really builds through
+/// a real [`SessionManager`] ring.
+#[test]
+fn the_retain_marker_the_arena_sends_is_the_one_the_session_ring_reads() {
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::time::Instant;
+
+    use mush_proto::{ClientCaps, ClientKind, ColorDepth, RichText};
+    use mush_session::{CharKey, ConnId, ConnectionHandle};
+
+    assert_eq!(
+        tacsim::match_::cockpit::RETAIN_LATEST,
+        mush_session::RETAIN_LATEST,
+        "the arena's marker and the ring's are one string"
+    );
+
+    let manager = SessionManager::with_config(SessionConfig::default());
+    let (tx, _rx) = tokio::sync::mpsc::channel(256);
+    let handle = ConnectionHandle::new_structured_at(
+        ConnId(1),
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        ClientCaps {
+            kind: ClientKind::Web,
+            color: ColorDepth::TrueColor,
+            width: 0,
+            height: 0,
+            utf8: true,
+            structured: true,
+        },
+        tx,
+        Instant::now(),
+    );
+    let (sess, _) = manager.attach(handle, CharKey(1), "ada".into());
+
+    // A line, then a hundred cockpit frames and a hundred maps — payloads the
+    // game's own builders produce, on the feeds it really sends them on — then
+    // another line.
+    let panel = |feed: &str, data: Value| OutputEvent::Panel {
+        feed: feed.into(),
+        kind: mush_proto::PanelFrameKind::Keyframe,
+        data,
+    };
+    manager.send_event_to_char(CharKey(1), OutputEvent::Sys(RichText::plain("before")));
+    for _ in 0..100 {
+        manager.send_event_to_char(
+            CharKey(1),
+            panel(COCKPIT_FEED, tacsim::match_::cockpit::cockpit_cleared()),
+        );
+        manager.send_event_to_char(
+            CharKey(1),
+            panel(MAP_FEED, tacsim::match_::cockpit::map_unseated()),
+        );
+    }
+    manager.send_event_to_char(CharKey(1), OutputEvent::Sys(RichText::plain("after")));
+
+    let ring = manager
+        .replay_since(sess, 0)
+        .expect("a coalesced ring is never TooOld");
+    let feeds: Vec<String> = ring
+        .iter()
+        .filter_map(|envelope| match &envelope.event {
+            OutputEvent::Panel { feed, .. } => Some(feed.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        feeds,
+        vec![COCKPIT_FEED.to_owned(), MAP_FEED.to_owned()],
+        "one survivor per feed, and the two lines untouched around them"
+    );
+    assert_eq!(ring.len(), 4, "the two lines are still in the ring");
+}
+
 /// The cells the two slot-1 tanks are re-posed to for the shooting case: **four
 /// cells apart** on the same road, both pointed east so the blue tank presents
 /// its rear.
@@ -1958,9 +2254,10 @@ fn tui_names_nothing(seen: &str, red: u32, blue: u32) {
 /// room, asked to `look` before the match and again while it runs.
 ///
 /// What this does **not** cover, and why: the TUI binds no screen to
-/// `tacsim.frame`, so there is no full-screen cockpit panel for this cut to assert
-/// about. The pilot's arena window on a terminal is `VIEW`'s line-rendered grid,
-/// which the test above asserts.
+/// `arena.cockpit`, so there is no full-screen cockpit panel for this cut to
+/// assert about (16b cut Q.4 builds one; 16b cut Q.3 only renamed the feed and
+/// added `arena.map` beside it). The pilot's arena window on a terminal is
+/// `VIEW`'s line-rendered grid, which the test above asserts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tui_witness_is_shown_the_tanks_and_then_nothing_about_the_two_in_the_match() {
     let server = boot("observer-tui").await;

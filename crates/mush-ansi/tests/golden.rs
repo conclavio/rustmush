@@ -1090,6 +1090,145 @@ fn the_printed_option_numbers_are_the_ones_respond_decodes() {
     assert!(!page.contains("  0  "), "{page}");
 }
 
+// -- the canonical cockpit fixtures (16b cut Q.3; doc 16 §5) -----------------
+//
+// One scene, three payloads, produced by `tacsim`'s pure builders and committed
+// under `web/src/lib/fixtures/cockpit/`. This side owns the LINE renderer's half
+// of doc 16 §5's parity claim: what the `grid`-shaped cockpit frame prints, and
+// that the other two print nothing at all.
+//
+// `view_grid.txt` is the twenty map rows of that print, north-up. It is what 16b
+// cut Q.4's (TUI) and Q.5's (web) compositions of `arena_map.json` +
+// `cockpit_frame.json` at exactly 78 by 20 must equal byte for byte — that
+// equality, and not three separate goldens, is what makes the three renderers
+// one renderer.
+//
+// Re-bless with `TACSIM_BLESS=1 cargo test -p mush-ansi --test golden`.
+
+/// The fixture directory, from this crate's manifest.
+fn fixture_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/src/lib/fixtures/cockpit")
+}
+
+/// One committed payload as a `Panel` keyframe on its own feed.
+fn fixture_panel(feed: &str, text: &str) -> OutputEvent {
+    OutputEvent::Panel {
+        feed: feed.into(),
+        kind: PanelFrameKind::Keyframe,
+        data: serde_json::from_str(text).expect("a committed fixture is JSON"),
+    }
+}
+
+/// The 78-by-20 print of the committed `view_frame.json`, with the map rows
+/// pinned as `view_grid.txt`.
+#[test]
+fn the_cockpit_window_fixture_prints_the_committed_grid() {
+    // Width 80 less the two-column margin is 78; height 24 less the four lines
+    // of chrome is 20 — the terminal `VIEW_COLUMNS` by `VIEW_ROWS` was sized for.
+    let view = fixture_panel(
+        "arena.cockpit",
+        include_str!("../../../web/src/lib/fixtures/cockpit/view_frame.json"),
+    );
+    let page = rendered_str(&view, ColorDepth::None, 80);
+    let lines: Vec<&str> = page.trim_end_matches("\r\n").split("\r\n").collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some("Arena window (fixture_yard, 1000 cm cells)"),
+        "{page}"
+    );
+    assert!(
+        lines.get(1).is_some_and(|l| l.starts_with("legend: ")),
+        "{page}"
+    );
+    assert_eq!(
+        lines.last().copied(),
+        // The extent is the WINDOW's own: `view_frame`'s `width`/`height` are
+        // the 78 by 20 it carved out of the 96 by 64 ground, and the origin says
+        // where in the arena it was carved from.
+        Some("x 0..77  y 0..19  of 78x20  you at (6, 4)"),
+        "the footer names the window and where the platform is: {page}"
+    );
+    // The map itself: the twenty rows immediately above the footer, north-up.
+    // Found from the footer rather than by counting from the top, because the
+    // legend is one line of frame data and the wrapper may give it two.
+    let footer = lines
+        .iter()
+        .rposition(|line| line.starts_with("x 0.."))
+        .expect("a footer");
+    let grid: String = lines
+        .iter()
+        .skip(footer.saturating_sub(20))
+        .take(20)
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(grid.lines().count(), 20, "twenty rows: {page}");
+    for row in grid.lines() {
+        assert_eq!(row.chars().count(), 78, "seventy-eight columns: {row:?}");
+    }
+    // The pilot's own marker, the hostile and the unknown on the building are
+    // all where the fixture put them — read off the printed page, because that
+    // is the thing the TUI and the web have to match.
+    let row_from_south = |y: usize| {
+        grid.lines()
+            .nth(19_usize.saturating_sub(y))
+            .expect("a row")
+            .chars()
+            .collect::<Vec<char>>()
+    };
+    assert_eq!(row_from_south(4).get(6).copied(), Some('@'));
+    assert_eq!(row_from_south(14).get(36).copied(), Some('x'));
+    assert_eq!(row_from_south(9).get(2).copied(), Some('+'));
+    assert_eq!(
+        row_from_south(7).get(14).copied(),
+        Some('?'),
+        "the unknown contact's marker beats the building it stands on"
+    );
+    assert_eq!(row_from_south(7).get(13).copied(), Some('#'));
+
+    let path = fixture_dir().join("view_grid.txt");
+    if std::env::var("TACSIM_BLESS").is_ok() {
+        std::fs::write(&path, &grid).expect("the fixture is writable");
+        return;
+    }
+    assert_eq!(
+        include_str!("../../../web/src/lib/fixtures/cockpit/view_grid.txt"),
+        grid,
+        "web/src/lib/fixtures/cockpit/view_grid.txt is out of date; re-bless with \
+         `TACSIM_BLESS=1 cargo test -p mush-ansi --test golden`"
+    );
+}
+
+/// **The line-client-unchanged proof** (16b cut Q.3): neither the per-pulse
+/// cockpit frame nor the whole-arena map prints one byte on a terminal.
+///
+/// The cockpit frame declares no shape at all, and the map declares `terrain`,
+/// which is not `grid` — so a pilot who never types `VIEW` is sent a keyframe
+/// twice a second and reads nothing, and a line client that somehow subscribed
+/// to `arena.map` would print nothing rather than 256 rows.
+#[test]
+fn the_cockpit_frame_and_the_arena_map_print_nothing_on_a_line_client() {
+    for (feed, text) in [
+        (
+            "arena.cockpit",
+            include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"),
+        ),
+        (
+            "arena.map",
+            include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json"),
+        ),
+    ] {
+        let panel = fixture_panel(feed, text);
+        for depth in [ColorDepth::None, ColorDepth::TrueColor] {
+            for width in [0_u16, 40, 80, 200] {
+                assert!(
+                    rendered(&panel, depth, width).is_empty(),
+                    "{feed} printed something at {depth:?}/{width}"
+                );
+            }
+        }
+    }
+}
+
 /// Look-back I3-C36: a room field carrying a newline used to forge a second
 /// fact row. `LineWriter::write` splits an embedded newline with `end_line()`
 /// at indent 0 — flush left, exactly where a fact LABEL sits — and room

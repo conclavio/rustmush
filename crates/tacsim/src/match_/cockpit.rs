@@ -66,7 +66,7 @@
 //! # Where the numbers come from
 //!
 //! The arena is the only thing that knows a tank's speed, heading, power or
-//! tempo, and it publishes them as the `tacsim.frame` keyframe cut T.2 opened.
+//! tempo, and it publishes them as the `arena.cockpit` keyframe cut T.2 opened.
 //! The world keeps the last one per pilot
 //! ([`crate::arena_bridge::ArenaRegistry::last_frame`]) and every read verb
 //! renders **that** — never a second model of the same fact. A pilot with no
@@ -83,6 +83,17 @@
 //! no per-feed code in either. The grid rides `VIEW` and not the pulse
 //! deliberately: a line client would otherwise be sent twenty rows of map twice a
 //! second.
+//!
+//! ## And a third, which is not a cockpit frame at all
+//!
+//! **16b cut Q.3** added [`map_frame`]: the whole arena's terrain on its own feed
+//! ([`crate::arena_bridge::MAP_FEED`]), carrying no unit of any kind. It is only
+//! ever the answer to a **query**, never pushed, so a line client is never sent
+//! it and a panel client asks for it once per match. A panel client that holds a
+//! map and a cockpit frame composes them itself; [`view_window`] is the same
+//! composition done server-side for `VIEW`, and the fixtures under
+//! `web/src/lib/fixtures/cockpit/` are the one set all three renderers are held
+//! to (doc 16 §5).
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -96,7 +107,7 @@ use crate::arena::damage;
 use crate::arena::intents::{ControlState, IntentKind};
 use crate::arena::motion::BlockedCause;
 use crate::arena::perception::{FrameNotice, NoticeKind, RefusalDetail};
-use crate::arena::state::{Channel, Classification, ContactId, Designator, Power};
+use crate::arena::state::{ArenaTerrain, Channel, Classification, ContactId, Designator, Power};
 use crate::arena::step::Frame;
 use crate::arena_bridge::{
     ArenaRegistry, CockpitFrame, FRAME_FEED, IntentRefusal, NOTICE_CATEGORY, forward_intent,
@@ -1715,7 +1726,7 @@ fn range(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
     let held = last_frame(ctx.w, actor);
     let (frame, row) = named_row(held.as_ref(), rest)?;
     let line = range_line(frame, &row, pass_ms(ctx.w));
-    say_and_frame(ctx, held.as_ref(), vec![line], false);
+    say_and_frame(ctx, held.as_ref(), vec![line]);
     Ok(())
 }
 
@@ -1756,7 +1767,7 @@ fn bearing(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
     let held = last_frame(ctx.w, actor);
     let (_, row) = named_row(held.as_ref(), rest)?;
     let line = bearing_line(&row, pass_ms(ctx.w));
-    say_and_frame(ctx, held.as_ref(), vec![line], false);
+    say_and_frame(ctx, held.as_ref(), vec![line]);
     Ok(())
 }
 
@@ -1788,7 +1799,7 @@ fn scan(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
     let held = last_frame(ctx.w, actor);
     let (frame, row) = named_row(held.as_ref(), rest)?;
     let lines = scan_lines(frame, &row);
-    say_and_frame(ctx, held.as_ref(), lines, false);
+    say_and_frame(ctx, held.as_ref(), lines);
     Ok(())
 }
 
@@ -2006,7 +2017,7 @@ fn contacts(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     for row in &rows {
         lines.push(row.render());
     }
-    say_and_frame(ctx, held.as_ref(), lines, false);
+    say_and_frame(ctx, held.as_ref(), lines);
     Ok(())
 }
 
@@ -2029,7 +2040,7 @@ fn weapon_status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
     for weapon in &weapons {
         lines.push(weapon.render());
     }
-    say_and_frame(ctx, held.as_ref(), lines, false);
+    say_and_frame(ctx, held.as_ref(), lines);
     Ok(())
 }
 
@@ -2087,7 +2098,7 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
             display_name(ctx.w, unit)
         )],
     };
-    say_and_frame(ctx, held.as_ref(), lines, false);
+    say_and_frame(ctx, held.as_ref(), lines);
     Ok(())
 }
 
@@ -2134,27 +2145,45 @@ pub fn section_lines(sections: &[crate::arena::step::FrameSection]) -> Vec<Strin
 }
 
 /// `VIEW` — the arena window, as the grid frame (doc 16 §3.6, §5).
+///
+/// **16b cut Q.3**: the panel goes first and the one line that may follow it
+/// comes after, because the line is *about* the map the pilot has just been
+/// shown ([`beyond_window_line`]).
 fn view(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     let actor = ctx.actor;
-    let held = last_frame(ctx.w, actor);
-    let lines = match held.as_ref() {
-        // The map is the frame's; a line client's renderer draws it. Nothing is
-        // said twice.
-        Some(_) => Vec::new(),
-        None => vec!["The window is dark: the panel has told you nothing yet.".to_owned()],
+    // The map is the frame's; a line client's renderer draws it. Nothing is said
+    // twice.
+    let Some(held) = last_frame(ctx.w, actor) else {
+        ctx.out.sys_to_actor(
+            actor,
+            NOTICE_CATEGORY,
+            "The window is dark: the panel has told you nothing yet.",
+        );
+        return Ok(());
     };
-    say_and_frame(ctx, held.as_ref(), lines, true);
+    let payload = view_frame(ctx, held.match_id, &held.frame);
+    let beyond = beyond_window_line(&held.frame, &payload);
+    ctx.out.push(
+        mush_core::Audience::Actor(actor),
+        OutputEvent::Panel {
+            feed: SmolStr::new_static(FRAME_FEED),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data: payload,
+        },
+    );
+    if let Some(line) = beyond {
+        ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
+    }
     Ok(())
 }
 
 /// Say what a read verb answers and push the frame it read (doc 16 §5: one feed,
 /// and the line renderer prints the frame).
-fn say_and_frame(
-    ctx: &mut Ctx<'_>,
-    held: Option<&CockpitFrame>,
-    lines: Vec<String>,
-    with_view: bool,
-) {
+///
+/// **16b cut Q.3** took the `with_view` flag off: `VIEW` is the one verb that
+/// pushes the grid, and it now owns its own order — the panel first, then the
+/// line it owes about what the panel could not fit.
+fn say_and_frame(ctx: &mut Ctx<'_>, held: Option<&CockpitFrame>, lines: Vec<String>) {
     let actor = ctx.actor;
     for line in lines {
         ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
@@ -2162,11 +2191,7 @@ fn say_and_frame(
     let Some(held) = held else {
         return;
     };
-    let payload = if with_view {
-        view_frame(ctx, held.match_id, &held.frame)
-    } else {
-        status_frame(held.match_id, &held.frame)
-    };
+    let payload = status_frame(held.match_id, &held.frame);
     ctx.out.push(
         mush_core::Audience::Actor(actor),
         OutputEvent::Panel {
@@ -2186,6 +2211,34 @@ pub const FRAME_SCHEMA: &str = "arena.cockpit";
 
 /// Its version. Cuts S and W add fields; a field added is not a version.
 pub const FRAME_VERSION: u32 = 1;
+
+/// **The terrain frame's schema id** (16b cut Q.3), carried on
+/// [`crate::arena_bridge::MAP_FEED`].
+pub const MAP_SCHEMA: &str = "arena.map";
+
+/// Its version. The map is terrain and an origin; a field added is not a
+/// version, exactly as [`FRAME_VERSION`]'s comment says of the cockpit frame.
+pub const MAP_VERSION: u32 = 1;
+
+/// **The terrain frame's shape** (16b cut Q.3).
+///
+/// Deliberately **not** `grid`: `mush_ansi::panel` renders a `grid` keyframe as
+/// twenty rows of text, and the whole arena is 256 by 256. A line client that
+/// somehow received one must print nothing, and a shape it does not know is how
+/// it does that.
+pub const MAP_SHAPE: &str = "terrain";
+
+/// **The `schema.retain` marker that makes a keyframe replace its own
+/// predecessors in a session's resume ring** (16b cut Q.3; the rule is
+/// implemented in `mush_session::SessionManager`, which cannot see this crate —
+/// the string is the contract).
+///
+/// Both arena feeds carry it, and so does [`view_frame`]'s replacement schema.
+/// Two keyframes a second of `Engaged` play would otherwise evict everything
+/// else from a 512-entry ring in about four minutes; every frame either feed
+/// sends is the whole state, so the older ones are not history and nothing is
+/// lost by dropping them.
+pub const RETAIN_LATEST: &str = "latest";
 
 /// **The cockpit keyframe** (doc 16 §5): where the tank is, how fast, which way,
 /// whether it is awake, whether it is held, how often it is being told things,
@@ -2369,7 +2422,9 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
             .map(|held| range_m_rounded(held.range_cm, LOCK_RANGE_STEP_M))
     });
     serde_json::json!({
-        "schema": { "id": FRAME_SCHEMA, "version": FRAME_VERSION },
+        // 16b cut Q.3: `retain` tells the session ring that this keyframe
+        // supersedes the ones before it on this feed (see [`RETAIN_LATEST`]).
+        "schema": { "id": FRAME_SCHEMA, "version": FRAME_VERSION, "retain": RETAIN_LATEST },
         "match": match_id.0,
         "unit": frame.unit.0,
         // 16b cut Q.1: the platform's own public name, and the arena cell it is
@@ -2407,38 +2462,20 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     })
 }
 
-/// **The cockpit keyframe with the window in it** — [`status_frame`] plus the
-/// `grid` shape `mush_ansi::panel` renders as a text map and the web draws as a
-/// map panel (doc 16 §5: *the ANSI line renderer prints the frame as text; the
-/// TUI and web render the same structure*).
+/// **One rectangle of terrain, run-length encoded** (16b cut Q.3), and the
+/// classes it actually carries in first-seen order.
 ///
-/// The window is [`VIEW_COLUMNS`] by [`VIEW_ROWS`] cells around the platform,
-/// clamped to the arena — the most a line client prints, so the renderer only
-/// has to clip it to a narrow terminal and never has to ask for more. One glyph
-/// per terrain class, from the atlas's own table, so the arena's map and the
-/// atlas's map read alike.
-#[must_use]
-pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json::Value {
-    let mut payload = status_frame(match_id, frame);
-    let Some(ground) = ctx
-        .w
-        .module_state::<ArenaRegistry>()
-        .and_then(|registry| registry.arena_of(match_id))
-    else {
-        return payload;
-    };
-    let terrain = &ground.terrain;
-    let Some((cx, cy)) = terrain.cell_of(&frame.pose) else {
-        return payload;
-    };
-    let width = VIEW_COLUMNS.min(terrain.width());
-    let height = VIEW_ROWS.min(terrain.height());
-    let x0 = cx
-        .saturating_sub(width / 2)
-        .min(terrain.width().saturating_sub(width));
-    let y0 = cy
-        .saturating_sub(height / 2)
-        .min(terrain.height().saturating_sub(height));
+/// Row `0` of the answer is the **south** edge (`y0`), which is what the grid
+/// shape means by `rows` and what [`map_frame`] and [`view_window`] both publish.
+/// One glyph per terrain class, from the atlas's own table, so the arena's map
+/// and the atlas's map read alike.
+fn terrain_rows(
+    terrain: &ArenaTerrain,
+    origin: (u16, u16),
+    size: (u16, u16),
+) -> (Vec<serde_json::Value>, Vec<mush_atlas::TerrainClass>) {
+    let (x0, y0) = origin;
+    let (width, height) = size;
     let mut rows: Vec<serde_json::Value> = Vec::with_capacity(usize::from(height));
     let mut classes: Vec<mush_atlas::TerrainClass> = Vec::new();
     for y in y0..y0.saturating_add(height) {
@@ -2467,6 +2504,178 @@ pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json
         }
         rows.push(serde_json::Value::Array(runs));
     }
+    (rows, classes)
+}
+
+/// **The whole arena's terrain, and nothing else** (16b cut Q.3; doc 16 §3.2,
+/// §3.6).
+///
+/// The knowledge rule it rests on is the cut Q design note's, and doc 16 §3.2
+/// and §3.6 are owed the sentence: *the proving ground is surveyed ground — its
+/// terrain is known to every pilot at check-out, its units are not*. Terrain
+/// names no unit, and `VIEW` has drawn ground behind hills since cut K.2.
+///
+/// There is no `units` key, no `you` key and nothing about any unit **by
+/// construction**: the whole observer rule on this surface is that the map is a
+/// fact about the ground. What moves goes on the cockpit frame, which is
+/// per-pilot and projected; a panel client draws the markers of
+/// [`status_frame`] over the rows of this one.
+///
+/// It is only ever the answer to a query
+/// ([`crate::arena_bridge::MAP_FEED`]'s handler) and is never pushed: it is the
+/// largest message the arena produces and a match's opening pulse is the least
+/// reliable moment to send one, because a full per-connection output queue drops
+/// an event silently and nothing retries. A client that holds a cockpit frame of
+/// match M and no map of M asks, and asks again until it has one.
+#[must_use]
+pub fn map_frame(match_id: MatchId, surface: &str, terrain: &ArenaTerrain) -> serde_json::Value {
+    let (rows, classes) = terrain_rows(terrain, (0, 0), (terrain.width(), terrain.height()));
+    let legend: Vec<serde_json::Value> = classes
+        .iter()
+        .map(|class| serde_json::json!([class.glyph().to_string(), class.label()]))
+        .collect();
+    serde_json::json!({
+        "schema": {
+            "id": MAP_SCHEMA,
+            "version": MAP_VERSION,
+            "shape": MAP_SHAPE,
+            "retain": RETAIN_LATEST,
+        },
+        "match": match_id.0,
+        "surface": surface,
+        "cell_cm": terrain.cell_cm(),
+        "width": terrain.width(),
+        "height": terrain.height(),
+        // Always the arena's own corner today. It is in the payload because it
+        // is what a windowed map would carry: doc 16 §11's 10 km path would
+        // answer a `window` parameter with a slice of the same shape, and a
+        // renderer written against this key keeps working when it does.
+        "origin_cell": [0, 0],
+        "rows": rows,
+        "legend": legend,
+    })
+}
+
+/// **The answer to an `arena.map` query from somebody who is not flying**
+/// (16b cut Q.3): the schema, and the one fact that is theirs to have.
+///
+/// Nothing about any match: not its id, not its ground, not whether one is
+/// running. A bystander, a staffer and a pilot who has typed `EXIT` read the
+/// same two keys.
+#[must_use]
+pub fn map_unseated() -> serde_json::Value {
+    serde_json::json!({
+        "schema": {
+            "id": MAP_SCHEMA,
+            "version": MAP_VERSION,
+            "shape": MAP_SHAPE,
+            "retain": RETAIN_LATEST,
+        },
+        "seated": false,
+    })
+}
+
+/// **The empty cockpit frame** (16b cut Q.3) — what a panel is sent when its
+/// pilot stops being one, and what an `arena.cockpit` query answers anybody who
+/// is not flying.
+///
+/// The bridge sends it once through the ordinary output path when a pilot is
+/// unbound (`EXIT`, a released seat, the match ending, a void). It prints
+/// nothing on a line client, because it declares no shape; a panel clears; and —
+/// because it carries [`RETAIN_LATEST`] like every frame before it — it is the
+/// one frame left in the session's resume ring, so a client that reconnects
+/// after the match does not resurrect a dead cockpit.
+#[must_use]
+pub fn cockpit_cleared() -> serde_json::Value {
+    serde_json::json!({
+        "schema": { "id": FRAME_SCHEMA, "version": FRAME_VERSION, "retain": RETAIN_LATEST },
+        "seated": false,
+    })
+}
+
+/// **The cockpit keyframe with the window in it** — [`status_frame`] plus the
+/// `grid` shape `mush_ansi::panel` renders as a text map and the web draws as a
+/// map panel (doc 16 §5: *the ANSI line renderer prints the frame as text; the
+/// TUI and web render the same structure*).
+///
+/// **16b cut Q.3** split the window itself out into [`view_window`], which is a
+/// pure function of a frame and a terrain: it is what the canonical fixtures
+/// call, and what makes the three renderers' compositions comparable. All this
+/// adds is the two things a window cannot know without a world — which ground
+/// the match is being fought over, and what the pilot's own tank is called.
+#[must_use]
+pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json::Value {
+    let payload = status_frame(match_id, frame);
+    let Some(ground) = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.arena_of(match_id))
+    else {
+        return payload;
+    };
+    let mut payload = view_window(payload, ground.id.as_str(), &ground.terrain, frame);
+    // The pilot's own tank's name, which is theirs to have and which a pure
+    // window has no world to ask for: [`view_window`] leaves the key out rather
+    // than inventing a value the live feed does not send, and this is the one
+    // place it is filled in. The whole payload is byte for byte what it was
+    // before cut Q.3 apart from `schema.retain`.
+    if let Some(you) = payload
+        .get_mut("units")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|units| units.first_mut())
+        .filter(|unit| unit.get("you").and_then(serde_json::Value::as_bool) == Some(true))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        you.insert(
+            "name".to_owned(),
+            serde_json::json!(display_name(ctx.w, frame.unit)),
+        );
+    }
+    payload
+}
+
+/// **The arena window, as a pure function of the frame and the ground** (16b cut
+/// Q.3).
+///
+/// `payload` is a [`status_frame`] this widens in place: the `schema` object is
+/// **replaced** by one carrying `shape: "grid"` — and [`RETAIN_LATEST`] with it,
+/// or a typed `VIEW` would re-create the ring flood one frame at a time — and
+/// the window's own keys are added beside the cockpit's.
+///
+/// The window is [`VIEW_COLUMNS`] by [`VIEW_ROWS`] cells around the platform,
+/// clamped to the arena: the most a line client prints, so the renderer only has
+/// to clip it to a narrow terminal and never has to ask for more. A pose off the
+/// window answers the payload untouched.
+///
+/// **The marker order is the rule every compositor follows**: the pilot's own
+/// marker first, then the contacts in frame order, a later marker overwriting an
+/// earlier one on the same cell (which is what `mush_ansi::panel::expand_rows`
+/// does with `units`, and what the TUI and the web must do too).
+///
+/// The own marker carries **no `name`**: a window has no world, and the name the
+/// live feed sends there is the tank's display name, which only [`view_frame`]
+/// can ask for. An absent key is honest; a callsign in its place would teach
+/// every renderer written against the fixtures a value the server never sends.
+#[must_use]
+pub fn view_window(
+    payload: serde_json::Value,
+    surface: &str,
+    terrain: &ArenaTerrain,
+    frame: &Frame,
+) -> serde_json::Value {
+    let mut payload = payload;
+    let Some((cx, cy)) = terrain.cell_of(&frame.pose) else {
+        return payload;
+    };
+    let width = VIEW_COLUMNS.min(terrain.width());
+    let height = VIEW_ROWS.min(terrain.height());
+    let x0 = cx
+        .saturating_sub(width / 2)
+        .min(terrain.width().saturating_sub(width));
+    let y0 = cy
+        .saturating_sub(height / 2)
+        .min(terrain.height().saturating_sub(height));
+    let (rows, classes) = terrain_rows(terrain, (x0, y0), (width, height));
     let mut legend: Vec<serde_json::Value> = classes
         .iter()
         .map(|class| serde_json::json!([class.glyph().to_string(), class.label()]))
@@ -2481,7 +2690,6 @@ pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json
     ];
     let mut units = vec![serde_json::json!({
         "id": format!("#{}", frame.unit.0),
-        "name": display_name(ctx.w, frame.unit),
         "cell": you,
         "glyph": YOU_GLYPH,
         "you": true,
@@ -2496,10 +2704,15 @@ pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json
     if let Some(object) = payload.as_object_mut() {
         object.insert(
             "schema".to_owned(),
-            serde_json::json!({ "id": FRAME_SCHEMA, "version": FRAME_VERSION, "shape": "grid" }),
+            serde_json::json!({
+                "id": FRAME_SCHEMA,
+                "version": FRAME_VERSION,
+                "shape": "grid",
+                "retain": RETAIN_LATEST,
+            }),
         );
         object.insert("title".to_owned(), serde_json::json!("Arena window"));
-        object.insert("surface".to_owned(), serde_json::json!(ground.id.as_str()));
+        object.insert("surface".to_owned(), serde_json::json!(surface));
         object.insert("width".to_owned(), serde_json::json!(width));
         object.insert("height".to_owned(), serde_json::json!(height));
         object.insert("cell_cm".to_owned(), serde_json::json!(terrain.cell_cm()));
@@ -2516,6 +2729,36 @@ pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json
         object.insert("you".to_owned(), serde_json::json!(you));
     }
     payload
+}
+
+/// **The one honest line `VIEW` owes a pilot whose scope is wider than their
+/// terminal** (16b cut Q.3; doc 16 §3.6).
+///
+/// A sensor reaches sixty cells every way and the line client's window is
+/// [`VIEW_COLUMNS`] by [`VIEW_ROWS`], because a terminal is eighty by
+/// twenty-four. A contact whose plot falls outside that window — or off the
+/// arena entirely, which is a plot with no cell — is on `CONTACTS` and not on
+/// the map, and the pilot is told so rather than left to conclude the scope is
+/// empty. `None` when every held contact is drawn.
+///
+/// `window` is the payload [`view_window`] just produced: its `units` are the
+/// markers that were drawn, so the count is the drawing's own and cannot drift
+/// from it. A payload with no window at all owes nothing.
+#[must_use]
+pub fn beyond_window_line(frame: &Frame, window: &serde_json::Value) -> Option<String> {
+    let drawn = window
+        .get("units")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .filter(|unit| unit.get("you").and_then(serde_json::Value::as_bool) != Some(true))
+        .count();
+    match frame.contacts.len().saturating_sub(drawn) {
+        0 => None,
+        1 => Some("1 contact plots beyond this window; CONTACTS lists it.".to_owned()),
+        many => Some(format!(
+            "{many} contacts plot beyond this window; CONTACTS lists them."
+        )),
+    }
 }
 
 /// **The contact markers a window carries, and the legend entries they earn**

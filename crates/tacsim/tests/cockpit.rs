@@ -103,6 +103,12 @@ struct Rig {
     pilots: Vec<ObjId>,
     egress: Option<tokio::sync::mpsc::Receiver<tacsim::arena_task::ArenaOut>>,
     now: i64,
+    /// **16b cut Q.3**: everything the rig has ever emitted, in order.
+    ///
+    /// Two of this cut's claims are about what was **never** sent — no
+    /// `arena.map` frame unasked, one cleared cockpit per pilot and not two —
+    /// and an absence can only be asserted against a whole record.
+    log: Vec<(Audience, OutputEvent)>,
 }
 
 impl Rig {
@@ -140,6 +146,7 @@ impl Rig {
             pilots: who,
             egress,
             now: 0,
+            log: Vec::new(),
         };
         // **The control-lease mirror.** `request_seat_activation` fails closed on
         // an unread one (`SeatError::ControlUnknown`), and the mirror is
@@ -179,12 +186,13 @@ impl Rig {
         if staged == 0 {
             return;
         }
-        self.tw.apply(mush_core::WorldCommand::ModuleAsyncDone {
+        let out = self.tw.apply(mush_core::WorldCommand::ModuleAsyncDone {
             module: smol_str::SmolStr::new_static(tacsim::arena_bridge::MODULE),
             actor: GOD,
             correlation: 0,
             payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
         });
+        self.log.extend(out);
         tasks.stamp_ledger_writes(1);
         tasks.ack_ledger_upto(1);
     }
@@ -195,13 +203,13 @@ impl Rig {
 
     fn say(&mut self, n: usize, line: &str) -> String {
         let actor = self.pilot(n);
-        let events = self.tw.run(actor, line);
+        let events = self.events_of(actor, line);
         self.tw.seen_by(&events, actor).join("\n")
     }
 
     /// Run one line as God (staff).
     fn staff(&mut self, line: &str) -> String {
-        let events = self.tw.run(GOD, line);
+        let events = self.events_of(GOD, line);
         self.tw.seen_by(&events, GOD).join("\n")
     }
 
@@ -209,7 +217,50 @@ impl Rig {
     /// a panel frame and not only at its text.
     fn events(&mut self, n: usize, line: &str) -> Vec<(Audience, OutputEvent)> {
         let actor = self.pilot(n);
-        self.tw.run(actor, line)
+        self.events_of(actor, line)
+    }
+
+    /// One line as `actor`, recorded into [`Rig::log`].
+    fn events_of(&mut self, actor: ObjId, line: &str) -> Vec<(Audience, OutputEvent)> {
+        let events = self.tw.run(actor, line);
+        self.log.extend(events.iter().cloned());
+        events
+    }
+
+    /// **16b cut Q.3**: every panel frame of `feed` the rig has ever emitted,
+    /// with the audience it went to.
+    fn panels(&self, feed: &str) -> Vec<(Audience, serde_json::Value)> {
+        self.log
+            .iter()
+            .filter_map(|(audience, event)| match event {
+                OutputEvent::Panel {
+                    feed: sent, data, ..
+                } if sent.as_str() == feed => Some((audience.clone(), data.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **16b cut Q.3**: one registered query, answered for `actor` exactly as
+    /// the engine's `Inbound::Query` handling answers it.
+    fn query(&self, actor: ObjId, feed: &str) -> serde_json::Value {
+        let (_owner, handler) = self
+            .tw
+            .registry()
+            .query_handler(feed)
+            .unwrap_or_else(|| panic!("{feed} has a registered query handler"));
+        match handler.query(self.tw.world(), actor, &serde_json::json!({})) {
+            Ok(OutputEvent::Panel {
+                feed: answered,
+                kind,
+                data,
+            }) => {
+                assert_eq!(answered.as_str(), feed, "answered on its own feed");
+                assert_eq!(kind, mush_proto::PanelFrameKind::Keyframe);
+                data
+            }
+            other => panic!("{feed} must answer a keyframe, got {other:?}"),
+        }
     }
 
     fn state(&self) -> MatchState {
@@ -237,6 +288,25 @@ impl Rig {
         self.tw.world().get(self.pilot(n)).and_then(|o| o.location)
     }
 
+    /// **Stand one unit on an arena cell** (16b cut Q.3), through the staff
+    /// placement verb the arena story opens with — the only way a test puts two
+    /// tanks inside each other's sensors without driving them there for ninety
+    /// seconds. The arena takes the placement at check-out, so it is done while
+    /// the centre is `Boarding`.
+    fn place(&mut self, unit: ObjId, cell: (i64, i64), heading_mdeg: u32) {
+        let domain = mush_sim::pose_of(self.tw.world(), unit)
+            .expect("the tank is placed on the proving ground")
+            .0;
+        let said = self.staff(&format!(
+            "@spatial/place/domain #{}={},{{\"x_cm\":{},\"y_cm\":{},\"heading_mdeg\":{heading_mdeg}}}",
+            unit.0,
+            domain.0,
+            cell.0 * 1_000 + 500,
+            cell.1 * 1_000 + 500
+        ));
+        assert!(said.contains("Placed"), "the placement was refused: {said}");
+    }
+
     /// Walk one pilot into the room `entry` names.
     fn walk_to(&mut self, n: usize, entry: &str) {
         let pilot = self.pilot(n);
@@ -250,7 +320,8 @@ impl Rig {
     fn tick_to(&mut self, seconds: i64) {
         self.now = seconds;
         self.tw.set_now(seconds);
-        self.tw.fire_due(seconds.saturating_mul(1_000));
+        let out = self.tw.fire_due(seconds.saturating_mul(1_000));
+        self.log.extend(out);
     }
 
     /// Two pilots, one a side, claimed, started and boarded — the state every
@@ -795,6 +866,107 @@ async fn the_window_is_centred_on_a_platform_the_arena_has_room_around() {
     );
 }
 
+/// **`VIEW`'s payload is what it always was, apart from `retain`** (16b cut
+/// Q.3).
+///
+/// The cut split the window out into the pure [`cockpit::view_window`] the
+/// fixtures call, and claimed the live surface did not move. That claim is two
+/// things, and both are pinned here:
+///
+/// * the live payload is [`cockpit::view_window`]'s, with **one** field added —
+///   the pilot's own tank's display name, which a window with no world cannot
+///   ask for and which [`cockpit::view_window`] therefore leaves out rather than
+///   filling with a callsign the server never sends;
+/// * the `schema` object is the pre-cut one plus `retain`, and nothing else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_live_window_is_the_pure_one_plus_the_tank_s_own_name() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let held = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.last_frame(rig.pilot(0)))
+        .cloned()
+        .expect("a frame");
+    let ground = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.arena_of(held.match_id))
+        .cloned()
+        .expect("the running match's ground");
+    let unit = held.frame.unit;
+    let name = mush_core::output::display_name(rig.tw.world(), unit);
+
+    let live = rig.with_ctx(0, |ctx| {
+        cockpit::view_frame(ctx, held.match_id, &held.frame)
+    });
+    let mut pure = cockpit::view_window(
+        cockpit::status_frame(held.match_id, &held.frame),
+        ground.id.as_str(),
+        &ground.terrain,
+        &held.frame,
+    );
+
+    // The pure window says nothing about what the tank is called, and the live
+    // one says the name it has always said — never the callsign.
+    let you = pure
+        .get("units")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|units| units.first())
+        .cloned()
+        .expect("the platform's own marker is first");
+    assert_eq!(
+        you.get("you").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        you.get("name").is_none(),
+        "a pure window invents no name: {you}"
+    );
+    let live_you = live
+        .get("units")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|units| units.first())
+        .cloned()
+        .expect("the live payload's own marker is first too");
+    assert_eq!(
+        live_you.get("name").and_then(serde_json::Value::as_str),
+        Some(name.as_str()),
+        "the live own marker carries the tank's display name: {live_you}"
+    );
+    assert_ne!(
+        live_you.get("name").and_then(serde_json::Value::as_str),
+        Some(held.frame.callsign.to_string().as_str()),
+        "and not the callsign the cockpit frame already carries"
+    );
+
+    // With that one field put back, the two payloads are the same payload.
+    if let Some(marker) = pure
+        .get_mut("units")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|units| units.first_mut())
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        marker.insert("name".to_owned(), serde_json::json!(name));
+    }
+    assert_eq!(live, pure, "the live window is the pure one, plus the name");
+
+    // And the schema is the one cut K.2 wrote, plus the marker the session ring
+    // reads — the whole of what this cut changed about what `VIEW` sends.
+    assert_eq!(
+        live.get("schema"),
+        Some(&serde_json::json!({
+            "id": "arena.cockpit",
+            "version": 1,
+            "shape": "grid",
+            "retain": "latest",
+        }))
+    );
+}
+
 // ---------------------------------------------------------------------------
 // (5) The reads, and the frame's shape
 // ---------------------------------------------------------------------------
@@ -1326,4 +1498,1055 @@ async fn the_team_room_a_pilot_boards_from_is_the_one_their_slot_is_on() {
     assert_eq!(rig.location(1), Some(blue));
     // Two pilots, two tanks, two sides.
     assert_ne!(rig.tank(0), rig.tank(1));
+}
+
+// ---------------------------------------------------------------------------
+// (10) The two feeds (16b cut Q.3; doc 16 §3.2, §5)
+// ---------------------------------------------------------------------------
+
+/// **The map is the answer to a question and nothing else.**
+///
+/// A seated pilot who asks gets the ground; a bystander, a staffer and a pilot
+/// who has typed `EXIT` get the same two keys, which say nothing about any
+/// match. And in a whole match nobody is ever *sent* one unasked — the one-shot
+/// push of the biggest message at the least reliable moment is exactly what this
+/// design refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_arena_map_is_pulled_by_a_seated_pilot_and_pushed_to_nobody() {
+    let mut rig = Rig::boot(3);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+
+    // (a) A seated pilot gets the whole ground.
+    let map = rig.query(rig.pilot(0), tacsim::arena_bridge::MAP_FEED);
+    assert_eq!(
+        map.get("schema").and_then(|s| s.get("id")),
+        Some(&serde_json::json!("arena.map"))
+    );
+    assert_eq!(
+        map.get("width").and_then(serde_json::Value::as_u64),
+        Some(u64::from(match_::ARENA_CELLS)),
+        "the whole arena and not a window: {map}"
+    );
+    assert_eq!(
+        map.get("cell_cm").and_then(serde_json::Value::as_u64),
+        Some(u64::from(match_::ARENA_CELL_CM))
+    );
+    assert!(map.get("units").is_none(), "no unit of any kind: {map}");
+    assert!(map.get("seated").is_none(), "a seated pilot is not told so");
+
+    // (b) A bystander in the lobby, and staff, get the unseated answer — which
+    // does not even say whether a match is running.
+    let unseated = cockpit::map_unseated();
+    assert_eq!(
+        rig.query(rig.pilot(2), tacsim::arena_bridge::MAP_FEED),
+        unseated,
+        "a bystander"
+    );
+    assert_eq!(
+        rig.query(GOD, tacsim::arena_bridge::MAP_FEED),
+        unseated,
+        "and staff, who are not flying either"
+    );
+
+    // (c) And a pilot who has left.
+    rig.say(0, "exit");
+    assert_eq!(
+        rig.query(rig.pilot(0), tacsim::arena_bridge::MAP_FEED),
+        unseated,
+        "the binding went with the seat, so the answer did too"
+    );
+
+    // (d) Nothing on that feed was ever pushed, to anybody, at any point.
+    assert!(
+        rig.panels(tacsim::arena_bridge::MAP_FEED).is_empty(),
+        "the map is pulled, never pushed: {:?}",
+        rig.panels(tacsim::arena_bridge::MAP_FEED)
+    );
+}
+
+/// The cockpit query answers the world's own mirror — the same frame `STATUS`
+/// and `CONTACTS` render — and answers anybody else the cleared frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_cockpit_query_answers_the_mirror_and_an_unseated_asker_nothing() {
+    let mut rig = Rig::boot(3);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+
+    let held = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.last_frame(rig.pilot(0)))
+        .cloned()
+        .expect("the mirror holds a frame");
+    let answered = rig.query(rig.pilot(0), tacsim::arena_bridge::FRAME_FEED);
+    assert_eq!(
+        answered,
+        cockpit::status_frame(held.match_id, &held.frame),
+        "the query is a re-render of the mirror and never a second model"
+    );
+    assert_eq!(
+        answered.get("notices"),
+        Some(&serde_json::json!([])),
+        "the mirror is stored with its notices cleared, so a resync says nothing twice"
+    );
+
+    let cleared = cockpit::cockpit_cleared();
+    assert_eq!(
+        rig.query(rig.pilot(2), tacsim::arena_bridge::FRAME_FEED),
+        cleared
+    );
+    assert_eq!(rig.query(GOD, tacsim::arena_bridge::FRAME_FEED), cleared);
+
+    // **And a pilot who has left is a bystander from the next line of code**,
+    // even though a pulse that was already staged when she typed `EXIT` is
+    // drained after it. Seated is the registry's binding and never the mirror: a
+    // query is answerable from the lobby at any time, and answering an ex-pilot
+    // out of a stale mirror would hand her a whole tank's contact list, locks,
+    // bearings and ranges.
+    rig.say(0, "exit");
+    for _ in 0..40 {
+        rig.pump();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        rig.query(rig.pilot(0), tacsim::arena_bridge::FRAME_FEED),
+        cleared,
+        "the binding went with the seat, so the answer did too"
+    );
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(rig.pilot(0)))
+            .is_none(),
+        "and no pulse in flight wrote the mirror again"
+    );
+}
+
+/// **The cleared cockpit**: one frame to the pilot who left, none to anybody
+/// else, and one to whoever is still aboard when the match ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pilot_who_stops_flying_is_sent_one_cleared_cockpit_and_nobody_else_is() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    assert!(rig.frame_for(1).await, "and one to the other pilot");
+
+    let cleared = cockpit::cockpit_cleared();
+    let count = |rig: &Rig, who: ObjId| {
+        rig.panels(tacsim::arena_bridge::FRAME_FEED)
+            .into_iter()
+            .filter(|(audience, data)| *audience == Audience::Actor(who) && *data == cleared)
+            .count()
+    };
+    assert_eq!(count(&rig, rig.pilot(0)), 0, "nothing cleared while flying");
+
+    // `EXIT` clears the leaver's panel, once — three channels release one seat,
+    // and only the first of them unbinds anybody.
+    let said = rig.say(0, "exit");
+    assert!(
+        said.contains("climb out"),
+        "the ordinary line is unchanged: {said}"
+    );
+    assert_eq!(count(&rig, rig.pilot(0)), 1, "exactly one, at the EXIT");
+    assert_eq!(
+        count(&rig, rig.pilot(1)),
+        0,
+        "and nothing at all to the pilot who is still in her tank"
+    );
+
+    // **And it stays cleared.** The arena drops her from its roster at the start
+    // of its next pulse, so a batch staged before the `EXIT` is drained after
+    // it; a live frame pushed then would be the LAST thing on her feed and —
+    // the retain marker being what it is — the only thing left in her session's
+    // ring to reconnect into.
+    let last_to = |rig: &Rig, who: ObjId| {
+        rig.panels(tacsim::arena_bridge::FRAME_FEED)
+            .into_iter()
+            .filter(|(audience, _)| *audience == Audience::Actor(who))
+            .map(|(_, data)| data)
+            .next_back()
+    };
+    for _ in 0..40 {
+        rig.pump();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        last_to(&rig, rig.pilot(0)),
+        Some(cleared.clone()),
+        "the last cockpit frame the leaver was sent is the cleared one"
+    );
+    assert_eq!(
+        count(&rig, rig.pilot(0)),
+        1,
+        "and still exactly one of them"
+    );
+
+    // The match ends: the pilot still aboard is cleared too, and the leaver is
+    // not cleared a second time.
+    rig.staff("@arena/abort");
+    for _ in 0..400 {
+        rig.pump();
+        if count(&rig, rig.pilot(1)) > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        count(&rig, rig.pilot(1)),
+        1,
+        "once, at the end of the match"
+    );
+    assert_eq!(
+        count(&rig, rig.pilot(0)),
+        1,
+        "and still only once for the leaver"
+    );
+}
+
+/// **What `VIEW` actually sends, in order** (16b cut Q.3; doc 16 §3.6).
+///
+/// The sentence itself is a pure function and is pinned as one below; this is
+/// the verb around it, which the pure test cannot see: that the panel goes
+/// **first** and the line after it (a pilot is not told about a map before being
+/// shown it), that the line rides the arena's own notice tag, and that it is the
+/// only thing this cut added to what a line client is sent.
+///
+/// The two tanks open 240 cells apart, so the scene is built: they are stood
+/// fourteen cells apart north-south, which is inside the stock sensor's sixty
+/// and outside the twenty rows a terminal has.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn view_follows_its_panel_with_the_line_about_what_the_window_could_not_fit() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    // Up the middle of the proving ground, on the road the two entry zones face
+    // each other along, and fourteen cells apart: past the ten rows the window
+    // has north of the platform, well inside the sixty cells a stock sensor
+    // reaches.
+    let middle = i64::from(match_::ARENA_CELLS / 2);
+    rig.place(rig.tank(0), (middle, middle), 0);
+    rig.place(rig.tank(1), (middle, middle + 14), 180_000);
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    let said = rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running, "{said}");
+    rig.say(0, "startup");
+    rig.say(1, "startup");
+    assert!(rig.powered(0).await, "the tank wakes up");
+
+    // Pump until the platform holds the other tank.
+    let mut held = 0;
+    for _ in 0..600 {
+        rig.pump();
+        held = rig
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(rig.pilot(0)))
+            .map_or(0, |frame| frame.frame.contacts.len());
+        if held > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(held, 1, "the platform holds the tank fourteen cells north");
+
+    let events = rig.events(0, "view");
+    let panel = events.iter().position(|(_, event)| {
+        matches!(event, OutputEvent::Panel { feed, data, .. }
+            if feed.as_str() == tacsim::arena_bridge::FRAME_FEED
+                && data.get("schema").and_then(|schema| schema.get("shape"))
+                    == Some(&serde_json::json!("grid")))
+    });
+    let beyond = "1 contact plots beyond this window; CONTACTS lists it.";
+    let line = events.iter().position(|(_, event)| {
+        matches!(event, OutputEvent::Sys(text)
+            if text.to_plain_text() == beyond
+                && text
+                    .spans()
+                    .iter()
+                    .any(|span| span.tag.as_deref() == Some("arena")))
+    });
+    let (Some(panel), Some(line)) = (panel, line) else {
+        panic!("VIEW owes a grid panel and the one line: {events:?}");
+    };
+    assert!(
+        panel < line,
+        "the panel goes first and the line about it after: {events:?}"
+    );
+    assert_eq!(
+        rig.tw
+            .seen_by(&events, rig.pilot(0))
+            .iter()
+            .filter(|said| said.as_str() == beyond)
+            .count(),
+        1,
+        "said once"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (11) The canonical fixtures (16b cut Q.3; doc 16 §5)
+// ---------------------------------------------------------------------------
+//
+// Doc 16 §5 asks for renderer parity, and three renderers each pinned to a
+// golden of its own is regression and not parity. So there is ONE scene, built
+// below by the three pure builders, written to `web/src/lib/fixtures/cockpit/`,
+// and read by everybody: Rust `include_str!`s it (as `mush-net-ssh`'s TUI reads
+// `run-allowlist.json`), vitest reads it natively, and there are no copies to
+// drift.
+//
+// The scene is deliberately awkward. The pilot stands near the SOUTH-WEST corner
+// so the window clamps on two edges at once; one contact stands on a building
+// cell inside the window; one plots outside it; one carries a reading and one
+// does not. `view_grid.txt` — pinned in `mush-ansi/tests/golden.rs` — is what a
+// line client draws of it, and it is what 16b cut Q.4's and Q.5's compositions of
+// `arena_map.json` + `cockpit_frame.json` at exactly 78 by 20 must equal byte for
+// byte. That equality, and not three separate goldens, is what makes the three
+// renderers one renderer.
+//
+// Re-bless with `TACSIM_BLESS=1 cargo test -p tacsim --test cockpit`.
+
+mod fixture {
+    use std::path::PathBuf;
+
+    use mush_atlas::TerrainClass;
+    use mush_core::ObjId;
+    use mush_sim::data::Pose;
+    use smol_str::SmolStr;
+    use tacsim::arena::clock::Tempo;
+    use tacsim::arena::condition::{Condition, ConditionBand};
+    use tacsim::arena::perception::{FrameCondition, FrameContact, FrameNotice, Named, NoticeKind};
+    use tacsim::arena::state::{
+        ArenaTerrain, Classification, ContactId, Designator, Power, Team, TerrainCell,
+    };
+    use tacsim::arena::step::{Frame, FrameFacet, FrameHeat, FrameSection};
+    use tacsim::arena::weapons::{FrameBand, FrameWeapon};
+    use tacsim::arena_task::MatchId;
+    use tacsim::match_::cockpit;
+
+    /// The env var that rewrites the fixtures instead of comparing against them.
+    pub const BLESS: &str = "TACSIM_BLESS";
+
+    /// The one match id the fixtures are stamped with.
+    pub const MATCH: MatchId = MatchId(7);
+
+    /// The synthetic ground's id, as the payloads' `surface` carries it.
+    pub const SURFACE: &str = "fixture_yard";
+
+    /// The ground is 96 by 64 cells of ten metres.
+    pub const WIDTH: u16 = 96;
+    /// As [`WIDTH`], up the ground.
+    pub const HEIGHT: u16 = 64;
+
+    /// The pilot's own unit.
+    const UNIT: ObjId = ObjId(101);
+
+    /// The pilot's cell, near the south-west corner: 78 by 20 around it clamps
+    /// to the arena's own west edge AND its own south edge.
+    const YOU: (u16, u16) = (6, 4);
+
+    /// The four contacts' row keys. Opaque and never printed; distinct and
+    /// ascending, because a frame's contact list is in contact-id order.
+    const HOSTILE: ContactId = ContactId(0x1111_1111_1111_1111);
+    const FRIEND: ContactId = ContactId(0x2222_2222_2222_2222);
+    const ON_A_ROOF: ContactId = ContactId(0x3333_3333_3333_3333);
+    const OFF_WINDOW: ContactId = ContactId(0x4444_4444_4444_4444);
+
+    /// The fixture ground: five terrain classes, a building block and a pond.
+    ///
+    /// NOT the shipped proving ground. A fixture built on shipped content would
+    /// move whenever the content did, and what these files pin is the *shape* of
+    /// a payload, not the ground the game happens to ship.
+    #[must_use]
+    pub fn terrain() -> ArenaTerrain {
+        let cell = |class: TerrainClass, move_cost: u16| TerrainCell {
+            class,
+            elev_cm: 0,
+            move_cost,
+        };
+        let mut cells =
+            vec![cell(TerrainClass::Grass, 120); usize::from(WIDTH) * usize::from(HEIGHT)];
+        let mut put = |x: u16, y: u16, what: TerrainCell| {
+            let index = usize::from(y) * usize::from(WIDTH) + usize::from(x);
+            if let Some(slot) = cells.get_mut(index) {
+                *slot = what;
+            }
+        };
+        // An east-west road across the whole ground, ten cells up.
+        for x in 0..WIDTH {
+            put(x, 10, cell(TerrainClass::Road, 60));
+        }
+        // A pond north-east of the muster corner, inside the window.
+        for y in 2..6 {
+            for x in 20..30 {
+                put(x, y, cell(TerrainClass::Water, 0));
+            }
+        }
+        // A building, inside the window, with a contact standing on it.
+        for y in 6..9 {
+            for x in 12..16 {
+                put(x, y, cell(TerrainClass::Wall, 0));
+            }
+        }
+        // Woods well north of the window: on the map, off the view — which is
+        // what makes the two legends differ.
+        for y in 20..30 {
+            for x in 40..60 {
+                put(x, y, cell(TerrainClass::WoodsLight, 200));
+            }
+        }
+        ArenaTerrain::new(WIDTH, HEIGHT, 1_000, cells).expect("the fixture grid is 96 by 64")
+    }
+
+    /// The opaque posture blob every `Pose` carries, empty.
+    fn posture() -> mush_sim::RulesValue {
+        let reference = mush_core::DefinitionRef::new(
+            mush_core::DefinitionKey::new(
+                mush_core::OwnerId::new("tacsim").expect("a canonical owner"),
+                mush_core::DefinitionKind::new("schema").expect("a canonical kind"),
+                mush_core::DefinitionId::new("tacsim.arena.fixture").expect("a canonical id"),
+            ),
+            1,
+            mush_core::DefinitionDigest::from_bytes([0_u8; 32]),
+        )
+        .expect("version 1 is not zero");
+        mush_sim::RulesValue::new(reference, serde_json::json!({})).expect("an empty posture blob")
+    }
+
+    /// `ggyrd`: two whole sections, one hurt, one nearly gone, one destroyed.
+    fn reading() -> Condition {
+        Condition::default()
+            .with_band(0, ConditionBand::Green)
+            .with_band(1, ConditionBand::Green)
+            .with_band(2, ConditionBand::Yellow)
+            .with_band(3, ConditionBand::Red)
+            .with_band(4, ConditionBand::Destroyed)
+    }
+
+    /// **The one scene.**
+    ///
+    /// Red slot 1, `RA`, at the south-west corner, heading north-east, moving,
+    /// warm, one track hurt and one destroyed, a cannon loaded and a machine gun
+    /// cycling, locked on `BA`, four contacts and two notices.
+    #[must_use]
+    pub fn frame() -> Frame {
+        Frame {
+            unit: UNIT,
+            callsign: Designator::Slot {
+                team: Team::Red,
+                slot: 1,
+            },
+            cell: Some(YOU),
+            team: Team::Red,
+            pose: Pose {
+                x_cm: i64::from(YOU.0) * 1_000 + 500,
+                y_cm: i64::from(YOU.1) * 1_000 + 500,
+                z_cm: 0,
+                heading_mdeg: 45_000,
+                posture: posture(),
+            },
+            speed_cms: 1_200,
+            power: Power::Online,
+            blocked: false,
+            tempo: Tempo::Engaged,
+            contacts: vec![
+                // Classified hostile, read two seconds ago, and the lock.
+                FrameContact {
+                    id: HOSTILE,
+                    designator: Designator::Slot {
+                        team: Team::Blue,
+                        slot: 1,
+                    },
+                    alias: Some(1),
+                    class: Classification::Classified { team: Team::Blue },
+                    bearing_mdeg: 45_000,
+                    range_cm: 43_000,
+                    age_ms: 1_200,
+                    cell: Some((36, 14)),
+                    condition: Some(FrameCondition {
+                        table: 0,
+                        bands: reading(),
+                        age_ms: 2_000,
+                    }),
+                },
+                // Classified friendly off the mesh: no reading at all, which is
+                // what keeps its chassis out of `scan_tables`.
+                FrameContact {
+                    id: FRIEND,
+                    designator: Designator::Slot {
+                        team: Team::Red,
+                        slot: 2,
+                    },
+                    alias: None,
+                    class: Classification::Classified { team: Team::Red },
+                    bearing_mdeg: 270_000,
+                    range_cm: 12_000,
+                    age_ms: 400,
+                    cell: Some((2, 9)),
+                    condition: None,
+                },
+                // Unknown, standing ON the building block inside the window: its
+                // marker overwrites the wall glyph.
+                FrameContact {
+                    id: ON_A_ROOF,
+                    designator: Designator::Provisional(3),
+                    alias: None,
+                    class: Classification::Unknown,
+                    bearing_mdeg: 315_000,
+                    range_cm: 22_000,
+                    age_ms: 3_500,
+                    cell: Some((14, 7)),
+                    condition: None,
+                },
+                // Unknown, plotted north of the window: on `CONTACTS`, not on
+                // the map, and the reason `VIEW` says its one line.
+                FrameContact {
+                    id: OFF_WINDOW,
+                    designator: Designator::Provisional(4),
+                    alias: None,
+                    class: Classification::Unknown,
+                    bearing_mdeg: 30_000,
+                    range_cm: 58_000,
+                    age_ms: 6_000,
+                    cell: Some((50, 33)),
+                    condition: None,
+                },
+            ],
+            scan_tables: vec![vec![
+                SmolStr::new_static("engine"),
+                SmolStr::new_static("hull"),
+                SmolStr::new_static("left_track"),
+                SmolStr::new_static("right_track"),
+                SmolStr::new_static("turret"),
+            ]],
+            notices: vec![
+                FrameNotice::Contact {
+                    kind: NoticeKind::Acquired,
+                    contact: Named {
+                        id: OFF_WINDOW,
+                        designator: Designator::Provisional(4),
+                    },
+                    class: Classification::Unknown,
+                    was: None,
+                },
+                FrameNotice::TargetSectionLost {
+                    contact: Named {
+                        id: HOSTILE,
+                        designator: Designator::Slot {
+                            team: Team::Blue,
+                            slot: 1,
+                        },
+                    },
+                    section: SmolStr::new_static("turret"),
+                },
+            ],
+            lock: Some(HOSTILE),
+            weapons: vec![
+                FrameWeapon {
+                    id: SmolStr::new_static("cannon"),
+                    ready: true,
+                    ready_in_ms: 0,
+                    rounds: 14,
+                    rounds_max: 20,
+                    range_band: Some(FrameBand {
+                        index: 1,
+                        of: 2,
+                        max_range_cm: 100_000,
+                        dispersion_mrad: 4,
+                    }),
+                    p_permille: Some(624),
+                    bands_cm: vec![100_000, 300_000],
+                },
+                FrameWeapon {
+                    id: SmolStr::new_static("machine_gun"),
+                    ready: false,
+                    ready_in_ms: 900,
+                    rounds: 380,
+                    rounds_max: 500,
+                    range_band: None,
+                    p_permille: Some(210),
+                    bands_cm: vec![40_000],
+                },
+            ],
+            sections: vec![
+                FrameSection {
+                    id: SmolStr::new_static("engine"),
+                    condition: SmolStr::new_static("intact"),
+                    internals: Some((40, 40)),
+                    facets: Vec::new(),
+                },
+                FrameSection {
+                    id: SmolStr::new_static("hull"),
+                    condition: SmolStr::new_static("intact"),
+                    internals: Some((60, 60)),
+                    facets: vec![
+                        FrameFacet {
+                            id: SmolStr::new_static("front"),
+                            armor: 55,
+                            armor_max: 80,
+                        },
+                        FrameFacet {
+                            id: SmolStr::new_static("rear"),
+                            armor: 30,
+                            armor_max: 30,
+                        },
+                    ],
+                },
+                // Damaged.
+                FrameSection {
+                    id: SmolStr::new_static("left_track"),
+                    condition: SmolStr::new_static("intact"),
+                    internals: Some((6, 24)),
+                    facets: vec![FrameFacet {
+                        id: SmolStr::new_static("left"),
+                        armor: 4,
+                        armor_max: 24,
+                    }],
+                },
+                // Destroyed.
+                FrameSection {
+                    id: SmolStr::new_static("right_track"),
+                    condition: SmolStr::new_static("destroyed"),
+                    internals: Some((0, 24)),
+                    facets: vec![FrameFacet {
+                        id: SmolStr::new_static("right"),
+                        armor: 0,
+                        armor_max: 24,
+                    }],
+                },
+                FrameSection {
+                    id: SmolStr::new_static("turret"),
+                    condition: SmolStr::new_static("intact"),
+                    internals: Some((30, 30)),
+                    facets: vec![FrameFacet {
+                        id: SmolStr::new_static("top"),
+                        armor: 18,
+                        armor_max: 20,
+                    }],
+                },
+            ],
+            heat: Some(FrameHeat { heat: 40, max: 100 }),
+        }
+    }
+
+    /// The three payloads of the one scene, through the three pure builders.
+    #[must_use]
+    pub fn payloads() -> (serde_json::Value, serde_json::Value, serde_json::Value) {
+        let frame = frame();
+        let terrain = terrain();
+        let cockpit = cockpit::status_frame(MATCH, &frame);
+        let map = cockpit::map_frame(MATCH, SURFACE, &terrain);
+        let view = cockpit::view_window(cockpit.clone(), SURFACE, &terrain, &frame);
+        (cockpit, map, view)
+    }
+
+    /// One payload, as a fixture file holds it: pretty JSON with a trailing
+    /// newline, so a diff of a fixture is readable.
+    #[must_use]
+    pub fn text(value: &serde_json::Value) -> String {
+        let mut out = serde_json::to_string_pretty(value).expect("a payload encodes");
+        out.push('\n');
+        out
+    }
+
+    /// **The grid shape's decode**, as `mush_ansi::panel::expand_rows` does it:
+    /// `height` rows of `width` glyphs, run-length pairs expanded, short rows
+    /// padded, then the markers overlaid in order with the last write winning.
+    ///
+    /// Re-stated here rather than imported, because the game crate depends on no
+    /// renderer and must not start. It is the same eighteen lines, and
+    /// `mush-ansi/tests/golden.rs` drives the REAL one over the very files this
+    /// test writes — so a drift between the two is a failing golden.
+    #[must_use]
+    pub fn expand_rows(data: &serde_json::Value) -> Vec<Vec<char>> {
+        let num = |key: &str| {
+            data.get(key)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(0)
+        };
+        let glyph_of = |value: &serde_json::Value| {
+            value
+                .as_str()
+                .and_then(|text| text.chars().next())
+                .unwrap_or('?')
+        };
+        let (width, height) = (num("width"), num("height"));
+        let empty = Vec::new();
+        let raw = data
+            .get("rows")
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or(&empty);
+        let mut rows: Vec<Vec<char>> = Vec::with_capacity(height);
+        for y in 0..height {
+            let mut row: Vec<char> = Vec::with_capacity(width);
+            if let Some(runs) = raw.get(y).and_then(serde_json::Value::as_array) {
+                for run in runs {
+                    let Some(pair) = run.as_array() else { continue };
+                    let glyph = pair.first().map_or(' ', &glyph_of);
+                    let n = pair
+                        .get(1)
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|n| usize::try_from(n).ok())
+                        .unwrap_or(1);
+                    for _ in 0..n {
+                        if row.len() >= width {
+                            break;
+                        }
+                        row.push(glyph);
+                    }
+                }
+            }
+            row.resize(width, ' ');
+            rows.push(row);
+        }
+        if let Some(units) = data.get("units").and_then(serde_json::Value::as_array) {
+            for unit in units {
+                let Some(cell) = unit.get("cell").and_then(serde_json::Value::as_array) else {
+                    continue;
+                };
+                let coord = |n: usize| {
+                    cell.get(n)
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|v| usize::try_from(v).ok())
+                };
+                let (Some(x), Some(y)) = (coord(0), coord(1)) else {
+                    continue;
+                };
+                let glyph = unit.get("glyph").map_or('o', &glyph_of);
+                if let Some(slot) = rows.get_mut(y).and_then(|row| row.get_mut(x)) {
+                    *slot = glyph;
+                }
+            }
+        }
+        rows
+    }
+
+    /// The directory the four files live in, from this crate's manifest.
+    #[must_use]
+    pub fn dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/src/lib/fixtures/cockpit")
+    }
+
+    /// Compare `actual` with the committed `name`, or rewrite it under
+    /// [`BLESS`] — the way the content digest pins are re-blessed.
+    pub fn pinned(name: &str, committed: &str, actual: &str) {
+        if std::env::var(BLESS).is_ok() {
+            std::fs::create_dir_all(dir()).expect("the fixture directory");
+            std::fs::write(dir().join(name), actual).expect("the fixture is writable");
+            return;
+        }
+        assert_eq!(
+            committed, actual,
+            "web/src/lib/fixtures/cockpit/{name} is out of date; re-bless with \
+             `{BLESS}=1 cargo test -p tacsim --test cockpit`"
+        );
+    }
+}
+
+/// The three payloads of the one scene, byte for byte.
+#[test]
+fn the_canonical_cockpit_fixtures_are_what_the_builders_produce() {
+    let (cockpit, map, view) = fixture::payloads();
+    fixture::pinned(
+        "cockpit_frame.json",
+        include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"),
+        &fixture::text(&cockpit),
+    );
+    fixture::pinned(
+        "arena_map.json",
+        include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json"),
+        &fixture::text(&map),
+    );
+    fixture::pinned(
+        "view_frame.json",
+        include_str!("../../../web/src/lib/fixtures/cockpit/view_frame.json"),
+        &fixture::text(&view),
+    );
+}
+
+/// What the scene was built to exercise, asserted on the payloads rather than
+/// left to a reader of the JSON: the clamp on two edges, a marker on a building,
+/// a contact off the window, a reading and a chassis that is only published
+/// because of it, and nothing about any unit on the map.
+#[test]
+fn the_fixture_scene_exercises_the_clamp_the_building_and_the_off_window_contact() {
+    let (cockpit, map, view) = fixture::payloads();
+    let pair = |value: &serde_json::Value, key: &str| -> (i64, i64) {
+        let cell = value
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("{key} is a pair: {value}"))
+            .clone();
+        (
+            cell.first()
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(-1),
+            cell.get(1)
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(-1),
+        )
+    };
+    // The window clamps on BOTH the west and the south edge, so the platform
+    // draws at its own cell rather than in the middle.
+    assert_eq!(pair(&view, "origin"), (0, 0));
+    assert_eq!(pair(&view, "you"), (6, 4));
+    assert_eq!(
+        view.get("width").and_then(serde_json::Value::as_u64),
+        Some(u64::from(cockpit::VIEW_COLUMNS))
+    );
+    assert_eq!(
+        view.get("height").and_then(serde_json::Value::as_u64),
+        Some(u64::from(cockpit::VIEW_ROWS))
+    );
+    // Three of the four contacts are drawn; the fourth is beyond the window.
+    let units = view
+        .get("units")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(units.len(), 4, "the platform and three markers: {view}");
+    assert_eq!(
+        units
+            .first()
+            .and_then(|unit| unit.get("you"))
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+        "the pilot's own marker is FIRST: the marker order is the rule every \
+         compositor follows"
+    );
+    let drawn: Vec<&str> = units
+        .iter()
+        .skip(1)
+        .filter_map(|unit| unit.get("id").and_then(serde_json::Value::as_str))
+        .collect();
+    assert_eq!(drawn, vec!["BA", "RB", "X3"], "in frame order: {view}");
+    // `X3` stands on a wall cell, and its marker wins the cell.
+    let on_a_roof = units
+        .iter()
+        .find(|unit| unit.get("id").and_then(serde_json::Value::as_str) == Some("X3"))
+        .expect("X3 is drawn");
+    assert_eq!(
+        on_a_roof.get("cell"),
+        Some(&serde_json::json!([14, 7])),
+        "relative to the window's own corner, which is the arena's here"
+    );
+    let rows = fixture::expand_rows(&view);
+    assert_eq!(
+        rows.get(7).and_then(|row| row.get(14)).copied(),
+        Some('?'),
+        "an unknown contact's glyph overwrites the building it is standing on"
+    );
+    assert_eq!(
+        rows.get(7).and_then(|row| row.get(13)).copied(),
+        Some('#'),
+        "and the building is still there beside it"
+    );
+    // The reading, and the chassis it is the price of.
+    let hostile = cockpit
+        .get("contacts")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|rows| rows.first())
+        .expect("the first contact");
+    assert_eq!(
+        hostile.get("condition").and_then(|c| c.get("bands")),
+        Some(&serde_json::json!("ggyrd"))
+    );
+    assert_eq!(
+        cockpit.get("scan_tables"),
+        Some(&serde_json::json!([[
+            "engine",
+            "hull",
+            "left_track",
+            "right_track",
+            "turret"
+        ]])),
+        "one table, for the one contact that carries a reading"
+    );
+    // The map is the ground and nothing else.
+    assert!(map.get("units").is_none(), "the map names no unit: {map}");
+    assert!(map.get("you").is_none(), "nor the asker: {map}");
+    assert_eq!(map.get("origin_cell"), Some(&serde_json::json!([0, 0])));
+    assert_eq!(
+        map.get("width").and_then(serde_json::Value::as_u64),
+        Some(u64::from(fixture::WIDTH))
+    );
+    assert_eq!(
+        map.get("height").and_then(serde_json::Value::as_u64),
+        Some(u64::from(fixture::HEIGHT))
+    );
+    // The map's legend carries the woods the window cannot see.
+    let map_legend = map
+        .get("legend")
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    let view_legend = view
+        .get("legend")
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    assert!(map_legend.contains("woods_light"), "{map_legend}");
+    assert!(!view_legend.contains("woods_light"), "{view_legend}");
+}
+
+/// Every keyframe either arena feed sends carries the retain marker, and the
+/// grid-shaped one carries it too — or a typed `VIEW` would re-create the ring
+/// flood one frame at a time.
+#[test]
+fn both_feeds_ask_the_session_ring_to_keep_only_the_latest() {
+    let (cockpit, map, view) = fixture::payloads();
+    for (what, payload, shape) in [
+        ("cockpit_frame.json", &cockpit, None),
+        ("arena_map.json", &map, Some("terrain")),
+        ("view_frame.json", &view, Some("grid")),
+    ] {
+        let schema = payload.get("schema").expect("a schema");
+        assert_eq!(
+            schema.get("retain").and_then(serde_json::Value::as_str),
+            // `mush_session::RETAIN_LATEST`, spelled out: the game crate does
+            // not depend on the gateway's session manager, and the string IS the
+            // contract between them.
+            Some("latest"),
+            "{what} must carry the retain marker: {schema}"
+        );
+        // The shape is what decides whether a line client prints anything at
+        // all: `mush_ansi::panel` draws `grid` and nothing else, so a pulse
+        // frame and a whole-arena map are both silent on a terminal.
+        assert_eq!(
+            schema.get("shape").and_then(serde_json::Value::as_str),
+            shape,
+            "{what}: {schema}"
+        );
+    }
+}
+
+/// The map of the SHIPPED proving ground fits in one message, and expanding it
+/// gives back the authored terrain cell for cell.
+///
+/// The live ground and not [`match_::stock_definition`]'s uniform stand-in: the
+/// bound is about what the content pack actually paints, and a flat window would
+/// run-length-encode to nothing and prove nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_shipped_arena_s_map_is_small_enough_to_send_and_expands_to_the_ground() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let match_id = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.last_frame(rig.pilot(0)))
+        .map(|held| held.match_id)
+        .expect("a frame names its match");
+    let definition = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.arena_of(match_id))
+        .cloned()
+        .expect("the running match's ground");
+    let terrain = &definition.terrain;
+    let map = cockpit::map_frame(match_id, definition.id.as_str(), terrain);
+    let bytes = serde_json::to_vec(&map).expect("the map encodes").len();
+    assert!(
+        bytes < 256 * 1024,
+        "the shipped arena's map is {bytes} bytes, past the 256 KiB bound a \
+         pulled keyframe is held to"
+    );
+    // The renderer's own decode, and it reads `width`/`height` off the payload —
+    // so this is the round trip a client makes. (`mush-ansi/tests/golden.rs`
+    // drives the real `mush_ansi::panel::expand_rows` over the committed
+    // fixtures; this crate depends on no renderer.)
+    let rows = fixture::expand_rows(&map);
+    assert_eq!(rows.len(), usize::from(terrain.height()));
+    for y in 0..terrain.height() {
+        let row = rows.get(usize::from(y)).expect("a row per cell row");
+        assert_eq!(row.len(), usize::from(terrain.width()));
+        for x in 0..terrain.width() {
+            let expected = terrain
+                .get(x, y)
+                .map_or(mush_atlas::TerrainClass::Void, |cell| cell.class)
+                .glyph();
+            assert_eq!(
+                row.get(usize::from(x)).copied(),
+                Some(expected),
+                "cell ({x}, {y}) of the shipped ground"
+            );
+        }
+    }
+    // And nothing about any unit is in it, on the live ground as on the fixture.
+    assert!(map.get("units").is_none(), "the shipped map names no unit");
+}
+
+/// `VIEW`'s one honest line: nothing when the window holds everything, the
+/// singular when one contact is beyond it, the plural when several are.
+#[test]
+fn view_says_how_many_contacts_plot_beyond_its_window() {
+    let terrain = fixture::terrain();
+    let mut frame = fixture::frame();
+    let window = |frame: &tacsim::arena::step::Frame| {
+        cockpit::view_window(
+            cockpit::status_frame(fixture::MATCH, frame),
+            fixture::SURFACE,
+            &terrain,
+            frame,
+        )
+    };
+    // The scene as it stands: one contact north of the window.
+    assert_eq!(
+        cockpit::beyond_window_line(&frame, &window(&frame)),
+        Some("1 contact plots beyond this window; CONTACTS lists it.".to_owned())
+    );
+    // Push a second one off the window, and a third off the arena entirely (a
+    // plot with no cell at all) — three beyond, one line.
+    if let Some(contact) = frame.contacts.get_mut(0) {
+        contact.cell = Some((36, 40));
+    }
+    if let Some(contact) = frame.contacts.get_mut(1) {
+        contact.cell = None;
+    }
+    assert_eq!(
+        cockpit::beyond_window_line(&frame, &window(&frame)),
+        Some("3 contacts plot beyond this window; CONTACTS lists them.".to_owned())
+    );
+    // Bring them all inside: no line at all.
+    for (n, contact) in frame.contacts.iter_mut().enumerate() {
+        contact.cell = Some((u16::try_from(n).unwrap_or(0) + 20, 5));
+    }
+    assert_eq!(cockpit::beyond_window_line(&frame, &window(&frame)), None);
+    // And a payload with no window in it owes nothing.
+    assert_eq!(
+        cockpit::beyond_window_line(&frame, &cockpit::status_frame(fixture::MATCH, &frame)),
+        None
+    );
+}
+
+/// The answers the two feeds give somebody who is not flying, and the cleared
+/// cockpit a panel is sent when its pilot stops being one. One payload, twice.
+#[test]
+fn an_unseated_asker_and_a_cleared_cockpit_read_the_same() {
+    assert_eq!(
+        cockpit::cockpit_cleared(),
+        serde_json::json!({
+            "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+            "seated": false,
+        })
+    );
+    assert_eq!(
+        cockpit::map_unseated(),
+        serde_json::json!({
+            "schema": {
+                "id": "arena.map",
+                "version": 1,
+                "shape": "terrain",
+                "retain": "latest",
+            },
+            "seated": false,
+        })
+    );
 }

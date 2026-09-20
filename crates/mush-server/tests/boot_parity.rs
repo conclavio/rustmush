@@ -294,7 +294,13 @@ fn expected_panels() -> Vec<&'static str> {
     // `[tacsim].enabled` is set, for the same reason the layer's verbs are: a
     // disabled layer refuses out loud rather than making a feed appear and
     // disappear under the web client's manifest. Cut K's cockpit is the consumer.
-    panels.push("tacsim.frame");
+    panels.push("arena.cockpit");
+    // 16b cut Q.3: the terrain feed, registered immediately after the cockpit
+    // frame's in `arena_bridge::register` and therefore listed here next. It is
+    // pull-only — nothing is ever pushed on it — but it is a registered feed so
+    // that it reaches the client manifest and so that a `PanelSubscribe` routes
+    // to its query handler.
+    panels.push("arena.map");
     panels.push("who");
     panels.push("legal.actions");
     panels

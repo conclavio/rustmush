@@ -12,5 +12,11 @@ tokio.workspace = true
 dashmap.workspace = true
 tracing.workspace = true
 
+# 16b cut Q.3: the `schema.retain` ring tests build panel payloads by hand. The
+# manager itself reads them through `mush_proto`'s re-exported `Value` and needs
+# no edge of its own.
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

@@ -1,0 +1,497 @@
+{
+  "blocked": false,
+  "callsign": "RA",
+  "cell": [
+    6,
+    4
+  ],
+  "cell_cm": 1000,
+  "contacts": [
+    {
+      "age_ms": 1200,
+      "age_s": 1,
+      "alias": "X1",
+      "band": "effective",
+      "bearing_deg": 45,
+      "cell": [
+        36,
+        14
+      ],
+      "class": "blue",
+      "condition": {
+        "age_ms": 2000,
+        "bands": "ggyrd",
+        "table": 0
+      },
+      "designator": "BA",
+      "friendly": false,
+      "id": "1111111111111111",
+      "range_m": 450,
+      "relative_deg": 0
+    },
+    {
+      "age_ms": 400,
+      "age_s": 0,
+      "alias": null,
+      "band": "close",
+      "bearing_deg": 270,
+      "cell": [
+        2,
+        9
+      ],
+      "class": "red",
+      "condition": null,
+      "designator": "RB",
+      "friendly": true,
+      "id": "2222222222222222",
+      "range_m": 100,
+      "relative_deg": 225
+    },
+    {
+      "age_ms": 3500,
+      "age_s": 3,
+      "alias": null,
+      "band": "close",
+      "bearing_deg": 315,
+      "cell": [
+        14,
+        7
+      ],
+      "class": "unknown",
+      "condition": null,
+      "designator": "X3",
+      "friendly": false,
+      "id": "3333333333333333",
+      "range_m": 200,
+      "relative_deg": 270
+    },
+    {
+      "age_ms": 6000,
+      "age_s": 6,
+      "alias": null,
+      "band": "effective",
+      "bearing_deg": 30,
+      "cell": [
+        50,
+        33
+      ],
+      "class": "unknown",
+      "condition": null,
+      "designator": "X4",
+      "friendly": false,
+      "id": "4444444444444444",
+      "range_m": 600,
+      "relative_deg": 345
+    }
+  ],
+  "heading_deg": 45,
+  "heading_mdeg": 45000,
+  "heat": {
+    "heat": 40,
+    "max": 100,
+    "overheated": false
+  },
+  "height": 20,
+  "legend": [
+    [
+      "\"",
+      "grass"
+    ],
+    [
+      "~",
+      "water"
+    ],
+    [
+      "#",
+      "wall"
+    ],
+    [
+      "=",
+      "road"
+    ],
+    [
+      "@",
+      "you"
+    ],
+    [
+      "x",
+      "hostile"
+    ],
+    [
+      "+",
+      "friendly"
+    ],
+    [
+      "?",
+      "contact"
+    ]
+  ],
+  "lock": "1111111111111111",
+  "lock_designator": "BA",
+  "lock_p_permille": 624,
+  "lock_percent": 62,
+  "lock_range_m": 430,
+  "match": 7,
+  "notices": [
+    {
+      "contact": "4444444444444444",
+      "designator": "X4",
+      "kind": "acquired",
+      "section": null,
+      "text": "New contact X4: bearing 030°, effective."
+    },
+    {
+      "contact": "1111111111111111",
+      "designator": "BA",
+      "kind": "target_section_lost",
+      "section": "turret",
+      "text": "BA's turret is destroyed."
+    }
+  ],
+  "origin": [
+    0,
+    0
+  ],
+  "power": "online",
+  "rows": [
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        20
+      ],
+      [
+        "~",
+        10
+      ],
+      [
+        "\"",
+        48
+      ]
+    ],
+    [
+      [
+        "\"",
+        20
+      ],
+      [
+        "~",
+        10
+      ],
+      [
+        "\"",
+        48
+      ]
+    ],
+    [
+      [
+        "\"",
+        20
+      ],
+      [
+        "~",
+        10
+      ],
+      [
+        "\"",
+        48
+      ]
+    ],
+    [
+      [
+        "\"",
+        20
+      ],
+      [
+        "~",
+        10
+      ],
+      [
+        "\"",
+        48
+      ]
+    ],
+    [
+      [
+        "\"",
+        12
+      ],
+      [
+        "#",
+        4
+      ],
+      [
+        "\"",
+        62
+      ]
+    ],
+    [
+      [
+        "\"",
+        12
+      ],
+      [
+        "#",
+        4
+      ],
+      [
+        "\"",
+        62
+      ]
+    ],
+    [
+      [
+        "\"",
+        12
+      ],
+      [
+        "#",
+        4
+      ],
+      [
+        "\"",
+        62
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "=",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ],
+    [
+      [
+        "\"",
+        78
+      ]
+    ]
+  ],
+  "scan_tables": [
+    [
+      "engine",
+      "hull",
+      "left_track",
+      "right_track",
+      "turret"
+    ]
+  ],
+  "schema": {
+    "id": "arena.cockpit",
+    "retain": "latest",
+    "shape": "grid",
+    "version": 1
+  },
+  "sections": [
+    {
+      "condition": "intact",
+      "facets": [],
+      "id": "engine",
+      "internals": 40,
+      "internals_max": 40
+    },
+    {
+      "condition": "intact",
+      "facets": [
+        {
+          "armor": 55,
+          "armor_max": 80,
+          "id": "front"
+        },
+        {
+          "armor": 30,
+          "armor_max": 30,
+          "id": "rear"
+        }
+      ],
+      "id": "hull",
+      "internals": 60,
+      "internals_max": 60
+    },
+    {
+      "condition": "intact",
+      "facets": [
+        {
+          "armor": 4,
+          "armor_max": 24,
+          "id": "left"
+        }
+      ],
+      "id": "left_track",
+      "internals": 6,
+      "internals_max": 24
+    },
+    {
+      "condition": "destroyed",
+      "facets": [
+        {
+          "armor": 0,
+          "armor_max": 24,
+          "id": "right"
+        }
+      ],
+      "id": "right_track",
+      "internals": 0,
+      "internals_max": 24
+    },
+    {
+      "condition": "intact",
+      "facets": [
+        {
+          "armor": 18,
+          "armor_max": 20,
+          "id": "top"
+        }
+      ],
+      "id": "turret",
+      "internals": 30,
+      "internals_max": 30
+    }
+  ],
+  "speed_cms": 1200,
+  "speed_kph": 43,
+  "surface": "fixture_yard",
+  "tempo": "engaged",
+  "title": "Arena window",
+  "unit": 101,
+  "units": [
+    {
+      "cell": [
+        6,
+        4
+      ],
+      "glyph": "@",
+      "id": "#101",
+      "you": true
+    },
+    {
+      "cell": [
+        36,
+        14
+      ],
+      "glyph": "x",
+      "id": "BA",
+      "name": "blue",
+      "you": false
+    },
+    {
+      "cell": [
+        2,
+        9
+      ],
+      "glyph": "+",
+      "id": "RB",
+      "name": "red",
+      "you": false
+    },
+    {
+      "cell": [
+        14,
+        7
+      ],
+      "glyph": "?",
+      "id": "X3",
+      "name": "unknown",
+      "you": false
+    }
+  ],
+  "weapons": [
+    {
+      "id": "cannon",
+      "p_permille": 624,
+      "percent": 62,
+      "range_band": {
+        "dispersion_mrad": 4,
+        "index": 1,
+        "max_range_cm": 100000,
+        "of": 2
+      },
+      "ready": true,
+      "ready_in_ms": 0,
+      "rounds": 14,
+      "rounds_max": 20
+    },
+    {
+      "id": "machine_gun",
+      "p_permille": 210,
+      "percent": 21,
+      "range_band": null,
+      "ready": false,
+      "ready_in_ms": 900,
+      "rounds": 380,
+      "rounds_max": 500
+    }
+  ],
+  "width": 78,
+  "x_cm": 6500,
+  "y_cm": 4500,
+  "you": [
+    6,
+    4
+  ],
+  "z_cm": 0
+}

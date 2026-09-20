@@ -1032,8 +1032,22 @@ pub fn finish(
 
     // The registry's rows go last: `untrack` is what frees the epoch mirror and
     // the unit bindings the routing reads.
+    //
+    // **16b cut Q.3**: anybody still bound when it happens is owed a cleared
+    // cockpit, so the list is read before the rows go. In the ordinary case
+    // `release_seat` above has already unbound every pilot through
+    // `send_control`, and each of them was cleared there; this is the rest — a
+    // pilot whose station was already gone, and every pilot on a void.
+    let orphans: Vec<ObjId> = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.pilots_of(match_id))
+        .unwrap_or_default();
     if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
         registry.untrack(match_id);
+    }
+    for pilot in orphans {
+        crate::arena_bridge::clear_cockpit(ctx, pilot);
     }
     if let Some(tasks) = ctx
         .w

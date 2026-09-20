@@ -241,6 +241,10 @@ struct SessEntry {
     /// ([`SessionManager::send_to_conn`]) consume seqs but are **not**
     /// recorded — they must not replay to other/future connections; the
     /// resulting seq gaps are harmless (replay filters `seq > last_seq`).
+    ///
+    /// **16b cut Q.3**: a `Panel` whose payload carries the [`RETAIN_LATEST`]
+    /// marker also drops its own feed's earlier marked entries as it is
+    /// recorded, which leaves the same harmless kind of gap.
     ring: VecDeque<(u64, Arc<Envelope>)>,
     /// Highest seq evicted from the ring (0 = nothing evicted yet) — the
     /// [`ReplayError::TooOld`] boundary.
@@ -265,6 +269,43 @@ struct ConnEntry {
 /// tripwire, mirroring the SP1 rule-1 allowlist precedent.
 const NARRATIVE_RING_INVARIANT: &str = "Narrative must reach the resume ring only via the M11-gated Char fan-out, \
      never a session/broadcast writer (interface plan I12 leak invariant)";
+
+/// **The `schema.retain` value that makes a panel keyframe supersede its own
+/// predecessors in the resume ring** (16b cut Q.3).
+///
+/// The `schema.shape` idiom, applied to retention rather than to rendering: a
+/// producer declares a property of its payload in the payload, and the transport
+/// honours it with no per-feed table anywhere. A `Panel` whose
+/// `data.schema.retain` is this string is a **whole-state keyframe** — the newest
+/// one is the whole truth and the ones before it are not history — so
+/// [`SessionManager::deliver_to_session`] drops every earlier ring entry of the
+/// same feed that also carries the marker before recording it.
+///
+/// Why it exists: the arena's cockpit feed sends a keyframe per pilot per pulse,
+/// which at `Engaged` tempo is two a second. A 512-entry ring holds about four
+/// minutes of that and nothing else — every room description, every page and
+/// every channel line a pilot might resume into is evicted by a map they are
+/// looking at anyway.
+///
+/// What it does **not** touch: `evicted_seq`. Coalescing removes an *interior*
+/// entry, and [`SessionManager::replay_since`] gates only on `evicted_seq` and
+/// `last_seq`, so a resume across a coalesce cannot answer
+/// [`ReplayError::TooOld`] because of one. The sequence gap it leaves is the
+/// harmless kind [`SessionManager::send_to_conn`] already documents. A frame
+/// without the marker — and a frame of a *different* feed — is never touched, and
+/// a gateway that has never heard of the marker simply records everything as
+/// before.
+pub const RETAIN_LATEST: &str = "latest";
+
+/// The feed of a `Panel` event whose payload asks to be retained latest-only,
+/// or `None` for anything else (16b cut Q.3; see [`RETAIN_LATEST`]).
+fn retained_latest_feed(event: &OutputEvent) -> Option<&str> {
+    let OutputEvent::Panel { feed, data, .. } = event else {
+        return None;
+    };
+    let retain = data.get("schema")?.get("retain")?.as_str()?;
+    (retain == RETAIN_LATEST).then(|| feed.as_str())
+}
 
 /// The session registry. Fully `Send + Sync`; every method is non-blocking
 /// and none requires a tokio runtime (delivery uses `mpsc::Sender::try_send`
@@ -669,6 +710,14 @@ impl SessionManager {
             s.last_seq += 1;
             let seq = s.last_seq;
             let env = Arc::new(Envelope::new(seq, (self.clock)(), (**ev).clone()));
+            // 16b cut Q.3: a whole-state keyframe supersedes its own feed's
+            // earlier ones (see `RETAIN_LATEST`). One pass over a bounded ring,
+            // and only for an event that asked for it; `evicted_seq` is left
+            // exactly where it was.
+            if let Some(feed) = retained_latest_feed(ev) {
+                s.ring
+                    .retain(|(_, held)| retained_latest_feed(&held.event) != Some(feed));
+            }
             s.ring.push_back((seq, Arc::clone(&env)));
             while s.ring.len() > self.config.resume_ring {
                 if let Some((evicted, _)) = s.ring.pop_front() {

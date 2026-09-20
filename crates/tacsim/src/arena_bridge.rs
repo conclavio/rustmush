@@ -77,7 +77,29 @@ use crate::store::{NS, push_op};
 
 /// The panel feed cockpit frames go out on (doc 16 §5). Cut K builds the real
 /// cockpit on it; this cut publishes the [`Frame`] the arena library produces.
-pub const FRAME_FEED: &str = "tacsim.frame";
+///
+/// **16b cut Q.3** renamed it from `tacsim.frame` to doc 16 §5's own name, which
+/// the frame's *schema* id ([`crate::match_::cockpit::FRAME_SCHEMA`]) has
+/// carried since cut K.2: the feed was the one place the transport drifted from
+/// the document. The schema and its version do not move — every field cut Q adds
+/// is additive — and the project is pre-launch, so there is no second lane and
+/// no client pinned to the old name.
+pub const FRAME_FEED: &str = "arena.cockpit";
+
+/// **The panel feed the arena's terrain goes out on** (16b cut Q.3; doc 16 §3.2,
+/// §5).
+///
+/// It is a **pulled** feed and nothing is ever pushed on it: the only producer
+/// is the query handler [`register`] installs, which answers
+/// [`crate::match_::cockpit::map_frame`] to a seated pilot and
+/// [`crate::match_::cockpit::map_unseated`] to everybody else. A panel client
+/// that holds a cockpit frame of match M and no map of M asks for it, and asks
+/// again at most once every two seconds until it has one.
+///
+/// Registered as a feed — rather than only as a query name — because that is
+/// what puts `arena.map` in the client manifest and what makes a
+/// `PanelSubscribe` route to the handler at all.
+pub const MAP_FEED: &str = "arena.map";
 
 /// The notice category every arena notice carries.
 pub const NOTICE_CATEGORY: &str = "arena";
@@ -591,6 +613,17 @@ impl ArenaRegistry {
         self.pilots.get(&pilot).copied()
     }
 
+    /// **Everybody still bound to that match** (16b cut Q.3), in object order —
+    /// who [`crate::match_::finish`] owes a cleared cockpit to.
+    #[must_use]
+    pub fn pilots_of(&self, match_id: MatchId) -> Vec<ObjId> {
+        self.pilots
+            .iter()
+            .filter(|(_, (held, _))| *held == match_id)
+            .map(|(pilot, _)| *pilot)
+            .collect()
+    }
+
     /// **Forget one pilot's seat** (16b cut F.1) — the undo of [`bind_pilot`],
     /// and the remembered frame with it.
     ///
@@ -975,7 +1008,7 @@ pub fn send_control(
     state: ControlState,
     pilot: Option<ObjId>,
 ) -> Result<(), ControlRefusal> {
-    let (match_id, control, tasks) = {
+    let (match_id, control, tasks, unbound) = {
         let registry = ctx
             .w
             .module_state_mut::<ArenaRegistry>()
@@ -987,11 +1020,10 @@ pub fn send_control(
         // The world side of the same sentence, done here so that every route to a
         // released seat — `EXIT`, the lobby's sweep, the linkdead grace running
         // out — unbinds the pilot, and not only the one verb a reviewer thought of.
-        if state == ControlState::Released
-            && let Some(pilot) = pilot
-        {
-            registry.unbind_pilot(pilot);
-        }
+        let unbound = match (state, pilot) {
+            (ControlState::Released, Some(pilot)) => registry.unbind_pilot(pilot),
+            _ => false,
+        };
         (
             match_id,
             Control {
@@ -1002,6 +1034,7 @@ pub fn send_control(
                 pilot,
             },
             registry.tasks.clone(),
+            unbound,
         )
     };
     // The centre's own half of the same sentence, outside the registry's borrow.
@@ -1011,6 +1044,12 @@ pub fn send_control(
         && let Some(pilot) = pilot
     {
         crate::match_::lobby::slot_left(ctx, pilot);
+    }
+    // **16b cut Q.3**: and the panel's half. Gated on the *binding* having
+    // actually gone rather than on the state word, so three channels releasing
+    // one seat send one cleared frame and not three.
+    if let (true, Some(pilot)) = (unbound, pilot) {
+        clear_cockpit(ctx, pilot);
     }
     tasks
         .offer(match_id, ArenaMsg::Control(control))
@@ -1145,6 +1184,22 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) 
         if ctx.w.get(pilot).is_none() {
             continue;
         }
+        // **16b cut Q.3**: and neither does one who stopped being a pilot while
+        // it ran. `send_control(Released)` unbinds and clears on the world task
+        // the moment `EXIT` is typed, while the arena drops the same pilot from
+        // its roster at the start of its next pulse — so a batch staged before
+        // the release is drained after it. Without this the mirror would be
+        // written again and a live cockpit pushed over the cleared one, which
+        // (the marker being what it is) would be the only frame left in that
+        // session's ring.
+        let seated = ctx
+            .w
+            .module_state::<ArenaRegistry>()
+            .and_then(|registry| registry.seat_of_pilot(pilot))
+            .is_some_and(|(held, _)| held == match_id);
+        if !seated {
+            continue;
+        }
         // 16b cut K.2: the world's copy first, so a cockpit verb typed in the
         // same batch reads the frame the pilot was just sent, and then the frame
         // itself — doc 16 §5's keyframe, which cut K.2 filled out.
@@ -1194,6 +1249,42 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) 
             mirror.tempo = tempo;
         }
     }
+}
+
+/// **Tell one pilot's panel that there is no cockpit any more** (16b cut Q.3).
+///
+/// One `arena.cockpit` keyframe carrying
+/// [`crate::match_::cockpit::cockpit_cleared`], down the same output path the
+/// pulse frames take. It prints nothing on a line client — the payload declares
+/// no shape — so the ordinary end-of-match and `EXIT` lines a pilot reads are
+/// exactly what they were; a panel clears; and because the payload carries the
+/// same `schema.retain` marker every frame before it did, it is the **only**
+/// cockpit frame left in that session's resume ring, so a client that
+/// reconnects after the match does not resume into a dead tank.
+///
+/// Sent exactly once per pilot, from the two places a pilot stops being one:
+/// [`send_control`], when a `Released` actually unbinds somebody, and
+/// [`crate::match_::finish`], for anybody still bound when the match is
+/// untracked.
+pub fn clear_cockpit(ctx: &mut Ctx<'_>, pilot: ObjId) {
+    let Some(feed) = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .map(|registry| registry.frames.clone())
+    else {
+        return;
+    };
+    // A pilot whose object has gone with the match gets nothing rather than an
+    // event addressed to a dead id (treaty ruling 3: re-validate), which is the
+    // same rule `on_frames` follows.
+    if ctx.w.get(pilot).is_none() {
+        return;
+    }
+    feed.keyframe_to(
+        ctx,
+        Audience::Actor(pilot),
+        crate::match_::cockpit::cockpit_cleared(),
+    );
 }
 
 /// The ledger log id one match streams into: `log:match.<id>` is
@@ -1627,6 +1718,102 @@ fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// The two queries (16b cut Q.3)
+// ---------------------------------------------------------------------------
+
+/// The match and ground one actor is flying in, or `None` for anybody who is
+/// not seated on a deployed unit of a tracked match.
+///
+/// The binding is the registry's own `pilot → (match, unit)` row, which
+/// check-out writes and which `EXIT`, a released seat, a linkdead grace running
+/// out and `untrack` all take away. So "seated" here means exactly what it means
+/// everywhere else in this module, and a pilot who has left reads as a
+/// bystander from the next line of code onward.
+fn seated_ground(
+    w: &mush_core::World,
+    actor: ObjId,
+) -> Option<(MatchId, &crate::arena::state::ArenaDefinition)> {
+    let registry = w.module_state::<ArenaRegistry>()?;
+    let (match_id, _unit) = registry.seat_of_pilot(actor)?;
+    Some((match_id, registry.arena_of(match_id)?))
+}
+
+/// **`arena.map`'s handler** (16b cut Q.3): the terrain of the arena the asker
+/// is flying in, or [`crate::match_::cockpit::map_unseated`].
+///
+/// `params` is ignored today. A `window` parameter is where doc 16 §11's 10 km
+/// path would slice it — `{ "window": [x0, y0, w, h] }` in cells — and the
+/// payload's `origin_cell` is in it for exactly that: a renderer written against
+/// that key keeps working when the map stops starting at the arena's corner.
+struct MapQuery;
+
+impl mush_core::QueryHandler for MapQuery {
+    fn query(
+        &self,
+        w: &mush_core::World,
+        actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        let data = match seated_ground(w, actor) {
+            Some((match_id, ground)) => {
+                crate::match_::cockpit::map_frame(match_id, ground.id.as_str(), &ground.terrain)
+            }
+            // Nothing about any match: not its id, not its ground, not whether
+            // one is running at all.
+            None => crate::match_::cockpit::map_unseated(),
+        };
+        Ok(mush_proto::OutputEvent::Panel {
+            feed: SmolStr::new_static(MAP_FEED),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data,
+        })
+    }
+}
+
+/// **`arena.cockpit`'s handler** (16b cut Q.3): the last frame the arena sent
+/// this pilot, re-rendered through
+/// [`crate::match_::cockpit::status_frame`] — the same mirror `STATUS` and
+/// `CONTACTS` read, which carries no notices, because the mirror is stored with
+/// them cleared and a notice re-sent is a notice said twice.
+///
+/// Anybody who is not flying gets
+/// [`crate::match_::cockpit::cockpit_cleared`], which is the same payload an
+/// ex-pilot's panel was cleared with: a client that resyncs after its match is
+/// told the truth by the same two keys twice.
+///
+/// **Seated is the binding and never the mirror.** The answer is gated on
+/// [`ArenaRegistry::seat_of_pilot`] — the same definition [`seated_ground`] and
+/// the rest of this module use — and only then read out of the mirror. A mirror
+/// row is a cache of the last frame the arena sent, and the pulse that was
+/// already staged when a pilot typed `EXIT` is drained afterwards; gating on the
+/// row alone would answer an ex-pilot with a whole tank's contact list, locks
+/// and ranges on a feed that is a *query* and can be asked at any time from the
+/// lobby.
+struct CockpitQuery;
+
+impl mush_core::QueryHandler for CockpitQuery {
+    fn query(
+        &self,
+        w: &mush_core::World,
+        actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+        let data = w
+            .module_state::<ArenaRegistry>()
+            .filter(|registry| registry.seat_of_pilot(actor).is_some())
+            .and_then(|registry| registry.last_frame(actor))
+            .map_or_else(crate::match_::cockpit::cockpit_cleared, |held| {
+                crate::match_::cockpit::status_frame(held.match_id, &held.frame)
+            });
+        Ok(mush_proto::OutputEvent::Panel {
+            feed: SmolStr::new_static(FRAME_FEED),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -1650,6 +1837,14 @@ pub fn register(
     sensors_cfg: &crate::config::SensorsConfig,
 ) -> Result<(), ModError> {
     let frames = reg.panel_feed(FRAME_FEED)?;
+    // **16b cut Q.3**: the terrain feed beside it, and its handle dropped at
+    // once — nothing ever pushes a map. Registering the feed is what advertises
+    // `arena.map` in the client manifest and what routes a `PanelSubscribe` to
+    // the query handler below. The order of these two registrations is the order
+    // `mush-server`'s boot-parity test pins the manifest in.
+    drop(reg.panel_feed(MAP_FEED)?);
+    reg.query_handler(MAP_FEED, Arc::new(MapQuery))?;
+    reg.query_handler(FRAME_FEED, Arc::new(CockpitQuery))?;
     reg.async_completion(Arc::new(ArenaEgress))?;
     reg.hook(mush_core::HookPoint::Connected, Arc::new(SeatFacts));
     // 16b cut K.2 (K4): the kernel's new point, and the revival that rides

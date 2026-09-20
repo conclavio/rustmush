@@ -14,7 +14,7 @@ use mush_proto::{
 };
 use mush_session::{
     AttachOutcome, CharKey, ConnId, ConnectionHandle, DetachReason, ReplayError, SendToConn,
-    SessionConfig, SessionManager,
+    SessId, SessionConfig, SessionManager,
 };
 use tokio::sync::mpsc;
 
@@ -537,6 +537,257 @@ fn backlog_matching_reports_evicted_once_the_ring_rolls() {
     );
     assert!(!bl.more, "no further match — older seqs were evicted");
     assert!(bl.evicted, "the ring rolled, so older history may be gone");
+}
+
+// ---- 16b cut Q.3: `schema.retain == "latest"` coalescing --------------------
+//
+// The arena's cockpit feed sends a whole-state keyframe per pilot per pulse —
+// two a second at `Engaged` tempo — and a 512-entry ring holds about four
+// minutes of that and nothing else. A payload that declares
+// `schema.retain == "latest"` says "the newest of me is the whole truth", and
+// the ring drops that feed's earlier marked entries as it records the new one.
+// Everything else in the ring is untouched, and `evicted_seq` never moves, so
+// `replay_since` cannot answer `TooOld` because of a coalesce.
+
+/// The marker, spelled out. `mush_session::RETAIN_LATEST` is the thing under
+/// test, and a suite that builds its payloads from it would stay green if its
+/// value were renamed — while `tacsim`, which has no dependency on this crate
+/// and spells the same string in `match_::cockpit`, went on sending the old one
+/// and the ring quietly stopped coalescing. The literal is the contract;
+/// `crates/mushd/tests/observer_rule.rs` is where the two constants are held to
+/// each other.
+const LATEST: &str = "latest";
+
+/// A panel keyframe that asks to be retained latest-only.
+fn retained(feed: &str, n: u64) -> OutputEvent {
+    OutputEvent::Panel {
+        feed: feed.into(),
+        kind: mush_proto::PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "schema": { "id": feed, "version": 1, "retain": LATEST },
+            "n": n,
+        }),
+    }
+}
+
+/// The same feed, without the marker.
+fn unmarked(feed: &str, n: u64) -> OutputEvent {
+    OutputEvent::Panel {
+        feed: feed.into(),
+        kind: mush_proto::PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "schema": { "id": feed, "version": 1 },
+            "n": n,
+        }),
+    }
+}
+
+/// The `VIEW` case: a grid-shaped frame of the same feed, marked. It must
+/// coalesce with the shapeless pulse frames, or a pilot who types `VIEW` twice a
+/// second re-creates the flood one frame at a time.
+fn retained_grid(feed: &str, n: u64) -> OutputEvent {
+    OutputEvent::Panel {
+        feed: feed.into(),
+        kind: mush_proto::PanelFrameKind::Keyframe,
+        data: serde_json::json!({
+            "schema": {
+                "id": feed,
+                "version": 1,
+                "shape": "grid",
+                "retain": LATEST,
+            },
+            "n": n,
+        }),
+    }
+}
+
+/// Every ring envelope of `sess`, oldest first — `replay_since(0)` is exactly
+/// that, and it is also the read a reconnecting client makes.
+fn ring_of(mgr: &SessionManager, sess: SessId) -> Vec<Arc<Envelope>> {
+    mgr.replay_since(sess, 0).expect("the ring is readable")
+}
+
+/// One ring entry's `n`, for a panel.
+fn panel_n(event: &OutputEvent) -> Option<u64> {
+    match event {
+        OutputEvent::Panel { data, .. } => data.get("n").and_then(serde_json::Value::as_u64),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_thousand_retained_frames_leave_one_ring_entry_and_disturb_nothing_else() {
+    assert_eq!(
+        mush_session::RETAIN_LATEST,
+        LATEST,
+        "the exported marker is the string every producer spells"
+    );
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (web, mut rx) = web_conn(1, 4_096);
+    let (sess, _) = mgr.attach(web, CharKey(1), "a".into());
+
+    // Three ordinary lines, then a thousand cockpit frames, then one more line.
+    for i in 1..=3 {
+        mgr.send_event_to_char(CharKey(1), sys(&format!("before {i}")));
+    }
+    for n in 0..1_000 {
+        mgr.send_event_to_char(CharKey(1), retained("arena.cockpit", n));
+    }
+    mgr.send_event_to_char(CharKey(1), sys("after"));
+
+    let ring = ring_of(&mgr, sess);
+    let events: Vec<OutputEvent> = ring.iter().map(|e| e.event.clone()).collect();
+    assert_eq!(
+        events.len(),
+        5,
+        "one frame survives, and the four lines stay"
+    );
+    assert_eq!(
+        events[..3].to_vec(),
+        vec![sys("before 1"), sys("before 2"), sys("before 3")],
+        "in order, and ahead of the frame"
+    );
+    assert_eq!(events[4], sys("after"), "and the line after it is after it");
+    // The survivor is the LAST frame, not the first.
+    assert_eq!(panel_n(&events[3]), Some(999));
+    // Nothing was evicted: the ring never came near its bound, and a client
+    // resuming from anywhere is answered rather than told to re-hydrate.
+    assert_eq!(mgr.replay_since(sess, 0).expect("from zero").len(), 5);
+    assert_eq!(
+        mgr.replay_since(sess, 500).expect("from the middle").len(),
+        2
+    );
+    assert!(
+        mgr.replay_since(sess, 1_004).expect("caught up").is_empty(),
+        "every one of the 1,004 sends still consumed a seq"
+    );
+    // And the connection was sent all 1,004: coalescing is a RING rule and
+    // never a delivery rule.
+    let mut delivered = 0;
+    while rx.try_recv().is_ok() {
+        delivered += 1;
+    }
+    assert_eq!(delivered, 1_004);
+}
+
+#[test]
+fn a_panel_without_the_marker_is_never_coalesced() {
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (web, _rx) = web_conn(1, 64);
+    let (sess, _) = mgr.attach(web, CharKey(2), "b".into());
+
+    for n in 0..5 {
+        mgr.send_event_to_char(CharKey(2), unmarked("arena.cockpit", n));
+    }
+    assert_eq!(ring_of(&mgr, sess).len(), 5, "an unmarked panel is history");
+
+    // A marked frame of the same feed arrives: it coalesces only with its own
+    // kind, and the five unmarked ones stay exactly where they were.
+    mgr.send_event_to_char(CharKey(2), retained("arena.cockpit", 100));
+    mgr.send_event_to_char(CharKey(2), retained("arena.cockpit", 101));
+    let ring = ring_of(&mgr, sess);
+    assert_eq!(ring.len(), 6);
+    let ns: Vec<u64> = ring.iter().filter_map(|e| panel_n(&e.event)).collect();
+    assert_eq!(ns, [0, 1, 2, 3, 4, 101]);
+}
+
+#[test]
+fn a_typed_view_coalesces_with_the_pulse_frames_of_its_own_feed() {
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (web, _rx) = web_conn(1, 64);
+    let (sess, _) = mgr.attach(web, CharKey(3), "c".into());
+
+    mgr.send_event_to_char(CharKey(3), retained("arena.cockpit", 1));
+    mgr.send_event_to_char(CharKey(3), retained_grid("arena.cockpit", 2));
+    mgr.send_event_to_char(CharKey(3), retained("arena.cockpit", 3));
+    mgr.send_event_to_char(CharKey(3), retained_grid("arena.cockpit", 4));
+
+    let ring = ring_of(&mgr, sess);
+    assert_eq!(ring.len(), 1, "a shape is not a second feed");
+    let OutputEvent::Panel { data, .. } = &ring[0].event else {
+        panic!("a panel");
+    };
+    assert_eq!(data.get("n").and_then(serde_json::Value::as_u64), Some(4));
+    assert_eq!(
+        data.get("schema").and_then(|s| s.get("shape")),
+        Some(&serde_json::json!("grid")),
+        "and the survivor is the last one sent, whatever its shape"
+    );
+}
+
+#[test]
+fn two_retained_feeds_coalesce_independently() {
+    let mgr = manager_with_ticking_clock(SessionConfig::default());
+    let (web, _rx) = web_conn(1, 64);
+    let (sess, _) = mgr.attach(web, CharKey(4), "d".into());
+
+    for n in 0..4 {
+        mgr.send_event_to_char(CharKey(4), retained("arena.cockpit", n));
+        mgr.send_event_to_char(CharKey(4), retained("arena.map", n));
+    }
+    let ring = ring_of(&mgr, sess);
+    assert_eq!(ring.len(), 2, "one survivor per feed");
+    let rows: Vec<(String, u64)> = ring
+        .iter()
+        .filter_map(|e| match &e.event {
+            OutputEvent::Panel { feed, .. } => Some((feed.to_string(), panel_n(&e.event)?)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![("arena.cockpit".to_owned(), 3), ("arena.map".to_owned(), 3)],
+        "and each survivor is its own feed's newest, in send order"
+    );
+}
+
+#[test]
+fn coalescing_never_moves_the_too_old_boundary_and_leaves_the_backlog_alone() {
+    let mgr = manager_with_ticking_clock(SessionConfig {
+        resume_ring: 8,
+        ..SessionConfig::default()
+    });
+    let (web, _rx) = web_conn(1, 256);
+    let (sess, _) = mgr.attach(web, CharKey(5), "e".into());
+
+    // Four narrative lines, then far more cockpit frames than the ring is deep.
+    for i in 1..=4 {
+        mgr.send_event_to_char(CharKey(5), narr(&format!("n{i}")));
+    }
+    for n in 0..50 {
+        mgr.send_event_to_char(CharKey(5), retained("arena.cockpit", n));
+    }
+
+    // **The point of the whole idiom**: the four lines are still there. Before
+    // it, fifty frames into an eight-deep ring left nothing else in it.
+    let keep = |ev: &OutputEvent| matches!(ev, OutputEvent::Narrative { .. });
+    let backlog = mgr.backlog_matching(sess, None, 10, keep).expect("session");
+    assert_eq!(
+        backlog
+            .lines
+            .iter()
+            .map(|e| e.event.clone())
+            .collect::<Vec<OutputEvent>>(),
+        vec![narr("n4"), narr("n3"), narr("n2"), narr("n1")],
+        "the narrative backlog is untouched by coalescing"
+    );
+    assert!(!backlog.evicted, "nothing rolled off the ring");
+    assert!(!backlog.more);
+
+    // And a client that has seen nothing at all is still answered, with the one
+    // surviving frame in it — never `TooOld`, because `evicted_seq` never moved.
+    let replayed = mgr.replay_since(sess, 0).expect("never TooOld");
+    assert_eq!(replayed.len(), 5);
+    assert_eq!(
+        panel_n(&replayed[4].event),
+        Some(49),
+        "the survivor is last"
+    );
+    assert_eq!(
+        replayed.iter().map(|e| e.seq).collect::<Vec<u64>>(),
+        [1, 2, 3, 4, 54],
+        "the gap the coalesce left is the harmless kind a conn-scoped send leaves"
+    );
 }
 
 // ---- I12 leak tripwire: the ring's non-Char writers refuse a Narrative ------
