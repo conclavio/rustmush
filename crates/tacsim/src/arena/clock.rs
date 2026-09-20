@@ -293,20 +293,42 @@ impl Clock {
     }
 
     /// **The substep length** (doc 16 §3.1 "Rate independence"):
-    /// `min(substep_max_ms, cell_cm × 1000 / max_speed_cms)`, floored at
+    /// `min(substep_max_ms, (cell_cm - 1) × 1000 / max_speed_cms)`, floored at
     /// [`MIN_SUBSTEP_MS`].
     ///
     /// The quotient is the milliseconds the fastest unit in the match needs to
-    /// cross one cell, so no unit ever advances more than one cell in a substep
-    /// and step 4 of doc 16 §3.4 has at most one boundary to test.
+    /// cross one cell **less a centimetre**, so **one substep's travel on either
+    /// axis — the carry it banked last substep included, because that carry is
+    /// inside the same division — is at most `cell_cm - 1`**. No unit therefore
+    /// advances more than one cell in a substep and step 4 of doc 16 §3.4 has at
+    /// most one boundary to test.
+    ///
+    /// **16b cut Q.6 took that centimetre back, for margin and not for a repair.**
+    /// The bound was `cell_cm × 1000 / max_speed_cms`, under which travel could be
+    /// exactly `cell_cm` — and *that is still one cell*, because
+    /// [`crate::arena::state::ArenaTerrain::cell_at`] divides: adding exactly
+    /// `cell_cm` to a coordinate raises its cell index by exactly one, from a pose
+    /// one centimetre short of the edge as much as from anywhere else. Nor could
+    /// the carry [`crate::arena::state::MotionCarry`] added push it past that: one
+    /// axis of a substep is `div_euclid(speed × dt × fixed + carry, D)` with
+    /// `carry < D` and `|fixed| ≤ SIN_ONE`, so under the old bound the quotient was
+    /// at most `cell_cm` and under this one it is at most `cell_cm - 1`. The
+    /// tightening therefore buys a **strict** margin: with the remainder now inside
+    /// that quotient, the old bound was tight with nothing at all left over, and
+    /// every later change to the travel arithmetic would have had to re-derive that
+    /// it was still exactly tight. The stock tank (1,500 cm/s on 1,000 cm cells) is
+    /// bound by the 250 ms cap either way, so no shipped partition moves.
     ///
     /// When no unit can move the length is `substep_max_ms` — there is no cell
     /// crossing to bound — still floored at [`MIN_SUBSTEP_MS`], because a
     /// configured `substep_max_ms` below the floor would otherwise subdivide a
-    /// pulse without limit.
+    /// pulse without limit. The floor is the one thing that can still beat the
+    /// bound (a unit faster than 20,000 cm/s on 10 m cells), which is why motion's
+    /// own one-cell guard refuses a longer jump rather than trusting this.
     #[must_use]
     pub fn substep_ms(cfg: &TempoConfig, cell_cm: u16, max_speed_cms: u32) -> u32 {
         let base = match u32::from(cell_cm)
+            .saturating_sub(1)
             .saturating_mul(1_000)
             .checked_div(max_speed_cms)
         {
@@ -562,8 +584,11 @@ mod tests {
         // 1,000 cm cells at 1,000 cm/s is 1,000 ms to cross, so the 250 ms cap
         // wins.
         assert_eq!(Clock::substep_ms(&cfg, 1_000, 1_000), 250);
-        // 1,000 cm cells at 5,000 cm/s is 200 ms, under the cap.
-        assert_eq!(Clock::substep_ms(&cfg, 1_000, 5_000), 200);
+        // 1,000 cm cells at 5,000 cm/s crosses the cell in 200 ms; the bound is
+        // one centimetre short of that cell, so it is 199 — and 199 ms of travel
+        // at 5,000 cm/s is 995 cm, with the motion carry (16b cut Q.6) able to add
+        // at most one more.
+        assert_eq!(Clock::substep_ms(&cfg, 1_000, 5_000), 199);
         // Fast enough to cross a cell in under the floor: the floor wins.
         assert_eq!(Clock::substep_ms(&cfg, 1_000, 100_000), MIN_SUBSTEP_MS);
         // Nothing can move: the cap, with no crossing to bound.

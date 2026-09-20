@@ -605,6 +605,52 @@ impl Default for MotionLimits {
     }
 }
 
+/// **The fractions of a turn, of a speed change and of a distance that a substep
+/// did not spend** (16b cut Q.6; doc 16 §3.1 "Rate independence", §3.4).
+///
+/// Motion is three rates over arena time integrated into integer state, and
+/// before this cut each of the three was written `rate × dt / 1000` and the
+/// remainder thrown away — three truncations per unit per substep. That makes the
+/// *substep length* an input to the answer: a tank at 1,500 cm/s crossing a
+/// 250 ms substep travels 375 cm, and the same tank across five 50 ms substeps
+/// travels five times 75, which agrees only because those numbers happen to be
+/// whole. They usually are not. X.6's own measurement is the evidence: one
+/// scripted climb printed five `blocked` events at 150 ms substeps against one at
+/// 250, because a held tank gained a few cm/s on the ragged 50 ms tail, covered no
+/// whole centimetre, and so never reached the boundary to be refused at again.
+///
+/// So each rate keeps its remainder, exactly the way
+/// [`HeatState::carry_milli`](crate::arena::state::HeatState::carry_milli) keeps
+/// the fraction of a heat unit that a substep did not shed
+/// ([`crate::arena::heat`]'s head is the argument, written once). The total
+/// turned, gained or travelled over any interval is then the same however that
+/// interval is cut — see [`crate::arena::motion`]'s head for exactly which
+/// motions that makes exact and which it does not.
+///
+/// **Every field is folded into [`crate::arena::hash::state_hash`]**, because a
+/// carry is the fractional part of authoritative state: two replays whose carries
+/// differ are two replays that are about to disagree about a whole centimetre.
+///
+/// **A refused substep banks nothing.** Every stop, every wreck, every dead
+/// engine and every cold hull zeroes what it refused, which is
+/// [`crate::arena::heat`]'s own rule for a unit that has gone cold: a carry
+/// belongs to arena time that was actually spent moving.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MotionCarry {
+    /// Millidegrees × 1,000 not yet turned, in `0..1000`.
+    pub turn: u32,
+    /// cm/s × 1,000 not yet gained or shed, in `0..1000`.
+    pub speed: u32,
+    /// Centimetres × `1000 << 20` not yet travelled eastward, in `0..(1000 << 20)`
+    /// — the scale is the millisecond's thousand times [`SIN_ONE`]'s fixed point
+    /// ([`crate::arena::motion::SIN_ONE`]), because the east component is
+    /// `speed × dt × sin` and neither division is taken until the carry has been
+    /// added.
+    pub east: i64,
+    /// The same northward.
+    pub north: i64,
+}
+
 /// A unit's power state (doc 16 §3.3 "Startup").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1014,6 +1060,13 @@ pub struct UnitState {
     /// ledger event of its own, and a unit can sit in a cell for many substeps
     /// after the crossing that set it.
     pub grade_pct: u16,
+    /// **What the last substep of motion did not spend** (16b cut Q.6; doc 16
+    /// §3.1 "Rate independence") — the fractional turn, speed change and distance
+    /// that would otherwise be truncated away three times a substep.
+    ///
+    /// Written only by [`crate::arena::motion::integrate`], and folded into
+    /// [`crate::arena::hash::state_hash`] field by field: see [`MotionCarry`].
+    pub carry: MotionCarry,
     /// What damage has taken from its motion.
     pub limits: MotionLimits,
     /// How high its eye sits, centimetres (doc 16 §3.2 "Line of sight").
@@ -2541,6 +2594,10 @@ impl Arena {
                 // A unit opens the match standing still, so it entered its cell by
                 // no edge at all: grade zero, which is the flat factor.
                 grade_pct: 0,
+                // **16b cut Q.6**: and it has spent no arena time moving, so there
+                // is no fraction of a turn, a speed change or a centimetre to
+                // carry into its first substep.
+                carry: MotionCarry::default(),
                 limits: entry.limits,
                 sensor_height_cm: if unit.sensor_height_cm == 0 {
                     DEFAULT_SENSOR_HEIGHT_CM

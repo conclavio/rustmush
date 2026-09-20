@@ -644,6 +644,32 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
         "SCAN of an unheld name said something about a contact: {refused}"
     );
 
+    // **16b cut Q.6, the owner's ruling of 2026-09-20**, over a real line: *"if
+    // someone locks X1 and it becomes BA then their lock should continue, since
+    // it is the same contact even though the letters changed."* The word the
+    // lock was taken under above is `contact`, and by now the row answers to
+    // `named` — so re-issuing the **old** word has to reach the same contact,
+    // because `ContactRow::alias` keeps the provisional number after the rename
+    // (16b cut Q.1). It is asserted whichever name the race handed the lock: if
+    // `contact` was still `X<n>` it is the alias that resolves it, and if the
+    // classification had already landed it is the current designator — the claim
+    // is that neither is ever `No such contact.`, and that the lock is not
+    // disturbed. The library-level proof that the window really was the
+    // provisional one is `tacsim/tests/weapons.rs` and `tacsim/tests/cockpit.rs`,
+    // which drive the classification clock instead of racing it.
+    let renamed = ada.mark();
+    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    let kept = strip_ansi(&ada.seen[renamed..]);
+    assert!(
+        !kept.contains("No such contact."),
+        "the name the lock was taken under stopped resolving after the rename: {kept}"
+    );
+    let still = ask(&mut ada, "WEAPONSTATUS", "Locked on").await;
+    assert!(
+        still.contains(&named) && !still.contains("No lock"),
+        "the lock moved or broke: {still}"
+    );
+
     // Then the coaxial, whose pull is a ten-round burst: at this range one of
     // them lands, so the victim's half of the surface is exercised without the
     // test depending on a single draw. Both waits are taken from a mark, because

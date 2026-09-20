@@ -1069,7 +1069,24 @@ impl Arena {
     ///
     /// The mesh is line of sight and the same attenuation rule detection uses (W6:
     /// *tactical comms are LOS mesh jammed by the same ECM*), so a teammate behind
-    /// a wall is told nothing. A share **refreshes** what it hands over, which is
+    /// a wall is told nothing.
+    ///
+    /// **16b cut Q.6 closed the rest of that W6 clause.** Until it, the ECM half
+    /// of the sentence was unbuilt and doc 16 §3.6's own note recorded it as the
+    /// one clause still open: a pod jammed every sight in its bubble and jammed no
+    /// radio at all. Now a link is made only when **both ends** can carry it —
+    /// `jamming_at` is folded at the sharer's pose and at the mate's, each with
+    /// that unit's own filter recovered out of it, and the **tighter** of the two
+    /// answers governs. The line must pass [`sees`] at the smaller
+    /// [`Jamming::budget`], and the sharer-to-mate range must be inside the
+    /// smaller [`Jamming::scale`] of the share reach. Two terms, both the sensor
+    /// pass's own, so a pod cannot blind a tank and still let it phone home.
+    ///
+    /// The cull is untouched by all of it: the index is queried at the *unjammed*
+    /// reach and jamming only ever shortens, which is doc 16 §3.2's rule that the
+    /// cull never decides membership.
+    ///
+    /// A share **refreshes** what it hands over, which is
     /// what keeps a contact the mesh is still reporting from expiring in the
     /// teammate's own store (cut S's deviation (3), kept).
     ///
@@ -1120,6 +1137,17 @@ impl Arena {
         let cell_cm = u64::from(self.definition.terrain.cell_cm());
         let reach = u32::try_from(u64::from(sensor.share_range_cells).saturating_mul(cell_cm))
             .unwrap_or(u32::MAX);
+        // **16b cut Q.6**: the pods the *sharer* is standing among, folded once for
+        // the whole pass and not once per mate — the observer's own fold in
+        // `detections` is read the same way, and for the same reason. The sharer's
+        // own filter takes its share back out before either term is read, exactly
+        // as an observer's does. A match with no pod in it has `jam_radius_cm == 0`
+        // and never reaches the index or a counter, so a stock share is
+        // bit-identical to the one cut F.3 left.
+        let sharer_jam = self
+            .jamming_at(&sharing.pose, counters)
+            .map(|jam| jam.recovered(sharing.eccm));
+        let sharer_reach = sharer_jam.map_or(u64::from(reach), |jam| jam.scale(u64::from(reach)));
         // What there is to say: [`ShadowContact::shareable`], which is both of this
         // function's rules written once — classified, and seen by **this
         // platform's own** sensors inside the time to live, with that sighting's
@@ -1165,7 +1193,27 @@ impl Arena {
             counters.cell_probes = counters
                 .cell_probes
                 .saturating_add(u64::from(trace.visited));
-            if !sees(&trace.sight, attenuation) {
+            // **16b cut Q.6**: and the pods the *receiver* is standing among, with
+            // its own filter against them. A link has two ends and a pod sitting on
+            // either one cuts it, so the **tighter** of the two answers governs:
+            // the smaller attenuation budget for the line, and the shorter scaled
+            // reach for the range. Doc 16 W6 — *tactical comms are LOS mesh jammed
+            // by the same ECM* — is the whole rule, and "the same" is meant
+            // literally: this is `jamming_at`, `recovered`, `budget` and `scale`,
+            // the four the sensor pass uses, so detection and the mesh cannot jam
+            // differently.
+            let mate_jam = self
+                .jamming_at(&mate.pose, counters)
+                .map(|jam| jam.recovered(mate.eccm));
+            let budget = sharer_jam
+                .map_or(attenuation, |jam| jam.budget(attenuation))
+                .min(mate_jam.map_or(attenuation, |jam| jam.budget(attenuation)));
+            if !sees(&trace.sight, budget) {
+                continue;
+            }
+            let link_reach = sharer_reach
+                .min(mate_jam.map_or(u64::from(reach), |jam| jam.scale(u64::from(reach))));
+            if range_cm(&sharing.pose, &mate.pose) > link_reach {
                 continue;
             }
             mates.push(id);

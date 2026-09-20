@@ -2280,12 +2280,20 @@ fn a_spent_section_is_one_ledger_at_three_cadences() {
     // on the transition — so the change gets the cross-tempo cover every arena
     // behaviour gets.
     let mut runs: Vec<(i64, Replay)> = Vec::new();
+    // **16b cut Q.6**: and what the shooter's own result row (doc 16 §4) counted,
+    // which is read off the arena rather than off the black box — the two are
+    // deliberately different numbers now.
+    let mut counted: Vec<(u32, u32)> = Vec::new();
     for cadence in [5_000_i64, 1_000, 500] {
         let mut arena = spent_section_arena();
-        runs.push((
-            cadence,
-            replay(&mut arena, cadence, 60_000, &spent_section_script()),
-        ));
+        let run = replay(&mut arena, cadence, 60_000, &spent_section_script());
+        counted.push(
+            arena
+                .unit(RED)
+                .map(|state| (state.shots_fired, state.hits))
+                .unwrap_or_default(),
+        );
+        runs.push((cadence, run));
     }
     let Some((_, first)) = runs.first() else {
         panic!("three replays");
@@ -2301,6 +2309,40 @@ fn a_spent_section_is_one_ledger_at_three_cadences() {
         .filter(|(_, encoded, _, _)| encoded.contains("\"kind\":\"hit\""))
         .count();
     assert_eq!(destroyed, 1, "one destruction, whatever landed afterwards");
+    // **16b cut Q.6**: every `hit` line **after** the destruction is a round that
+    // arrived at a section already at zero armour and zero internals. The ledger
+    // records each of them, truthfully — the round landed — and the shooter's
+    // result row counts none of them, because it is what a pilot reads his own
+    // gunnery off and nothing was taken off anything. `skip_while` stops **at**
+    // the `section_destroyed` line, which sits after its own `hit`, so the round
+    // that finished the turret is on the right side of the count.
+    let spent = first
+        .events
+        .iter()
+        .skip_while(|(_, encoded, _, _)| !encoded.contains("\"kind\":\"section_destroyed\""))
+        .filter(|(_, encoded, _, _)| encoded.contains("\"kind\":\"hit\""))
+        .count();
+    assert!(
+        spent >= 1,
+        "no round landed on the spent turret: {hits} hits"
+    );
+    assert_eq!(
+        counted.first().map(|row| row.1),
+        Some(u32::try_from(hits.saturating_sub(spent)).unwrap_or(0)),
+        "the result row counted a round that took nothing off anything"
+    );
+    assert_eq!(
+        counted.first().map(|row| row.0),
+        Some(8),
+        "the eight shots the script fires are all accepted"
+    );
+    for (cadence, row) in [5_000_i64, 1_000, 500].iter().zip(counted.iter()).skip(1) {
+        assert_eq!(
+            Some(row),
+            counted.first().as_ref().copied(),
+            "the shooter's shots or hits differ at {cadence} ms"
+        );
+    }
     // 140 of rear armour and 150 of internals against a 120-round: the third
     // finishes the turret and the five after it arrive at a section with nothing
     // left to break. Before this cut each of those wrote a second destruction.

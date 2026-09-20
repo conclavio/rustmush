@@ -201,6 +201,21 @@ impl Rig {
         *self.pilots.get(n).expect("that many pilots were booted")
     }
 
+    /// **The frame the world's mirror holds for that pilot** (16b cut Q.6), cloned
+    /// so a test can hold one pulse's frame and wait for the next.
+    ///
+    /// The mirror only moves on [`Rig::pump`], which is the whole reason this
+    /// exists: an order typed with [`Rig::say`] is forwarded as an intent and
+    /// resolved a pulse later, so a frame read without pumping first is the frame
+    /// from *before* the order and says nothing about it.
+    fn frame(&self, n: usize) -> Option<tacsim::arena::step::Frame> {
+        self.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(self.pilot(n)))
+            .map(|held| held.frame.clone())
+    }
+
     fn say(&mut self, n: usize, line: &str) -> String {
         let actor = self.pilot(n);
         let events = self.events_of(actor, line);
@@ -1128,6 +1143,228 @@ async fn range_and_bearing_refuse_with_their_own_line_and_one_refusal_for_a_name
     let first = answers.first().cloned().unwrap_or_default();
     for said in &answers {
         assert_eq!(said, &first, "the three verbs refuse differently");
+    }
+}
+
+/// **A lock taken on `X1` is still a lock when the row becomes `BA`, at the
+/// cockpit** (16b cut Q.6; the owner's ruling of 2026-09-20).
+///
+/// The owner's words: *"new contact X1 until identified is fine, but if someone
+/// locks X1 and it becomes BA then their lock should continue, since it is the
+/// same contact even though the letters changed."* `weapons.rs` proves the arena
+/// keeps the lock; this proves the **cockpit** does not need it re-taken, which
+/// is where a pilot would find out.
+///
+/// Three claims, in the order a pilot meets them:
+///
+/// 1. the rename does not disturb the lock — the frame's opaque `lock` is the
+///    same sixteen digits before and after, and nothing says the lock broke;
+/// 2. **both spellings still resolve to it**: `LOCK BA` (the new name) and
+///    `LOCK X1` (the number the platform gave it first, which `ContactRow::alias`
+///    keeps) are the same order on the same contact, and `resolve_lock` is
+///    idempotent, so neither drops it and neither takes it again. Each repeat is
+///    given a pulse before its frame is read — the order is an intent and the
+///    mirror only moves on [`Rig::pump`] — because a frame read straight after
+///    `say` is the frame from *before* the order and would make the claim true
+///    without testing it. The ledger half of the same claim, that a repeat
+///    journals no second `locked` line, is `weapons.rs`'s (5b);
+/// 3. the four read verbs that fall back to the lock — `RANGE`, `BEARING`,
+///    `WEAPONSTATUS` and `SCAN`, each with no argument — answer **for that
+///    contact under its new name**, so a pilot who locked `X1` reads `BA`
+///    everywhere the moment the platform tells it apart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lock_taken_on_a_provisional_number_still_answers_to_both_names() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    // Fourteen cells apart up the middle, as `VIEW`'s own fixture stands them:
+    // well inside the stock sixty-cell sight and inside the half-reach a `SCAN`
+    // needs, so the only thing this test waits for is the classification clock.
+    let middle = i64::from(match_::ARENA_CELLS / 2);
+    rig.place(rig.tank(0), (middle, middle), 0);
+    rig.place(rig.tank(1), (middle, middle + 14), 180_000);
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    let said = rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running, "{said}");
+    rig.say(0, "startup");
+    rig.say(1, "startup");
+    assert!(rig.powered(0).await, "the tank wakes up");
+
+    // Pump until the platform holds the other tank and has **not** yet told it
+    // apart: that window is `classify_after_ms` long and it is the only moment
+    // this test can take its lock in.
+    let mut provisional = None;
+    for _ in 0..900 {
+        rig.pump();
+        let row = rig
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(rig.pilot(0)))
+            .map(|held| cockpit::frame_contacts(&held.frame))
+            .unwrap_or_default()
+            .first()
+            .cloned();
+        if let Some(row) = row
+            && row.class.as_str() == "unknown"
+        {
+            provisional = Some(row);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let provisional = provisional.expect("the platform holds an unidentified return");
+    let number = provisional.designator.to_string();
+    assert_eq!(number, "X1", "the first return this platform ever held");
+    assert_eq!(
+        provisional.alias, None,
+        "while unknown, the number IS the name"
+    );
+
+    let said = rig.say(0, &format!("lock {number}"));
+    assert!(said.contains(&format!("Locking {number}.")), "{said}");
+    // The order is forwarded as an intent and resolved in the arena's next pulse
+    // phase 4, so the lock reaches the world's mirror a pulse later.
+    let mut locked_on = None;
+    for _ in 0..300 {
+        rig.pump();
+        locked_on = rig
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(rig.pilot(0)))
+            .and_then(|held| cockpit::frame_lock(&held.frame));
+        if locked_on.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        locked_on,
+        Some(provisional.id),
+        "the lock landed on the unidentified return"
+    );
+
+    // Now let the classification clock run out.
+    let mut named = None;
+    for _ in 0..900 {
+        rig.pump();
+        let row = rig
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.last_frame(rig.pilot(0)))
+            .map(|held| cockpit::frame_contacts(&held.frame))
+            .unwrap_or_default()
+            .first()
+            .cloned();
+        if let Some(row) = row
+            && row.class.as_str() != "unknown"
+        {
+            named = Some(row);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let named = named.expect("the return is told apart");
+
+    // (1) The same contact, under a new name, with the lock untouched.
+    assert_eq!(named.id, provisional.id, "a rename is not a new contact");
+    assert_eq!(
+        named.designator.to_string(),
+        "BA",
+        "the other side's first slot"
+    );
+    assert_eq!(
+        named.alias,
+        Some(1),
+        "and the number it was held under is kept"
+    );
+    let still = rig
+        .tw
+        .world()
+        .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.last_frame(rig.pilot(0)))
+        .and_then(|held| cockpit::frame_lock(&held.frame));
+    assert_eq!(still, locked_on, "the rename moved the lock");
+    assert_eq!(
+        still,
+        Some(named.id),
+        "and it is on the row that was renamed"
+    );
+
+    // (2) Both spellings, and neither is a second lock. `resolve_lock` journals
+    //     nothing for a lock already held, so what a repeat may not do is change
+    //     the frame's lock or say the lock broke.
+    //
+    //     Each repeat is given a pulse before its frame is read. The order is
+    //     forwarded as an intent and resolved in the arena's next pulse, so a
+    //     frame read straight after `say` is the one from before the order and
+    //     would make the assertion below true by construction.
+    let spoken = rig.log.len();
+    for word in ["BA", "ba", &number, "x1"] {
+        let said = rig.say(0, &format!("lock {word}"));
+        assert!(
+            !said.contains(cockpit::NO_SUCH_CONTACT),
+            "LOCK {word} was refused after the rename: {said}"
+        );
+        assert!(said.contains("Locking BA."), "LOCK {word}: {said}");
+        let before = rig.frame(0).expect("a seated pilot holds a frame");
+        let mut pulsed = false;
+        for _ in 0..600 {
+            rig.pump();
+            if rig.frame(0).is_some_and(|now| !now.same_as(&before)) {
+                pulsed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(pulsed, "no pulse reached the mirror after LOCK {word}");
+        let held = rig.frame(0).and_then(|frame| cockpit::frame_lock(&frame));
+        assert_eq!(held, still, "LOCK {word} re-took or dropped the lock");
+    }
+    // And the pilot was never told the lock went. A repeat **does** answer with
+    // the hit chance — phase 4 stages the `Locked` notice on every accepted order,
+    // which is where `Locked on BA, 88% to hit.` comes from (16b cut F.2) — so the
+    // line that would mean something here is the one that says the lock broke, and
+    // `weapons.rs`'s claim (5b) is what proves the repeat journalled no second
+    // lock.
+    let told: Vec<String> = rig
+        .log
+        .iter()
+        .skip(spoken)
+        .filter_map(|(_, event)| match event {
+            OutputEvent::Sys(text) => Some(text.to_plain_text()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !told.iter().any(|line| line.contains("broken")),
+        "a repeated LOCK broke the lock: {told:?}"
+    );
+    assert!(
+        told.iter().any(|line| line.starts_with("Locked on BA,")),
+        "a repeated LOCK did not answer with the lock it already held: {told:?}"
+    );
+
+    // (3) The four reads that fall back to the lock, each with no argument.
+    for verb in ["range", "bearing", "weaponstatus", "scan"] {
+        let said = rig.say(0, verb);
+        assert!(
+            said.contains("BA"),
+            "{verb} did not answer for the locked contact under its new name: {said}"
+        );
+        assert!(
+            !said.contains(cockpit::NO_LOCK_OR_NAME) && !said.contains(cockpit::NO_LOCK),
+            "{verb} answered as though there were no lock: {said}"
+        );
+        assert!(
+            !said.contains(&named.id.to_string()),
+            "{verb} printed the sixteen digits: {said}"
+        );
     }
 }
 

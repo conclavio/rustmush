@@ -223,9 +223,9 @@ pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, Classification, ContactId,
     Controller, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, Designator, DesignatorBook,
     DueEvent, DueHeap, DueKind, EndReason, EntryZone, EpochTable, HeatState, KeySpot, MatchEnd,
-    MotionLimits, NO_SUCH_CONTACT, PROVISIONAL_PREFIX, Pilot, Power, ShadowContact, ShadowContacts,
-    Side, StopReason, Team, TerrainCell, TrackedRules, UnitState, Waypoint, Waypoints,
-    WeaponSummary,
+    MotionCarry, MotionLimits, NO_SUCH_CONTACT, PROVISIONAL_PREFIX, Pilot, Power, ShadowContact,
+    ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules, UnitState, Waypoint,
+    Waypoints, WeaponSummary,
 };
 pub use step::{Frame, FrameHeat, FrameSlots, StepOutput};
 pub use weapons::{FrameBand, FrameWeapon, Shot, WeaponBand};

@@ -2,7 +2,7 @@
 //! "Acceptance and cost" and "Scheduled impact", §3.7's `LOCK`, `FIRE` and
 //! `WEAPONSTATUS`, §3.1's tempo table and "Rate independence").
 //!
-//! Nine tests, driving the library directly — no host, no store, no task, the same
+//! Ten tests, driving the library directly — no host, no store, no task, the same
 //! shape `arena.rs` and `perception.rs` take:
 //!
 //! - **(a)** `FIRE` is refused for want of a lock, a finished cycle, a round and
@@ -21,7 +21,10 @@
 //!   `locked`/`fired`/`impact`/`miss` sequence and one per-substep hash sequence at
 //!   5,000, 1,000 and 500 ms;
 //! - **(i)** ammunition is conserved across a scripted run of four shots: rounds
-//!   fired plus rounds left equals the load.
+//!   fired plus rounds left equals the load;
+//! - **(j)** **a lock taken on a provisional number survives the rename** (16b cut
+//!   Q.6, the owner's ruling of 2026-09-20): `X1` becomes `BA` and the lock, the
+//!   contact id and the target are the same three things they were.
 //!
 //! # Two places a test reaches into the arena's own state, and why
 //!
@@ -54,7 +57,7 @@ use tacsim::arena::perception::{NoticeKind, SensorProfile, SignatureFactor};
 use tacsim::arena::rng::draw_contact_id;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    EntryZone, Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, TrackedRules,
+    Designator, EntryZone, Pilot, Power, SeenPose, ShadowContact, Team, TerrainCell, TrackedRules,
     WeaponSummary,
 };
 use tacsim::arena::step::{Frame, StepOutput};
@@ -1276,4 +1279,205 @@ fn ammunition_is_conserved_across_a_scripted_run() {
         cells.get(&SmolStr::new("cannon")).copied(),
         Some(load.saturating_sub(spent))
     );
+}
+
+// ---------------------------------------------------------------------------
+// (j) A lock survives the rename (16b cut Q.6; the owner's ruling of 2026-09-20)
+// ---------------------------------------------------------------------------
+
+/// **A lock taken on a provisional number is the same lock after the contact is
+/// told apart** (16b cut Q.6; doc 16 §3.5, §3.6, W5).
+///
+/// The owner's ruling on cut Q's short designators: *"new contact X1 until
+/// identified is fine, but if someone locks X1 and it becomes BA then their lock
+/// should continue, since it is the same contact even though the letters
+/// changed."* Cut Q.1 built it that way by construction — the arena only ever
+/// holds [`IntentKind::Lock`] with a [`ContactId`], and the designator is a
+/// rendering of the row rather than a handle on it — but nothing said so end to
+/// end, and a rename that silently dropped a lock is exactly the kind of thing a
+/// pilot finds out about when his `FIRE` is refused.
+///
+/// So this drives the whole transition through `Arena::step`: the lock is taken
+/// while the return is `X1`, the classification clock runs out, and afterwards
+/// the **same** `ContactId` is locked, the frame renders it `BA`, the only line
+/// the rename produced is the one that announces the new name, and a `FIRE` with
+/// no re-lock is accepted against the same object.
+///
+/// The counter-proof is in the same test: no `lock_lost` and no `lost` line
+/// anywhere, in the ledger or in the pilot's own notices. Those are the two
+/// events that *would* break a lock (16b cut W.1 clears it on the `lost`), and
+/// the claim is precisely that a rename is neither of them.
+#[test]
+fn a_lock_taken_on_a_provisional_number_survives_the_contact_being_told_apart() {
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let contact = contact_of(RED, BLUE);
+
+    // (1) One second in, against a `classify_after_ms` of three: the return is
+    //     held and not told apart, so its only name is this platform's own
+    //     provisional number.
+    assert_eq!(
+        arena.contacts.get(RED, contact).map(|held| held.class),
+        Some(Classification::Unknown),
+        "the return is still provisional at one second"
+    );
+
+    // (2) The lock, taken on `X1`.
+    let out = pulse(
+        &mut arena,
+        wall + 500,
+        &[intent(RED, IntentKind::Lock { contact }, 3)],
+        &mut bytes,
+    );
+    assert_eq!(
+        arena.unit(RED).and_then(|state| state.lock),
+        Some(contact),
+        "the lock landed"
+    );
+    let locked_frame = out
+        .frames
+        .iter()
+        .find(|(pilot, _)| *pilot == RED_PILOT)
+        .map(|(_, frame)| frame.clone())
+        .expect("taking a lock changes the gunner's view");
+    assert_eq!(
+        cockpit::lock_designator(&locked_frame),
+        Some(Designator::Provisional(1)),
+        "the lock is rendered under the number the platform gave the return"
+    );
+    assert_eq!(
+        cockpit::lock_designator(&locked_frame).map(|named| named.to_string()),
+        Some("X1".to_owned())
+    );
+
+    // (3) Past `classify_after_ms`. Everything the gunner is told from here on is
+    //     the rename's doing: the tanks are stationary, loaded and online.
+    let frames = run(&mut arena, 500, 5_000, &mut bytes);
+    let told: Vec<&'static str> = frames
+        .iter()
+        .filter(|(pilot, _)| *pilot == RED_PILOT)
+        .flat_map(|(_, frame)| frame.notices.iter().map(|notice| notice.kind().as_str()))
+        .collect();
+    assert_eq!(
+        told,
+        vec!["classified"],
+        "the rename said one thing, and it was the new name"
+    );
+
+    // (4) The lock is the same lock, on the same opaque id, and the platform's
+    //     row for it now carries the other side's slot designator.
+    assert_eq!(
+        arena.unit(RED).and_then(|state| state.lock),
+        Some(contact),
+        "the rename dropped the lock"
+    );
+    assert_eq!(
+        arena.contacts.get(RED, contact).map(|held| held.class),
+        Some(Classification::Classified { team: Team::Blue }),
+        "the return was never told apart"
+    );
+    let named_frame = frames
+        .iter()
+        .rev()
+        .find(|(pilot, _)| *pilot == RED_PILOT)
+        .map(|(_, frame)| frame.clone())
+        .expect("the classification changes the gunner's view");
+    let renamed = cockpit::lock_designator(&named_frame).expect("the lock is still on a held row");
+    assert_eq!(
+        renamed,
+        Designator::Slot {
+            team: Team::Blue,
+            slot: 1
+        },
+        "the lock now renders as the target's own callsign"
+    );
+    assert_eq!(renamed.to_string(), "BA");
+
+    // (5) Neither of the two events that break a lock happened — in the black box
+    //     or in the pilot's lines.
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "lost"), 0, "nothing was lost");
+    assert_eq!(count(&log, "locked"), 1, "one lock, taken once");
+    assert_eq!(
+        count(&log, "classified"),
+        2,
+        "each platform told the other apart once"
+    );
+    assert!(
+        !told.contains(&"lock_lost") && !told.contains(&"lost"),
+        "the rename broke the lock: {told:?}"
+    );
+
+    // (5b) And the order **repeated** on the renamed row is not a second lock.
+    //      This is the arena half of what a pilot does at the cockpit when he
+    //      types `LOCK BA` on a contact he already locked as `X1`:
+    //      `Arena::resolve_lock` answers `Ok` for a lock already held without
+    //      touching the state or the black box, so the ledger still holds one
+    //      `locked` line. The gunner **is** answered — phase 4 stages the notice
+    //      on every accepted order, which is where the hit chance comes from
+    //      (16b cut F.2) — so the line is the order's own reply and the ledger is
+    //      what says whether anything moved.
+    let repeat_at = arena.now_ms + 500;
+    let again = pulse(
+        &mut arena,
+        repeat_at,
+        &[intent(RED, IntentKind::Lock { contact }, 4)],
+        &mut bytes,
+    );
+    assert_eq!(
+        arena.unit(RED).and_then(|state| state.lock),
+        Some(contact),
+        "the repeat moved the lock"
+    );
+    let answered: Vec<&'static str> = again
+        .frames
+        .iter()
+        .filter(|(pilot, _)| *pilot == RED_PILOT)
+        .flat_map(|(_, frame)| frame.notices.iter().map(|notice| notice.kind().as_str()))
+        .collect();
+    assert_eq!(
+        answered,
+        vec!["locked"],
+        "a repeat answers with the lock and says nothing else"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(
+        count(&log, "locked"),
+        1,
+        "the repeat journalled a second lock"
+    );
+    assert_eq!(count(&log, "lock_lost"), 0, "and dropped the first");
+
+    // (6) And a `FIRE` with no re-lock is accepted, against the same object.
+    let before = arena.unit(RED).map(|state| state.weapon_ammo("cannon"));
+    let trigger_at = arena.now_ms + 500;
+    pulse(
+        &mut arena,
+        trigger_at,
+        &[intent(
+            RED,
+            IntentKind::Fire {
+                weapon: SmolStr::new("cannon"),
+            },
+            5,
+        )],
+        &mut bytes,
+    );
+    assert_eq!(
+        arena.unit(RED).map(|state| state.weapon_ammo("cannon")),
+        before.map(|rounds| rounds.saturating_sub(1)),
+        "the shot cost its round"
+    );
+    let shot = arena
+        .shots
+        .values()
+        .next()
+        .cloned()
+        .expect("one round in flight");
+    assert_eq!(shot.contact, contact, "fired on the lock it already held");
+    assert_eq!(shot.target, BLUE, "and it resolved against the same tank");
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "fired"), 1, "one pull, with no second lock");
+    assert_eq!(count(&log, "locked"), 1, "and no lock was re-taken");
 }

@@ -38,12 +38,39 @@
 //! cross-tempo property test compare byte-identical per-substep hashes across
 //! machines as well as across tempos.
 //!
-//! The one rounding that is visible: the distance along each axis is rounded to
-//! the nearest whole centimetre **per substep**, so a unit on a diagonal
-//! accumulates up to half a centimetre of rounding per substep rather than
-//! carrying a remainder (a remainder would be state, and
-//! [`crate::arena::state::UnitState`] deliberately holds none). At 250 ms
-//! substeps that is under 2 cm a second against cells 10 m wide.
+//! # The three remainders are carried, not truncated (16b cut Q.6)
+//!
+//! Each of the three rates above was written `rate × dt / 1000` and the
+//! remainder dropped, three times per unit per substep — so the *substep length*
+//! was an input to the answer. X.6's own measurement is the evidence: one
+//! scripted climb printed five `blocked` events at 150 ms substeps against one at
+//! 250, because a held tank gained a few cm/s on the ragged 50 ms tail of each
+//! pulse, covered no whole centimetre, and so never reached the boundary to be
+//! refused at again.
+//!
+//! So each rate keeps what it did not spend, on
+//! [`crate::arena::state::MotionCarry`], exactly the way [`crate::arena::heat`]
+//! keeps the fraction of a heat unit a substep did not shed — that module's head
+//! is the argument, written once. The turn carries millidegrees × 1,000, the
+//! acceleration carries cm/s × 1,000, and each axis of the travel carries
+//! centimetres × [`DISTANCE_SCALE`], because the distance is `speed × dt × sin`
+//! and **neither** division is taken until the carry has been added. A refused
+//! substep banks nothing: every stop, every wreck, every dead engine and every
+//! cold hull zeroes what it did not travel.
+//!
+//! **What this makes exact, whatever way arena time is cut into substeps** — 250,
+//! 150, 50, or a ragged remainder: a straight run at constant speed, a pure turn,
+//! and a speed ramp on uniform ground each end at the same heading, speed and
+//! pose.
+//!
+//! **What it does not.** Position while accelerating, or while turning and moving
+//! at once, is first-order in the substep (semi-implicit Euler: the substep
+//! travels at the speed and heading it *ends* with). The difference is bounded and
+//! it is no longer a truncation that drifts one way. Event **timestamps** are
+//! substep boundaries, so two different partitions of the same arena time still do
+//! not give one event list or one hash sequence; the cross-tempo property holds
+//! because the three cadences share one partition. An absolute substep lattice is
+//! the full remedy and is deliberately not taken here.
 
 use mush_atlas::physics::StepKind;
 use mush_sim::data::Pose;
@@ -51,6 +78,20 @@ use mush_sim::data::Pose;
 use crate::arena::index::SpatialIndex;
 use crate::arena::slope;
 use crate::arena::state::{ArenaTerrain, Power, Side, TerrainCell, UnitState};
+
+/// **The scale each axis of [`crate::arena::state::MotionCarry`] is measured in**
+/// (16b cut Q.6): the millisecond's thousand times [`SIN_ONE`]'s fixed point.
+///
+/// The east component of one substep's travel is `speed_cms × dt_ms × sin_fx`,
+/// which is centimetres times both of those divisors, so the numerator is carried
+/// whole and divided by this once — rather than divided twice with a truncation
+/// at each.
+pub const DISTANCE_SCALE: i64 = 1_000 * SIN_ONE;
+
+/// The scale [`crate::arena::state::MotionCarry::turn`] and
+/// [`crate::arena::state::MotionCarry::speed`] are measured in: milliseconds in a
+/// second, because both of those rates are per second and `dt` is milliseconds.
+const RATE_SCALE: u64 = 1_000;
 
 /// A full turn, millidegrees.
 pub const FULL_TURN_MDEG: u32 = 360_000;
@@ -138,21 +179,6 @@ fn quadrant_sin_fx(mdeg: u32) -> i64 {
     }
     let high = SIN_FX.get(sample.saturating_add(1)).copied().unwrap_or(low);
     low + (high - low) * frac / i64::from(SIN_STEP_MDEG)
-}
-
-/// `value × fixed / `[`SIN_ONE`], rounded to the nearest whole unit with halves
-/// away from zero. The product is taken in `i128`: a distance in centimetres
-/// times a fixed-point unit vector is comfortably inside `i64`, but only once the
-/// division has happened.
-fn scale_round(value: i64, fixed: i64) -> i64 {
-    let product = i128::from(value).saturating_mul(i128::from(fixed));
-    let half = i128::from(SIN_ONE) / 2;
-    let rounded = if product >= 0 {
-        product.saturating_add(half) / i128::from(SIN_ONE)
-    } else {
-        product.saturating_sub(half) / i128::from(SIN_ONE)
-    };
-    i64::try_from(rounded).unwrap_or(if rounded < 0 { i64::MIN } else { i64::MAX })
 }
 
 /// **Why a unit was stopped at a cell boundary** (16b cut F.2; doc 16 §3.4 step
@@ -298,12 +324,18 @@ fn advance(
     );
 
     // ---- 3. the position advances along the heading ----
-    let travel = i64::from(unit.speed_cms).saturating_mul(dt) / 1_000;
-    if travel == 0 {
-        return MotionOutcome::default();
-    }
-    let east = scale_round(travel, sin_fx(unit.pose.heading_mdeg));
-    let north = scale_round(travel, cos_fx(unit.pose.heading_mdeg));
+    // **16b cut Q.6**: `speed × dt × sin` is centimetres times a thousand times
+    // [`SIN_ONE`], so the numerator is taken whole, the carry is added to it, and
+    // the one division answers both the whole centimetres and what is left. The
+    // magnitudes stay inside `i64` by a wide margin — the shipped ceiling is
+    // 1,500 cm/s over a 250 ms substep, which is under 4 × 10¹¹ — and the
+    // multiplications saturate rather than trusting that.
+    let (speed_cms, heading_mdeg) = (unit.speed_cms, unit.pose.heading_mdeg);
+    let east = axis(speed_cms, dt, sin_fx(heading_mdeg), &mut unit.carry.east);
+    let north = axis(speed_cms, dt, cos_fx(heading_mdeg), &mut unit.carry.north);
+    // No whole centimetre either way, so no boundary to test — **after** the two
+    // carries have been banked, which is what lets a crawl accumulate instead of
+    // standing still for ever.
     if east == 0 && north == 0 {
         return MotionOutcome::default();
     }
@@ -313,6 +345,10 @@ fn advance(
         // refuses a pose off the window, so this is unreachable through the
         // shipped lane and is written as a refusal rather than an assumption.
         unit.speed_cms = 0;
+        // **16b cut Q.6**: a refused substep banks no distance it never travelled.
+        unit.carry.speed = 0;
+        unit.carry.east = 0;
+        unit.carry.north = 0;
         unit.blocked = true;
         return MotionOutcome {
             moved: false,
@@ -376,6 +412,23 @@ fn advance(
     }
 }
 
+/// **One axis of step 3's travel, with its remainder carried** (16b cut Q.6).
+///
+/// `num = speed_cms × dt × fixed + carry`, then one Euclidean division by
+/// [`DISTANCE_SCALE`]: the quotient is the whole centimetres this substep covers
+/// along that axis and the remainder — always in `0..DISTANCE_SCALE`, which is
+/// what `rem_euclid` gives for a negative numerator too — is what it did not.
+/// Reversing therefore carries as cleanly as driving forward: the quotient floors
+/// toward negative infinity and the carry makes up the difference next substep.
+fn axis(speed_cms: i32, dt: i64, fixed: i64, carry: &mut i64) -> i64 {
+    let numerator = i64::from(speed_cms)
+        .saturating_mul(dt)
+        .saturating_mul(fixed)
+        .saturating_add(*carry);
+    *carry = numerator.rem_euclid(DISTANCE_SCALE);
+    numerator.div_euclid(DISTANCE_SCALE)
+}
+
 /// Step 1: turn toward `desired_heading_mdeg` at `turn_rate_mdeg_s × dt / 1000`
 /// on the shortest arc, **blocked toward a `no_turn_toward` side**.
 ///
@@ -391,14 +444,24 @@ fn advance(
 /// A wreck and a unit whose motion is disabled do not turn at all: doc 16 §3.3
 /// revokes `tactics.mobility` with the wreck, and a destroyed engine is
 /// `disable_motion`.
+///
+/// **16b cut Q.6**: the rate's remainder is carried on
+/// [`crate::arena::state::MotionCarry::turn`], so a turn of 30°/s is 30° of arc
+/// over a second however that second is cut into substeps. It is zeroed on every
+/// substep that does **not** turn — a wreck, a dead engine, a cold hull, an arc
+/// already closed, a side that is forbidden both ways — and on the substep that
+/// closes the arc, because the fraction left over then belongs to a turn that is
+/// finished.
 fn turn(unit: &mut UnitState, dt: i64) {
     if unit.limits.wreck || unit.limits.motion_disabled || unit.power != Power::Online {
+        unit.carry.turn = 0;
         return;
     }
     let current = unit.pose.heading_mdeg % FULL_TURN_MDEG;
     let desired = unit.desired_heading_mdeg % FULL_TURN_MDEG;
     let clockwise_arc = (desired + FULL_TURN_MDEG - current) % FULL_TURN_MDEG;
     if clockwise_arc == 0 {
+        unit.carry.turn = 0;
         return;
     }
     let short_is_clockwise = clockwise_arc <= HALF_TURN_MDEG;
@@ -414,16 +477,25 @@ fn turn(unit: &mut UnitState, dt: i64) {
         };
     }
     if unit.limits.no_turn_toward == Some(toward) {
+        unit.carry.turn = 0;
         return;
     }
     let arc = match toward {
         Side::Right => clockwise_arc,
         Side::Left => FULL_TURN_MDEG - clockwise_arc,
     };
-    let rate = u64::from(unit.mobility.turn_rate_mdeg_s)
+    let budget = u64::from(unit.mobility.turn_rate_mdeg_s)
         .saturating_mul(u64::try_from(dt).unwrap_or(0))
-        / 1_000;
-    let step = u32::try_from(rate).unwrap_or(u32::MAX).min(arc);
+        .saturating_add(u64::from(unit.carry.turn));
+    let step = u32::try_from(budget / RATE_SCALE)
+        .unwrap_or(u32::MAX)
+        .min(arc);
+    // The arc is closed: what is left of the budget belongs to a turn that is over.
+    unit.carry.turn = if step == arc {
+        0
+    } else {
+        u32::try_from(budget % RATE_SCALE).unwrap_or(0)
+    };
     unit.pose.heading_mdeg = match toward {
         Side::Right => (current + step) % FULL_TURN_MDEG,
         Side::Left => (current + FULL_TURN_MDEG - step) % FULL_TURN_MDEG,
@@ -465,9 +537,19 @@ fn turn(unit: &mut UnitState, dt: i64) {
 /// can never sit above `max_speed_cms`, because the order is clamped to that
 /// (`apply_intent`) and nothing else raises it, so the substep's one-cell bound
 /// (doc 16 §3.1) still holds.
+///
+/// **16b cut Q.6**: the rate's remainder is carried on
+/// [`crate::arena::state::MotionCarry::speed`], so a ramp at 200 cm/s² reaches the
+/// same speed however the arena time is cut. It is zeroed when the speed is
+/// already at its target, when this substep reaches it, and on the wreck / dead
+/// engine / cold power return — which also zeroes the two travel carries, because
+/// a tank that has just been stopped dead did not travel the fraction they hold.
 fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u32) {
     if unit.limits.wreck || unit.limits.motion_disabled || unit.power != Power::Online {
         unit.speed_cms = 0;
+        unit.carry.speed = 0;
+        unit.carry.east = 0;
+        unit.carry.north = 0;
         return;
     }
     let scaled = |ceiling: u32| -> i32 {
@@ -485,6 +567,7 @@ fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u32) {
     let target = unit.desired_speed_cms.clamp(reverse, forward);
     let current = unit.speed_cms;
     if target == current {
+        unit.carry.speed = 0;
         return;
     }
     let rate = if target.abs() < current.abs() {
@@ -492,13 +575,21 @@ fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u32) {
     } else {
         unit.mobility.accel_cms2
     };
-    let delta = i64::from(rate).saturating_mul(dt) / 1_000;
-    let delta = i32::try_from(delta).unwrap_or(i32::MAX);
+    let budget = u64::from(rate)
+        .saturating_mul(u64::try_from(dt).unwrap_or(0))
+        .saturating_add(u64::from(unit.carry.speed));
+    let delta = i32::try_from(budget / RATE_SCALE).unwrap_or(i32::MAX);
+    unit.carry.speed = u32::try_from(budget % RATE_SCALE).unwrap_or(0);
     unit.speed_cms = if target > current {
         current.saturating_add(delta).min(target)
     } else {
         current.saturating_sub(delta).max(target)
     };
+    // The target is reached: what is left of the budget belongs to a ramp that is
+    // over, exactly as the closed arc's does.
+    if unit.speed_cms == target {
+        unit.carry.speed = 0;
+    }
 }
 
 /// **The one boundary a substep crosses**, fetched once (16b cut X.6).
@@ -549,13 +640,15 @@ impl Crossing<'_> {
 /// axis, it is passable, the edge onto it is within this unit's slope limit, and
 /// it is either empty or already held by this unit.
 ///
-/// **The one-cell guard.** The substep length is `min(substep_max_ms, cell_cm ×
-/// 1000 / max_speed_cms)` (doc 16 §3.1), so a unit covers at most one cell in a
-/// substep and step 4 has at most one boundary to test. A configuration whose
-/// floor beat that bound could offer a longer jump, and the cells in between
-/// would never be tested — so a jump of more than one cell is **refused** rather
-/// than trusted, which keeps the invariant true of the code and not merely of the
-/// shipped constants.
+/// **The one-cell guard.** The substep length is
+/// `min(substep_max_ms, (cell_cm - 1) × 1000 / max_speed_cms)` (doc 16 §3.1,
+/// tightened by 16b cut Q.6), so one substep's travel on either axis is at most
+/// `cell_cm - 1` — the carry included, because [`axis`] adds it *inside* the one
+/// division — and a unit covers at most one cell in a substep, so step 4 has at
+/// most one boundary to test. A configuration whose floor beat that bound could
+/// offer a longer jump, and the cells in between would never be tested — so a jump
+/// of more than one cell is **refused** rather than trusted, which keeps the
+/// invariant true of the code and not merely of the shipped constants.
 ///
 /// A **diagonal** crossing tests the diagonal neighbour and nothing else: the
 /// unit cuts the corner and never occupies either edge-adjacent cell, so neither
@@ -614,6 +707,12 @@ fn refusal(
 /// "At the boundary" is the last whole centimetre of its own cell, because
 /// [`ArenaTerrain::cell_of`] gives a boundary to the cell it opens: at 1,000 cm
 /// cells, column 3 is `3_000..=3_999`.
+///
+/// **16b cut Q.6**: and the three motion carries go with the speed. The rule is
+/// [`crate::arena::heat`]'s — a carry belongs to arena time that was actually
+/// spent — and a refused substep spent none: banking the fraction of a centimetre
+/// the unit was clamped back out of would push it over the boundary on the next
+/// substep without a second test.
 fn stop_at_boundary(
     unit: &mut UnitState,
     terrain: &ArenaTerrain,
@@ -629,6 +728,9 @@ fn stop_at_boundary(
     unit.pose.x_cm = moved_x.clamp(low_x, low_x.saturating_add(side).saturating_sub(1));
     unit.pose.y_cm = moved_y.clamp(low_y, low_y.saturating_add(side).saturating_sub(1));
     unit.speed_cms = 0;
+    unit.carry.speed = 0;
+    unit.carry.east = 0;
+    unit.carry.north = 0;
     unit.blocked = true;
     MotionOutcome {
         moved: false,
@@ -696,6 +798,51 @@ mod tests {
             step_one(arena, id, dt_ms);
         }
     }
+
+    /// **Drive `total_ms` of arena time through one partition of it** (16b cut
+    /// Q.6): pulses of `pulse_ms`, each cut into substeps of at most
+    /// `substep_max_ms` by [`crate::arena::clock::substeps`] — the real partition
+    /// machinery, so a ragged pulse produces the ragged tail a live one does.
+    ///
+    /// Answers how many **stops** the drive produced, counted the way
+    /// [`crate::arena::step`] journals its `blocked` line: on the rising edge of
+    /// `UnitState::blocked`, once per stop rather than once per substep a standing
+    /// order holds the unit against the obstacle.
+    fn drive(
+        arena: &mut Arena,
+        id: ObjId,
+        total_ms: u32,
+        pulse_ms: u32,
+        substep_max_ms: u32,
+    ) -> (usize, usize) {
+        let mut spent = 0_u32;
+        let mut journalled = 0_usize;
+        let mut told = 0_usize;
+        let mut was_blocked = false;
+        let mut was_held = false;
+        while spent < total_ms {
+            let pulse = pulse_ms.min(total_ms - spent);
+            for dt in crate::arena::clock::substeps(pulse, substep_max_ms) {
+                let outcome = step_one(arena, id, dt);
+                if outcome.blocked_at.is_some() && !was_blocked {
+                    journalled += 1;
+                }
+                if outcome.blocked_by.is_some() && !was_held {
+                    told += 1;
+                }
+                was_blocked = arena.unit(id).is_some_and(|unit| unit.blocked);
+                was_held = arena.unit(id).is_some_and(|unit| unit.held);
+                spent = spent.saturating_add(dt);
+            }
+        }
+        (journalled, told)
+    }
+
+    /// The four partitions every Q.6 property is asserted over: three uniform
+    /// substep ceilings driven by a 5,000 ms pulse, and a **ragged** one — pulses
+    /// of 370 ms, which is not a multiple of any substep ceiling, so every pulse
+    /// ends in a short tail. That tail is exactly what X.6's measurement caught.
+    const PARTITIONS: [(u32, u32); 4] = [(5_000, 250), (5_000, 150), (5_000, 50), (370, 250)];
 
     #[test]
     fn the_sine_table_is_pinned_at_the_angles_everyone_knows() {
@@ -1170,5 +1317,436 @@ mod tests {
                 }
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut Q.6: the carries
+    // -----------------------------------------------------------------------
+
+    /// **A straight run, a pure turn and a speed ramp do not depend on how arena
+    /// time is cut into substeps** (16b cut Q.6; doc 16 §3.1 "Rate independence").
+    ///
+    /// Four partitions of the same 100 seconds — 250, 150 and 50 ms ceilings under
+    /// a 5,000 ms pulse, and a ragged 370 ms pulse whose every tail is short — and
+    /// the three motions this module's head calls **exact** end identically in all
+    /// four. The numbers are chosen so that each one would have failed before the
+    /// carries: a crawl at 3 cm/s covers no whole centimetre in any of these
+    /// substeps, a turn at 33.333°/s leaves a remainder in every one of them, and
+    /// a ramp at 333 cm/s² likewise.
+    ///
+    /// The ramp's **pose** is deliberately not compared: a substep travels at the
+    /// speed it ends with, so position under acceleration is first-order in the
+    /// substep, which is the one thing the module head says the carries do *not*
+    /// make exact.
+    #[test]
+    fn the_carries_make_a_run_a_turn_and_a_ramp_independent_of_the_substep() {
+        // (a) the crawl: 3 cm/s for 100 s is 300 cm, and before the carries it was
+        // nothing at all — `3 × 250 / 1000` is zero, and so is `3 × 50 / 1000`.
+        let mut crawled: Vec<(i64, i64)> = Vec::new();
+        for (pulse_ms, substep_max_ms) in PARTITIONS {
+            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.pose.heading_mdeg = 90_000;
+                unit.desired_heading_mdeg = 90_000;
+                unit.speed_cms = 3;
+                unit.desired_speed_cms = 3;
+            }
+            assert_eq!(
+                drive(&mut arena, A, 100_000, pulse_ms, substep_max_ms),
+                (0, 0)
+            );
+            crawled.push(
+                arena
+                    .unit(A)
+                    .map_or((0, 0), |unit| (unit.pose.x_cm, unit.pose.y_cm)),
+            );
+        }
+        assert!(
+            crawled.iter().all(|pose| *pose == (3_800, 3_500)),
+            "a crawl of 3 cm/s for 100 s is 300 cm at every partition: {crawled:?}"
+        );
+
+        // (b) the full-speed run: 1,000 cm/s due east for 4 s, across four cell
+        // boundaries of open ground.
+        let mut ran: Vec<(i64, i64)> = Vec::new();
+        for (pulse_ms, substep_max_ms) in PARTITIONS {
+            let mut arena = running(vec![tank(A, Team::Red, pose(500, 3_500))]);
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.pose.heading_mdeg = 90_000;
+                unit.desired_heading_mdeg = 90_000;
+                unit.speed_cms = 1_000;
+                unit.desired_speed_cms = 1_000;
+            }
+            assert_eq!(
+                drive(&mut arena, A, 4_000, pulse_ms, substep_max_ms),
+                (0, 0)
+            );
+            ran.push(
+                arena
+                    .unit(A)
+                    .map_or((0, 0), |unit| (unit.pose.x_cm, unit.pose.y_cm)),
+            );
+        }
+        assert!(
+            ran.iter().all(|pose| *pose == (4_500, 3_500)),
+            "a road run at 1,000 cm/s for 4 s is 4,000 cm at every partition: {ran:?}"
+        );
+
+        // (c) the turn: 33.333 degrees a second for 4 s is 133.332 degrees of a
+        // half turn that is never closed, so what is compared is the arc itself
+        // and not the order it is heading for.
+        let mut turned: Vec<u32> = Vec::new();
+        for (pulse_ms, substep_max_ms) in PARTITIONS {
+            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.mobility.turn_rate_mdeg_s = 33_333;
+                unit.desired_heading_mdeg = 180_000;
+            }
+            assert_eq!(
+                drive(&mut arena, A, 4_000, pulse_ms, substep_max_ms),
+                (0, 0)
+            );
+            turned.push(arena.unit(A).map_or(0, |unit| unit.pose.heading_mdeg));
+        }
+        assert!(
+            turned.iter().all(|heading| *heading == 133_332),
+            "33,333 mdeg/s for 4,000 ms is 133,332 mdeg at every partition: {turned:?}"
+        );
+
+        // (d) the ramp: 333 cm/s² for 2 s is 666 cm/s, mid-ramp, so the target is
+        // never reached and the rate itself is what is compared.
+        let mut ramped: Vec<i32> = Vec::new();
+        for (pulse_ms, substep_max_ms) in PARTITIONS {
+            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.mobility.accel_cms2 = 333;
+                unit.desired_speed_cms = 1_000;
+            }
+            drive(&mut arena, A, 2_000, pulse_ms, substep_max_ms);
+            ramped.push(arena.unit(A).map_or(0, |unit| unit.speed_cms));
+        }
+        assert!(
+            ramped.iter().all(|speed| *speed == 666),
+            "333 cm/s² for 2,000 ms is 666 cm/s at every partition: {ramped:?}"
+        );
+    }
+
+    /// **One obstacle is one stop, and the tank is held at the same centimetre,
+    /// at every partition** (16b cut Q.6) — and the one thing that is still not
+    /// partition-independent, measured rather than asserted away.
+    ///
+    /// A tank ordered east into an impassable band is stopped at the boundary and
+    /// held there however the pulse is cut, and **the pilot is told once** at
+    /// every partition, because the notice fires on the rising edge of the `held`
+    /// condition (16b cut F.2) and that condition survives a substep in which
+    /// nothing moved.
+    ///
+    /// **The ledger's `blocked` line does not**, and the carries do not fix it.
+    /// It fires on the rising edge of the per-substep `blocked` **flag**, which
+    /// `advance` clears at the top of every substep and a substep that covers no
+    /// whole centimetre never sets again — so on a short tail substep a held tank
+    /// re-accelerates from the zero a stop left it at, travels under a centimetre,
+    /// and makes the next refusal a second rising edge. That is the two-flag split
+    /// F.2 recorded deliberately, not the truncation this cut removed: the carry a
+    /// refused substep would need in order to cross the centimetre is exactly the
+    /// one a refusal must **not** bank. The counts are therefore printed, the way
+    /// X.6 printed its own.
+    #[test]
+    fn one_obstacle_is_one_stop_at_every_partition() {
+        let mut counts: Vec<(usize, usize)> = Vec::new();
+        let mut poses: Vec<(i64, bool)> = Vec::new();
+        for (pulse_ms, substep_max_ms) in PARTITIONS {
+            let mut cells = vec![ground(); 64];
+            for y in 0..8_u16 {
+                if let Some(cell) = cells.get_mut(usize::from(y) * 8 + 4) {
+                    cell.move_cost = 0;
+                }
+            }
+            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            arena.definition.terrain =
+                ArenaTerrain::new(8, 8, 1_000, cells).expect("the band window");
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.pose.heading_mdeg = 90_000;
+                unit.desired_heading_mdeg = 90_000;
+                unit.desired_speed_cms = 1_000;
+            }
+            counts.push(drive(&mut arena, A, 30_000, pulse_ms, substep_max_ms));
+            poses.push(
+                arena
+                    .unit(A)
+                    .map_or((0, false), |unit| (unit.pose.x_cm, unit.held)),
+            );
+        }
+        assert!(
+            poses.iter().all(|end| *end == (3_999, true)),
+            "the tank is held at the same centimetre at every partition: {poses:?}"
+        );
+        assert!(
+            counts.iter().all(|count| count.1 == 1),
+            "the pilot is told once at every partition: {counts:?}"
+        );
+        // And the one that is not, reported rather than asserted equal.
+        println!(
+            "q6_partition_blocked_ledger_lines: {:?}",
+            counts.iter().map(|count| count.0).collect::<Vec<usize>>()
+        );
+        assert!(
+            counts.iter().all(|count| count.0 >= 1),
+            "no stop was journalled at all: {counts:?}"
+        );
+    }
+
+    /// **The substep bound leaves a centimetre for the carry, and a unit driven
+    /// flat out from a cell edge is never refused one** (16b cut Q.6; the
+    /// adversarial review's X-6).
+    ///
+    /// Two things, and it is worth being exact about which is which.
+    ///
+    /// The **constant** is the property: `substep_ms` is `min(substep_max_ms,
+    /// (cell_cm - 1) × 1000 / max_speed_cms)`, so at 5,000 cm/s on 1,000 cm cells
+    /// it is **199** and not 200, and one substep's travel is therefore strictly
+    /// inside a cell rather than exactly a cell. It is a margin and not a repair:
+    /// [`crate::arena::clock::Clock::substep_ms`]'s own comment re-derives why the
+    /// old quotient could not produce a two-cell step either, and this test does
+    /// **not** claim that it could.
+    ///
+    /// The **drive** is a regression pin on the arithmetic that margin protects:
+    /// from one centimetre short of a cell edge, a minute at full speed crosses
+    /// three hundred boundaries and is refused none of them, and the distance it
+    /// covers is exact. Part (a) is the brief's own fixture, whose 5,000 cm/s
+    /// divides `cell_cm × 1000` exactly and so never rolls a carry over at all;
+    /// part (b) is the same run at 4,999, where every substep banks 801 thousandths
+    /// of a centimetre and the rollover happens inside the cell crossings — which
+    /// is the case (a) cannot reach.
+    #[test]
+    fn a_unit_at_the_edge_of_its_cell_at_full_speed_is_never_refused() {
+        use crate::arena::clock::Clock;
+        use crate::config::TempoConfig;
+
+        let cfg = TempoConfig::default();
+        assert_eq!(
+            Clock::substep_ms(&cfg, 1_000, 5_000),
+            199,
+            "the bound is one centimetre short of a cell"
+        );
+        assert_eq!(
+            Clock::substep_ms(&cfg, 1_000, 4_999),
+            199,
+            "and the same for the speed that does not divide it"
+        );
+
+        // A long, flat corridor: 320 cells of open ground, which 5,000 cm/s covers
+        // 300 of in the minute below.
+        let corridor = |speed: i32| -> Arena {
+            let cells = vec![ground(); 320 * 4];
+            let mut arena = running(vec![tank(A, Team::Red, pose(999, 1_500))]);
+            arena.definition.terrain =
+                ArenaTerrain::new(320, 4, 1_000, cells).expect("the corridor window");
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.pose.heading_mdeg = 90_000;
+                unit.desired_heading_mdeg = 90_000;
+                unit.mobility.max_speed_cms = u32::try_from(speed).unwrap_or(0);
+                unit.speed_cms = speed;
+                unit.desired_speed_cms = speed;
+            }
+            arena
+        };
+
+        // (a) the brief's fixture: 5,000 cm/s, whose travel is whole centimetres.
+        let mut exact = corridor(5_000);
+        assert_eq!(
+            drive(&mut exact, A, 60_000, 1_000, 199),
+            (0, 0),
+            "a tank on open ground was refused a cell"
+        );
+        assert_eq!(
+            exact.unit(A).map(|unit| unit.pose.x_cm),
+            Some(999 + 300_000),
+            "60 s at 5,000 cm/s is 300,000 cm"
+        );
+
+        // (b) 4,999 cm/s, which rolls the carry over: one 199 ms substep is
+        // 994.801 cm, so the substep covers 994 and banks 801 thousandths, and the
+        // rollover lands inside the crossings the drive below makes.
+        let mut probe = corridor(4_999);
+        step_one(&mut probe, A, 199);
+        assert_eq!(
+            probe
+                .unit(A)
+                .map(|unit| (unit.pose.x_cm, unit.carry.east != 0)),
+            Some((999 + 994, true)),
+            "4,999 cm/s over 199 ms is 994 cm and a carry"
+        );
+        let mut rolling = corridor(4_999);
+        assert_eq!(
+            drive(&mut rolling, A, 60_000, 1_000, 199),
+            (0, 0),
+            "the rolling carry pushed the tank into a cell it was refused"
+        );
+        assert_eq!(
+            rolling.unit(A).map(|unit| unit.pose.x_cm),
+            Some(999 + 299_940),
+            "60 s at 4,999 cm/s is 299,940 cm, carried and not truncated"
+        );
+    }
+
+    /// **A refused substep banks no distance it never travelled** (16b cut Q.6):
+    /// every stop, every wreck, every dead engine and every cold hull zeroes the
+    /// carries — [`crate::arena::heat`]'s own rule for a unit that has gone cold.
+    #[test]
+    fn a_stop_a_wreck_and_a_cold_hull_all_zero_the_carries() {
+        // (a) the four refusals. Each fixture drives a tank on a heading whose
+        // carries are non-zero on **both** axes — 30 degrees, where neither
+        // `sin_fx` nor `cos_fx` is zero and neither divides the travel — into the
+        // thing that refuses it. Due east would leave `carry.north` zero
+        // throughout, and its zeroing would then be asserted against a field that
+        // was never set.
+        let banded = |cost: u16| -> Vec<TerrainCell> {
+            let mut cells = vec![ground(); 64];
+            for y in 0..8_u16 {
+                if let Some(cell) = cells.get_mut(usize::from(y) * 8 + 4) {
+                    cell.move_cost = cost;
+                }
+            }
+            cells
+        };
+        // Impassable ground, a cell another tank holds, and the window's own edge.
+        // The slope needs relief rather than a band, so it builds its own window.
+        let mut cliff = vec![ground(); 64];
+        for y in 0..8_u16 {
+            if let Some(cell) = cliff.get_mut(usize::from(y) * 8 + 4) {
+                cell.elev_cm = 900;
+            }
+        }
+        for (cause, terrain, units) in [
+            (
+                BlockedCause::Impassable,
+                ArenaTerrain::new(8, 8, 1_000, banded(0)).expect("the band window"),
+                vec![tank(A, Team::Red, pose(3_800, 3_500))],
+            ),
+            (
+                BlockedCause::Occupied,
+                ArenaTerrain::new(8, 8, 1_000, banded(100)).expect("the open window"),
+                vec![
+                    tank(A, Team::Red, pose(3_800, 3_500)),
+                    tank(B, Team::Blue, pose(4_500, 3_500)),
+                ],
+            ),
+            (
+                BlockedCause::TooSteep,
+                ArenaTerrain::new(8, 8, 1_000, cliff).expect("the cliff window"),
+                vec![tank(A, Team::Red, pose(3_800, 3_500))],
+            ),
+            (
+                BlockedCause::Edge,
+                ArenaTerrain::new(8, 8, 1_000, banded(100)).expect("the open window"),
+                vec![tank(A, Team::Red, pose(7_800, 3_500))],
+            ),
+        ] {
+            let mut arena = running(units);
+            arena.definition.terrain = terrain;
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.pose.heading_mdeg = 30_000;
+                unit.desired_heading_mdeg = 30_000;
+                unit.speed_cms = 999;
+                unit.desired_speed_cms = 999;
+                unit.slope_limit_pct = Some(60);
+            }
+            // 999 cm/s over 250 ms on a 30 degree heading is 124.875 cm east and
+            // 216.28 cm north, so the first substep stays inside its own cell and
+            // banks a fraction of a centimetre on each axis. That is what makes
+            // the assertion after the refusal mean something on both of them.
+            let first = step_one(&mut arena, A, 250);
+            assert_eq!(first.blocked_by, None, "{cause:?}: refused too early");
+            assert!(
+                arena
+                    .unit(A)
+                    .is_some_and(|unit| unit.carry.east != 0 && unit.carry.north != 0),
+                "{cause:?}: nothing was carried into the refusal"
+            );
+            let outcome = step_one(&mut arena, A, 250);
+            assert_eq!(outcome.blocked_by, Some(cause));
+            assert_eq!(
+                arena.unit(A).map(|unit| unit.carry),
+                Some(crate::arena::state::MotionCarry::default()),
+                "{cause:?}: a refused substep banked what it never travelled"
+            );
+        }
+
+        // (b) a wreck, a dead engine and a cold hull, each with every carry
+        // already loaded: the substep that stops the tank dead empties them.
+        for limits in [
+            MotionLimits {
+                wreck: true,
+                ..MotionLimits::default()
+            },
+            MotionLimits {
+                motion_disabled: true,
+                ..MotionLimits::default()
+            },
+            MotionLimits::default(),
+        ] {
+            let cold = limits == MotionLimits::default();
+            let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.carry = crate::arena::state::MotionCarry {
+                    turn: 700,
+                    speed: 800,
+                    east: 900,
+                    north: 1_000,
+                };
+                unit.speed_cms = 500;
+                unit.desired_speed_cms = 500;
+                unit.desired_heading_mdeg = 90_000;
+                unit.limits = limits;
+                if cold {
+                    unit.power = Power::Off;
+                }
+            }
+            step_one(&mut arena, A, 250);
+            assert_eq!(
+                arena.unit(A).map(|unit| unit.carry),
+                Some(crate::arena::state::MotionCarry::default()),
+                "a stopped unit kept a carry (cold {cold})"
+            );
+            assert_eq!(arena.unit(A).map(|unit| unit.speed_cms), Some(0));
+        }
+
+        // (c) and the two carries that belong to a finished order: an arc that
+        // closes and a ramp that reaches its target both end at zero, so the next
+        // order starts from a known place rather than from whatever the last one
+        // left over.
+        let mut arena = running(vec![tank(A, Team::Red, pose(3_500, 3_500))]);
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.mobility.turn_rate_mdeg_s = 33_333;
+            unit.desired_heading_mdeg = 30_000;
+            unit.desired_speed_cms = 333;
+            unit.mobility.accel_cms2 = 333;
+        }
+        // 33,333 mdeg/s and 333 cm/s² both leave a quarter of a unit over on a
+        // 250 ms substep, so both carries are alive before either order finishes.
+        step_one(&mut arena, A, 250);
+        assert_eq!(
+            arena
+                .unit(A)
+                .map(|unit| (unit.carry.turn, unit.carry.speed)),
+            Some((250, 250)),
+            "the first substep closed neither"
+        );
+        run(&mut arena, A, 3, 250);
+        assert_eq!(
+            arena
+                .unit(A)
+                .map(|unit| (unit.pose.heading_mdeg, unit.speed_cms)),
+            Some((30_000, 333)),
+            "the arc and the ramp both finished"
+        );
+        assert_eq!(
+            arena
+                .unit(A)
+                .map(|unit| (unit.carry.turn, unit.carry.speed)),
+            Some((0, 0)),
+            "a finished order left a carry behind"
+        );
     }
 }

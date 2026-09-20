@@ -192,7 +192,14 @@ pub struct UnitResult {
     /// Shots fired, off the arena's own counter (16b cut W.2). `0` for a unit the
     /// arena's end message did not name, and for every unit on a void.
     pub shots: u32,
-    /// How many of them landed, likewise.
+    /// **How many of them took something off something**, likewise (16b cut Q.6).
+    ///
+    /// It is [`crate::arena::damage::UnitReturn::hits`] copied through the check-in
+    /// message, and that field's doc is the argument: it is **not** the black
+    /// box's count of `hit` lines, because a round that reaches a section already
+    /// at zero armour and zero internals did land and is journalled, but moved no
+    /// cell. A reader of this record who cross-checks the two will find them
+    /// differing by exactly the rounds spent on spent sections.
     pub hits: u32,
 }
 

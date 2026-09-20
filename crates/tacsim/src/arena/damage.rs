@@ -286,7 +286,14 @@ pub struct UnitReturn {
     pub pose: mush_sim::data::Pose,
     /// How many shots it fired.
     pub shots: u32,
-    /// How many of them landed.
+    /// **How many of them took something off something** (16b cut Q.6).
+    ///
+    /// Not the same number as the ledger's count of `hit` lines, and deliberately
+    /// so: a round that reaches a section already at zero armour and zero
+    /// internals did land, and the black box records it, but it moved no cell and
+    /// bumped no revision — so counting it here flattered every shooter who kept
+    /// firing at a spent track. This is the figure a pilot reads his own gunnery
+    /// off ([`Arena::resolve_impact`]'s guard is the one place it is raised).
     pub hits: u32,
     /// It is a wreck (doc 16 §3.3).
     pub wreck: bool,
@@ -595,7 +602,8 @@ impl Arena {
         // a bumped revision. A revision is what the check-out diff is taken
         // against; bumping it for a round that moved nothing put a lie in the one
         // document that outlives the match. The round is still journalled as a
-        // hit, truthfully (see below).
+        // hit, truthfully (see below) — but from 16b cut Q.6 it is not counted as
+        // one on the shooter's result row, which is inside this guard.
         if !plan.ops().is_empty() {
             let applied = self
                 .unit(shot.target)
@@ -616,9 +624,16 @@ impl Arena {
             // **16b cut Q.2**: through the one writer, so the band cache the
             // gunner's `SCAN` reads moves with the round that changed it.
             self.set_unit(shot.target, post);
-        }
-        if let Some(state) = self.unit_mut(shot.shooter) {
-            state.hits = state.hits.saturating_add(1);
+            // **16b cut Q.6**: and the shooter's count is inside the guard with
+            // it. The result record's `hits` (doc 16 §4) is what a pilot reads
+            // his own gunnery off, and a round that reached a section already at
+            // zero armour and zero internals took nothing off anything — counting
+            // it flattered every shooter who kept firing at a spent track. The
+            // **ledger's** `hit` line below and the pilot's notice are unchanged:
+            // the round did land, and that is a different sentence.
+            if let Some(state) = self.unit_mut(shot.shooter) {
+                state.hits = state.hits.saturating_add(1);
+            }
         }
         journal.push((
             t_ms,

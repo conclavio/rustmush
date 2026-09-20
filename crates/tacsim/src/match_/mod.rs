@@ -174,6 +174,14 @@ impl MatchBook {
     /// takes back what `BOARD` put in a pod, and `BOARD` fails closed on the
     /// control-lease mirror until that same 1 Hz projection has been read once,
     /// so there is nothing of anybody's to take.
+    ///
+    /// **16b cut Q.6 looked at moving it and did not** (doc 16 §9 item 6's
+    /// carry-over list). `mush_core::Module` has `on_world_loaded` and no hook
+    /// that runs *after* every module's load, so the only places a sweep could run
+    /// earlier than this tick are a new kernel lifecycle hook or an assertion
+    /// about composition order — a dependency on another module's position in the
+    /// roster, which is the thing the composition root exists to keep nobody
+    /// needing. The tick is where it stays, and this paragraph is why.
     pub fn arm_boot_sweep(&mut self) {
         self.boot_sweep = true;
     }

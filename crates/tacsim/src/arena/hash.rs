@@ -61,7 +61,10 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///        values would make two weapons that swapped cycles one state;
 ///    11. **the controller byte** (16b cut N.1): `0` pilot, `1` reflex;
 ///    12. **`grade_pct`** (16b cut X.6), `u16` — the uphill slope of the edge the
-///        unit entered its cell by.
+///        unit entered its cell by;
+///    13. **the four motion carries** (16b cut Q.6), in field order: `carry.turn`
+///        as `u32`, `carry.speed` as `u32`, `carry.east` as `i64` and
+///        `carry.north` as `i64`.
 /// 2. **The reflex machines** (16b cut N.1), in unit-id order — the map's own, so
 ///    there is no iteration order to diverge on: per machine the unit's `u32`, the
 ///    state byte, the goal cell's two `u16` (`u16::MAX` twice for none), the
@@ -157,6 +160,16 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// would make this function a second and weaker copy of that journal — the reason
 /// the opaque unit itself is absent.
 ///
+/// **Cut Q.6's extension**: the four motion carries. They are the *fractional
+/// part* of three quantities this hash already folds — the heading, the speed and
+/// the pose — so leaving them out would be folding a number and hiding its low
+/// bits. Each is authoritative state with exactly one writer
+/// ([`crate::arena::motion::integrate`]), each moves with no ledger event of its
+/// own, and two replays whose carries differ are two replays that are about to
+/// disagree about a whole centimetre — several substeps later, when the drift has
+/// accumulated, which is precisely the divergence the per-substep sequence exists
+/// to catch at the substep it happened.
+///
 /// The *callsign* on each unit is deliberately **not** folded: it is a pure
 /// function of the check-out message, resolved once by `Arena::new` and never
 /// moved, so two replays of one custody message agree on it by construction —
@@ -214,6 +227,12 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fnv1a64_update(hash, &[unit.controller.code()]);
         // 16b cut X.6: the slope it is standing on.
         hash = fnv1a64_update(hash, &unit.grade_pct.to_le_bytes());
+        // 16b cut Q.6: the fractions of a turn, a speed change and a centimetre
+        // that the last substep did not spend.
+        hash = fnv1a64_update(hash, &unit.carry.turn.to_le_bytes());
+        hash = fnv1a64_update(hash, &unit.carry.speed.to_le_bytes());
+        hash = fnv1a64_update(hash, &unit.carry.east.to_le_bytes());
+        hash = fnv1a64_update(hash, &unit.carry.north.to_le_bytes());
     }
     // 16b cut N.1: the controller's own machines, in unit-id order.
     for (unit, row) in arena.reflex.rows() {
@@ -526,6 +545,43 @@ mod tests {
             };
         }
         assert_eq!(state_hash(&renamed), base);
+    }
+
+    /// **16b cut Q.6's extension**: each of the four motion carries is the
+    /// fractional part of a quantity already in the hash, so each has to move it
+    /// on its own — a replay whose carries differ is a replay that is about to
+    /// disagree about a whole centimetre.
+    #[test]
+    fn the_hash_folds_each_of_the_four_motion_carries() {
+        let base = state_hash(&two_tanks());
+        for mutate in [
+            (|unit: &mut crate::arena::state::UnitState| unit.carry.turn = 1) as fn(&mut _),
+            |unit| unit.carry.speed = 1,
+            |unit| unit.carry.east = 1,
+            |unit| unit.carry.north = 1,
+        ] {
+            let mut probe = two_tanks();
+            if let Some(unit) = probe.unit_mut(ObjId(9)) {
+                mutate(unit);
+            }
+            assert_ne!(state_hash(&probe), base, "a carry went unhashed");
+        }
+        // The four are separate fields and not one number: a carry moved from one
+        // to another is a different state.
+        let mut east = two_tanks();
+        if let Some(unit) = east.unit_mut(ObjId(9)) {
+            unit.carry.east = 7;
+        }
+        let mut north = two_tanks();
+        if let Some(unit) = north.unit_mut(ObjId(9)) {
+            unit.carry.north = 7;
+        }
+        assert_ne!(state_hash(&east), state_hash(&north));
+        // And back to nothing carried is the same state again.
+        if let Some(unit) = east.unit_mut(ObjId(9)) {
+            unit.carry.east = 0;
+        }
+        assert_eq!(state_hash(&east), base);
     }
 
     #[test]

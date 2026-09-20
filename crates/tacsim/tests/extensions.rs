@@ -49,6 +49,15 @@
 //! centimetre; a filter with no bubble on it, or one shot off its mount, is no
 //! filter at all; and it needs no power, because a filter radiates nothing.
 //!
+//! **16b cut Q.6** paid two debts this file owed. Four of the five items above
+//! shipped without the cross-tempo test 16b §11 makes mandatory for any cut that
+//! changes arena behaviour, and X.4 left the second half of doc 16 §2 W6 — *and
+//! tactical comms are LOS mesh jammed by the same ECM* — unbuilt. Both are at the
+//! end of this file, prefixed `q6_`, on fixtures of their own: the replays need a
+//! corridor rather than the 16 by 16 window the X items wanted, and the mesh
+//! property needs a **blind** teammate, whose only possible way of holding
+//! anything is the link under test.
+//!
 //! # What this file loads, and what it deliberately does not
 //!
 //! The three extension packs go through the **operator's** route —
@@ -5126,11 +5135,11 @@ fn x6_one_scripted_climb_at_three_cadences_is_one_event_list_and_one_hash_sequen
 /// **The climb does not depend on the substep length either** (16b cut X.6).
 ///
 /// The three cadences of the test above all run 250 ms substeps, because
-/// `substep_ms` is `min(substep_max_ms, cell_cm × 1000 / max_speed_cms)` and
-/// depends on neither the tempo nor the pulse. So the substep length is covered
-/// here instead, by moving the table's own `substep_max_ms`: the sustained speed
-/// on the ramp and the cell the mover is refused at are the same at 250 ms and at
-/// 150 ms.
+/// `substep_ms` is `min(substep_max_ms, (cell_cm - 1) × 1000 / max_speed_cms)`
+/// (16b cut Q.6 took that centimetre back) and depends on neither the tempo nor
+/// the pulse. So the substep length is covered here instead, by moving the
+/// table's own `substep_max_ms`: the sustained speed on the ramp and the cell the
+/// mover is refused at are the same at 250 ms and at 150 ms.
 ///
 /// What is **not** asserted identical, deliberately: the transient — a shorter
 /// substep quantises the acceleration finer, so the pose at a given arena
@@ -5138,8 +5147,21 @@ fn x6_one_scripted_climb_at_three_cadences_is_one_event_list_and_one_hash_sequen
 /// 150 ms a 5,000 ms pulse is thirty-three substeps of 150 and one of 50, and on
 /// that 50 ms piece a held tank gains 5 cm/s, travels no whole centimetre, and
 /// `integrate` returns having cleared `blocked` — so the next refusal is a second
-/// rising edge. That is the pre-existing short-substep truncation, which X.6
-/// neither fixes nor widens.
+/// rising edge.
+///
+/// **16b cut Q.6 measured that and it is not the truncation it was read as.**
+/// The carries removed every truncation in motion and this count did not move:
+/// 250 ms still prints one and 150 ms still prints five. The cause is the *two
+/// flags* cut F.2 split deliberately — the ledger's `blocked` line fires on the
+/// rising edge of `UnitState::blocked`, which is what **this substep** did and
+/// which a substep covering no whole centimetre cannot set, while the pilot's
+/// own line fires on the rising edge of the `held` **condition**, which survives
+/// such a substep and is therefore said exactly once at every partition
+/// (`arena::motion`'s `one_obstacle_is_one_stop_at_every_partition`). The carry
+/// that would close the gap is the one a refusal must not bank. Closing it means
+/// moving the ledger line onto `held`, and `held` is not folded into
+/// `state_hash`, so that is a change to what the hash covers and not a change to
+/// motion.
 #[test]
 fn x6_the_climb_does_not_depend_on_the_substep_length() {
     const MOVER: mush_core::ObjId = mush_core::ObjId(4);
@@ -5586,4 +5608,1030 @@ fn q2_the_band_cache_survives_an_entry_consequence_a_beam_and_a_heat_cycle() {
         after, before,
         "forty beams moved no band at all, so the invariant above proves nothing"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Q.6 — the four cross-tempo tests 16b §11 owes for X.2 to X.5, and the jammed
+// share mesh (doc 16 W6's last clause)
+// ---------------------------------------------------------------------------
+
+/// The mate on the share mesh (16b cut Q.6).
+const MESH_MATE: mush_core::ObjId = mush_core::ObjId(5);
+/// The second target of the thermal replay, the far one.
+const FAR_TARGET: mush_core::ObjId = mush_core::ObjId(11);
+
+/// **A window of any shape for the Q.6 replays** (16b cut Q.6).
+///
+/// [`definition`] is 16 by 16 because that is the shape every X-cut fixture
+/// wants; the thermal sight reads to 450 m and the jamming bubble is 60 m wide,
+/// so three of the four replays below need a corridor rather than a square. The
+/// entry zones are the two ends of it, as [`definition`]'s are of its own.
+fn q6_window(width: u16, height: u16) -> ArenaDefinition {
+    let cells = vec![ground(); usize::from(width) * usize::from(height)];
+    ArenaDefinition {
+        id: SmolStr::new("tacsim.arena.q6"),
+        terrain: ArenaTerrain::new(width, height, CELL_CM, cells).expect("the q6 window"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: width - 1,
+                y1: 1,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: 0,
+                y0: height - 2,
+                x1: width - 1,
+                y1: height - 1,
+            },
+        ],
+        key_spots: Vec::new(),
+        waypoints: Waypoints::default(),
+    }
+}
+
+/// [`arena_of`] over a window the caller chose (16b cut Q.6).
+fn q6_arena(catalog: &Catalog, units: Vec<CustodyUnit>, definition: ArenaDefinition) -> Arena {
+    let pilots = units
+        .iter()
+        .enumerate()
+        .map(|(seat, unit)| Pilot {
+            unit: unit.id,
+            pilot: mush_core::ObjId(1_000 + u32::try_from(seat).unwrap_or(0)),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        })
+        .collect();
+    Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots,
+            resolution: tacsim::match_::resolution_for(catalog),
+            seed: SEED,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("the q6 arena")
+}
+
+/// One unit as a Q.6 replay left it: `(unit, x_cm, y_cm, heading_mdeg, speed_cms,
+/// slow_pct, motion_disabled, blocked)`.
+type Q6Final = (mush_core::ObjId, i64, i64, u32, i32, u8, bool, bool);
+
+/// What one Q.6 replay produced — [`ReliefReplay`] without X.6's climb
+/// instruments, which none of these four fixtures climbs anything to measure.
+struct Q6Replay {
+    events: Vec<ReliefLine>,
+    hashes: Vec<u64>,
+    finals: Vec<Q6Final>,
+}
+
+impl Q6Replay {
+    /// Every ledger line of `kind` whose JSON contains all of `needles`, as
+    /// `(t_ms, json)` — the instrument these four properties read, because what
+    /// each is about is *when* a particular contact or consequence arrived, and a
+    /// fixture with three units in it journals several lines of each kind.
+    fn lines(&self, kind: &str, needles: &[&str]) -> Vec<(i64, String)> {
+        let head = format!("{{\"kind\":\"{kind}\",");
+        self.events
+            .iter()
+            .filter(|(_, json, _, _)| {
+                json.starts_with(&head) && needles.iter().all(|needle| json.contains(needle))
+            })
+            .map(|(t_ms, json, _, _)| (*t_ms, json.clone()))
+            .collect()
+    }
+}
+
+/// Drive one arena through `script` at `cadence_ms` until arena time reaches
+/// `until_ms`, with the tempo pinned — [`relief_replay`] over [`Q6Final`].
+fn q6_replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[ReliefBeat]) -> Q6Replay {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = 0_i64;
+    let mut next = 0_usize;
+    let mut ended = false;
+    loop {
+        arena
+            .clock
+            .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+        let mut intents: Vec<tacsim::arena::intents::Intent> = Vec::new();
+        while let Some(beat) = script.get(next) {
+            if beat.t_ms > arena.now_ms {
+                break;
+            }
+            intents.extend(beat.intents.iter().cloned());
+            next += 1;
+        }
+        // Each beat goes in a pulse of **no wall time at all**, which is
+        // `tests/resolution.rs`'s rule and the reason these replays compare at
+        // all: phase 4 resolves a discrete action at the arena millisecond its
+        // pulse ended at, so a beat handed to a pulse that advances nothing
+        // resolves at exactly the millisecond the script names — at every cadence.
+        if !intents.is_empty() {
+            let out = arena.step(wall, &[], &intents);
+            for chunk in &out.ledger_chunks {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
+            hashes.extend(arena.substep_hashes.iter().copied());
+            ended = out.ended.is_some();
+        }
+        if ended || arena.now_ms >= until_ms {
+            break;
+        }
+        wall += cadence_ms;
+        let out = arena.step(wall, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if out.ended.is_some() || arena.now_ms >= until_ms {
+            break;
+        }
+    }
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    Q6Replay {
+        events: String::from_utf8(bytes)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                serde_json::from_str::<tacsim::arena::ledger::LedgerEvent>(line).ok()
+            })
+            .map(|event| {
+                (
+                    event.t_ms,
+                    serde_json::to_string(&event.kind).unwrap_or_default(),
+                    event.draw,
+                    event.hash,
+                )
+            })
+            .collect(),
+        hashes,
+        finals: arena
+            .units
+            .iter()
+            .map(|unit| {
+                (
+                    unit.id,
+                    unit.pose.x_cm,
+                    unit.pose.y_cm,
+                    unit.pose.heading_mdeg,
+                    unit.speed_cms,
+                    unit.limits.slow_pct,
+                    unit.limits.motion_disabled,
+                    unit.blocked,
+                )
+            })
+            .collect(),
+    }
+}
+
+/// **The three cadences, compared** (16b §11): one scripted log at 5,000, 1,000
+/// and 500 ms gives one event list, one per-substep hash sequence and one final
+/// state — with the sibling tests' differing-pulses guard, which is that every
+/// replay ran to exactly the same arena time.
+fn q6_three_cadences(
+    label: &str,
+    until_ms: i64,
+    mut build: impl FnMut() -> Arena,
+    script: &[ReliefBeat],
+) -> Q6Replay {
+    let mut runs: Vec<(i64, Q6Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = build();
+        let run = q6_replay(&mut arena, cadence, until_ms, script);
+        assert_eq!(
+            arena.now_ms, until_ms,
+            "{label}: cadence {cadence} ran to a different arena time"
+        );
+        runs.push((cadence, run));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("{label}: three replays");
+    };
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "{label}: the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes,
+            first.hashes,
+            "{label}: the per-substep hash sequence differs at {cadence} ms ({} against {})",
+            run.hashes.len(),
+            first.hashes.len()
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "{label}: a final pose, limit or speed differs at {cadence} ms"
+        );
+    }
+    let Some((_, first)) = runs.into_iter().next() else {
+        panic!("{label}: three replays");
+    };
+    first
+}
+
+// --- X.2: a biped losing one leg and then the other ------------------------
+
+/// **The scripted leg fight** (16b cut Q.6 for X.2): a stock tank seven cells
+/// south of a walking biped, with the biped's whole facet table pointed at its
+/// two legs so that the weighted draw can only ever choose between them.
+///
+/// The draw is still the arena's own (`choose_section` off the shot sequence), so
+/// *which* leg a round takes is not the fixture's to say — what the fixture
+/// guarantees is that every round takes one of them, and that both eventually go.
+fn q6_leg_arena(catalog: &Catalog) -> Arena {
+    let mut arena = q6_arena(
+        catalog,
+        vec![
+            unit_of(catalog, content::LINE_TANK, RED, Team::Red, (8, 1)),
+            unit_of(catalog, content::BIPED_MK1, BLUE, Team::Blue, (8, 8)),
+        ],
+        q6_window(16, 48),
+    );
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.profile.bands = state
+            .profile
+            .bands
+            .iter()
+            .map(|band| tacsim::arena::resolution::BandProfile {
+                sections: vec![
+                    (SmolStr::new("left_leg"), 1),
+                    (SmolStr::new("right_leg"), 1),
+                ],
+                ..band.clone()
+            })
+            .collect();
+    }
+    // The shooter opens the match already holding its target, the way [`duel`]
+    // does: this property is about the legs, not about acquisition.
+    let contact = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+    arena.contacts.insert(
+        RED,
+        contact,
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot_of(&arena, BLUE),
+        ),
+    );
+    arena
+}
+
+/// Start up, walk north, turn about, walk back, and be shot at all the way
+/// through — every timestamp a multiple of 5,000 ms, so one script means one
+/// thing at all three cadences.
+fn q6_leg_script() -> Vec<ReliefBeat> {
+    use tacsim::arena::intents::IntentKind;
+    let contact = tacsim::arena::rng::draw_contact_id(SEED, RED, BLUE);
+    let mut beats = vec![
+        ReliefBeat {
+            t_ms: 0,
+            intents: vec![
+                relief_intent(RED, IntentKind::Startup, 1),
+                relief_intent(BLUE, IntentKind::Startup, 1),
+            ],
+        },
+        ReliefBeat {
+            t_ms: 10_000,
+            intents: vec![relief_intent(BLUE, IntentKind::Speed { cms: 1_200 }, 2)],
+        },
+        ReliefBeat {
+            t_ms: 25_000,
+            intents: vec![relief_intent(BLUE, IntentKind::Speed { cms: 0 }, 3)],
+        },
+        ReliefBeat {
+            t_ms: 60_000,
+            intents: vec![
+                relief_intent(BLUE, IntentKind::Heading { mdeg: 180_000 }, 4),
+                relief_intent(BLUE, IntentKind::Speed { cms: 1_200 }, 5),
+            ],
+        },
+        ReliefBeat {
+            t_ms: 70_000,
+            intents: vec![relief_intent(BLUE, IntentKind::Speed { cms: 0 }, 6)],
+        },
+    ];
+    // The cannon's cycle is 6,000 ms, so a round every ten seconds is a round
+    // every time it is ready, and each leg takes four of them through the front
+    // facet (260 of armour and 160 of internals against a 120-round).
+    for (n, at) in (15_000_i64..=135_000).step_by(10_000).enumerate() {
+        let seq = u64::try_from(n).unwrap_or(0).saturating_mul(2) + 10;
+        beats.push(ReliefBeat {
+            t_ms: at,
+            intents: vec![
+                relief_intent(RED, IntentKind::Lock { contact }, seq),
+                relief_intent(
+                    RED,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                    },
+                    seq + 1,
+                ),
+            ],
+        });
+    }
+    // The driver walks the script in order and stops at the first beat the arena
+    // has not reached, so the beats must be in **arena-time order**: they are
+    // written above in two groups, the helm's and the gunner's.
+    beats.sort_by_key(|beat| beat.t_ms);
+    beats
+}
+
+/// **One scripted leg fight at three cadences is one event list and one hash
+/// sequence** (16b §11's mandatory cross-tempo test, owed by 16b cut X.2; doc 16
+/// §9 item 2, §3.1 "Rate independence").
+///
+/// X.2 put a mobility mode and a **pair** consequence into the world —
+/// `disable_motion_when_all_of`, which fires on the second leg and not on the
+/// first — and neither had a cross-tempo test. Both are in this one: the biped
+/// walks under the legged numbers while it is being shot at, `slow(50)` fires on
+/// the first leg, and the pair rule fires on the second at one arena millisecond
+/// in all three replays.
+#[test]
+fn q6_one_scripted_leg_fight_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
+    let catalog = biped_catalog();
+    let script = q6_leg_script();
+    let first = q6_three_cadences("x2 legs", 140_000, || q6_leg_arena(&catalog), &script);
+
+    // The run is worth comparing before it is compared: both legs went, and they
+    // went at two different arena milliseconds.
+    let legs: Vec<(i64, String)> = first
+        .lines("section_destroyed", &["\"unit\":9"])
+        .into_iter()
+        .filter(|(_, json)| json.contains("_leg"))
+        .collect();
+    assert_eq!(legs.len(), 2, "the fight did not take both legs: {legs:?}");
+    assert!(
+        legs.get(1).map(|(at, _)| *at) > legs.first().map(|(at, _)| *at),
+        "the two legs went at the same instant: {legs:?}"
+    );
+    // And the pair rule fired on the **second** of them. The ledger cannot show
+    // that — a `section_destroyed` line carries the section's *authored*
+    // consequences whatever actually fired, which is F.2's own ruling — so it is
+    // read off the unit instead, at an arena time between the two losses. That is
+    // a second three-cadence property in its own right: the biped is limping, and
+    // not stopped, at the same arena millisecond at every cadence.
+    let limping = q6_three_cadences(
+        "x2 legs, one down",
+        60_000,
+        || q6_leg_arena(&catalog),
+        &script,
+    );
+    assert_eq!(
+        limping
+            .lines("section_destroyed", &["\"unit\":9"])
+            .iter()
+            .filter(|(_, json)| json.contains("_leg"))
+            .count(),
+        1,
+        "the halfway run did not take exactly one leg"
+    );
+    let one_down = limping
+        .finals
+        .iter()
+        .find(|(id, ..)| *id == BLUE)
+        .copied()
+        .expect("the biped");
+    assert_eq!(
+        one_down.5, 50,
+        "one leg is a limp: doc 16 §9 item 2's slow(50)"
+    );
+    assert!(
+        !one_down.6,
+        "the pair rule fired on the first leg: one leg is a limp, not a stop"
+    );
+    // And with both gone: a biped with no legs is still slowed to half and cannot
+    // move at all.
+    let biped = first
+        .finals
+        .iter()
+        .find(|(id, ..)| *id == BLUE)
+        .copied()
+        .expect("the biped");
+    assert_eq!(biped.5, 50, "the first leg's slow is still in force");
+    assert!(biped.6, "the pair rule did not disable the biped's motion");
+    assert_eq!(biped.4, 0, "a biped with no legs is standing still");
+}
+
+// --- X.3: the thermal signature against power and speed --------------------
+
+/// **The scripted thermal watch** (16b cut Q.6 for X.3): one thermal sight and
+/// two blind stock tanks, at the two ranges doc 16 §9 item 3's three states
+/// separate.
+///
+/// The Mk1 thermal sight reads 45 cells, and the mount's own factors are 120 per
+/// mille for a cold hull and 650 for an idling one, over the `ground` row's 980
+/// stopped and 1,000 moving. So the reach against a stock tank on open ground is
+/// 52 m cold, 286 m idling and 450 m under way — and 200 m and 340 m are the two
+/// ranges that tell all three apart.
+fn q6_thermal_arena(catalog: &Catalog) -> Arena {
+    let mut arena = q6_arena(
+        catalog,
+        vec![
+            unit_of(catalog, content::LINE_TANK_THERMAL, RED, Team::Red, (8, 1)),
+            blind(unit_of(
+                catalog,
+                content::LINE_TANK,
+                BLUE,
+                Team::Blue,
+                (8, 21),
+            )),
+            blind(unit_of(
+                catalog,
+                content::LINE_TANK,
+                FAR_TARGET,
+                Team::Blue,
+                (8, 35),
+            )),
+        ],
+        q6_window(16, 48),
+    );
+    if let Some(state) = arena.unit_mut(RED) {
+        state.power = Power::Online;
+    }
+    arena
+}
+
+/// Cold and stopped, then both started up, then the far one under way.
+fn q6_thermal_script() -> Vec<ReliefBeat> {
+    use tacsim::arena::intents::IntentKind;
+    vec![
+        ReliefBeat {
+            t_ms: 20_000,
+            intents: vec![
+                relief_intent(BLUE, IntentKind::Startup, 1),
+                relief_intent(FAR_TARGET, IntentKind::Startup, 1),
+            ],
+        },
+        ReliefBeat {
+            t_ms: 40_000,
+            intents: vec![
+                relief_intent(FAR_TARGET, IntentKind::Heading { mdeg: 180_000 }, 2),
+                relief_intent(FAR_TARGET, IntentKind::Speed { cms: 1_500 }, 3),
+            ],
+        },
+    ]
+}
+
+/// **One scripted thermal watch at three cadences is one event list and one hash
+/// sequence** (16b §11's mandatory cross-tempo test, owed by 16b cut X.3; doc 16
+/// §9 item 3).
+///
+/// X.3's term is keyed on the **target's** power and speed, both of which move
+/// inside a pulse: a startup completes at a due event's own arena millisecond and
+/// a tank is under way the substep its speed leaves zero. So the acquisition it
+/// causes has to land at one arena millisecond whatever the cadence, which is
+/// what the shared event list asserts — a cold, stopped tank at 200 m is dark, it
+/// is found the moment it idles, and its neighbour at 340 m stays dark until it
+/// is under way.
+#[test]
+fn q6_one_scripted_thermal_watch_at_three_cadences_is_one_event_list_and_one_hash_sequence() {
+    let catalog = thermal_catalog();
+    let script = q6_thermal_script();
+    let first = q6_three_cadences("x3 thermal", 70_000, || q6_thermal_arena(&catalog), &script);
+
+    let near = first.lines("detected", &["\"viewer\":4", "\"target\":9"]);
+    let far = first.lines("detected", &["\"viewer\":4", "\"target\":11"]);
+    assert_eq!(
+        near.len(),
+        1,
+        "the near tank was found once and only once: {near:?}"
+    );
+    assert_eq!(far.len(), 1, "the far tank likewise: {far:?}");
+    let (Some(near_ms), Some(far_ms)) = (
+        near.first().map(|(at, _)| *at),
+        far.first().map(|(at, _)| *at),
+    ) else {
+        panic!("one acquisition each");
+    };
+    assert!(
+        near_ms >= 20_000,
+        "a cold, stopped tank at 200 m was seen before it started up: {near_ms}"
+    );
+    assert!(
+        near_ms < 40_000,
+        "the near tank was not found when it began to idle: {near_ms}"
+    );
+    assert!(
+        far_ms > 40_000,
+        "the far tank was found before it was under way: {far_ms}"
+    );
+}
+
+// --- X.4 and X.5: the jamming fold, and the filter against it --------------
+
+/// **The scripted drive through a bubble** (16b cut Q.6 for X.4 and X.5): an
+/// observer driving north up column 2, a blind stock tank standing at 90 m, and
+/// the Mk1 pod parked two cells off the observer's track.
+///
+/// The Mk1 pod's bubble is 60 m and leaves 150 per mille of a target's signature.
+/// The Mk1 eye reads 540 m against a stock tank stopped on open ground, so inside
+/// the bubble it reads 81 m and the target at 90 m is gone; the Mk1 filter adds
+/// 75 per mille on top of what the bubble left, which is 121 m, and the same
+/// target is held throughout. That gap is the whole of X.5's acceptance, and this
+/// fixture is what puts arena time through it.
+fn q6_bubble_arena(catalog: &Catalog, watcher: &str) -> Arena {
+    let mut arena = q6_arena(
+        catalog,
+        vec![
+            unit_of(catalog, watcher, RED, Team::Red, (2, 1)),
+            blind(unit_of(
+                catalog,
+                content::LINE_TANK,
+                BLUE,
+                Team::Blue,
+                (11, 8),
+            )),
+            blind(unit_of(
+                catalog,
+                content::LINE_TANK_ECM,
+                POD,
+                Team::Blue,
+                (4, 8),
+            )),
+        ],
+        q6_window(16, 48),
+    );
+    for id in [RED, POD] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    arena
+}
+
+/// Drive north through the bubble and out the far side of it.
+fn q6_bubble_script() -> Vec<ReliefBeat> {
+    use tacsim::arena::intents::IntentKind;
+    vec![
+        ReliefBeat {
+            t_ms: 10_000,
+            intents: vec![relief_intent(RED, IntentKind::Speed { cms: 1_500 }, 1)],
+        },
+        ReliefBeat {
+            t_ms: 40_000,
+            intents: vec![relief_intent(RED, IntentKind::Speed { cms: 0 }, 2)],
+        },
+    ]
+}
+
+/// **One scripted drive through a jamming bubble at three cadences is one event
+/// list and one hash sequence** (16b §11's mandatory cross-tempo test, owed by
+/// 16b cut X.4; doc 16 §9 item 4).
+///
+/// X.4's fold is taken at the **observer's** pose, which moves every substep, so
+/// the moment a bubble swallows a contact is a function of where the tank was
+/// when its pass ran. A cadence that ran the pass half a pulse later would lose
+/// the contact at a different arena millisecond, and the shared event list is
+/// what forbids it.
+#[test]
+fn q6_one_scripted_drive_through_a_bubble_at_three_cadences_is_one_event_list() {
+    let catalog = ecm_catalog();
+    let script = q6_bubble_script();
+    let first = q6_three_cadences(
+        "x4 bubble",
+        60_000,
+        || q6_bubble_arena(&catalog, content::LINE_TANK),
+        &script,
+    );
+
+    let found = first.lines("detected", &["\"viewer\":4", "\"target\":9"]);
+    let lost = first.lines("lost", &["\"viewer\":4", "\"target\":9"]);
+    assert_eq!(
+        lost.len(),
+        1,
+        "the bubble did not take the contact exactly once: {lost:?}"
+    );
+    assert_eq!(
+        found.len(),
+        2,
+        "the contact was not found, lost and found again: {found:?}"
+    );
+    let (Some(first_ms), Some(lost_ms), Some(again_ms)) = (
+        found.first().map(|(at, _)| *at),
+        lost.first().map(|(at, _)| *at),
+        found.get(1).map(|(at, _)| *at),
+    ) else {
+        panic!("two acquisitions and one loss");
+    };
+    assert!(
+        first_ms < lost_ms && lost_ms < again_ms,
+        "found {first_ms}, lost {lost_ms}, found again {again_ms}"
+    );
+}
+
+/// **The filter holds what the bubble took, at every cadence** (16b §11's
+/// mandatory cross-tempo test, owed by 16b cut X.5; doc 16 §9 item 5).
+///
+/// The same script, the same pod and the same target, driven twice: once by a
+/// stock-sighted tank and once by its twin carrying the Mk1 filter. The
+/// unfiltered observer loses the contact inside the bubble and finds it again on
+/// the far side; the filtered one never loses it at all, which is `recovered`'s
+/// 75 per mille as arena time reads it. Each run is its own three-cadence
+/// property, so the recovery is rate-independent and not merely present.
+#[test]
+fn q6_the_filter_holds_the_contact_the_bubble_takes_at_three_cadences() {
+    let catalog = pod_and_filter_catalog();
+    let script = q6_bubble_script();
+
+    let bare = q6_three_cadences(
+        "x5 unfiltered",
+        60_000,
+        || q6_bubble_arena(&catalog, content::LINE_TANK),
+        &script,
+    );
+    let filtered = q6_three_cadences(
+        "x5 filtered",
+        60_000,
+        || q6_bubble_arena(&catalog, content::LINE_TANK_ECCM),
+        &script,
+    );
+
+    assert_eq!(
+        bare.lines("lost", &["\"viewer\":4", "\"target\":9"]).len(),
+        1,
+        "the unfiltered twin did not lose the contact"
+    );
+    assert!(
+        filtered
+            .lines("lost", &["\"viewer\":4", "\"target\":9"])
+            .is_empty(),
+        "the filter did not hold the contact the bubble took: {:?}",
+        filtered.lines("lost", &["\"viewer\":4", "\"target\":9"])
+    );
+    assert_eq!(
+        filtered
+            .lines("detected", &["\"viewer\":4", "\"target\":9"])
+            .len(),
+        1,
+        "the filtered observer found the target once and kept it"
+    );
+}
+
+// --- doc 16 W6's last clause: the share mesh is jammed too -----------------
+
+/// **One share pass, applied directly**, with the spatial index rebuilt first —
+/// [`thermal_pass`]'s shape for the mesh. The jam scan reads the same index the
+/// mate scan does, so the rebuild is what makes a pass driven directly the pass
+/// `Arena::step`'s phase 3 runs.
+fn q6_share(
+    arena: &mut Arena,
+    sharer: mush_core::ObjId,
+    t_ms: i64,
+) -> tacsim::arena::perception::PerceptionCounters {
+    let mut counters = tacsim::arena::perception::PerceptionCounters::default();
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    let units = arena.units.clone();
+    arena.index.rebuild(&arena.definition.terrain, &units);
+    arena.share_pass(sharer, t_ms, &mut counters, &mut journal);
+    counters
+}
+
+/// **A sharer, a blind mate and a target only the sharer can see** (16b cut Q.6),
+/// with the pod parked where a fixture puts it.
+///
+/// The mate carries no sight at all, so the only way it can come to hold the
+/// target is the mesh — which is what makes "the link was cut" and "the mate holds
+/// nothing" the same sentence.
+fn q6_mesh_arena(
+    catalog: &Catalog,
+    sharer_cell: (u16, u16),
+    mate_cell: (u16, u16),
+    pod: Option<(u16, u16)>,
+    paint: &[(u16, u16, TerrainCell)],
+) -> Arena {
+    let mut units = vec![
+        unit_of(catalog, content::LINE_TANK, RED, Team::Red, sharer_cell),
+        blind(unit_of(
+            catalog,
+            content::LINE_TANK,
+            MESH_MATE,
+            Team::Red,
+            mate_cell,
+        )),
+        blind(unit_of(
+            catalog,
+            content::LINE_TANK,
+            BLUE,
+            Team::Blue,
+            (3, 2),
+        )),
+    ];
+    if let Some(cell) = pod {
+        units.push(unit_of(
+            catalog,
+            content::LINE_TANK_ECM,
+            POD,
+            Team::Blue,
+            cell,
+        ));
+    }
+    let mut arena = arena_of(catalog, units, paint);
+    for id in [RED, MESH_MATE, POD] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    // The sharer opens holding the target, classified and seen by its own eye,
+    // which is `ShadowContact::shareable`'s whole precondition.
+    let contact = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+    arena.contacts.insert(
+        RED,
+        contact,
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot_of(&arena, BLUE),
+        ),
+    );
+    arena
+}
+
+/// Whether the mate came to hold the target after one share pass.
+fn q6_meshed(arena: &mut Arena) -> bool {
+    q6_share(arena, RED, 0);
+    let id = tacsim::arena::rng::draw_contact_id(arena.seed, MESH_MATE, BLUE);
+    arena.contacts.resolve(MESH_MATE, id).is_some()
+}
+
+/// Put the filter's recovery on one end of the link, by hand — the filter is a
+/// fitting, and what this property is about is *which end carries it*.
+fn q6_fit_filter(arena: &mut Arena, unit: mush_core::ObjId) {
+    if let Some(state) = arena.unit_mut(unit) {
+        state.eccm = Some(authored_filter());
+    }
+}
+
+/// **A pod cuts the mesh by range** (doc 16 W6: *tactical comms are LOS mesh
+/// jammed by the same ECM*; 16b cut Q.6).
+///
+/// Sixty metres of open ground between two teammates is well inside the Mk1
+/// sight's 300 m share reach (30 cells), and a pod beside the receiver leaves 45 m
+/// of it.
+/// The link therefore goes, and it goes on the **range** term with the line still
+/// perfectly clear — which is the half of the fold a clear trace cannot test.
+#[test]
+fn q6_a_pod_beside_one_end_cuts_the_mesh_by_range() {
+    let catalog = ecm_catalog();
+    // No pod: the link is made, and the mate holds what the sharer saw.
+    let mut open = q6_mesh_arena(&catalog, (3, 8), (9, 8), None, &[]);
+    assert!(q6_meshed(&mut open), "the unjammed link was not made");
+    // A stock match never reaches the index for a pod that is not there, which is
+    // what makes the share pass of a field with no ECM on it bit-identical to the
+    // one cut F.3 left.
+    let mut stock = q6_mesh_arena(&catalog, (3, 8), (9, 8), None, &[]);
+    let counters = q6_share(&mut stock, RED, 0);
+    assert_eq!(
+        counters.jam_checks, 0,
+        "a field with no pod on it scanned for one"
+    );
+
+    // The pod, four cells from the mate and eight from the sharer: the receiver
+    // is inside the bubble and the sharer is not.
+    let mut jammed = q6_mesh_arena(&catalog, (3, 8), (9, 8), Some((13, 8)), &[]);
+    assert!(
+        !q6_meshed(&mut jammed),
+        "the pod beside the receiver did not cut the link"
+    );
+    // And it is the range and not the line: the same pod, the same open ground
+    // and the same clear trace, with the two teammates three cells apart instead
+    // of six, links — so what cut the link above was the sixty metres against the
+    // forty-five the bubble left.
+    let mut nearer = q6_mesh_arena(&catalog, (6, 8), (9, 8), Some((13, 8)), &[]);
+    assert!(
+        q6_meshed(&mut nearer),
+        "thirty metres of the same clear ground did not link, so the cut was not the range"
+    );
+
+    // The filter goes on the end that is in the bubble, and nowhere else: a pod
+    // is jamming the receiver, so the receiver is what has to recover.
+    let mut wrong_end = q6_mesh_arena(&catalog, (3, 8), (9, 8), Some((13, 8)), &[]);
+    q6_fit_filter(&mut wrong_end, RED);
+    assert!(
+        !q6_meshed(&mut wrong_end),
+        "a filter on the unjammed end recovered somebody else's bubble"
+    );
+    let mut right_end = q6_mesh_arena(&catalog, (3, 8), (9, 8), Some((13, 8)), &[]);
+    q6_fit_filter(&mut right_end, MESH_MATE);
+    assert!(
+        q6_meshed(&mut right_end),
+        "the filter did not buy back the reach the pod took"
+    );
+}
+
+/// **The end in the bubble may be the sharer's, and both terms cut the link just
+/// the same** (doc 16 W6; 16b cut Q.6).
+///
+/// Every other mesh fixture in this file stands the pod beside the *receiver*, so
+/// the sharer's own fold — taken once for the whole pass, before the mate loop —
+/// is `None` in all of them and neither half of it decides anything. This is its
+/// mirror image, and it is the case the rule exists for: a relay that jammed only
+/// the ends it transmitted *to* would let a pod parked on top of an enemy spotter
+/// blind its sights and still leave it free to hand the whole team every contact
+/// it already held.
+///
+/// Both terms, because the sharer contributes to both: the **range**, at sixty
+/// metres against the 45 m the bubble leaves of its reach, and the **budget**, at
+/// thirty metres through one belt of light woods that costs 25 of the 15 the pod
+/// leaves it. And the filter is the exact inverse of the pair beside it — it buys
+/// nothing on the end that is not in the bubble, and buys back exactly what
+/// `recovered` recovers on the end that is.
+#[test]
+fn q6_a_pod_beside_the_sharer_cuts_the_mesh_at_both_terms() {
+    let catalog = ecm_catalog();
+
+    // (1) The range. The sharer is four cells from the pod and the mate is ten, so
+    //     this time it is the transmitting end that stands in the bubble.
+    let mut open = q6_mesh_arena(&catalog, (9, 8), (3, 8), None, &[]);
+    assert!(q6_meshed(&mut open), "the unjammed link was not made");
+    let mut jammed = q6_mesh_arena(&catalog, (9, 8), (3, 8), Some((13, 8)), &[]);
+    assert!(
+        !q6_meshed(&mut jammed),
+        "the pod beside the sharer did not cut the link"
+    );
+    let mut nearer = q6_mesh_arena(&catalog, (9, 8), (6, 8), Some((13, 8)), &[]);
+    assert!(
+        q6_meshed(&mut nearer),
+        "thirty metres of the same clear ground did not link, so the cut was not the range"
+    );
+    let mut wrong_end = q6_mesh_arena(&catalog, (9, 8), (3, 8), Some((13, 8)), &[]);
+    q6_fit_filter(&mut wrong_end, MESH_MATE);
+    assert!(
+        !q6_meshed(&mut wrong_end),
+        "a filter on the unjammed end recovered somebody else's bubble"
+    );
+    let mut right_end = q6_mesh_arena(&catalog, (9, 8), (3, 8), Some((13, 8)), &[]);
+    q6_fit_filter(&mut right_end, RED);
+    assert!(
+        q6_meshed(&mut right_end),
+        "the filter did not buy back the reach the pod took from the sharer"
+    );
+
+    // (2) The budget, at a range the jammed reach still covers: one belt of light
+    //     woods three cells from the sharer, which the Mk1 sight sees through and
+    //     the jammed one does not.
+    let belt = [(7_u16, 8_u16, woods())];
+    let mut clear = q6_mesh_arena(&catalog, (9, 8), (6, 8), None, &belt);
+    assert!(
+        q6_meshed(&mut clear),
+        "one belt of light woods is inside the Mk1 sight's budget"
+    );
+    let mut opaque = q6_mesh_arena(&catalog, (9, 8), (6, 8), Some((13, 8)), &belt);
+    assert!(
+        !q6_meshed(&mut opaque),
+        "the pod did not take the budget the belt needed from the sharer"
+    );
+    let mut filtered = q6_mesh_arena(&catalog, (9, 8), (6, 8), Some((13, 8)), &belt);
+    q6_fit_filter(&mut filtered, RED);
+    assert!(
+        q6_meshed(&mut filtered),
+        "the filter did not buy back the budget the pod took from the sharer"
+    );
+}
+
+/// **A pod cuts the mesh by the attenuation budget too** (doc 16 W6; 16b cut
+/// Q.6), which is the other half of the same fold.
+///
+/// Thirty metres apart with one belt of light woods between them: the atlas
+/// prices that belt at 25 and the Mk1 sight's budget is 40, so the link is made.
+/// The Mk1 pod takes 25 of the budget and leaves 15, and the same belt is now
+/// opaque — while the range term, at 30 m against the jammed reach of 45 m, is
+/// still satisfied, so the budget is demonstrably what cut it.
+#[test]
+fn q6_a_pod_beside_one_end_cuts_the_mesh_by_the_budget() {
+    let catalog = ecm_catalog();
+    let belt = [(7_u16, 8_u16, woods())];
+    let mut open = q6_mesh_arena(&catalog, (6, 8), (9, 8), None, &belt);
+    assert!(
+        q6_meshed(&mut open),
+        "one belt of light woods is inside the Mk1 sight's budget"
+    );
+
+    let mut jammed = q6_mesh_arena(&catalog, (6, 8), (9, 8), Some((13, 8)), &belt);
+    assert!(
+        !q6_meshed(&mut jammed),
+        "the pod did not take the budget the belt needed"
+    );
+    // The range term is not what cut it: the same pair with a clear line between
+    // them still links.
+    let mut clear = q6_mesh_arena(&catalog, (6, 8), (9, 8), Some((13, 8)), &[]);
+    assert!(
+        q6_meshed(&mut clear),
+        "thirty metres is inside the jammed reach, so the range did not cut it"
+    );
+
+    let mut filtered = q6_mesh_arena(&catalog, (6, 8), (9, 8), Some((13, 8)), &belt);
+    q6_fit_filter(&mut filtered, MESH_MATE);
+    assert!(
+        q6_meshed(&mut filtered),
+        "the filter did not buy back the budget the pod took"
+    );
+}
+
+/// **A pod that is shut down or burnt out jams no radio either** (16b cut Q.6),
+/// which is X.4's own rule for sight, read once and applied twice.
+#[test]
+fn q6_a_shut_down_or_wrecked_pod_leaves_the_mesh_alone() {
+    let catalog = ecm_catalog();
+    for cold in [true, false] {
+        let mut arena = q6_mesh_arena(&catalog, (3, 8), (9, 8), Some((13, 8)), &[]);
+        if let Some(state) = arena.unit_mut(POD) {
+            if cold {
+                state.power = Power::Off;
+            } else {
+                state.limits.wreck = true;
+            }
+        }
+        assert!(
+            q6_meshed(&mut arena),
+            "a pod that is not radiating cut the mesh (cold {cold})"
+        );
+    }
+}
+
+/// **The scripted jammed-then-unjammed share** (16b cut Q.6; 16b §11's mandatory
+/// cross-tempo test for this cut's own behaviour change).
+///
+/// A pod parked between two teammates, driven out of the way half way through:
+/// the blind mate loses the contact the mesh was keeping alive, and gets it back
+/// when the pod leaves. Both the loss and the return are journalled, and both
+/// have to land at one arena millisecond at 5,000, 1,000 and 500 ms.
+fn q6_mesh_replay_arena(catalog: &Catalog) -> Arena {
+    let mut arena = q6_mesh_arena(catalog, (3, 8), (9, 8), Some((13, 8)), &[]);
+    // The mate opens holding the contact, put there by the mesh before the pod
+    // arrived: what the replay is about is losing it and getting it back.
+    let id = tacsim::arena::rng::draw_contact_id(arena.seed, MESH_MATE, BLUE);
+    arena.contacts.insert(
+        MESH_MATE,
+        id,
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot_of(&arena, BLUE),
+        ),
+    );
+    // The mate's copy is a mesh copy: nothing of its own ever saw the target, so
+    // it cannot relay and it expires when the mesh stops refreshing it.
+    if let Some(held) = arena.contacts.get_mut(MESH_MATE, id) {
+        held.own_seen = None;
+    }
+    arena
+}
+
+/// The pod drives east out of the bubble's reach of the mate.
+fn q6_mesh_script() -> Vec<ReliefBeat> {
+    use tacsim::arena::intents::IntentKind;
+    vec![ReliefBeat {
+        t_ms: 20_000,
+        intents: vec![
+            relief_intent(POD, IntentKind::Heading { mdeg: 90_000 }, 1),
+            relief_intent(POD, IntentKind::Speed { cms: 1_500 }, 2),
+        ],
+    }]
+}
+
+/// **One scripted jammed-then-unjammed share at three cadences is one event list
+/// and one hash sequence** (16b §11, mandatory for this cut).
+#[test]
+fn q6_one_scripted_jammed_share_at_three_cadences_is_one_event_list() {
+    let catalog = ecm_catalog();
+    let script = q6_mesh_script();
+    let first = q6_three_cadences(
+        "q6 mesh",
+        60_000,
+        || q6_mesh_replay_arena(&catalog),
+        &script,
+    );
+    let lost = first.lines("lost", &["\"viewer\":5", "\"target\":9"]);
+    let found = first.lines("detected", &["\"viewer\":5", "\"target\":9"]);
+    assert_eq!(
+        lost.len(),
+        1,
+        "the jammed mate did not lose its mesh copy exactly once: {lost:?}"
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "the mate did not get the contact back when the pod left: {found:?}"
+    );
+    let (Some(lost_ms), Some(found_ms)) = (
+        lost.first().map(|(at, _)| *at),
+        found.first().map(|(at, _)| *at),
+    ) else {
+        panic!("one loss and one return");
+    };
+    assert!(lost_ms < found_ms, "lost {lost_ms}, found again {found_ms}");
 }
