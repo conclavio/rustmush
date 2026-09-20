@@ -565,7 +565,11 @@ impl TacsimStore {
         // refusal (`TacsimRuleset::register` binds the same packs and returns
         // it), so this arm is the honest degradation rather than a second
         // policy: the packs are there and the definitions are empty.
-        match crate::definitions::Catalog::build_game(&packs, crate::NS) {
+        // **16b cut Q.8**: the FIELDED catalog — the stock content plus doc 16
+        // §9's five extension items — which is what `SIM UNIT` lists, what the
+        // arena applier binds through and what the stock-tank reset compares
+        // against.
+        match crate::definitions::Catalog::build_fielded(&packs, crate::NS) {
             Ok(catalog) => self.definitions = std::sync::Arc::new(catalog),
             Err(error) => {
                 tracing::error!(%error, "tacsim: the loaded packs' definitions did not bind");

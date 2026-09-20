@@ -30,10 +30,59 @@ the same thing this topic does, in fewer words.
   SIM AI [n]          how many units a side fields when the machines fill in.
                       A side's first pilot or staff, before the match starts;
                       the bare word reads the number.
+  SIM UNIT [type]     which unit type your own slot fields. The bare word lists
+                      what this server can field and what you are flying.
 
 A slot belongs to your **account**, not to your character, so an alt cannot take
 a second one. All of these work in the lobby, the two team rooms and the pods,
 and nowhere else.
+
+## Choosing what you fly
+
+Each pod has a tank of its own, and that is what you fly unless you say
+otherwise. `SIM UNIT` says otherwise:
+
+  SIM UNIT                    Fieldable units: biped_mk1, line_tank,
+                              line_tank_eccm, line_tank_ecm, line_tank_laser,
+                              line_tank_thermal. Yours: line_tank.
+  SIM UNIT biped_mk1          Slot red 1 will field biped_mk1.
+
+It changes **your own** slot and only during selection, and everyone in the
+centre reads the line. `SIM UNIT line_tank` — the pod's own type — puts you back
+to the default. The pod's tank is actually refitted when `SIM START` runs, and
+it is put back to the pod's own type the moment the centre goes idle — the next
+`SIM TEAM` after a match, the last pilot giving up their slot, or a staff
+`@arena/reset` — so nobody inherits your choice.
+
+Once the match has started the board stops printing anybody's choice: by then
+the tanks have been refitted, and what another machine is remains something
+your own sensors have to tell you.
+
+What the shipped server can field:
+
+  line_tank           the stock tank: a 105 mm cannon, a coaxial machine gun
+                      and a Mk1 sight.
+  line_tank_laser     the same hull with a beam weapon in place of the cannon's
+                      second mount. It makes heat.
+  line_tank_thermal   the stock tank with a thermal sight: it picks a stopped
+                      machine out of cover that the eye would lose, at shorter
+                      range, not through a canopy, and slower to tell apart.
+  line_tank_ecm       the stock tank carrying a jamming pod, which shortens
+                      everyone's sensor reach near it, friends included.
+  line_tank_eccm      the stock tank carrying a counter-jamming filter, which
+                      takes some of that back.
+  biped_mk1           a two-legged machine: taller, quicker to turn and slower
+                      flat out, and its sight sits nine metres up.
+
+Three things worth knowing before you pick one:
+
+* a bare `FIRE` fires the **cannon** whenever the machine has one, and
+  otherwise the first weapon it carries. The laser tank carries no cannon, so
+  its bare `FIRE` is its beam; name the weapon (`FIRE laser`, `FIRE
+  machine_gun`) and there is nothing to remember.
+* a legged machine still pays the tracked machine's price for crossing a cell.
+  That is a known gap, not a feature of the chassis.
+* the machines that fill the unclaimed pods always fly the pod's own tank.
 
 ## Fighting the machines
 
@@ -96,8 +145,8 @@ evidence, and `SIM STATUS` keeps showing the result until somebody starts the
 next match. Staff can read the full record with `@arena/status` and the tanks
 with `@unit/show`.
 
-The next `SIM TEAM` clears the board, puts all eight tanks back at spec and back
-at muster, and opens selection again.
+The next `SIM TEAM` clears the board, puts all eight tanks back at spec, back at
+muster and back to their own types, and opens selection again.
 
 ## When there is no simulator
 

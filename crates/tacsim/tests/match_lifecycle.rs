@@ -223,6 +223,16 @@ impl Rig {
         self.seen(GOD, &events)
     }
 
+    /// **16b cut Q.8**: run one line as pilot `n` and answer what pilot `other`
+    /// heard of it — the audience half of a sentence, which is the only way to
+    /// tell an announced line from one said to the actor alone.
+    fn say_overheard(&mut self, n: usize, line: &str, other: usize) -> String {
+        let actor = self.pilot(n);
+        let listener = self.pilot(other);
+        let events = self.tw.run(actor, line);
+        self.seen(listener, &events)
+    }
+
     fn seen(&self, viewer: ObjId, events: &[(Audience, OutputEvent)]) -> String {
         self.tw.seen_by(events, viewer).join("\n")
     }
@@ -1251,4 +1261,405 @@ async fn q7_the_boarding_deadline_runs_with_one_seated_pilot_and_aborts_with_non
     assert_eq!(rig.state(), MatchState::Aborted);
     let said = rig.say(0, "sim status");
     assert!(said.contains("aborted"), "{said}");
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.8 — the unit type a slot fields
+// ---------------------------------------------------------------------------
+
+/// The canonical id of the unit definition one pod's tank is CURRENTLY built
+/// from, resolved through the loaded catalog's own bindings — the same
+/// comparison `reset_one` makes.
+fn tank_schema(rig: &Rig, team: Team, index: u8) -> String {
+    let w = rig.tw.world();
+    let tank = match_::tank_for_slot(w, team, index).expect("the pod's tank is in the world");
+    let held = mush_tactics::module::unit_of(w, tank).expect("the tank is a tactical unit");
+    let store = w
+        .module_state::<tacsim::TacsimStore>()
+        .expect("the tacsim store");
+    let catalog = store.definitions();
+    catalog
+        .bindings
+        .iter()
+        .find(|(_, binding)| binding.spec.definition == *held.schema())
+        .map(|(id, _)| id.as_str().to_owned())
+        .expect("the tank's schema is loaded")
+}
+
+/// One pod's tank's pose, for the "back at muster" half.
+fn tank_pose(rig: &Rig, team: Team, index: u8) -> Option<(mush_sim::DomainId, mush_sim::Pose)> {
+    let w = rig.tw.world();
+    let tank = match_::tank_for_slot(w, team, index).expect("the pod's tank is in the world");
+    mush_sim::pose_of(w, tank)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_sim_unit_lists_selects_and_clears_a_choice() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+
+    // The bare read: the fielded catalog, and what this slot is flying. The
+    // order is the catalog's own, which is canonical-id order, which is what
+    // makes the sentence the same on every boot of the same content — and it is
+    // pinned here because `docs/help/simulator.md` prints it.
+    let said = rig.say(0, "sim unit");
+    assert!(
+        said.contains(
+            "Fieldable units: biped_mk1, line_tank, line_tank_eccm, line_tank_ecm, \
+             line_tank_laser, line_tank_thermal. Yours: line_tank."
+        ),
+        "{said}"
+    );
+
+    // The choice, announced the way a claim is, and on the board.
+    let said = rig.say(0, "sim unit biped_mk1");
+    assert!(said.contains("Slot red 1 will field biped_mk1."), "{said}");
+    assert_eq!(
+        rig.centre().slots[0].unit_type.as_deref(),
+        Some("tacsim.unit.biped_mk1"),
+        "the slot records the canonical id"
+    );
+    let said = rig.say(1, "sim status");
+    assert!(
+        said.contains("1 (RA): Pilot0 [biped_mk1]"),
+        "the board shows a non-default choice: {said}"
+    );
+    let said = rig.say(0, "sim unit");
+    assert!(said.contains("Yours: biped_mk1."), "{said}");
+
+    // **Who hears what** (16b cut Q.8, fixer). The list is a read and goes to
+    // the actor alone; the choice is announced the way a claim is, so the other
+    // side reads it and can answer it. Neither audience has a test anywhere else
+    // in this cut, and both are the kind of thing a later cut moves by accident.
+    let overheard = rig.say_overheard(0, "sim unit", 1);
+    assert!(
+        !overheard.contains("Fieldable units:"),
+        "the catalog listing is the asker's own: {overheard}"
+    );
+    let overheard = rig.say_overheard(0, "sim unit biped_mk1", 1);
+    assert!(
+        overheard.contains("Slot red 1 will field biped_mk1."),
+        "the choice is announced to the centre: {overheard}"
+    );
+
+    // The pod's OWN type clears the choice rather than recording it.
+    let said = rig.say(0, "sim unit line_tank");
+    assert!(said.contains("Slot red 1 will field line_tank."), "{said}");
+    assert_eq!(rig.centre().slots[0].unit_type, None);
+    let said = rig.say(1, "sim status");
+    assert!(
+        said.contains("1 (RA): Pilot0,") || said.contains("1 (RA): Pilot0"),
+        "{said}"
+    );
+    assert!(
+        !said.contains('['),
+        "a slot at its own type prints no bracket: {said}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_sim_unit_refuses_an_unknown_type_no_slot_and_a_wrong_state() {
+    let mut rig = Rig::boot(2);
+
+    // No slot at all — the honest line in `Idle` and in a terminal centre.
+    let said = rig.say(0, "sim unit");
+    assert!(
+        said.contains("Claim a slot first: SIM TEAM red|blue."),
+        "{said}"
+    );
+
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim unit wibble");
+    assert!(
+        said.contains("No such unit type: wibble. SIM UNIT lists them."),
+        "{said}"
+    );
+    assert_eq!(rig.centre().slots[0].unit_type, None, "and nothing moved");
+
+    // A word that names a loaded definition that is not a UNIT is not a type
+    // either: the list is the unit catalog's and nothing else's.
+    let said = rig.say(0, "sim unit laser_mk1");
+    assert!(said.contains("No such unit type: laser_mk1."), "{said}");
+
+    // Past `Selection` it is too late.
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    let said = rig.say(0, "sim unit biped_mk1");
+    assert!(
+        said.contains(
+            "The simulator centre is boarding; that is not something you can do to it now."
+        ),
+        "{said}"
+    );
+}
+
+/// **A refit that cannot be made refuses the START and locks nothing** (16b cut
+/// Q.8).
+///
+/// The tank is marked deployed, which is the one refusal `refit_unit` makes that
+/// a test can arrange without breaking the world: the arena is the single writer
+/// for a unit it holds, and the lobby has to stop rather than write anyway.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_a_refit_refusal_at_start_refuses_the_start_and_takes_no_lock() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim unit biped_mk1");
+
+    let tank = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    mush_sim::deployed::mark(
+        rig.tw.world_mut(),
+        tank,
+        mush_sim::DeployedMark::new(99, "tacsim.arena.proving_ground"),
+    );
+
+    let said = rig.say(0, "sim start");
+    assert!(
+        said.contains("Slot red 1 cannot field biped_mk1: "),
+        "the refusal names the slot and the type: {said}"
+    );
+    assert!(said.contains("is deployed"), "{said}");
+    assert_eq!(rig.state(), MatchState::Selection, "nothing moved");
+    assert!(rig.centre().match_id.is_none(), "and no id was minted");
+    assert!(
+        rig.centre().slots.iter().all(|slot| slot.pod.is_none()),
+        "no partial lock was taken"
+    );
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "and nothing was written to the tank"
+    );
+}
+
+/// **A match fought in a biped leaves the pod a `line_tank` at spec and at
+/// muster** (16b cut Q.8), and a second reset writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_the_return_to_idle_puts_the_pods_own_tank_back() {
+    let mut rig = Rig::boot(2);
+    let authored = tank_pose(&rig, Team::Red, 1).expect("red 1's tank is placed");
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim unit biped_mk1");
+    rig.say(0, "sim start");
+
+    // The refit happened at `SIM START`, before the pods locked.
+    assert_eq!(tank_schema(&rig, Team::Red, 1), "tacsim.unit.biped_mk1");
+    assert_eq!(
+        tank_schema(&rig, Team::Blue, 1),
+        "tacsim.unit.line_tank",
+        "a slot that chose nothing is untouched"
+    );
+
+    assert!(!rig.seat(0));
+    assert!(rig.seat(1), "the second seat fires the trigger");
+    assert_eq!(rig.state(), MatchState::Running);
+    rig.say(0, "sim abort");
+    for _ in 0..400 {
+        if rig.state() == MatchState::Aborted {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the check-in lands");
+
+    let said = rig.staff("@arena/reset");
+    assert!(said.contains("is reset"), "{said}");
+    assert!(
+        said.contains("back to their own type"),
+        "the staff line says what it put back: {said}"
+    );
+    assert_eq!(rig.state(), MatchState::Idle);
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "the pod's own tank is back"
+    );
+    let now = tank_pose(&rig, Team::Red, 1).expect("and it is still placed");
+    assert_eq!(now.0, authored.0, "in its own domain");
+    assert_eq!(
+        (now.1.x_cm, now.1.y_cm, now.1.heading_mdeg),
+        (authored.1.x_cm, authored.1.y_cm, authored.1.heading_mdeg),
+        "on its authored cell"
+    );
+
+    // Idempotent and quiet: a second reset finds nothing at all.
+    let said = rig.staff("@arena/reset");
+    assert!(said.contains("already idle; nothing changed"), "{said}");
+    assert!(!said.contains("back to their own type"), "{said}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_a_clean_boots_reset_is_still_silent() {
+    let mut rig = Rig::boot(1);
+    let said = rig.staff("@arena/reset");
+    assert!(said.contains("already idle; nothing changed"), "{said}");
+    assert!(!said.contains("back at spec"), "{said}");
+    assert!(!said.contains("back to their own type"), "{said}");
+}
+
+/// **The board stops naming anybody's machine the moment the match is on** (16b
+/// cut Q.8, fixer; doc 16 §1, §5).
+///
+/// `SIM STATUS` is the one selector that answers in every state, and the `SIM`
+/// gate admits the eight pods as well as the three rooms — so an ungated bracket
+/// would let a seated pilot read the chassis of the contact their own sight
+/// still renders `X1`, which is the single fact Q.1's provisional designators
+/// and Q.2's classification clock exist to withhold. During `Selection` there is
+/// no arena and no sensor to go round and both sides may read it; afterwards the
+/// choice has been fitted to the tank and the row carries nothing the lobby
+/// still needs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_the_board_prints_a_chosen_type_only_during_selection() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim unit biped_mk1");
+
+    // Selection: the opposing pilot reads it, deliberately.
+    let said = rig.say(1, "sim status");
+    assert!(said.contains("[biped_mk1]"), "{said}");
+
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    let said = rig.say(1, "sim status");
+    assert!(
+        said.contains("1 (RA): Pilot0"),
+        "the row itself is unchanged: {said}"
+    );
+    assert!(
+        !said.contains("biped_mk1") && !said.contains('['),
+        "the board named the other side's machine after the match began: {said}"
+    );
+    // And staff's own read of the same board says no more than a pilot's.
+    let said = rig.staff("@arena/status");
+    assert!(!said.contains("biped_mk1"), "{said}");
+
+    assert!(!rig.seat(0));
+    assert!(rig.seat(1));
+    assert_eq!(rig.state(), MatchState::Running);
+    let said = rig.say(1, "sim status");
+    assert!(!said.contains("biped_mk1"), "{said}");
+}
+
+/// **The last `SIM LEAVE` is a return to `Idle`, and puts the tanks back** (16b
+/// cut Q.8, fixer).
+///
+/// `lobby::leave` zeroes the centre in place when the last slot goes, and it was
+/// the one path to `Idle` that never ran the tank reset — invisible until a
+/// `SIM START` could leave a refitted tank standing in `Selection`. It can: the
+/// refits are applied in slot order and the first refusal returns with the
+/// earlier ones committed, which is the state this walks into and then out of.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_the_last_leave_puts_a_half_refitted_lobbys_tanks_back() {
+    let mut rig = Rig::boot(3);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team blue");
+    rig.say(0, "sim unit biped_mk1");
+    rig.say(1, "sim unit biped_mk1");
+
+    // Red 2's tank cannot be refitted, so the start refuses — after red 1's has
+    // already been written.
+    let second = match_::tank_for_slot(rig.tw.world(), Team::Red, 2).expect("red 2's tank");
+    mush_sim::deployed::mark(
+        rig.tw.world_mut(),
+        second,
+        mush_sim::DeployedMark::new(99, "tacsim.arena.proving_ground"),
+    );
+    let said = rig.say(0, "sim start");
+    assert!(
+        said.contains("Slot red 2 cannot field biped_mk1: "),
+        "{said}"
+    );
+    assert_eq!(rig.state(), MatchState::Selection);
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.biped_mk1",
+        "the refit that landed before the refusal stands"
+    );
+
+    // Everybody gives up on that lobby. The last one to go returns the centre to
+    // `Idle`, and that is what puts the tanks back.
+    for pilot in 0..3 {
+        rig.say(pilot, "sim leave");
+    }
+    assert_eq!(rig.state(), MatchState::Idle);
+    assert!(rig.centre().slots.is_empty());
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "the next pair does not inherit last lobby's biped"
+    );
+
+    // And a reset over it has nothing left to do.
+    let said = rig.staff("@arena/reset");
+    assert!(said.contains("already idle; nothing changed"), "{said}");
+}
+
+/// **The refit's document really crosses into `tactics`, under the module
+/// identity production uses** (16b cut Q.8, fixer).
+///
+/// `refit_unit` writes through `Ctx::persist`, whose fast path is one namespace
+/// equality and which consults the `tacsim → tactics` delegation table **only**
+/// on a mismatch — so a call made under the tactics identity exercises no
+/// delegation at all, and a refused crossing is a silent no-op that still leaves
+/// the `UnitStore` RAM row (which every other assertion in this cut reads)
+/// looking right. This is the production identity in the production
+/// composition, where the delegation is really declared.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_a_refit_under_the_tacsim_identity_queues_the_tactics_document() {
+    let mut rig = Rig::boot(1);
+    let tank = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let spec = {
+        let id = mush_core::CanonicalId::new("tacsim.unit.biped_mk1").expect("a canonical id");
+        rig.tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .expect("the tacsim store")
+            .definitions()
+            .bindings
+            .get(&id)
+            .expect("the biped is in the fielded catalog")
+            .spec
+            .clone()
+    };
+
+    let mut out = Outbox::new();
+    let engine = rig.tw.engine_mut();
+    let mut ctx = Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: SwitchSet::default(),
+        args: ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(smol_str::SmolStr::new(tacsim::NS)),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    mush_tactics::module::refit_unit(&mut ctx, tank, &spec).expect("the refit lands");
+
+    let ops: Vec<mush_core::ModuleOp> = out
+        .take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ops.len(), 1, "a refit is one document: {ops:?}");
+    assert_eq!(
+        ops[0].ns,
+        mush_tactics::module::NS,
+        "the delegation carried the write instead of dropping it"
+    );
+    let expected = format!("unit:{}", tank.0);
+    assert!(
+        matches!(&ops[0].op, mush_core::ModuleWrite::JsonSet { key, .. }
+            if key.as_str() == expected),
+        "the one op is this tank's record: {:?}",
+        ops[0].op
+    );
 }

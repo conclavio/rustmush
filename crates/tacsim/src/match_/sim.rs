@@ -8,6 +8,7 @@
 //! SIM ABORT               call the match off (any participant, or staff)
 //! SIM STATUS              the centre, as it stands
 //! SIM AI [n]              how many units a side fields when the machines fill in
+//! SIM UNIT [<type>]       which unit type your own slot fields
 //! ```
 //!
 //! # Why one verb and not five
@@ -15,7 +16,7 @@
 //! Doc 16 §3.7 spells the lobby's whole surface as one word with a selector, and
 //! `legacy-handlers.toml` counts **primary verbs**: five would be five stanzas
 //! and five names taken out of the global namespace for one subsystem that
-//! exists in three rooms. So `SIM` is one command, and the five selectors are
+//! exists in three rooms. So `SIM` is one command, and its selectors are
 //! registered as its switches — which is what makes `SIM/STATUS` work as well as
 //! doc 16's `SIM STATUS`, because a switch and a leading word resolve to the
 //! **same** [`Selector`] on the way in. There is one code path, not two
@@ -88,17 +89,21 @@ pub enum Selector {
     /// **`SIM AI [<n>]`** (16b cut Q.7): how many units a side fields with the
     /// AI fill on.
     Ai,
+    /// **`SIM UNIT [<type>]`** (16b cut Q.8): which unit type the caller's own
+    /// slot fields.
+    Unit,
 }
 
 impl Selector {
-    /// The six words, in help order.
-    pub const ALL: [(Selector, &'static str); 6] = [
+    /// The seven words, in help order.
+    pub const ALL: [(Selector, &'static str); 7] = [
         (Selector::Team, "team"),
         (Selector::Leave, "leave"),
         (Selector::Start, "start"),
         (Selector::Abort, "abort"),
         (Selector::Status, "status"),
         (Selector::Ai, "ai"),
+        (Selector::Unit, "unit"),
     ];
 
     /// One word, however it was spelled.
@@ -112,7 +117,7 @@ impl Selector {
     }
 }
 
-/// The switches `SIM` registers — the same five words, so `SIM/STATUS` and
+/// The switches `SIM` registers — the same words, so `SIM/STATUS` and
 /// `SIM STATUS` are one command and not two.
 #[must_use]
 pub fn register_switches() -> Vec<SmolStr> {
@@ -152,8 +157,8 @@ fn selector_of(ctx: &Ctx<'_>) -> Option<(Selector, String)> {
 ///
 /// Whatever the centre refused, as the one line the player sees.
 pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str =
-        "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM STATUS | SIM AI [n]";
+    const USAGE: &str = "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM STATUS | \
+                         SIM AI [n] | SIM UNIT [type]";
     // **Where before what** (16b cut F.4 residual). The deleted gate answered
     // every spelling of the verb outside the centre with the one
     // [`crate::match_::OUTSIDE_CENTRE`] line, and taking it away put the parser
@@ -200,6 +205,14 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 }
             };
             lobby::ai(ctx, size).map_err(refusal)
+        }
+        // **16b cut Q.8**: bare lists and reads, with a word chooses. Every
+        // refusal is the library's, because `lobby` is a public surface and its
+        // guards are its own.
+        Selector::Unit => {
+            let rest = rest.trim();
+            let choice = (!rest.is_empty()).then_some(rest);
+            lobby::unit_type(ctx, choice).map_err(refusal)
         }
         Selector::Status => {
             // A read, and the only selector that does not need the centre to be
@@ -315,6 +328,10 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    SIM AI [n]          how many units a side fields when the server fills the \
                    unclaimed pods with machines. A side's first pilot or staff, before the \
                    match starts; bare, it reads the number.\n\
+                   SIM UNIT [type]     which unit type your own slot fields. Bare, it lists \
+                   what this server can field and what you are flying; with a type, your pod's \
+                   tank is refitted to it when the match starts. Your own slot only, before the \
+                   match starts, and the pod goes back to its own tank afterwards.\n\
                    The switch spelling (SIM/STATUS) is the same command. All of it works in \
                    the simulator lobby, the two team rooms and the pods; anywhere else every \
                    spelling of SIM answers only where the simulator is."
@@ -339,8 +356,9 @@ mod tests {
     #[test]
     fn every_selector_has_a_word_and_a_switch() {
         let switches = register_switches();
-        // 16b cut Q.7 made it six: `ai` joined the five.
-        assert_eq!(switches.len(), 6);
+        // 16b cut Q.7 made it six: `ai` joined the five. 16b cut Q.8 made it
+        // seven with `unit`.
+        assert_eq!(switches.len(), 7);
         for (selector, name) in Selector::ALL {
             assert!(switches.iter().any(|switch| switch == name), "{name}");
             assert_eq!(Selector::parse(name), Some(selector));

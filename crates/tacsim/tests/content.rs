@@ -817,3 +817,71 @@ fn the_muster_stands_on_the_road_and_the_run_at_the_enemy_reaches_the_ford() {
         "and the blue muster is not on it"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.8 — the fielded source list
+// ---------------------------------------------------------------------------
+
+/// **`fielded_sources` is `sources` plus the five tables, in `requires` order,
+/// and nothing latched moved** (16b cut Q.8).
+///
+/// The order claim is the one worth a test: [`content::SOURCES`] is authored as
+/// "a pack after every pack it names", the five extension tables each carry the
+/// same promise inside themselves, and the question this answers is whether
+/// concatenating them keeps it. It does, because no extension pack requires a
+/// pack from another extension table — every one of them requires only the
+/// stock cannon, coaxial and sight, plus, for the laser tank, the two laser
+/// packs ahead of it in its own table.
+#[test]
+fn q8_the_fielded_sources_are_the_shipped_ones_and_then_the_five_in_requires_order() {
+    let stock = content::sources();
+    let fielded = content::fielded_sources();
+    assert_eq!(
+        fielded.len(),
+        stock.len() + 10,
+        "eight shipped packs and doc 16 section 9's ten extension files"
+    );
+    for (shipped, both) in stock.iter().zip(fielded.iter()) {
+        assert_eq!(shipped.name, both.name, "the shipped prefix is unmoved");
+        assert_eq!(shipped.bytes, both.bytes);
+    }
+    for source in &fielded {
+        assert!(
+            source.name.starts_with("<built-in "),
+            "a fielded pack is shipped content, not an operator's file: {}",
+            source.name
+        );
+    }
+
+    // A pack after every pack it names.
+    let mut behind: BTreeSet<(String, u32)> = BTreeSet::new();
+    for source in &fielded {
+        let pack = tacsim::pack::load_pack(&source.bytes)
+            .unwrap_or_else(|error| panic!("{} does not verify: {error}", source.name));
+        for required in pack.manifest().requires() {
+            assert!(
+                behind.contains(&(required.id.to_string(), required.version)),
+                "{} requires {}@{}, which is not ahead of it",
+                source.name,
+                required.id,
+                required.version
+            );
+        }
+        behind.insert((pack.manifest().id().to_string(), pack.manifest().version()));
+    }
+
+    // Nothing is latched by this: the two boot packs are the same two.
+    let boot = content::boot_packs().expect("the boot packs verify");
+    let ids: Vec<String> = boot
+        .iter()
+        .map(|pack| pack.manifest().id().to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            content::PROVING_GROUND_ATLAS_PACK.to_owned(),
+            content::PROVING_GROUND_PACK.to_owned(),
+        ],
+        "16b cut Q.8 latches nothing new"
+    );
+}

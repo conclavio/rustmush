@@ -878,3 +878,194 @@ fn a_match_on_the_shipped_arena_is_fought_on_the_authored_ground() {
         "the authored arena and the stand-in are different arenas"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.8 — the FIELDED catalog
+// ---------------------------------------------------------------------------
+
+/// Doc 16 §9's five items, by the definition ids the extension packs declare.
+const FIELDED_EXTRAS: [&str; 5] = [
+    content::LINE_TANK_LASER,
+    content::BIPED_MK1,
+    content::LINE_TANK_THERMAL,
+    content::LINE_TANK_ECM,
+    content::LINE_TANK_ECCM,
+];
+
+/// **The stock game is unmoved, and the fielded game is it plus the five.**
+///
+/// The two assertions have to live beside each other, because the whole of
+/// Q.8's catalog design is that `build_game` keeps meaning "the stock game" —
+/// which is what `every_shipped_definition_loads_validates_and_binds` above and
+/// seven cut-X acceptances measure their own item against — while the three
+/// production sites build the fielded one.
+#[test]
+fn q8_build_fielded_is_the_stock_game_plus_doc_16_s9s_five_items() {
+    let stock = Catalog::build_game(&[], tacsim::NS).expect("the shipped content binds");
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+
+    // The stock rows, unmoved and still there.
+    assert_eq!(stock.specs.len(), 1, "the stock game is one unit schema");
+    assert_eq!(fielded.arenas.len(), stock.arenas.len(), "no new arena");
+    assert_eq!(
+        fielded.resolutions.len(),
+        stock.resolutions.len(),
+        "no new resolution table"
+    );
+    for id in stock.specs.keys() {
+        assert!(fielded.specs.contains_key(id), "{id} left the catalog");
+    }
+    for (id, reference) in &stock.references {
+        assert_eq!(
+            fielded.references.get(id),
+            Some(reference),
+            "{id}'s exact reference moved between the two catalogs"
+        );
+    }
+
+    // And exactly the five, by id.
+    let mut expected: Vec<String> = stock
+        .specs
+        .keys()
+        .map(|id| id.as_str().to_owned())
+        .chain(FIELDED_EXTRAS.iter().map(|id| (*id).to_owned()))
+        .collect();
+    expected.sort();
+    let mut actual: Vec<String> = fielded
+        .specs
+        .keys()
+        .map(|id| id.as_str().to_owned())
+        .collect();
+    actual.sort();
+    assert_eq!(actual, expected, "the fielded unit schemas");
+    assert_eq!(
+        fielded.units.len(),
+        expected.len(),
+        "and the tactics catalog carries every one of them"
+    );
+
+    // The rows the five bring with them: X.1's laser and its charge, X.3's
+    // thermal sight, X.4's pod and X.5's filter. The biped mounts the stock
+    // weapons and adds none.
+    assert_eq!(
+        fielded.weapons.len(),
+        stock.weapons.len() + 1,
+        "the laser, and no other weapon"
+    );
+    assert_eq!(
+        fielded.ammunition.len(),
+        stock.ammunition.len() + 1,
+        "the laser charge"
+    );
+    assert_eq!(
+        fielded.sensors.len(),
+        stock.sensors.len() + 3,
+        "the thermal sight, the jamming pod and the filter"
+    );
+    assert!(
+        fielded
+            .weapons
+            .keys()
+            .any(|entry| entry.as_str() == content::LASER_MK1),
+        "{} is not in the fielded catalog",
+        content::LASER_MK1
+    );
+    for id in [content::THERMAL_MK1, content::ECM_MK1, content::ECCM_MK1] {
+        assert!(
+            fielded.sensors.keys().any(|entry| entry.as_str() == id),
+            "{id} is not in the fielded catalog"
+        );
+    }
+}
+
+/// **An operator who lists an extension file keeps booting** (16b cut Q.8).
+///
+/// Before this cut the five were operator content and `build_game` took them as
+/// an operator pack; now they are shipped, and C.2's skip-a-duplicate rule is
+/// what keeps that operator's `[tacsim].pack_paths` working: the same
+/// `(id, version)` through the other route is skipped rather than refused as a
+/// duplicate entry id. The **same file** — which is what the next test is the
+/// other half of.
+#[test]
+fn q8_build_fielded_skips_an_extension_pack_offered_again_as_an_operator_pack() {
+    let plain = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let mut operator = Vec::new();
+    for table in [
+        content::EXTENSIONS.as_slice(),
+        content::EXTENSIONS_BIPED.as_slice(),
+        content::EXTENSIONS_THERMAL.as_slice(),
+        content::EXTENSIONS_ECM.as_slice(),
+        content::EXTENSIONS_ECCM.as_slice(),
+    ] {
+        for source in content::extension_sources_of(table) {
+            operator.push(tacsim::config::LoadedPack {
+                pack: tacsim::pack::load_pack(&source.bytes).expect("an extension pack loads"),
+                source: source.name,
+            });
+        }
+    }
+    let again =
+        Catalog::build_fielded(&operator, tacsim::NS).expect("the same files through both routes");
+    assert_eq!(
+        again.specs.keys().collect::<Vec<_>>(),
+        plain.specs.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        again.references, plain.references,
+        "and nothing was re-minted"
+    );
+}
+
+/// **An EDITED pack wearing a shipped name and version is refused, not
+/// dropped** (16b cut Q.8, fixer).
+///
+/// The skip above is the whole of C.2's rule, and it was justified in the
+/// source by a claim about `verify_sources` that is not true of it:
+/// `verify_sources` compares the **configured** sources against each other and
+/// never reads the compiled-in bytes, so an operator's own edit of a shipped
+/// pack verified, entered the pack ledger — and was then dropped here without a
+/// word, with the shipped pack running in its place. Q.8 widened that from the
+/// eight stock packs to thirteen more, so the dedupe compares the digest:
+/// identical is the same file and is skipped, different is somebody's edit and
+/// is refused **naming their file**.
+#[test]
+fn q8_build_fielded_refuses_an_edited_pack_wearing_a_shipped_name() {
+    let edited = tampered(
+        content::LINE_TANK_ECM_JSON,
+        "\"label\": \"line tank (ECM)\"",
+        "\"label\": \"line tank (ECM, house rules)\"",
+    );
+    let operator = vec![tacsim::config::LoadedPack {
+        pack: tacsim::pack::load_pack(&edited).expect("the edit is re-signed and loads"),
+        source: "<operator line_tank_ecm.json>".to_owned(),
+    }];
+    let refused = Catalog::build_fielded(&operator, tacsim::NS)
+        .expect_err("an edit under a shipped name and version is refused");
+    let text = refused.to_string();
+    assert!(
+        text.contains("<operator line_tank_ecm.json>"),
+        "the refusal names the operator's file: {text}"
+    );
+    assert!(
+        text.contains("tacsim.pack.line_tank_ecm") && text.contains("different digest"),
+        "{text}"
+    );
+
+    // And the stock game says the same thing about a stock pack, because it is
+    // one rule and not a rule about extensions.
+    let stock_edit = tampered(
+        content::LINE_TANK_JSON,
+        "\"label\": \"line tank\"",
+        "\"label\": \"line tank (house rules)\"",
+    );
+    let operator = vec![tacsim::config::LoadedPack {
+        pack: tacsim::pack::load_pack(&stock_edit).expect("the edit is re-signed and loads"),
+        source: "<operator line_tank.json>".to_owned(),
+    }];
+    let refused = Catalog::build_game(&operator, tacsim::NS)
+        .expect_err("an edit under a shipped name and version is refused");
+    assert!(
+        refused.to_string().contains("<operator line_tank.json>"),
+        "{refused}"
+    );
+}

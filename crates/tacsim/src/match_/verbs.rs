@@ -315,8 +315,17 @@ pub fn reset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
     }
     if outcome.tanks.changed() {
+        // **16b cut Q.8**: and how many were put back to their own TYPE. A refit
+        // is a re-instantiation and not a plan, so it is in neither count above
+        // — and without this the line could read "0 tank(s) back at spec, 0 back
+        // at muster" over a pass that rewrote three documents. Empty, and the
+        // sentence byte-identical, when nothing was refitted.
+        let refits = match outcome.tanks.refitted {
+            0 => String::new(),
+            n => format!(", {n} back to their own type"),
+        };
         let line = format!(
-            "{} tank(s) back at spec, {} back at muster.",
+            "{} tank(s) back at spec, {} back at muster{refits}.",
             outcome.tanks.restored.len(),
             outcome.tanks.remustered.len()
         );

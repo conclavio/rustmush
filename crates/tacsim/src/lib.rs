@@ -368,12 +368,18 @@ impl TacsimRuleset {
 /// do not do is reach the staff verb's catalog. When cut K needs them to, the
 /// argument goes down the composition root and this function takes it.
 ///
+/// **16b cut Q.8** made it [`definitions::Catalog::build_fielded`]: the shipped
+/// content *and* doc 16 §9's five extension items, which is what makes
+/// `@unit/create #3=tacsim.unit.biped_mk1` and `SIM UNIT biped_mk1` resolve on a
+/// shipped server. `build_game` is still the stock game and is still what every
+/// cut-X acceptance measures against.
+///
 /// # Errors
 ///
 /// A message naming the entry when the shipped content does not bind — a build
 /// error, since `crates/tacsim/tests/content.rs` pins it.
 pub fn builtin_definitions() -> Result<definitions::Catalog, String> {
-    definitions::Catalog::build_game(&[], NS).map_err(|error| error.to_string())
+    definitions::Catalog::build_fielded(&[], NS).map_err(|error| error.to_string())
 }
 
 impl Default for TacsimRuleset {
@@ -414,7 +420,10 @@ impl GameModule for TacsimRuleset {
         // definition is a fact about the shipped content, not about whether an
         // operator turned the layer on, and `@unit/create` must be able to name
         // the stock tank on any composition that carries this crate.
-        let catalog = definitions::Catalog::build_game(&self.loaded_packs()?, NS)
+        // **16b cut Q.8**: `build_fielded`, so the five extension items are
+        // registered through the same C1 route as the stock eight and a
+        // persisted unit may point at one.
+        let catalog = definitions::Catalog::build_fielded(&self.loaded_packs()?, NS)
             .map_err(|error| ModError::msg(error.to_string()))?;
         for kind in definitions::KINDS {
             let of_kind: Vec<_> = catalog

@@ -87,6 +87,17 @@ pub struct Slot {
     /// grace running out all reach it, and the last two reach it more often in a
     /// playtest than the first.
     pub left: bool,
+    /// **The unit type this pilot has chosen to field** (16b cut Q.8), as the
+    /// definition's canonical id, or `None` for the pod's own authored type.
+    ///
+    /// Written by [`unit_type`] (`SIM UNIT <type>`) during `Selection`, read at
+    /// `SIM START`, where the pod's tank is refitted to it through
+    /// [`mush_tactics::module::refit_unit`] before the pods lock. It goes with
+    /// the slot: every release clears `centre.slots`, so the choice never
+    /// survives the return to `Idle` and the next match starts from the authored
+    /// types again — which is also what the reset on that transition guarantees
+    /// of the tanks themselves.
+    pub unit_type: Option<SmolStr>,
 }
 
 impl Slot {
@@ -243,6 +254,38 @@ pub enum SimError {
     /// The actor holds no slot.
     #[error("You hold no slot in the simulator.")]
     NoSlot,
+    /// **`SIM UNIT` with no slot to put a unit in** (16b cut Q.8).
+    ///
+    /// [`SimError::NoSlot`] by another name, said as the thing to do next: the
+    /// selector is the one a pilot is most likely to reach for before claiming,
+    /// because the list of fieldable units is the reason to want a slot.
+    #[error("Claim a slot first: SIM TEAM red|blue.")]
+    NoSlotToField,
+    /// **`SIM UNIT <word>` naming nothing the catalog carries** (16b cut Q.8).
+    #[error("No such unit type: {word}. SIM UNIT lists them.")]
+    NoSuchUnitType {
+        /// What was typed, as it was typed.
+        word: String,
+    },
+    /// **A chosen unit type that would not go onto the slot's tank** (16b cut
+    /// Q.8), refusing the `SIM START` that tried to fit it.
+    ///
+    /// Everything [`mush_tactics::module::refit_unit`] refuses with: a roster
+    /// tank that is not a unit, one still carrying a `deployed` marker, a frozen
+    /// definition owner, a reference the registry does not hold. Every one of
+    /// them is a broken world rather than a player's mistake, so the line names
+    /// the slot and quotes the reason rather than advising a repair.
+    #[error("Slot {team} {index} cannot field {unit_type}: {why}")]
+    Refit {
+        /// Which side.
+        team: &'static str,
+        /// Which slot.
+        index: u8,
+        /// The unit type it asked for, as the board spells it.
+        unit_type: String,
+        /// What refused.
+        why: String,
+    },
     /// The centre is not in a state that admits this.
     #[error("The simulator centre is {state}; that is not something you can do to it now.")]
     WrongState {
@@ -552,6 +595,7 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
             pod: None,
             unit: None,
             left: false,
+            unit_type: None,
         });
         if !centre.leads.iter().any(|(side, _)| *side == team) {
             centre.leads.push((team, account));
@@ -581,7 +625,7 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     require_layer(ctx.w)?;
     in_centre(ctx.w, actor)?;
     let account = account_of(ctx.w, actor)?;
-    let (team, index, seated) = {
+    let (team, index, seated, emptied) = {
         let book = ctx
             .w
             .module_state_mut::<MatchBook>()
@@ -612,10 +656,11 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
                 centre.leads.push((held.team, heir));
             }
         }
-        if centre.slots.is_empty() {
+        let emptied = centre.slots.is_empty();
+        if emptied {
             *centre = Centre::default();
         }
-        (held.team, held.index, held.is_seated())
+        (held.team, held.index, held.is_seated(), emptied)
     };
     // **16b cut F.1**: the seat goes with the slot.
     //
@@ -630,6 +675,24 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     if seated || crate::match_::cockpit::in_a_pod(ctx.w, actor) {
         crate::match_::cockpit::eject_pilot(ctx, actor);
     }
+    // **16b cut Q.8 (fixer): the last leave is a return to `Idle`, and every
+    // return to `Idle` puts the tanks back.**
+    //
+    // This is the third path to the line above and it was the only one that did
+    // not run the tank reset: [`reset`] runs it (`@arena/reset`, and [`claim`]
+    // on a terminal centre) and the boot pass runs it, but a lobby that simply
+    // empties zeroed the centre in place and left whatever the tanks were. That
+    // was invisible until `SIM UNIT`, and then it was not: a `SIM START` that
+    // refits one slot and is refused by the next leaves a refitted tank standing
+    // in `Selection`, and the pilots giving up on that lobby would have handed
+    // the next pair a biped nobody asked for. It is [`reset_stock_tanks`]'s own
+    // pass — idempotent, silent when nothing moved, `deployed` skipped — so on
+    // every other leave in the project's life it writes nothing.
+    //
+    // [`reset_stock_tanks`]: crate::match_::reset_stock_tanks
+    if emptied {
+        crate::match_::reset_stock_tanks(ctx);
+    }
     let name = display_name(ctx.w, actor);
     announce(
         ctx,
@@ -639,6 +702,211 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     // for, or the thing that empties a side. Either way the answer is owed now
     // and not at the deadline.
     settle_boarding(ctx);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `SIM UNIT`: which machine the slot fields (16b cut Q.8)
+// ---------------------------------------------------------------------------
+
+/// The word the board spells one unit definition with: its **short** name — the
+/// last segment of the canonical id, so `tacsim.unit.line_tank` is `line_tank` —
+/// unless another loaded definition shares that segment, in which case there is
+/// no short name to be had and the whole id is the word.
+///
+/// The collision is checked against every loaded unit definition and not only
+/// the fieldable ones, so the word a slot's row prints cannot change when a
+/// definition stops resolving as current.
+fn short_name(id: &str) -> &str {
+    id.rsplit('.').next().unwrap_or(id)
+}
+
+/// Whether `short_name(id)` is this world's name for exactly one loaded unit
+/// definition.
+fn short_name_is_unique(w: &World, id: &str) -> bool {
+    let Some(store) = w.module_state::<crate::TacsimStore>() else {
+        return true;
+    };
+    let short = short_name(id);
+    store
+        .definitions()
+        .specs
+        .keys()
+        .filter(|other| short_name(other.as_str()).eq_ignore_ascii_case(short))
+        .count()
+        <= 1
+}
+
+/// How the board and every `SIM UNIT` sentence spell one definition id.
+fn type_word(w: &World, id: &str) -> String {
+    if short_name_is_unique(w, id) {
+        short_name(id).to_owned()
+    } else {
+        id.to_owned()
+    }
+}
+
+/// **Every unit type this world can field**, in the catalog's own canonical-id
+/// order: the loaded unit definitions that resolve through
+/// [`mush_tactics::UnitCatalog::get_current`] as *the* current definition of
+/// their key.
+///
+/// That is the same resolution `@unit/create <obj>=<schema-id>` makes, which is
+/// what makes "fieldable" mean "something the tactics crate will really
+/// instantiate" rather than "something a pack mentioned". A definition that is
+/// loaded but ambiguous across owners or versions is not offered, because
+/// `refit_unit` could not act on the word either.
+fn fieldable_ids(w: &World, reg: &mush_core::cmd::Registry) -> Vec<mush_core::CanonicalId> {
+    let Some(definitions) = reg.definitions() else {
+        return Vec::new();
+    };
+    let Some(store) = w.module_state::<crate::TacsimStore>() else {
+        return Vec::new();
+    };
+    let catalog = store.definitions();
+    catalog
+        .specs
+        .keys()
+        .filter(|id| {
+            catalog
+                .units
+                .get_current(id.as_str(), definitions)
+                .is_some()
+        })
+        .cloned()
+        .collect()
+}
+
+/// One typed word as a fieldable definition id, or `None`.
+///
+/// The whole canonical id first, then the short name — so a world where two
+/// packs both end in `.line_tank` still answers to both full ids, and answers to
+/// neither short one, which is what "list and accept the full id for those"
+/// means.
+fn resolve_unit_type(
+    w: &World,
+    reg: &mush_core::cmd::Registry,
+    word: &str,
+) -> Option<mush_core::CanonicalId> {
+    let word = word.trim();
+    if word.is_empty() {
+        return None;
+    }
+    let ids = fieldable_ids(w, reg);
+    if let Some(exact) = ids.iter().find(|id| id.as_str().eq_ignore_ascii_case(word)) {
+        return Some(exact.clone());
+    }
+    let mut matches = ids
+        .iter()
+        .filter(|id| short_name(id.as_str()).eq_ignore_ascii_case(word));
+    let first = matches.next()?;
+    matches.next().is_none().then(|| first.clone())
+}
+
+/// **The unit type one pod's tank is authored with** — the arena pack's own
+/// `tanks[].unit` for side `team`'s slot `index`, resolved through the same slot
+/// id [`crate::match_::tank_for_slot`] resolves the object through.
+///
+/// It is what `SIM UNIT` clears a choice back to, what the board means by
+/// "Yours" on a slot that has chosen nothing, and what the `Idle` reset puts
+/// back.
+#[must_use]
+pub fn authored_unit_type(w: &World, team: Team, index: u8) -> Option<SmolStr> {
+    let arena = mush_core::CanonicalId::new(CENTRE_ARENA).ok()?;
+    let slot = centre::slot_id(w, CENTRE_ARENA, team, index)?;
+    let definitions = w.module_state::<crate::TacsimStore>()?.definitions();
+    let def = definitions.arenas.get(&arena)?;
+    def.tanks
+        .iter()
+        .find(|tank| tank.id.as_str() == slot.as_str())
+        .map(|tank| SmolStr::new(tank.unit.as_str()))
+}
+
+/// **`SIM UNIT [<type>]`** — read or choose the unit type the caller's own slot
+/// will field (16b cut Q.8).
+///
+/// `Selection` only, and it acts on the **caller's** slot: there is no arguing
+/// about somebody else's machine, and the choice is applied at `SIM START` and
+/// not here, so a lobby that never starts a match writes nothing to any tank.
+///
+/// Choosing the pod's **authored** type clears the choice rather than recording
+/// it, so `SIM UNIT line_tank` and never having typed `SIM UNIT` at all are the
+/// same state and the start does no work for either.
+///
+/// # Errors
+///
+/// [`SimError`], as the line the player sees:
+/// [`SimError::NoSlotToField`] for a caller holding no slot,
+/// [`SimError::WrongState`] outside `Selection`, and
+/// [`SimError::NoSuchUnitType`] for a word the catalog does not carry.
+pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError> {
+    let actor = ctx.actor;
+    require_layer(ctx.w)?;
+    in_centre(ctx.w, actor)?;
+    let account = account_of(ctx.w, actor)?;
+    // The slot before the state: outside `Selection` nobody in `Idle` or a
+    // terminal centre holds one, so "claim a slot first" is the honest line
+    // there, and a pilot who holds one through `Boarding` or `Running` gets the
+    // state refusal that is honest for them.
+    let held = centre(ctx.w)
+        .and_then(|centre| centre.slot_of_account(account))
+        .cloned()
+        .ok_or(SimError::NoSlotToField)?;
+    {
+        let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
+        if centre.state != MatchState::Selection {
+            return Err(SimError::WrongState {
+                state: centre.state.as_str(),
+            });
+        }
+    }
+    let authored = authored_unit_type(ctx.w, held.team, held.index);
+    let Some(word) = choice.map(str::trim).filter(|word| !word.is_empty()) else {
+        // The bare read, to the actor alone: a list is not news the room wants.
+        let ids = fieldable_ids(ctx.w, ctx.reg);
+        if ids.is_empty() {
+            return Err(SimError::Unavailable);
+        }
+        let list: Vec<String> = ids.iter().map(|id| type_word(ctx.w, id.as_str())).collect();
+        let mine = held
+            .unit_type
+            .clone()
+            .or(authored)
+            .map(|id| format!(" Yours: {}.", type_word(ctx.w, id.as_str())))
+            .unwrap_or_default();
+        ctx.out.sys_to_actor(
+            actor,
+            NOTICE_CATEGORY,
+            format!("Fieldable units: {}.{mine}", list.join(", ")),
+        );
+        return Ok(());
+    };
+    let chosen =
+        resolve_unit_type(ctx.w, ctx.reg, word).ok_or_else(|| SimError::NoSuchUnitType {
+            word: word.to_owned(),
+        })?;
+    let spelling = type_word(ctx.w, chosen.as_str());
+    let stored =
+        (authored.as_deref() != Some(chosen.as_str())).then(|| SmolStr::new(chosen.as_str()));
+    {
+        let book = ctx
+            .w
+            .module_state_mut::<MatchBook>()
+            .ok_or(SimError::Unavailable)?;
+        let centre = book.centre_mut();
+        let Some(slot) = centre.slots.iter_mut().find(|slot| slot.account == account) else {
+            return Err(SimError::NoSlotToField);
+        };
+        slot.unit_type = stored;
+    }
+    announce(
+        ctx,
+        format!(
+            "Slot {} {} will field {spelling}.",
+            held.team.as_str(),
+            held.index
+        ),
+    );
     Ok(())
 }
 
@@ -777,6 +1045,9 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
             locks.push((position, pod));
         }
     }
+    // **16b cut Q.8**: the refits, after every refusal above and before a single
+    // pod is locked or an id is minted.
+    refit_chosen_units(ctx)?;
     let match_id = crate::match_::allocate_id(ctx).map_err(|_| SimError::Unavailable)?;
     let deadline = ctx
         .w
@@ -806,6 +1077,84 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
             match_cfg.board_timeout_ms / 1_000
         ),
     );
+    Ok(())
+}
+
+/// **Fit every claimed slot's chosen unit type onto its pod's tank** (16b cut
+/// Q.8), the last thing [`start`] does before it writes anything of its own.
+///
+/// Only a slot whose [`Slot::unit_type`] is `Some` **and** whose tank is not
+/// already that type is touched, so a lobby where nobody chose anything writes
+/// nothing at all and a second `SIM START` after a refused one refits only what
+/// is still wrong. AI-filled pods are never here: they hold no slot, so they
+/// field their authored tank, which is [`crate::match_::reset`]'s own baseline.
+///
+/// **A refusal refuses the START**, before the pods lock and before an id is
+/// minted, so no partial lock is taken — but a tank already refitted in this
+/// same call **stays refitted**. There is no rollback and there does not need to
+/// be one: **every** return to `Idle` puts every roster tank back to its
+/// authored type (`crate::match_::reset_stock_tanks`), and a half-refitted
+/// centre that started no match is exactly the state that transition exists to
+/// clear. All four paths there run it — `@arena/reset`, a [`claim`] on a
+/// terminal centre, the boot pass, and the last [`leave`], which is the one this
+/// cut had to make true.
+///
+/// # Errors
+///
+/// [`SimError::Refit`], naming the slot, the type and what
+/// [`mush_tactics::module::refit_unit`] refused with.
+fn refit_chosen_units(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+    // Everything the writes need, read in one borrow: the tank, the chosen id
+    // and the spec to build it from.
+    let mut owed: Vec<(Team, u8, ObjId, String, mush_tactics::UnitSpec)> = Vec::new();
+    {
+        let Some(centre) = centre(ctx.w) else {
+            return Err(SimError::Unavailable);
+        };
+        let chosen: Vec<(Team, u8, SmolStr)> = centre
+            .slots
+            .iter()
+            .filter_map(|slot| slot.unit_type.clone().map(|id| (slot.team, slot.index, id)))
+            .collect();
+        for (team, index, id) in chosen {
+            let Some(tank) = centre::tank_for_slot(ctx.w, team, index) else {
+                return Err(SimError::NoUnit {
+                    team: team.as_str(),
+                    index,
+                });
+            };
+            let word = type_word(ctx.w, id.as_str());
+            let refuse = |why: String| SimError::Refit {
+                team: team.as_str(),
+                index,
+                unit_type: word.clone(),
+                why,
+            };
+            let entry = mush_core::CanonicalId::new(id.as_str())
+                .map_err(|error| refuse(format!("`{id}` is not a canonical id: {error}")))?;
+            let binding = ctx
+                .w
+                .module_state::<crate::TacsimStore>()
+                .and_then(|store| store.definitions().bindings.get(&entry).cloned())
+                .ok_or_else(|| refuse(format!("no unit schema `{id}` is loaded")))?;
+            // Already that type: the tank was refitted by an earlier `SIM START`
+            // this selection, or it is authored as one. Nothing is written.
+            if mush_tactics::module::unit_of(ctx.w, tank)
+                .is_some_and(|held| *held.schema() == binding.spec.definition)
+            {
+                continue;
+            }
+            owed.push((team, index, tank, word, binding.spec));
+        }
+    }
+    for (team, index, tank, word, spec) in owed {
+        mush_tactics::module::refit_unit(ctx, tank, &spec).map_err(|why| SimError::Refit {
+            team: team.as_str(),
+            index,
+            unit_type: word,
+            why,
+        })?;
+    }
     Ok(())
 }
 
@@ -1496,8 +1845,32 @@ pub fn status_lines(w: &World) -> Vec<String> {
                 team,
                 slot: u16::from(slot.index),
             };
+            // **16b cut Q.8**: the machine this slot has chosen, when it is not
+            // the pod's own. A slot that chose nothing prints nothing, so the
+            // row a stock lobby renders is byte for byte the one Q.1 wrote.
+            //
+            // **And only during `Selection`** (16b cut Q.8, fixer). The board is
+            // read from the lobby, the two team rooms AND the eight pods, and
+            // `SIM STATUS` is the one selector that answers in every state — so
+            // an unbracketed rule here would hand a seated pilot mid-match the
+            // chassis of the contact their own sight still renders `X1`, which
+            // is the single fact Q.1's provisional designators and Q.2's
+            // classification clock exist to withhold (doc 16 §1, §5). Before the
+            // match there is no arena and no sensor to go round: the choice is a
+            // lobby negotiation and both sides may read it, which is what the
+            // callsign note above says of the letter. Afterwards the choice has
+            // already been fitted to the tank, so the row carries nothing the
+            // lobby still needs and staff read the real thing with `@unit/show`.
+            let fielding = match centre.state {
+                MatchState::Selection => slot
+                    .unit_type
+                    .as_deref()
+                    .map(|id| format!(" [{}]", type_word(w, id)))
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
             pilots.push(format!(
-                "{} ({callsign}): {}{pod}{seated}",
+                "{} ({callsign}): {}{fielding}{pod}{seated}",
                 slot.index,
                 display_name(w, slot.pilot)
             ));
@@ -1631,6 +2004,7 @@ mod tests {
             pod: None,
             unit: None,
             left: false,
+            unit_type: None,
         }
     }
 

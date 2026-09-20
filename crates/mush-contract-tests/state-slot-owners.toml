@@ -336,6 +336,20 @@ until this cut both sides needed a seated pilot to get one.
 """
 
 [[site]]
+path = "crates/mushd/tests/sim_units.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut Q.8's extension-unit lens, performing the same post-composition wiring
+the rows above perform and for the same reason: two pilots hold slots, choose a
+unit type with `SIM UNIT`, board the pods their slots locked and fight in a
+biped and a laser tank, and a slot belongs to an ACCOUNT. It is the one lens
+that can show a refit at all end to end, because the choice is a lobby row and
+the write is at `SIM START`.
+"""
+
+[[site]]
 path = "crates/mushd/tests/arena_story.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

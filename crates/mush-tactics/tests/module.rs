@@ -2,7 +2,7 @@
 //! v2-only authoring, explicit v1 dry-run migration, lifecycle gating, and a
 //! boot path that never edits authoritative records or behavior bindings.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use mush_core::module::{GameModule, ModError, Registrar};
 use mush_core::{
@@ -3469,4 +3469,325 @@ fn vf_c8_the_grant_helpers_are_called_only_from_view_module_and_status() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.8 — `refit_unit`, the second instantiate route
+// ---------------------------------------------------------------------------
+
+/// The same composition as [`boot`], plus `mush-sim`: a refit has to be shown
+/// NOT to reach a placement, a station or a billet, and those live on the
+/// simulation's own state slot.
+fn boot_with_sim() -> TestWorld {
+    let spec = example_spec();
+    let kit = kitted_spec();
+    let catalog = example_catalog();
+    TestWorld::with_modules(vec![
+        Box::new(TestRulesModule {
+            owner: "tacsim",
+            specs: vec![spec, kit],
+        }),
+        Box::new(mush_sim::SimulationModule::new()),
+        Box::new(TacticsModule::with_catalog(catalog)),
+    ])
+}
+
+/// Run one closure against a real `Ctx` under the **tactics** module's own
+/// identity, and hand back what it answered beside every op it queued.
+///
+/// The identity matters, and it is **not** production's: `persist_unit_document`
+/// goes through `Ctx::persist`, whose fast path is one namespace equality and
+/// which consults the delegation table only on a mismatch — so under the
+/// crate's own `tactics` identity the `tacsim -> tactics` delegation is never
+/// read at all. What these tests prove is therefore the shape of the write (one
+/// op, one namespace, one key) and not that the crossing is permitted; the
+/// crossing has its own lens in the game crate, over the real composition where
+/// the delegation is really declared:
+/// `crates/tacsim/tests/match_lifecycle.rs`'s
+/// `q8_a_refit_under_the_tacsim_identity_queues_the_tactics_document`.
+fn with_tactics_ctx<T>(
+    world: &mut TestWorld,
+    f: impl FnOnce(&mut mush_core::Ctx<'_>) -> T,
+) -> (T, Vec<mush_core::ModuleOp>) {
+    let mut out = Outbox::new();
+    let engine = world.engine_mut();
+    let mut ctx = mush_core::Ctx {
+        w: &mut engine.world,
+        actor: GOD,
+        switches: mush_core::SwitchSet::default(),
+        args: mush_core::ParsedArgs::default(),
+        out: &mut out,
+        reg: &engine.registry,
+        module: Some(SmolStr::new("tactics")),
+        typed_state: mush_core::ModuleActionState::unavailable(),
+    };
+    let answer = f(&mut ctx);
+    let ops = out
+        .take_deferred()
+        .into_iter()
+        .filter_map(|deferred| match deferred {
+            mush_core::Deferred::Persist(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    (answer, ops)
+}
+
+/// The spec of the OTHER shipped schema — `tacsim.mech.atlas`, which has a
+/// component the locust does not and no facet the locust does, so a refit
+/// between them is a real change of structure that no `UnitMutationPlan` could
+/// express.
+fn atlas_spec() -> UnitSpec {
+    let wanted = DefinitionId::new("tacsim.mech.atlas").unwrap();
+    example_catalog()
+        .specs()
+        .find(|spec| spec.definition.key().id == wanted)
+        .cloned()
+        .expect("the kitted schema is in the catalog")
+}
+
+/// `mush-sim`'s whole record set, for a before/after comparison.
+fn spatial(world: &TestWorld) -> mush_sim::SpatialState {
+    world
+        .world()
+        .module_state::<mush_sim::SpatialState>()
+        .expect("the simulation slot")
+        .clone()
+}
+
+/// Place `unit` in a passive domain of its own and give it one control station,
+/// so the refit has a placement, a station topology and an `assignment:<unit>`
+/// record to leave alone.
+fn station_and_place(world: &mut TestWorld, unit: ObjId) {
+    let room = world
+        .world_mut()
+        .create(ObjKind::Room, "Hangar", GOD, None)
+        .unwrap();
+    with_tactics_ctx(world, |ctx| {
+        let domain = mush_sim::open_passive_domain(ctx, room, room).expect("a passive domain");
+        mush_sim::place(
+            ctx,
+            unit,
+            domain,
+            mush_sim::Pose {
+                x_cm: 1_200,
+                y_cm: 3_400,
+                z_cm: 0,
+                heading_mdeg: 90_000,
+                posture: mush_sim::passive_rules_value(json!({})).expect("a posture"),
+            },
+        )
+        .expect("the unit stands somewhere");
+        let mut channels = BTreeSet::new();
+        channels.insert(mush_core::ChannelId::new("drive").unwrap());
+        mush_sim::declare_station(
+            ctx,
+            unit,
+            &mush_sim::StationId::new("pilot").unwrap(),
+            "pilot",
+            &channels,
+            None,
+            2,
+        )
+        .expect("the unit has a cockpit");
+    });
+}
+
+#[test]
+fn q8_refit_refuses_an_object_with_no_unit_and_writes_nothing() {
+    let mut world = boot();
+    let bare = world
+        .world_mut()
+        .create(ObjKind::Thing, "Crate", GOD, None)
+        .unwrap();
+    let spec = example_spec();
+    let (answer, ops) = with_tactics_ctx(&mut world, |ctx| {
+        mush_tactics::module::refit_unit(ctx, bare, &spec)
+    });
+    assert_eq!(
+        answer.unwrap_err(),
+        format!("#{} holds no unit to refit", bare.0)
+    );
+    assert!(ops.is_empty(), "a refusal wrote {ops:?}");
+    assert!(!store(&world).units.contains_key(&bare));
+}
+
+#[test]
+fn q8_refit_refuses_a_deployed_unit_and_writes_nothing() {
+    // With `mush-sim`, because the custody mark lives on ITS state slot and the
+    // refusal is a read of that slot.
+    let mut world = boot_with_sim();
+    let unit = make_unit(&mut world);
+    let before = store(&world).units.get(&unit).cloned().expect("the unit");
+    with_tactics_ctx(&mut world, |ctx| {
+        mush_tactics::custody::check_out(
+            ctx,
+            unit,
+            mush_sim::DeployedMark::new(7, "tacsim.arena.proving_ground"),
+        )
+        .expect("the arena takes it");
+    });
+    let atlas = atlas_spec();
+    let (answer, ops) = with_tactics_ctx(&mut world, |ctx| {
+        mush_tactics::module::refit_unit(ctx, unit, &atlas)
+    });
+    assert_eq!(
+        answer.unwrap_err(),
+        format!(
+            "#{} is deployed; a deployed unit cannot be refitted",
+            unit.0
+        )
+    );
+    assert!(ops.is_empty(), "a refusal wrote {ops:?}");
+    assert_eq!(
+        store(&world)
+            .units
+            .get(&unit)
+            .cloned()
+            .expect("still a unit"),
+        before,
+        "the arena is the single writer while it holds the unit"
+    );
+}
+
+#[test]
+fn q8_refit_refuses_a_spec_the_registry_does_not_hold_and_writes_nothing() {
+    let mut world = boot();
+    let unit = make_unit(&mut world);
+    let before = store(&world).units.get(&unit).cloned().expect("the unit");
+    // A schema of an owner this world never composed: every one of its
+    // references is absent from the registry, which is what `create_unit`'s
+    // exact-digest walk exists to catch and what `refit_unit` repeats.
+    let stranger = example_spec_for("shadowrun", "shadowrun.mech.ghost");
+    let (answer, ops) = with_tactics_ctx(&mut world, |ctx| {
+        mush_tactics::module::refit_unit(ctx, unit, &stranger)
+    });
+    let why = answer.unwrap_err();
+    assert!(
+        why.contains("not available") || why.contains("unavailable"),
+        "the refusal names the missing definition: {why}"
+    );
+    assert!(ops.is_empty(), "a refusal wrote {ops:?}");
+    assert_eq!(
+        store(&world)
+            .units
+            .get(&unit)
+            .cloned()
+            .expect("still a unit"),
+        before
+    );
+}
+
+#[test]
+fn q8_a_refit_changes_the_type_and_leaves_the_world_around_it_alone() {
+    let mut world = boot_with_sim();
+    let unit = make_unit(&mut world);
+    station_and_place(&mut world, unit);
+    let _ = fold_kv(&mut world);
+
+    let binding_before = world
+        .world()
+        .get(unit)
+        .and_then(|object| object.behaviors.get(&unit_behavior()).cloned())
+        .expect("`@unit/create` attached the unit behaviour");
+    let spatial_before = spatial(&world);
+    let locust = store(&world)
+        .units
+        .get(&unit)
+        .cloned()
+        .expect("the unit")
+        .schema()
+        .clone();
+
+    let atlas = atlas_spec();
+    let (answer, ops) = with_tactics_ctx(&mut world, |ctx| {
+        mush_tactics::module::refit_unit(ctx, unit, &atlas)
+    });
+    let refitted = answer.expect("the refit lands");
+    assert_eq!(*refitted.schema(), atlas.definition);
+    assert_ne!(*refitted.schema(), locust, "it really is another schema");
+
+    // **One write, in one namespace, on one key.** That is the whole proof that
+    // the placement, the stations and the billets are untouched: `refit_unit`
+    // never reaches `mush-sim` at all.
+    assert_eq!(ops.len(), 1, "a refit is one document: {ops:?}");
+    assert_eq!(ops[0].ns, "tactics");
+    let expected_key = format!("unit:{}", unit.0);
+    assert!(
+        matches!(&ops[0].op, ModuleWrite::JsonSet { key, .. } if key.as_str() == expected_key),
+        "the one op is this unit's record: {:?}",
+        ops[0].op
+    );
+    assert_eq!(
+        spatial(&world),
+        spatial_before,
+        "a refit moved a placement, a station or a billet"
+    );
+    assert_eq!(
+        world
+            .world()
+            .get(unit)
+            .and_then(|object| object.behaviors.get(&unit_behavior()).cloned()),
+        Some(binding_before),
+        "a refit restamped the behaviour binding"
+    );
+
+    // The RAM row is the new type, and it is still the ONE active record.
+    assert_eq!(
+        *store(&world)
+            .units
+            .get(&unit)
+            .expect("still a unit")
+            .schema(),
+        atlas.definition
+    );
+    assert_eq!(
+        store(&world)
+            .records
+            .iter()
+            .filter(|record| record.object == Some(unit) && record.state == MechanicalState::Active)
+            .count(),
+        1,
+        "the lifecycle row was replaced, not duplicated"
+    );
+}
+
+#[test]
+fn q8_a_refitted_document_decodes_as_the_new_type_on_the_next_boot() {
+    let mut world = boot();
+    let unit = make_unit(&mut world);
+    let _ = fold_kv(&mut world);
+    let atlas = atlas_spec();
+    let (answer, ops) = with_tactics_ctx(&mut world, |ctx| {
+        mush_tactics::module::refit_unit(ctx, unit, &atlas)
+    });
+    answer.expect("the refit lands");
+    let kv: Vec<(SmolStr, Value)> = ops
+        .into_iter()
+        .filter_map(|op| match op.op {
+            ModuleWrite::JsonSet { key, value } => Some((key, value)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(kv.len(), 1);
+
+    let mut next = boot();
+    let reborn = next
+        .world_mut()
+        .create(ObjKind::Thing, "Atlas", GOD, None)
+        .unwrap();
+    assert_eq!(reborn, unit, "the object id assumption this boot rests on");
+    attach_current_binding(&mut next, reborn);
+    load_tactics(&mut next, kv);
+    let held = store(&next)
+        .units
+        .get(&reborn)
+        .cloned()
+        .expect("the refitted record boots active");
+    assert_eq!(*held.schema(), atlas.definition);
+    assert!(
+        held.component(&ComponentId::new("gauss").unwrap())
+            .is_some(),
+        "the new type's own component came back with it"
+    );
 }

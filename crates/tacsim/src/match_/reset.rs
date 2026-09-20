@@ -69,6 +69,21 @@
 //! Compare first, always. A tank already equal to its spec and already standing on
 //! its authored cell is **not written**, so a boot on a clean world writes nothing
 //! and a second `@arena/reset` still says nothing changed.
+//!
+//! # And the type, before the plan (16b cut Q.8)
+//!
+//! `SIM UNIT` lets a pilot field a biped or a laser tank out of one of these
+//! eight pods, which means a roster tank can be standing here as something its
+//! pack did not author — and a plan cannot turn a biped back into a tank, for
+//! the reason above. So [`reset_one`] asks one question before the diff: is the
+//! held unit's schema the **authored** one? If it is not, the tank is
+//! re-instantiated through [`mush_tactics::module::refit_unit`] — the one seam
+//! that can — and the compare-first plan then runs exactly as before and finds
+//! nothing to do. `ResetReport::refitted` counts them.
+//!
+//! This is what makes a chosen type a property of one match rather than of a
+//! pod: `Slot::unit_type` goes with the slot at every release, and the tank
+//! itself comes back here.
 
 use mush_core::{Ctx, ObjId};
 use smol_str::SmolStr;
@@ -91,6 +106,15 @@ pub struct ResetReport {
     pub restored: Vec<ObjId>,
     /// The tanks put back on their authored cell.
     pub remustered: Vec<ObjId>,
+    /// **How many tanks were put back to their authored TYPE** (16b cut Q.8) —
+    /// a re-instantiation through [`mush_tactics::module::refit_unit`], not a
+    /// plan, and therefore not one of [`ResetReport::restored`]'s rows.
+    ///
+    /// A count and not a list, because it is a fact about the pass and not
+    /// something anybody has to go and look at: a refit that refused is already
+    /// in [`ResetReport::failed`] with its reason, and a refit that worked left
+    /// the tank at spec like every other row.
+    pub refitted: usize,
     /// The roster tanks skipped because they still carry a `deployed` marker.
     pub deployed: Vec<ObjId>,
     /// The roster tanks that could not be reset, with the reason.
@@ -101,7 +125,7 @@ impl ResetReport {
     /// Whether anything was written.
     #[must_use]
     pub fn changed(&self) -> bool {
-        !self.restored.is_empty() || !self.remustered.is_empty()
+        !self.restored.is_empty() || !self.remustered.is_empty() || self.refitted > 0
     }
 
     /// Whether the reset found nothing to say at all.
@@ -170,7 +194,10 @@ pub fn reset_stock_tanks(ctx: &mut Ctx<'_>) -> ResetReport {
             continue;
         }
         match reset_one(ctx, object, &schema) {
-            Ok(rewritten) => {
+            Ok((refitted, rewritten)) => {
+                if refitted {
+                    report.refitted = report.refitted.saturating_add(1);
+                }
                 if rewritten {
                     report.restored.push(object);
                 }
@@ -193,12 +220,13 @@ pub fn reset_stock_tanks(ctx: &mut Ctx<'_>) -> ResetReport {
     report
 }
 
-/// Put one tank's record back to its spec. Answers whether anything was written.
-fn reset_one(ctx: &mut Ctx<'_>, object: ObjId, schema: &SmolStr) -> Result<bool, String> {
+/// Put one tank's record back to its spec. Answers
+/// `(was it refitted, was a plan written)`.
+fn reset_one(ctx: &mut Ctx<'_>, object: ObjId, schema: &SmolStr) -> Result<(bool, bool), String> {
     let Some(held) = mush_tactics::module::unit_of(ctx.w, object).cloned() else {
         // A roster object that is not a tactical unit at all: content the applier
         // never finished, or a staffer's `@unit/remove`. Not this pass's business.
-        return Ok(false);
+        return Ok((false, false));
     };
     let (spec, binding) = {
         let entry = mush_core::CanonicalId::new(schema.as_str())
@@ -220,17 +248,33 @@ fn reset_one(ctx: &mut Ctx<'_>, object: ObjId, schema: &SmolStr) -> Result<bool,
             .ok_or_else(|| format!("unit schema `{schema}` has no binding"))?;
         (spec, binding)
     };
-    // **The exact `DefinitionRef` the held unit points at**, and nothing else. A
-    // plan can move a cell and cannot invent one, so resetting a unit built from
-    // version 1 against version 2's spec would refuse op by op or, worse, leave it
-    // half-way. A version bump for these eight is a content change with its own
-    // re-apply, not something a reset improvises.
+    // **A tank that is not the type its pod authors is put back to it first**
+    // (16b cut Q.8). A plan can move a cell and cannot invent one, so a unit
+    // built from another schema — a `SIM UNIT` refit, or a version of this one
+    // that is no longer loaded — cannot be reset by the diff below at all: every
+    // op would name a cell the held unit does not have. Until this cut that was
+    // the refusal `re-apply the arena pack`, which named a repair no verb
+    // performs; now it is a re-instantiation through the one seam that can make
+    // one, and the plan that follows then finds nothing left to do.
+    //
+    // The write is the reset's own: it is why `SIM UNIT`'s choice does not have
+    // to survive a match, and why a half-refitted `SIM START` that refused
+    // leaves nothing behind.
+    let mut refitted = false;
+    let mut held = held;
     if binding.spec.definition != *held.schema() {
-        return Err(format!(
-            "its record points at {} and the loaded `{schema}` is {}; re-apply the arena pack",
-            held.schema(),
-            binding.spec.definition
-        ));
+        mush_tactics::module::refit_unit(ctx, object, &binding.spec).map_err(|why| {
+            format!(
+                "its record points at {} and the loaded `{schema}` is {}; it could not be \
+                 refitted: {why}",
+                held.schema(),
+                binding.spec.definition
+            )
+        })?;
+        refitted = true;
+        held = mush_tactics::module::unit_of(ctx.w, object)
+            .cloned()
+            .ok_or_else(|| format!("`{schema}` was refitted and then found no unit"))?;
     }
     // `to_tactical_unit` is `TacticalUnit::from_spec` over the binding's exact
     // registry identity — the same call the arena pack's applier makes when it
@@ -240,10 +284,10 @@ fn reset_one(ctx: &mut Ctx<'_>, object: ObjId, schema: &SmolStr) -> Result<bool,
     let pristine = to_tactical_unit(&spec, &binding, object)
         .map_err(|error| format!("`{schema}` will not instantiate: {error}"))?;
     let Some(plan) = spec_plan(&held, &pristine) else {
-        return Ok(false);
+        return Ok((refitted, false));
     };
     mush_tactics::module::apply_plan(ctx, object, &plan)?;
-    Ok(true)
+    Ok((refitted, true))
 }
 
 /// **The plan that turns `held` back into `pristine`** (doc 16 §3.3: *cells to

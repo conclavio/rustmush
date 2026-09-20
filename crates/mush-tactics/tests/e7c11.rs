@@ -9,8 +9,9 @@
 /// L3 says *"Its writers today are `module.rs`'s boot hydration and whatever the
 /// damage model eventually writes — there is **no production cell writer at all**
 /// yet … which is exactly why this lane is cheap **now**"*. The narrow claim
-/// about *cells* survives; the writer enumeration does not. `UnitStore` has four
-/// synchronous production writers beyond boot, and one of them —
+/// about *cells* survives; the writer enumeration does not. `UnitStore` has five
+/// synchronous production writers beyond boot (16b cut Q.8 added `refit_unit`),
+/// and one of them —
 /// `on_obj_destroyed` — runs in a `WorldEvent` hook with `&mut Ctx` and **no
 /// `ActionTxn`**, which is the same obstacle §15.5 calls fatal for the market
 /// lift. §4.1's own cut-8 row already says the store is "written synchronously
@@ -51,8 +52,8 @@ fn vf_g4_the_unit_store_writer_census_is_pinned() {
     }
     assert_eq!(
         sites.len(),
-        7,
-        "seven `module_state_mut::<UnitStore>` sites"
+        8,
+        "eight `module_state_mut::<UnitStore>` sites"
     );
     sites.sort();
     sites.dedup();
@@ -77,11 +78,21 @@ fn vf_g4_the_unit_store_writer_census_is_pinned() {
             // The `WorldEvent::ObjDestroyed` hook: `hold_active` / `remove_active`
             // / `update_active`, with `&mut Ctx` and NO `ActionTxn`.
             "on_obj_destroyed".to_owned(),
+            // 16b cut Q.8: the FIFTH production writer beyond boot, and the
+            // second instantiate route — `refit_unit` replaces the unit an
+            // object already is, which is what `SIM UNIT`'s chosen type and the
+            // simulator centre's return to `Idle` both need and what a
+            // `UnitMutationPlan` cannot express (a plan can move a cell and
+            // cannot invent one). It is `create_unit` without the eligibility
+            // test and without the behaviour binding, on the same guards, and it
+            // opens no second lane: the write is `persist_unit_document`, the
+            // governed path `apply_plan` already uses.
+            "refit_unit".to_owned(),
             // §4.1's "three legacy commands" (`unit_damage`'s site is
             // `apply_plan` above since 16b cut F.1).
             "unit_remove".to_owned(),
         ],
-        "L3's synchronous writers — four production writers beyond boot, one of \
+        "L3's synchronous writers — five production writers beyond boot, one of \
          them an event hook with no txn"
     );
     // The narrow claim §14 makes that DOES survive: no production CELL writer.

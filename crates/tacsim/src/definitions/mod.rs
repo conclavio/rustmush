@@ -48,8 +48,8 @@ use std::collections::BTreeMap;
 
 use mush_core::CanonicalId;
 use mush_core::mechanics::{
-    DefinitionDescriptor, DefinitionRef, DefinitionRegistryBuilder, DefinitionValidationContext,
-    OwnerId,
+    DefinitionDescriptor, DefinitionDigest, DefinitionRef, DefinitionRegistryBuilder,
+    DefinitionValidationContext, OwnerId,
 };
 use mush_tactics::{MobilityVocabulary, UnitCatalog, UnitCatalogBuilder};
 
@@ -478,25 +478,84 @@ impl Catalog {
         Ok(out)
     }
 
-    /// **The game's definitions: the content compiled into this binary, plus
-    /// whatever `[tacsim].pack_paths` added** (16b cut C.2).
+    /// **The STOCK game's definitions: [`content::SOURCES`], plus whatever
+    /// `[tacsim].pack_paths` added** (16b cut C.2).
     ///
-    /// The one function every consumer calls, so the composition root's unit
-    /// catalog, the module's registry descriptors and the arena applier's
-    /// bindings are three readings of one answer. An operator pack that carries
-    /// a `(id, version)` the shipped content already declares is **skipped**
-    /// here rather than refused: with the layer on it is the very same file
-    /// through the other route, `verify_sources` already refused a *different*
-    /// file under a shipped name, and the digest is what makes those two
-    /// statements the same one.
+    /// Two weapons, one sensor, one unit schema and one arena — doc 16 §9's own
+    /// measure of what an extension adds, and what every cut-X acceptance
+    /// compares its own item against. **16b cut Q.8** moved the three production
+    /// callers to [`Catalog::build_fielded`] and left this one exactly as it
+    /// was, so those acceptances keep meaning what they said. Nothing in
+    /// production calls it.
+    ///
+    /// An operator pack that carries a `(id, version)` the shipped content
+    /// already declares is **skipped** when it is byte for byte that same file
+    /// and **refused** when it is not; see [`Catalog::build_from`] for why.
     ///
     /// # Errors
     ///
     /// As [`Catalog::build`], plus a shipped pack that does not verify — a
     /// build error, since `crates/tacsim/tests/content.rs` pins it.
     pub fn build_game(operator: &[LoadedPack], owner: &str) -> Result<Catalog, DefinitionError> {
+        Catalog::build_from(content::sources(), operator, owner)
+    }
+
+    /// **The game as it is fielded: the stock content, doc 16 §9's five
+    /// extension items, and whatever `[tacsim].pack_paths` added** (16b cut
+    /// Q.8).
+    ///
+    /// The three production sites call this and not [`Catalog::build_game`]:
+    /// `crate::builtin_definitions` (the `@unit/create` catalog the composition
+    /// root freezes), `crate::TacsimRuleset::register` (the C1 descriptors) and
+    /// `crate::store::TacsimStore::install_packs` (the catalog `SIM UNIT`, the
+    /// arena applier and the stock-tank reset all read). So the two answers
+    /// cannot disagree about a laser tank any more than they could about the
+    /// line tank, which is the whole reason `build` is one function.
+    ///
+    /// [`Catalog::build_game`] stays exactly what it was — **the stock game** —
+    /// because that is what doc 16 §9's rule measures an extension against and
+    /// what seven cut-X acceptances assert about. Nothing calls it in
+    /// production.
+    ///
+    /// # Errors
+    ///
+    /// As [`Catalog::build_game`].
+    pub fn build_fielded(operator: &[LoadedPack], owner: &str) -> Result<Catalog, DefinitionError> {
+        Catalog::build_from(content::fielded_sources(), operator, owner)
+    }
+
+    /// The body both of the above share: load `base` as the compiled-in content,
+    /// then append the operator's packs, **skipping** one that is the very same
+    /// file and **refusing** one that is not.
+    ///
+    /// C.2's rule was "skip a `(id, version)` the base already carries", and it
+    /// justified the skip by saying [`crate::verify_sources`] had already
+    /// refused a different file under a shipped name. It has not:
+    /// `verify_sources` compares the **configured** sources against each other
+    /// and never reads the compiled-in bytes at all, so an operator pack under a
+    /// shipped name and version was accepted, ledgered — and then silently
+    /// dropped here, with the shipped pack running in its place. Q.8 made that
+    /// matter, because the five extension files moved into the base and an
+    /// operator may well already list one.
+    ///
+    /// So the dedupe compares the **declared digest**, which [`crate::pack::load_pack`]
+    /// has already checked against the content on both sides:
+    ///
+    /// - same digest — it *is* the shipped file, arriving twice because it is on
+    ///   `[tacsim].pack_paths` as well as compiled in. Skipped, exactly as
+    ///   before, so that operator keeps booting and their pack ledger row is
+    ///   unchanged;
+    /// - different digest — an edited pack wearing a shipped pack's name and
+    ///   version. **Refused**, naming the file, because the alternative is an
+    ///   operator's deliberate edit having no effect and no message. A pack that
+    ///   means to replace shipped content says so with a new version.
+    fn build_from(
+        base: Vec<crate::config::PackSource>,
+        operator: &[LoadedPack],
+        owner: &str,
+    ) -> Result<Catalog, DefinitionError> {
         let mut packs: Vec<LoadedPack> = Vec::new();
-        for source in content::sources() {
+        for source in base {
             let pack = crate::pack::load_pack(&source.bytes)
                 .map_err(|error| DefinitionError::value(&source.name, error.to_string()))?;
             packs.push(LoadedPack {
@@ -504,22 +563,37 @@ impl Catalog {
                 pack,
             });
         }
-        let shipped: Vec<(CanonicalId, u32)> = packs
+        let shipped: Vec<((CanonicalId, u32), DefinitionDigest)> = packs
             .iter()
             .map(|loaded| {
+                let manifest = loaded.pack.manifest();
                 (
-                    loaded.pack.manifest().id().clone(),
-                    loaded.pack.manifest().version(),
+                    (manifest.id().clone(), manifest.version()),
+                    manifest.digest(),
                 )
             })
             .collect();
         for loaded in operator {
-            let key = (
-                loaded.pack.manifest().id().clone(),
-                loaded.pack.manifest().version(),
-            );
-            if shipped.contains(&key) {
-                continue;
+            let manifest = loaded.pack.manifest();
+            let key = (manifest.id().clone(), manifest.version());
+            if let Some((_, digest)) = shipped.iter().find(|(shipped, _)| *shipped == key) {
+                // The very same file, arriving through both routes. Skipped, as
+                // it always was.
+                if *digest == manifest.digest() {
+                    continue;
+                }
+                return Err(DefinitionError::value(
+                    &loaded.source,
+                    format!(
+                        "declares {}@{}, which this server ships under a different digest ({} \
+                         against the shipped {}); publish it under a version of its own rather \
+                         than a shipped pack's name and version",
+                        key.0,
+                        key.1,
+                        manifest.digest().to_hex(),
+                        digest.to_hex(),
+                    ),
+                ));
             }
             packs.push(loaded.clone());
         }

@@ -62,6 +62,29 @@
 //! **16b cut X.3** adds the thermal sight and the tank that mounts it as
 //! [`EXTENSIONS_THERMAL`], on the same rule. **16b cut X.4** adds the jamming pod
 //! and the tank that carries it as [`EXTENSIONS_ECM`], on the same rule again.
+//! **16b cut X.5** adds the counter-jamming filter and its tank as
+//! [`EXTENSIONS_ECCM`], the last of doc 16 §9's five.
+//!
+//! # And what is **fielded**
+//!
+//! **16b cut Q.8** answers X.1 deviation 1's open question — *whether the
+//! extensions join the shipped catalog* — with **yes for the game, and no for
+//! the stock game**. [`fielded_sources`] is [`sources`] followed by all five
+//! extension tables in `requires` order, and [`super::Catalog::build_fielded`]
+//! is what the three production sites build from, so `SIM UNIT` can offer a
+//! pilot a biped and `@unit/create` can name a laser tank on a shipped server.
+//!
+//! [`SOURCES`] and [`sources`] are untouched, and so is
+//! [`super::Catalog::build_game`]: "the stock game" is a statement about the
+//! eight packs in the table above, it is what every cut-X acceptance compares
+//! its own item against, and a cut that moved it would have rewritten seven
+//! tests about lasers, bipeds and pods to say something about a lobby.
+//!
+//! Nothing here is **latched**. A unit, weapon, ammunition or sensor definition
+//! applies no world state, so the catalog is rebuilt from these bytes at every
+//! boot and [`boot_packs`] — the two packs that really do instantiate — is
+//! unmoved. A live world takes the fielded catalog at its next restart and its
+//! standing tanks are untouched until somebody picks a type.
 
 use crate::config::PackSource;
 
@@ -295,6 +318,39 @@ pub fn sources() -> Vec<PackSource> {
             bytes: (*bytes).to_string(),
         })
         .collect()
+}
+
+/// **Every pack the fielded game loads** (16b cut Q.8): [`SOURCES`], then doc 16
+/// §9's five extension items, in `requires` order — a pack after every pack it
+/// names.
+///
+/// The five tables carry no dependency on one another: each unit requires the
+/// stock cannon, coaxial and sight (plus, for the laser tank, the two laser
+/// packs of its own table), and every sensor and ammunition row requires
+/// nothing. So the order below is `EXTENSIONS`, `EXTENSIONS_BIPED`,
+/// `EXTENSIONS_THERMAL`, `EXTENSIONS_ECM`, `EXTENSIONS_ECCM`, which is the order
+/// doc 16 §9 numbers its items in, and `crates/tacsim/tests/content.rs` pins
+/// that every named requirement is satisfied by a pack ahead of it.
+///
+/// Named `<built-in …>` like [`sources`], and not `<extension …>` like
+/// [`extension_sources_of`]: through this route the five are shipped content and
+/// not an operator's file, and the name is what a refusal quotes.
+#[must_use]
+pub fn fielded_sources() -> Vec<PackSource> {
+    let mut out = sources();
+    for table in [
+        EXTENSIONS.as_slice(),
+        EXTENSIONS_BIPED.as_slice(),
+        EXTENSIONS_THERMAL.as_slice(),
+        EXTENSIONS_ECM.as_slice(),
+        EXTENSIONS_ECCM.as_slice(),
+    ] {
+        out.extend(table.iter().map(|(name, bytes)| PackSource {
+            name: format!("<built-in {name}>"),
+            bytes: (*bytes).to_string(),
+        }));
+    }
+    out
 }
 
 /// The two packs the content latch applies at a first boot, in order: the

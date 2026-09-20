@@ -2738,6 +2738,94 @@ pub fn create_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<Tac
     Ok(created)
 }
 
+/// **Re-instantiate `obj`'s unit from a different `spec`** — the second
+/// instantiate route, and the one a *refit* needs (16b cut Q.8).
+///
+/// [`create_unit`] makes an object a unit; this replaces the unit an object
+/// already is. It is [`create_unit`] **without the eligibility test** (the
+/// object must already hold a unit, so "already has a record" is the
+/// precondition rather than the refusal) and **without the behaviour binding**
+/// (the object already carries [`UNIT_BEHAVIOR`], and re-attaching it would
+/// restamp a binding nobody made). Everything else is the same call in the same
+/// order: the record schema from [`UnitStore::record_definition`], every
+/// reference owner-ready and present at its exact digest, `from_spec`, the
+/// mobility settle, **encode before you mutate**, the governed document write,
+/// the RAM row.
+///
+/// Its **only two callers** are in the game crate, and both are about the
+/// simulator centre's eight stock tanks:
+///
+/// 1. `tacsim::match_::lobby::start`, when a pilot has chosen a unit type for
+///    their slot with `SIM UNIT`, applied before the pods lock;
+/// 2. `tacsim::match_::reset::reset_one`, which puts the pod's **authored** type
+///    back on the way into `Idle`.
+///
+/// Both reach it under the tacsim module's identity through the declared
+/// `tacsim → tactics` persist delegation, which is why the write is
+/// [`persist_unit_document`] and not [`persist_encoded_unit`] — the same choice
+/// [`apply_plan`] makes and for the same reason.
+///
+/// **A plan cannot do this.** F.1's reset is a [`UnitMutationPlan`] against the
+/// held unit's own schema, and `tacsim::match_::reset::spec_plan`'s header says
+/// why: *a plan can move a cell and cannot invent one*. Changing a tank's type
+/// changes its sections, its cells, its components and its capabilities, so it
+/// is a re-instantiation or it is nothing.
+///
+/// **What it does not touch**: the object, its placement, the stations and
+/// billets keyed on it in `mush-sim`, its roster entry, and its lifecycle
+/// record's custody marker ([`UnitStore::replace_active`] keeps the row). A
+/// **deployed** unit is refused outright, for [`apply_plan`]'s reason: while a
+/// match runs the arena is the single writer for that unit's cells.
+///
+/// # Errors
+///
+/// A message naming what refused: `#N holds no unit to refit`, `#N is deployed;
+/// a deployed unit cannot be refitted`, a frozen definition owner, a reference
+/// the registry does not hold at its exact digest, a spec that will not
+/// instantiate, or a record that will not encode. **Nothing is written on any of
+/// them.**
+pub fn refit_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<TacticalUnit, String> {
+    if unit_of(ctx.w, obj).is_none() {
+        return Err(format!("#{} holds no unit to refit", obj.0));
+    }
+    if mush_sim::deployed::is_deployed(ctx.w, obj) {
+        return Err(format!(
+            "#{} is deployed; a deployed unit cannot be refitted",
+            obj.0
+        ));
+    }
+    let record_definition = ctx
+        .w
+        .module_state::<UnitStore>()
+        .and_then(|store| store.record_definition.clone())
+        .ok_or_else(|| "the tactics record schema is not installed".to_string())?;
+    let definitions = ctx
+        .reg
+        .definitions()
+        .ok_or_else(|| "the mechanics definition registry is not ready".to_string())?;
+    let mut references = spec.body().definition_references();
+    references.push(spec.definition.clone());
+    references.push(record_definition.clone());
+    require_definition_owners_ready(ctx.reg, &references).map_err(|error| error.to_string())?;
+    for reference in &references {
+        definitions
+            .get_exact(reference)
+            .map_err(|error| format!("unit schema dependency is unavailable: {error}"))?;
+    }
+    let now = ctx.w.now();
+    let mut u = TacticalUnit::from_spec(spec, obj).map_err(|error| error.to_string())?;
+    u.settle_mobility(now);
+    // Validate/encode before touching RAM: a refitted unit must always be
+    // acceptable to the next boot.
+    let (document, payload_digest) = encode_unit_document(&record_definition, &u, None)?;
+    persist_unit_document(ctx, obj, document);
+    let refitted = u.clone();
+    if let Some(store) = ctx.w.module_state_mut::<UnitStore>() {
+        store.replace_active(u, payload_digest);
+    }
+    Ok(refitted)
+}
+
 fn unit_create(
     catalog: &UnitCatalog,
     feed: &PanelFeedHandle,

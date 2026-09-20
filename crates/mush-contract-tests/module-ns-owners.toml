@@ -302,4 +302,19 @@ player's `SIM TEAM` on a terminal centre and from this module's own boot pass, \
 all under the tacsim module identity. Doc 16 section 3.3 asks for that reset \
 "by one UnitMutationPlan", so the write is a plan through the same seam \
 `@unit/damage` takes, and tacsim still spells no tactics key.
+
+16b cut Q.8 adds the third governed crossing, and it is neither a custody \
+transition nor a plan: mush_tactics::module::refit_unit RE-INSTANTIATES an \
+object's unit from another UnitSpec and writes the whole `unit:<obj>` record \
+through the tactics crate's own encoder, on the same `Ctx::persist` this row \
+governs. It exists because a plan cannot do it — tacsim::match_::reset's own \
+spec_plan says a plan can move a cell and cannot invent one, and changing a \
+tank's type changes its sections, cells, components and capabilities — and it \
+has exactly two callers, both tacsim's and both about the simulator centre's \
+eight stock tanks: `SIM START` fitting the type a pilot chose with `SIM UNIT`, \
+and the return to Idle putting the pod's authored type back. It refuses a \
+deployed unit and an object holding no unit, checks every reference at its \
+exact digest exactly as create_unit does, encodes before it mutates, and \
+touches no placement, station, billet or roster entry. tacsim still spells no \
+tactics key.
 """
