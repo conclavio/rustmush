@@ -100,7 +100,11 @@ impl MatchState {
 impl From<EndReason> for MatchState {
     fn from(reason: EndReason) -> MatchState {
         match reason {
-            EndReason::Elimination { .. } | EndReason::Timeout => MatchState::Ended,
+            // 16b cut Q.7: `Spent` is a match that ran to a conclusion, so it
+            // ends like an elimination and not like an abort.
+            EndReason::Elimination { .. } | EndReason::Spent | EndReason::Timeout => {
+                MatchState::Ended
+            }
             EndReason::Abort => MatchState::Aborted,
             // A ledger overflow is a void by doc 16 §3.1's own words: *on `Void`
             // (panic or ledger overflow) the world restores each unit from the
@@ -157,7 +161,8 @@ impl From<EndReason> for MatchOutcome {
             EndReason::Elimination {
                 winner: Some(Team::Blue),
             } => MatchOutcome::Blue,
-            EndReason::Elimination { winner: None } => MatchOutcome::Draw,
+            // 16b cut Q.7: nobody can shoot, so nobody won.
+            EndReason::Elimination { winner: None } | EndReason::Spent => MatchOutcome::Draw,
             EndReason::Timeout => MatchOutcome::Timeout,
             EndReason::Abort => MatchOutcome::Abort,
             EndReason::Void | EndReason::LedgerOverflow => MatchOutcome::Void,
@@ -475,6 +480,8 @@ pub fn write_restart_abort(ctx: &mut Ctx<'_>, match_id: MatchId, units: &[ObjId]
 const fn reason_word(reason: EndReason) -> &'static str {
     match reason {
         EndReason::Elimination { .. } => "elimination",
+        // 16b cut Q.7.
+        EndReason::Spent => "spent",
         EndReason::Timeout => "timeout",
         EndReason::Abort => "abort",
         EndReason::Void => "void",
@@ -519,6 +526,8 @@ mod tests {
                 MatchState::Ended,
                 MatchOutcome::Blue,
             ),
+            // 16b cut Q.7: a draw that names no winner.
+            (EndReason::Spent, MatchState::Ended, MatchOutcome::Draw),
             (EndReason::Timeout, MatchState::Ended, MatchOutcome::Timeout),
             (EndReason::Abort, MatchState::Aborted, MatchOutcome::Abort),
             (EndReason::Void, MatchState::Void, MatchOutcome::Void),

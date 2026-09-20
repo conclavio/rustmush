@@ -47,7 +47,7 @@ use mush_core::{AccountId, Ctx, ObjId, World};
 use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
 
-use crate::arena::state::{StopReason, Team};
+use crate::arena::state::{EndReason, StopReason, Team};
 use crate::arena_bridge::NOTICE_CATEGORY;
 use crate::arena_task::MatchId;
 use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -115,6 +115,25 @@ pub struct Centre {
     pub board_deadline_ms: Option<i64>,
     /// How the last match ended, until staff reset the centre.
     pub outcome: Option<MatchOutcome>,
+    /// **The arena's own reason for that outcome** (16b cut Q.7).
+    ///
+    /// [`MatchOutcome`] is the result document's six-word vocabulary (doc 16 §4)
+    /// and two different ends map to `draw`: a mutual elimination, and
+    /// [`EndReason::Spent`] — nobody left with a round to fire. The board is the
+    /// one surface that wants to tell them apart, so it keeps the reason beside
+    /// the word rather than widening the record's vocabulary for a sentence.
+    pub outcome_reason: Option<EndReason>,
+    /// **How many units each side fields with `[tacsim.match].ai_fill` on**
+    /// (16b cut Q.7), or `None` for the default — which is the larger side's
+    /// claimed slots, and never less than one.
+    ///
+    /// `SIM AI <n>` writes it, and it is cleared with the rest of the board at
+    /// every return to `Idle`. It is **not** a per-side number: the two sides
+    /// field the same count, because a fill that let one side ask for more
+    /// machines than the other would be the lobby choosing who wins — which is
+    /// why [`ai_side_size`] reads it as a **floor** under the larger side and
+    /// not as a cap on it.
+    pub ai_side_size: Option<u8>,
 }
 
 impl Centre {
@@ -236,6 +255,29 @@ pub enum SimError {
     /// A side has nobody.
     #[error("The {0} side has no pilots; a match takes at least one a side.")]
     EmptySide(&'static str),
+    /// **Nobody at all is playing** (16b cut Q.7), with the AI fill on.
+    ///
+    /// The fill lets one human fight the machines; it does not let a centre run
+    /// a match nobody is in. This is what is left of `EmptySide` when a side
+    /// without a pilot is legal and a *centre* without one is not.
+    #[error("Nobody is in the simulator; a match takes at least one pilot.")]
+    NobodyPlaying,
+    /// **`SIM AI` on a server whose fill is off** (16b cut Q.7).
+    #[error("AI fill is off on this server.")]
+    AiOff,
+    /// **`SIM AI <n>` outside the centre's pods** (16b cut Q.7).
+    #[error("AI fill is 1 to {max} a side.")]
+    AiRange {
+        /// The upper bound: [`slots_per_side`].
+        max: u8,
+    },
+    /// **`SIM AI <n>` below the side that has already claimed more than that**
+    /// (16b cut Q.7): the fill tops a side up, it never drops a pilot.
+    #[error("AI fill cannot be below the larger side ({claimed}).")]
+    AiBelowSide {
+        /// How many slots the larger side holds.
+        claimed: u8,
+    },
     /// The centre's arena, or one of its units, is not in this world.
     ///
     /// **16b cut F.4 made the advice performable.** It used to say "staff must
@@ -291,6 +333,49 @@ pub fn slots_per_side(match_cfg: &MatchConfig) -> u8 {
     u8::try_from(match_cfg.max_slots_per_side)
         .unwrap_or(PODS_PER_SIDE)
         .clamp(1, PODS_PER_SIDE)
+}
+
+/// **The claimed slots of the larger side** (16b cut Q.7), never below one.
+///
+/// It is the floor under [`ai_side_size`] and the number `SIM AI` refuses to go
+/// below: the fill tops a side up to a count, so a count under what somebody has
+/// already claimed would be an instruction to un-claim a slot.
+#[must_use]
+pub fn largest_side(centre: &Centre) -> u8 {
+    Team::ALL
+        .iter()
+        .map(|team| u8::try_from(centre.side_len(*team)).unwrap_or(u8::MAX))
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
+/// **How many units each side fields with the AI fill on** (16b cut Q.7): the
+/// number `SIM AI` set, never below [`largest_side`], held inside
+/// `1..=slots_per_side`.
+///
+/// **This departs from cut N.1's "its whole four pods"**, deliberately and in
+/// the owner's own words: a solo player who typed `SIM START` against the fill
+/// got a four-a-side battle with seven machines in it. The fill now answers the
+/// size of the game the humans turned up for, and `SIM AI 4` is how somebody who
+/// wants the old behaviour asks for it.
+///
+/// **The number `SIM AI` stores is a floor and not a cap.** `SIM AI` refuses a
+/// size below what is already claimed ([`SimError::AiBelowSide`]) — but claiming
+/// goes on for the whole of `Selection`, so a lead who typed `SIM AI 2` and then
+/// watched two friends claim would otherwise have set up a 4 v 2 under a board
+/// line reading `each side fields 2`. Reading the stored number against
+/// `largest_side` on every read is what keeps the two sides the same size, which
+/// is [`Centre::ai_side_size`]'s own rule: a fill that let one side ask for more
+/// machines than the other would be the lobby choosing who wins.
+#[must_use]
+pub fn ai_side_size(centre: &Centre, match_cfg: &MatchConfig) -> u8 {
+    let cap = slots_per_side(match_cfg);
+    centre
+        .ai_side_size
+        .unwrap_or(0)
+        .max(largest_side(centre))
+        .clamp(1, cap)
 }
 
 /// **The pod one pilot holds** (cut K.2's `BOARD` asks this first).
@@ -564,6 +649,7 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
 /// — [`leave`] here, and cut K.2's `EXIT` through [`slot_vacated`]. Silent, and
 /// a no-op on a centre that is not boarding.
 fn settle_boarding(ctx: &mut Ctx<'_>) {
+    let fill = configs(ctx.w).is_some_and(|(_, match_cfg, _)| match_cfg.ai_fill);
     let (match_id, empty, ready) = {
         let Some(centre) = centre(ctx.w) else {
             return;
@@ -574,10 +660,17 @@ fn settle_boarding(ctx: &mut Ctx<'_>) {
         let Some(match_id) = centre.match_id else {
             return;
         };
-        let empty = Team::ALL
-            .iter()
-            .find(|team| centre.side_len(**team) == 0)
-            .copied();
+        // **16b cut Q.7**: with the fill on, a side losing its last slot is not an
+        // abort — the machines take that side. A centre losing its last slot is.
+        let empty = if fill {
+            centre.slots.is_empty().then_some(None)
+        } else {
+            Team::ALL
+                .iter()
+                .find(|team| centre.side_len(**team) == 0)
+                .copied()
+                .map(Some)
+        };
         let ready = !centre.slots.is_empty() && centre.slots.iter().all(Slot::is_seated);
         (match_id, empty, ready)
     };
@@ -585,10 +678,13 @@ fn settle_boarding(ctx: &mut Ctx<'_>) {
         release(ctx, MatchState::Aborted, Some(MatchOutcome::Abort));
         announce(
             ctx,
-            format!(
-                "Match {match_id} is aborted: the {} side has nobody left to fly it.",
-                team.as_str()
-            ),
+            match team {
+                Some(team) => format!(
+                    "Match {match_id} is aborted: the {} side has nobody left to fly it.",
+                    team.as_str()
+                ),
+                None => format!("Match {match_id} is aborted: nobody is left to fly it."),
+            },
         );
         return;
     }
@@ -646,9 +742,20 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         if !staff && !lead {
             return Err(SimError::NotLead);
         }
-        for team in Team::ALL {
-            if centre.side_len(team) == 0 {
-                return Err(SimError::EmptySide(team.as_str()));
+        // **16b cut Q.7**: with the fill on, one claimed slot **in the centre**
+        // starts a match — the owner asked for exactly one human against the
+        // machines. With it off, both sides still need a pilot, byte for byte.
+        // `Selection` is only reachable with a slot in it, so the first arm is a
+        // guard and not a path.
+        if match_cfg.ai_fill {
+            if centre.slots.is_empty() {
+                return Err(SimError::NobodyPlaying);
+            }
+        } else {
+            for team in Team::ALL {
+                if centre.side_len(team) == 0 {
+                    return Err(SimError::EmptySide(team.as_str()));
+                }
             }
         }
     }
@@ -832,6 +939,13 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
         let Some(centre) = centre(ctx.w) else {
             return Err(SimError::Unavailable);
         };
+        // **16b cut Q.7**: with the fill on, the question is not "has each side a
+        // pilot" but "is anybody playing at all". Asked once, over the whole
+        // centre, before a single side is built.
+        if match_cfg.ai_fill && !centre.slots.iter().any(Slot::is_seated) {
+            return Err(SimError::NobodyPlaying);
+        }
+        let fill_to = ai_side_size(centre, &match_cfg);
         for team in Team::ALL {
             // **16b cut Q.1**: the pod index travels with the unit. It is the
             // only place in the tree that knows which slot fielded which tank, so
@@ -848,25 +962,34 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
                     })
                 })
                 .collect();
-            if units.is_empty() {
+            if !match_cfg.ai_fill && units.is_empty() {
                 return Err(SimError::EmptySide(team.as_str()));
             }
             // **16b cut N.1** (doc 16 §6: *the AI fill of a later lobby*), behind
-            // `[tacsim.match].ai_fill`. With it on, a side with at least one pilot
-            // fields its **whole** four pods: the tanks of the slots nobody claimed,
-            // and of the slots dropped at the boarding deadline, go over with the
-            // rest. They arrive at the check-out with **no seated pilot**, which is
-            // the one thing that makes them the reflex controller's
-            // (`crate::match_::start`) — the lobby names no controller of its own,
-            // so the two halves cannot disagree about who is flying what.
+            // `[tacsim.match].ai_fill`, **sized by 16b cut Q.7**. With it on, a
+            // side is topped up to [`ai_side_size`] with the tanks of the lowest
+            // unclaimed pods: the pods nobody claimed, and the pods of the slots
+            // dropped at the boarding deadline. They arrive at the check-out with
+            // **no seated pilot**, which is the one thing that makes them the
+            // reflex controller's (`crate::match_::start`) — the lobby names no
+            // controller of its own, so the two halves cannot disagree about who
+            // is flying what.
             //
-            // A side with nobody in it is still an abort, on or off: doc 16 §3.8's
-            // *an empty side aborts* is about a side nobody is *playing*, and a match
-            // of eight machines is a demonstration and not a match.
+            // **A side with nobody in it is no longer an abort on its own**, and
+            // this comment used to say the opposite ("a match of eight machines is
+            // a demonstration and not a match"). That ruling was written when no
+            // human could be alone in a centre — both sides needed a pilot to
+            // start at all — and the owner has now asked for exactly one human
+            // against the fill. What replaces it is the same sentence read over
+            // the *centre*: a match still needs somebody playing it, and `run`
+            // refuses one that has nobody seated anywhere.
             //
             // Off by default, and `crate::config::MatchConfig::ai_fill` says why.
             if match_cfg.ai_fill {
                 for index in 1..=slots_per_side(&match_cfg) {
+                    if units.len() >= usize::from(fill_to) {
+                        break;
+                    }
                     if centre
                         .slots
                         .iter()
@@ -886,6 +1009,12 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
                         });
                     }
                 }
+            }
+            // A side with no unit at all is still a side nobody can fight: with
+            // the fill on it means the centre's tanks are missing (K.1 deviation
+            // 1), which is the same broken world `SimError::NoUnit` names.
+            if units.is_empty() {
+                return Err(SimError::EmptySide(team.as_str()));
             }
             sides.push(Side { team, units });
         }
@@ -977,24 +1106,116 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
             ),
         );
     }
-    let empty = Team::ALL
-        .iter()
-        .find(|team| centre(ctx.w).is_some_and(|centre| centre.side_len(**team) == 0))
-        .copied();
+    // **16b cut Q.7**: with the fill on the deadline asks about the centre and not
+    // about a side — a side that boarded nobody is a side the machines fly, and
+    // only a centre that boarded nobody is an abort.
+    let fill = configs(ctx.w).is_some_and(|(_, match_cfg, _)| match_cfg.ai_fill);
+    let empty = if fill {
+        centre(ctx.w)
+            .is_some_and(|centre| centre.slots.is_empty())
+            .then_some(None)
+    } else {
+        Team::ALL
+            .iter()
+            .find(|team| centre(ctx.w).is_some_and(|centre| centre.side_len(**team) == 0))
+            .copied()
+            .map(Some)
+    };
     if let Some(team) = empty {
         release(ctx, MatchState::Aborted, Some(MatchOutcome::Abort));
         announce(
             ctx,
-            format!(
-                "Match {match_id} is aborted: the {} side boarded nobody.",
-                team.as_str()
-            ),
+            match team {
+                Some(team) => format!(
+                    "Match {match_id} is aborted: the {} side boarded nobody.",
+                    team.as_str()
+                ),
+                None => format!("Match {match_id} is aborted: nobody boarded."),
+            },
         );
         return;
     }
     if let Err(error) = run(ctx, match_id) {
         tracing::warn!(match_id = match_id.0, %error, "tacsim: a boarding deadline could not start its match");
     }
+}
+
+// ---------------------------------------------------------------------------
+// `SIM AI` — how many machines a side fields (16b cut Q.7)
+// ---------------------------------------------------------------------------
+
+/// **`SIM AI [<n>]`** — read or set how many units each side fields with the AI
+/// fill on (16b cut Q.7).
+///
+/// A team lead or staff, in `Selection` only: the fill is decided before the
+/// pods lock, because it is what the pods are locked *for*. `None` reads;
+/// `Some(n)` sets, and is announced to the centre the way a claim is.
+///
+/// The number is a **side size**, not a machine count: `SIM AI 3` is a three a
+/// side match, so a side with two pilots gets one machine and a side with none
+/// gets three.
+///
+/// # Errors
+///
+/// [`SimError`], as the line the player sees:
+/// [`SimError::AiOff`] on a server with `[tacsim.match].ai_fill` off,
+/// [`SimError::WrongState`] outside `Selection`, [`SimError::NotLead`] for
+/// anyone but a side's first pilot or staff, [`SimError::AiRange`] outside
+/// `1..=slots_per_side`, and [`SimError::AiBelowSide`] under what a side has
+/// already claimed.
+pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
+    let actor = ctx.actor;
+    require_layer(ctx.w)?;
+    in_centre(ctx.w, actor)?;
+    let staff = is_staff(ctx.w, actor);
+    let account = match account_of(ctx.w, actor) {
+        Ok(account) => Some(account),
+        Err(_) if staff => None,
+        Err(error) => return Err(error),
+    };
+    let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
+    // The server fact first: a player on a box with no fill is owed that and not
+    // a lecture about who may set it.
+    if !match_cfg.ai_fill {
+        return Err(SimError::AiOff);
+    }
+    let cap = slots_per_side(&match_cfg);
+    let (effective, claimed) = {
+        let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
+        if centre.state != MatchState::Selection {
+            return Err(SimError::WrongState {
+                state: centre.state.as_str(),
+            });
+        }
+        let lead = account.is_some_and(|account| {
+            Team::ALL
+                .iter()
+                .any(|team| centre.leads_side(*team, account))
+        });
+        if !staff && !lead {
+            return Err(SimError::NotLead);
+        }
+        (ai_side_size(centre, &match_cfg), largest_side(centre))
+    };
+    let Some(size) = size else {
+        ctx.out.sys_to_actor(
+            actor,
+            NOTICE_CATEGORY,
+            format!("AI fill: {effective} a side."),
+        );
+        return Ok(());
+    };
+    if size < 1 || size > cap {
+        return Err(SimError::AiRange { max: cap });
+    }
+    if size < claimed {
+        return Err(SimError::AiBelowSide { claimed });
+    }
+    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+        book.centre_mut().ai_side_size = Some(size);
+    }
+    announce(ctx, format!("AI fill set to {size} a side."));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,7 +1336,12 @@ pub fn reset(ctx: &mut Ctx<'_>) -> ResetOutcome {
 /// the pods and the slots, in the same authoritative action. The centre is left
 /// in its terminal state carrying the outcome so `SIM STATUS` can say how it
 /// went, and [`reset`] is what returns it to `Idle`.
-pub(crate) fn on_match_finished(ctx: &mut Ctx<'_>, match_id: MatchId, outcome: MatchOutcome) {
+pub(crate) fn on_match_finished(
+    ctx: &mut Ctx<'_>,
+    match_id: MatchId,
+    outcome: MatchOutcome,
+    reason: EndReason,
+) {
     if centre(ctx.w).and_then(|centre| centre.match_id) != Some(match_id) {
         return;
     }
@@ -1128,6 +1354,10 @@ pub(crate) fn on_match_finished(ctx: &mut Ctx<'_>, match_id: MatchId, outcome: M
     // the hatches as well as the rows — which is [`release`]'s own first half
     // since 16b cut F.1.
     release(ctx, state, Some(outcome));
+    // 16b cut Q.7: the reason the board renders the outcome with.
+    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+        book.centre_mut().outcome_reason = Some(reason);
+    }
     announce(
         ctx,
         format!(
@@ -1188,9 +1418,16 @@ fn release_rows(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutco
         centre.board_deadline_ms = None;
         centre.state = state;
         centre.outcome = outcome;
+        // 16b cut Q.7: the reason is written by `on_match_finished`, straight
+        // after this; every other release has an outcome with no arena reason
+        // behind it (an abort before the arena opened), so it is cleared here.
+        centre.outcome_reason = None;
         if state == MatchState::Idle {
             centre.match_id = None;
             centre.arena = SmolStr::default();
+            // 16b cut Q.7: the fill size belongs to the match that was set up,
+            // so the next `SIM TEAM` starts from the default again.
+            centre.ai_side_size = None;
         }
     }
 }
@@ -1225,6 +1462,12 @@ pub fn status_lines(w: &World) -> Vec<String> {
         None => format!("Simulator centre: {}", centre.state.as_str()),
     };
     match centre.outcome {
+        // **16b cut Q.7**: `Spent` is a draw, and a draw for a reason nobody can
+        // read off the word — so the board says it, in the em-dash style it has
+        // always used for an outcome.
+        Some(_) if centre.outcome_reason == Some(EndReason::Spent) => {
+            rows.push(format!("{head} — draw: both sides are out of ammunition"));
+        }
         Some(outcome) => rows.push(format!("{head} — {}", outcome.as_str())),
         None => rows.push(head),
     }
@@ -1264,6 +1507,26 @@ pub fn status_lines(w: &World) -> Vec<String> {
         } else {
             rows.push(format!("  {}: {}", team.as_str(), pilots.join("; ")));
         }
+    }
+    // **16b cut Q.7**: what the machines are doing here.
+    //
+    // An AI-filled unit never enters `centre.slots`, so the board said nothing at
+    // all about it — and Q.1's slot designators made that a real gap rather than a
+    // tidy omission, because a pilot who hears `BC` on the radio can read "blue's
+    // third" off the letter and would otherwise find blue's third missing from the
+    // board. The line publishes no order of battle the letters do not already
+    // give: how many a side, and that the machines take the pods nobody claimed.
+    if let Some((_, match_cfg, _)) = configs(w)
+        && match_cfg.ai_fill
+        && matches!(
+            centre.state,
+            MatchState::Selection | MatchState::Boarding | MatchState::Running
+        )
+    {
+        rows.push(format!(
+            "  AI fill: each side fields {}; machines take the unclaimed pods.",
+            ai_side_size(centre, &match_cfg)
+        ));
     }
     if let Some(deadline) = centre.board_deadline_ms {
         let left = deadline

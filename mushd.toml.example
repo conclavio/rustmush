@@ -278,13 +278,20 @@ weight_range = 100                 # the utility weight on range to a candidate 
 weight_facet = 40                  # the utility weight on the facet a candidate presents (a rear shot beats a frontal one)
 weight_health = 30                 # the utility weight on its OWN health: the same addend for every candidate, so it orders nothing
 engage_band_permille = 700         # the fraction of a weapon's reach Engage holds rather than driving onto the target
+rally_ms = 20000                   # (16b cut Q.7) arena ms a withdrawn unit waits with nothing hostile on its board before it comes back into the fight -- once; at or above decide_ms
 
 [tacsim.match]                     # (16b cut G) the match lifecycle's slots and timeouts
 startup_ms = 10000                 # ms STARTUP takes to carry a unit's power from starting to online; until then motion and fire refuse
 board_timeout_ms = 120000          # ms Boarding waits for every claimed slot to be seated before unseated slots are dropped (an empty side aborts)
 max_duration_ms = 3600000          # one hour: the longest a match runs before it ends as a timeout
-max_slots_per_side = 12            # pilot slots one side may claim (doc 16's 12 v 12); the floor is two
-ai_fill = false                    # (16b cut N.1) whether SIM START also fields the tanks of the pods nobody claimed, under the reflex controller
+max_slots_per_side = 12            # pilot slots one side may claim (doc 16's 12 v 12); the floor is one
+# (16b cut N.1, sized by Q.7) whether SIM START tops each side up to a size with
+# the tanks of the pods nobody claimed, under the reflex controller. With it ON
+# one pilot alone in the centre can start a match: each side fields the larger
+# side's claimed slots (never fewer than one), and SIM AI <n> is how a lead asks
+# for a bigger one -- a number it sets is a FLOOR, so a claim after it still
+# raises both sides together. OFF, both sides still need a pilot of their own.
+ai_fill = false
 
 [tacsim.sensors]                   # (16b cut G) the sensor pass
 pass_ms = 1000                     # arena ms between one unit's passes, staggered by unit id

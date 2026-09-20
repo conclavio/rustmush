@@ -83,11 +83,13 @@ use smol_str::SmolStr;
 
 use crate::arena::intents::{Intent, IntentKind, IntentOutcome, apply_intent, resolve_startup};
 use crate::arena::ledger::EventKind;
-use crate::arena::path::{PathScratch, path_with};
+use crate::arena::motion::BlockedCause;
+use crate::arena::path::{PathScratch, path_with, shoulder_refuses};
 use crate::arena::perception::bearing_of;
 use crate::arena::resolution::facet_band_seen;
+use crate::arena::slope;
 use crate::arena::state::{
-    Arena, Classification, ContactId, Controller, DueKind, Power, SeenPose, UnitState,
+    Arena, ArenaTerrain, Classification, ContactId, Controller, DueKind, Power, SeenPose, UnitState,
 };
 use crate::config::ReflexConfig;
 use crate::deliberation::order::{Objective, Order, StandingOrder};
@@ -105,6 +107,35 @@ pub const ARRIVE_CELLS: u16 = 1;
 /// 16 by 256), and this search runs once per `repath_ms` per withdrawing unit, so
 /// it is bounded for the same reason everything else here is.
 pub const MAX_ENTRY_SCAN: usize = 1_024;
+
+/// **The most cells one unit remembers being stopped at** (16b cut Q.7), oldest
+/// dropped.
+///
+/// Eight, because the list is a memory of *this* stop and the two or three before
+/// it — a tank that is being herded round a wreck needs the wreck's cell and the
+/// cells it tried instead, and nothing older than that. It is also what bounds
+/// the scan [`crate::arena::path::path_with`] pays per neighbour.
+pub const REFLEX_AVOID_MAX: usize = 8;
+
+/// **How long a remembered stop lasts**, arena milliseconds (16b cut Q.7).
+///
+/// Entries **age**; they are not cleared when the goal changes. `Approach`
+/// recomputes its goal from the contact's plot at every tick, so a
+/// clear-on-goal-change would wipe the list about once a second — in exactly the
+/// case the owner hit, a tank chasing a moving target past a wreck. Thirty
+/// seconds is long enough to get round an obstacle and short enough that a wreck
+/// that has been salvaged, or a tank that has driven off, stops being a hole in
+/// the map.
+pub const REFLEX_AVOID_TTL_MS: i64 = 30_000;
+
+/// **How many decide cycles a cornered `Withdraw` stands and fights** (16b cut
+/// Q.7) before it asks again whether it still has a line.
+///
+/// Three, because the live line a `Withdraw` is refusing to turn its back on
+/// flickers: a treeline between two tanks breaks and remakes the trace several
+/// times a second of arena time, and a unit that resumed its run on the first
+/// broken tick would spend the next one turning round again.
+pub const REFLEX_STAND_TICKS: i64 = 3;
 
 /// The exposure, per mille, of each facet band a candidate may present — the
 /// `weight_facet` term of doc 16 §6's utility score.
@@ -205,6 +236,36 @@ pub struct ReflexUnit {
     /// A shot of this unit's was refused the line (W's `blocked` or `cover` miss):
     /// the `no line` edge, cleared by the tick that re-plans on it.
     pub no_line: bool,
+    /// **The cells this unit was stopped at by something standing in them**, with
+    /// the arena millisecond of the stop (16b cut Q.7; doc 16 §3.4 step 5).
+    ///
+    /// Written by [`Arena::note_blocked`] off the `Blocked` **ledger event** —
+    /// the one place the cell and the cause are both in hand — and read by the
+    /// path search, which treats every listed cell as impassable. At most
+    /// [`REFLEX_AVOID_MAX`] entries, oldest dropped; a repeat of a listed cell
+    /// refreshes its stamp; an entry older than [`REFLEX_AVOID_TTL_MS`] is
+    /// dropped at the top of a tick.
+    ///
+    /// It is **not** occupancy and it cannot be used as one: the unit knows it
+    /// was refused a cell, and never what refused it. The occupant may be a
+    /// platform it has not detected (doc 16 §3.6).
+    pub avoid: Vec<((u16, u16), i64)>,
+    /// **While this is in the future, a cornered `Withdraw` stands** (16b cut
+    /// Q.7): stopped, turned onto the hostile's plot, firing when the line is
+    /// there. Set to `t_ms + REFLEX_STAND_TICKS × decide_ms` by the tick that
+    /// found the line, and cleared by the first tick past it with no line.
+    pub stand_until_ms: Option<i64>,
+    /// **When this `Withdraw` last had nothing hostile on its plot board** (16b
+    /// cut Q.7), arena milliseconds; `None` while it holds one, or while it is
+    /// still on its way home. [`crate::config::ReflexConfig::rally_ms`] of it is
+    /// what returns the unit to `Patrol`.
+    pub quiet_since_ms: Option<i64>,
+    /// **This unit has already come back into the fight once** (16b cut Q.7).
+    ///
+    /// The health edge is not taken twice: a tank that withdrew, waited out its
+    /// quiet and rallied fights to the end. A commander's `Objective::Withdraw`
+    /// still overrides it, and so does having nothing left to fire.
+    pub rallied: bool,
     /// **The squad order it is under** (16b cut N.2; doc 16 §6 "Deliberation"),
     /// with the arena milliseconds it was accepted at and runs out at.
     ///
@@ -362,6 +423,15 @@ impl ReflexMemory {
             row.goal = None;
             row.route.clear();
             row.searched_ms = None;
+            // **16b cut Q.7**: a machine pointed at a new state starts with a
+            // clean memory of where it was stopped and whether it has already
+            // rallied. A seat released into `Withdraw` is the case that matters:
+            // it becomes an AI teammate that can come back, not one that has
+            // already used its one return.
+            row.avoid.clear();
+            row.stand_until_ms = None;
+            row.quiet_since_ms = None;
+            row.rallied = false;
         }
     }
 
@@ -559,6 +629,54 @@ impl Arena {
         }
     }
 
+    /// **Note that `unit` was stopped at `cell`** (16b cut Q.7; doc 16 §3.4 step
+    /// 4), which is the `blocked` edge read off the **event** instead of off the
+    /// flag.
+    ///
+    /// [`crate::arena::state::UnitState::blocked`] is cleared at the top of every
+    /// substep, so a tick saw a stop only when the blocking substep happened to be
+    /// the last one before it — a fact about wall-clock pacing, and therefore
+    /// exactly the kind of thing that must not reach hashed state. The `Blocked`
+    /// *ledger* event is journalled once per stop, at its own arena timestamp,
+    /// with the cell and the cause in hand; this is called from there, and it is
+    /// the only way the controller learns of a stop now.
+    ///
+    /// A stop of any cause throws the route away, as the flag did. A stop with
+    /// [`BlockedCause::Occupied`] does two things more: it remembers the cell (see
+    /// [`ReflexUnit::avoid`]) and it clears `searched_ms`, so the next tick
+    /// searches at once rather than waiting out `repath_ms` against an obstacle
+    /// that is not going to move. The re-search is still under
+    /// [`ReflexMemory::may_search`]'s per-window budget, so a field that all stops
+    /// at once cannot spend more searches than a field that does not.
+    pub fn note_blocked(&mut self, unit: ObjId, cell: (u16, u16), cause: BlockedCause, t_ms: i64) {
+        if self
+            .unit(unit)
+            .is_none_or(|state| state.controller != Controller::Reflex)
+        {
+            return;
+        }
+        let Some(row) = self.reflex.units.get_mut(&unit) else {
+            return;
+        };
+        row.route.clear();
+        if cause != BlockedCause::Occupied {
+            return;
+        }
+        row.searched_ms = None;
+        match row.avoid.iter_mut().find(|(at, _)| *at == cell) {
+            // A repeat refreshes the stamp rather than taking a second slot: a
+            // tank held against one wreck for ten seconds must not push the other
+            // seven cells it learned out of the list.
+            Some(entry) => entry.1 = t_ms,
+            None => {
+                if row.avoid.len() >= REFLEX_AVOID_MAX {
+                    row.avoid.remove(0);
+                }
+                row.avoid.push((cell, t_ms));
+            }
+        }
+    }
+
     /// **Hand a unit to the controller, or take it back** (doc 16 §3.8
     /// "Disconnects"), which is the one thing that moves
     /// [`crate::arena::state::UnitState::controller`] after check-out.
@@ -643,6 +761,12 @@ impl Arena {
             return plan;
         };
         let mut row = memory.unit(id).cloned().unwrap_or_default();
+        // **16b cut Q.7**: remembered stops age out, at the top of the tick and
+        // in arena time. They are deliberately NOT cleared on a goal change —
+        // `Approach` moves its goal every tick, and clearing there would empty the
+        // list in exactly the case it exists for.
+        row.avoid
+            .retain(|(_, at_ms)| t_ms.saturating_sub(*at_ms) < REFLEX_AVOID_TTL_MS);
 
         // ---- the `Disabled` edge, before anything else ----
         //
@@ -788,9 +912,24 @@ impl Arena {
             }
         }
 
-        // ---- the `Withdraw` edge ----
+        // ---- the `Withdraw` edges ----
+        //
+        // Two of them, and **16b cut Q.7** added the second. The health edge is
+        // doc 16 §6's; the *dry* edge is the honest reading of the same sentence
+        // for a tank with nothing to shoot — a unit whose magazines are empty, or
+        // whose turret has been shot off, is closing on a hostile in order to
+        // stand in front of it.
+        //
+        // The health edge is **not taken by a unit that has already rallied**: a
+        // tank gets one return to the fight and then fights to the end, which is
+        // what stops a hurt machine oscillating between the entry zone and the
+        // line for the rest of the match. A commander's `Objective::Withdraw`
+        // (above) overrides either way, rallied or not.
         let health = self.reflex_health_permille(id);
-        if row.state != ReflexState::Withdraw && health < memory.cfg.withdraw_permille {
+        let dry = is_dry(unit);
+        if row.state != ReflexState::Withdraw
+            && (dry || (!row.rallied && health < memory.cfg.withdraw_permille))
+        {
             row.state = ReflexState::Withdraw;
             row.target = None;
             row.goal = None;
@@ -834,14 +973,13 @@ impl Arena {
             }
         }
 
-        // ---- the `blocked` edge (doc 16 §3.4 step 4, A.2's flag) ----
+        // ---- the `blocked` edge (doc 16 §3.4 step 4) ----
         //
-        // The unit is held against an obstacle, an occupied cell or the window's
-        // edge. Whatever route it was following ends at a wall, so it is thrown
-        // away and the next search starts from where the unit actually is.
-        if unit.blocked {
-            row.route.clear();
-        }
+        // There is nothing to do here any more. **16b cut Q.7** moved the edge onto
+        // the `Blocked` ledger event ([`Arena::note_blocked`]), which sees every
+        // stop at its own arena timestamp — the flag this used to read is cleared
+        // at the top of every substep, so a tick saw a stop only when the pacing
+        // happened to put the two next to each other. One way of learning, not two.
         // ---- the `no line` edge (W's `blocked`/`cover` miss) ----
         //
         // A round of this unit's was stopped by the ground. Standing still and
@@ -934,9 +1072,60 @@ impl Arena {
                     }
                 }
             }
+            // **16b cut Q.7**: `Withdraw` is no longer terminal. It has two new
+            // edges inside it and one out of it, and none of them is a state flip
+            // on a live line — see [`ReflexUnit::stand_until_ms`] for why.
             ReflexState::Withdraw => {
                 if row.goal.is_none() {
                     row.goal = self.entry_cell(id).or(here);
+                }
+                // (a) **cornered**. A hostile it holds, classified, inside the
+                // reach an order allows it, with a line: it stops where it is,
+                // turns onto the plot and shoots — **without leaving `Withdraw`
+                // and without touching the goal or the route**, so the run home
+                // resumes from where it stopped rather than from a fresh search.
+                // A tank with nothing to fire, or one told to hold its fire, is
+                // never cornered: see [`Arena::withdraw_stand`].
+                let cornered = self.withdraw_stand(id, memory, health, order.as_ref(), counters);
+                if let Some((contact, plot)) = cornered {
+                    row.stand_until_ms = Some(t_ms.saturating_add(
+                        REFLEX_STAND_TICKS.saturating_mul(i64::from(memory.cfg.decide_ms)),
+                    ));
+                    row.quiet_since_ms = None;
+                    plan.speed_cms = Some(0);
+                    plan.heading_mdeg = Some(plot.bearing_from(&unit.pose));
+                    self.engage_orders(id, contact, order.as_ref(), &mut plan);
+                } else if row.stand_until_ms.is_some_and(|until| t_ms < until) {
+                    // The dwell: the line has gone for the moment, and a tank
+                    // that turned its back on the last three seconds of it would
+                    // be turning round again on the next tick.
+                    row.quiet_since_ms = None;
+                    plan.speed_cms = Some(0);
+                } else {
+                    row.stand_until_ms = None;
+                    // (b) **rally**. Home (or with nowhere to go) and with nothing
+                    // hostile on the board for `rally_ms` of arena time: back to
+                    // `Patrol`, once. A unit with nothing to fire never rallies —
+                    // it has no fight to come back to.
+                    let arrived = match (here, row.goal) {
+                        (Some(here), Some(goal)) => {
+                            here.0.abs_diff(goal.0).max(here.1.abs_diff(goal.1)) <= ARRIVE_CELLS
+                        }
+                        (_, None) => true,
+                        _ => false,
+                    };
+                    if self.holds_a_hostile(id) || !arrived || dry {
+                        row.quiet_since_ms = None;
+                    } else {
+                        let since = *row.quiet_since_ms.get_or_insert(t_ms);
+                        if t_ms.saturating_sub(since) >= i64::from(memory.cfg.rally_ms) {
+                            row.state = ReflexState::Patrol;
+                            row.rallied = true;
+                            row.goal = None;
+                            row.route.clear();
+                            row.quiet_since_ms = None;
+                        }
+                    }
                 }
             }
         }
@@ -1046,6 +1235,14 @@ impl Arena {
         if range > ceiling {
             return;
         }
+        // **16b cut Q.7**: and the heat. The controller reads the platform's
+        // ceiling the way `crate::arena::weapons`'s acceptance does — the `heat`
+        // cell against its own maximum — and skips a weapon whose shot would take
+        // it there, so it does not feed an `Overheated` refusal into the resolver
+        // every tick and then sit with a hot gun. A unit already at the ceiling
+        // fires nothing at all, which is the same sentence read at zero cost. A
+        // unit whose content declares no heat is never held back here, which is
+        // every stock tank.
         plan.fire = unit
             .weapons
             .iter()
@@ -1053,8 +1250,73 @@ impl Arena {
                 unit.weapon_ready(&weapon.id, self.now_ms)
                     && unit.weapon_ammo(&weapon.id) > 0
                     && u64::from(weapon.max_range_cm) >= range
+                    && !would_overheat(unit, &weapon.id)
             })
             .map(|weapon| weapon.id.clone());
+    }
+
+    /// **Whether a withdrawing unit is cornered** (16b cut Q.7), and by which
+    /// contact: the hostile it would fight if it had to, with the plot to turn
+    /// onto.
+    ///
+    /// The candidate is the utility score's own best hostile — the same chooser
+    /// `Approach` uses, so a `Withdraw` that turns to fight turns onto the same
+    /// tank it would have closed on — and the two tests after it are `Approach`'s
+    /// own, in `Approach`'s own order: the **plot's** range against what the order
+    /// allows (16b cut F.3: the range the gunner has), and then one trace. The
+    /// trace is paid only when the range test has already passed, so a withdrawing
+    /// tank with nothing near it costs a `Withdraw` tick exactly what it cost
+    /// before this cut.
+    ///
+    /// **A unit that cannot shoot is never cornered.** The stand stops a tank in
+    /// the open and turns it onto the plot; a tank that would then stage no shot
+    /// has stopped in front of a gun for nothing, which is the parked target this
+    /// cut exists to remove and not a stand. The two reasons that hold for the
+    /// whole of a stand — the magazines are empty ([`is_dry`]), and a commander
+    /// wrote `hold_fire` — are asked here, before the candidate. A weapon merely
+    /// on its cycle is *not* one of them: that one comes back within the second,
+    /// and a tank that gave up the stand for it would be turning round twice a
+    /// second.
+    fn withdraw_stand(
+        &self,
+        id: ObjId,
+        memory: &ReflexMemory,
+        health_permille: u32,
+        order: Option<&Order>,
+        counters: &mut ReflexCounters,
+    ) -> Option<(ContactId, SeenPose)> {
+        let unit = self.unit(id)?;
+        if is_dry(unit) || order.is_some_and(|order| order.constraints.hold_fire) {
+            return None;
+        }
+        let (contact, target) = self.best_hostile(id, memory, health_permille, None)?;
+        let plot = self.plot_of(id, contact)?;
+        if plot.range_from(&unit.pose) > order_reach_cm(unit, order).max(1) {
+            return None;
+        }
+        if !self.reflex_has_line(id, target, counters) {
+            return None;
+        }
+        Some((contact, plot))
+    }
+
+    /// **Whether this platform holds any live hostile at all** (16b cut Q.7) —
+    /// the question `Withdraw`'s rally asks, and the widest reading of it: any
+    /// classified contact of another side whose unit is not a wreck, at any range
+    /// and with or without a line.
+    ///
+    /// It is the contact store and nothing else (doc 16 §3.6), so a unit that
+    /// cannot see the enemy rallies and a unit being watched from a ridge does
+    /// not.
+    fn holds_a_hostile(&self, id: ObjId) -> bool {
+        self.unit(id).is_some_and(|unit| {
+            self.contacts.of(id).any(|(_, held)| {
+                matches!(held.class, Classification::Classified { team } if team != unit.team)
+                    && self
+                        .unit(held.target)
+                        .is_some_and(|target| !target.limits.wreck)
+            })
+        })
     }
 
     /// **The object an order points this unit at**, or `None` (16b cut N.2).
@@ -1355,6 +1617,12 @@ impl Arena {
             .is_some_and(|cell| cell.0.abs_diff(here.0).max(cell.1.abs_diff(here.1)) > 1)
         {
             row.route.clear();
+            // **16b cut Q.7**: and the search that route came from is spent. A
+            // unit that has been pushed off its route is standing somewhere the
+            // route was never computed from, and making it wait out `repath_ms`
+            // before it may say so is what left a tank crawling sideways past an
+            // obstacle for four seconds at a time.
+            row.searched_ms = None;
         }
         if row.route.is_empty() {
             let fresh_enough = row
@@ -1367,6 +1635,9 @@ impl Arena {
                 counters.path_queries = counters.path_queries.saturating_add(1);
                 let budget = memory.cfg.path_max_cells;
                 let scale = memory.min_move_cost;
+                // **16b cut Q.7**: the cells this unit has been stopped at, at
+                // most `REFLEX_AVOID_MAX` of them, built once per search.
+                let avoid: Vec<(u16, u16)> = row.avoid.iter().map(|(cell, _)| *cell).collect();
                 // **16b cut X.6**: the unit's own slope limit goes into the
                 // search, so the route the controller follows is a route the
                 // crossing will accept. A route over an edge motion then refuses
@@ -1380,6 +1651,7 @@ impl Arena {
                     budget,
                     scale,
                     unit.slope_limit_pct,
+                    &avoid,
                 ) {
                     Ok(found) => {
                         counters.path_cells = counters
@@ -1404,14 +1676,72 @@ impl Arena {
         }
         // Steer at whatever the route (or, with none, the goal) says next.
         let cell_cm = i64::from(self.definition.terrain.cell_cm().max(1));
-        let aim = row.route.first().copied().unwrap_or(goal);
+        let routed = row.route.first().copied();
+        let aim = routed.unwrap_or(goal);
         let to_x = i64::from(aim.0).saturating_mul(cell_cm) + cell_cm / 2;
         let to_y = i64::from(aim.1).saturating_mul(cell_cm) + cell_cm / 2;
-        plan.heading_mdeg = Some(bearing_of(
+        let heading = bearing_of(
             to_x.saturating_sub(unit.pose.x_cm),
             to_y.saturating_sub(unit.pose.y_cm),
-        ));
+        );
+        // **16b cut Q.7** (closes 16b cut X.6's deviation 13): with no route, the
+        // goal is a *direction* and nobody has checked the ground between here and
+        // it. The one cell the unit would actually cross first is checked with the
+        // crossing's own rule, and a unit that would be refused it waits for its
+        // search rather than driving at a cliff or back into the cell it was just
+        // stopped at. With a route the question is already answered — the search
+        // asked it of every edge it planned.
+        if routed.is_none() && !self.first_step_is_open(unit, here, heading, &row.avoid) {
+            plan.speed_cms = Some(0);
+            return;
+        }
+        plan.heading_mdeg = Some(heading);
         plan.speed_cms = Some(i32::try_from(unit.mobility.max_speed_cms).unwrap_or(i32::MAX));
+    }
+
+    /// **Whether the one cell on `heading` is a cell this unit may enter** (16b
+    /// cut Q.7), asked exactly as [`crate::arena::motion`]'s step 4 will ask it.
+    ///
+    /// The neighbour is the octant of the bearing — the eight compass directions,
+    /// each owning 45 degrees — because that is the cell the crossing will test
+    /// first. Then four questions, in the crossing's own order: it is on the
+    /// window, its class is passable, the edge onto it is within this unit's slope
+    /// limit **either way**, and on a diagonal its shoulders are not a cliff
+    /// ([`shoulder_refuses`], the search's own rule read out of the search's own
+    /// module). And one of this cut's: it is not a cell the unit has been stopped
+    /// at.
+    ///
+    /// A unit with no slope limit at all is refused by no slope, exactly as
+    /// `path` and `motion` refuse it by none.
+    fn first_step_is_open(
+        &self,
+        unit: &UnitState,
+        here: (u16, u16),
+        heading_mdeg: u32,
+        avoid: &[((u16, u16), i64)],
+    ) -> bool {
+        let terrain = &self.definition.terrain;
+        let (dx, dy) = octant_step(heading_mdeg);
+        let (Some(nx), Some(ny)) = (
+            u16::try_from(i32::from(here.0).saturating_add(dx)).ok(),
+            u16::try_from(i32::from(here.1).saturating_add(dy)).ok(),
+        ) else {
+            return false;
+        };
+        if (nx, ny) == here {
+            return true;
+        }
+        let (Some(here_cell), Some(to_cell)) = (terrain.get(here.0, here.1), terrain.get(nx, ny))
+        else {
+            return false;
+        };
+        if !to_cell.passable() {
+            return false;
+        }
+        if avoid.iter().any(|(cell, _)| *cell == (nx, ny)) {
+            return false;
+        }
+        edge_is_open(terrain, unit, here_cell, to_cell, here, (nx, ny))
     }
 
     /// The `unreachable` edge's landing: the nearest waypoint, or the next one
@@ -1532,6 +1862,115 @@ fn order_reach_cm(unit: &UnitState, order: Option<&Order>) -> u64 {
     }
 }
 
+/// **The 8-neighbour step nearest a bearing** (16b cut Q.7).
+///
+/// Bearing zero is north and [`bearing_of`] measures clockwise, so the eight
+/// octants are 45 degrees wide and centred on the compass points: the octant is
+/// `(mdeg + 22,500) / 45,000` modulo eight, and the table below is the step each
+/// one names in cell coordinates (`+y` north, `+x` east).
+fn octant_step(heading_mdeg: u32) -> (i32, i32) {
+    const STEPS: [(i32, i32); 8] = [
+        (0, 1),
+        (1, 1),
+        (1, 0),
+        (1, -1),
+        (0, -1),
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+    ];
+    let octant = ((heading_mdeg.saturating_add(22_500) / 45_000) % 8) as usize;
+    STEPS.get(octant).copied().unwrap_or((0, 1))
+}
+
+/// **Whether one edge is crossable for this unit** (16b cut Q.7), which is
+/// [`crate::arena::motion`]'s step 4 and [`crate::arena::path::path_with`]'s edge
+/// rule asked of a single step.
+fn edge_is_open(
+    terrain: &ArenaTerrain,
+    unit: &UnitState,
+    here_cell: &crate::arena::state::TerrainCell,
+    to_cell: &crate::arena::state::TerrainCell,
+    here: (u16, u16),
+    to: (u16, u16),
+) -> bool {
+    let Some(limit) = unit.slope_limit_pct else {
+        return true;
+    };
+    let cell_cm = u32::from(terrain.cell_cm());
+    let Some(kind) = slope::step_kind(here, to) else {
+        return true;
+    };
+    if slope::too_steep(
+        Some(limit),
+        slope::steepness_pct(here_cell, to_cell, kind, cell_cm),
+    ) {
+        return false;
+    }
+    if kind == mush_atlas::physics::StepKind::Diagonal
+        && shoulder_refuses(terrain, Some(limit), here_cell, to_cell, here, to)
+    {
+        return false;
+    }
+    true
+}
+
+/// **Whether a platform that *had* a gun has nothing left to fire** (16b cut
+/// Q.7), which is the `Withdraw` edge doc 16 §6's health threshold does not
+/// cover.
+///
+/// Two halves, and the first is what keeps it honest. A tank that came into the
+/// match with no weapon at all is not *dry*: it is a spotter, a target or a
+/// harness mover, and [`Arena::best_hostile`] already says what the machine does
+/// with one — *it patrols, which is doc 16 §6's machine with the states that mean
+/// nothing to it left out*. The second half is `remove_weapons` and an empty
+/// magazine read as the one fact they are: there is no shot this platform can
+/// take, so closing on a hostile would be closing in order to stand in front of
+/// it.
+fn is_dry(unit: &UnitState) -> bool {
+    unit.armed_at_checkout()
+        && !unit
+            .weapons
+            .iter()
+            .any(|weapon| unit.weapon_ammo(&weapon.id) > 0)
+}
+
+/// **Whether firing `weapon` would take this platform past its heat ceiling**
+/// (16b cut Q.7; doc 16 §9 item 1).
+///
+/// The same two numbers `crate::arena::weapons`'s acceptance reads — the `heat`
+/// cell and its own maximum — plus the weapon's `heat_per_shot`. A platform with
+/// no heat at all answers `false` for every weapon.
+///
+/// **It is the engine's own line and not one shot short of it.**
+/// [`crate::arena::state::UnitState::overheated`] refuses at the ceiling *and not
+/// merely past it*: a shot that would carry a unit past the maximum leaves it
+/// exactly at it, and the **next** shot is the one refused. So the controller
+/// declines a shot that would land the unit **above** the ceiling and takes the
+/// one that lands it on it — otherwise a weapon whose `heat_per_shot` equals its
+/// platform's whole ceiling would be a gun a pilot could fire from cold and a
+/// machine could never fire at all, which is the two halves of one platform
+/// disagreeing about whether the gun works. A unit already at the ceiling is
+/// asked the engine's own question and answers `true` for every weapon,
+/// `heat_per_shot` of zero included.
+///
+/// A platform whose content declares heat but carries no `heat` **cell** reads
+/// `None` here and is held back by nothing, because that is the platform
+/// [`crate::arena::state::UnitState::overheated`] answers `false` for however hot
+/// its weapons are: the engine would take every one of those shots.
+fn would_overheat(unit: &UnitState, weapon: &str) -> bool {
+    let Some(heat) = unit.heat.as_ref() else {
+        return false;
+    };
+    let Some(now) = unit.heat_now() else {
+        return false;
+    };
+    if now >= heat.max {
+        return true;
+    }
+    now.saturating_add(heat.per_shot(weapon)) > heat.max
+}
+
 /// **The range `Approach` holds**, centimetres (16b cut N.2): doctrine's own
 /// `engage_band_permille` of the reach, capped by the order's band.
 fn band_hold_cm(unit: &UnitState, engage_band_permille: u32, order: Option<&Order>) -> u64 {
@@ -1607,6 +2046,132 @@ mod tests {
         assert!(memory.may_search(1_000));
         assert!(memory.may_search(1_999));
         assert!(!memory.may_search(1_999));
+    }
+
+    /// **16b cut Q.7**: the remembered-stop list is bounded, refreshes rather
+    /// than duplicating, and only an `Occupied` stop puts anything in it.
+    #[test]
+    fn the_avoided_cells_are_bounded_and_a_repeat_refreshes_its_stamp() {
+        let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+        if let Some(state) = arena.unit_mut(ObjId(4)) {
+            state.controller = Controller::Reflex;
+        }
+        arena.reflex.adopt(ObjId(4), ReflexState::Patrol);
+        // A search this tick already paid for, so the clearing below is a fact
+        // about `note_blocked` and not about how `adopt` leaves a fresh row.
+        if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
+            row.searched_ms = Some(0);
+        }
+        // Nine distinct cells into a list of eight: the oldest goes.
+        for n in 0..9_u16 {
+            arena.note_blocked(ObjId(4), (n, 1), BlockedCause::Occupied, i64::from(n) * 100);
+        }
+        let row = arena.reflex.unit(ObjId(4)).cloned().unwrap_or_default();
+        assert_eq!(row.avoid.len(), REFLEX_AVOID_MAX);
+        assert_eq!(row.avoid.first().map(|(cell, _)| *cell), Some((1, 1)));
+        assert_eq!(row.avoid.last().map(|(cell, _)| *cell), Some((8, 1)));
+        assert_eq!(row.searched_ms, None, "the next tick searches");
+
+        // A repeat moves the stamp and takes no second slot.
+        arena.note_blocked(ObjId(4), (1, 1), BlockedCause::Occupied, 9_000);
+        let row = arena.reflex.unit(ObjId(4)).cloned().unwrap_or_default();
+        assert_eq!(row.avoid.len(), REFLEX_AVOID_MAX);
+        assert_eq!(row.avoid.first().copied(), Some(((1, 1), 9_000)));
+
+        // Every other cause throws the route away and remembers nothing: the
+        // ground is not going to move out of the way, and the search already
+        // knows about it.
+        if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
+            row.route = vec![(2, 2)];
+            row.avoid.clear();
+        }
+        for cause in [
+            BlockedCause::Impassable,
+            BlockedCause::Edge,
+            BlockedCause::TooSteep,
+        ] {
+            if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
+                row.searched_ms = Some(10_000);
+            }
+            arena.note_blocked(ObjId(4), (3, 3), cause, 10_000);
+            let row = arena.reflex.unit(ObjId(4)).cloned().unwrap_or_default();
+            assert!(row.route.is_empty(), "{cause:?} throws the route away");
+            assert!(row.avoid.is_empty(), "{cause:?} remembers nothing");
+            assert_eq!(
+                row.searched_ms,
+                Some(10_000),
+                "{cause:?} is ground, not traffic: the search it just paid for stands"
+            );
+        }
+
+        // And a unit that is not the controller's learns nothing at all.
+        if let Some(state) = arena.unit_mut(ObjId(4)) {
+            state.controller = Controller::Pilot;
+        }
+        arena.note_blocked(ObjId(4), (7, 7), BlockedCause::Occupied, 11_000);
+        assert!(
+            arena
+                .reflex
+                .unit(ObjId(4))
+                .is_some_and(|row| row.avoid.is_empty())
+        );
+    }
+
+    /// **16b cut Q.7**: each of the four new row fields is authoritative state,
+    /// so each of them moves [`crate::arena::hash::state_hash`].
+    #[test]
+    fn each_new_row_field_moves_the_state_hash() {
+        let build = || {
+            let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(1_500, 1_500))]);
+            arena.reflex.adopt(ObjId(4), ReflexState::Withdraw);
+            arena
+        };
+        let base = crate::arena::hash::state_hash(&build());
+        let mut moved: Vec<u64> = Vec::new();
+        for edit in [
+            0_u8, // the avoided cell
+            1,    // its stamp
+            2,    // stand_until_ms
+            3,    // quiet_since_ms
+            4,    // rallied
+        ] {
+            let mut arena = build();
+            if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
+                match edit {
+                    0 => row.avoid.push(((3, 4), 1_000)),
+                    1 => row.avoid.push(((3, 4), 2_000)),
+                    2 => row.stand_until_ms = Some(1_500),
+                    3 => row.quiet_since_ms = Some(1_500),
+                    _ => row.rallied = true,
+                }
+            }
+            let hash = crate::arena::hash::state_hash(&arena);
+            assert_ne!(hash, base, "edit {edit} did not move the hash");
+            assert!(
+                !moved.contains(&hash),
+                "edit {edit} folded the same bytes as an earlier one"
+            );
+            moved.push(hash);
+        }
+    }
+
+    #[test]
+    fn the_octant_of_a_bearing_is_the_cell_the_crossing_will_test() {
+        for (mdeg, step) in [
+            (0_u32, (0_i32, 1_i32)),
+            (22_499, (0, 1)),
+            (22_500, (1, 1)),
+            (45_000, (1, 1)),
+            (90_000, (1, 0)),
+            (135_000, (1, -1)),
+            (180_000, (0, -1)),
+            (225_000, (-1, -1)),
+            (270_000, (-1, 0)),
+            (315_000, (-1, 1)),
+            (359_999, (0, 1)),
+        ] {
+            assert_eq!(octant_step(mdeg), step, "{mdeg} mdeg");
+        }
     }
 
     #[test]

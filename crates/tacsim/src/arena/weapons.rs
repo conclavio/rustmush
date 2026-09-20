@@ -213,6 +213,22 @@ impl UnitState {
         self.ammo.get(id).copied().unwrap_or(0)
     }
 
+    /// **Whether this platform came into the match carrying a gun** (16b cut
+    /// Q.7), whatever has happened to it since.
+    ///
+    /// [`UnitState::ammo`] is laid down at check-out with one row per weapon and
+    /// is **never** emptied — a turret shot off takes its `weapons` rows and its
+    /// `ready_at_ms` rows and deliberately leaves the rounds behind (16b cut F.1,
+    /// so the check-in can still say what the tank spent). That makes it the one
+    /// durable record of *was there ever a weapon here*, which is the difference
+    /// between a tank that has run out of ammunition and a tank that never had
+    /// any: the first is what [`crate::arena::state::EndReason::Spent`] is about,
+    /// and the second is a target.
+    #[must_use]
+    pub fn armed_at_checkout(&self) -> bool {
+        !self.ammo.is_empty()
+    }
+
     /// **The longest reach anything the unit carries has**, centimetres — the
     /// number `tempo.alert_range_cm` is derived from (16b §9). Zero for a unit
     /// that carries no weapon, and then nothing is in range of it.

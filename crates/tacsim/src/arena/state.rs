@@ -2133,6 +2133,18 @@ pub enum EndReason {
         /// The surviving side, or `None` for a draw.
         winner: Option<Team>,
     },
+    /// **Nobody left on either side can fire a round** (16b cut Q.7), and the
+    /// last one in flight has landed: a **draw**, naming no winner.
+    ///
+    /// It is deliberately not a redefinition of doc 16 §3.8's elimination, which
+    /// stays *a wreck, or disabled with no weapons*: counting an empty magazine
+    /// as out of action would make a solo player at full armour lose the instant
+    /// their last round left the breech. This is the symmetric reading instead —
+    /// a side that is dry while the other is not plays on, and only when neither
+    /// can shoot is there nothing left to decide. Before it, such a match ran to
+    /// `match.max_duration_ms`, which is an hour of two tanks driving at each
+    /// other.
+    Spent,
     /// `match.max_duration_ms`, or `ledger.max_bytes` reached (doc 16 §4).
     Timeout,
     /// `SIM ABORT`.

@@ -628,7 +628,15 @@ impl Arena {
         // test rig today, and whatever a later cut adds. It is **before** the duration
         // check, so a match whose last unit dies on the pulse the clock runs out is a
         // victory and not a timeout.
-        if let Some(end) = self.settle_elimination() {
+        //
+        // **16b cut Q.7** put `Spent` beside it, in that order: a side eliminated
+        // on the same pulse is an elimination with a winner, and a draw over the
+        // top of it would lose the result.
+        let mut settled = self.settle_elimination();
+        if settled.is_none() {
+            settled = self.settle_spent();
+        }
+        if let Some(end) = settled {
             ledger_full |= !self.journal(
                 self.now_ms,
                 EventKind::MatchEnded { reason: end.reason },
@@ -723,6 +731,12 @@ impl Arena {
         // point in the same order as the ledger's own `blocked` line, which is
         // what the scan would have given.
         let mut stops: Vec<(ObjId, crate::arena::motion::BlockedCause)> = Vec::new();
+        // **16b cut Q.7**: the same stops again, with the cell, for the reflex
+        // controller's own memory. They are collected here and applied below —
+        // after arena time has advanced, so the timestamp a controller remembers
+        // is the one the `blocked` ledger line carries, and before the due-event
+        // loop, so the `ReflexTick` of this very substep already knows.
+        let mut learned: Vec<(ObjId, (u16, u16), crate::arena::motion::BlockedCause)> = Vec::new();
 
         // ---- (a) motion ----
         {
@@ -755,6 +769,14 @@ impl Arena {
                     && !was_blocked
                 {
                     notices.push((0, EventKind::Blocked { unit: id, x, y }, None));
+                    // 16b cut Q.7: the controller learns from the **event** and
+                    // not from the per-substep flag, which is cleared before the
+                    // next tick could read it. `blocked_at` and `blocked_by` are
+                    // written together by `stop_at_boundary`, so the cause is in
+                    // hand at exactly the edge the line is journalled on.
+                    if let Some(cause) = outcome.blocked_by {
+                        learned.push((id, (x, y), cause));
+                    }
                 }
                 // The pilot's one line per stop, off the rising edge of the
                 // `held` **condition** — which is the stricter of the two, and
@@ -780,6 +802,10 @@ impl Arena {
             // The `blocked` notices belong to the interval just integrated, which
             // ends here.
             notice.0 = self.now_ms;
+        }
+        // 16b cut Q.7: and so does what the controller remembers of them.
+        for (unit, cell, cause) in learned {
+            self.note_blocked(unit, cell, cause, self.now_ms);
         }
 
         // **16b cut X.1** (doc 16 §9 item 1): the heat the interval just
@@ -942,7 +968,15 @@ impl Arena {
         // side was eliminated is a fact of arena time — and a `match_ended` stamped at
         // the pulse boundary instead would carry a different timestamp at every
         // cadence.
-        if let Some(end) = self.settle_elimination() {
+        //
+        // **16b cut Q.7** settles `Spent` here too, and after it: the last round
+        // in flight lands as a due event inside this very substep, so the substep
+        // that resolves it is the substep in which nobody can shoot any more.
+        let mut settled = self.settle_elimination();
+        if settled.is_none() {
+            settled = self.settle_spent();
+        }
+        if let Some(end) = settled {
             notices.push((
                 self.now_ms,
                 EventKind::MatchEnded { reason: end.reason },

@@ -705,5 +705,49 @@ fn the_hand_written_dev_box_parses_and_runs_the_simulator() {
             "{relative}: [tacsim].enabled is false, so this box has no arena and no stock \
              tanks and its simulator centre cannot start a match"
         );
+        // **16b cut Q.7**: and the fill is on, because one person alone on a dev
+        // box has nobody to fight. The example ships it off (doc 16 §1's A1 is a
+        // two-tank story and the example is the reference); these boxes are where
+        // the owner plays.
+        assert!(
+            cfg.tacsim.match_.ai_fill,
+            "{relative}: [tacsim.match].ai_fill is false, so a lone pilot on this box \
+             cannot start a match at all"
+        );
+        assert!(
+            cfg.tacsim.arena.reflex.rally_ms >= cfg.tacsim.arena.reflex.decide_ms,
+            "{relative}: [tacsim.arena.reflex].rally_ms is under decide_ms"
+        );
     }
+}
+
+/// **16b cut Q.7: the rendered instances turn the AI fill on, and the example
+/// does not.**
+///
+/// The two are deliberately different. `mushd.toml.example` is the reference
+/// file a reader learns the shape from, and doc 16 §1's acceptance story A1 is
+/// two humans in two tanks; the boxes the owner actually plays on are where one
+/// human against the machines is the point.
+#[test]
+fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
+    let root = repo_root();
+    for instance in SHIPPED {
+        let env_file = instance.env;
+        let (_, cfg) = rendered_instance(instance);
+        assert!(
+            cfg.tacsim.match_.ai_fill,
+            "{env_file}: the rendered box should field machines for a lone pilot"
+        );
+        assert_eq!(
+            cfg.tacsim.arena.reflex.rally_ms, 20_000,
+            "{env_file}: 16b §9's rally lull"
+        );
+    }
+    let example = Config::load(&root.join("mushd.toml.example"))
+        .unwrap_or_else(|e| panic!("mushd.toml.example does not parse: {e}"));
+    assert!(
+        !example.tacsim.match_.ai_fill,
+        "the reference example stays off: doc 16 §1's A1 is a two-tank story"
+    );
+    assert_eq!(example.tacsim.arena.reflex.rally_ms, 20_000);
 }

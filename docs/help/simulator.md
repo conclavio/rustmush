@@ -27,10 +27,37 @@ the same thing this topic does, in fewer words.
   SIM ABORT           call the match off (any pilot in it, or staff).
   SIM STATUS          the centre: its state, its sides, its slots and its pods.
                       The bare word SIM is the same thing.
+  SIM AI [n]          how many units a side fields when the machines fill in.
+                      A side's first pilot or staff, before the match starts;
+                      the bare word reads the number.
 
 A slot belongs to your **account**, not to your character, so an alt cannot take
 a second one. All of these work in the lobby, the two team rooms and the pods,
 and nowhere else.
+
+## Fighting the machines
+
+On a server with the AI fill switched on, the tanks of the pods nobody claimed
+are flown by the simulator itself, and **one pilot is enough to start a match**.
+Each side fields as many units as the larger side has claimed slots — so alone
+you get a one against one, and two of you on red get two machines on blue. `SIM
+AI 3` asks for a bigger game; it cannot go below what a side has already
+claimed, or above the four pods a side — and if more pilots claim afterwards the
+number follows them up, because both sides always field the same count. The
+board says which it is:
+
+  AI fill: each side fields 2; machines take the unclaimed pods.
+
+A machine patrols, closes on what it can see, holds the range its gun likes and
+shoots. Hurt badly enough it breaks off for its own entry zone — but it is not
+out of the match: cornered on the way home by something it can see and shoot it
+stops and fights back — with an empty magazine it keeps driving — and after
+twenty quiet seconds with nothing hostile in sight it turns round and comes back
+in, once. A tank whose pilot left does the same, so a disconnection leaves your
+side a teammate rather than a parked target.
+
+With the fill switched off, `SIM AI` answers `AI fill is off on this server.`
+and both sides need a pilot of their own, as before.
 
 If you claim into a centre that is still showing the last match's result, your
 claim clears the board first and puts the tanks back at muster. You do not need
@@ -58,8 +85,11 @@ once the link-dead grace runs out.
 
 While it runs, the cockpit is the whole of it: `help cockpit`.
 
-It ends when one side has nothing left that can fight, when the match's time
-runs out, or when somebody aborts it. Everyone in the centre reads
+It ends when one side has nothing left that can fight, when **neither** side has
+a round left to fire (a draw: `ended — draw: both sides are out of ammunition`),
+when the match's time runs out, or when somebody aborts it. Running dry on your
+own does not lose you the match — the other side has to be dry too.
+Everyone in the centre reads
 `Match N is over (red). Its units are checked in.`, the hatches open, and the
 tanks stand where they stopped, damaged as they ended — that is the match's own
 evidence, and `SIM STATUS` keeps showing the result until somebody starts the

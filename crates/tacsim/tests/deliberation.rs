@@ -542,7 +542,7 @@ fn a_hold_order_parks_the_squad_and_a_movement_order_does_not_pursue() {
 }
 
 #[test]
-fn a_withdraw_order_withdraws_and_holds_fire() {
+fn a_withdraw_order_withdraws_and_stands_when_it_is_cornered() {
     let cfg = arena_cfg(30_000);
     let mut arena = field(&cfg);
     let mut bytes = Vec::new();
@@ -564,11 +564,72 @@ fn a_withdraw_order_withdraws_and_holds_fire() {
         goal.0 <= 1,
         "it makes for its OWN entry zone (columns 0..=1), not {goal:?}"
     );
+    // **16b cut Q.7** changed this. Before it, a commanded withdrawal held its
+    // fire all the way home; now a tank that still holds a classified hostile
+    // inside its reach, with a line, stops and shoots back — **without leaving
+    // `Withdraw` and without touching the goal**, which the two assertions above
+    // are exactly what pin. `hold_fire` is the constraint a commander who means
+    // "do not shoot" writes, and `hold_fire_stops_the_trigger_and_leaves_the_lock`
+    // below is its test.
+    let fired = events(&mut arena, &mut bytes);
+    assert!(
+        fired_by(&fired, RED_A) > 0,
+        "cornered on the way out, it stands and shoots back"
+    );
+}
+
+/// **`hold_fire` still means "do not stop to fight"** (16b cut Q.7).
+///
+/// The stand above is worth stopping for because the tank shoots back. A tank
+/// whose commander wrote `hold_fire` would stop, turn onto the plot, stage
+/// nothing and re-arm the dwell for as long as it held the contact — a parked
+/// target under an order to break off. The constraint is read where the stand is
+/// decided, not only at the trigger.
+#[test]
+fn a_withdraw_under_hold_fire_keeps_driving() {
+    let cfg = arena_cfg(30_000);
+    let mut arena = field(&cfg);
+    let mut bytes = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    let at = arena.now_ms;
+    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
+    let mut told = order(Objective::Withdraw, 60_000);
+    told.constraints.hold_fire = true;
+    issue(&mut arena, &told);
+    run(&mut arena, 6_000, &mut bytes);
+
+    assert_eq!(
+        state_of(&arena, RED_A),
+        Some(ReflexState::Withdraw),
+        "the order still puts it in `Withdraw`"
+    );
+    assert_eq!(
+        arena.reflex.unit(RED_A).and_then(|row| row.stand_until_ms),
+        None,
+        "it never stopped to fight a fight it was told not to have"
+    );
     let fired = events(&mut arena, &mut bytes);
     assert_eq!(
-        fired_by(&fired, RED_A) + fired_by(&fired, RED_B),
+        fired_by(&fired, RED_A),
         0,
-        "and it holds its fire on the way"
+        "and `hold_fire` stages no FIRE, cornered or not"
+    );
+
+    // The same field at the same arena millisecond with the constraint lifted
+    // does stand, which is what makes the assertions above about the constraint
+    // and not about the geometry.
+    let mut free = field(&cfg);
+    let mut free_bytes = Vec::new();
+    run(&mut free, 2_000, &mut free_bytes);
+    let at = free.now_ms;
+    plant_contact(&mut free, RED_A, BLUE, Team::Blue, at);
+    issue(&mut free, &order(Objective::Withdraw, 60_000));
+    run(&mut free, 6_000, &mut free_bytes);
+    assert!(
+        free.reflex
+            .unit(RED_A)
+            .is_some_and(|row| row.stand_until_ms.is_some()),
+        "the cornered stand is there when nothing forbids it"
     );
 }
 

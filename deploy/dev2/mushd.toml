@@ -107,14 +107,18 @@ weight_range = 100
 weight_facet = 40
 weight_health = 30
 engage_band_permille = 700
+# 16b cut Q.7: the quiet a withdrawn unit waits out before it rallies, once.
+rally_ms = 20000
 
 [tacsim.match]
 startup_ms = 10000
 board_timeout_ms = 120000
 max_duration_ms = 3600000
 max_slots_per_side = 12
-# 16b cut N.1: off, because doc 16's A1 is a two-tank story.
-ai_fill = false
+# 16b cut N.1, sized by Q.7: ON here, because one player alone on a dev box has
+# nobody to fight. Each side fields the larger side's claimed slots (never fewer
+# than one) and the machines take the unclaimed pods; SIM AI <n> changes it.
+ai_fill = true
 
 [tacsim.sensors]
 pass_ms = 1000

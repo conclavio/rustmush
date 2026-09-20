@@ -235,7 +235,7 @@ pub fn path(
     budget: u32,
     scale: u32,
 ) -> Result<PathResult, PathFailure> {
-    path_with(terrain, scratch, start, goal, budget, scale, None)
+    path_with(terrain, scratch, start, goal, budget, scale, None, &[])
 }
 
 /// **The bounded A\* with a slope limit** (16b cut X.6; doc 16 §9 item 6) —
@@ -263,9 +263,28 @@ pub fn path(
 /// With `slope_limit` `None` neither test runs, and the surcharge is the
 /// identity on level ground, so [`path`] is exactly what it was.
 ///
+/// **The `avoid` list** (16b cut Q.7): cells this caller has been *stopped at*
+/// and will not try again — [`crate::arena::reflex::ReflexUnit::avoid`], fed by
+/// the `Blocked` ledger event's own `Occupied` cause. They are impassable to the
+/// search exactly as a wall is, and for the same reason the shoulder rule
+/// exists: a route that walks the caller back into the cell a parked tank or a
+/// wreck is standing in is a route that ends in the same stop. It is **not**
+/// occupancy: the search never reads the index, the list is a memory of this
+/// unit's own refusals, and the occupant may be a unit this platform has not
+/// detected (doc 16 §3.6's observer rule). A goal that is itself on the list is
+/// an ordinary [`PathFailure::NoRoute`] — nothing enters it, so nothing closes
+/// it — and the `unreachable` edge takes it from there. `&[]` is exactly what
+/// the search was before.
+///
 /// # Errors
 ///
 /// [`PathFailure`], exactly as [`path`].
+///
+/// The argument list is long because every one of them is a **caller's** fact —
+/// the ground, the reusable scratch, the two ends, the two bounds, the unit's
+/// slope limit and the cells it has been stopped at — and a struct to carry them
+/// would be a struct built and thrown away once per search.
+#[allow(clippy::too_many_arguments)]
 pub fn path_with(
     terrain: &ArenaTerrain,
     scratch: &mut PathScratch,
@@ -274,6 +293,7 @@ pub fn path_with(
     budget: u32,
     scale: u32,
     slope_limit: Option<u32>,
+    avoid: &[(u16, u16)],
 ) -> Result<PathResult, PathFailure> {
     let passable = |x: u16, y: u16| terrain.get(x, y).is_some_and(|cell| cell.passable());
     let cell_cm = u32::from(terrain.cell_cm());
@@ -355,6 +375,13 @@ pub fn path_with(
                 continue;
             };
             if !cell.passable() {
+                continue;
+            }
+            // **16b cut Q.7**: a cell this caller was stopped at is not a cell it
+            // may plan through. The test is a scan of at most
+            // `crate::arena::reflex::REFLEX_AVOID_MAX` pairs, taken after the
+            // class test so an ordinary window pays nothing for an empty list.
+            if avoid.contains(&(nx, ny)) {
                 continue;
             }
             let kind = if dx != 0 && dy != 0 {
@@ -467,7 +494,12 @@ pub fn path_with(
 /// that is there and passable must be reachable from `here` and able to reach
 /// `to`, both as **orthogonal** steps, or the corner is a cliff edge and the
 /// route goes another way.
-fn shoulder_refuses(
+///
+/// **16b cut Q.7** made it `pub(crate)`: the follower's own one-cell test
+/// ([`crate::arena::reflex`]) has to ask the edge question *exactly* as the
+/// search asks it, and a second implementation of the shoulder rule beside this
+/// one would be two rules with one name.
+pub(crate) fn shoulder_refuses(
     terrain: &ArenaTerrain,
     limit: Option<u32>,
     here_cell: &TerrainCell,
@@ -691,11 +723,97 @@ mod tests {
                 let mut limited = PathScratch::default();
                 assert_eq!(
                     path(&terrain, &mut plain, start, goal, 65_536, scale),
-                    path_with(&terrain, &mut limited, start, goal, 65_536, scale, Some(45)),
+                    path_with(
+                        &terrain,
+                        &mut limited,
+                        start,
+                        goal,
+                        65_536,
+                        scale,
+                        Some(45),
+                        &[]
+                    ),
                     "{start:?} -> {goal:?} moved under a limit on level ground"
                 );
             }
         }
+    }
+
+    /// **16b cut Q.7**: an avoided cell is a wall to the search, and an avoided
+    /// goal is an ordinary `NoRoute` rather than a special case.
+    #[test]
+    fn an_avoided_cell_is_walked_round_and_an_avoided_goal_has_no_route() {
+        let terrain = window(8, 3, &[]);
+        let scale = min_move_cost(&terrain);
+        let mut scratch = PathScratch::default();
+        // Column 4 of the three rows, all three avoided: the run has to go round
+        // the window rather than through it, and on a three-row window there is
+        // nowhere to go.
+        let sealed = [(4, 0), (4, 1), (4, 2)];
+        assert_eq!(
+            path_with(
+                &terrain,
+                &mut scratch,
+                (0, 1),
+                (7, 1),
+                4_096,
+                scale,
+                None,
+                &sealed
+            ),
+            Err(PathFailure::NoRoute)
+        );
+        // One avoided cell on the straight line is stepped round, and the route
+        // never enters it.
+        let found = path_with(
+            &terrain,
+            &mut scratch,
+            (0, 1),
+            (7, 1),
+            4_096,
+            scale,
+            None,
+            &[(4, 1)],
+        )
+        .expect("a route round one cell");
+        assert!(!found.cells.contains(&(4, 1)));
+        assert_eq!(found.cells.last().copied(), Some((7, 1)));
+        // And an avoided **goal** is the ordinary failure: nothing enters it, so
+        // nothing closes it.
+        assert_eq!(
+            path_with(
+                &terrain,
+                &mut scratch,
+                (0, 1),
+                (7, 1),
+                4_096,
+                scale,
+                None,
+                &[(7, 1)]
+            ),
+            Err(PathFailure::NoRoute)
+        );
+        // An empty list is the search exactly as it was.
+        assert_eq!(
+            path_with(
+                &terrain,
+                &mut scratch,
+                (0, 1),
+                (7, 1),
+                4_096,
+                scale,
+                None,
+                &[]
+            ),
+            path(
+                &terrain,
+                &mut PathScratch::default(),
+                (0, 1),
+                (7, 1),
+                4_096,
+                scale
+            )
+        );
     }
 
     #[test]

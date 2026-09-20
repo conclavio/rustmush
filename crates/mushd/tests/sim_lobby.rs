@@ -343,6 +343,15 @@ async fn two_pilots_walk_selection_and_boarding_twice_and_a_slot_belongs_to_an_a
         // A pilot who is not a side's first cannot start it.
         say(&mut cy, "SIM START", "first pilot or staff").await;
 
+        // **16b cut Q.7**: this server fields no machines, so the sixth selector
+        // says so and the board says nothing at all about a fill.
+        say(&mut ada, "SIM AI", "AI fill is off on this server.").await;
+        let status = ask(&mut ada, "SIM STATUS", "blue:").await;
+        assert!(
+            !status.contains("AI fill:"),
+            "run {run}: a board with no fill behind it says nothing about one: {status}"
+        );
+
         // `Selection -> Boarding`: the pods lock, slot n to pod n.
         say(&mut ada, "SIM START", "is boarding").await;
         let status = ask(&mut ada, "SIM STATUS", "blue:").await;

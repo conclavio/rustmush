@@ -16,10 +16,14 @@
 //!    tank, which had been sitting still, **drives itself home**. That is doc 16
 //!    §3.8's amendment: K4's "the tank idles" was standing in for this until the
 //!    controller existed.
-//! 2. **The lobby's AI fill.** With `[tacsim.match].ai_fill` on, one pilot a side
-//!    fields all eight pods: the six nobody claimed arrive at the check-out with
-//!    no seated pilot, which is what makes them the controller's, and they start
-//!    themselves up without anybody typing `STARTUP`.
+//! 2. **The lobby's AI fill, and the size 16b cut Q.7 gave it.** With
+//!    `[tacsim.match].ai_fill` on, `SIM AI 4` fields all eight pods: the six
+//!    nobody claimed arrive at the check-out with no seated pilot, which is what
+//!    makes them the controller's, and they start themselves up without anybody
+//!    typing `STARTUP`. Cut N.1 did that for every match; cut Q.7 made it the
+//!    size somebody asked for, and the **default** is the larger side's claimed
+//!    slots — so the third test here is two pilots on the **same** side getting
+//!    two machines on the other one.
 //!
 //! # Why the tank is moved before the match starts
 //!
@@ -341,8 +345,17 @@ async fn open_the_centre(god: &mut Term) {
 
 /// Claim, start, walk and board: the state both tests begin from.
 async fn take_off(ada: &mut Term, bo: &mut Term) {
+    take_off_sized(ada, bo, None).await;
+}
+
+/// The same, with **16b cut Q.7**'s `SIM AI <n>` asked for between the claims and
+/// the start — the one point in the lifecycle the fill's size can be set.
+async fn take_off_sized(ada: &mut Term, bo: &mut Term, ai: Option<u8>) {
     say(ada, "SIM TEAM red", "takes red slot 1").await;
     say(bo, "SIM TEAM blue", "takes blue slot 1").await;
+    if let Some(size) = ai {
+        say(ada, &format!("SIM AI {size}"), "AI fill set to").await;
+    }
     say(ada, "SIM START", "is boarding").await;
     say(ada, "red", "Red Room").await;
     say(bo, "blue", "Blue Room").await;
@@ -523,28 +536,37 @@ async fn past_the_grace_the_reflex_controller_drives_the_tank_home() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn with_ai_fill_on_one_pilot_a_side_fields_all_eight_pods() {
+async fn with_ai_fill_on_sim_ai_four_fields_all_eight_pods() {
     let server = boot("sim-reflex-fill", Duration::from_secs(120), true).await;
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god).await;
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
-    take_off(&mut ada, &mut bo).await;
+    // **16b cut Q.7**: the fill is **sized** now. Cut N.1 fielded a side's whole
+    // four pods whatever the humans had asked for, which handed a solo player a
+    // four a side battle with seven machines in it; the default is the larger
+    // side's claimed slots, so these two pilots would get a one against one.
+    // `SIM AI 4` is how somebody asks for what N.1 always did.
+    take_off_sized(&mut ada, &mut bo, Some(4)).await;
 
     // The six pods nobody claimed went over with the two that were claimed, and
     // the check-out made them the controller's because they arrived with no seated
     // pilot. Nobody typed `STARTUP` for them.
     tokio::time::sleep(Duration::from_secs(3)).await;
-    // And the centre still says what it always said: one pilot a side.
-    let seen = ask(&mut ada, "SIM STATUS", "Simulator centre").await;
+    // And the board says so, in the one line the slots cannot.
+    let seen = ask(&mut ada, "SIM STATUS", "machines take the unclaimed pods").await;
     assert!(seen.contains("running"), "{seen}");
+    assert!(
+        seen.contains("AI fill: each side fields 4; machines take the unclaimed pods."),
+        "the board says what the fill is: {seen}"
+    );
     say(&mut ada, "SIM ABORT", "aborts match").await;
     tokio::time::sleep(Duration::from_millis(1_000)).await;
     let events = ledger_events(&server.store, 1).await;
     assert_eq!(
         units_in_summary(&events),
         8,
-        "one pilot a side should field all eight pods with `ai_fill` on: {:?}",
+        "`SIM AI 4` should field all eight pods with `ai_fill` on: {:?}",
         events
             .iter()
             .filter_map(|event| event.get("kind").and_then(Value::as_str))
@@ -554,6 +576,54 @@ async fn with_ai_fill_on_one_pilot_a_side_fields_all_eight_pods() {
     assert!(
         count(&events, "startup") >= 6,
         "the six machines should have started themselves up: {} startups",
+        count(&events, "startup")
+    );
+}
+
+/// **16b cut Q.7**: and with nobody asking for a size, the fill is the larger
+/// side's claimed slots — two friends on red get **two machines on blue**.
+///
+/// Both pilots claim the **same** side deliberately. One a side would field no
+/// machine at all (each side already has its one), so a test written that way
+/// would pass with the fill switched off and prove nothing about the sizing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_ai_fill_on_the_default_size_is_the_larger_side() {
+    let server = boot("sim-reflex-sized", Duration::from_secs(120), true).await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM red", "takes red slot 2").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "red", "Red Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let seen = ask(&mut ada, "SIM STATUS", "machines take the unclaimed pods").await;
+    assert!(
+        seen.contains("AI fill: each side fields 2; machines take the unclaimed pods."),
+        "two on red is a two a side: {seen}"
+    );
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+    tokio::time::sleep(Duration::from_millis(1_000)).await;
+    let events = ledger_events(&server.store, 1).await;
+    assert_eq!(
+        units_in_summary(&events),
+        4,
+        "red's two claimed pods and blue's two machines: {:?}",
+        events
+            .iter()
+            .filter_map(|event| event.get("kind").and_then(Value::as_str))
+            .take(20)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        count(&events, "startup") >= 2,
+        "the two machines should have started themselves up: {} startups",
         count(&events, "startup")
     );
 }

@@ -276,12 +276,16 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
         recovery: recovery_config(&cfg.recovery)?,
         // ---- 16b cut G — the combat arena's five blocks ----
         //
-        // Carried, not validated, on the `[tacsim.time]` rule two comments up:
-        // nothing reads one of these yet, so a knob that configures nothing must
-        // not be able to refuse a boot. Cut A validates the arena's, T the
-        // match's, S the sensors', W the resolution tables and H the harness's,
-        // each in the commit that reads them. The ONE exception is the sensors'
-        // float, below: converting it is a read, so it is checked here.
+        // Carried here, and **validated below** since 16b cut Q.7. Cut G left them
+        // unchecked on the `[tacsim.time]` rule two comments up — *the cut that
+        // reads a field is the cut that validates it* — and every block has a
+        // reader now (A the arena's, T the match's, S and Q.1/Q.2 the sensors',
+        // H the harness's), so the debt fell due for all of them at once. Until
+        // it was paid a `[tacsim.arena.tempo].engaged_ms = 0` booted clean and
+        // froze arena time. `[tacsim.resolution]` is still only `paths`, which is
+        // a list of files the loader does not read yet, so it has nothing to
+        // check. The sensors' float is checked where it is converted, below,
+        // because that is where the operator's own number is still in hand.
         arena: tacsim::config::ArenaConfig {
             tempo: tacsim::config::TempoConfig {
                 quiet_ms: cfg.arena.tempo.quiet_ms,
@@ -317,6 +321,8 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
                 weight_facet: cfg.arena.reflex.weight_facet,
                 weight_health: cfg.arena.reflex.weight_health,
                 engage_band_permille: cfg.arena.reflex.engage_band_permille,
+                // 16b cut Q.7: the lull before a withdrawn unit rallies.
+                rally_ms: cfg.arena.reflex.rally_ms,
             },
         },
         match_: tacsim::config::MatchConfig {
@@ -360,6 +366,16 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             max_ledger_bytes: cfg.harness.max_ledger_bytes,
         },
     };
+    // **16b cut Q.7**: the arena's own values, checked here and nowhere else.
+    // Each answers one sentence naming the TOML key and the value it was given,
+    // and the boot stops on the first. They are pure functions on the typed
+    // blocks, so a test rig that builds a `TacsimConfig` by hand — which is how
+    // half the arena's fixtures make an edge visible in two pulses — bypasses
+    // them, exactly as it bypasses this whole function.
+    typed.arena.validate()?;
+    typed.match_.validate()?;
+    typed.sensors.validate()?;
+    typed.harness.validate()?;
     // Verify here, at the host, so the boot fails with the file's name in the message.
     // The check is pure and the module repeats it at wiring; two evaluations of a pure
     // function over the same bytes cannot disagree.
@@ -921,6 +937,7 @@ mod tests {
              weight_facet = 35\n\
              weight_health = 25\n\
              engage_band_permille = 600\n\
+             rally_ms = 9000\n\
              [tacsim.match]\n\
              startup_ms = 5000\n\
              board_timeout_ms = 60000\n\
@@ -983,6 +1000,8 @@ mod tests {
                     weight_facet: 35,
                     weight_health: 25,
                     engage_band_permille: 600,
+                    // 16b cut Q.7: the rally lull, mapped like the rest.
+                    rally_ms: 9_000,
                 },
             }
         );
@@ -1045,6 +1064,262 @@ mod tests {
             defaults.sensors.max_signature_factor_permille, 1_500,
             "the shipped 1.5 is 1500 per mille"
         );
+    }
+
+    /// **16b cut Q.7: every value rule refuses by name, through the real
+    /// mapper.**
+    ///
+    /// One row per rule. Each writes one nonsense value into an otherwise
+    /// default `[tacsim]`, and the assertion is on the *message*: a boot refusal
+    /// an operator cannot act on is a refusal that costs them the same afternoon
+    /// the missing check did. So the key has to be in it, spelled the way the
+    /// file spells it, and so does the number they wrote.
+    ///
+    /// The cross-key rules (the tempo ladder, yellow under green, fighting under
+    /// units) name their block and both values instead, which is the only
+    /// sentence that can be true of a rule about a pair.
+    #[test]
+    fn q7_every_arena_value_rule_refuses_by_name_through_the_mapper() {
+        for (block, body, key, value) in [
+            (
+                "[tacsim.arena.tempo]",
+                "engaged_ms = 0\n",
+                "[tacsim.arena.tempo].engaged_ms",
+                "0",
+            ),
+            (
+                "[tacsim.arena.tempo]",
+                "alert_ms = 49\nengaged_ms = 40\n",
+                "[tacsim.arena.tempo].alert_ms",
+                "49",
+            ),
+            (
+                "[tacsim.arena.tempo]",
+                "quiet_ms = 60\n",
+                "[tacsim.arena.tempo]",
+                "60",
+            ),
+            (
+                "[tacsim.arena.tempo]",
+                "substep_max_ms = 10\n",
+                "[tacsim.arena.tempo].substep_max_ms",
+                "10",
+            ),
+            (
+                "[tacsim.arena.tempo]",
+                "alert_hold_ms = 0\n",
+                "[tacsim.arena.tempo].alert_hold_ms",
+                "0",
+            ),
+            (
+                "[tacsim.arena.tempo]",
+                "engaged_hold_ms = 0\n",
+                "[tacsim.arena.tempo].engaged_hold_ms",
+                "0",
+            ),
+            (
+                "[tacsim.arena.tempo]",
+                "stall_ms = 100\n",
+                "[tacsim.arena.tempo].stall_ms",
+                "100",
+            ),
+            (
+                "[tacsim.arena]",
+                "max_catch_up_steps = 0\n",
+                "[tacsim.arena].max_catch_up_steps",
+                "0",
+            ),
+            (
+                "[tacsim.arena.intents]",
+                "max_pending_per_unit = 0\n",
+                "[tacsim.arena.intents].max_pending_per_unit",
+                "0",
+            ),
+            (
+                "[tacsim.arena.ledger]",
+                "summary_ms = 999\n",
+                "[tacsim.arena.ledger].summary_ms",
+                "999",
+            ),
+            (
+                "[tacsim.arena.ledger]",
+                "max_bytes = 1024\n",
+                "[tacsim.arena.ledger].max_bytes",
+                "1024",
+            ),
+            (
+                "[tacsim.arena.ledger]",
+                "max_unflushed_chunks = 0\n",
+                "[tacsim.arena.ledger].max_unflushed_chunks",
+                "0",
+            ),
+            (
+                "[tacsim.arena.reflex]",
+                "decide_ms = 20\nrally_ms = 20\n",
+                "[tacsim.arena.reflex].decide_ms",
+                "20",
+            ),
+            (
+                "[tacsim.arena.reflex]",
+                "path_max_cells = 0\n",
+                "[tacsim.arena.reflex].path_max_cells",
+                "0",
+            ),
+            (
+                "[tacsim.arena.reflex]",
+                "max_path_queries = 0\n",
+                "[tacsim.arena.reflex].max_path_queries",
+                "0",
+            ),
+            (
+                "[tacsim.arena.reflex]",
+                "withdraw_permille = 1001\n",
+                "[tacsim.arena.reflex].withdraw_permille",
+                "1001",
+            ),
+            (
+                "[tacsim.arena.reflex]",
+                "engage_band_permille = 0\n",
+                "[tacsim.arena.reflex].engage_band_permille",
+                "0",
+            ),
+            (
+                "[tacsim.arena.reflex]",
+                "rally_ms = 500\n",
+                "[tacsim.arena.reflex].rally_ms",
+                "500",
+            ),
+            (
+                "[tacsim.match]",
+                "startup_ms = 600001\n",
+                "[tacsim.match].startup_ms",
+                "600001",
+            ),
+            (
+                "[tacsim.match]",
+                "board_timeout_ms = 999\n",
+                "[tacsim.match].board_timeout_ms",
+                "999",
+            ),
+            (
+                "[tacsim.match]",
+                "max_duration_ms = 59999\n",
+                "[tacsim.match].max_duration_ms",
+                "59999",
+            ),
+            (
+                "[tacsim.match]",
+                "max_slots_per_side = 0\n",
+                "[tacsim.match].max_slots_per_side",
+                "0",
+            ),
+            (
+                "[tacsim.match]",
+                "max_slots_per_side = 13\n",
+                "[tacsim.match].max_slots_per_side",
+                "13",
+            ),
+            (
+                "[tacsim.sensors]",
+                "pass_ms = 10\n",
+                "[tacsim.sensors].pass_ms",
+                "10",
+            ),
+            (
+                "[tacsim.sensors]",
+                "lost_after_passes = 0\n",
+                "[tacsim.sensors].lost_after_passes",
+                "0",
+            ),
+            (
+                "[tacsim.sensors]",
+                "condition_green_permille = 0\n",
+                "[tacsim.sensors].condition_green_permille",
+                "0",
+            ),
+            (
+                "[tacsim.sensors]",
+                "condition_yellow_permille = 1001\n",
+                "[tacsim.sensors].condition_yellow_permille",
+                "1001",
+            ),
+            (
+                "[tacsim.sensors]",
+                "condition_yellow_permille = 700\ncondition_green_permille = 700\n",
+                "[tacsim.sensors]",
+                "700",
+            ),
+            (
+                "[tacsim.sensors]",
+                "condition_reach_permille = 0\n",
+                "[tacsim.sensors].condition_reach_permille",
+                "0",
+            ),
+            (
+                "[tacsim.harness]",
+                "units = 10\nfighting = 11\n",
+                "[tacsim.harness].fighting",
+                "11",
+            ),
+        ] {
+            let cfg = tacsim_cfg(&format!("{block}\n{body}"));
+            let error = tacsim_config(&cfg)
+                .err()
+                .unwrap_or_else(|| panic!("{block} {body:?} should refuse the boot"));
+            assert!(
+                error.contains(key) && error.contains(value),
+                "{block} {body:?}: the refusal should name {key} and {value}: {error}"
+            );
+        }
+        // And nothing valid is refused: the shipped defaults map and pass.
+        assert!(tacsim_config(&TacsimCfg::default()).is_ok());
+    }
+
+    /// **16b cut Q.7: every shipped config's arena values pass the validators.**
+    ///
+    /// The template is read as it ships, with its `__PLACEHOLDER__`s still in it
+    /// — so only the blocks that carry none are lifted out, which is all four of
+    /// them: the template says in its own comment that *nothing here is
+    /// per-instance*, and that is now a checked claim rather than a remark.
+    #[test]
+    fn q7_every_shipped_config_passes_the_arena_validators() {
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            #[serde(default)]
+            tacsim: TacsimCfg,
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf)
+            .expect("the repository root");
+        for relative in [
+            "mushd.toml.example",
+            "deploy/instance/mushd.toml.tmpl",
+            "deploy/dev2/mushd.toml",
+        ] {
+            let path = root.join(relative);
+            let text =
+                std::fs::read_to_string(&path).unwrap_or_else(|why| panic!("{relative}: {why}"));
+            let mut lifted = String::from("[tacsim]\n");
+            let mut keeping = false;
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with('[') {
+                    keeping = trimmed.starts_with("[tacsim.arena")
+                        || trimmed.starts_with("[tacsim.match]")
+                        || trimmed.starts_with("[tacsim.sensors]")
+                        || trimmed.starts_with("[tacsim.harness]");
+                }
+                if keeping {
+                    lifted.push_str(line);
+                    lifted.push('\n');
+                }
+            }
+            let wrap: Wrap = toml::from_str(&lifted)
+                .unwrap_or_else(|why| panic!("{relative}: the arena blocks do not parse: {why}"));
+            tacsim_config(&wrap.tacsim).unwrap_or_else(|why| panic!("{relative}: {why}"));
+        }
     }
 
     /// Cut G: the per-mille conversion, at the edges — and the refusal.

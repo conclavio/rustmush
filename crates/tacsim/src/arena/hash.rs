@@ -69,7 +69,11 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    there is no iteration order to diverge on: per machine the unit's `u32`, the
 ///    state byte, the goal cell's two `u16` (`u16::MAX` twice for none), the
 ///    waypoint index as `u16` (`u16::MAX` for none), the route's length as `u64`
-///    and the target unit's `u32` (`0` for none).
+///    and the target unit's `u32` (`0` for none); then the standing order (16b
+///    cut N.2) and, from **16b cut Q.7**, the avoided cells — their count as
+///    `u64`, then per entry the cell's two `u16` and the stop's `i64` stamp — and
+///    `stand_until_ms`, `quiet_since_ms` (each a presence byte then an `i64`) and
+///    the `rallied` byte.
 /// 3. **The shadow contact store** (16b cut S.1), in its own iteration order —
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
@@ -262,6 +266,21 @@ pub fn state_hash(arena: &Arena) -> u64 {
             }
             None => hash = fnv1a64_update(hash, &[0_u8]),
         }
+        // **16b cut Q.7**: the cells it was stopped at, with the stamps that age
+        // them out, and the three fields that make `Withdraw` something other than
+        // a parking space. Every one is written from an arena timestamp and read
+        // at an arena timestamp, so two cadences of one scripted match fold the
+        // same bytes — and a replay whose tank has already rallied must not
+        // compare equal to one that has not.
+        hash = fnv1a64_update(hash, &(row.avoid.len() as u64).to_le_bytes());
+        for ((x, y), at_ms) in &row.avoid {
+            hash = fnv1a64_update(hash, &x.to_le_bytes());
+            hash = fnv1a64_update(hash, &y.to_le_bytes());
+            hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
+        }
+        hash = fold_stamp(hash, row.stand_until_ms);
+        hash = fold_stamp(hash, row.quiet_since_ms);
+        hash = fnv1a64_update(hash, &[u8::from(row.rallied)]);
     }
     for (viewer, id, held) in arena.contacts.all() {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
@@ -330,6 +349,22 @@ fn fold_reading(hash: u64, reading: Option<crate::arena::condition::Reading>) ->
             let hash = fnv1a64_update(hash, &reading.at_ms.to_le_bytes());
             let hash = fnv1a64_update(hash, &reading.condition.bands.to_le_bytes());
             fnv1a64_update(hash, &[reading.condition.sections])
+        }
+        None => fnv1a64_update(hash, &[0_u8]),
+    }
+}
+
+/// **One optional arena timestamp** (16b cut Q.7): a presence byte, then the
+/// `i64`.
+///
+/// `Withdraw`'s two stamps are folded by one function so they cannot fold
+/// differently, for the reason [`fold_plot`] and [`fold_reading`] are one
+/// function each.
+fn fold_stamp(hash: u64, at_ms: Option<i64>) -> u64 {
+    match at_ms {
+        Some(at_ms) => {
+            let hash = fnv1a64_update(hash, &[1_u8]);
+            fnv1a64_update(hash, &at_ms.to_le_bytes())
         }
         None => fnv1a64_update(hash, &[0_u8]),
     }

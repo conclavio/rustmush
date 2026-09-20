@@ -1121,6 +1121,75 @@ impl Arena {
         Some(end)
     }
 
+    /// **Whether nobody left on either side can fire a round** (16b cut Q.7) —
+    /// the predicate behind [`EndReason::Spent`].
+    ///
+    /// Four conditions, and each of them is load-bearing:
+    ///
+    /// 1. **both sides are present**, the same test [`Arena::eliminated`] makes,
+    ///    because a one-sided window is the lobby's business and never a result;
+    /// 2. **each side brought a gun and still has the platform that carried it.**
+    ///    *Out of ammunition* presumes ammunition: a side of unarmed units — every
+    ///    cut-A fixture's target, and the harness's movers — has not run dry, it
+    ///    never had a gun, and calling that a draw would be a sentence that is not
+    ///    true. The test is [`UnitState::armed_at_checkout`], which survives a
+    ///    turret being shot off because `destroy_unit` and `remove_weapons`
+    ///    deliberately leave the rounds where they are (16b cut F.1);
+    /// 3. **no unit still in action has a weapon row holding rounds.** Rows
+    ///    emptied by `remove_weapons` (doc 16 §3.3, a turret shot off) count as
+    ///    none, which is the honest reading: that tank cannot shoot either;
+    /// 4. **nothing is in flight.** A round already on its way can still decide
+    ///    the match, and ending before it lands would be calling a draw over a
+    ///    kill.
+    #[must_use]
+    pub fn spent(&self) -> bool {
+        let mut present: Vec<Team> = Vec::new();
+        let mut armed: Vec<Team> = Vec::new();
+        for unit in &self.units {
+            if !present.contains(&unit.team) {
+                present.push(unit.team);
+            }
+            if self.out_of_action(unit.id) {
+                continue;
+            }
+            if unit.armed_at_checkout() && !armed.contains(&unit.team) {
+                armed.push(unit.team);
+            }
+            if unit
+                .weapons
+                .iter()
+                .any(|weapon| unit.weapon_ammo(&weapon.id) > 0)
+            {
+                return false;
+            }
+        }
+        if present.len() < 2 || armed.len() < 2 {
+            return false;
+        }
+        !self
+            .due
+            .iter()
+            .any(|event| matches!(event.kind, DueKind::Impact { .. }))
+    }
+
+    /// **End the match because nothing can shoot any more** (16b cut Q.7), if
+    /// [`Arena::spent`] says so.
+    ///
+    /// Called beside [`Arena::settle_elimination`] and never before it: a side
+    /// eliminated on the same substep is an elimination with a winner, and a draw
+    /// over the top of it would lose the result.
+    pub fn settle_spent(&mut self) -> Option<MatchEnd> {
+        if self.ended.is_some() || !self.spent() {
+            return None;
+        }
+        let end = MatchEnd {
+            reason: EndReason::Spent,
+            t_ms: self.now_ms,
+        };
+        self.ended = Some(end);
+        Some(end)
+    }
+
     /// **Every unit as the check-in takes it back** (doc 16 §3.1 "Custody",
     /// check-in; 16b cut W.2 fills the seam T.3 left), in unit-id order.
     ///

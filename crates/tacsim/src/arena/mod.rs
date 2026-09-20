@@ -211,7 +211,10 @@ pub use perception::{
     SensorProfile, SignatureFactor, ThermalSignature, bearing_mdeg, bearing_of, contact_refusal,
     sees,
 };
-pub use reflex::{ARRIVE_CELLS, ReflexCounters, ReflexMemory, ReflexState, ReflexUnit};
+pub use reflex::{
+    ARRIVE_CELLS, REFLEX_AVOID_MAX, REFLEX_AVOID_TTL_MS, REFLEX_STAND_TICKS, ReflexCounters,
+    ReflexMemory, ReflexState, ReflexUnit,
+};
 pub use resolution::{
     BandProfile, Consequence, DIRECT_BANDS, Resolution, SectionProfile, UnitProfile, facet_band,
 };

@@ -7,6 +7,7 @@
 //! SIM START               lock the pods and open boarding (a side's first pilot, or staff)
 //! SIM ABORT               call the match off (any participant, or staff)
 //! SIM STATUS              the centre, as it stands
+//! SIM AI [n]              how many units a side fields when the machines fill in
 //! ```
 //!
 //! # Why one verb and not five
@@ -84,16 +85,20 @@ pub enum Selector {
     Abort,
     /// `SIM STATUS`, and the bare `SIM`.
     Status,
+    /// **`SIM AI [<n>]`** (16b cut Q.7): how many units a side fields with the
+    /// AI fill on.
+    Ai,
 }
 
 impl Selector {
-    /// The five words, in help order.
-    pub const ALL: [(Selector, &'static str); 5] = [
+    /// The six words, in help order.
+    pub const ALL: [(Selector, &'static str); 6] = [
         (Selector::Team, "team"),
         (Selector::Leave, "leave"),
         (Selector::Start, "start"),
         (Selector::Abort, "abort"),
         (Selector::Status, "status"),
+        (Selector::Ai, "ai"),
     ];
 
     /// One word, however it was spelled.
@@ -147,7 +152,8 @@ fn selector_of(ctx: &Ctx<'_>) -> Option<(Selector, String)> {
 ///
 /// Whatever the centre refused, as the one line the player sees.
 pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str = "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM STATUS";
+    const USAGE: &str =
+        "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM STATUS | SIM AI [n]";
     // **Where before what** (16b cut F.4 residual). The deleted gate answered
     // every spelling of the verb outside the centre with the one
     // [`crate::match_::OUTSIDE_CENTRE`] line, and taking it away put the parser
@@ -178,6 +184,23 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Selector::Leave => lobby::leave(ctx).map_err(refusal),
         Selector::Start => lobby::start(ctx).map_err(refusal),
         Selector::Abort => lobby::abort(ctx).map_err(refusal),
+        // **16b cut Q.7**: bare reads, with a number sets. A word that is not a
+        // number is the usage line and never a silent read — `SIM AI four` must
+        // not quietly answer "AI fill: 2 a side."
+        Selector::Ai => {
+            let rest = rest.trim();
+            let size = if rest.is_empty() {
+                None
+            } else {
+                match rest.parse::<u8>() {
+                    Ok(size) => Some(size),
+                    Err(_) => {
+                        return Err(CmdError::msg("How many a side? `SIM AI 2`."));
+                    }
+                }
+            };
+            lobby::ai(ctx, size).map_err(refusal)
+        }
         Selector::Status => {
             // A read, and the only selector that does not need the centre to be
             // in any particular state — but it is still of the centre, and the
@@ -289,6 +312,9 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    running match stops at the arena's next pulse.\n\
                    SIM STATUS          the centre: its state, its sides, its slots and its \
                    pods. Also the bare SIM.\n\
+                   SIM AI [n]          how many units a side fields when the server fills the \
+                   unclaimed pods with machines. A side's first pilot or staff, before the \
+                   match starts; bare, it reads the number.\n\
                    The switch spelling (SIM/STATUS) is the same command. All of it works in \
                    the simulator lobby, the two team rooms and the pods; anywhere else every \
                    spelling of SIM answers only where the simulator is."
@@ -313,7 +339,8 @@ mod tests {
     #[test]
     fn every_selector_has_a_word_and_a_switch() {
         let switches = register_switches();
-        assert_eq!(switches.len(), 5);
+        // 16b cut Q.7 made it six: `ai` joined the five.
+        assert_eq!(switches.len(), 6);
         for (selector, name) in Selector::ALL {
             assert!(switches.iter().any(|switch| switch == name), "{name}");
             assert_eq!(Selector::parse(name), Some(selector));

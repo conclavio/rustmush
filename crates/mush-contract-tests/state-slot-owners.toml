@@ -323,6 +323,19 @@ ACCOUNT.
 """
 
 [[site]]
+path = "crates/mushd/tests/sim_solo.rs"
+accessor = "World::module_state_mut"
+slot = "AccountOracle"
+owner = "sim"
+reason = """
+16b cut Q.7's solo lens, performing the same post-composition wiring the rows
+above perform and for the same reason: ONE pilot holds a slot, boards and fights
+the machine that took the pod nobody claimed, and a slot belongs to an ACCOUNT.
+It is the one lens that can show a lone human starting a match at all, because
+until this cut both sides needed a seated pilot to get one.
+"""
+
+[[site]]
 path = "crates/mushd/tests/arena_story.rs"
 accessor = "World::module_state_mut"
 slot = "AccountOracle"

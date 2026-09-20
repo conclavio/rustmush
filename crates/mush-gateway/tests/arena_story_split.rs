@@ -152,7 +152,12 @@ fn test_config(tag: &str) -> Config {
     cfg.tacsim.arena.tempo.quiet_ms = 100;
     cfg.tacsim.arena.tempo.alert_ms = 100;
     cfg.tacsim.arena.tempo.engaged_ms = 100;
-    cfg.tacsim.arena.ledger.summary_ms = 200;
+    // **16b cut Q.7**: this is the one arena test that boots through the host's
+    // own `[tacsim]` mapping rather than building a `TacsimConfig` by hand, so it
+    // is the one that meets the value validation — and the floor under
+    // `summary_ms` is a thousand. Nothing here reads a `position_summary`; the
+    // cadence was only ever "often enough to be a usable record".
+    cfg.tacsim.arena.ledger.summary_ms = 1_000;
     cfg.tacsim.match_.startup_ms = 300;
     cfg.tacsim.match_.board_timeout_ms = 120_000;
     cfg

@@ -276,6 +276,18 @@ pub struct ReflexConfig {
     /// controller closes to this band and stops rather than driving onto the
     /// target's guns.
     pub engage_band_permille: u32,
+    /// **How long a withdrawn unit waits, with nothing hostile on its board,
+    /// before it comes back into the fight** (16b cut Q.7; doc 16 §6), arena
+    /// milliseconds.
+    ///
+    /// `Withdraw` used to be terminal: a hurt tank parked in its entry zone and
+    /// the match ran to `match.max_duration_ms`. It rallies once now — the health
+    /// edge is not taken a second time — so this is the length of the lull a
+    /// crew needs before it turns round, and not a respawn timer.
+    ///
+    /// It is validated at or above `decide_ms`: a rally shorter than one decision
+    /// would fire on the tick after the one that withdrew.
+    pub rally_ms: u32,
 }
 
 impl Default for ReflexConfig {
@@ -292,6 +304,8 @@ impl Default for ReflexConfig {
             weight_facet: 40,
             weight_health: 30,
             engage_band_permille: 700,
+            // 16b cut Q.7: twenty seconds of quiet.
+            rally_ms: 20_000,
         }
     }
 }
@@ -576,6 +590,259 @@ impl Default for HarnessConfig {
             // 64 MiB.
             max_ledger_bytes: 67_108_864,
         }
+    }
+}
+
+// ---- 16b cut Q.7 — the values, checked at the host ------------------------
+//
+// Doc 16 §7 and 16b §9 say what every key above *means*; until this cut nothing
+// said what it may **be**. The blocks are all live now — cut A reads the arena's,
+// T the match's, S and Q.1/Q.2 the sensors', H the harness's — so
+// [`TacsimTimeConfig`]'s rule ("the cut that reads a field is the cut that
+// validates it") has come due for all four at once, and a `[tacsim.arena.tempo]
+// .engaged_ms = 0` that booted clean and froze arena time is what it cost not to
+// have them.
+//
+// Four pure functions, no I/O, called once by
+// `mush_server::config_ext::tacsim_config` on the way past, so a nonsense value
+// **refuses the boot naming its key** rather than being discovered at the first
+// match. They are deliberately NOT called from `Arena::new`: a test rig that
+// builds a `TacsimConfig` by hand bypasses the mapper, and odd values are how
+// half this crate's fixtures make an edge visible in two pulses.
+//
+// The message shape is one sentence, the TOML key first and the value last:
+// `[tacsim.arena.tempo].engaged_ms must be at least 50 (it is 0)`.
+
+/// One refusal, in the shape every message in this section takes. `key` is the
+/// whole TOML key, written as an operator would find it in the file.
+fn at_least(key: &str, floor: u64, value: u64) -> Result<(), String> {
+    if value < floor {
+        return Err(format!("{key} must be at least {floor} (it is {value})"));
+    }
+    Ok(())
+}
+
+/// One refusal for a value outside an inclusive range.
+fn between(key: &str, low: u64, high: u64, value: u64) -> Result<(), String> {
+    if value < low || value > high {
+        return Err(format!("{key} must be {low} to {high} (it is {value})"));
+    }
+    Ok(())
+}
+
+impl ArenaConfig {
+    /// **Check `[tacsim.arena]` and its four sub-tables** (16b cut Q.7).
+    ///
+    /// # Errors
+    ///
+    /// One sentence naming the key and the value it was given.
+    pub fn validate(&self) -> Result<(), String> {
+        let floor = u64::from(crate::arena::clock::MIN_SUBSTEP_MS);
+        for (key, value) in [
+            ("quiet_ms", self.tempo.quiet_ms),
+            ("alert_ms", self.tempo.alert_ms),
+            ("engaged_ms", self.tempo.engaged_ms),
+        ] {
+            at_least(
+                &format!("[tacsim.arena.tempo].{key}"),
+                floor,
+                u64::from(value),
+            )?;
+        }
+        // The three periods are a ladder: a tempo that got *slower* as the arena
+        // got busier would be the table of doc 16 §3.1 read upside down.
+        if self.tempo.quiet_ms < self.tempo.alert_ms || self.tempo.alert_ms < self.tempo.engaged_ms
+        {
+            return Err(format!(
+                "[tacsim.arena.tempo] must have quiet_ms >= alert_ms >= engaged_ms (they are {}, \
+                 {}, {})",
+                self.tempo.quiet_ms, self.tempo.alert_ms, self.tempo.engaged_ms
+            ));
+        }
+        at_least(
+            "[tacsim.arena.tempo].substep_max_ms",
+            floor,
+            u64::from(self.tempo.substep_max_ms),
+        )?;
+        at_least(
+            "[tacsim.arena.tempo].alert_hold_ms",
+            1,
+            u64::from(self.tempo.alert_hold_ms),
+        )?;
+        at_least(
+            "[tacsim.arena.tempo].engaged_hold_ms",
+            1,
+            u64::from(self.tempo.engaged_hold_ms),
+        )?;
+        // A watchdog that voids a match sooner than one pulse of the fastest
+        // tempo would void every busy match on its first pulse.
+        at_least(
+            "[tacsim.arena.tempo].stall_ms",
+            u64::from(self.tempo.engaged_ms),
+            u64::from(self.tempo.stall_ms),
+        )?;
+        at_least(
+            "[tacsim.arena].max_catch_up_steps",
+            1,
+            u64::from(self.max_catch_up_steps),
+        )?;
+        at_least(
+            "[tacsim.arena.intents].max_pending_per_unit",
+            1,
+            u64::from(self.intents.max_pending_per_unit),
+        )?;
+        at_least(
+            "[tacsim.arena.ledger].summary_ms",
+            1_000,
+            u64::from(self.ledger.summary_ms),
+        )?;
+        at_least(
+            "[tacsim.arena.ledger].max_bytes",
+            1_048_576,
+            self.ledger.max_bytes,
+        )?;
+        at_least(
+            "[tacsim.arena.ledger].max_unflushed_chunks",
+            1,
+            u64::from(self.ledger.max_unflushed_chunks),
+        )?;
+        at_least(
+            "[tacsim.arena.reflex].decide_ms",
+            50,
+            u64::from(self.reflex.decide_ms),
+        )?;
+        at_least(
+            "[tacsim.arena.reflex].path_max_cells",
+            1,
+            u64::from(self.reflex.path_max_cells),
+        )?;
+        at_least(
+            "[tacsim.arena.reflex].max_path_queries",
+            1,
+            u64::from(self.reflex.max_path_queries),
+        )?;
+        between(
+            "[tacsim.arena.reflex].withdraw_permille",
+            0,
+            1_000,
+            u64::from(self.reflex.withdraw_permille),
+        )?;
+        between(
+            "[tacsim.arena.reflex].engage_band_permille",
+            1,
+            1_000,
+            u64::from(self.reflex.engage_band_permille),
+        )?;
+        // 16b cut Q.7: a rally shorter than one decision would fire on the tick
+        // after the one that withdrew.
+        at_least(
+            "[tacsim.arena.reflex].rally_ms",
+            u64::from(self.reflex.decide_ms),
+            u64::from(self.reflex.rally_ms),
+        )?;
+        Ok(())
+    }
+}
+
+impl MatchConfig {
+    /// **Check `[tacsim.match]`** (16b cut Q.7).
+    ///
+    /// # Errors
+    ///
+    /// One sentence naming the key and the value it was given.
+    pub fn validate(&self) -> Result<(), String> {
+        // Ten minutes of `STARTUP` is not a startup; zero is legal, and is a
+        // tank that is online the moment it is told to be.
+        between(
+            "[tacsim.match].startup_ms",
+            0,
+            600_000,
+            u64::from(self.startup_ms),
+        )?;
+        at_least(
+            "[tacsim.match].board_timeout_ms",
+            1_000,
+            u64::from(self.board_timeout_ms),
+        )?;
+        at_least(
+            "[tacsim.match].max_duration_ms",
+            60_000,
+            u64::from(self.max_duration_ms),
+        )?;
+        // W9, doc 16 §1: twelve a side is the ceiling the whole model is sized
+        // for, and zero is a lobby nobody can claim a slot in.
+        between(
+            "[tacsim.match].max_slots_per_side",
+            1,
+            12,
+            u64::from(self.max_slots_per_side),
+        )?;
+        Ok(())
+    }
+}
+
+impl SensorsConfig {
+    /// **Check `[tacsim.sensors]`** (16b cut Q.7).
+    ///
+    /// `max_signature_factor` is not here: it is the one configured float, and
+    /// `mush_server::config_ext` refuses it on the way through the conversion to
+    /// per mille, where the value the operator wrote is still in hand.
+    ///
+    /// # Errors
+    ///
+    /// One sentence naming the key and the value it was given.
+    pub fn validate(&self) -> Result<(), String> {
+        at_least("[tacsim.sensors].pass_ms", 50, u64::from(self.pass_ms))?;
+        at_least(
+            "[tacsim.sensors].lost_after_passes",
+            1,
+            u64::from(self.lost_after_passes),
+        )?;
+        between(
+            "[tacsim.sensors].condition_green_permille",
+            1,
+            1_000,
+            u64::from(self.condition_green_permille),
+        )?;
+        between(
+            "[tacsim.sensors].condition_yellow_permille",
+            1,
+            1_000,
+            u64::from(self.condition_yellow_permille),
+        )?;
+        // Green is the *higher* floor: a yellow floor at or above it would make
+        // the yellow band empty and `SCAN` a two-colour read.
+        if self.condition_yellow_permille >= self.condition_green_permille {
+            return Err(format!(
+                "[tacsim.sensors] must have condition_yellow_permille below \
+                 condition_green_permille (they are {} and {})",
+                self.condition_yellow_permille, self.condition_green_permille
+            ));
+        }
+        between(
+            "[tacsim.sensors].condition_reach_permille",
+            1,
+            1_000,
+            u64::from(self.condition_reach_permille),
+        )?;
+        Ok(())
+    }
+}
+
+impl HarnessConfig {
+    /// **Check `[tacsim.harness]`** (16b cut Q.7).
+    ///
+    /// # Errors
+    ///
+    /// One sentence naming the key and the value it was given.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.fighting > self.units {
+            return Err(format!(
+                "[tacsim.harness].fighting must be at most units ({}) (it is {})",
+                self.units, self.fighting
+            ));
+        }
+        Ok(())
     }
 }
 

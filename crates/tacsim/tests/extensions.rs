@@ -4385,13 +4385,18 @@ fn plateau(ramp: bool) -> ArenaDefinition {
 /// `repath_ms` 0 and `tests/reflex.rs`'s own 10 m/s, 180°-a-second helm. At the
 /// shipped doctrine and the shipped helm it does not, and the reason is the
 /// follower and not the route: a tank doing 15 m/s and turning at 30°/s
-/// overshoots a corner, throws its route away, and is **not** given another
-/// until `repath_ms` has passed — and while it has none it steers straight at
-/// the goal, which on this window is straight at the cliff. That is 16b cut
-/// N.1's follower, which this cut does not touch; test 9 measures what it costs
-/// at the stock settings, with the numbers printed for the ledger. What *this*
-/// test is about is whether the route is one motion accepts, so it asks for a
-/// route that is never stale.
+/// overshoots a corner and steers at the goal, which on this window is at the
+/// cliff. **16b cut Q.7 closed half of that** — a route the unit has wandered
+/// off now spends the search it came from, so the re-plan is the next tick and
+/// not the next `repath_ms`, and a follower with no route at all tests the one
+/// cell the crossing would enter before it moves (`tests/reflex.rs`'s
+/// `the_follower_holds_rather_than_drive_at_a_bluff`). The other half is the
+/// cadence itself: a 1 Hz decision at 15 m/s commits a cell and a half of
+/// travel, and the cell the tank crosses in the middle of one is nobody's
+/// choice. Measured on this window at cut Q.7, the stock doctrine still records
+/// seven stops. Test 9 measures what that costs, with the numbers printed for
+/// the ledger. What *this* test is about is whether the route is one motion
+/// accepts, so it asks for a route that is never stale.
 #[test]
 fn x6_the_route_goes_round_what_motion_refuses() {
     let limit = tracked_limit();
@@ -4411,6 +4416,7 @@ fn x6_the_route_goes_round_what_motion_refuses() {
         65_536,
         scale,
         Some(limit),
+        &[],
     )
     .expect("the ramp is a way up");
     assert!(
@@ -4487,7 +4493,8 @@ fn x6_the_route_goes_round_what_motion_refuses() {
             goal,
             65_536,
             scale,
-            Some(limit)
+            Some(limit),
+            &[]
         ),
         Err(tacsim::arena::PathFailure::NoRoute)
     );
@@ -4526,12 +4533,13 @@ fn x6_the_route_goes_round_what_motion_refuses() {
     definition.waypoints = relief_waypoints(start, goal);
     // The doctrine `tests/reflex.rs` runs its own edges on: think every 250 ms
     // and re-plan whenever the route is gone. A tank doing 15 m/s covers a cell
-    // and a half between decisions at the stock cadence, and a route it has
-    // wandered off is thrown away and **not** replaced until `repath_ms` has
-    // passed — during which the follower steers straight at the goal, which on
-    // this window means straight at the cliff. That is the pre-existing follower
-    // (16b cut N.1) and not this cut's; what this test is about is whether the
-    // *route* is one motion accepts, so the fixture asks for a fresh one.
+    // and a half between decisions at the stock cadence, and the cell it crosses
+    // in the middle of one is nobody's choice — **16b cut Q.7** gave the
+    // follower back the two decisions that were its own (a wandered-off route
+    // now spends its search, and a follower with no route tests the cell the
+    // crossing would enter) and this window still records stops at the stock
+    // cadence. See this test's head. What it is about is whether the *route* is
+    // one motion accepts, so the fixture asks for a fresh one.
     let cfg = ArenaConfig {
         reflex: tacsim::config::ReflexConfig {
             decide_ms: 250,
@@ -5403,6 +5411,7 @@ fn x6_the_limited_search_costs_what_it_costs() {
             65_536,
             scale,
             Some(limit),
+            &[],
         )
         .unwrap_or_else(|why| panic!("{start:?} -> {goal:?} limited: {why:?}"));
         limited_us += at.elapsed().as_micros();

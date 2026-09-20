@@ -68,6 +68,12 @@ fn config() -> TacsimConfig {
 /// twice in one process, and several of these tests boot more than one world.
 /// The sheet has nothing to do with the lobby.
 fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
+    roster_with(config())
+}
+
+/// **16b cut Q.7**: the same roster on a named `[tacsim]`, so a test can boot a
+/// centre with `[tacsim.match].ai_fill` on.
+fn roster_with(cfg: TacsimConfig) -> Vec<Box<dyn mush_core::GameModule>> {
     use tacsim::composition as comp;
 
     let llm = Arc::new(
@@ -76,7 +82,6 @@ fn roster() -> Vec<Box<dyn mush_core::GameModule>> {
     );
     let onboarding = mush_core::OnboardingConfig::default();
     let game = tacsim::GameEconomyConfig::default();
-    let cfg = config();
     let mut mods = comp::server_modules_with(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
@@ -121,7 +126,13 @@ struct Rig {
 
 impl Rig {
     fn boot(pilots: usize) -> Rig {
-        let mut tw = TestWorld::with_modules(roster());
+        Rig::boot_on(pilots, roster())
+    }
+
+    /// **16b cut Q.7**: the same rig on a named roster, so a test can boot a
+    /// centre with the AI fill on.
+    fn boot_on(pilots: usize, modules: Vec<Box<dyn mush_core::GameModule>>) -> Rig {
+        let mut tw = TestWorld::with_modules(modules);
         let lobby = match_::centre_object(tw.world(), match_::LOBBY_ENTRY)
             .expect("the OOC pack at version 4 carries the simulator lobby");
         let mut map = Accounts::default();
@@ -289,6 +300,59 @@ impl Rig {
             typed_state: mush_core::ModuleActionState::unavailable(),
         };
         match_::slot_vacated(&mut ctx, match_id, pilot).expect("the vacancy is reported");
+    }
+
+    /// **End the running match the way the egress does** (16b cut Q.7):
+    /// `arena_bridge`'s `Ended` arm reduced to the one call that puts the reason
+    /// on the board. Nothing is returned, because what this is for is the
+    /// centre's half and not the cells.
+    fn end_match(&mut self, reason: tacsim::arena::EndReason) {
+        let match_id = self
+            .centre()
+            .match_id
+            .expect("a running centre has a match id");
+        let mut out = Outbox::new();
+        let engine = self.tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let end = tacsim::arena::MatchEnd {
+            reason,
+            t_ms: 12_000,
+        };
+        assert!(
+            match_::finish(&mut ctx, match_id, end, "0".repeat(64), &[]),
+            "the match had a live record to check in"
+        );
+    }
+
+    /// **Which pods the running match actually fielded** (16b cut Q.7), as
+    /// `(team, pod index)` — the AI fill's units never enter `centre.slots`, so
+    /// the board cannot answer this and the registry's own unit binding can.
+    fn match_units(&self) -> Vec<(Team, u8)> {
+        let w = self.tw.world();
+        let Some(id) = match_::centre_of(w).and_then(|centre| centre.match_id) else {
+            return Vec::new();
+        };
+        let registry = w.module_state::<tacsim::arena_bridge::ArenaRegistry>();
+        let mut out = Vec::new();
+        for team in Team::ALL {
+            for slot in 1..=match_::PODS_PER_SIDE {
+                if let Some(tank) = match_::tank_for_slot(w, team, slot)
+                    && registry.and_then(|registry| registry.match_of_unit(tank)) == Some(id)
+                {
+                    out.push((team, slot));
+                }
+            }
+        }
+        out
     }
 
     /// Fire the module ticks due at `seconds`, which is what closes boarding.
@@ -929,4 +993,262 @@ fn f4_with_the_layer_off_the_lobby_refuses_out_loud() {
         match_::centre_of(tw.world()).is_some_and(|centre| centre.slots.is_empty()),
         "a slot was claimed on a server with no arena"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.7 — one human against the machines
+// ---------------------------------------------------------------------------
+
+/// The same short config with `[tacsim.match].ai_fill` **on**.
+fn fill_config() -> TacsimConfig {
+    let mut cfg = config();
+    cfg.match_.ai_fill = true;
+    cfg
+}
+
+/// A centre on a server that fields machines.
+fn fill_rig(pilots: usize) -> Rig {
+    Rig::boot_on(pilots, roster_with(fill_config()))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q7_with_the_fill_on_one_claimed_slot_starts_a_match() {
+    // This reverses the ruling `lobby::run` used to carry. It was written when
+    // no human could be alone in a centre; the owner has asked for exactly one
+    // human against the machines, and what is left of the old rule is that a
+    // match still needs somebody playing it.
+    let mut rig = fill_rig(1);
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim start");
+    assert!(said.contains("boarding"), "one pilot starts it: {said}");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    assert!(rig.centre().match_id.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q7_with_the_fill_off_an_empty_side_is_still_refused_byte_for_byte() {
+    let mut rig = Rig::boot(1);
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim start");
+    assert!(
+        said.contains("The blue side has no pilots; a match takes at least one a side."),
+        "{said}"
+    );
+    assert_eq!(rig.state(), MatchState::Selection);
+    assert!(rig.centre().match_id.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q7_the_default_fill_is_the_larger_side_and_sim_ai_sets_it() {
+    let mut rig = fill_rig(3);
+    rig.say(0, "sim team red");
+    assert_eq!(
+        tacsim::match_::ai_side_size(&rig.centre(), &fill_config().match_),
+        1,
+        "one pilot alone is a one against one"
+    );
+    rig.say(1, "sim team red");
+    assert_eq!(
+        tacsim::match_::ai_side_size(&rig.centre(), &fill_config().match_),
+        2,
+        "two friends on red get two machines on blue"
+    );
+
+    // The board says so, in the one line the slots cannot.
+    let said = rig.say(0, "sim status");
+    assert!(
+        said.contains("  AI fill: each side fields 2; machines take the unclaimed pods."),
+        "{said}"
+    );
+
+    // And the lead can ask for more.
+    let said = rig.say(0, "sim ai 3");
+    assert!(said.contains("AI fill set to 3 a side."), "{said}");
+    assert_eq!(rig.centre().ai_side_size, Some(3));
+    let said = rig.say(0, "sim ai");
+    assert!(said.contains("AI fill: 3 a side."), "{said}");
+    let said = rig.say(0, "sim status");
+    assert!(
+        said.contains("  AI fill: each side fields 3; machines take the unclaimed pods."),
+        "{said}"
+    );
+}
+
+/// **The size somebody set is a floor and not a cap** (16b cut Q.7).
+///
+/// `SIM AI` refuses a size below what is claimed, but claiming goes on for the
+/// whole of `Selection`: a lead who sized the fill and then watched two friends
+/// claim would otherwise start a 3 v 1 under a board line reading `each side
+/// fields 1`, which is the one thing the refusal exists to prevent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q7_a_claim_after_sim_ai_raises_the_fill_rather_than_splitting_the_sides() {
+    let mut rig = fill_rig(3);
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim ai 1");
+    assert!(said.contains("AI fill set to 1 a side."), "{said}");
+    assert_eq!(rig.centre().ai_side_size, Some(1));
+
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team red");
+    assert_eq!(
+        tacsim::match_::ai_side_size(&rig.centre(), &fill_config().match_),
+        3,
+        "the three that turned up are what both sides field"
+    );
+    let said = rig.say(0, "sim status");
+    assert!(
+        said.contains("  AI fill: each side fields 3; machines take the unclaimed pods."),
+        "the board says the number the check-out will use: {said}"
+    );
+
+    rig.say(0, "sim start");
+    for n in 0..3 {
+        rig.seat(n);
+    }
+    assert_eq!(rig.state(), MatchState::Running);
+    let units = rig.match_units();
+    assert_eq!(units.len(), 6, "three a side: {units:?}");
+    assert_eq!(
+        units.iter().filter(|(team, _)| *team == Team::Blue).count(),
+        3,
+        "blue was filled to the size red brought: {units:?}"
+    );
+}
+
+/// **A dry field is a draw the board can explain** (16b cut Q.7).
+///
+/// [`tacsim::arena::EndReason::Spent`] maps to `MatchOutcome::Draw`, which is
+/// the result document's own word (doc 16 §4) — so the board carries the arena's
+/// reason beside it, and this is the one place that sentence is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q7_a_spent_end_is_a_draw_the_board_explains() {
+    let mut rig = fill_rig(1);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim start");
+    assert!(rig.seat(0), "the one pilot boards and the match runs");
+    rig.end_match(tacsim::arena::EndReason::Spent);
+    assert_eq!(rig.state(), MatchState::Ended);
+    assert_eq!(
+        rig.centre().outcome_reason,
+        Some(tacsim::arena::EndReason::Spent),
+        "the reason is written after the rows are released, not before"
+    );
+    let said = rig.say(0, "sim status");
+    assert!(
+        said.contains("— draw: both sides are out of ammunition"),
+        "{said}"
+    );
+
+    // And a draw that is not a dry field is the bare word, so the sentence
+    // above is about the reason and not about the outcome.
+    let mut rig = fill_rig(1);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim start");
+    assert!(rig.seat(0));
+    rig.end_match(tacsim::arena::EndReason::Elimination { winner: None });
+    let said = rig.say(0, "sim status");
+    assert!(said.contains("— draw"), "{said}");
+    assert!(
+        !said.contains("out of ammunition"),
+        "a mutual elimination is not a dry field: {said}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q7_sim_ai_refuses_by_the_sentence_for_each_reason() {
+    let mut rig = fill_rig(3);
+    // Outside `Selection` there is nothing to size.
+    let said = rig.say(0, "sim ai 2");
+    assert!(
+        said.contains("that is not something you can do to it now"),
+        "{said}"
+    );
+
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    // Not a lead.
+    let said = rig.say(1, "sim ai 3");
+    assert!(
+        said.contains("Only a side's first pilot or staff can start the match."),
+        "{said}"
+    );
+    // Out of range, both ends: the centre has four pods a side.
+    let said = rig.say(0, "sim ai 0");
+    assert!(said.contains("AI fill is 1 to 4 a side."), "{said}");
+    let said = rig.say(0, "sim ai 5");
+    assert!(said.contains("AI fill is 1 to 4 a side."), "{said}");
+    // And never below what a side already holds.
+    let said = rig.say(0, "sim ai 1");
+    assert!(
+        said.contains("AI fill cannot be below the larger side (2)."),
+        "{said}"
+    );
+    assert_eq!(rig.centre().ai_side_size, None, "nothing was written");
+    // A word that is not a number is the usage line and never a silent read.
+    let said = rig.say(0, "sim ai four");
+    assert!(said.contains("How many a side?"), "{said}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q7_with_the_fill_off_sim_ai_says_so_and_the_board_says_nothing() {
+    let mut rig = Rig::boot(1);
+    rig.say(0, "sim team red");
+    let said = rig.say(0, "sim ai");
+    assert!(said.contains("AI fill is off on this server."), "{said}");
+    let said = rig.say(0, "sim status");
+    assert!(
+        !said.contains("AI fill:"),
+        "a board on a server with no fill says nothing about one: {said}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q7_a_solo_match_fields_one_machine_and_its_pod_keeps_its_designator() {
+    let mut rig = fill_rig(1);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim start");
+    assert!(rig.seat(0), "the one pilot boards");
+    assert_eq!(rig.state(), MatchState::Running);
+    let units = rig.match_units();
+    assert_eq!(units.len(), 2, "one a side: {units:?}");
+    // The machine took blue's LOWEST unclaimed pod, so its designator is `BA`.
+    assert!(
+        units
+            .iter()
+            .any(|(team, slot)| *team == Team::Blue && *slot == 1),
+        "the fill takes the lowest unclaimed pod: {units:?}"
+    );
+    let said = rig.say(0, "sim status");
+    assert!(
+        said.contains("  AI fill: each side fields 1; machines take the unclaimed pods."),
+        "the board says it while the match runs: {said}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q7_the_boarding_deadline_runs_with_one_seated_pilot_and_aborts_with_none() {
+    // One of two boards; the other never does. With the fill on that is a match,
+    // because somebody is playing it.
+    let mut rig = fill_rig(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    assert!(
+        !rig.seat(0),
+        "one of two seated is not the trigger; the deadline is"
+    );
+    assert_eq!(rig.state(), MatchState::Boarding, "still waiting on blue");
+    rig.tick_to(6);
+    assert_eq!(rig.state(), MatchState::Running, "it ran with who was in");
+
+    // Nobody at all boards, and it is an abort — the half of the old rule that
+    // survives.
+    let mut rig = fill_rig(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    rig.tick_to(6);
+    assert_eq!(rig.state(), MatchState::Aborted);
+    let said = rig.say(0, "sim status");
+    assert!(said.contains("aborted"), "{said}");
 }

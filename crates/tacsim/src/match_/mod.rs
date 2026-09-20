@@ -80,9 +80,10 @@ pub use cockpit::{
     flying,
 };
 pub use lobby::{
-    Centre, OUTSIDE_CENTRE, ResetOutcome, SimError, Slot, abort as sim_abort, board_deadline,
-    centre as centre_of, claim, leave, pilot_of, pod_of, reset as reset_centre, slot_seated,
-    slot_vacated, slots_per_side, start as sim_start, status_lines,
+    Centre, OUTSIDE_CENTRE, ResetOutcome, SimError, Slot, abort as sim_abort, ai as sim_ai,
+    ai_side_size, board_deadline, centre as centre_of, claim, largest_side, leave, pilot_of,
+    pod_of, reset as reset_centre, slot_seated, slot_vacated, slots_per_side, start as sim_start,
+    status_lines,
 };
 pub use record::{
     MatchOutcome, MatchRecord, MatchState, PoseNumbers, TeamRoster, UnitOutcome, UnitResult,
@@ -1080,7 +1081,10 @@ pub fn finish(
     // 16b cut K.1: and the lobby's own half of the release — the pods and the
     // slots — in this same authoritative action, with the centre left in its
     // terminal state carrying the outcome until somebody resets it.
-    lobby::on_match_finished(ctx, match_id, outcome);
+    // 16b cut Q.7: and the arena's own reason beside the outcome, because two
+    // different ends map to `draw` and the board is the surface that wants to
+    // tell them apart.
+    lobby::on_match_finished(ctx, match_id, outcome, end.reason);
     true
 }
 

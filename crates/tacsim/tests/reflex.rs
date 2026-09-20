@@ -183,8 +183,26 @@ fn graph() -> Waypoints {
     )
 }
 
+/// **A bluff**: passable ground thirty metres up, which every stock slope limit
+/// refuses either way (16b cut X.6, read by cut Q.7's one-cell follower test).
+fn bluff() -> TerrainCell {
+    TerrainCell {
+        class: mush_atlas::TerrainClass::Ground,
+        elev_cm: 3_000,
+        move_cost: 100,
+    }
+}
+
 /// The window, with `paint`ed cells over uniform ground.
 fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
+    definition_with(paint, graph())
+}
+
+/// The same, with a named waypoint graph — **16b cut Q.7** needs one window with
+/// no graph at all, so that the `unreachable` edge has nowhere to fall back to
+/// and the follower's own one-cell test is the only thing left between the tank
+/// and the bluff.
+fn definition_with(paint: &[(u16, u16, TerrainCell)], waypoints: Waypoints) -> ArenaDefinition {
     let mut cells = vec![ground(); usize::from(SIDE) * usize::from(SIDE)];
     for (x, y, cell) in paint {
         if let Some(slot) = cells.get_mut(usize::from(*y) * usize::from(SIDE) + usize::from(*x)) {
@@ -211,7 +229,7 @@ fn definition(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
             },
         ],
         key_spots: Vec::new(),
-        waypoints: graph(),
+        waypoints,
     }
 }
 
@@ -344,6 +362,17 @@ fn arena_of(
     cfg: &ArenaConfig,
     seated: &[ObjId],
 ) -> Arena {
+    arena_on(definition(paint), units, cfg, seated)
+}
+
+/// The same over a whole [`ArenaDefinition`] — **16b cut Q.7** needs a window
+/// with no waypoint graph.
+fn arena_on(
+    definition: ArenaDefinition,
+    units: Vec<CustodyUnit>,
+    cfg: &ArenaConfig,
+    seated: &[ObjId],
+) -> Arena {
     let pilots = seated
         .iter()
         .enumerate()
@@ -356,7 +385,7 @@ fn arena_of(
         .collect();
     Arena::new(
         CustodyOut {
-            definition: definition(paint),
+            definition,
             units,
             pilots,
             resolution: tacsim::match_::stock_resolution(),
@@ -753,8 +782,24 @@ fn under_the_health_threshold_it_breaks_off_toward_its_own_entry_zone() {
     }
     assert_eq!(arena.reflex_health_permille(RED), 166);
 
+    // **16b cut Q.7**: the hostile has to be *gone* for this test's claim to be
+    // about the health threshold at all. A withdrawing tank that still holds a
+    // classified hostile inside its reach with a line stands and shoots back —
+    // that is the cut's own `stand` edge, and it has its own test below. So the
+    // blue tank drives over the ridge first (a five-cell sight has an outside on
+    // a sixteen-cell window) and the contact expires before the damage lands.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(15, 15);
+    }
+    run(&mut arena, 12_000, &mut bytes);
+    assert_eq!(
+        arena.contacts.of(RED).count(),
+        0,
+        "the contact expired, so what is left is the health edge"
+    );
+    let west_of = arena.unit(RED).map(|unit| unit.pose.x_cm).unwrap_or(0);
     let before = count(&events(&mut arena, &mut bytes), "fired");
-    run(&mut arena, 20_000, &mut bytes);
+    run(&mut arena, 32_000, &mut bytes);
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
     // It is making for its **own** entry zone — the red one, columns 0 and 1 —
     // and not the blue one it was closing on.
@@ -771,7 +816,7 @@ fn under_the_health_threshold_it_breaks_off_toward_its_own_entry_zone() {
         "a withdrawing tank holds its fire"
     );
     assert!(
-        arena.unit(RED).is_some_and(|unit| unit.pose.x_cm < 6_500),
+        arena.unit(RED).is_some_and(|unit| unit.pose.x_cm < west_of),
         "it drove west"
     );
 }
@@ -988,6 +1033,115 @@ fn a_goal_behind_a_sealed_wall_falls_back_to_the_nearest_waypoint() {
         row.goal
     );
     assert!(row.waypoint.is_some());
+}
+
+/// **The escalation terminates, and it keeps what it learned** (16b cut Q.7).
+///
+/// Two claims the test above cannot make, because it runs at [`reflex_cfg`]'s
+/// `repath_ms` of zero — where a route-empty tick searches whatever happened
+/// before it.
+///
+/// 1. **A sealed goal is not a failing search a tick.** At the shipped damper
+///    the `unreachable` edge fires, the goal becomes a waypoint, and the next
+///    failure is one `repath_ms` away and not one `decide_ms` away. Forty ticks
+///    of arena time buy a handful of failures, not forty.
+/// 2. **`avoid` survives the edge.** The tank is stopped by a parked teammate on
+///    the way, learns the cell, and then fails its search: if the fallback threw
+///    the list away, the escalation would cycle — stop, learn, fall back, forget,
+///    stop at the same cell again — which is the "cycling wreck, fallback,
+///    wreck" the cut brief names.
+#[test]
+fn a_sealed_goal_escalates_without_cycling_and_keeps_its_avoided_cells() {
+    let mut paint: Vec<(u16, u16, TerrainCell)> = Vec::new();
+    for x in 8..=12_u16 {
+        paint.push((x, 6, wall()));
+        paint.push((x, 10, wall()));
+    }
+    for y in 6..=10_u16 {
+        paint.push((8, y, wall()));
+        paint.push((12, y, wall()));
+    }
+    let cfg = arena_cfg(ReflexConfig {
+        decide_ms: 500,
+        repath_ms: 4_000,
+        ..ReflexConfig::default()
+    });
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(4, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(10, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+            // Parked on the way to the only node the fallback can reach: the
+            // stop the machine has to remember while the escalation runs.
+            tank(RED2, Team::Red, centre(3, 8), Vec::new(), Controller::Pilot),
+        ],
+        &paint,
+        &cfg,
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    // First the stop: nothing is held yet, so the machine patrols west into the
+    // parked tank and learns the cell.
+    run(&mut arena, 6_000, &mut bytes);
+    let learned = avoided(&arena, RED);
+    assert!(
+        !learned.is_empty(),
+        "the parked tank never stopped it, so there is nothing to keep"
+    );
+
+    // Then the escalation. The contact is re-planted every pulse: a five-cell
+    // sight cannot hold a tank six cells away inside a sealed pocket, and what
+    // this test is about is what an `Approach` does with a goal it cannot reach —
+    // which needs the `Approach` to last (see this file's head for why a test
+    // may plant one).
+    let until = arena.now_ms + 16_000;
+    let mut wall_ms = arena.now_ms;
+    let mut counters = tacsim::arena::ReflexCounters::default();
+    while arena.now_ms < until {
+        let now = arena.now_ms;
+        plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        counters.absorb(&out.reflex);
+        wall_ms += 500;
+    }
+
+    assert!(
+        counters.path_failures > 0,
+        "the sealed pocket is unreachable: {counters:?}"
+    );
+    // Thirty-two decide ticks in sixteen seconds; the damper is four.
+    assert!(
+        counters.path_failures < 10,
+        "the escalation ran the same failing search over and over: {counters:?}"
+    );
+    assert_eq!(
+        avoided(&arena, RED),
+        learned,
+        "the `unreachable` edge threw away what the stop taught it"
+    );
+    // The goal read at the end is `Approach`'s own and not the fallback's: the
+    // state re-asks `stand_off_cell` off the contact's plot on every tick, which
+    // is the cut brief's own rule and what makes the bound above the interesting
+    // number. What the fallback leaves behind is the node it stepped to.
+    assert!(
+        arena
+            .reflex
+            .unit(RED)
+            .is_some_and(|row| row.waypoint.is_some()),
+        "the fallback never took"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,7 +1423,7 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
     // And it drives itself home, on the epoch the world published — not on one of
     // its own.
     let start = arena.unit(RED).map(|unit| unit.pose.x_cm).unwrap_or(0);
-    run(&mut arena, 30_000, &mut bytes);
+    run(&mut arena, 16_000, &mut bytes);
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
     let row = arena.reflex.unit(RED).cloned().expect("a machine");
     assert!(
@@ -1280,6 +1434,15 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
     assert!(
         arena.unit(RED).is_some_and(|unit| unit.pose.x_cm < start),
         "it drove west"
+    );
+    // **16b cut Q.7**: and then it comes back. A seat released past the linkdead
+    // grace used to leave a tank parked in the entry zone for the rest of the
+    // match; after `arena.reflex.rally_ms` of quiet it is an AI teammate again.
+    run(&mut arena, 60_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert!(
+        arena.reflex.unit(RED).is_some_and(|row| row.rallied),
+        "it rallied once"
     );
 
     // A reclaimed seat takes it back, and the machine is forgotten.
@@ -1307,5 +1470,1214 @@ fn a_released_seat_hands_the_tank_to_the_controller_in_withdraw() {
             .iter()
             .any(|event| matches!(event.kind, tacsim::arena::state::DueKind::ReflexTick { .. })),
         "the reclaimed seat took its ticks off the heap"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.7 — the blocked edge learned at the event
+// ---------------------------------------------------------------------------
+
+/// The cells one unit's machine is avoiding, without their stamps.
+fn avoided(arena: &Arena, unit: ObjId) -> Vec<(u16, u16)> {
+    arena
+        .reflex
+        .unit(unit)
+        .map(|row| row.avoid.iter().map(|(cell, _)| *cell).collect())
+        .unwrap_or_default()
+}
+
+/// How many times the black box says `unit` was stopped **at this cell** — the
+/// lens doc 16 §3.4 step 4's *one notice per stop* is read through, and the one
+/// that does not move with the substep partition the way a raw count does (16b
+/// cut Q.6's `blocked` note).
+fn blocked_at(events: &[LedgerEvent], unit: ObjId, cell: (u16, u16)) -> usize {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                tacsim::arena::ledger::EventKind::Blocked { unit: on, x, y }
+                    if on == unit && (x, y) == cell
+            )
+        })
+        .count()
+}
+
+/// Turn a unit into a wreck the way a killing round would, so the spatial index
+/// keeps holding its cell and nothing targets it.
+fn wreck_it(arena: &mut Arena, unit: ObjId) {
+    if let Some(state) = arena.unit_mut(unit) {
+        state.limits.wreck = true;
+        state.limits.motion_disabled = true;
+        state.power = Power::Off;
+        state.speed_cms = 0;
+        state.desired_speed_cms = 0;
+    }
+}
+
+#[test]
+fn a_reflex_tank_stopped_by_a_parked_one_learns_the_cell_and_goes_round_it() {
+    // Doc 16 §3.4 step 5: one unit per cell. The blue tank is parked in the red
+    // one's way and nobody is driving it, so before this cut the red tank
+    // re-planned the same route into it every `repath_ms` for the rest of the
+    // match — the owner's "an AI tank queues for ever behind a parked unit".
+    //
+    // The red tank carries nothing, so it has no target and no `Approach`: what
+    // is left is `Patrol` walking to `west`, straight through (5, 8).
+    let mut arena = arena_of(
+        vec![
+            tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Reflex),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(5, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    // The tank walks the graph, so "did it get past" is the WEST-most place it
+    // ever reached and not where it happens to be standing at the end.
+    let mut wall_ms = 0_i64;
+    let mut west_most = i64::MAX;
+    let mut counters = tacsim::arena::ReflexCounters::default();
+    while arena.now_ms < 30_000 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        counters.absorb(&out.reflex);
+        west_most = west_most.min(arena.unit(RED).map_or(i64::MAX, |unit| unit.pose.x_cm));
+        wall_ms += 500;
+    }
+    let log = events(&mut arena, &mut bytes);
+
+    assert!(
+        blocked_at(&log, RED, (5, 8)) <= 2,
+        "one obstacle is one stop, not a stop every pulse: {} stops at (5, 8)",
+        blocked_at(&log, RED, (5, 8))
+    );
+    assert!(
+        counters.path_queries >= 2,
+        "it searched again after the stop: {counters:?}"
+    );
+    assert!(
+        west_most < 3_000,
+        "it went round the parked tank and on to `west` at (1, 8), which `ARRIVE_CELLS` \
+         makes cell 2: west-most {west_most} cm"
+    );
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
+}
+
+/// **The re-plan is within one `decide_ms` of the stop at the *shipped*
+/// `repath_ms`** (16b cut Q.7), which is the clearing of `searched_ms` and
+/// nothing else.
+///
+/// Every other test in this file runs on [`reflex_cfg`], whose `repath_ms` is
+/// zero — and a route-empty tick searches at `repath_ms` zero whether or not
+/// anything cleared the stamp, so none of them can see the clearing at all. This
+/// one runs at the shipped four seconds, where the damper is real: without the
+/// clearing the tank would sit behind the parked one for up to four seconds a
+/// time, which is the owner's "an AI tank queues for ever behind a parked unit"
+/// with a number on it.
+///
+/// Both clearing sites are here. (a) the stop, through `Arena::note_blocked`;
+/// (b) the shove, through `follow`'s "wandered off the route" branch — a tank
+/// moved four cells off its route holds a route whose next cell is not a
+/// neighbour, and it must be allowed to say so at once rather than steering
+/// sideways until `repath_ms` runs out.
+#[test]
+fn a_stop_and_a_shove_are_both_re_planned_within_one_decide_tick() {
+    const DECIDE_MS: i64 = 500;
+    let cfg = arena_cfg(ReflexConfig {
+        decide_ms: 500,
+        repath_ms: 4_000,
+        ..ReflexConfig::default()
+    });
+    let mut arena = arena_of(
+        vec![
+            tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Reflex),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(5, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &cfg,
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let searched = |arena: &Arena| arena.reflex.unit(RED).and_then(|row| row.searched_ms);
+
+    // (a) the stop. The stamp the stop threw away is read from the pulse before
+    // it, because `Arena::note_blocked` is applied ahead of the due loop and the
+    // very substep that stopped the tank may already carry the tick that
+    // re-plans it.
+    let mut wall_ms = 0_i64;
+    let mut held = searched(&arena);
+    let mut learned_at: Option<i64> = None;
+    let mut spent: Option<i64> = None;
+    let mut replanned: Option<i64> = None;
+    while arena.now_ms < 30_000 {
+        let before = held;
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        wall_ms += 100;
+        held = searched(&arena);
+        if learned_at.is_none() && !avoided(&arena, RED).is_empty() {
+            learned_at = Some(arena.now_ms);
+            spent = before;
+        }
+        if learned_at.is_some() && held.is_some() && held != spent {
+            replanned = held;
+            break;
+        }
+    }
+    let learned = learned_at.expect("the parked tank stopped it");
+    assert!(
+        spent.is_some(),
+        "it was following a route it had searched for"
+    );
+    let replanned = replanned.expect("it never searched again");
+    assert!(
+        replanned - learned <= DECIDE_MS,
+        "the re-plan is the next tick and not the next `repath_ms` ({} ms): \
+         stopped at {learned} ms, searched at {replanned} ms",
+        cfg.reflex.repath_ms
+    );
+
+    // (b) the shove. It holds a fresh route now; four cells north of it is a
+    // route whose next cell is nobody's neighbour.
+    let stamp = searched(&arena);
+    assert_eq!(
+        stamp,
+        Some(replanned),
+        "it holds the search it just paid for"
+    );
+    assert!(
+        arena
+            .reflex
+            .unit(RED)
+            .is_some_and(|row| !row.route.is_empty()),
+        "and the route that came out of it"
+    );
+    if let Some(state) = arena.unit_mut(RED) {
+        state.pose = centre(6, 12);
+    }
+    let shoved_at = arena.now_ms;
+    let mut re_searched: Option<i64> = None;
+    while arena.now_ms < shoved_at + 3_000 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        wall_ms += 100;
+        if searched(&arena) != stamp && searched(&arena).is_some() {
+            re_searched = Some(arena.now_ms);
+            break;
+        }
+    }
+    let re_searched = re_searched.expect("a shoved tank never asked for a new route");
+    assert!(
+        re_searched - shoved_at <= DECIDE_MS,
+        "a tank pushed off its route re-plans on its next tick and not in \
+         {}: shoved at {shoved_at} ms, searched at {re_searched} ms",
+        cfg.reflex.repath_ms
+    );
+}
+
+#[test]
+fn a_wreck_in_the_causeway_is_learned_and_the_other_gap_is_taken() {
+    // A band down column 4 with exactly two gaps, at rows 8 and 2. The red tank
+    // is on row 8 and the shorter way is through the gap in front of it — which
+    // a wreck is standing in. It has to learn that and take the other one.
+    let band: Vec<(u16, u16, TerrainCell)> = (0..SIDE)
+        .filter(|y| *y != 8 && *y != 2)
+        .map(|y| (4_u16, y, wall()))
+        .collect();
+    let mut arena = arena_of(
+        vec![
+            tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Reflex),
+            tank(RED2, Team::Red, centre(4, 8), Vec::new(), Controller::Pilot),
+        ],
+        &band,
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    wreck_it(&mut arena, RED2);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    let mut west_most = i64::MAX;
+    while arena.now_ms < 60_000 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        west_most = west_most.min(arena.unit(RED).map_or(i64::MAX, |unit| unit.pose.x_cm));
+        wall_ms += 500;
+    }
+    let log = events(&mut arena, &mut bytes);
+    assert!(
+        blocked_at(&log, RED, (4, 8)) <= 2,
+        "one wreck is one stop: {} stops at (4, 8)",
+        blocked_at(&log, RED, (4, 8))
+    );
+    assert!(
+        west_most < 4_000,
+        "it is through the other gap: west-most {west_most} cm"
+    );
+}
+
+#[test]
+fn the_avoided_cells_survive_an_approach_whose_goal_moves_every_tick() {
+    // The case the owner hit. `Approach` recomputes its goal from the contact's
+    // plot at **every** tick, so a list cleared on a goal change would be empty
+    // again about once a second — and the tank would drive back into the wreck it
+    // had just learned about, for ever.
+    let mut arena = arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(6, 8),
+                    vec![carbine()],
+                    Controller::Reflex,
+                ),
+                14,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(12, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+            tank(RED2, Team::Red, centre(7, 8), Vec::new(), Controller::Pilot),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    wreck_it(&mut arena, RED2);
+    let mut bytes: Vec<u8> = Vec::new();
+    // Classified, and closing: the carbine reaches two cells and the target is
+    // six away, so this is `Approach` and its goal is a stand-off cell.
+    run(&mut arena, 5_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Approach));
+
+    // The target walks north and south a cell at a time, so the goal moves under
+    // the machine on every single tick.
+    let mut wall_ms = arena.now_ms;
+    let mut north = true;
+    let mut ever_avoided = false;
+    for _ in 0..40 {
+        if let Some(state) = arena.unit_mut(BLUE) {
+            state.pose = centre(12, if north { 9 } else { 7 });
+        }
+        north = !north;
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        ever_avoided |= !avoided(&arena, RED).is_empty();
+        wall_ms += 500;
+    }
+    assert!(
+        ever_avoided,
+        "the wreck's cell was never remembered at all, so nothing was proved"
+    );
+    assert!(
+        arena.unit(RED).is_some_and(|unit| unit.pose.x_cm > 7_999),
+        "it got past the wreck rather than queueing behind it: {:?}",
+        arena.unit(RED).map(|unit| unit.pose.x_cm)
+    );
+}
+
+#[test]
+fn a_remembered_stop_ages_out_and_the_cell_is_planned_through_again() {
+    let mut arena = arena_of(
+        vec![
+            tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Reflex),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(5, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    let mut learned: Option<(u16, u16)> = None;
+    for _ in 0..16 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        if let Some(cell) = avoided(&arena, RED).first().copied() {
+            learned = Some(cell);
+            break;
+        }
+        wall_ms += 500;
+    }
+    assert_eq!(learned, Some((5, 8)), "the cell it could not enter");
+    // The blocker leaves, and thirty seconds of arena time pass. An entry that
+    // aged out is a cell the search may use again, which is what stops a wreck
+    // that has been cleared from being a permanent hole in the map.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(15, 15);
+    }
+    let at = arena.now_ms;
+    run(
+        &mut arena,
+        at + tacsim::arena::REFLEX_AVOID_TTL_MS + 2_000,
+        &mut bytes,
+    );
+    assert!(
+        avoided(&arena, RED).is_empty(),
+        "the entry should have aged out at {} ms: {:?}",
+        tacsim::arena::REFLEX_AVOID_TTL_MS,
+        avoided(&arena, RED)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.7 — the follower never steers at a refused edge
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_follower_holds_rather_than_drive_at_a_bluff() {
+    // 16b cut X.6's deviation 13, closed. With no route and no search this tick
+    // the follower used to aim at the **goal**, which on relief is a direction and
+    // not a way: the tank drove at the bluff, motion refused the edge, and the
+    // whole thing happened again on the next tick.
+    //
+    // The window has no waypoint graph, so the `unreachable` edge has nowhere to
+    // fall back to and the one-cell test is the only thing between the tank and
+    // the cliff. The tank is DRY — it came in with a cannon and no rounds — so
+    // its goal is its own entry zone, the far side of the bluff.
+    let bluff_wall: Vec<(u16, u16, TerrainCell)> = (0..SIDE).map(|y| (4_u16, y, bluff())).collect();
+    let mut arena = arena_on(
+        definition_with(&bluff_wall, Waypoints::new(Vec::new(), &[])),
+        vec![tank(
+            RED,
+            Team::Red,
+            centre(6, 8),
+            vec![cannon()],
+            Controller::Reflex,
+        )],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ammo.insert(SmolStr::new("cannon"), 0);
+        // The stock locomotion's own limit; the fixture's hand-made unit declares
+        // no mobility, so it is written on here rather than read off a spec.
+        state.slope_limit_pct = Some(30);
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 30_000, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Withdraw),
+        "a tank with nothing to fire withdraws"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(
+        count(&log, "blocked"),
+        0,
+        "it never drove at the bluff, so motion never refused it an edge"
+    );
+    let cell = arena
+        .unit(RED)
+        .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose));
+    assert_eq!(
+        cell,
+        Some((5, 8)),
+        "it walked up to the last cell it could enter and stopped there"
+    );
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.desired_speed_cms),
+        Some(0),
+        "and it is waiting for a route rather than pushing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.7 — Withdraw is not terminal
+// ---------------------------------------------------------------------------
+
+/// Take a tank's armour and internals down to 166 per mille, under the stock
+/// `withdraw_permille` of 350. See this file's head for why a test may do this.
+fn hurt(arena: &mut Arena, unit: ObjId) {
+    let ops = vec![
+        UnitMutationOp::SetCell {
+            addr: CellAddr::Facet {
+                section: SectionId::new("hull").expect("a section"),
+                facet: FacetId::new("front").expect("a facet"),
+                cell: mush_tactics::CellId::new("armor").expect("a cell"),
+            },
+            value: 1,
+        },
+        UnitMutationOp::SetCell {
+            addr: CellAddr::Section {
+                section: SectionId::new("hull").expect("a section"),
+                cell: mush_tactics::CellId::new("internals").expect("a cell"),
+            },
+            value: 2,
+        },
+    ];
+    let plan =
+        UnitMutationPlan::new(ops, None, Some(SmolStr::new("test:hurt"))).expect("a two-op plan");
+    let hurt = {
+        let state = arena.unit(unit).expect("the tank");
+        mush_tactics::apply(&state.unit, &plan, 0)
+            .expect("the plan applies")
+            .0
+    };
+    if let Some(state) = arena.unit_mut(unit) {
+        state.unit = hurt;
+    }
+}
+
+#[test]
+fn a_cornered_withdrawal_stands_and_fights_without_leaving_the_state() {
+    // The flicker: the hostile crosses in and out of the carbine's two-cell reach
+    // once a pulse for ten seconds. A machine that answered it with a **state**
+    // change would throw its route away and buy a path query every second; this
+    // one stands where it is, shoots when the line is there, and keeps the run
+    // home it had planned.
+    let mut arena = arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(8, 8),
+                    vec![carbine()],
+                    Controller::Reflex,
+                ),
+                14,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 5_000, &mut bytes);
+    // Hurt it under the threshold, so the next tick is a `Withdraw`.
+    hurt(&mut arena, RED);
+    run(&mut arena, 8_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+
+    let mut wall_ms = arena.now_ms;
+    let mut queries = 0_u32;
+    let mut near = true;
+    for _ in 0..20 {
+        if let Some(state) = arena.unit_mut(BLUE) {
+            state.pose = centre(if near { 9 } else { 14 }, 8);
+        }
+        near = !near;
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        queries = queries.saturating_add(out.reflex.path_queries);
+        assert_eq!(
+            state_of(&arena, RED),
+            Some(ReflexState::Withdraw),
+            "the flicker moved the machine out of `Withdraw` at {} ms",
+            arena.now_ms
+        );
+        wall_ms += 500;
+    }
+    assert!(
+        queries <= 3,
+        "a state flip a second would have bought a search a second: {queries}"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert!(count(&log, "fired") > 0, "cornered, it shot back");
+}
+
+#[test]
+fn a_withdrawn_tank_rallies_once_and_then_fights_to_the_end() {
+    let mut arena = arena_of(
+        vec![tank(
+            RED,
+            Team::Red,
+            centre(9, 8),
+            vec![cannon()],
+            Controller::Reflex,
+        )],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    hurt(&mut arena, RED);
+    run(&mut arena, 12_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert!(
+        arena.reflex.unit(RED).is_some_and(|row| !row.rallied),
+        "it has not come back yet"
+    );
+
+    // Home, and quiet. `arena.reflex.rally_ms` later it turns round.
+    run(&mut arena, 60_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert!(arena.reflex.unit(RED).is_some_and(|row| row.rallied));
+    assert!(
+        arena.reflex_health_permille(RED) < ReflexConfig::default().withdraw_permille,
+        "it is still hurt, which is what makes the next assertion mean something"
+    );
+
+    // And it does not withdraw again: the health edge is spent.
+    run(&mut arena, 120_000, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Patrol),
+        "a rallied tank fights to the end"
+    );
+}
+
+#[test]
+fn a_tank_with_nothing_to_fire_withdraws_and_never_rallies() {
+    let mut arena = arena_of(
+        vec![tank(
+            RED,
+            Team::Red,
+            centre(9, 8),
+            vec![cannon()],
+            Controller::Reflex,
+        )],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ammo.insert(SmolStr::new("cannon"), 0);
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 5_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    // Four times the rally lull, at full health and with nothing hostile to see:
+    // every other reason to stay out is gone, and it stays out.
+    run(&mut arena, 90_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert!(arena.reflex.unit(RED).is_some_and(|row| !row.rallied));
+}
+
+/// A hurt tank one cell from a classified hostile, with `rounds` in the
+/// magazine: how far west it got over twenty seconds of `Withdraw`, and how many
+/// rounds it fired.
+fn withdrawing_beside_a_hostile(rounds: u32) -> (i64, usize) {
+    let mut arena = arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(9, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                14,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(10, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ammo.insert(SmolStr::new("cannon"), rounds);
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 4_000, &mut bytes);
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    hurt(&mut arena, RED);
+    let from = arena.unit(RED).map_or(0, |unit| unit.pose.x_cm);
+    let before = count(&events(&mut arena, &mut bytes), "fired");
+    let until = arena.now_ms + 20_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Withdraw),
+        "the fixture is about what a withdrawal does, so it has to be one"
+    );
+    let west = from - arena.unit(RED).map_or(0, |unit| unit.pose.x_cm);
+    (
+        west,
+        count(&events(&mut arena, &mut bytes), "fired") - before,
+    )
+}
+
+/// **A tank with nothing to fire is never cornered** (16b cut Q.7).
+///
+/// The stand stops a withdrawing tank in the open and turns it onto the plot,
+/// which is worth doing because it shoots back. A dry tank would stop, turn,
+/// stage nothing and re-arm the dwell every tick for as long as it held the
+/// contact — a parked target in front of a gun, which is the debt this cut was
+/// paid to remove and not a stand. The armed half is the control: same ground,
+/// same hostile, same damage, and the only difference is the magazine.
+#[test]
+fn a_dry_withdrawal_drives_on_where_an_armed_one_stands_and_fights() {
+    // Twenty rounds, because a magazine that runs out mid-test would turn the
+    // control into the case it is a control for.
+    let (armed_west, armed_fired) = withdrawing_beside_a_hostile(20);
+    assert!(
+        armed_fired > 0,
+        "the control is a tank that stands and shoots back"
+    );
+    assert!(
+        armed_west < 2_000,
+        "and one that is standing: it made {armed_west} cm of ground"
+    );
+
+    let (dry_west, dry_fired) = withdrawing_beside_a_hostile(0);
+    assert_eq!(dry_fired, 0, "it had nothing to fire");
+    // Cell 9 to the red entry zone at columns 0 and 1 is seven cells of ground,
+    // and twenty seconds at ten metres a second is more than enough of it.
+    assert!(
+        dry_west > 5_000 && dry_west > armed_west + 3_000,
+        "a dry tank drives home instead of stopping in front of the gun: \
+         {dry_west} cm against the armed tank's {armed_west} cm"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.7 — heat
+// ---------------------------------------------------------------------------
+
+/// A tank with a real `heat` cell on its hull, carrying `now` of a ceiling of
+/// `max` and paying `per_shot` for every round of the cannon.
+///
+/// The cell is a real one, because the controller and the resolver must be asked
+/// the **same** question: [`tacsim::arena::state::UnitState::overheated`] reads
+/// the cell, and a platform that declares heat but carries no cell is a platform
+/// the engine never refuses.
+fn heated(arena: &mut Arena, unit: ObjId, max: u32, now: u32, per_shot: u32) {
+    let spec = UnitSpec {
+        definition: dref("unit", "tacsim.unit.line_tank"),
+        sections: vec![SectionSpec {
+            id: SectionId::new("hull").expect("a canonical section"),
+            condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+            facets: vec![FacetSpec {
+                id: FacetId::new("front").expect("a canonical facet"),
+                cells: vec![CellSpec {
+                    id: mush_tactics::CellId::new("armor").expect("a cell"),
+                    min: 0,
+                    max: 10,
+                    init: 10,
+                }],
+            }],
+            slots: Vec::new(),
+            cells: vec![
+                CellSpec {
+                    id: mush_tactics::CellId::new("internals").expect("a cell"),
+                    min: 0,
+                    max: 8,
+                    init: 8,
+                },
+                CellSpec {
+                    id: mush_tactics::CellId::new(tacsim::definitions::unit::HEAT_CELL)
+                        .expect("a cell"),
+                    min: 0,
+                    max: i64::from(max),
+                    init: i64::from(now),
+                },
+            ],
+        }],
+        unit_cells: Vec::new(),
+        components: Vec::new(),
+        capabilities: Vec::new(),
+        mobility: None,
+        rules: rules(),
+    };
+    let mut per_shot_by_weapon = std::collections::BTreeMap::new();
+    per_shot_by_weapon.insert(SmolStr::new("cannon"), per_shot);
+    if let Some(state) = arena.unit_mut(unit) {
+        state.unit = TacticalUnit::from_spec(&spec, unit).expect("a unit that carries heat");
+        state.heat = Some(tacsim::arena::state::HeatState {
+            section: SmolStr::new("hull"),
+            max,
+            per_s: 0,
+            per_shot: per_shot_by_weapon,
+            carry_milli: 0,
+        });
+    }
+}
+
+/// The two tanks the heat tests share: the machine in reach of a parked target.
+fn heat_field() -> Arena {
+    arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    )
+}
+
+#[test]
+fn an_overheated_machine_holds_its_fire_rather_than_feeding_a_refusal() {
+    // (a) **at the ceiling**: the platform is carrying its whole ten, which is
+    // the one reading `apply_intent`'s `Overheated` refusal takes. The
+    // controller reads it too and stages nothing at all.
+    let mut arena = heat_field();
+    heated(&mut arena, RED, 10, 10, 1);
+    let mut bytes: Vec<u8> = Vec::new();
+    let counters = run(&mut arena, 8_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(counters.shots, 0, "the hot gun stayed quiet: {counters:?}");
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "fired"), 0);
+    assert!(count(&log, "locked") > 0, "it still closed and locked");
+
+    // (b) **one shot short of it**: a cold platform whose shot costs its whole
+    // ceiling. The engine's rule is that a shot which would carry a unit past
+    // the maximum leaves it exactly at it and the *next* one is refused
+    // (`UnitState::overheated`), so this is a gun that works once — and the
+    // machine must take that shot, or a pilot and a machine in the same tank
+    // would disagree about whether the gun works at all.
+    let mut arena = heat_field();
+    heated(&mut arena, RED, 10, 0, 10);
+    let mut bytes: Vec<u8> = Vec::new();
+    let counters = run(&mut arena, 8_000, &mut bytes);
+    assert_eq!(
+        counters.shots, 1,
+        "the engine's last legal shot: {counters:?}"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "fired"), 1);
+    assert_eq!(
+        arena.unit(RED).and_then(|unit| unit.heat_now()),
+        Some(10),
+        "and it is at the ceiling now, which is what stopped the second"
+    );
+
+    // (c) **past it**: the same shot against a platform already carrying one.
+    // Eleven of a ceiling of ten is a shot the engine would accept and the heat
+    // would cap, and the controller declines it rather than spending the round
+    // for a refusal on the next tick.
+    let mut arena = heat_field();
+    heated(&mut arena, RED, 10, 1, 10);
+    let mut bytes: Vec<u8> = Vec::new();
+    let counters = run(&mut arena, 8_000, &mut bytes);
+    assert_eq!(counters.shots, 0, "it would have gone past: {counters:?}");
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.7 — `EndReason::Spent`
+// ---------------------------------------------------------------------------
+
+/// Two armed tanks facing each other, one the machine's and one a pilot's.
+fn dry_pair(red_rounds: u32, blue_rounds: u32) -> Arena {
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                vec![cannon()],
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    for (unit, rounds) in [(RED, red_rounds), (BLUE, blue_rounds)] {
+        if let Some(state) = arena.unit_mut(unit) {
+            state.ammo.insert(SmolStr::new("cannon"), rounds);
+        }
+    }
+    arena
+}
+
+#[test]
+fn two_dry_sides_end_in_a_draw_and_one_dry_side_plays_on() {
+    // Both magazines empty and both tanks whole: doc 16 §3.8's elimination is
+    // untouched — neither is a wreck and neither is disabled — so what ends it is
+    // that nobody can shoot.
+    let mut arena = dry_pair(0, 0);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut ended = None;
+    let mut wall_ms = 0_i64;
+    while arena.now_ms < 20_000 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        if let Some(end) = out.ended {
+            ended = Some(end);
+            break;
+        }
+        wall_ms += 500;
+    }
+    let end = ended.unwrap_or_else(|| panic!("nobody could shoot, so it should have ended"));
+    assert_eq!(end.reason, tacsim::arena::state::EndReason::Spent);
+    assert_eq!(
+        tacsim::match_::MatchOutcome::from(end.reason),
+        tacsim::match_::MatchOutcome::Draw,
+        "it names no winner"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert!(
+        log.iter().any(|event| matches!(
+            event.kind,
+            tacsim::arena::ledger::EventKind::MatchEnded {
+                reason: tacsim::arena::state::EndReason::Spent
+            }
+        )),
+        "the black box says why"
+    );
+
+    // One side dry is not a result. A solo player at full armour does not lose
+    // the instant their last round leaves the breech.
+    let mut arena = dry_pair(0, 40);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    while arena.now_ms < 15_000 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        assert!(out.ended.is_none(), "a dry side plays on: {:?}", out.ended);
+        wall_ms += 500;
+    }
+}
+
+#[test]
+fn a_round_still_in_flight_holds_the_draw_off() {
+    // The last round has left the breech and has not landed: it can still decide
+    // the match, so calling a draw over it would be calling a draw over a kill.
+    let mut arena = dry_pair(1, 0);
+    // A slow round, so "in flight" outlives the pulse that fired it: the stock
+    // cannon's 1,450 m/s crosses three cells in twenty milliseconds and the
+    // impact is resolved inside the same substep.
+    if let Some(weapon) = arena
+        .unit_mut(RED)
+        .and_then(|state| state.weapons.first_mut())
+    {
+        weapon.muzzle_speed_cms = 1_000;
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall_ms = 0_i64;
+    let mut in_flight = false;
+    while arena.now_ms < 20_000 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        if !arena.shots.is_empty() {
+            in_flight = true;
+            assert!(
+                !arena.spent(),
+                "a round is still in the air at {} ms",
+                arena.now_ms
+            );
+        }
+        if out.ended.is_some() {
+            break;
+        }
+        wall_ms += 500;
+    }
+    assert!(in_flight, "the machine never fired its one round");
+    assert!(
+        arena.ended.is_some(),
+        "and once it landed, nobody could shoot"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut Q.7 — the cross-tempo property (16b §11: mandatory)
+// ---------------------------------------------------------------------------
+
+/// **The one arena millisecond a scripted replay does something to the world.**
+///
+/// A multiple of all three cadences, so the pulse that reaches it ends at
+/// exactly this arena millisecond at every one of them and the script is the
+/// same fact of arena time in all three logs.
+const SCRIPT_AT_MS: i64 = 20_000;
+
+/// One scripted replay of `build`'s arena, at one cadence. `script` runs at
+/// [`SCRIPT_AT_MS`] and nowhere else.
+fn replay_of(
+    cadence_ms: i64,
+    until_ms: i64,
+    build: fn() -> Arena,
+    script: fn(&mut Arena),
+) -> Replay {
+    let mut arena = build();
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = 0_i64;
+    loop {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms == SCRIPT_AT_MS {
+            script(&mut arena);
+        }
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    let finals = arena
+        .units
+        .iter()
+        .map(|unit| {
+            let row = arena.reflex.unit(unit.id);
+            (
+                unit.id,
+                unit.pose.x_cm,
+                unit.pose.y_cm,
+                unit.pose.heading_mdeg,
+                unit.speed_cms,
+                row.map_or(ReflexState::Startup, |row| row.state),
+                row.and_then(|row| row.goal),
+            )
+        })
+        .collect();
+    Replay {
+        events,
+        hashes,
+        finals,
+    }
+}
+
+/// The detour of `a_wreck_in_the_causeway_is_learned_and_the_other_gap_is_taken`,
+/// as a function nothing but the cadence can vary.
+fn wreck_detour() -> Arena {
+    let band: Vec<(u16, u16, TerrainCell)> = (0..SIDE)
+        .filter(|y| *y != 8 && *y != 2)
+        .map(|y| (4_u16, y, wall()))
+        .collect();
+    let mut arena = arena_of(
+        vec![
+            tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Reflex),
+            tank(RED2, Team::Red, centre(4, 8), Vec::new(), Controller::Pilot),
+        ],
+        &band,
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    wreck_it(&mut arena, RED2);
+    arena
+}
+
+/// **The whole of `Withdraw`'s new life, in one scripted log**: a hurt machine
+/// breaks off, is cornered on the way out and stands and fights, loses the
+/// contact when the other tank pulls out at [`SCRIPT_AT_MS`], drives home and
+/// rallies twenty quiet seconds later.
+fn withdraw_and_rally() -> Arena {
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(8, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    hurt(&mut arena, RED);
+    arena
+}
+
+/// Nothing at all — the wreck detour writes its own story.
+fn no_script(_arena: &mut Arena) {}
+
+/// The blue tank pulls out to the far corner, off the red one's five-cell sight.
+fn blue_pulls_out(arena: &mut Arena) {
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(15, 15);
+    }
+}
+
+#[test]
+fn the_wreck_detour_is_one_event_list_and_one_hash_sequence_at_three_cadences() {
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| replay_of(cadence, 40_000, wreck_detour, no_script))
+        .collect();
+    let first = runs.first().expect("three replays");
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    assert!(
+        kinds.iter().any(|kind| kind.contains("blocked")),
+        "the replay never hit the wreck, so nothing was compared: {kinds:?}"
+    );
+    assert!(first.hashes.len() >= 100, "{} substeps", first.hashes.len());
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+}
+
+#[test]
+fn withdraw_stand_and_rally_are_one_event_list_and_one_hash_sequence_at_three_cadences() {
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| replay_of(cadence, 70_000, withdraw_and_rally, blue_pulls_out))
+        .collect();
+    let first = runs.first().expect("three replays");
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    for want in ["startup", "detected", "classified", "fired", "lost"] {
+        assert!(
+            kinds.iter().any(|kind| kind.contains(want)),
+            "the replay never journalled a {want}: {kinds:?}"
+        );
+    }
+    // The arc really happened: the hurt tank is out of `Withdraw` again, which
+    // only the rally can do.
+    assert!(
+        first
+            .finals
+            .iter()
+            .any(|(unit, _, _, _, _, state, _)| *unit == RED
+                && !matches!(state, ReflexState::Withdraw)),
+        "the machine never rallied, so the log proves only half of it: {:?}",
+        first.finals
+    );
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+}
+
+/// The cells one run of [`wreck_detour`] avoided, sorted, and the west-most
+/// place it reached.
+fn avoided_and_arrival(cadence_ms: i64) -> (Vec<(u16, u16)>, i64) {
+    let mut arena = wreck_detour();
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut seen: Vec<(u16, u16)> = Vec::new();
+    let mut west_most = i64::MAX;
+    while arena.now_ms < 40_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        for cell in avoided(&arena, RED) {
+            if !seen.contains(&cell) {
+                seen.push(cell);
+            }
+        }
+        west_most = west_most.min(arena.unit(RED).map_or(i64::MAX, |unit| unit.pose.x_cm));
+        wall += cadence_ms;
+    }
+    seen.sort_unstable();
+    (seen, west_most)
+}
+
+#[test]
+fn a_ragged_partition_reaches_the_same_place_with_the_same_avoided_cells() {
+    // **What is true of a ragged pulse, and what is not.** 370 ms is not a whole
+    // multiple of the 250 ms substep, so the substep boundaries fall elsewhere and
+    // every event timestamp moves with them: the event list and the hash sequence
+    // are NOT the same, and 16b cut Q.6 says why (an absolute substep lattice is
+    // the owner's open question 10), and the exact pose is not either (16b cut
+    // Q.6: position while accelerating or turning is first-order in the substep).
+    // What the model does promise is the OUTCOME — the tank learns the same cell,
+    // goes round the same wreck and gets through the same causeway.
+    let regular = avoided_and_arrival(500);
+    let ragged = avoided_and_arrival(370);
+    assert!(
+        !regular.0.is_empty(),
+        "nothing was avoided, so nothing was compared"
+    );
+    assert_eq!(
+        regular.0, ragged.0,
+        "the set of avoided cells moved with the partition"
+    );
+    assert!(
+        regular.1 < 4_000 && ragged.1 < 4_000,
+        "both runs are through the causeway: {} cm regular, {} cm ragged",
+        regular.1,
+        ragged.1
     );
 }

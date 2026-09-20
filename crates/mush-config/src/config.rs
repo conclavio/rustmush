@@ -82,6 +82,7 @@
 //! | `[tacsim.arena.reflex].weight_facet` | `40` | the utility weight on the facet a candidate presents |
 //! | `[tacsim.arena.reflex].weight_health` | `30` | the utility weight on the chooser's own health — the same addend for every candidate |
 //! | `[tacsim.arena.reflex].engage_band_permille` | `700` | the fraction of a weapon's reach `Engage` holds |
+//! | `[tacsim.arena.reflex].rally_ms` | `20000` | **16b cut Q.7** (doc 16 §6): arena milliseconds a withdrawn unit waits, with nothing hostile on its board, before it comes back into the fight — once |
 //! | `[tacsim.match].startup_ms` | `10000` | **16b cut G** (doc 16 §3.3): milliseconds `STARTUP` takes to bring a unit's power online |
 //! | `[tacsim.match].board_timeout_ms` | `120000` | milliseconds `Boarding` waits before unseated slots are dropped (doc 16 §3.8) |
 //! | `[tacsim.match].max_duration_ms` | `3600000` | the longest a match runs before it ends as a timeout |
@@ -992,6 +993,14 @@ pub struct TacsimReflexCfg {
     pub weight_health: u32,
     /// The fraction of a weapon's reach `Engage` holds, per mille.
     pub engage_band_permille: u32,
+    /// **How long a withdrawn unit waits with nothing hostile on its board before
+    /// it comes back into the fight** (16b cut Q.7), arena milliseconds.
+    ///
+    /// `Withdraw` used to be terminal — a hurt AI tank parked in its entry zone
+    /// and the match ran to `[tacsim.match].max_duration_ms`. It rallies once
+    /// now, and this is the lull that buys it. At or above `decide_ms`, or the
+    /// boot is refused.
+    pub rally_ms: u32,
 }
 
 impl Default for TacsimReflexCfg {
@@ -1006,6 +1015,8 @@ impl Default for TacsimReflexCfg {
             weight_facet: 40,
             weight_health: 30,
             engage_band_permille: 700,
+            // 16b cut Q.7: twenty seconds of quiet.
+            rally_ms: 20_000,
         }
     }
 }
