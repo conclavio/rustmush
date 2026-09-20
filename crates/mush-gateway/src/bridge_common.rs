@@ -1173,9 +1173,39 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         self.guard.is_blocked(addr)
     }
 
-    /// Record one failed auth attempt against an IP.
+    /// Record one failed **password** attempt against an IP — the counter
+    /// that arms the tempban. A refused web token is not one of these; see
+    /// [`GameBridge::token_refused`].
     pub fn auth_failed(&self, addr: IpAddr) {
         self.guard.record_failure(addr);
+    }
+
+    /// Record one refused **bearer token** against an IP, on the guard's
+    /// separate counter (`mush_config::ipguard`): it may arm a short
+    /// cool-off, and can never tempban.
+    pub fn token_refused(&self, addr: IpAddr) {
+        self.guard.record_token_failure(addr);
+    }
+
+    /// Whether the address is inside a refused-token cool-off.
+    #[must_use]
+    pub fn is_token_throttled(&self, addr: IpAddr) -> bool {
+        self.guard.is_token_throttled(addr)
+    }
+
+    /// How much of the address's tempban is left, for a transport that tells
+    /// a refused client when to come back. `None` when it is not tempbanned
+    /// (a siteban answers [`GameBridge::siteban_active`] instead).
+    #[must_use]
+    pub fn tempban_remaining(&self, addr: IpAddr) -> Option<Duration> {
+        self.guard.tempban_remaining(addr)
+    }
+
+    /// Whether a persisted siteban currently covers the address.
+    #[must_use]
+    pub fn siteban_active(&self, addr: IpAddr) -> bool {
+        self.guard
+            .siteban_active_at(addr, mush_config::unix_now_s())
     }
 
     /// The `QUIT` flow, serialized through the world task so a quitter's

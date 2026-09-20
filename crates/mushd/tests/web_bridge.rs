@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{Engine, GOD, Inbound, ObjId};
-use mush_net_web::{LoginErr, NewWebConn, ResumeErr, WebHooks};
+use mush_net_web::{AttachErr, LoginErr, NewWebConn, ResumeErr, TokenVerdict, WebHooks};
 use mush_proto::{
     ActionStatusId, Envelope, OutputEvent, ProjectedActionReceipt, ProjectedCommitToken, Query,
 };
@@ -203,11 +203,9 @@ async fn login_mints_a_sliding_hashed_token() {
         .await
         .unwrap();
 
-    let identity = rig
-        .bridge
-        .validate_token(&ok.token)
-        .await
-        .expect("valid token");
+    let TokenVerdict::Valid(identity) = rig.bridge.validate_token(&ok.token).await else {
+        panic!("valid token");
+    };
     assert_eq!(identity.account, "nick");
     assert_eq!(identity.characters[0].name, "Nick");
     let slid = rig
@@ -222,8 +220,12 @@ async fn login_mints_a_sliding_hashed_token() {
         slid.expires
     );
 
-    // Garbage tokens validate to None.
-    assert!(rig.bridge.validate_token("deadbeef").await.is_none());
+    // A garbage token is REFUSED — checked and dead, which is the one
+    // verdict the transport may answer with the fatal close.
+    assert_eq!(
+        rig.bridge.validate_token("deadbeef").await,
+        TokenVerdict::Refused
+    );
 }
 
 /// The bridge's hash must match the store's key derivation; recompute it
@@ -292,8 +294,11 @@ async fn logout_revokes_one_token_only() {
         .token;
 
     rig.bridge.logout(&t1).await;
-    assert!(rig.bridge.validate_token(&t1).await.is_none());
-    assert!(rig.bridge.validate_token(&t2).await.is_some());
+    assert_eq!(rig.bridge.validate_token(&t1).await, TokenVerdict::Refused);
+    assert!(matches!(
+        rig.bridge.validate_token(&t2).await,
+        TokenVerdict::Valid(_)
+    ));
     // Idempotent.
     rig.bridge.logout(&t1).await;
 }
@@ -371,19 +376,21 @@ async fn connect_rejects_bad_tokens_and_foreign_characters() {
     let (token, _key) = register(&rig, "nick", "hunter42", "Nick").await;
     let (_zoe_token, zoe_key) = register(&rig, "zoe", "hunter42", "Zoe").await;
 
+    // Both are genuine credential refusals — `Refused`, the one variant the
+    // transport may answer with the close that costs the client its token.
     let (conn, _rx) = web_conn(1_001, 1);
-    assert!(
+    assert!(matches!(
         rig.bridge
             .connect_character(conn, "not-a-token", zoe_key)
-            .await
-            .is_err()
-    );
+            .await,
+        Err(AttachErr::Refused(_))
+    ));
     let (conn, _rx) = web_conn(1_002, 1);
     assert!(
-        rig.bridge
-            .connect_character(conn, &token, zoe_key)
-            .await
-            .is_err(),
+        matches!(
+            rig.bridge.connect_character(conn, &token, zoe_key).await,
+            Err(AttachErr::Refused(_))
+        ),
         "nick's token must not attach zoe's character"
     );
     assert_eq!(rig.sessions.connection_count(), 0);
@@ -791,8 +798,14 @@ async fn newpassword_rehashes_and_revokes_web_sessions() {
     );
     expect_env(&mut nick_rx, "Your password has been changed by God.").await;
 
-    assert!(rig.bridge.validate_token(&token).await.is_none());
-    assert!(rig.bridge.validate_token(&token2).await.is_none());
+    assert_eq!(
+        rig.bridge.validate_token(&token).await,
+        TokenVerdict::Refused
+    );
+    assert_eq!(
+        rig.bridge.validate_token(&token2).await,
+        TokenVerdict::Refused
+    );
     assert!(matches!(
         rig.accounts.verify("nick", "hunter42").await,
         AuthOutcome::BadCredentials

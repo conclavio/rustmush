@@ -187,6 +187,32 @@ deploy line (`ssh … 'GATEWAY_RESTART=1 bash …/deploy/dev1-split/deploy.sh'`)
 connections drop once. Everything else stays a `reload`
 ([`dev1-split/README.md`](dev1-split/README.md) has the table).
 
+**What a full restart does to a web player.** Every SSH and web connection
+drops once, and every in-progress *session* — the attach, the scrollback ring,
+the resume point — is gone with the gateway's memory. Signing in is a different
+thing and survives: web tokens are store rows (`token:{hash}`, 7-day sliding
+TTL) in this instance's Redis, so an open tab reconnects on its own backoff and
+lands back in the game without a password. Players are asked to sign in again
+only when the **store** loses the token — `scripts/reset-instance.sh` (it
+`FLUSHDB`s), `@newpassword`, an explicit logout, or the TTL running out. Redis
+being *briefly unreachable* is not one of those: the gateway answers "cannot
+check right now" (HTTP 503 on the upgrade), which a tab waits out with its
+token intact, rather than "your session has ended", which would have made every
+open tab throw away a valid credential over a few seconds of store trouble.
+
+That combination is a trap worth knowing about on a box running a gateway
+older than 2026-09-20: a tab reconnecting with a token the store no longer
+holds was refused with an HTTP 401 that a browser cannot distinguish from a
+dropped network, so it retried, and five refusals inside the backoff's first
+fifteen seconds tempbanned the address — **out of SSH as well**, for fifteen
+minutes, with `ssh -p 6789 play@…` answering a password prompt that could
+never succeed. Since that date a refused token is answered with a WebSocket
+close the client understands (it drops the token and shows the login form),
+refused tokens are counted apart from passwords and can no longer ban
+anything, and a blocked address is told in words how long is left. If you meet
+the old behaviour on an un-updated box: wait fifteen minutes, or restart the
+gateway (the tempban is gateway memory and does not survive it).
+
 The deploy script is the redeploy because the config is rendered: it re-resolves
 the external IP, rewrites `instance.env`, **re-renders `mushd.toml`** from the
 shipped template and preflights it with both halves before it touches the unit,

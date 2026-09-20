@@ -7,6 +7,37 @@
 //! method takes an explicit `Instant` (the `*_now` wrappers stamp
 //! `Instant::now()`), so the window math is deterministic under test.
 //!
+//! ## Two failure counters, not one
+//!
+//! A wrong **password** is a guess: nothing but knowing the secret makes the
+//! next attempt likelier to work, so five of them in ten minutes buy a
+//! fifteen-minute tempban and that number is not negotiable.
+//!
+//! A refused **bearer token** is not a guess. Web tokens are 256-bit store
+//! records (`token:{hash}`, 7-day sliding TTL — see
+//! `mush_gateway::web_bridge`), so a browser tab presenting one that the
+//! server no longer knows is almost always a tab that outlived the record:
+//! the store was flushed and rebuilt (`scripts/reset-instance.sh`), the
+//! account's tokens were revoked, or the TTL simply ran out while the tab
+//! slept. The tab then reconnects on its own backoff, and on 2026-09-20 that
+//! is exactly what happened on dev1. The store had been flushed the day
+//! before, so it held no token at all; a browser still carried one from the
+//! old world; the refusal was a pre-upgrade HTTP 401, which a browser reports
+//! as a dropped network, so the tab never showed a sign-in form and kept
+//! trying. Five refused upgrades in about five minutes tempbanned the owner's
+//! own address out of SSH, and as each fifteen-minute ban lapsed the same tab
+//! re-armed it: five bans in seventy minutes, from one forgotten tab.
+//! Guessing a 256-bit token is not a threat model; locking a player's address
+//! out of the front door because their browser did what it was built to do is
+//! a real one.
+//!
+//! So refused tokens get [`IpGuard::record_token_failure_at`] — their own,
+//! much looser sliding window (**30 in 10 minutes → a 60-second cool-off**,
+//! [`IpGuard::is_token_throttled_at`]) that can *delay* an address and can
+//! never tempban it. It bounds the cost of token probing without ever
+//! touching [`IpGuard::is_blocked_at`], which stays the union of the
+//! password tempban and the persisted sitebans.
+//!
 //! Failure and connection accounting is keyed on the **network**, not the
 //! address: a client with a routed /64 would otherwise buy a fresh failure
 //! budget and a fresh connection cap for every one of 2^64 addresses. The
@@ -52,6 +83,15 @@ pub struct IpGuardConfig {
     pub window: Duration,
     /// How long a triggered ban lasts.
     pub ban: Duration,
+    /// Refused **bearer tokens** within [`IpGuardConfig::token_window`] that
+    /// trigger a cool-off. Deliberately far above `max_failures`: see the
+    /// module docs — a refused token is a stale client, not a guess.
+    pub max_token_failures: u32,
+    /// Sliding window over which refused tokens are counted.
+    pub token_window: Duration,
+    /// How long a triggered token cool-off lasts. Short on purpose: it is a
+    /// brake on probing, not a punishment, and it never bans anything.
+    pub token_cooloff: Duration,
     /// Maximum concurrent connections per IP.
     pub max_conns: u32,
     /// Prefix length an IPv4 address is folded to before it is counted.
@@ -69,6 +109,9 @@ impl Default for IpGuardConfig {
             max_failures: 5,
             window: Duration::from_secs(600),
             ban: Duration::from_secs(900),
+            max_token_failures: 30,
+            token_window: Duration::from_secs(600),
+            token_cooloff: Duration::from_secs(60),
             max_conns: 8,
             v4_prefix: 32,
             v6_prefix: 64,
@@ -96,13 +139,24 @@ struct IpEntry {
     failures: Vec<Instant>,
     /// Active tempban, if any.
     banned_until: Option<Instant>,
+    /// Instants of recent refused bearer tokens (pruned to the token
+    /// window). Kept apart from `failures` so a stale browser tab can never
+    /// contribute to a tempban.
+    token_failures: Vec<Instant>,
+    /// Active token cool-off, if any. Never consulted by
+    /// [`IpGuard::is_blocked_at`].
+    token_cooloff_until: Option<Instant>,
     /// Live connections from this IP.
     conns: u32,
 }
 
 impl IpEntry {
     fn is_idle(&self) -> bool {
-        self.failures.is_empty() && self.banned_until.is_none() && self.conns == 0
+        self.failures.is_empty()
+            && self.banned_until.is_none()
+            && self.token_failures.is_empty()
+            && self.token_cooloff_until.is_none()
+            && self.conns == 0
     }
 }
 
@@ -184,6 +238,87 @@ impl IpGuard {
     #[must_use]
     pub fn is_blocked(&self, ip: IpAddr) -> bool {
         self.is_blocked_at(ip, Instant::now())
+    }
+
+    /// How much of `ip`'s **tempban** is left at `now`, or `None` when it is
+    /// not tempbanned. Sitebans are not counted here: they carry a wall-clock
+    /// expiry (or none at all) and answer [`IpGuard::siteban_active_at`].
+    ///
+    /// This exists so a transport can tell a refused client *when* to come
+    /// back instead of only *no* — see `mush_net_ssh`'s authentication
+    /// banner. Unlike [`IpGuard::is_blocked_at`] it does not clear a lapsed
+    /// ban (it takes `&self` through a read guard); the next `is_blocked_at`
+    /// does that.
+    #[must_use]
+    pub fn tempban_remaining_at(&self, ip: IpAddr, now: Instant) -> Option<Duration> {
+        let e = self.map.get(&self.key(ip))?;
+        let until = e.banned_until?;
+        (until > now).then(|| until.saturating_duration_since(now))
+    }
+
+    /// [`IpGuard::tempban_remaining_at`] with `Instant::now()`.
+    #[must_use]
+    pub fn tempban_remaining(&self, ip: IpAddr) -> Option<Duration> {
+        self.tempban_remaining_at(ip, Instant::now())
+    }
+
+    /// Record one **refused bearer token** against `ip`'s network. Returns
+    /// `true` when this refusal crossed the threshold and started a cool-off.
+    ///
+    /// This is the whole of the separation described in the module docs: it
+    /// writes only `token_failures`/`token_cooloff_until`, so no number of
+    /// refused tokens can ever produce a tempban or affect
+    /// [`IpGuard::is_blocked_at`].
+    pub fn record_token_failure_at(&self, ip: IpAddr, now: Instant) -> bool {
+        let net = self.key(ip);
+        let mut e = self.map.entry(net).or_default();
+        let window = self.cfg.token_window;
+        e.token_failures
+            .retain(|&t| now.saturating_duration_since(t) < window);
+        e.token_failures.push(now);
+        if e.token_failures.len() >= self.cfg.max_token_failures as usize {
+            e.token_failures.clear();
+            e.token_cooloff_until = Some(now + self.cfg.token_cooloff);
+            tracing::info!(
+                %ip,
+                %net,
+                cooloff_s = self.cfg.token_cooloff.as_secs(),
+                "refused tokens exceeded; token cool-off (no tempban)"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// [`IpGuard::record_token_failure_at`] with `Instant::now()`.
+    pub fn record_token_failure(&self, ip: IpAddr) -> bool {
+        self.record_token_failure_at(ip, Instant::now())
+    }
+
+    /// Whether `ip` is inside a token cool-off at `now` — i.e. whether a
+    /// transport should refuse to even look up the next token it presents.
+    /// Expired cool-offs are cleared as a side effect. Never a ban: a client
+    /// in cool-off is still admitted by [`IpGuard::is_blocked_at`], and SSH
+    /// never consults this at all.
+    #[must_use]
+    pub fn is_token_throttled_at(&self, ip: IpAddr, now: Instant) -> bool {
+        let Some(mut e) = self.map.get_mut(&self.key(ip)) else {
+            return false;
+        };
+        if let Some(until) = e.token_cooloff_until {
+            if now < until {
+                return true;
+            }
+            e.token_cooloff_until = None;
+        }
+        false
+    }
+
+    /// [`IpGuard::is_token_throttled_at`] with `Instant::now()`.
+    #[must_use]
+    pub fn is_token_throttled(&self, ip: IpAddr) -> bool {
+        self.is_token_throttled_at(ip, Instant::now())
     }
 
     /// Record one auth failure against `ip`'s network. Returns `true` when
@@ -335,6 +470,85 @@ mod tests {
         assert!(!g.is_blocked_at(ip(1), banned_at + Duration::from_secs(901)));
         // Other IPs unaffected.
         assert!(!g.is_blocked_at(ip(2), t0));
+    }
+
+    #[test]
+    fn refused_tokens_cool_off_and_never_tempban() {
+        // The 2026-09-20 incident in miniature: one client presenting a
+        // token the server no longer knows, over and over. Six times the
+        // password budget goes by without a tempban, and the address stays
+        // admissible to SSH throughout.
+        let g = IpGuard::new();
+        let t0 = Instant::now();
+        for i in 0..29u64 {
+            assert!(!g.record_token_failure_at(ip(1), t0 + Duration::from_secs(i)));
+            assert!(!g.is_token_throttled_at(ip(1), t0 + Duration::from_secs(i)));
+            assert!(!g.is_blocked_at(ip(1), t0 + Duration::from_secs(i)));
+        }
+        // The thirtieth inside ten minutes arms the cool-off — and only that.
+        assert!(g.record_token_failure_at(ip(1), t0 + Duration::from_secs(29)));
+        assert!(g.is_token_throttled_at(ip(1), t0 + Duration::from_secs(30)));
+        assert!(
+            !g.is_blocked_at(ip(1), t0 + Duration::from_secs(30)),
+            "a token cool-off must never close the SSH front door"
+        );
+        assert_eq!(
+            g.tempban_remaining_at(ip(1), t0 + Duration::from_secs(30)),
+            None
+        );
+        // 60 seconds later it lapses, and clears itself on the way out.
+        assert!(!g.is_token_throttled_at(ip(1), t0 + Duration::from_secs(91)));
+        // The two counters are independent: a password budget is untouched.
+        for i in 0..4u64 {
+            assert!(!g.record_failure_at(ip(1), t0 + Duration::from_secs(100 + i)));
+        }
+        assert!(g.record_failure_at(ip(1), t0 + Duration::from_secs(104)));
+        assert!(g.is_blocked_at(ip(1), t0 + Duration::from_secs(105)));
+    }
+
+    #[test]
+    fn old_token_failures_age_out_and_entries_still_drop() {
+        let g = IpGuard::new();
+        let t0 = Instant::now();
+        for _ in 0..29 {
+            g.record_token_failure_at(ip(7), t0);
+        }
+        // The thirtieth arrives after the window: the first 29 have aged out.
+        assert!(!g.record_token_failure_at(ip(7), t0 + Duration::from_secs(601)));
+        assert!(!g.is_token_throttled_at(ip(7), t0 + Duration::from_secs(601)));
+        // An entry holding only token state is still idle-collected once the
+        // cool-off is cleared and nothing else is tracked.
+        assert_eq!(g.tracked(), 1);
+        g.conn_opened(ip(7));
+        g.conn_closed(ip(7));
+        assert_eq!(g.tracked(), 1, "a live token window keeps the entry");
+    }
+
+    #[test]
+    fn tempban_remaining_counts_down_and_ignores_sitebans() {
+        let g = IpGuard::new();
+        let t0 = Instant::now();
+        assert_eq!(g.tempban_remaining_at(ip(5), t0), None);
+        for i in 0..5u64 {
+            g.record_failure_at(ip(5), t0 + Duration::from_secs(i));
+        }
+        let banned_at = t0 + Duration::from_secs(4);
+        assert_eq!(
+            g.tempban_remaining_at(ip(5), banned_at),
+            Some(Duration::from_secs(900))
+        );
+        assert_eq!(
+            g.tempban_remaining_at(ip(5), banned_at + Duration::from_secs(300)),
+            Some(Duration::from_secs(600))
+        );
+        assert_eq!(
+            g.tempban_remaining_at(ip(5), banned_at + Duration::from_secs(900)),
+            None
+        );
+        // A siteban is blocking but has no tempban countdown to report.
+        g.set_siteban(ip(6), None);
+        assert!(g.is_blocked(ip(6)));
+        assert_eq!(g.tempban_remaining_at(ip(6), t0), None);
     }
 
     #[test]

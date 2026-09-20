@@ -789,11 +789,16 @@ async fn logout_kills_the_live_ws() {
         "Disconnect(logged out) before the close: {seen:?}"
     );
 
-    // And the token is gone: reconnecting with it is refused pre-upgrade.
-    match connect_ws(&rig, &token, key, "").await {
-        Err(WsError::Http(resp)) => assert_eq!(resp.status(), 401),
-        other => panic!("expected HTTP 401, got {other:?}"),
-    }
+    // And the token is gone. The refusal completes the upgrade and closes
+    // 4401: a browser cannot see the status of a failed upgrade, so a
+    // pre-upgrade 401 looked to the SPA exactly like a dropped network and it
+    // retried the dead token forever.
+    let mut dead = connect_ws(&rig, &token, key, "")
+        .await
+        .expect("the refusal is a close frame, not an HTTP status");
+    let (code, reason, _) = recv_close(&mut dead).await;
+    assert_eq!(code, 4401);
+    assert_eq!(reason, mush_net_web::SESSION_ENDED);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -856,12 +861,16 @@ async fn newpassword_boots_the_accounts_web_connections() {
         "Disconnect carries the reason: {texts:?}"
     );
 
-    // Both tokens are dead; the old password too; the new one works.
+    // Both tokens are dead; the old password too; the new one works. A dead
+    // token is refused with close 4401, which the SPA acts on by dropping the
+    // token (a pre-upgrade 401 reaches a browser as an opaque 1006).
     for t in [&token, &token2] {
-        match connect_ws(&rig, t, key, "").await {
-            Err(WsError::Http(resp)) => assert_eq!(resp.status(), 401),
-            other => panic!("expected HTTP 401, got {other:?}"),
-        }
+        let mut dead = connect_ws(&rig, t, key, "")
+            .await
+            .expect("the refusal is a close frame, not an HTTP status");
+        let (code, reason, _) = recv_close(&mut dead).await;
+        assert_eq!(code, 4401);
+        assert_eq!(reason, mush_net_web::SESSION_ENDED);
     }
     let old = post_json(
         &rig.url("/api/auth/login"),

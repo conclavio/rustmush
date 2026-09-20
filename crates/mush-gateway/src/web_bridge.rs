@@ -54,8 +54,8 @@ use futures::future::BoxFuture;
 use mush_core::{DisconnectKind, ObjId};
 use mush_ipc::{ConnectionAdmission, InputSend, ToServer, WireInbound};
 use mush_net_web::{
-    CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,
-    TokenIdentity, WebHooks,
+    AttachErr, CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk,
+    SessionStart, TokenIdentity, TokenVerdict, WebHooks,
 };
 use mush_proto::{
     ClientCaps, ClientKind, ColorDepth, OutputEvent, Query, RespondChoice, RichText, SmolStr,
@@ -68,13 +68,25 @@ use mush_config::ipguard::IpGuard;
 use mush_config::unix_now_s;
 
 use crate::accounts::{AuthBackend, CreateErr};
-use crate::bridge_common::{AuthResult, GameBridge};
+use crate::bridge_common::{AuthResult, ConnectErr, GameBridge};
 use crate::delivery::{char_key, send_event_to_conn};
 use crate::poison::locked;
 
 /// Web session lifetime: 7 days, sliding (each successful validation
 /// pushes expiry out to `now + TOKEN_TTL_S`).
 pub const TOKEN_TTL_S: i64 = 7 * 24 * 60 * 60;
+
+/// Why [`WebBridge::authorize_character`] could not hand back a character:
+/// the same split [`TokenVerdict`] draws, carried one level up so each
+/// caller can map it onto its own transport vocabulary
+/// ([`AttachErr`] / [`ResumeErr`]) without re-folding the two together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthzFail {
+    /// Checked: the token is dead, or names no such character.
+    Refused,
+    /// Not checked: the store could not answer.
+    Unavailable,
+}
 
 /// The production [`WebHooks`] implementation: the shared [`GameBridge`]
 /// core plus the token store and the panel manifest.
@@ -183,16 +195,23 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
     }
 
     /// Shared token validation: fetch by hash, slide the TTL, resolve the
-    /// account's characters. `None` = unknown, expired, or store failure
-    /// (fail closed).
-    async fn validate(&self, token: &str) -> Option<TokenIdentity> {
+    /// account's characters.
+    ///
+    /// Fails closed on a store error — but as
+    /// [`TokenVerdict::Unavailable`], not as a refusal. The two used to
+    /// collapse into one `None`, which the transport could only report as
+    /// "your session has ended": one stalled instance Redis would then have
+    /// deleted the stored token of every open tab at once, each holding a
+    /// perfectly valid 7-day credential that was never revoked. The store
+    /// not answering is the server's fault and the client's cue to retry.
+    async fn validate(&self, token: &str) -> TokenVerdict {
         let hash = token_hash(token);
         let rec = match self.store.token_get(&hash).await {
             Ok(Some(rec)) => rec,
-            Ok(None) => return None,
+            Ok(None) => return TokenVerdict::Refused,
             Err(e) => {
-                tracing::error!(error = %e, "token lookup failed; failing closed");
-                return None;
+                tracing::error!(error = %e, "token lookup failed; failing closed (unavailable)");
+                return TokenVerdict::Unavailable;
             }
         };
         // Sliding TTL: push expiry out on every successful validation. A
@@ -203,7 +222,7 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
             .await
         {
             Ok(true) => {}
-            Ok(false) => return None,
+            Ok(false) => return TokenVerdict::Refused,
             Err(e) => {
                 // The token itself validated; a failed refresh only means
                 // the TTL did not slide this time. Not fatal.
@@ -221,22 +240,34 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
                 name: c.name,
             })
             .collect();
-        Some(TokenIdentity {
+        TokenVerdict::Valid(TokenIdentity {
             account: rec.account,
             characters,
         })
     }
 
     /// Validate a token AND that `character` is on its account. Returns the
-    /// account name + character name.
-    async fn authorize_character(&self, token: &str, character: u64) -> Option<(String, String)> {
-        let identity = self.validate(token).await?;
+    /// account name + character name, or which kind of failure it was —
+    /// both callers must keep "this credential is dead" apart from "the
+    /// store could not say", because only the first may cost the client its
+    /// token.
+    async fn authorize_character(
+        &self,
+        token: &str,
+        character: u64,
+    ) -> Result<(String, String), AuthzFail> {
+        let identity = match self.validate(token).await {
+            TokenVerdict::Valid(identity) => identity,
+            TokenVerdict::Refused => return Err(AuthzFail::Refused),
+            TokenVerdict::Unavailable => return Err(AuthzFail::Unavailable),
+        };
         let name = identity
             .characters
             .iter()
             .find(|c| c.key == character)
-            .map(|c| c.name.clone())?;
-        Some((identity.account, name))
+            .map(|c| c.name.clone())
+            .ok_or(AuthzFail::Refused)?;
+        Ok((identity.account, name))
     }
 
     /// The default capability set for a fresh web connection: structured
@@ -424,7 +455,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
         })
     }
 
-    fn validate_token<'a>(&'a self, token: &'a str) -> BoxFuture<'a, Option<TokenIdentity>> {
+    fn validate_token<'a>(&'a self, token: &'a str) -> BoxFuture<'a, TokenVerdict> {
         Box::pin(self.validate(token))
     }
 
@@ -433,14 +464,23 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
         conn: NewWebConn,
         token: &'a str,
         character: u64,
-    ) -> BoxFuture<'a, Result<SessionStart, String>> {
+    ) -> BoxFuture<'a, Result<SessionStart, AttachErr>> {
         Box::pin(async move {
-            let Some((account, char_name)) = self.authorize_character(token, character).await
-            else {
-                return Err("Invalid session; please log in again.".to_string());
+            let (account, char_name) = match self.authorize_character(token, character).await {
+                Ok(pair) => pair,
+                Err(AuthzFail::Refused) => {
+                    return Err(AttachErr::Refused(
+                        "Invalid session; please log in again.".to_string(),
+                    ));
+                }
+                // The store could not say whether the token is good. Not the
+                // player's credential's fault, so not the fatal close.
+                Err(AuthzFail::Unavailable) => return Err(AttachErr::Unavailable),
             };
             let Ok(actor) = u32::try_from(character).map(ObjId) else {
-                return Err("That is not your character.".to_string());
+                return Err(AttachErr::Refused(
+                    "That is not your character.".to_string(),
+                ));
             };
             let handle = ConnectionHandle::new_structured(
                 ConnId(conn.id),
@@ -463,7 +503,17 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                 Ok(entered) => entered,
                 Err(e) => {
                     locked(&self.conn_tokens, "conn_tokens").remove(&conn_id);
-                    return Err(format!("{e}."));
+                    // `enter_game` refuses for two transient reasons — full
+                    // lifecycle custody, and the server half being gone
+                    // mid-setup (the ordinary split `reload`). Neither says
+                    // anything about the token, so neither may reach the
+                    // client as the close that deletes it; the resume path
+                    // has always mapped the same two to 1013/1012.
+                    return Err(match e {
+                        ConnectErr::Busy => AttachErr::Busy,
+                        ConnectErr::WorldGone => AttachErr::Unavailable,
+                        ConnectErr::NotYourCharacter => AttachErr::Refused(format!("{e}.")),
+                    });
                 }
             };
             let _ = self.core.sessions.redeliver_unacknowledged(ConnId(conn_id));
@@ -481,9 +531,12 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
         last_seq: u64,
     ) -> BoxFuture<'a, Result<ResumeOk, ResumeErr>> {
         Box::pin(async move {
-            let Some((account, _char_name)) = self.authorize_character(token, character).await
-            else {
-                return Err(ResumeErr::BadSession);
+            let account = match self.authorize_character(token, character).await {
+                Ok((account, _char_name)) => account,
+                Err(AuthzFail::Refused) => return Err(ResumeErr::BadSession),
+                // Same rule as the fresh attach: a store that could not
+                // answer is a reconnect, not an expired session.
+                Err(AuthzFail::Unavailable) => return Err(ResumeErr::Unavailable),
             };
             let Ok(actor) = u32::try_from(character).map(ObjId) else {
                 return Err(ResumeErr::BadSession);
@@ -776,6 +829,18 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
         self.core.auth_failed(addr);
     }
 
+    // A refused `/ws` token rides the guard's OWN counter, never the one
+    // that tempbans: a 256-bit token record is not guessable, so a refused
+    // one is a tab that outlived the record, and counting it as a credential
+    // failure is what locked an operator out of SSH on 2026-09-20.
+    fn token_refused(&self, addr: IpAddr) {
+        self.core.token_refused(addr);
+    }
+
+    fn is_token_throttled(&self, addr: IpAddr) -> bool {
+        self.core.is_token_throttled(addr)
+    }
+
     // Per-IP concurrent-connection cap (HIGH finding): the same `IpGuard`
     // counter the SSH bridge already claims/releases via
     // `connection_opened`/`connection_closed` — reused, not duplicated, so
@@ -929,6 +994,153 @@ mod tests {
 
         fn request(&self, _req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
             Box::pin(async { None })
+        }
+    }
+
+    /// A link that answers admission however the test says and never gets
+    /// as far as carrying a message: the refusals under test all happen
+    /// before or at admission.
+    struct StubLink {
+        admission: ConnectionAdmission,
+    }
+
+    impl GatewayLink for StubLink {
+        fn try_reserve_connection(&self, _conn: u64, _actor: ObjId) -> ConnectionAdmission {
+            self.admission
+        }
+
+        fn cancel_connection_reservation(&self, _conn: u64) {}
+
+        fn to_server(&self, _msg: ToServer) -> BoxFuture<'_, bool> {
+            Box::pin(async { false })
+        }
+
+        fn request(&self, _req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
+            Box::pin(async { None })
+        }
+    }
+
+    async fn stub_bridge(
+        store: Arc<dyn ObjectStore>,
+        admission: ConnectionAdmission,
+    ) -> WebBridge<ResumeAuth> {
+        WebBridge::with_link(
+            Arc::new(ResumeAuth { actor: ObjId(7) }),
+            Arc::new(SessionManager::default()),
+            Arc::new(StubLink { admission }),
+            Arc::new(IpGuard::new()),
+            store,
+            Vec::new(),
+        )
+    }
+
+    /// The store being unable to answer is not evidence against the token.
+    /// The transport's only way to say "refused" is the close that makes the
+    /// SPA DELETE its stored token, so folding a store outage into a refusal
+    /// would have signed every open tab out — each holding a valid,
+    /// unrevoked 7-day credential — the moment this instance's Redis
+    /// stalled during a deploy. Fail closed, yes; fail *fatal*, no.
+    #[tokio::test]
+    async fn a_store_that_cannot_answer_is_unavailable_not_refused() {
+        let raw = InMemoryStore::new();
+        let token = "a-perfectly-good-token";
+        let now = unix_now_s();
+        raw.token_put(
+            token_hash(token),
+            TokenRecord {
+                account: "acct".to_string(),
+                created: now,
+                expires: now + TOKEN_TTL_S,
+            },
+        )
+        .await
+        .unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(raw);
+        let bridge = stub_bridge(Arc::clone(&store), ConnectionAdmission::Reserved).await;
+
+        // Baseline: while the store answers, the same token is Valid and a
+        // token it has never heard of is Refused.
+        assert!(matches!(
+            bridge.validate_token(token).await,
+            TokenVerdict::Valid(_)
+        ));
+        assert_eq!(
+            bridge.validate_token("never-issued").await,
+            TokenVerdict::Refused
+        );
+
+        // Now the store cannot answer at all (Redis restarting, pool
+        // reconnecting). The SAME good token must not be called dead.
+        store.close().await.unwrap();
+        assert_eq!(
+            bridge.validate_token(token).await,
+            TokenVerdict::Unavailable,
+            "a store outage says nothing about the credential"
+        );
+        let (tx, _rx) = mpsc::channel::<Arc<Envelope>>(4);
+        assert_eq!(
+            bridge
+                .connect_character(
+                    NewWebConn {
+                        id: 1,
+                        addr: "127.0.0.1".parse().unwrap(),
+                        tx,
+                    },
+                    token,
+                    7,
+                )
+                .await,
+            Err(AttachErr::Unavailable),
+            "and the attach refusal must be the retryable one"
+        );
+    }
+
+    /// The other half of the same rule: a game half that is full or gone is
+    /// a retry, not a dead session. An ordinary split `reload` restarts
+    /// `mush-server` under a surviving gateway — a web tab reconnecting
+    /// inside that window must not be logged out by it.
+    #[tokio::test]
+    async fn a_busy_or_absent_world_is_never_a_credential_refusal() {
+        for (admission, expected) in [
+            (ConnectionAdmission::Busy, AttachErr::Busy),
+            (ConnectionAdmission::Gone, AttachErr::Unavailable),
+        ] {
+            let raw = InMemoryStore::new();
+            let token = "live-token";
+            let now = unix_now_s();
+            raw.token_put(
+                token_hash(token),
+                TokenRecord {
+                    account: "acct".to_string(),
+                    created: now,
+                    expires: now + TOKEN_TTL_S,
+                },
+            )
+            .await
+            .unwrap();
+            let bridge = stub_bridge(Arc::new(raw), admission).await;
+            let (tx, _rx) = mpsc::channel::<Arc<Envelope>>(4);
+            let err = bridge
+                .connect_character(
+                    NewWebConn {
+                        id: 2,
+                        addr: "127.0.0.1".parse().unwrap(),
+                        tx,
+                    },
+                    token,
+                    7,
+                )
+                .await
+                .expect_err("admission refuses");
+            assert_eq!(err, expected, "{admission:?} must stay retryable");
+            assert!(
+                !matches!(err, AttachErr::Refused(_)),
+                "only a checked-and-dead credential may take the fatal close"
+            );
+            assert!(
+                bridge.conn_tokens.lock().unwrap().is_empty(),
+                "a refused attach leaves no tracked connection behind"
+            );
         }
     }
 

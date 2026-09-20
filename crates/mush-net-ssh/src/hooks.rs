@@ -13,6 +13,7 @@
 
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_proto::{ClientCaps, OutputEvent, RespondChoice};
@@ -41,6 +42,20 @@ pub enum AuthResult {
     BadCreds,
     /// The account is banned; the connection should be refused.
     Banned,
+}
+
+/// Why an address is being refused, so the transport can say so in words
+/// instead of leaving an OpenSSH client to guess at a password prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockReason {
+    /// A staff-set, persisted siteban. No countdown is promised: it may be
+    /// permanent, and the expiry is not the player's business.
+    Siteban,
+    /// The auth-failure tempban, with what is left of it.
+    TooManyFailures {
+        /// Time remaining on the ban.
+        remaining: Duration,
+    },
 }
 
 /// Why account creation was refused.
@@ -168,6 +183,18 @@ pub trait SshHooks: Send + Sync {
     /// tempban armed mid-connection also stops an already-open welcome
     /// screen from guessing further.
     fn is_ip_blocked(&self, addr: IpAddr) -> bool;
+
+    /// Why the address is blocked, when it is — the refusal
+    /// [`is_ip_blocked`](Self::is_ip_blocked) reports, in enough detail to
+    /// tell the client about it. The transport sends it as an SSH
+    /// authentication banner (the one thing an OpenSSH client displays
+    /// before it gives up) and reuses it on the welcome screen.
+    ///
+    /// Answering `None` for a blocked address is safe: the refusal is
+    /// unaffected, the client is simply told nothing. Default: `None`.
+    fn block_reason(&self, _addr: IpAddr) -> Option<BlockReason> {
+        None
+    }
 
     /// Count one failed credential check against the address.
     fn auth_failed(&self, addr: IpAddr);

@@ -194,6 +194,19 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
     pub fn auth_failed(&self, addr: IpAddr) {
         self.core.auth_failed(addr);
     }
+
+    /// Why the address is refused, so the transport can put it in the
+    /// authentication banner. The siteban is checked first: it is the
+    /// stronger fact, and it carries no countdown to promise.
+    #[must_use]
+    pub fn block_reason(&self, addr: IpAddr) -> Option<mush_net_ssh::BlockReason> {
+        if self.core.siteban_active(addr) {
+            return Some(mush_net_ssh::BlockReason::Siteban);
+        }
+        self.core
+            .tempban_remaining(addr)
+            .map(|remaining| mush_net_ssh::BlockReason::TooManyFailures { remaining })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +394,10 @@ mod net {
 
         fn auth_failed(&self, addr: IpAddr) {
             self.core.auth_failed(addr);
+        }
+
+        fn block_reason(&self, addr: IpAddr) -> Option<net_ssh::BlockReason> {
+            SshBridge::block_reason(self, addr)
         }
 
         fn connection_opened(&self, addr: IpAddr) -> bool {

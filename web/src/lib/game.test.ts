@@ -1382,3 +1382,88 @@ describe("the cockpit feeds", () => {
     }
   });
 });
+
+// The 2026-09-20 incident's client half. A gateway restart leaves an open tab
+// holding a token the server no longer knows; the server now refuses it with
+// close 4401 (`mush-net-web/src/ws.rs`), and the tab must believe it. Retrying
+// a dead token is what fed the address to `IpGuard` five times in fifteen
+// seconds and locked the owner out of SSH.
+describe("a refused session token", () => {
+  it("is dropped, ends the reconnect loop, and returns to login with one line", () => {
+    const store = memoryStorage({
+      "rustmush.token": "tok",
+      "rustmush.account": "nick",
+      "rustmush.chars": JSON.stringify([{ key: 7, name: "Atlas" }]),
+    });
+    vi.stubGlobal("localStorage", store);
+    const app = makeApp();
+    app.enterGame(7);
+    const ws = openHello();
+    expect(app.screen).toBe("game");
+
+    ws.drop(4401); // the server: "your session has ended"
+
+    expect(app.screen).toBe("login");
+    expect(app.loginNotice).toBe("Your session expired — please sign in again.");
+    // The credential is GONE, not merely unused: a reload must not resurrect
+    // the reconnect loop the close just stopped.
+    expect((store as { getItem(k: string): string | null }).getItem("rustmush.token")).toBeNull();
+    expect((store as { getItem(k: string): string | null }).getItem("rustmush.chars")).toBeNull();
+
+    // And nothing reconnects, however long we wait.
+    const sockets = FakeSocket.instances.length;
+    vi.advanceTimersByTime(300_000);
+    expect(FakeSocket.instances).toHaveLength(sockets);
+  });
+
+  it("a network drop is NOT a refusal: the token is kept and the backoff runs", () => {
+    const store = memoryStorage({
+      "rustmush.token": "tok",
+      "rustmush.account": "nick",
+      "rustmush.chars": JSON.stringify([{ key: 7, name: "Atlas" }]),
+    });
+    vi.stubGlobal("localStorage", store);
+    const app = makeApp();
+    app.enterGame(7);
+    const ws = openHello();
+
+    ws.drop(); // 1006: the blip a browser reports for anything that is not a close frame
+
+    expect(app.screen).toBe("game");
+    expect(app.loginNotice).toBeNull();
+    expect((store as { getItem(k: string): string | null }).getItem("rustmush.token")).toBe("tok");
+    // The retry carries the SAME token, in the same subprotocol slot.
+    vi.advanceTimersByTime(500);
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(lastSocket().protocols).toEqual(["rustmush.v1.tok"]);
+  });
+
+  // The server closes 1012 when the game half is restarting and 1013 when
+  // admission is full — an ordinary `reload`, or a reconnect landing under
+  // load. Neither says anything about the credential, so neither may take
+  // the 4401 branch: widening that branch would sign every web player out on
+  // a routine deploy.
+  it.each([
+    [1012, "the game half is restarting"],
+    [1013, "admission is full"],
+  ])("close %i (%s) keeps the token and retries", (code) => {
+    const store = memoryStorage({
+      "rustmush.token": "tok",
+      "rustmush.account": "nick",
+      "rustmush.chars": JSON.stringify([{ key: 7, name: "Atlas" }]),
+    });
+    vi.stubGlobal("localStorage", store);
+    const app = makeApp();
+    app.enterGame(7);
+    const ws = openHello();
+
+    ws.drop(code);
+
+    expect(app.screen).toBe("game");
+    expect(app.loginNotice).toBeNull();
+    expect((store as { getItem(k: string): string | null }).getItem("rustmush.token")).toBe("tok");
+    vi.advanceTimersByTime(500);
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(lastSocket().protocols).toEqual(["rustmush.v1.tok"]);
+  });
+});

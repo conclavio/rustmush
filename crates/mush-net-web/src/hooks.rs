@@ -93,6 +93,50 @@ pub struct TokenIdentity {
     pub characters: Vec<CharSummary>,
 }
 
+/// What a token lookup concluded — three outcomes, not two.
+///
+/// Folding "I checked, and this credential is dead" together with "I could
+/// not check" is a defect, not a simplification: the transport's only way to
+/// say the first is close 4401, which the SPA answers by **deleting the
+/// stored token**. Report the second as `Unavailable` and a store outage
+/// costs a retry instead of signing every web player out of a token that was
+/// never revoked.
+///
+/// `Unavailable` is still **fail closed**: the connection is refused. Only
+/// the explanation differs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TokenVerdict {
+    /// The token is live; here is what it unlocks. The TTL has been slid.
+    Valid(TokenIdentity),
+    /// Checked and refused: unknown, expired, or revoked. The credential
+    /// will never work again, so the client must drop it and sign in.
+    Refused,
+    /// Not checked — the token store could not answer (down, restarting,
+    /// reconnecting). Says **nothing** about the token: the client must keep
+    /// it and retry.
+    Unavailable,
+}
+
+/// Why a fresh attach ([`WebHooks::connect_character`]) was refused.
+///
+/// Mirrors [`ResumeErr`]'s split, for the same reason: only `Refused` is
+/// about the credential, and only `Refused` may reach the client as the
+/// fatal close that costs it its token. An overloaded or restarting game is
+/// a retry, exactly as it is on the resume path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttachErr {
+    /// The token/character pair does not name a character this connection
+    /// may play, and retrying cannot change that. Carries the
+    /// player-readable sentence the close frame quotes.
+    Refused(String),
+    /// The game cannot accept another connection right now (bounded
+    /// lifecycle custody is full). Transient; the client keeps its token.
+    Busy,
+    /// The game boundary disappeared during setup — a server restart race,
+    /// or a store the gateway could not reach. Transient.
+    Unavailable,
+}
+
 /// Everything the binary needs to register a freshly upgraded WebSocket's
 /// transport: it wraps these fields in a structured-sink
 /// `mush_session::ConnectionHandle` and attaches it. The transport task
@@ -179,19 +223,22 @@ pub trait WebHooks: Send + Sync {
     /// are a no-op.
     fn logout<'a>(&'a self, token: &'a str) -> BoxFuture<'a, ()>;
 
-    /// Resolve a token to its account, refreshing the sliding TTL. `None`
-    /// means unknown or expired.
-    fn validate_token<'a>(&'a self, token: &'a str) -> BoxFuture<'a, Option<TokenIdentity>>;
+    /// Resolve a token to its account, refreshing the sliding TTL. The
+    /// implementor must distinguish a refused credential from a store that
+    /// could not answer — see [`TokenVerdict`]; the transport turns the
+    /// first into a close the client answers by discarding its token.
+    fn validate_token<'a>(&'a self, token: &'a str) -> BoxFuture<'a, TokenVerdict>;
 
     /// Attach `conn` as playing `character` under the account `token`
     /// resolves to. On `Ok` the world owns the character's output until the
-    /// connection ends; an `Err` carries a player-readable refusal.
+    /// connection ends; an [`AttachErr`] says whether the refusal is about
+    /// the credential (fatal) or about the moment (retryable).
     fn connect_character<'a>(
         &'a self,
         conn: NewWebConn,
         token: &'a str,
         character: u64,
-    ) -> BoxFuture<'a, Result<SessionStart, String>>;
+    ) -> BoxFuture<'a, Result<SessionStart, AttachErr>>;
 
     /// Re-attach `conn` to an existing session and replay everything after
     /// `last_seq` from its resume ring.
@@ -250,12 +297,42 @@ pub trait WebHooks: Send + Sync {
     /// upgrade.
     fn is_ip_blocked(&self, addr: IpAddr) -> bool;
 
-    /// Count one failed credential check against the address. Also called
-    /// for a WS upgrade whose token fails [`validate_token`](Self::validate_token)
-    /// — token probing over `/ws` counts against the address exactly like a
-    /// failed `/api/auth/login` (HIGH finding: `/ws` previously had no
-    /// failure accounting of its own).
+    /// Count one failed **credential** check against the address — a wrong
+    /// password on `/api/auth/login`, and nothing else. This is the counter
+    /// that arms the tempban, so only a guess may feed it.
+    ///
+    /// A `/ws` upgrade whose token fails
+    /// [`validate_token`](Self::validate_token) used to call this and no
+    /// longer does; it calls [`token_refused`](Self::token_refused) instead.
     fn auth_failed(&self, addr: IpAddr);
+
+    /// Count one **refused bearer token** on a `/ws` upgrade against the
+    /// address, on a counter of its own that may throttle
+    /// ([`is_token_throttled`](Self::is_token_throttled)) but must never
+    /// tempban.
+    ///
+    /// A 256-bit session token is not guessable, so a refused one is a stale
+    /// client — typically a browser tab that outlived the token record (a
+    /// flushed store, a revoked account, an expired TTL) and is reconnecting
+    /// on its own backoff. Counting that as a credential failure is what
+    /// locked an operator out of SSH on 2026-09-20; see
+    /// `mush_config::ipguard`. Default: ignored.
+    ///
+    /// Only [`TokenVerdict::Refused`] feeds this. A
+    /// [`TokenVerdict::Unavailable`] counts nothing at all: the store being
+    /// down is the server's problem, and charging every reconnecting tab for
+    /// it would arm a throttle precisely when recovery needs those
+    /// reconnects.
+    fn token_refused(&self, _addr: IpAddr) {}
+
+    /// Whether the address is inside a refused-token cool-off. Checked on
+    /// every `/ws` upgrade *before* the token is looked up, so a probing
+    /// client costs the store nothing. Never a ban: it does not affect
+    /// [`is_ip_blocked`](Self::is_ip_blocked), the auth routes, or SSH.
+    /// Default: never throttled.
+    fn is_token_throttled(&self, _addr: IpAddr) -> bool {
+        false
+    }
 
     /// Claim a per-IP concurrent WS connection slot for a **freshly
     /// requested** upgrade, before it completes and before its token is

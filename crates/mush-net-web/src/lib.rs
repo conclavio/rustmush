@@ -30,9 +30,14 @@
 //!   are not CORS-guarded by browsers — the bearer token requirement is
 //!   what actually gates `/ws`.)
 //! - **IpGuard first**: [`WebHooks::is_ip_blocked`] is checked before the
-//!   auth routes and before every WS upgrade; failed logins **and** invalid
-//!   WS tokens count via [`WebHooks::auth_failed`]. Every WS upgrade also
-//!   claims a per-IP concurrent-connection slot via
+//!   auth routes and before every WS upgrade. Failed logins count via
+//!   [`WebHooks::auth_failed`] (the tempban counter); a refused WS token
+//!   counts via [`WebHooks::token_refused`] on a separate, looser counter
+//!   that throttles but never bans, because a 256-bit token is a stale
+//!   client's, not a guesser's. A store that cannot answer is
+//!   [`TokenVerdict::Unavailable`] — refused (fail closed) but counted
+//!   nowhere, and never reported to the client as a dead credential. Every
+//!   WS upgrade also claims a per-IP concurrent-connection slot via
 //!   [`WebHooks::connection_opened`] before the handshake completes.
 //! - **Rate limits**: tower_governor per-IP GCRA bucket on `/api/auth/*`
 //!   (burst 5, 1 per 30 s by default). `X-Forwarded-For` is honored only
@@ -81,7 +86,8 @@ pub use mush_config::metrics;
 pub use app::{router, serve, serve_with_shutdown, serve_with_shutdown_bound};
 pub use config::{TlsConfig, WebConfig};
 pub use hooks::{
-    CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,
-    TokenIdentity, WEB_CONN_ID_BASE, WebHooks,
+    AttachErr, CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk,
+    SessionStart, TokenIdentity, TokenVerdict, WEB_CONN_ID_BASE, WebHooks,
 };
 pub use metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, MetricsSnapshot, WorldSample};
+pub use ws::SESSION_ENDED;

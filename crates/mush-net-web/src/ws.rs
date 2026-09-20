@@ -41,15 +41,58 @@
 //! too slow to accept a frame within `send_timeout_ms` is closed (1013) —
 //! the session layer's resume ring lets it recover the tail on reconnect.
 //!
+//! ## Refusing a token so the client can hear it
+//!
+//! A browser cannot see the HTTP status of a failed WebSocket upgrade: the
+//! WebSocket API reports every pre-upgrade refusal as close 1006, which is
+//! indistinguishable from a network blip, so a client told "your token is
+//! dead" that way retries forever. A refused token therefore **completes
+//! the upgrade** (echoing the offered subprotocol, which is what lets the
+//! browser accept it) and then closes with
+//! [`close_code::BAD_SESSION`] and [`SESSION_ENDED`] — the same 4401 the
+//! attach-time refusals use, which the SPA already treats as fatal: it drops
+//! the stored token and returns to the login form. The cost is one WS
+//! handshake per refusal, which the cool-off below bounds.
+//!
+//! ## Only a dead credential may be fatal
+//!
+//! 4401 is expensive — the client answers it by **deleting its token**, and
+//! nothing the player can do brings it back. So this route spends it only on
+//! a refusal that is genuinely about the credential, and every arm of the
+//! handshake is typed to say which it is:
+//!
+//! - [`WebHooks::validate_token`] answers a [`TokenVerdict`], so a store
+//!   that cannot be reached ([`TokenVerdict::Unavailable`]) is refused with
+//!   a plain 503 and counts nothing. Folding it into "refused" would have
+//!   signed every web player out, with a valid 7-day token, the moment the
+//!   instance Redis blinked during a deploy.
+//! - [`WebHooks::connect_character`] answers an [`AttachErr`], so an
+//!   overloaded or restarting game half maps to 1013/1012 — the same two
+//!   codes the resume arm has always used for the same two conditions
+//!   ([`ResumeErr::Busy`], [`ResumeErr::Unavailable`]). An ordinary
+//!   server-half reload must not log a web player out.
+//!
+//! The rule in one line: **transient is 1006/503/1012/1013 and keeps the
+//! token; 4401 means the credential itself is gone.**
+//!
 //! ## Abuse protection (HIGH finding: `/ws` previously had none)
 //!
-//! An invalid/expired token counts one [`WebHooks::auth_failed`] against the
-//! peer, exactly like a failed `/api/auth/login` — so `IpGuard`'s tempban
-//! engages on WS token probing. Every upgrade also claims a per-IP
-//! concurrent-connection slot via [`WebHooks::connection_opened`] before the
-//! handshake completes (over-cap is refused pre-upgrade) and releases it
-//! via [`WebHooks::connection_closed`] exactly once, however the socket
-//! task ends — see [`ConnSlot`].
+//! A refused token counts one [`WebHooks::token_refused`] against the peer
+//! — **not** [`WebHooks::auth_failed`]. It used to count as a credential
+//! failure, which meant an open tab holding a token the server no longer
+//! knew could tempban its own address out of SSH for fifteen minutes (dev1,
+//! 2026-09-20). A 256-bit token is not guessable; a refused one is a stale
+//! client. `IpGuard` keeps the two counters apart — passwords on the
+//! five-in-ten-minutes tempban, refused tokens on a much looser cool-off —
+//! and this route honours the cool-off via
+//! [`WebHooks::is_token_throttled`] *before* it asks the store about a
+//! token, so probing is cheap to refuse and can never ban anyone.
+//!
+//! Every upgrade also claims a per-IP concurrent-connection slot via
+//! [`WebHooks::connection_opened`] before the handshake completes (over-cap
+//! is refused pre-upgrade) and releases it via
+//! [`WebHooks::connection_closed`] exactly once, however the socket task
+//! ends — see [`ConnSlot`].
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -66,11 +109,27 @@ use tokio::time::MissedTickBehavior;
 
 use crate::app::AppState;
 use crate::config::WebConfig;
-use crate::hooks::{NewWebConn, ResumeErr, WebHooks};
+use crate::hooks::{AttachErr, NewWebConn, ResumeErr, TokenVerdict, WebHooks};
 use crate::ip::client_ip;
 
 /// Subprotocol prefix carrying the auth token.
 const SUBPROTO_PREFIX: &str = "rustmush.v1.";
+
+/// The close reason a refused token carries. One plain sentence: the client
+/// shows it (or its own wording) on the login form, so it says what happened
+/// and what to do, and never why the token was refused.
+pub const SESSION_ENDED: &str = "Your session has ended; please sign in again.";
+
+/// Close reason for a refusal the game will outgrow on its own: bounded
+/// admission is full right now. Retryable — the client keeps its token.
+const SERVER_BUSY: &str = "server busy; try again";
+
+/// Close reason for a refusal caused by the game boundary being gone
+/// mid-setup (a server-half restart). Retryable — the client keeps its
+/// token. Shared by the resume arm and the fresh-attach arm so one
+/// condition never gets two different answers depending on which arm the
+/// reconnect happened to land in.
+const GAME_RESTARTING: &str = "game restarting; reconnect shortly";
 
 /// Close codes used by this module.
 mod close_code {
@@ -207,6 +266,13 @@ pub(crate) async fn ws_route(
     if state.hooks.is_ip_blocked(ip) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    if state.hooks.is_token_throttled(ip) {
+        // Inside a refused-token cool-off: refused before the store is asked
+        // about anything, and before a connection slot is claimed. A plain
+        // 429 is right here — this IS the transient condition a client should
+        // back off from, unlike the 4401 below.
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
     if !state.hooks.connection_opened(ip) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
@@ -224,16 +290,38 @@ pub(crate) async fn ws_route(
     let Some(character) = params.char_key else {
         return (StatusCode::BAD_REQUEST, "missing or invalid char parameter").into_response();
     };
-    if state.hooks.validate_token(&token).await.is_none() {
-        // Token probing over /ws counts like any other auth failure, so
-        // IpGuard's tempban engages here too (HIGH finding).
-        state.hooks.auth_failed(ip);
-        return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
-    }
-
     let cap = state.config.max_frame_bytes;
     let mut ws = ws.max_message_size(cap).max_frame_size(cap);
     ws = ws.protocols([format!("{SUBPROTO_PREFIX}{token}")]);
+
+    match state.hooks.validate_token(&token).await {
+        TokenVerdict::Valid(_) => {}
+        TokenVerdict::Refused => {
+            // A refused token is a stale client, not a guess: it goes on the
+            // cool-off counter, never on the one that tempbans (module docs).
+            state.hooks.token_refused(ip);
+            // Upgrade first, then close 4401 — a pre-upgrade 401 reaches a
+            // browser as an opaque 1006 the client cannot tell from a dropped
+            // network, which is how one open tab reconnected itself into a ban.
+            return ws.on_upgrade(move |mut socket| async move {
+                let _slot = slot;
+                close(&mut socket, close_code::BAD_SESSION, SESSION_ENDED).await;
+            });
+        }
+        TokenVerdict::Unavailable => {
+            // The store could not answer, so we know NOTHING about this
+            // token. Still fail closed — but pre-upgrade, as a 503, which is
+            // exactly the shape a browser already treats as transient (1006:
+            // keep the token, keep the backoff). Deliberately cheaper than
+            // the 4401 path above: during a store outage every open tab is
+            // reconnecting at once, and spending a WS handshake apiece on a
+            // condition the client can only wait out would add load to the
+            // thing that is already failing. Nothing is counted against the
+            // address either — see `WebHooks::token_refused`.
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    }
+
     let resume = params.resume;
     ws.on_upgrade(move |socket| handle_socket(state, socket, ip, token, character, resume, slot))
 }
@@ -281,23 +369,18 @@ async fn handle_socket(
                         replayed: false,
                         replay: Vec::new(),
                     }),
-                    Err(reason) => {
-                        close(&mut socket, close_code::BAD_SESSION, &reason).await;
+                    Err(err) => {
+                        close_attach_err(&mut socket, err).await;
                         return;
                     }
                 }
             }
             Err(ResumeErr::Busy) => {
-                close(&mut socket, close_code::SLOW, "server busy; try again").await;
+                close(&mut socket, close_code::SLOW, SERVER_BUSY).await;
                 return;
             }
             Err(ResumeErr::Unavailable) => {
-                close(
-                    &mut socket,
-                    close_code::SERVICE_RESTART,
-                    "game restarting; reconnect shortly",
-                )
-                .await;
+                close(&mut socket, close_code::SERVICE_RESTART, GAME_RESTARTING).await;
                 return;
             }
             Err(ResumeErr::BadSession) => {
@@ -308,8 +391,8 @@ async fn handle_socket(
     } else {
         match hooks.connect_character(new_conn(), &token, character).await {
             Ok(_start) => None,
-            Err(reason) => {
-                close(&mut socket, close_code::BAD_SESSION, &reason).await;
+            Err(err) => {
+                close_attach_err(&mut socket, err).await;
                 return;
             }
         }
@@ -479,6 +562,24 @@ async fn send_env(socket: &mut WebSocket, env: &Envelope, timeout: Duration) -> 
             false
         }
         Err(_elapsed) => false,
+    }
+}
+
+/// Closes an upgraded socket for a refused fresh attach, spending 4401 —
+/// the code that costs the client its stored token — on the one variant
+/// that is actually about the credential. `Busy` and `Unavailable` get the
+/// same retryable codes the resume arm gives the identical conditions: an
+/// ordinary server-half reload, or a reconnect landing on full admission,
+/// must not sign a player out.
+async fn close_attach_err(socket: &mut WebSocket, err: AttachErr) {
+    match err {
+        AttachErr::Refused(reason) => {
+            close(socket, close_code::BAD_SESSION, &reason).await;
+        }
+        AttachErr::Busy => close(socket, close_code::SLOW, SERVER_BUSY).await,
+        AttachErr::Unavailable => {
+            close(socket, close_code::SERVICE_RESTART, GAME_RESTARTING).await;
+        }
     }
 }
 

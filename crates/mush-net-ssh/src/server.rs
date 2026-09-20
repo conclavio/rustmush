@@ -32,6 +32,16 @@
 //! mid-connection stops further guessing), and a connection that has not
 //! reached a character within [`PREAUTH_TIMEOUT`] is dropped.
 //!
+//! A blocked address is **told**. SSH has exactly one place to put words in
+//! front of a client it is refusing — the authentication banner, sent before
+//! the first method is tried — so that is where [`SshHooks::block_reason`]
+//! lands, and every auth callback then answers with [`reject_blocked`]: a
+//! `USERAUTH_FAILURE` offering no further methods, which an OpenSSH client
+//! reads as "give up" rather than "try a password". Before this, a blocked
+//! address met the auth-none front door with a bare `Auth::reject()`, fell
+//! through to `password`, and was left typing at a prompt that could never
+//! succeed and never said why.
+//!
 //! Deliberate M1 deferrals from design 02 §5.3 (recorded here so they read
 //! as decisions, not oversights): welcome-screen `WHO` is stubbed until
 //! pre-auth world queries exist, and in-band `connect`/`create` passwords
@@ -56,7 +66,7 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc;
 
 use crate::editor::{EchoMode, EditorAction, LineEditor};
-use crate::hooks::{AuthResult, CharSummary, NewConn, SshHooks};
+use crate::hooks::{AuthResult, BlockReason, CharSummary, NewConn, SshHooks};
 use crate::tui::{TuiManifest, TuiSession};
 use crate::welcome::{WelcomeCmd, parse_welcome};
 use crate::{caps, hostkey};
@@ -547,6 +557,45 @@ fn reject_toward_interactive() -> Auth {
     }
 }
 
+/// The refusal for a blocked address: `USERAUTH_FAILURE` with an **empty**
+/// method list, which is how the protocol says "there is nothing left for you
+/// to try". An OpenSSH client stops there and prints `Permission denied`; it
+/// does not prompt.
+///
+/// A plain `Auth::reject()` leaves the method list alone, so the client walks
+/// on to `password` and the operator gets a password prompt at the auth-none
+/// front door — a prompt no password can satisfy, saying nothing about why.
+/// That is what `ssh -p 6789 play@…` did on 2026-09-20. The *reason* travels
+/// separately, in the authentication banner
+/// ([`ConnHandler::authentication_banner`]), because a `USERAUTH_FAILURE`
+/// carries no text.
+fn reject_blocked() -> Auth {
+    Auth::Reject {
+        proceed_with_methods: Some(MethodSet::empty()),
+        partial_success: false,
+    }
+}
+
+/// What a refused address is told, in one sentence. The tempban names a
+/// deadline the player can act on; the siteban deliberately does not (it may
+/// be permanent, and staff, not a countdown, lift it).
+fn block_notice(reason: BlockReason) -> String {
+    match reason {
+        BlockReason::Siteban => "Connections from your address are not permitted.".to_owned(),
+        BlockReason::TooManyFailures { remaining } => {
+            // Rounded UP, and never "0 minutes": a player told to wait a
+            // minute and refused again has been lied to.
+            let minutes = remaining.as_secs().div_ceil(60).max(1);
+            let unit = if minutes == 1 { "minute" } else { "minutes" };
+            format!("Too many failed logins from your address. Try again in {minutes} {unit}.")
+        }
+    }
+}
+
+/// The wording for a refusal whose reason the hooks did not report (an
+/// embedder that has not implemented [`SshHooks::block_reason`]).
+const BLOCKED_FALLBACK: &str = "Too many failed logins from your address; try again later.";
+
 impl ConnHandler {
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
         self.shared.lock().expect("conn state poisoned")
@@ -883,6 +932,16 @@ impl ConnHandler {
         }
     }
 
+    /// The sentence a blocked address is refused with, on the welcome
+    /// screen and in the authentication banner alike — one wording, one
+    /// place. Falls back to [`BLOCKED_FALLBACK`] when the hooks report no
+    /// reason.
+    fn blocked_notice(&self) -> String {
+        self.hooks
+            .block_reason(self.addr)
+            .map_or_else(|| BLOCKED_FALLBACK.to_owned(), block_notice)
+    }
+
     /// A blocked address is refused before the backend is even asked —
     /// this is what makes an IpGuard tempban bite on an *already open*
     /// welcome screen instead of only on new TCP connections.
@@ -893,10 +952,8 @@ impl ConnHandler {
         password: &str,
     ) -> Result<(), russh::Error> {
         if self.hooks.is_ip_blocked(self.addr) {
-            return self.close_polite(
-                session,
-                "Too many failed logins from your address; try again later.",
-            );
+            let notice = self.blocked_notice();
+            return self.close_polite(session, &notice);
         }
         match self.hooks.auth_account(account, password).await {
             AuthResult::Banned => self.close_polite(session, "You are banned from this server."),
@@ -923,10 +980,8 @@ impl ConnHandler {
     ) -> Result<(), russh::Error> {
         use crate::hooks::CreateErr;
         if self.hooks.is_ip_blocked(self.addr) {
-            return self.close_polite(
-                session,
-                "Too many failed logins from your address; try again later.",
-            );
+            let notice = self.blocked_notice();
+            return self.close_polite(session, &notice);
         }
         match self.hooks.create_account(account, password).await {
             Err(CreateErr::Taken) => {
@@ -1169,13 +1224,27 @@ impl ConnHandler {
 impl Handler for ConnHandler {
     type Error = russh::Error;
 
+    /// Sent once, at the start of authentication, before any method is
+    /// tried — and the only channel an SSH server has for telling a client
+    /// it is about to refuse *why*. OpenSSH prints it. A blocked address
+    /// gets [`block_notice`]; everyone else gets nothing, so the front door
+    /// is unchanged.
+    async fn authentication_banner(&mut self) -> Result<Option<String>, Self::Error> {
+        let Some(reason) = self.hooks.block_reason(self.addr) else {
+            return Ok(None);
+        };
+        // Banners are displayed verbatim: one line, CRLF-terminated the way
+        // every other line this transport writes is.
+        Ok(Some(format!("{}\r\n", block_notice(reason))))
+    }
+
     async fn auth_none(&mut self, user: &str) -> Result<Auth, Self::Error> {
         if !self.counted {
             // Over the per-IP connection cap: shed the connection outright.
             return Err(russh::Error::Disconnect);
         }
         if self.hooks.is_ip_blocked(self.addr) {
-            return Ok(Auth::reject());
+            return Ok(reject_blocked());
         }
         if is_front_door(user) {
             self.route = Route::Welcome;
@@ -1190,7 +1259,7 @@ impl Handler for ConnHandler {
             return Err(russh::Error::Disconnect);
         }
         if self.hooks.is_ip_blocked(self.addr) {
-            return Ok(Auth::reject());
+            return Ok(reject_blocked());
         }
         if is_front_door(split_account_user(user).0) {
             self.route = Route::Welcome;
@@ -1209,7 +1278,7 @@ impl Handler for ConnHandler {
             return Err(russh::Error::Disconnect);
         }
         if self.hooks.is_ip_blocked(self.addr) {
-            return Ok(Auth::reject());
+            return Ok(reject_blocked());
         }
         if is_front_door(split_account_user(user).0) {
             self.route = Route::Welcome;
@@ -1245,7 +1314,7 @@ impl Handler for ConnHandler {
             return Err(russh::Error::Disconnect);
         }
         if self.hooks.is_ip_blocked(self.addr) {
-            return Ok(Auth::reject());
+            return Ok(reject_blocked());
         }
         let (account_user, _) = split_account_user(user);
         if is_front_door(account_user) {
@@ -1277,7 +1346,7 @@ impl Handler for ConnHandler {
             return Err(russh::Error::Disconnect);
         }
         if self.hooks.is_ip_blocked(self.addr) {
-            return Ok(Auth::reject());
+            return Ok(reject_blocked());
         }
         let (account_user, requested_char) = split_account_user(user);
         if is_front_door(account_user) {

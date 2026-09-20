@@ -104,6 +104,27 @@ Pick by what the commit touched:
 `web/` is on the restart list because the SPA is **embedded in the gateway
 binary** (`crates/mush-net-web`), not served from disk.
 
+A full restart drops every connection once and takes every in-progress session
+with it — the attach, the scrollback ring, the resume point all live in the
+gateway's memory. It does **not** sign anyone out: web tokens are Redis rows
+(`token:{hash}`, 7-day sliding TTL), so an open tab reconnects by itself and is
+back in the game without a password. Only the store losing the token asks for a
+fresh sign-in: `scripts/reset-instance.sh` (which `FLUSHDB`s), `@newpassword`,
+logout, or the TTL. Redis merely being slow or restarting is not one of those —
+the gateway answers 503 ("cannot check right now"), which a tab retries with
+its token kept — and neither is a plain `reload`: a reconnect that lands while
+the server half is down is answered 1012, not "session ended".
+
+> **On a gateway older than 2026-09-20**, an open tab holding a token the store
+> no longer knew could **tempban its own address for fifteen minutes** — and
+> the tempban is per address, not per transport, so `ssh -p 6789 play@…` then
+> answered a password prompt no password could satisfy. The fix: the refusal is
+> now a WebSocket close the client acts on (it drops the token and shows the
+> login form), refused tokens are counted apart from passwords and never ban,
+> and a blocked address is told how many minutes are left. Stuck on an
+> un-updated box: wait it out, or `systemctl restart dev1mush-gateway` — the
+> tempban is gateway memory.
+
 ### Building the SPA elsewhere
 
 `deploy.sh` refuses to start or reload anything when `web/dist/index.html` is

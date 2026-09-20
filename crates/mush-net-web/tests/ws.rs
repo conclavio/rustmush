@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use common::{CHAR_KEY, MockWebHooks, TOKEN, spawn_server, sys_env, test_config};
 use futures::{SinkExt, StreamExt};
-use mush_net_web::{ResumeErr, ResumeOk, WEB_CONN_ID_BASE, WebConfig};
+use mush_net_web::{AttachErr, ResumeErr, ResumeOk, WEB_CONN_ID_BASE, WebConfig};
 use mush_proto::{ClientCommand, Envelope, OutputEvent, ProjectedCommitToken, Query};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::ProtocolError;
@@ -319,7 +319,7 @@ async fn resume_unavailable_closes_1012_without_fresh_attach() {
 #[tokio::test]
 async fn connect_refusal_closes_4401_with_reason() {
     let hooks = Arc::new(MockWebHooks::new());
-    hooks.state().connect_err = Some("That character is unavailable.".into());
+    hooks.state().connect_err = Some(AttachErr::Refused("That character is unavailable.".into()));
     let addr = spawn_server(hooks.clone(), test_config()).await;
 
     let (mut ws, _) = connect_ws(addr, "char=7").await.unwrap();
@@ -328,6 +328,49 @@ async fn connect_refusal_closes_4401_with_reason() {
     assert_eq!(reason, "That character is unavailable.");
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(hooks.state().disconnects.is_empty());
+}
+
+/// A transient attach refusal is not a dead credential. 4401 costs the
+/// client its stored token, so the two conditions that mean "not now" — full
+/// admission, and the server half gone mid-setup, which is what an ordinary
+/// split `reload` looks like from here — must arrive as the same retryable
+/// codes the resume arm has always used, on BOTH attach arms (fresh, and the
+/// too-old resume fallback).
+#[tokio::test]
+async fn a_busy_or_restarting_game_never_spends_the_fatal_close() {
+    for (err, expected_code, expected_reason) in [
+        (AttachErr::Busy, 1013, "server busy; try again"),
+        (
+            AttachErr::Unavailable,
+            1012,
+            "game restarting; reconnect shortly",
+        ),
+    ] {
+        // The fresh-attach arm.
+        let hooks = Arc::new(MockWebHooks::new());
+        hooks.state().connect_err = Some(err.clone());
+        let addr = spawn_server(hooks.clone(), test_config()).await;
+        let (mut ws, _) = connect_ws(addr, "char=7").await.unwrap();
+        let (code, reason) = recv_close(&mut ws).await;
+        assert_eq!(code, expected_code, "{err:?} is retryable, not fatal");
+        assert_eq!(reason, expected_reason);
+
+        // The too-old-resume fallback arm reaches the same hook and must
+        // answer the same way.
+        let hooks = Arc::new(MockWebHooks::new());
+        {
+            let mut st = hooks.state();
+            st.resume_result = Some(Err(ResumeErr::TooOld));
+            st.connect_err = Some(err.clone());
+        }
+        let addr = spawn_server(hooks.clone(), test_config()).await;
+        let (mut ws, _) = connect_ws(addr, "char=7&resume=1").await.unwrap();
+        let (code, reason) = recv_close(&mut ws).await;
+        assert_eq!(code, expected_code);
+        assert_eq!(reason, expected_reason);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(hooks.state().disconnects.is_empty(), "never attached");
+    }
 }
 
 #[tokio::test]
@@ -533,9 +576,12 @@ async fn client_disconnect_reports_disconnected_once() {
 
 #[tokio::test]
 async fn ws_rejects_bad_token_blocked_ip_and_missing_char() {
-    // Invalid token, present via the subprotocol -> HTTP 401 before
-    // upgrade, and (HIGH finding) it counts as an auth failure against the
-    // IP exactly like a failed /api/auth/login.
+    // Invalid token, present via the subprotocol: the upgrade COMPLETES and
+    // the server closes 4401. A pre-upgrade 401 reaches a browser as an
+    // opaque 1006 it cannot tell from a dropped network, so the client kept
+    // retrying the dead token — which is how an open tab banned its own
+    // address (dev1, 2026-09-20). And the refusal counts on `token_refused`,
+    // never on the tempban counter.
     let hooks = Arc::new(MockWebHooks::new());
     let addr = spawn_server(hooks.clone(), test_config()).await;
     let mut req = format!("ws://{addr}/ws?char=7")
@@ -545,13 +591,20 @@ async fn ws_rejects_bad_token_blocked_ip_and_missing_char() {
         "sec-websocket-protocol",
         HeaderValue::from_static("rustmush.v1.wrong-token"),
     );
-    let err = connect_async(req).await.unwrap_err();
-    assert_http_status(err, 401);
-    assert_eq!(
-        hooks.state().auth_failed,
-        vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
-        "an invalid WS token must count against the IP like any other auth failure"
-    );
+    let (mut ws, _resp) = connect_async(req).await.expect("upgrade completes");
+    let (code, reason) = recv_close(&mut ws).await;
+    assert_eq!(code, 4401, "the client must be able to recognise this");
+    assert_eq!(reason, mush_net_web::SESSION_ENDED);
+    {
+        let st = hooks.state();
+        assert!(
+            st.auth_failed.is_empty(),
+            "a refused token must never feed the counter that tempbans"
+        );
+        assert_eq!(st.token_refused, vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
+        assert!(st.connects.is_empty(), "never attached");
+        assert!(st.disconnects.is_empty(), "never attached -> no disconnect");
+    }
 
     // Missing token entirely -> 401, but NOT an auth failure (nothing was
     // ever presented to validate).
@@ -579,6 +632,60 @@ async fn ws_rejects_bad_token_blocked_ip_and_missing_char() {
     let err = connect_ws(addr, "char=7").await.unwrap_err();
     assert_http_status(err, 403);
     assert!(hooks.state().connects.is_empty());
+}
+
+/// A store that cannot answer must never be reported as a dead session.
+/// The client answers 4401 by DELETING its token, so folding "the store is
+/// down" into "your token is refused" would sign every open tab out — each
+/// holding a valid, unrevoked 7-day credential — the moment the instance
+/// Redis blinked during a deploy. The upgrade is still refused (fail
+/// closed); it is refused transiently, and counted nowhere.
+#[tokio::test]
+async fn a_store_that_cannot_answer_is_transient_not_a_dead_session() {
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks.state().token_store_down = true;
+    let addr = spawn_server(hooks.clone(), test_config()).await;
+
+    // The token here is the mock's GOOD one; only the store is broken.
+    let err = connect_ws(addr, "char=7").await.unwrap_err();
+    assert_http_status(err, 503);
+
+    let st = hooks.state();
+    assert!(st.connects.is_empty(), "fail closed: nothing was attached");
+    assert!(
+        st.token_refused.is_empty(),
+        "an outage must not arm the cool-off against the players waiting it out"
+    );
+    assert!(st.auth_failed.is_empty(), "and never the tempban counter");
+}
+
+/// The refused-token cool-off: a 429 before anything is looked up, and no
+/// connection slot spent on it. The route must not confuse this with the
+/// tempban (403) or with a dead token (4401) — it is the one genuinely
+/// transient refusal of the three, so the client is right to back off.
+#[tokio::test]
+async fn ws_honours_the_refused_token_cooloff_without_touching_the_token() {
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks
+        .state()
+        .token_throttled
+        .insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    let addr = spawn_server(hooks.clone(), test_config()).await;
+
+    // Even a PERFECTLY GOOD token is refused while the cool-off runs.
+    let err = connect_ws(addr, "char=7").await.unwrap_err();
+    assert_http_status(err, 429);
+    let st = hooks.state();
+    assert!(st.connects.is_empty());
+    assert!(
+        st.conn_opens.is_empty(),
+        "refused before a connection slot is claimed"
+    );
+    assert!(
+        st.token_refused.is_empty(),
+        "a refusal the cool-off itself caused must not extend the cool-off"
+    );
+    assert!(st.auth_failed.is_empty(), "and never a credential failure");
 }
 
 /// HIGH finding: `/ws` previously had no per-IP concurrent-connection cap.

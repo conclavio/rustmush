@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_net_web::{
-    CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,
-    TokenIdentity, WebConfig, WebHooks,
+    AttachErr, CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk,
+    SessionStart, TokenIdentity, TokenVerdict, WebConfig, WebHooks,
 };
 use mush_proto::{Envelope, OutputEvent, ProjectedCommitToken, Query, RichText};
 use tokio::sync::mpsc;
@@ -33,9 +33,15 @@ pub struct MockState {
     pub accounts: HashMap<String, String>,
     pub tokens: HashMap<String, TokenIdentity>,
     pub blocked: HashSet<IpAddr>,
+    /// Addresses the mock reports as inside a refused-token cool-off.
+    pub token_throttled: HashSet<IpAddr>,
+    /// The token store cannot answer: every `validate_token` comes back
+    /// [`TokenVerdict::Unavailable`], whatever token is presented (a Redis
+    /// restart, a reconnecting pool).
+    pub token_store_down: bool,
     pub login_err: Option<LoginErr>,
     pub register_result: Option<Result<LoginOk, RegisterErr>>,
-    pub connect_err: Option<String>,
+    pub connect_err: Option<AttachErr>,
     pub resume_result: Option<Result<ResumeOk, ResumeErr>>,
     // -- recordings --
     pub lines: Vec<(u64, String)>,
@@ -43,6 +49,9 @@ pub struct MockState {
     pub acknowledgements: Vec<(u64, ProjectedCommitToken)>,
     pub disconnects: Vec<u64>,
     pub auth_failed: Vec<IpAddr>,
+    /// Refused-token counts, kept apart from `auth_failed` exactly as the
+    /// guard keeps the two counters apart.
+    pub token_refused: Vec<IpAddr>,
     pub logouts: Vec<String>,
     pub connects: Vec<(u64, String, u64)>,
     pub resumes: Vec<(u64, String, u64, u64)>,
@@ -157,8 +166,17 @@ impl WebHooks for MockWebHooks {
         })
     }
 
-    fn validate_token<'a>(&'a self, token: &'a str) -> BoxFuture<'a, Option<TokenIdentity>> {
-        Box::pin(async move { self.state().tokens.get(token).cloned() })
+    fn validate_token<'a>(&'a self, token: &'a str) -> BoxFuture<'a, TokenVerdict> {
+        Box::pin(async move {
+            let st = self.state();
+            if st.token_store_down {
+                return TokenVerdict::Unavailable;
+            }
+            match st.tokens.get(token).cloned() {
+                Some(identity) => TokenVerdict::Valid(identity),
+                None => TokenVerdict::Refused,
+            }
+        })
     }
 
     fn connect_character<'a>(
@@ -166,7 +184,7 @@ impl WebHooks for MockWebHooks {
         conn: NewWebConn,
         token: &'a str,
         character: u64,
-    ) -> BoxFuture<'a, Result<SessionStart, String>> {
+    ) -> BoxFuture<'a, Result<SessionStart, AttachErr>> {
         Box::pin(async move {
             let mut st = self.state();
             if let Some(err) = st.connect_err.clone() {
@@ -230,6 +248,14 @@ impl WebHooks for MockWebHooks {
 
     fn auth_failed(&self, addr: IpAddr) {
         self.state().auth_failed.push(addr);
+    }
+
+    fn token_refused(&self, addr: IpAddr) {
+        self.state().token_refused.push(addr);
+    }
+
+    fn is_token_throttled(&self, addr: IpAddr) -> bool {
+        self.state().token_throttled.contains(&addr)
     }
 
     fn connection_opened(&self, addr: IpAddr) -> bool {

@@ -20,7 +20,19 @@
 //     full-rehydrate callback fires so the app re-requests panel state
 //   - keepalive: answer every `ping` with a `pong` echoing the nonce
 //   - close 4401 (bad/expired token or session) is fatal: no reconnect,
-//     `onSessionExpired` fires so the app returns to login
+//     `onSessionExpired` fires so the app returns to login — which drops the
+//     stored token. This is the ONLY signal that distinguishes "your token is
+//     dead" from "the network blipped": a browser cannot see the HTTP status
+//     of a failed upgrade and reports every pre-upgrade refusal as 1006, so
+//     the server upgrades and then closes 4401 rather than answering 401
+//     (mush-net-web/src/ws.rs). Anything else — 1006 included — keeps the
+//     token and the backoff.
+//     Because 4401 destroys a credential the player cannot get back, the
+//     server spends it ONLY on a refusal it has actually checked. Everything
+//     transient gets a shape this loop retries: 503 on the upgrade (the token
+//     store could not answer), 1012 (the game half is restarting), 1013
+//     (admission full). A store outage or an ordinary server-half reload must
+//     never log a web player out, so do not widen the fatal branch below.
 //   - clean close: `close()` never triggers a reconnect
 //
 // The class takes injectable seams (WebSocket factory, RNG) so the vitest
@@ -306,7 +318,9 @@ export class WsClient {
         return;
       }
       if (ev.code === CLOSE_BAD_SESSION) {
-        // Token expired / session gone: retrying would loop forever.
+        // Token expired / session gone: retrying would loop forever — and a
+        // loop against a dead token is what tempbanned an operator's own
+        // address on 2026-09-20.
         this.#intentionalClose = true;
         this.#setStatus("closed");
         this.#opts.onSessionExpired?.();

@@ -11,12 +11,14 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use mush_net_ssh::{AuthResult, CharSummary, CreateErr, NewConn, SshConfig, SshHooks, SshServer};
+use mush_net_ssh::{
+    AuthResult, BlockReason, CharSummary, CreateErr, NewConn, SshConfig, SshHooks, SshServer,
+};
 use mush_proto::{
     InputMode, NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, PromptSpec, RichText, SmolStr,
     WhoEntry,
@@ -46,6 +48,9 @@ struct MockHooks {
     connected_chars: Mutex<Vec<(u64, u64)>>,
     auth_failures: AtomicUsize,
     next_char_key: AtomicUsize,
+    /// Set to stand in for a persisted siteban on the peer's address (the
+    /// guard's other reason for blocking one).
+    sitebanned: AtomicBool,
 }
 
 impl MockHooks {
@@ -339,7 +344,19 @@ impl SshHooks for MockHooks {
 
     fn is_ip_blocked(&self, _addr: IpAddr) -> bool {
         // Mirrors the binary's IpGuard policy: 5 failures arm a tempban.
-        self.auth_failures.load(Ordering::Relaxed) >= 5
+        self.sitebanned.load(Ordering::Relaxed) || self.auth_failures.load(Ordering::Relaxed) >= 5
+    }
+
+    fn block_reason(&self, addr: IpAddr) -> Option<BlockReason> {
+        if self.sitebanned.load(Ordering::Relaxed) {
+            return Some(BlockReason::Siteban);
+        }
+        // The guard's default ban length, so the sentence the test reads is
+        // the sentence a freshly tempbanned player reads.
+        self.is_ip_blocked(addr)
+            .then_some(BlockReason::TooManyFailures {
+                remaining: Duration::from_secs(900),
+            })
     }
 
     fn auth_failed(&self, _addr: IpAddr) {
@@ -359,6 +376,37 @@ impl russh::client::Handler for AcceptAll {
         _key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         Ok(true)
+    }
+}
+
+/// [`AcceptAll`] that also keeps the authentication banners the server sent
+/// — the ones an OpenSSH client prints before it gives up.
+#[derive(Clone, Default)]
+struct BannerRecorder(Arc<Mutex<Vec<String>>>);
+
+impl BannerRecorder {
+    fn text(&self) -> String {
+        self.0.lock().unwrap().concat()
+    }
+}
+
+impl russh::client::Handler for BannerRecorder {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        _key: &russh::keys::PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
+
+    async fn auth_banner(
+        &mut self,
+        banner: &str,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        self.0.lock().unwrap().push(banner.to_owned());
+        Ok(())
     }
 }
 
@@ -616,6 +664,103 @@ async fn in_band_lockout_closes_open_welcome_screen() {
         5,
         "the blocked attempt must never reach the auth backend"
     );
+
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// The 2026-09-20 incident, at the front door. A tempbanned address typing
+/// `ssh -p 6789 play@…` used to meet a bare `Auth::reject()` at auth-none,
+/// fall through to `password`, and sit at a prompt no password could satisfy
+/// that said nothing about why. Now it is told in the authentication banner
+/// — the one thing an OpenSSH client displays for a connection it never
+/// authenticates — and refused with an EMPTY method list, so the client has
+/// nothing left to try and never prompts.
+#[tokio::test]
+async fn a_tempbanned_address_is_told_why_and_offered_no_method() {
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server("blocked-banner", Arc::clone(&hooks)).await;
+    // Arm the mock's tempban (5 failures) without a live connection.
+    hooks.auth_failures.store(5, Ordering::Relaxed);
+
+    let banners = BannerRecorder::default();
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, banners.clone())
+        .await
+        .expect("connect");
+
+    // The front door, exactly as the owner typed it.
+    let auth = handle.authenticate_none("play").await.expect("auth-none");
+    match auth {
+        russh::client::AuthResult::Success => panic!("a blocked address must not be admitted"),
+        russh::client::AuthResult::Failure {
+            remaining_methods, ..
+        } => assert!(
+            remaining_methods.is_empty(),
+            "no method may be offered, or OpenSSH prompts for a password: {remaining_methods:?}"
+        ),
+    }
+    assert_eq!(
+        banners.text(),
+        "Too many failed logins from your address. Try again in 15 minutes.\r\n"
+    );
+
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// A siteban is a different fact and says so: staff set it, it may be
+/// permanent, and promising a countdown would be a lie.
+#[tokio::test]
+async fn a_sitebanned_address_gets_its_own_wording() {
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server("siteban-banner", Arc::clone(&hooks)).await;
+    hooks.sitebanned.store(true, Ordering::Relaxed);
+
+    let banners = BannerRecorder::default();
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, banners.clone())
+        .await
+        .expect("connect");
+
+    // The account route is refused the same way as the front door.
+    let auth = handle
+        .authenticate_password("nick", "pw123")
+        .await
+        .expect("auth-password");
+    assert!(!auth.success());
+    assert_eq!(
+        banners.text(),
+        "Connections from your address are not permitted.\r\n"
+    );
+    assert_eq!(
+        hooks.auth_failures.load(Ordering::Relaxed),
+        0,
+        "the blocked attempt must never reach the auth backend"
+    );
+
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// An unblocked address sees no banner at all: the auth-none front door is
+/// unchanged, which is the thing this fix must not break.
+#[tokio::test]
+async fn the_front_door_is_unchanged_for_an_unblocked_address() {
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server("no-banner", Arc::clone(&hooks)).await;
+
+    let banners = BannerRecorder::default();
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, banners.clone())
+        .await
+        .expect("connect");
+    let auth = handle.authenticate_none("play").await.expect("auth-none");
+    assert!(auth.success(), "play is still accepted with no auth");
+    assert_eq!(banners.text(), "");
 
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
