@@ -1415,11 +1415,25 @@ async fn q8_a_refit_refusal_at_start_refuses_the_start_and_takes_no_lock() {
     );
 
     let said = rig.say(0, "sim start");
+    // **16b cut Q.8, fixer (correctness Q8-6): the sentence's shape.** It names
+    // the slot and the type and nothing else. `refit_unit`'s own reason is
+    // `#57 is deployed; ...`, and this line goes to whoever typed `SIM START` —
+    // who may be the other side's lead. The raw reason is in the server log.
     assert!(
-        said.contains("Slot red 1 cannot field biped_mk1: "),
+        said.contains(
+            "Slot red 1 cannot field biped_mk1: the simulator refused the refit. Staff should \
+             read the server log."
+        ),
         "the refusal names the slot and the type: {said}"
     );
-    assert!(said.contains("is deployed"), "{said}");
+    assert!(
+        !said.contains("is deployed"),
+        "the raw reason belongs in the log, not in the line: {said}"
+    );
+    assert!(
+        !said.contains(&format!("#{}", tank.0)),
+        "the refusal named the tank's object number: {said}"
+    );
     assert_eq!(rig.state(), MatchState::Selection, "nothing moved");
     assert!(rig.centre().match_id.is_none(), "and no id was minted");
     assert!(
@@ -1597,6 +1611,232 @@ async fn q8_the_last_leave_puts_a_half_refitted_lobbys_tanks_back() {
     // And a reset over it has nothing left to do.
     let said = rig.staff("@arena/reset");
     assert!(said.contains("already idle; nothing changed"), "{said}");
+}
+
+/// A stale `deployed` marker on one pod's tank: the one refusal `refit_unit`
+/// makes that a test can arrange without breaking the world.
+fn wedge(rig: &mut Rig, team: Team, index: u8) -> ObjId {
+    let tank = match_::tank_for_slot(rig.tw.world(), team, index).expect("the pod's tank");
+    mush_sim::deployed::mark(
+        rig.tw.world_mut(),
+        tank,
+        mush_sim::DeployedMark::new(99, "tacsim.arena.proving_ground"),
+    );
+    tank
+}
+
+/// **A pod with no choice on it is put back to its authored type at `SIM
+/// START`** (16b cut Q.8, fixer: conformance Q8-4).
+///
+/// The walk used to visit only the slots whose `Slot::unit_type` is `Some`, so a
+/// tank refitted by an earlier refused start stood as whatever it had become —
+/// and the board showed no bracket over it, because the slot had chosen nothing.
+/// A pilot only has to change their mind for that to bite: `SIM UNIT line_tank`
+/// clears the choice and does **not** clear the tank, and until this fix they
+/// boarded the biped they had just said they did not want.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_sim_start_puts_a_pod_with_no_choice_back_to_its_authored_type() {
+    let mut rig = Rig::boot(3);
+    rig.say(0, "sim team red"); // red 1
+    rig.say(1, "sim team red"); // red 2
+    rig.say(2, "sim team blue"); // blue 1
+    rig.say(0, "sim unit biped_mk1");
+    rig.say(1, "sim unit biped_mk1");
+
+    // Red 2 refuses, after red 1 has already been written.
+    let second = wedge(&mut rig, Team::Red, 2);
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Selection);
+    assert_eq!(tank_schema(&rig, Team::Red, 1), "tacsim.unit.biped_mk1");
+
+    // Both of them change their minds. The board now says nothing about either
+    // slot, and red 1's tank is still a biped.
+    rig.say(0, "sim unit line_tank");
+    rig.say(1, "sim unit line_tank");
+    assert!(
+        rig.centre()
+            .slots
+            .iter()
+            .all(|slot| slot.unit_type.is_none()),
+        "no slot carries a choice any more"
+    );
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.biped_mk1",
+        "and clearing a choice writes nothing to the tank"
+    );
+
+    mush_sim::deployed::clear(rig.tw.world_mut(), second);
+    let said = rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding, "{said}");
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "the start put the pod with no choice on it back to its own machine"
+    );
+    assert_eq!(tank_schema(&rig, Team::Red, 2), "tacsim.unit.line_tank");
+    assert_eq!(tank_schema(&rig, Team::Blue, 1), "tacsim.unit.line_tank");
+}
+
+/// **A leaver's refit does not reach the next claimant of their slot** (16b cut
+/// Q.8, fixer: conformance Q8-4).
+///
+/// `Slot::unit_type` is cleared with the slot; the *tank* was not, and a
+/// non-last `SIM LEAVE` runs no reset of its own. So the pilot who gave a lobby
+/// up handed their biped to whoever took the slot next, with no bracket on the
+/// board to say so. The vacating itself now puts that one pod back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_a_leavers_refit_does_not_reach_the_next_claimant() {
+    let mut rig = Rig::boot(3);
+    rig.say(0, "sim team red"); // red 1
+    rig.say(1, "sim team red"); // red 2
+    rig.say(2, "sim team blue"); // blue 1
+    rig.say(0, "sim unit biped_mk1");
+    rig.say(1, "sim unit biped_mk1");
+
+    let second = wedge(&mut rig, Team::Red, 2);
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Selection);
+    assert_eq!(tank_schema(&rig, Team::Red, 1), "tacsim.unit.biped_mk1");
+
+    // Pilot 0 gives up. It is NOT the last slot, so the centre stays in
+    // `Selection` and the whole-roster reset the last leave runs does not.
+    rig.say(0, "sim leave");
+    assert_eq!(rig.state(), MatchState::Selection, "the lobby is still up");
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "the choice went with the pilot who made it"
+    );
+
+    // And the next claimant of red 1 chooses nothing and flies the pod's own
+    // machine.
+    mush_sim::deployed::clear(rig.tw.world_mut(), second);
+    rig.say(1, "sim unit line_tank");
+    rig.say(0, "sim team red");
+    let mine = rig
+        .centre()
+        .slots
+        .iter()
+        .find(|slot| slot.pilot == rig.pilot(0))
+        .map(|slot| (slot.team, slot.index, slot.unit_type.clone()))
+        .expect("the re-claim took a slot");
+    assert_eq!(
+        mine,
+        (Team::Red, 1, None),
+        "the lowest free red slot, with no choice on it"
+    );
+    // Pilot 1 inherited the side's lead when pilot 0 left.
+    let said = rig.say(1, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding, "{said}");
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "the new claimant boards the pod's own machine"
+    );
+}
+
+/// **An AI-filled pod flies the pod's own machine after the pilot who chose one
+/// left** (16b cut Q.8, fixer).
+///
+/// `lobby::run` fills the unclaimed pods — including the pods of the slots that
+/// went during `Boarding` — with `tank_for_slot`, so a tank refitted at `SIM
+/// START` and then abandoned was flown by a machine. That contradicts the third
+/// bullet of `docs/help/simulator.md` ("the machines that fill the unclaimed
+/// pods always fly the pod's own tank"), and there is no return to `Idle`
+/// between the leave and the check-out to put it right.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_an_ai_filled_pod_flies_the_authored_type_after_a_chooser_left() {
+    let mut rig = fill_rig(2);
+    rig.say(0, "sim team red"); // red 1
+    rig.say(1, "sim team red"); // red 2
+    let said = rig.say(0, "sim ai 2");
+    assert!(said.contains("AI fill set to 2 a side."), "{said}");
+    rig.say(0, "sim unit biped_mk1");
+
+    let said = rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding, "{said}");
+    assert_eq!(tank_schema(&rig, Team::Red, 1), "tacsim.unit.biped_mk1");
+
+    // The chooser gives up before boarding. Their pod is now one of the
+    // unclaimed ones the fill takes.
+    rig.say(0, "sim leave");
+    assert_eq!(rig.state(), MatchState::Boarding, "the match is still on");
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "the abandoned pod is back at its authored type before the check-out"
+    );
+
+    assert!(rig.seat(1), "the last seat fires the check-out");
+    assert_eq!(rig.state(), MatchState::Running);
+    assert!(
+        rig.match_units().contains(&(Team::Red, 1)),
+        "the fill really took the vacated pod: {:?}",
+        rig.match_units()
+    );
+    assert_eq!(
+        tank_schema(&rig, Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "and the machine flies the pod's own tank"
+    );
+}
+
+/// **`SIM UNIT`'s "claim a slot first" is only said where the claim is
+/// accepted** (16b cut Q.8, fixer: correctness Q8-5).
+///
+/// The bare list needs a claimed slot, and the refusal is `SimError::NoSlot` said
+/// as the thing to do next. `SIM TEAM` is accepted in `Idle`, in `Selection` and
+/// on a terminal centre, and refused in `Boarding` and `Running` — where the
+/// advice was therefore a lie, and the state refusal is what is honest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q8_sim_unit_advises_sim_team_only_where_sim_team_is_accepted() {
+    let mut rig = Rig::boot(3);
+
+    // `Idle`, and then `Selection` with no slot of one's own: true both times.
+    let said = rig.say(2, "sim unit");
+    assert!(
+        said.contains("Claim a slot first: SIM TEAM red|blue."),
+        "{said}"
+    );
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let said = rig.say(2, "sim unit");
+    assert!(
+        said.contains("Claim a slot first: SIM TEAM red|blue."),
+        "{said}"
+    );
+
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    let said = rig.say(2, "sim unit");
+    assert!(
+        said.contains(
+            "The simulator centre is boarding; that is not something you can do to it now."
+        ),
+        "{said}"
+    );
+    assert!(
+        !said.contains("SIM TEAM"),
+        "it advised a verb that is refused here: {said}"
+    );
+
+    assert!(!rig.seat(0));
+    assert!(rig.seat(1));
+    assert_eq!(rig.state(), MatchState::Running);
+    let said = rig.say(2, "sim unit");
+    assert!(said.contains("The simulator centre is running;"), "{said}");
+    assert!(!said.contains("SIM TEAM"), "{said}");
+
+    // A terminal centre takes a claim — it clears the last match's board first —
+    // so there the advice is true again.
+    rig.end_match(tacsim::arena::EndReason::Abort);
+    assert!(rig.state().is_terminal());
+    let said = rig.say(2, "sim unit");
+    assert!(
+        said.contains("Claim a slot first: SIM TEAM red|blue."),
+        "{said}"
+    );
 }
 
 /// **The refit's document really crosses into `tactics`, under the module

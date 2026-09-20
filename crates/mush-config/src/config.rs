@@ -1053,10 +1053,10 @@ pub struct TacsimTempoCfg {
     pub alert_range_cm: u32,
     /// The longest substep a pulse is cut into. Doc 16 §3.1: a pulse is a
     /// sequence of substeps of `min(substep_max_ms, (cell_cm - 1) × 1000 /
-    /// max_speed_cms)`, floored at 50 ms, so travel in one substep is at most
-    /// `cell_cm - 1` and the motion carry (16b cut Q.6) adds at most one — no
-    /// unit advances more than one cell in a substep and the outcome is the same
-    /// at every period.
+    /// max_speed_cms)`, floored at 50 ms, so one substep's travel — the motion
+    /// carry (16b cut Q.6) included, because the carry is added *inside* that
+    /// one division — is at most `cell_cm - 1`, and no unit advances more than
+    /// one cell in a substep and the outcome is the same at every period.
     pub substep_max_ms: u32,
     /// Milliseconds one pulse may take before the watchdog voids the match, the
     /// same way a panic does (doc 16 §3.1 "Failure").

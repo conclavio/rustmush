@@ -614,10 +614,16 @@ impl Default for MotionLimits {
 /// *substep length* an input to the answer: a tank at 1,500 cm/s crossing a
 /// 250 ms substep travels 375 cm, and the same tank across five 50 ms substeps
 /// travels five times 75, which agrees only because those numbers happen to be
-/// whole. They usually are not. X.6's own measurement is the evidence: one
-/// scripted climb printed five `blocked` events at 150 ms substeps against one at
-/// 250, because a held tank gained a few cm/s on the ragged 50 ms tail, covered no
-/// whole centimetre, and so never reached the boundary to be refused at again.
+/// whole. They usually are not, and a crawl is the plainest case: a unit ordered
+/// to 3 cm/s covered 0.75 cm in a 250 ms substep, which truncated to nothing, so
+/// it stood still for as long as it was driven.
+///
+/// **X.6's five-against-one `blocked` count was read as the same defect and is
+/// not one** (16b cut Q.6 measured it): the carries removed every truncation in
+/// motion and that count did not move — 250 ms still prints one and 150 ms still
+/// prints five. Its cause is the *two flags* cut F.2 split deliberately, and
+/// `crate::arena::motion`'s `one_obstacle_is_one_stop_at_every_partition` test
+/// measures it rather than asserting it away.
 ///
 /// So each rate keeps its remainder, exactly the way
 /// [`HeatState::carry_milli`](crate::arena::state::HeatState::carry_milli) keeps
@@ -635,17 +641,20 @@ impl Default for MotionLimits {
 /// engine and every cold hull zeroes what it refused, which is
 /// [`crate::arena::heat`]'s own rule for a unit that has gone cold: a carry
 /// belongs to arena time that was actually spent moving.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// It carries **no serde derives**: [`UnitState`] itself has none, the carries
+/// have no chosen wire form, and nothing in the tree encodes one (16b cut Q.6,
+/// fixer). A cut that gives them one chooses the form then.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MotionCarry {
     /// Millidegrees × 1,000 not yet turned, in `0..1000`.
     pub turn: u32,
     /// cm/s × 1,000 not yet gained or shed, in `0..1000`.
     pub speed: u32,
     /// Centimetres × `1000 << 20` not yet travelled eastward, in `0..(1000 << 20)`
-    /// — the scale is the millisecond's thousand times [`SIN_ONE`]'s fixed point
-    /// ([`crate::arena::motion::SIN_ONE`]), because the east component is
-    /// `speed × dt × sin` and neither division is taken until the carry has been
-    /// added.
+    /// — the scale is the millisecond's thousand times
+    /// [`SIN_ONE`](crate::arena::motion::SIN_ONE)'s fixed point, because the east
+    /// component is `speed × dt × sin` and neither division is taken until the
+    /// carry has been added.
     pub east: i64,
     /// The same northward.
     pub north: i64,

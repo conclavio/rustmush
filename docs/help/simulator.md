@@ -50,9 +50,10 @@ otherwise. `SIM UNIT` says otherwise:
 It changes **your own** slot and only during selection, and everyone in the
 centre reads the line. `SIM UNIT line_tank` — the pod's own type — puts you back
 to the default. The pod's tank is actually refitted when `SIM START` runs, and
-it is put back to the pod's own type the moment the centre goes idle — the next
-`SIM TEAM` after a match, the last pilot giving up their slot, or a staff
-`@arena/reset` — so nobody inherits your choice.
+it is put back to the pod's own type the moment your slot goes — you giving it
+up, the boarding deadline dropping you, the centre going idle after the match,
+or a staff `@arena/reset`. Every `SIM START` also puts back any pod that nobody
+has chosen for, so nobody ever inherits anybody else's choice.
 
 Once the match has started the board stops printing anybody's choice: by then
 the tanks have been refitted, and what another machine is remains something
@@ -62,8 +63,9 @@ What the shipped server can field:
 
   line_tank           the stock tank: a 105 mm cannon, a coaxial machine gun
                       and a Mk1 sight.
-  line_tank_laser     the same hull with a beam weapon in place of the cannon's
-                      second mount. It makes heat.
+  line_tank_laser     the same hull with a beam weapon where the cannon sat,
+                      keeping the coaxial machine gun. It carries no cannon at
+                      all, and the beam makes heat.
   line_tank_thermal   the stock tank with a thermal sight: it picks a stopped
                       machine out of cover that the eye would lose, at shorter
                       range, not through a canopy, and slower to tell apart.

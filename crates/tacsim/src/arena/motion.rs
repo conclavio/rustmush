@@ -42,11 +42,17 @@
 //!
 //! Each of the three rates above was written `rate × dt / 1000` and the
 //! remainder dropped, three times per unit per substep — so the *substep length*
-//! was an input to the answer. X.6's own measurement is the evidence: one
-//! scripted climb printed five `blocked` events at 150 ms substeps against one at
-//! 250, because a held tank gained a few cm/s on the ragged 50 ms tail of each
-//! pulse, covered no whole centimetre, and so never reached the boundary to be
-//! refused at again.
+//! was an input to the answer. A crawl is the plainest evidence: a unit ordered
+//! to 3 cm/s covered 0.75 cm in a 250 ms substep, which truncated to nothing, so
+//! it stood still for as long as it was driven.
+//!
+//! **X.6's five-against-one `blocked` count was read as the same defect and is
+//! not one** (16b cut Q.6 measured it): the carries removed every truncation in
+//! motion and that count did not move — 250 ms still prints one and 150 ms still
+//! prints five. Its cause is the *two flags* cut F.2 split deliberately, the
+//! per-substep `blocked` flag against the `held` condition, and this module's
+//! `one_obstacle_is_one_stop_at_every_partition` test measures it rather than
+//! asserting it away.
 //!
 //! So each rate keeps what it did not spend, on
 //! [`crate::arena::state::MotionCarry`], exactly the way [`crate::arena::heat`]

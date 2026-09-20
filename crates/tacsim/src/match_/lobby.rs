@@ -274,8 +274,21 @@ pub enum SimError {
     /// tank that is not a unit, one still carrying a `deployed` marker, a frozen
     /// definition owner, a reference the registry does not hold. Every one of
     /// them is a broken world rather than a player's mistake, so the line names
-    /// the slot and quotes the reason rather than advising a repair.
-    #[error("Slot {team} {index} cannot field {unit_type}: {why}")]
+    /// the slot and advises no repair.
+    ///
+    /// **The sentence does not quote the reason** (16b cut Q.8, fixer:
+    /// correctness Q8-6). `refit_unit`'s reasons carry the tank's object number
+    /// (`#57 is deployed; ...`), and this line is shown to whoever typed `SIM
+    /// START` — who may be the *other* side's lead, and for whom an object
+    /// number is a fact about a machine their platform has not detected (doc 16
+    /// §1, §5). The slot's own public designator is already on the board, so it
+    /// stays; the raw reason goes to the server log, which is where the staff
+    /// who can act on it read. [`Refit::why`] carries it there and is
+    /// deliberately not in the message.
+    #[error(
+        "Slot {team} {index} cannot field {unit_type}: the simulator refused the refit. Staff \
+         should read the server log."
+    )]
     Refit {
         /// Which side.
         team: &'static str,
@@ -283,7 +296,8 @@ pub enum SimError {
         index: u8,
         /// The unit type it asked for, as the board spells it.
         unit_type: String,
-        /// What refused.
+        /// **What refused, for the server log only** — never in the sentence,
+        /// because it names the object.
         why: String,
     },
     /// The centre is not in a state that admits this.
@@ -690,8 +704,16 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     // every other leave in the project's life it writes nothing.
     //
     // [`reset_stock_tanks`]: crate::match_::reset_stock_tanks
+    //
+    // **And when it is not the last, the leaver's own pod is put back** (16b cut
+    // Q.8, fixer). The whole-roster pass above would be wrong here: during
+    // `Boarding` the other pilots' tanks have already been refitted to what they
+    // chose, and a match is about to check them out. Only the slot that just went
+    // is un-fitted, which is what makes the choice go with the pilot.
     if emptied {
         crate::match_::reset_stock_tanks(ctx);
+    } else {
+        unfit_slot(ctx, team, index);
     }
     let name = display_name(ctx.w, actor);
     announce(
@@ -844,21 +866,30 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
     require_layer(ctx.w)?;
     in_centre(ctx.w, actor)?;
     let account = account_of(ctx.w, actor)?;
-    // The slot before the state: outside `Selection` nobody in `Idle` or a
-    // terminal centre holds one, so "claim a slot first" is the honest line
-    // there, and a pilot who holds one through `Boarding` or `Running` gets the
-    // state refusal that is honest for them.
+    let state = centre(ctx.w).ok_or(SimError::Unavailable)?.state;
+    // **The slot before the state, but only where the advice is true** (16b cut
+    // Q.8, fixer: correctness Q8-5).
+    //
+    // [`SimError::NoSlotToField`] is [`SimError::NoSlot`] said as the thing to do
+    // next — "claim a slot first: SIM TEAM red|blue" — and [`claim`] accepts
+    // exactly three states: `Idle`, `Selection`, and a terminal centre, where the
+    // claim clears the last match's board first. In `Boarding`, `Running` and
+    // `Stopping` it is refused, so there that sentence advises a verb the caller
+    // cannot type. In those three the state refusal is what is honest: for a
+    // pilot who holds a slot, as it always was, and now for one who does not.
+    if !matches!(state, MatchState::Idle | MatchState::Selection) && !state.is_terminal() {
+        return Err(SimError::WrongState {
+            state: state.as_str(),
+        });
+    }
     let held = centre(ctx.w)
         .and_then(|centre| centre.slot_of_account(account))
         .cloned()
         .ok_or(SimError::NoSlotToField)?;
-    {
-        let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
-        if centre.state != MatchState::Selection {
-            return Err(SimError::WrongState {
-                state: centre.state.as_str(),
-            });
-        }
+    if state != MatchState::Selection {
+        return Err(SimError::WrongState {
+            state: state.as_str(),
+        });
     }
     let authored = authored_unit_type(ctx.w, held.team, held.index);
     let Some(word) = choice.map(str::trim).filter(|word| !word.is_empty()) else {
@@ -1046,8 +1077,11 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         }
     }
     // **16b cut Q.8**: the refits, after every refusal above and before a single
-    // pod is locked or an id is minted.
-    refit_chosen_units(ctx)?;
+    // pod is locked or an id is minted. Every pod of the centre, not only the
+    // ones that chose something — a pod with no choice on it is put back to its
+    // authored type here, which is what stops a stale refit reaching the next
+    // claimant or the AI fill.
+    fit_fielded_units(ctx)?;
     let match_id = crate::match_::allocate_id(ctx).map_err(|_| SimError::Unavailable)?;
     let deadline = ctx
         .w
@@ -1080,82 +1114,232 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     Ok(())
 }
 
-/// **Fit every claimed slot's chosen unit type onto its pod's tank** (16b cut
-/// Q.8), the last thing [`start`] does before it writes anything of its own.
+/// **Fit every fielded pod's tank to the type that pod is to fly** (16b cut Q.8,
+/// walked over every slot by the fixer), the last thing [`start`] does before it
+/// writes anything of its own.
 ///
-/// Only a slot whose [`Slot::unit_type`] is `Some` **and** whose tank is not
-/// already that type is touched, so a lobby where nobody chose anything writes
-/// nothing at all and a second `SIM START` after a refused one refits only what
-/// is still wrong. AI-filled pods are never here: they hold no slot, so they
-/// field their authored tank, which is [`crate::match_::reset`]'s own baseline.
+/// The type one pod is to fly is `slot.unit_type.or(authored_unit_type(..))`:
+/// the claimant's own choice if the slot holds one, and **otherwise the type the
+/// arena pack authors that pod with**. That `or` is the whole of the fix.
+/// Walking only the slots that chose something left a pod refitted by an earlier
+/// refused `SIM START` — or by a pilot who chose and then left — standing as the
+/// machine nobody in this lobby asked for: the next claimant of that slot boarded
+/// it, and with `[tacsim.match].ai_fill` on the fill flew it, against the one
+/// sentence `docs/help/simulator.md` makes about the machines ("the machines that
+/// fill the unclaimed pods always fly the pod's own tank").
 ///
-/// **A refusal refuses the START**, before the pods lock and before an id is
-/// minted, so no partial lock is taken — but a tank already refitted in this
-/// same call **stays refitted**. There is no rollback and there does not need to
-/// be one: **every** return to `Idle` puts every roster tank back to its
-/// authored type (`crate::match_::reset_stock_tanks`), and a half-refitted
-/// centre that started no match is exactly the state that transition exists to
-/// clear. All four paths there run it — `@arena/reset`, a [`claim`] on a
-/// terminal centre, the boot pass, and the last [`leave`], which is the one this
-/// cut had to make true.
+/// So **every** pod of the centre is walked, claimed or not, and the ones with no
+/// choice on them are put back to their authored type before a single pod locks.
+/// A tank already holding the type it is to fly is not touched, so the healthy
+/// lobby — where nobody chose anything and the last `Idle` transition already put
+/// every tank back — writes nothing at all.
+///
+/// **A refusal on a claimed slot refuses the START**, before the pods lock and
+/// before an id is minted, so no partial lock is taken — but a tank already
+/// refitted in this same call **stays refitted**. There is no rollback and there
+/// does not need to be one: **every** return to `Idle` puts every roster tank
+/// back to its authored type (`crate::match_::reset_stock_tanks`), and a
+/// half-refitted centre that started no match is exactly the state that
+/// transition exists to clear. All four paths there run it — `@arena/reset`, a
+/// [`claim`] on a terminal centre, the boot pass, and the last [`leave`].
+///
+/// **A refusal on a pod nobody claimed is logged and skipped.** An unclaimed pod
+/// whose tank cannot be put back is a broken world (a stale `deployed` marker, a
+/// schema that stopped loading) and not something the pilots who are trying to
+/// start a match can do anything about; refusing their START over a machine's
+/// chassis would be a worse answer than letting the machine fly what it stands
+/// in. The next `Idle` reports the same tank in `ResetReport::deployed` or
+/// `failed`, which is the surface staff already read.
 ///
 /// # Errors
 ///
-/// [`SimError::Refit`], naming the slot, the type and what
-/// [`mush_tactics::module::refit_unit`] refused with.
-fn refit_chosen_units(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
-    // Everything the writes need, read in one borrow: the tank, the chosen id
-    // and the spec to build it from.
-    let mut owed: Vec<(Team, u8, ObjId, String, mush_tactics::UnitSpec)> = Vec::new();
-    {
+/// [`SimError::Refit`], naming the slot and the type; and [`SimError::NoUnit`]
+/// for a claimed slot whose pod has no tank at all, which [`start`] has already
+/// refused above.
+fn fit_fielded_units(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+    let (_, match_cfg, _) = configs(ctx.w).ok_or(SimError::Unavailable)?;
+    let per_side = slots_per_side(&match_cfg);
+    // Every pod of the centre in board order, each with the claim on it if there
+    // is one — read in one borrow, because everything below needs `ctx` mutably.
+    // A claimed slot whose index is outside the configured count (an operator
+    // narrowed `max_slots_per_side` under a live lobby) is still walked: it is in
+    // the match, and the fill's own loop is what the count bounds.
+    let pods: Vec<(Team, u8, bool, Option<SmolStr>)> = {
         let Some(centre) = centre(ctx.w) else {
             return Err(SimError::Unavailable);
         };
-        let chosen: Vec<(Team, u8, SmolStr)> = centre
-            .slots
-            .iter()
-            .filter_map(|slot| slot.unit_type.clone().map(|id| (slot.team, slot.index, id)))
-            .collect();
-        for (team, index, id) in chosen {
-            let Some(tank) = centre::tank_for_slot(ctx.w, team, index) else {
+        let mut pods: Vec<(Team, u8, bool, Option<SmolStr>)> = Vec::new();
+        for team in Team::ALL {
+            for index in 1..=per_side {
+                let claim = centre
+                    .slots
+                    .iter()
+                    .find(|slot| slot.team == team && slot.index == index);
+                pods.push((
+                    team,
+                    index,
+                    claim.is_some(),
+                    claim.and_then(|slot| slot.unit_type.clone()),
+                ));
+            }
+        }
+        for slot in &centre.slots {
+            if slot.index > per_side {
+                pods.push((slot.team, slot.index, true, slot.unit_type.clone()));
+            }
+        }
+        pods
+    };
+    // The reads, then the writes: `refit_unit` takes `ctx` mutably, and the
+    // binding it needs is cloned out first.
+    let mut owed: Vec<(Team, u8, bool, ObjId, String, mush_tactics::UnitSpec)> = Vec::new();
+    for (team, index, claimed, chosen) in pods {
+        let had_choice = chosen.is_some();
+        let Some(want) = chosen.or_else(|| authored_unit_type(ctx.w, team, index)) else {
+            // No choice and no authored type to fall back on: there is nothing
+            // this pass could put the tank back to, and the `Idle` reset has the
+            // same answer.
+            continue;
+        };
+        let Some(tank) = centre::tank_for_slot(ctx.w, team, index) else {
+            if claimed {
                 return Err(SimError::NoUnit {
                     team: team.as_str(),
                     index,
                 });
-            };
-            let word = type_word(ctx.w, id.as_str());
-            let refuse = |why: String| SimError::Refit {
-                team: team.as_str(),
-                index,
-                unit_type: word.clone(),
-                why,
-            };
-            let entry = mush_core::CanonicalId::new(id.as_str())
-                .map_err(|error| refuse(format!("`{id}` is not a canonical id: {error}")))?;
-            let binding = ctx
-                .w
-                .module_state::<crate::TacsimStore>()
-                .and_then(|store| store.definitions().bindings.get(&entry).cloned())
-                .ok_or_else(|| refuse(format!("no unit schema `{id}` is loaded")))?;
-            // Already that type: the tank was refitted by an earlier `SIM START`
-            // this selection, or it is authored as one. Nothing is written.
-            if mush_tactics::module::unit_of(ctx.w, tank)
-                .is_some_and(|held| *held.schema() == binding.spec.definition)
-            {
+            }
+            // An index with no pod at all: a centre whose content authors fewer
+            // tanks than the configured count. Nothing to fit.
+            continue;
+        };
+        let word = type_word(ctx.w, want.as_str());
+        let entry = match mush_core::CanonicalId::new(want.as_str()) {
+            Ok(entry) => entry,
+            Err(error) => {
+                let why = format!("`{want}` is not a canonical id: {error}");
+                if claimed {
+                    return Err(refit_refusal(team, index, word, why));
+                }
+                skipped_pod(team, index, tank, &word, &why);
                 continue;
             }
-            owed.push((team, index, tank, word, binding.spec));
+        };
+        let binding = ctx
+            .w
+            .module_state::<crate::TacsimStore>()
+            .and_then(|store| store.definitions().bindings.get(&entry).cloned());
+        let Some(binding) = binding else {
+            let why = format!("no unit schema `{want}` is loaded");
+            // A *choice* the catalog has lost between `SIM UNIT` and `SIM START`
+            // refuses the start; an authored type that is not loaded is the
+            // world the reset already lives with, and the tank stands.
+            if claimed && had_choice {
+                return Err(refit_refusal(team, index, word, why));
+            }
+            skipped_pod(team, index, tank, &word, &why);
+            continue;
+        };
+        // Already that type: the tank was refitted by an earlier `SIM START` this
+        // selection, or it is authored as one and nothing has moved it. Nothing
+        // is written, which is every pod of a healthy lobby.
+        if mush_tactics::module::unit_of(ctx.w, tank)
+            .is_some_and(|held| *held.schema() == binding.spec.definition)
+        {
+            continue;
+        }
+        owed.push((team, index, claimed, tank, word, binding.spec));
+    }
+    for (team, index, claimed, tank, word, spec) in owed {
+        if let Err(why) = mush_tactics::module::refit_unit(ctx, tank, &spec) {
+            if claimed {
+                return Err(refit_refusal(team, index, word, why));
+            }
+            skipped_pod(team, index, tank, &word, &why);
         }
     }
-    for (team, index, tank, word, spec) in owed {
-        mush_tactics::module::refit_unit(ctx, tank, &spec).map_err(|why| SimError::Refit {
-            team: team.as_str(),
-            index,
-            unit_type: word,
-            why,
-        })?;
-    }
     Ok(())
+}
+
+/// The refusal [`fit_fielded_units`] makes, with the raw reason put where staff
+/// read it and out of the sentence the lead sees (16b cut Q.8, fixer).
+fn refit_refusal(team: Team, index: u8, unit_type: String, why: String) -> SimError {
+    tracing::warn!(
+        team = team.as_str(),
+        index,
+        unit_type = %unit_type,
+        why = %why,
+        "tacsim: a claimed slot's unit could not be fitted; the start is refused"
+    );
+    SimError::Refit {
+        team: team.as_str(),
+        index,
+        unit_type,
+        why,
+    }
+}
+
+/// A pod nobody claimed whose tank could not be put back: logged, and the match
+/// goes on (16b cut Q.8, fixer).
+fn skipped_pod(team: Team, index: u8, tank: ObjId, unit_type: &str, why: &str) {
+    tracing::warn!(
+        team = team.as_str(),
+        index,
+        unit = %tank,
+        unit_type,
+        why,
+        "tacsim: an unclaimed pod's tank could not be fitted; it fields what it stands in"
+    );
+}
+
+/// **Put one pod's tank back to the type its arena pack authors** (16b cut Q.8,
+/// fixer) — what a slot's choice leaves behind when the slot itself goes.
+///
+/// [`Slot::unit_type`] is cleared with the slot, but the *tank* is not: after a
+/// `SIM START` the machine standing in that pod is the one the departing pilot
+/// chose, and during `Boarding` there is no return to `Idle` between their going
+/// and the check-out. So the two paths that drop a slot outright — [`leave`] and
+/// [`board_deadline`] — put that pod's tank back here, and the choice really does
+/// go with the pilot: the next claimant of the slot boards the pod's own machine,
+/// and with `[tacsim.match].ai_fill` on the fill flies the authored type, which is
+/// what `docs/help/simulator.md` promises.
+///
+/// It refuses nothing. A leave and a deadline are both things that have already
+/// happened, and neither can be undone over a tank; a failure is logged and the
+/// next `Idle` reset reports the tank again.
+///
+/// Silent and idempotent: a pod already holding its authored type — every pod of
+/// every lobby in which nobody chose anything — is compared and left alone.
+fn unfit_slot(ctx: &mut Ctx<'_>, team: Team, index: u8) {
+    let Some(want) = authored_unit_type(ctx.w, team, index) else {
+        return;
+    };
+    let Some(tank) = centre::tank_for_slot(ctx.w, team, index) else {
+        return;
+    };
+    let Ok(entry) = mush_core::CanonicalId::new(want.as_str()) else {
+        return;
+    };
+    let binding = ctx
+        .w
+        .module_state::<crate::TacsimStore>()
+        .and_then(|store| store.definitions().bindings.get(&entry).cloned());
+    let Some(binding) = binding else {
+        return;
+    };
+    if mush_tactics::module::unit_of(ctx.w, tank)
+        .is_some_and(|held| *held.schema() == binding.spec.definition)
+    {
+        return;
+    }
+    if let Err(why) = mush_tactics::module::refit_unit(ctx, tank, &binding.spec) {
+        tracing::warn!(
+            team = team.as_str(),
+            index,
+            unit = %tank,
+            why,
+            "tacsim: a vacated slot's tank could not be put back to its authored type"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1454,6 +1638,13 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
                 team.as_str()
             ),
         );
+        // **16b cut Q.8 (fixer): the choice goes with the slot.** A pilot dropped
+        // here chose their machine at `Selection` and `SIM START` fitted it; the
+        // pod they never boarded is about to be flown by the fill or left out of
+        // the match entirely, and either way what stands in it should be the pod's
+        // own tank again. Silent when they chose nothing, which is every drop in
+        // the project's life so far.
+        unfit_slot(ctx, *team, *index);
     }
     // **16b cut Q.7**: with the fill on the deadline asks about the centre and not
     // about a side — a side that boarded nobody is a side the machines fly, and

@@ -586,8 +586,9 @@ mod tests {
         assert_eq!(Clock::substep_ms(&cfg, 1_000, 1_000), 250);
         // 1,000 cm cells at 5,000 cm/s crosses the cell in 200 ms; the bound is
         // one centimetre short of that cell, so it is 199 — and 199 ms of travel
-        // at 5,000 cm/s is 995 cm, with the motion carry (16b cut Q.6) able to add
-        // at most one more.
+        // at 5,000 cm/s is 995 cm. The motion carry (16b cut Q.6) is added
+        // *inside* the same division, so it buys no extra centimetre on top: the
+        // whole substep's travel is at most `cell_cm - 1`, 999 cm.
         assert_eq!(Clock::substep_ms(&cfg, 1_000, 5_000), 199);
         // Fast enough to cross a cell in under the floor: the floor wins.
         assert_eq!(Clock::substep_ms(&cfg, 1_000, 100_000), MIN_SUBSTEP_MS);
