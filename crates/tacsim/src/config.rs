@@ -462,6 +462,35 @@ pub struct SensorsConfig {
     /// It is a configuration key and not a constant so that the owner can try the
     /// other reading on a box with a server-child restart and no build.
     pub designate_on_detection: bool,
+    /// **At or above this fraction of what it holds whole, a section reads
+    /// `green`** (16b cut Q.2; doc 16 §3.6), per mille.
+    ///
+    /// The three keys below are what `SCAN` turns the M32 cells into
+    /// ([`crate::arena::condition::Condition::of`]). They are configuration and
+    /// not a Rust table for the reason [`SensorsConfig::designate_on_detection`]
+    /// is — the owner tunes them on a box with a server-child restart and no
+    /// build — and not `resolution.json` because shipped content is compiled into
+    /// the binary and an operator pack cannot override a shipped id, so only
+    /// configuration is tunable at all.
+    ///
+    /// Every reader takes it `.min(1000)`, so a key above a whole section makes
+    /// everything below `green` and can never make the arithmetic overflow.
+    pub condition_green_permille: u32,
+    /// **At or above this fraction, a section reads `yellow`** (16b cut Q.2), per
+    /// mille; below it, `red`. Read `.min(1000)` for the reason above.
+    pub condition_yellow_permille: u32,
+    /// **How near a target has to be before a pass reads its bands at all** (16b
+    /// cut Q.2; doc 16 §2 W5), as a fraction of the effective reach the range test
+    /// just used — the ground's signature factor, the thermal term and the jamming
+    /// scale all already in it.
+    ///
+    /// A *close look*: a per-section reading at the very edge of detection would
+    /// be a bigger purchase than W5 prices identification at, so it costs one more
+    /// comparison per detection that has already passed every other test, and a
+    /// concealed or jammed target is that much harder to read for the same reason
+    /// it is harder to see. Read `.min(1000)`, so the widest this key can be is
+    /// *anything the platform can detect*.
+    pub condition_reach_permille: u32,
 }
 
 impl Default for SensorsConfig {
@@ -472,6 +501,12 @@ impl Default for SensorsConfig {
             max_signature_factor_permille: 1_500,
             lost_after_passes: 3,
             designate_on_detection: false,
+            // Two thirds and a third, so the three live bands are three roughly
+            // equal thirds of a section.
+            condition_green_permille: 667,
+            condition_yellow_permille: 334,
+            // Half the reach the range test just used.
+            condition_reach_permille: 500,
         }
     }
 }

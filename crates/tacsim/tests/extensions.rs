@@ -5440,3 +5440,150 @@ fn x6_the_limited_search_costs_what_it_costs() {
         pairs.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Q.2 — the band cache has one writer, and it is true of the unit at every step
+// ---------------------------------------------------------------------------
+
+/// **`UnitState::condition` equals `Condition::of` its own unit, for every unit
+/// in the match** (16b cut Q.2).
+///
+/// The whole reason `Arena::set_unit` exists: cut W.2's rule was that a unit's
+/// cells move only through one `mush_tactics::UnitMutationPlan`, but the
+/// *assignment* had two production sites — the impact and the heat plan — and a
+/// cache that either of them forgot would be a `SCAN` telling a gunner a spent
+/// turret is green. This is that invariant, asserted rather than grepped for.
+fn cache_agrees(arena: &Arena, at: &str) {
+    let sensors = SensorsConfig::default();
+    for state in &arena.units {
+        assert_eq!(
+            state.condition,
+            tacsim::arena::condition::Condition::of(
+                &state.unit,
+                sensors.condition_green_permille,
+                sensors.condition_yellow_permille,
+            ),
+            "{at}: the band cache on #{} has rotted away from its unit",
+            state.id.0
+        );
+    }
+}
+
+/// The laser duel with blue's left track already spent at check-out, so the match
+/// opens on 16b cut F.1's entry consequences with a section that is already gone.
+fn duel_with_a_spent_track() -> Arena {
+    let catalog = catalog();
+    let mut blue = unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL);
+    let addr = mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new("left_track").expect("a section"),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL).expect("a cell"),
+    };
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetCell { addr, value: 0 }],
+        None,
+        Some(SmolStr::new("test")),
+    )
+    .expect("a one-op plan");
+    let (post, _) = mush_tactics::apply(&blue.unit, &plan, 0).expect("the track is spent");
+    blue.unit = post;
+    let mut arena = arena_of(
+        &catalog,
+        vec![
+            unit_of(&catalog, content::LINE_TANK_LASER, RED, Team::Red, RED_CELL),
+            blue,
+        ],
+        &[],
+    );
+    for id in [RED, BLUE] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    let contact = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+    arena.contacts.insert(
+        RED,
+        contact,
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot_of(&arena, BLUE),
+        ),
+    );
+    arena.resolve_lock(RED, contact).expect("the lock holds");
+    arena
+}
+
+#[test]
+fn q2_the_band_cache_survives_an_entry_consequence_a_beam_and_a_heat_cycle() {
+    let mut arena = duel_with_a_spent_track();
+
+    // (1) **The entry consequence.** `Arena::new` computes the first value off
+    //     the record the world handed over, so a tank that checks in with a
+    //     spent track reads `destroyed` there from the opening frame rather than
+    //     from the first round that lands.
+    cache_agrees(&arena, "at check-out");
+    let bands = arena
+        .unit(BLUE)
+        .map(|state| state.condition.letters())
+        .unwrap_or_default();
+    assert_eq!(
+        bands, "ggdgg",
+        "the stock tank reads engine, hull, left_track, right_track, turret"
+    );
+
+    // (2) **The heat cycle.** A laser pulse writes the hull's heat cell through
+    //     `crate::arena::heat`, which is the second of the two production
+    //     writers `Arena::set_unit` took over. A heat cell moves no band — which
+    //     is exactly why it is the writer that would have been forgotten.
+    ready(&mut arena);
+    arena.resolve_fire(RED, "laser").expect("the shot");
+    assert_eq!(
+        arena.unit(RED).and_then(UnitState::heat_now),
+        Some(20),
+        "the shot really heated the tank"
+    );
+    cache_agrees(&arena, "after the shot's heat");
+    let mut wall = 0_i64;
+    for _ in 0..8 {
+        run(&mut arena, &mut wall, 500, 1);
+        cache_agrees(&arena, "through the cooling");
+    }
+    assert!(
+        arena
+            .unit(RED)
+            .and_then(UnitState::heat_now)
+            .is_some_and(|heat| heat < 20),
+        "the tank really cooled"
+    );
+
+    // (3) **The hit.** The impact is the other production writer, and this is
+    //     the one that does move a band: enough beams into one tank take its
+    //     armour down through the two floors.
+    let before = arena
+        .unit(BLUE)
+        .map(|state| state.condition)
+        .unwrap_or_default();
+    for _ in 0..60 {
+        ready(&mut arena);
+        // The heat ceiling is what stops a laser firing on demand, so a refused
+        // shot is answered by letting it cool rather than by clearing the cell:
+        // the ceiling is `x1_heat_rises_per_shot...`'s property, and driving it
+        // honestly here is what keeps both writers in the run.
+        if arena.resolve_fire(RED, "laser").is_err() {
+            run(&mut arena, &mut wall, 1_000, 4);
+            cache_agrees(&arena, "while the laser cooled");
+            continue;
+        }
+        run(&mut arena, &mut wall, 500, 2);
+        cache_agrees(&arena, "through the beams");
+    }
+    let after = arena
+        .unit(BLUE)
+        .map(|state| state.condition)
+        .unwrap_or_default();
+    assert_ne!(
+        after, before,
+        "forty beams moved no band at all, so the invariant above proves nothing"
+    );
+}

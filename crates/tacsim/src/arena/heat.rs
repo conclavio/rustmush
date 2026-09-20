@@ -230,10 +230,12 @@ fn apply_heat(
     let applied = arena
         .unit(unit)
         .map(|state| mush_tactics::apply(&state.unit, &plan, t_ms));
-    if let Some(Ok((post, _))) = applied
-        && let Some(state) = arena.unit_mut(unit)
-    {
-        state.unit = post;
+    // **16b cut Q.2**: through `Arena::set_unit`, the one assignment of a unit in
+    // non-test code, so the band cache cannot go stale behind a heat cycle. A
+    // heat cell is not armour and moves no band; going through the one writer
+    // anyway is what makes "one writer" a property and not a habit.
+    if let Some(Ok((post, _))) = applied {
+        arena.set_unit(unit, post);
     }
 }
 

@@ -1,4 +1,4 @@
-//! **The cockpit: boarding, the pilot's ten verbs, and the frame they read**
+//! **The cockpit: boarding, the pilot's twelve verbs, and the frame they read**
 //! (16b cut K.2; 16b §8 cut K, K2–K4; doc 16 §3.3 "Startup", "Stations are on
 //! the tank", §3.6 "What a pilot sees", §3.7, §3.8 "Disconnects", §5).
 //!
@@ -15,6 +15,7 @@
 //! VIEW                       the arena window, as a text map
 //! CONTACTS                   what the platform holds
 //! LOCK <contact>             hold one of them
+//! SCAN [<contact>]           what is left of one of them, by section
 //! FIRE [<weapon>]            shoot it
 //! WEAPONSTATUS               ammunition and readiness
 //! STATUS                     power, speed, heading, tempo
@@ -54,10 +55,10 @@
 //! # The verbs are contextual, and the gate is what makes them so
 //!
 //! There is no such thing as a verb that exists only in a cockpit: the command
-//! table is global. So the thirteen verbs are registered globally and
+//! table is global. So the fourteen verbs are registered globally and
 //! [`CockpitGate`] refuses each of them, with one line, wherever it does not
 //! mean anything — `BOARD` outside a team room, `EXIT` outside a pod, and the
-//! eleven cockpit selectors to anyone who is not focused on a station of a
+//! twelve cockpit selectors to anyone who is not focused on a station of a
 //! **deployed** unit. A pilot who has boarded but whose match has not started
 //! yet is in that last case on purpose: there is no arena to order until the
 //! trigger fires.
@@ -123,11 +124,13 @@ pub const EXIT_VERB: &str = "exit";
 /// the command table folds case on the way in (`Registry::lookup_idx`), so doc
 /// 16's capitals and a tired pilot's lower case are one verb.
 ///
-/// **16b cut Q.1** added the last two. Doc 16 §3.7 listed nine; the owner's first
-/// hand-played match wanted the two questions a pilot asks about a contact once
-/// they have one — *how far* and *which way* — as verbs rather than as columns to
-/// re-read `CONTACTS` for.
-pub const COCKPIT_VERBS: [&str; 11] = [
+/// **16b cut Q.1** added `range` and `bearing`. Doc 16 §3.7 listed nine; the
+/// owner's first hand-played match wanted the two questions a pilot asks about a
+/// contact once they have one — *how far* and *which way* — as verbs rather than
+/// as columns to re-read `CONTACTS` for.
+///
+/// **16b cut Q.2** added `scan`, which is the third: *what have I done to it*.
+pub const COCKPIT_VERBS: [&str; 12] = [
     "startup",
     "heading",
     "speed",
@@ -139,6 +142,7 @@ pub const COCKPIT_VERBS: [&str; 11] = [
     "status",
     "range",
     "bearing",
+    "scan",
 ];
 
 /// The station id one pod's pilot holds **on the tank** (doc 16 §3.3).
@@ -764,9 +768,16 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
                 _ => format!("Locked on {named}."),
             }
         }
-        FrameNotice::Hit { contact } => match contact {
-            Some(contact) => format!("Hit on {}.", contact.designator),
-            None => "Hit.".to_owned(),
+        // **16b cut Q.2**: the section word, where the shooter has earned one —
+        // the platform holds the target and has told it apart. `Hit on BA: turret.`
+        // against `Hit on X2.` against `Hit.`, which are the three things a gunner
+        // can honestly be told about where a round went.
+        FrameNotice::Hit { contact, section } => match (contact, section) {
+            (Some(contact), Some(section)) => {
+                format!("Hit on {}: {section}.", contact.designator)
+            }
+            (Some(contact), None) => format!("Hit on {}.", contact.designator),
+            (None, _) => "Hit.".to_owned(),
         },
         FrameNotice::Miss { contact, reason } => match contact {
             Some(contact) => format!("Miss on {}: {}.", contact.designator, miss_words(reason)),
@@ -812,6 +823,13 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
             } else {
                 format!("The {section} is destroyed: {cost}.")
             }
+        }
+        // **16b cut Q.2**: the gunner's half. The victim's line above says what it
+        // cost *them*; this one says only that the section went, because what a
+        // lost track does to a tank is the crew's own knowledge and a gunner
+        // watching from 400 m has not read it.
+        FrameNotice::TargetSectionLost { contact, section } => {
+            format!("{}'s {section} is destroyed.", contact.designator)
         }
         FrameNotice::Refused {
             order,
@@ -1567,7 +1585,7 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 }
 
 // ---------------------------------------------------------------------------
-// K3: the eleven cockpit verbs
+// K3: the twelve cockpit verbs
 // ---------------------------------------------------------------------------
 
 /// `STARTUP` — bring power up (doc 16 §3.3). Idempotent: the arena's own
@@ -1754,6 +1772,106 @@ pub fn bearing_line(row: &ContactRow, pass_ms: i64) -> String {
         row.relative_deg,
         stale_clause(row.age_ms, pass_ms)
     )
+}
+
+/// **`SCAN [<designator>]`** — what is left of one contact, section by section
+/// (16b cut Q.2; doc 16 §3.6, the owner's ask of 2026-09-19: *see the enemy
+/// status, not exact numbers but green/yellow/red*).
+///
+/// The same argument rules [`range`] follows: the named contact, else the
+/// platform's lock, else [`NO_LOCK_OR_NAME`]. What it prints is the reading the
+/// arena put on the contact ([`crate::arena::perception::FrameContact::condition`])
+/// and never a second computation, so the words a pilot reads and the bands a
+/// panel draws are one answer.
+fn scan(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    let held = last_frame(ctx.w, actor);
+    let (frame, row) = named_row(held.as_ref(), rest)?;
+    let lines = scan_lines(frame, &row);
+    say_and_frame(ctx, held.as_ref(), lines, false);
+    Ok(())
+}
+
+/// **The two-space indent a wrapped `SCAN` run carries** — `STATUS`'s damage
+/// block's own, so the two blocks line up under one another on a narrow terminal.
+const SCAN_INDENT: &str = "  ";
+
+/// **The lines `SCAN` says about one contact** (16b cut Q.2), split out from the
+/// world read the way [`range_line`] is, so every sentence can be pinned against a
+/// frame built by hand.
+///
+/// Four answers, and each is a different thing the pilot does not know:
+///
+/// * **unidentified** — `X2 is not identified yet; there is nothing to read.`
+///   Section ids are a chassis vocabulary, so a blip has no sections to read
+///   bands into; it says so rather than refusing, because the pilot does hold the
+///   contact and telling them otherwise would be a lie about their own scope.
+/// * **classified, no reading** — `No reading on BA yet: close the range for a
+///   look.` The close look is the price, and this is the only line that says what
+///   the price is.
+/// * **a reading** — the header with the **look's** own age, then one
+///   `section band` pair per section, comma-separated and wrapped at
+///   [`DAMAGE_COLUMNS`].
+/// * **unheld** — never reaches this function: [`named_row`] answers the one
+///   byte-identical [`NO_SUCH_CONTACT`] first.
+///
+/// **Never a number other than the age.** The bands are what a sight is worth
+/// (`crate::arena::condition`), and there is no exact figure on this path for a
+/// later surface to print.
+#[must_use]
+pub fn scan_lines(frame: &Frame, row: &ContactRow) -> Vec<String> {
+    let named = row.designator;
+    if row.class == "unknown" {
+        return vec![format!(
+            "{named} is not identified yet; there is nothing to read."
+        )];
+    }
+    let reading = frame
+        .contacts
+        .iter()
+        .find(|held| held.id == row.id)
+        .and_then(|held| held.condition);
+    let Some(reading) = reading else {
+        return vec![format!(
+            "No reading on {named} yet: close the range for a look."
+        )];
+    };
+    // The vocabulary the bands are in the order of. A reading whose table is not
+    // on the frame cannot be produced by the arena — the index is handed out by
+    // the walk that builds the list — and is answered with no sections rather
+    // than with a guess.
+    let names: &[SmolStr] = frame
+        .scan_tables
+        .get(usize::from(reading.table))
+        .map_or(&[], Vec::as_slice);
+    let mut lines = vec![format!(
+        "Scan of {named}, read {} s ago:",
+        reading.age_ms / 1_000
+    )];
+    let mut run = String::new();
+    for (index, section) in names.iter().enumerate() {
+        let Some(band) = reading.bands.band(index) else {
+            continue;
+        };
+        let cell = format!("{section} {}", band.as_str());
+        // The comma stays on the line it follows, so a wrapped run reads as one
+        // sentence rather than as two lists.
+        if !run.is_empty() && run.len() + 2 + cell.len() > DAMAGE_COLUMNS {
+            run.push(',');
+            lines.push(run.clone());
+            run.clear();
+        }
+        if run.is_empty() {
+            run.push_str(SCAN_INDENT);
+        } else {
+            run.push_str(", ");
+        }
+        run.push_str(&cell);
+    }
+    if !run.is_empty() {
+        lines.push(run);
+    }
+    lines
 }
 
 /// **The contact a read verb is about** (16b cut Q.1): the one the pilot named,
@@ -2108,6 +2226,17 @@ pub const FRAME_VERSION: u32 = 1;
 /// of that sighting rather than the hold time since first detection. A panel is
 /// therefore drawing what the platform knows, exactly as the line client is.
 ///
+/// **16b cut Q.2** added `condition` to each contact — `{ table, bands, age_ms }`
+/// or `null` — and `scan_tables` beside `contacts`. `bands` is the compact
+/// spelling (`"ggyrd"`, one letter a section: green, yellow, red, destroyed) in
+/// the order of `scan_tables[table]`, and `age_ms` is the age of the **look** and
+/// not of the plot. The table index lives inside the object on purpose: a contact
+/// with no reading can publish no section vocabulary by construction, and
+/// `scan_tables` lists a chassis only for a contact that carries one. Each notice
+/// also gained `section` — the section of the **target** a gunner's line is
+/// about, `null` on every other kind — so the new `target_section_lost` notice
+/// carries its section as a field and not only inside `text`.
+///
 /// **16b cut F.2** also added `sections` — doc 16 §5's status block, one entry per
 /// section as `{ id, condition, internals, internals_max, facets[{ id, armor,
 /// armor_max }] }` — and `heat` as `{ heat, max, overheated }` or `null`, which
@@ -2146,6 +2275,20 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
                 "age_s": row.age_ms / 1_000,
                 "cell": row.cell.map(|(x, y)| [x, y]),
                 "friendly": row.friendly,
+                // 16b cut Q.2: what the platform has read off this contact's
+                // hull, or `null`. The table index is inside the object, so a
+                // row with no reading carries no section vocabulary at all —
+                // which is the observer rule on this surface, by construction.
+                "condition": frame
+                    .contacts
+                    .iter()
+                    .find(|held| held.id == row.id)
+                    .and_then(|held| held.condition)
+                    .map(|reading| serde_json::json!({
+                        "table": reading.table,
+                        "bands": reading.bands.letters(),
+                        "age_ms": reading.age_ms,
+                    })),
             })
         })
         .collect();
@@ -2164,6 +2307,12 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
                 "kind": notice.kind().as_str(),
                 "contact": notice.contact().map(|id| id.to_string()),
                 "designator": notice.designator().map(|named| named.to_string()),
+                // 16b cut Q.2: the section of the *target* a gunner's line is
+                // about, so a panel that wants to flash it does not have to
+                // regex it back out of `text`. `null` on every other notice,
+                // the victim's own two included — what a round did inside this
+                // tank is `sections` above, with its facet and its cost.
+                "section": notice.section().map(SmolStr::as_str),
                 "text": text,
             }))
         })
@@ -2243,6 +2392,10 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
         "lock_p_permille": chosen,
         "lock_percent": chosen.map(|permille| permille / 10),
         "contacts": contacts,
+        // 16b cut Q.2: the section vocabularies the readings above are in the
+        // order of, one entry per distinct chassis and only for contacts that
+        // carry a reading. One name in Rust and on the wire.
+        "scan_tables": frame.scan_tables,
         "notices": notices,
         "weapons": weapons,
         "sections": sections,
@@ -2639,7 +2792,7 @@ pub fn resolve_designator(rows: &[ContactRow], word: &str) -> Option<ContactId> 
 // The gate and the dispatch
 // ---------------------------------------------------------------------------
 
-/// **The contextual gate**: the thirteen verbs exist everywhere and mean
+/// **The contextual gate**: the fourteen verbs exist everywhere and mean
 /// something in a team room, in a pod, and at a deployed unit's station.
 ///
 /// One line each, and nothing else refused: a gate that is asked about `look`
@@ -2756,7 +2909,7 @@ fn refusal(error: CockpitError) -> CmdError {
     CmdError::msg(error.to_string())
 }
 
-/// Run one cockpit verb: resolve the station first, so every one of the eleven
+/// Run one cockpit verb: resolve the station first, so every one of the twelve
 /// answers the same way to somebody who is not flying.
 fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError> {
     let Some((unit, _station)) = flying(ctx.w, ctx.actor) else {
@@ -2777,6 +2930,9 @@ fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError
         // reads.
         "range" => range(ctx, &rest),
         "bearing" => bearing(ctx, &rest),
+        // 16b cut Q.2: what is left of a contact, off the reading the arena put
+        // on it.
+        "scan" => scan(ctx, &rest),
         // Not reachable: the table below registers exactly `COCKPIT_VERBS`, and
         // this arm is the closed-set proof rather than a panic.
         _ => Err(CockpitError::OutsideCockpit),
@@ -2812,6 +2968,12 @@ fn cockpit_help(verb: &str) -> String {
         "bearing" => "BEARING [<contact>] which way a contact plotted, absolute and off your own \
                       nose; your lock if you name none."
             .to_owned(),
+        // 16b cut Q.2: and the help says what earns a reading, because a pilot
+        // who reads `No reading yet` needs to know the answer is to drive closer.
+        "scan" => "SCAN [<contact>]    what is left of a contact, section by section, as green, \
+                   yellow, red or destroyed; your lock if you name none. Only for a contact you \
+                   have identified and had a close look at, and never an exact number."
+            .to_owned(),
         "fire" => "FIRE [<weapon>]     shoot your lock; the cannon unless you name another weapon."
             .to_owned(),
         // 16b cut F.2 gave both of these more to say, and a help line that
@@ -2825,7 +2987,7 @@ fn cockpit_help(verb: &str) -> String {
     }
 }
 
-/// Register the cockpit on the **tacsim** module: thirteen verbs and one gate.
+/// Register the cockpit on the **tacsim** module: fourteen verbs and one gate.
 ///
 /// The state the verbs read is [`ArenaRegistry`]'s and [`MatchBook`]'s, both
 /// registered by [`crate::arena_bridge::register`], so nothing here declares a
@@ -2837,9 +2999,10 @@ fn cockpit_help(verb: &str) -> String {
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `BOARD` writes a station document, a placement, a billet and (at the
     // trigger) cut T.3's whole check-out; `EXIT` writes the same in reverse. Of
-    // the eleven selectors, five stage one arena intent each and the other six —
-    // cut Q.1's `RANGE` and `BEARING` among them — only read the last frame;
-    // none of the eleven writes anything at all. They are registered on the same
+    // the twelve selectors, five stage one arena intent each and the other seven
+    // — cut Q.1's `RANGE` and `BEARING` and cut Q.2's `SCAN` among them — only
+    // read the last frame; none of the twelve writes anything at all. They are
+    // registered on the same
     // lane as their two neighbours rather than split across two classifications
     // for one subsystem.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
@@ -3205,8 +3368,8 @@ mod tests {
         }
         assert_eq!(
             COCKPIT_VERBS.len(),
-            11,
-            "doc 16 section 3.7's nine, and cut Q.1's two read verbs"
+            12,
+            "doc 16 section 3.7's nine, cut Q.1's two read verbs and cut Q.2's SCAN"
         );
     }
 }

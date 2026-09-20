@@ -1071,7 +1071,30 @@ pub struct UnitState {
     /// M32 unit truth, carried opaque — and, from 16b cut W.2, written by exactly
     /// one thing: one [`mush_tactics::UnitMutationPlan`] per impact through
     /// `mush_tactics::apply` (doc 16 §3.5 "Damage").
+    ///
+    /// **16b cut Q.2 made "exactly one thing" true of the assignment too.** There
+    /// were two production writers — the impact in `crate::arena::damage` and the
+    /// heat plan in `crate::arena::heat` — and a cache beside a field with two
+    /// writers is a cache that rots. [`Arena::set_unit`] is the only assignment of
+    /// this field in non-test code, and it is what keeps
+    /// [`UnitState::condition`] true of it.
     pub unit: TacticalUnit,
+    /// **What a gunner would read off this tank**, cached (16b cut Q.2; doc 16
+    /// §3.6), recomputed by [`Arena::set_unit`] on every write of
+    /// [`UnitState::unit`] and by [`Arena::new`] at check-out.
+    ///
+    /// A cache and not authoritative state: it is a pure function of `unit` and of
+    /// the two `[tacsim.sensors]` floors, neither of which moves inside a match
+    /// except through the one writer. It is therefore **not** folded into
+    /// [`crate::arena::hash::state_hash`] on its own — `unit` is what M32
+    /// journals, and hashing a function of it would fold the same truth twice —
+    /// while the *readings* copied off it onto contacts are folded, because those
+    /// are knowledge and they go stale.
+    ///
+    /// It exists because a sensor pass reads it once per close classified
+    /// detection, and walking five sections and their facets per detection per
+    /// pass is exactly the per-pulse cost doc 16 §2 W4 bounds.
+    pub condition: crate::arena::condition::Condition,
     /// **Per-weapon ready time in arena milliseconds** (16b cut W.1 fills A.1's
     /// map): the arena millisecond at or after which that weapon may fire again,
     /// set to `now + cycle_ms` by an accepted shot. One row per weapon, laid down
@@ -1437,6 +1460,20 @@ pub struct ShadowContact {
     /// *place* — a second hop for the position, which is exactly what rule 1
     /// exists to stop.
     pub own_seen: Option<OwnSighting>,
+    /// **The per-section bands this platform holds on the target**, with the
+    /// arena timestamp of the look that took them (16b cut Q.2; doc 16 §3.6) —
+    /// this platform's own, or a teammate's as a share carried it.
+    ///
+    /// `None` until the platform has had a **close look** at a contact that is
+    /// **classified** (`crate::arena::perception::Detection`'s `close`), which is
+    /// what makes a reading earned rather than a free consequence of detection.
+    /// It is what `SCAN` prints, and it dies with the contact row: the store's
+    /// `expire` removes the row, so a re-acquired blip is `Unknown` again and
+    /// reads nothing until it has been told apart and looked at a second time.
+    ///
+    /// It is **not** [`OwnSighting::condition`]: this one may be a teammate's,
+    /// and only this platform's own may be put back on the mesh.
+    pub seen_condition: Option<crate::arena::condition::Reading>,
 }
 
 /// **One platform's own sighting of a target** (16b cut F.3): the moment, and
@@ -1447,11 +1484,31 @@ pub struct OwnSighting {
     pub at_ms: i64,
     /// Where the target stood, as this platform's own sensors took it.
     pub plot: SeenPose,
+    /// **The bands this platform's OWN sensors last read off the target** (16b
+    /// cut Q.2), with the timestamp of *that look* and not of this sighting.
+    ///
+    /// The two stamps differ on purpose. A sighting is every pass the platform
+    /// holds the target; a **look** is only the passes it held the target
+    /// classified and inside the close-look reach. So this field **carries
+    /// forward** across refreshes that did not earn a new reading, keeping its own
+    /// older stamp, and a share hands the receiver a reading that is honestly as
+    /// old as the look behind it.
+    ///
+    /// It is what may travel on the mesh, which is why it rides here and not
+    /// beside [`ShadowContact::seen_condition`]: a copy of somebody else's reading
+    /// must never be relayed a second hop (doc 16 §2 W6).
+    pub condition: Option<crate::arena::condition::Reading>,
 }
 
 impl ShadowContact {
     /// **A contact this platform's own sensors have just taken** at `t_ms`, with
     /// the target where it stood at that sighting (16b cut F.3).
+    ///
+    /// **16b cut Q.2**: and with no reading of any kind. A contact this
+    /// constructor makes is `Unknown` at every production call site, and an
+    /// unidentified return has no section vocabulary to read bands into; the
+    /// sensor pass writes one later, on a pass that finds the contact classified
+    /// and close.
     #[must_use]
     pub const fn sighted(
         target: ObjId,
@@ -1468,7 +1525,9 @@ impl ShadowContact {
             own_seen: Some(OwnSighting {
                 at_ms: t_ms,
                 plot: seen_at,
+                condition: None,
             }),
+            seen_condition: None,
         }
     }
 
@@ -2452,6 +2511,15 @@ impl Arena {
                 .filter(|weapon| entry.carries(&weapon.mount_section))
                 .collect();
             let weapons_left = weapons.len();
+            // **16b cut Q.2**: the first value of the band cache, off the record
+            // the world handed over — so a tank that checks in with a shot-off
+            // turret reads `destroyed` there from the opening frame, exactly as
+            // cut F.1's entry consequences already put its lost track in force.
+            let condition = crate::arena::condition::Condition::of(
+                &unit.unit,
+                sensors_cfg.condition_green_permille.min(1_000),
+                sensors_cfg.condition_yellow_permille.min(1_000),
+            );
             states.push(UnitState {
                 id: unit.id,
                 team: unit.team,
@@ -2527,6 +2595,7 @@ impl Arena {
                 heat,
                 controller: unit.controller,
                 unit: unit.unit,
+                condition,
                 lock: None,
                 blocked: false,
                 held: false,
@@ -2724,6 +2793,37 @@ impl Arena {
             .binary_search_by_key(&id, |state| state.id)
             .ok()?;
         self.units.get_mut(index)
+    }
+
+    /// **The one assignment of [`UnitState::unit`] in non-test code** (16b cut
+    /// Q.2; doc 16 §3.5 "Damage", D-16-6): take the unit `mush_tactics::apply`
+    /// handed back, and recompute the band cache beside it.
+    ///
+    /// Cut W.2's rule was already that a unit's cells move only through one
+    /// [`mush_tactics::UnitMutationPlan`] per change — but the *assignment* had
+    /// two production sites, the impact in [`crate::arena::damage`] and the heat
+    /// plan in [`crate::arena::heat`], and cut Q.2 added a cache
+    /// ([`UnitState::condition`]) that both of them would have had to remember.
+    /// A cache with two writers is a cache that rots, and a rotted band is a
+    /// `SCAN` that tells a gunner a spent turret is green. So there is one
+    /// function, both call it, and a third site added later is a diff somebody
+    /// reads rather than a silent divergence.
+    ///
+    /// A unit this arena does not hold is a no-op: the caller has already
+    /// resolved it, and `apply` produced a unit for an id that has left the match
+    /// only if the match let go of it inside the same substep.
+    pub(crate) fn set_unit(&mut self, id: ObjId, post: TacticalUnit) {
+        // Read the floors before the borrow, and read them `.min(1000)` the way
+        // every consumer of these keys does (their validation is Q.7's).
+        let condition = crate::arena::condition::Condition::of(
+            &post,
+            self.sensors_cfg.condition_green_permille.min(1_000),
+            self.sensors_cfg.condition_yellow_permille.min(1_000),
+        );
+        if let Some(state) = self.unit_mut(id) {
+            state.unit = post;
+            state.condition = condition;
+        }
     }
 
     /// **Take one pilot off the frame roster** (16b cut F.1; doc 16 §3.6).

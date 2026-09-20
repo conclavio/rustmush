@@ -902,13 +902,21 @@ async fn lock_refuses_every_id_identically_and_fire_refuses_for_want_of_one() {
 /// designator whose tank is out there and undetected, a provisional number
 /// nothing issued, a designator of nothing at all, and the sixteen digits that
 /// stopped being typable with this cut.
+///
+/// **16b cut Q.2** put `SCAN` on the same two rules. It matters more there than
+/// on the other two: `SCAN` of a contact the platform holds has three different
+/// answers of its own (unidentified, no reading, a reading), so a fourth answer
+/// for a contact it does *not* hold would be the one place the refusals could say
+/// which tanks are out there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn range_and_bearing_refuse_with_their_own_line_and_one_refusal_for_a_name() {
     let mut rig = Rig::boot(2);
     rig.fly().await;
     assert!(rig.frame_for(0).await, "the arena sends a frame");
 
-    for verb in ["range", "bearing"] {
+    // 16b cut Q.2 put `SCAN` on the same three rules: the named contact, else the
+    // lock, else this one line.
+    for verb in ["range", "bearing", "scan"] {
         let said = rig.say(0, verb);
         assert!(
             said.contains(cockpit::NO_LOCK_OR_NAME),
@@ -925,7 +933,7 @@ async fn range_and_bearing_refuse_with_their_own_line_and_one_refusal_for_a_name
     assert_ne!(cockpit::NO_LOCK, cockpit::NO_LOCK_OR_NAME);
 
     let mut answers: Vec<String> = Vec::new();
-    for verb in ["lock", "range", "bearing"] {
+    for verb in ["lock", "range", "bearing", "scan"] {
         let mut one: Vec<String> = Vec::new();
         for name in ["ba", "BA", "X1", "ZZ", "0123456789abcdef", "zzzz"] {
             let said = rig.say(0, &format!("{verb} {name}"));

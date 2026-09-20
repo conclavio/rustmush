@@ -1677,13 +1677,24 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     // is listed under both spellings, because the contact was told apart while
     // the rounds were in the air and the sentence names whatever the row read as
     // at the moment it was staged.
+    //
+    // **16b cut Q.2** put the section word on the shooter's line, so the bare
+    // `Hit on BA.` spelling is no longer the one a classified contact produces —
+    // both are listed, and the `Hit on BA: ` **prefix** is listed beside them so
+    // the assertion cannot quietly become vacuous the next time the sentence
+    // gains a clause. `BA's turret is destroyed.` is the shooter's other new
+    // sentence; the victim's own is `The turret is destroyed: …`, which is a
+    // different string and is legitimately in the victim's transcript.
     let shot_at = first_contact(&mut ada).await;
     for leak in [
         RED_TANK.to_string(),
         format!("#{red}"),
         format!("Hit on {contact}."),
         format!("Hit on {shot_at}."),
+        format!("Hit on {contact}: "),
+        format!("Hit on {shot_at}: "),
         format!("{shot_at} destroyed."),
+        format!("{shot_at}'s "),
         "Firing".to_string(),
         "Locked on".to_string(),
         "to hit".to_string(),
@@ -1701,6 +1712,150 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
         !shooter.contains("Hit on the "),
         "the shooter was shown the target's own damage:\n{shooter}"
     );
+
+    // ---- the gunner, and the one word this cut gave them ---------------
+    //
+    // **16b cut Q.2**: the shooter is told which section a round found and which
+    // section came apart, and *only* for a contact their own platform holds AND
+    // has told apart — because a section id is a chassis vocabulary
+    // (`left_track` against `left_leg`), so a section word on an unidentified
+    // blip is identification by gunfire, which doc 16 §2 W5 prices at
+    // `classify_after_ms` of looking.
+    let gunner = strip_ansi(&ada.seen);
+    let outcomes: Vec<&str> = gunner
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("Hit on ") && !line.starts_with("Hit on the "))
+        .collect();
+    assert!(
+        !outcomes.is_empty(),
+        "the gunner was told nothing:\n{gunner}"
+    );
+    for line in &outcomes {
+        // A provisional return earns no section word at all.
+        if line.starts_with("Hit on X") {
+            assert!(
+                !line.contains(':'),
+                "a section word on a return the platform has not identified: {line}"
+            );
+        }
+        // And whatever the line says, it carries no facet and nothing of the
+        // target's own gauges.
+        for leak in ["armour", "facet", "internals", "of "] {
+            assert!(
+                !line.contains(leak),
+                "the gunner's line carried {leak:?}: {line}"
+            );
+        }
+        // The section word itself is a word and never a number. The *designator*
+        // is a number when it is provisional (`Hit on X1.`), which is the
+        // platform's own name for the return and is exactly what cut Q.1 made it;
+        // what may not carry one is the part of the line that is about the
+        // target's hull.
+        if let Some((_, section)) = line.split_once(": ") {
+            assert!(
+                !section.chars().any(|c| c.is_ascii_digit()),
+                "the section word carried a number: {line}"
+            );
+        }
+    }
+    no_sixteen_digit_word(&gunner, "the gunner's transcript");
+
+    // ---- `SCAN`, on the shooter's own scope ----------------------------
+    //
+    // It defaults to the platform's lock, which is the contact the rounds above
+    // were fired at, so this is the reading the gunner earned by closing to
+    // muzzle range.
+    //
+    // The answer is a header line and then the run of bands, sent as separate
+    // lines, so the read is retried until the **whole** answer is in the window:
+    // a reader that stopped at the header would be asserting about half of it.
+    // The stock tank's five sections do not fit on one 76-column line, so the
+    // last of them is the needle.
+    //
+    // The wait is on the reading itself and **not** on either outcome: the two
+    // tanks are forty metres apart on open grass, which is well inside
+    // `condition_reach_permille` of the stock sight's reach, so a `SCAN` that
+    // still said `No reading on …` here would be the verb failing and not a
+    // fixture the test does not control. Every claim below is therefore
+    // unconditional.
+    let mut scanned = String::new();
+    for _ in 0..DRIVE_BUDGET {
+        let said = ask(&mut ada, "SCAN", &shot_at).await;
+        if said.contains("turret") {
+            scanned = said;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        scanned.contains("Scan of "),
+        "SCAN of the lock never read the target: {scanned}"
+    );
+    no_sixteen_digit_word(&scanned, "SCAN of the lock");
+    names_nothing(&scanned, red, blue, "SCAN of the lock");
+    // Never a number other than the age of the look: a band line names a section
+    // and a word, and between them the runs name all five of the stock tank's.
+    let runs: Vec<&str> = scanned
+        .lines()
+        .filter(|line| line.starts_with("  "))
+        .collect();
+    assert!(!runs.is_empty(), "SCAN printed no bands: {scanned}");
+    for line in &runs {
+        assert!(
+            !line.chars().any(|c| c.is_ascii_digit()),
+            "a band line carried a number: {line}"
+        );
+    }
+    let bands = runs.join(" ");
+    for section in ["hull", "turret", "left_track", "right_track", "engine"] {
+        assert!(
+            bands.contains(section),
+            "SCAN left out the {section}: {bands}"
+        );
+    }
+
+    // Every shape of name the platform does not hold takes the one
+    // byte-identical refusal, and `SCAN` may not be the verb that tells a pilot
+    // which tanks are out there: it has three different answers of its own for a
+    // contact it *does* hold, so a fourth for one it does not would be the leak.
+    let mut refusals: Vec<String> = Vec::new();
+    for name in ["ZZ", "X9", "RA", "0123456789abcdef", "zzzz"] {
+        let said = ask(&mut ada, &format!("SCAN {name}"), NO_SUCH_CONTACT).await;
+        assert!(
+            !said.contains("Scan of ") && !said.contains("not identified"),
+            "SCAN {name} answered something about a contact: {said}"
+        );
+        // The **answer** and not the window: what arrives between the mark and
+        // the refusal may still carry the tail of the previous read's own lines,
+        // and the claim here is that the four refusals are one sentence.
+        let answer = said.split_once(&format!("SCAN {name}")).map_or_else(
+            || said.trim().to_owned(),
+            |(_, tail)| tail.trim().to_owned(),
+        );
+        assert_eq!(answer, NO_SUCH_CONTACT, "SCAN {name}: {said}");
+        refusals.push(answer);
+    }
+    let first = refusals.first().cloned().unwrap_or_default();
+    for said in &refusals {
+        assert_eq!(
+            said, &first,
+            "SCAN answered two different refusals for two names it does not hold"
+        );
+    }
+
+    // ---- and the target's pilot reads none of it -----------------------
+    //
+    // The victim is told what it cost *their* tank (`The turret is destroyed:
+    // …`), which is their own physical knowledge; the gunner's sentence about
+    // the same section is a different string and is the shooter's alone.
+    let target_now = strip_ansi(&bo.seen[target_mark..]);
+    for line in target_now.lines() {
+        assert!(
+            !line.trim().starts_with("Scan of "),
+            "the target read the gunner's scan: {line}"
+        );
+    }
 
     // ---- and it really was hit -----------------------------------------
     say(&mut ada, "SIM ABORT", "aborts match").await;

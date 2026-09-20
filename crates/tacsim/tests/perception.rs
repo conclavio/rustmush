@@ -41,6 +41,7 @@ use smol_str::SmolStr;
 use std::collections::BTreeMap;
 
 use tacsim::arena::clock::Tempo;
+use tacsim::arena::condition::{Condition, ConditionBand, Reading};
 use tacsim::arena::intents::{Control, Intent, IntentKind};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::perception::{
@@ -2645,5 +2646,725 @@ fn one_scripted_approach_at_three_cadences_is_one_list_one_hash_and_one_column()
             run.columns, first.columns,
             "the designator column differs at {cadence} ms"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (p) the close look, the reading it earns, and what the mesh does with one
+//     — 16b cut Q.2
+//
+// The shipped sight reaches sixty cells at factor 1,000 and `ground` stopped is
+// 900, so its effective reach on this window is 54,000 cm — and
+// `condition_reach_permille` of 500 makes the close look 27,000 cm. Twenty cells
+// is therefore a look and thirty is a detection with no look in it, which is the
+// pair every test below is built on.
+// ---------------------------------------------------------------------------
+
+/// Twenty cells from `EYE`: detected, and inside the close-look reach.
+const NEAR: (u16, u16) = (30, 10);
+
+/// Thirty cells: detected, and outside it.
+const FAR: (u16, u16) = (40, 10);
+
+/// The reading `viewer` holds on `target`, straight out of the store.
+fn reading(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<Reading> {
+    let id = draw_contact_id(arena.seed, viewer, target);
+    arena
+        .contacts
+        .get(viewer, id)
+        .and_then(|held| held.seen_condition)
+}
+
+/// The reading `viewer`'s **own** sensors took, which is what the mesh may carry.
+fn own_reading(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<Reading> {
+    let id = draw_contact_id(arena.seed, viewer, target);
+    arena
+        .contacts
+        .get(viewer, id)
+        .and_then(|held| held.own_seen)
+        .and_then(|own| own.condition)
+}
+
+#[test]
+fn a_reading_is_taken_only_inside_the_close_look_and_only_once_classified() {
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+        ],
+        &[],
+    );
+    // The first pass detects, and the contact is `Unknown`: an unresolved return
+    // has no section vocabulary to read bands into, so there is no reading even
+    // though the target is well inside the close look.
+    pass(&mut arena, EYE, 1, 0);
+    assert_eq!(
+        arena
+            .contacts
+            .get(EYE, draw_contact_id(arena.seed, EYE, MARK))
+            .map(|held| held.class),
+        Some(Classification::Unknown)
+    );
+    assert_eq!(reading(&arena, EYE, MARK), None, "an unknown return read");
+    assert_eq!(own_reading(&arena, EYE, MARK), None);
+
+    // **The pass that classifies is also the pass that reads.** The reading is
+    // written after the classification arm, so the pilot is never told
+    // `Contact X1 identified: BA, blue.` and then `No reading on BA yet` about a
+    // tank they are looking straight at.
+    pass(&mut arena, EYE, 2, 1_000);
+    pass(&mut arena, EYE, 3, 2_000);
+    pass(&mut arena, EYE, 4, 3_000);
+    let read = reading(&arena, EYE, MARK).unwrap_or_else(|| panic!("the classifying pass read"));
+    assert_eq!(read.at_ms, 3_000, "the look's own stamp");
+    assert_eq!(
+        read.condition.sections, 1,
+        "the fixture tank has one section"
+    );
+    assert_eq!(read.condition.letters(), "g");
+    // What its own sensors took is what it holds, because nothing else has told
+    // it anything.
+    assert_eq!(own_reading(&arena, EYE, MARK), Some(read));
+}
+
+#[test]
+fn a_detection_outside_the_close_look_keeps_the_old_reading_and_its_old_stamp() {
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+        ],
+        &[],
+    );
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+    }
+    let close = reading(&arena, EYE, MARK).unwrap_or_else(|| panic!("a look was taken"));
+    assert_eq!(close.at_ms, 3_000);
+
+    // The target backs off to thirty cells: still detected, no longer close.
+    place(&mut arena, MARK, centre(FAR.0, FAR.1), 0);
+    for (seq, t_ms) in [(5_u64, 4_000_i64), (6, 5_000), (7, 6_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+    }
+    // Still held, and still classified: the plot is being refreshed every pass.
+    let id = draw_contact_id(arena.seed, EYE, MARK);
+    let held = arena
+        .contacts
+        .get(EYE, id)
+        .copied()
+        .unwrap_or_else(|| panic!("still held"));
+    assert_eq!(held.last_seen_ms, 6_000, "the plot is current");
+    // And the reading is the one taken at 3,000 — carried forward, with its own
+    // stamp, on both fields. `SCAN` therefore says how old the *look* is, which
+    // is three seconds older than the track.
+    assert_eq!(held.seen_condition, Some(close), "the look was lost");
+    assert_eq!(own_reading(&arena, EYE, MARK), Some(close));
+
+    // The frame renders that age, and it is the look's and not the plot's.
+    let row = arena
+        .frame_contacts(EYE)
+        .into_iter()
+        .find(|row| row.id == id)
+        .unwrap_or_else(|| panic!("the row is on the frame"));
+    let carried = row
+        .condition
+        .unwrap_or_else(|| panic!("the row carries it"));
+    assert_eq!(carried.age_ms, arena.now_ms.saturating_sub(3_000));
+}
+
+#[test]
+fn a_target_that_breaks_contact_keeps_its_last_reading_until_the_row_dies() {
+    // The teammate is deliberately **thirty cells** from the target and only ten
+    // from the watcher: far enough that no pass of its own can take a close look
+    // (the reach is twenty-seven), near enough to keep handing the watcher's row
+    // over the mesh. So the only reading in this run is the watcher's own, and
+    // nothing can quietly refresh it.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MATE, Team::Red, centre(0, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+        ],
+        &[],
+    );
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+        pass(&mut arena, MATE, seq, t_ms);
+    }
+    let watched = reading(&arena, EYE, MARK).unwrap_or_else(|| panic!("the watcher read"));
+    assert_eq!(watched.at_ms, 3_000, "the watcher's own look");
+    // The teammate holds a copy of the watcher's reading — that is the mesh
+    // working — but its **own** sensors read nothing, and a share carries only
+    // what a platform's own sensors read. So nothing it hands back can ever be
+    // newer than what the watcher already has.
+    assert_eq!(
+        own_reading(&arena, MATE, MARK),
+        None,
+        "the teammate is outside its close look and read nothing itself"
+    );
+
+    // The watcher's eye is put out — it detects nothing from here on — while the
+    // teammate keeps holding the target and keeps handing the row over. And the
+    // target is taken apart meanwhile, so a picture that *did* silently refresh
+    // would read differently rather than identically.
+    if let Some(state) = arena.unit_mut(EYE) {
+        state.sensor = None;
+    }
+    if let Some(state) = arena.unit_mut(MARK) {
+        state.condition = state.condition.with_band(0, ConditionBand::Destroyed);
+    }
+    for (seq, t_ms) in [(5_u64, 4_000_i64), (6, 5_000), (7, 6_000), (8, 7_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+        pass(&mut arena, MATE, seq, t_ms);
+    }
+    let still = reading(&arena, EYE, MARK).unwrap_or_else(|| panic!("the row is meshed alive"));
+    assert_eq!(
+        still, watched,
+        "the picture changed with nobody looking: it is the same look, bands and stamp"
+    );
+    assert_eq!(
+        still.condition.letters(),
+        "g",
+        "the destroyed section is the one the watcher cannot see happen"
+    );
+    // The row itself is still there, which is what makes the equality above a
+    // claim about the reading and not about an empty scope.
+    let id = draw_contact_id(arena.seed, EYE, MARK);
+    assert!(arena.contacts.get(EYE, id).is_some(), "the row is alive");
+
+    // ...**until the row dies.** With nobody holding it the mesh stops, the time
+    // to live runs out and the row goes — and the reading goes with it, because
+    // a reading is a fact about a contact and not about a target.
+    if let Some(state) = arena.unit_mut(MATE) {
+        state.sensor = None;
+    }
+    for (seq, t_ms) in [(9_u64, 8_000_i64), (10, 9_000), (11, 10_000), (12, 11_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+        pass(&mut arena, MATE, seq, t_ms);
+    }
+    assert!(
+        arena.contacts.get(EYE, id).is_none(),
+        "the row outlived its time to live"
+    );
+    assert_eq!(reading(&arena, EYE, MARK), None, "the reading outlived it");
+}
+
+#[test]
+fn a_section_the_gunner_watched_go_survives_a_teammates_older_look() {
+    // **The one thing a share does not overwrite.** A gunner's written-in
+    // `Destroyed` keeps the *old look's* stamp, because it is not a look — so a
+    // teammate's sighting taken between that look and the fire is stamped newer
+    // while knowing strictly less, and adopting it whole would make `SCAN`
+    // contradict the line the pilot was just sent half a second earlier.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MATE, Team::Red, centre(11, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+        ],
+        &[],
+    );
+    // Both are inside the close look, so both read — the teammate's a second
+    // later than the watcher's, which is the whole of the trap.
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+        pass(&mut arena, MATE, seq, t_ms);
+    }
+    pass(&mut arena, MATE, 5, 4_000);
+    let mate = reading(&arena, MATE, MARK).unwrap_or_else(|| panic!("the teammate read"));
+    assert_eq!(mate.at_ms, 4_000, "the teammate's look is the newer one");
+    assert_eq!(mate.condition.letters(), "g", "and it reads a whole tank");
+
+    // The watcher's own gunner then watches the one section come apart. The
+    // write-in **leaves the stamp alone** — it is not a look — so any sighting a
+    // teammate takes between that stamp and the fire is stamped newer while
+    // knowing strictly less, which is the trap.
+    let id = draw_contact_id(arena.seed, EYE, MARK);
+    let before = reading(&arena, EYE, MARK).unwrap_or_else(|| panic!("the watcher holds one"));
+    if let Some(held) = arena.contacts.get_mut(EYE, id)
+        && let Some(read) = held.seen_condition.as_mut()
+    {
+        read.condition = read.condition.with_band(0, ConditionBand::Destroyed);
+    }
+    assert_eq!(
+        reading(&arena, EYE, MARK).map(|read| (read.at_ms, read.condition.letters())),
+        Some((before.at_ms, "d".to_owned())),
+        "the write-in moved the stamp"
+    );
+
+    // The teammate's next look arrives over the mesh. It is newer, so it is
+    // taken — but the section the gunner watched go is still gone, because a
+    // section does not come back and `SCAN` may not contradict the line the
+    // pilot was just sent.
+    pass(&mut arena, MATE, 6, 5_000);
+    let held = reading(&arena, EYE, MARK).unwrap_or_else(|| panic!("the row still holds one"));
+    assert_eq!(held.at_ms, 5_000, "the newer share was refused outright");
+    assert_eq!(
+        held.condition.letters(),
+        "d",
+        "a teammate's look put a destroyed section back"
+    );
+}
+
+#[test]
+fn a_share_carries_the_sharers_own_reading_and_never_replaces_a_newer_one() {
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            // Blind: everything on its scope arrived over the mesh.
+            tank(MATE, Team::Red, centre(11, 10), None),
+            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+        ],
+        &[],
+    );
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+    }
+    let shared = reading(&arena, MATE, MARK).unwrap_or_else(|| panic!("the mesh carried it"));
+    assert_eq!(
+        shared,
+        reading(&arena, EYE, MARK).unwrap_or_else(|| panic!("the sharer read")),
+        "the receiver holds the sharer's own reading, stamp and all"
+    );
+    // **And no second hop.** What the receiver's own sensors read is still
+    // nothing, which is what stops it relaying the picture onward.
+    assert_eq!(own_reading(&arena, MATE, MARK), None);
+
+    // A newer reading the receiver already holds is not overwritten by an older
+    // share. The rule is the plot's, applied to the reading's own stamp.
+    let id = draw_contact_id(arena.seed, MATE, MARK);
+    let newer = Reading {
+        at_ms: 9_000,
+        condition: Condition::default().with_band(0, ConditionBand::Red),
+    };
+    if let Some(held) = arena.contacts.get_mut(MATE, id) {
+        held.seen_condition = Some(newer);
+    }
+    pass(&mut arena, EYE, 5, 4_000);
+    assert_eq!(
+        reading(&arena, MATE, MARK),
+        Some(newer),
+        "an older share overwrote a newer reading"
+    );
+    // ...and a share that IS newer is taken.
+    pass(&mut arena, EYE, 6, 10_000);
+    assert_eq!(
+        reading(&arena, MATE, MARK).map(|read| read.at_ms),
+        Some(10_000),
+        "a newer share was refused"
+    );
+}
+
+#[test]
+fn a_mesh_copy_of_a_contact_nobody_has_read_carries_no_reading_and_no_chassis() {
+    // The sharer holds the target classified but has never been close enough to
+    // read it: thirty cells is a detection and not a look. So the receiver's row
+    // is classified, carries no reading — and the frame publishes no section
+    // vocabulary for it at all, which is the whole of the `scan_tables` rule.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MATE, Team::Red, centre(11, 10), None),
+            tank(MARK, Team::Blue, centre(FAR.0, FAR.1), None),
+        ],
+        &[],
+    );
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+    }
+    for viewer in [EYE, MATE] {
+        let id = draw_contact_id(arena.seed, viewer, MARK);
+        assert!(
+            arena
+                .contacts
+                .get(viewer, id)
+                .is_some_and(|held| matches!(held.class, Classification::Classified { .. })),
+            "#{} does not hold it classified",
+            viewer.0
+        );
+        assert_eq!(reading(&arena, viewer, MARK), None);
+    }
+    for platform in [EYE, MATE] {
+        let id = draw_contact_id(arena.seed, platform, MARK);
+        let row = arena
+            .frame_contacts(platform)
+            .into_iter()
+            .find(|row| row.id == id)
+            .unwrap_or_else(|| panic!("#{} holds the row", platform.0));
+        assert!(
+            row.condition.is_none(),
+            "a row published a reading nobody took"
+        );
+    }
+    // And the blind teammate's whole frame carries no table either, because the
+    // one contact on it is the mesh copy. (The watcher's does: it is a cell away
+    // from its own teammate and has read *that* tank, which is exactly what the
+    // table list is for.)
+    let scope = arena.frame_scan_tables(MATE);
+    assert!(
+        scope.is_empty(),
+        "a contact with no reading published a chassis: {scope:?}"
+    );
+    assert!(
+        !arena.frame_scan_tables(EYE).is_empty(),
+        "the watcher read its own teammate, so its frame must name a chassis"
+    );
+}
+
+#[test]
+fn the_state_hash_moves_with_both_readings() {
+    let base = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+        ],
+        &[],
+    );
+    let id = draw_contact_id(base.seed, EYE, MARK);
+    let plant = |change: &dyn Fn(&mut tacsim::arena::state::ShadowContact)| -> u64 {
+        let mut arena = arena_of(
+            vec![
+                tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+                tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+            ],
+            &[],
+        );
+        arena.contacts.insert(
+            EYE,
+            id,
+            tacsim::arena::state::ShadowContact::sighted(
+                MARK,
+                Classification::Classified { team: Team::Blue },
+                0,
+                SeenPose::default(),
+            ),
+        );
+        if let Some(held) = arena.contacts.get_mut(EYE, id) {
+            change(held);
+        }
+        tacsim::arena::hash::state_hash(&arena)
+    };
+    let none = plant(&|_| {});
+    let green = Reading {
+        at_ms: 1_000,
+        condition: Condition::default().with_band(0, ConditionBand::Green),
+    };
+    let red = Reading {
+        at_ms: 1_000,
+        condition: Condition::default().with_band(0, ConditionBand::Red),
+    };
+    let later = Reading {
+        at_ms: 2_000,
+        ..green
+    };
+
+    // A reading where there was none, a different band, and a different stamp:
+    // each is a different state, because each is a different thing a pilot would
+    // be shown and none of the three writes an event of its own.
+    let held_green = plant(&|held| held.seen_condition = Some(green));
+    let held_red = plant(&|held| held.seen_condition = Some(red));
+    let held_later = plant(&|held| held.seen_condition = Some(later));
+    assert_ne!(held_green, none, "a reading went unhashed");
+    assert_ne!(held_red, held_green, "the bands went unhashed");
+    assert_ne!(held_later, held_green, "the look's stamp went unhashed");
+
+    // And the own reading is folded apart from the held one: two platforms that
+    // hold the same picture but may relay different things are two states.
+    let own_green = plant(&|held| {
+        if let Some(own) = held.own_seen.as_mut() {
+            own.condition = Some(green);
+        }
+    });
+    assert_ne!(own_green, none, "the own reading went unhashed");
+    assert_ne!(own_green, held_green, "the two readings fold as one field");
+
+    // The base arena holds no contact at all, which is a third state again.
+    assert_ne!(tacsim::arena::hash::state_hash(&base), none);
+}
+
+// ---------------------------------------------------------------------------
+// (q) every sentence `SCAN` says — 16b cut Q.2
+//
+// The three answers about a contact the platform **holds**. The fourth — the one
+// byte-identical `No such contact.` for a contact it does not — is the verb's and
+// is asserted through the real command table in `crates/tacsim/tests/cockpit.rs`,
+// beside `RANGE`'s and `BEARING`'s, because the point of that one is that the
+// three verbs cannot be told apart.
+// ---------------------------------------------------------------------------
+
+/// A real frame off a real pulse, with `EYE` watching `MARK` at `at`.
+fn scan_frame(at: (u16, u16)) -> (Arena, Frame) {
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(at.0, at.1), None),
+        ],
+        &[],
+    );
+    let mut tape: Vec<u8> = Vec::new();
+    let mut frame = None;
+    for step in 1..=8_i64 {
+        if let Some(sent) = pulse(&mut arena, step * PULSE_MS, &mut tape) {
+            frame = Some(sent);
+        }
+    }
+    let frame = frame.unwrap_or_else(|| panic!("the watcher was sent a frame"));
+    (arena, frame)
+}
+
+/// The one row on that frame, as the cockpit renders it.
+fn scan_row(frame: &Frame) -> cockpit::ContactRow {
+    cockpit::frame_contacts(frame)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("the frame carries a row"))
+}
+
+#[test]
+fn scan_of_an_unidentified_return_says_there_is_nothing_to_read() {
+    // One pulse: the return is held and `Unknown`, which is a blip and not a
+    // chassis. Section ids are a chassis vocabulary, so there is nothing to read
+    // bands into — and the sentence says so rather than refusing, because the
+    // pilot does hold the contact.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+        ],
+        &[],
+    );
+    let mut tape: Vec<u8> = Vec::new();
+    // The opening pulse establishes the wall reference and integrates nothing;
+    // the next one runs the pass that finds the return.
+    let _ = arena.step(0, &[], &[]);
+    let frame = pulse(&mut arena, PULSE_MS, &mut tape)
+        .unwrap_or_else(|| panic!("the watcher was sent a frame"));
+    let row = scan_row(&frame);
+    assert_eq!(row.designator.to_string(), "X1");
+    assert_eq!(
+        cockpit::scan_lines(&frame, &row),
+        vec!["X1 is not identified yet; there is nothing to read.".to_owned()]
+    );
+}
+
+#[test]
+fn scan_of_a_classified_contact_nobody_has_looked_at_says_to_close_the_range() {
+    // Thirty cells: detected and classified, and outside the close look. The
+    // sentence names the price, because a pilot who reads `No reading` has to be
+    // told the answer is to drive closer.
+    let (_, frame) = scan_frame(FAR);
+    let row = scan_row(&frame);
+    assert_eq!(row.designator.to_string(), "BA");
+    assert_eq!(
+        cockpit::scan_lines(&frame, &row),
+        vec!["No reading on BA yet: close the range for a look.".to_owned()]
+    );
+}
+
+#[test]
+fn scan_of_a_contact_that_has_been_looked_at_prints_its_bands_and_the_looks_age() {
+    let (_, frame) = scan_frame(NEAR);
+    let row = scan_row(&frame);
+    assert_eq!(row.designator.to_string(), "BA");
+    let lines = cockpit::scan_lines(&frame, &row);
+    // The fixture tank has one section, `hull`, and it is whole.
+    assert_eq!(
+        lines,
+        vec![
+            "Scan of BA, read 0 s ago:".to_owned(),
+            "  hull green".to_owned()
+        ]
+    );
+    // Never a number other than the age: no armour, no internals, no per mille.
+    for line in lines.iter().skip(1) {
+        assert!(
+            !line.chars().any(|c| c.is_ascii_digit()),
+            "a band line carried a number: {line}"
+        );
+    }
+}
+
+#[test]
+fn a_scan_of_a_wide_chassis_wraps_at_the_damage_blocks_own_width() {
+    // The stock tank has five sections and the extension biped seven, so nothing
+    // the game ships fills a line. The rule still has to hold for the sixteen a
+    // unit may declare, which is what this builds: a real frame, with its one
+    // row's reading replaced by sixteen sections of long names.
+    let (_, mut frame) = scan_frame(NEAR);
+    let names: Vec<SmolStr> = (0..16)
+        .map(|n| SmolStr::new(format!("left_forward_section_{n:02}")))
+        .collect();
+    let mut bands = Condition::default();
+    for index in 0..16 {
+        bands = bands.with_band(index, ConditionBand::Destroyed);
+    }
+    frame.scan_tables = vec![names.clone()];
+    for row in &mut frame.contacts {
+        row.condition = Some(tacsim::arena::perception::FrameCondition {
+            table: 0,
+            bands,
+            age_ms: 12_000,
+        });
+    }
+    let row = scan_row(&frame);
+    let lines = cockpit::scan_lines(&frame, &row);
+    assert_eq!(
+        lines.first().map(String::as_str),
+        Some("Scan of BA, read 12 s ago:")
+    );
+    let runs: Vec<&String> = lines.iter().skip(1).collect();
+    assert!(
+        runs.len() > 1,
+        "sixteen long sections fit on one line: {runs:?}"
+    );
+    for run in &runs {
+        assert!(
+            run.len() <= 76,
+            "a wrapped run ran past the damage block's width: {} ({run})",
+            run.len()
+        );
+        assert!(run.starts_with("  "), "a run lost its indent: {run}");
+    }
+    // Every section is named exactly once, and every one of them is destroyed.
+    let joined = runs
+        .iter()
+        .map(|run| run.as_str())
+        .collect::<Vec<&str>>()
+        .join(" ");
+    for name in &names {
+        assert_eq!(
+            joined.matches(&format!("{name} destroyed")).count(),
+            1,
+            "{name} is not in the run exactly once: {joined}"
+        );
+    }
+}
+
+#[test]
+fn a_reading_whose_table_is_not_on_the_frame_names_no_section() {
+    // The index is handed out by the walk that builds the list, so the arena
+    // cannot produce this — and the renderer answers with no sections rather
+    // than with a guess, because a guessed chassis is the one thing the table's
+    // whole shape exists to prevent.
+    let (_, mut frame) = scan_frame(NEAR);
+    for row in &mut frame.contacts {
+        row.condition = row
+            .condition
+            .map(|reading| tacsim::arena::perception::FrameCondition {
+                table: 9,
+                ..reading
+            });
+    }
+    let row = scan_row(&frame);
+    assert_eq!(
+        cockpit::scan_lines(&frame, &row),
+        vec!["Scan of BA, read 0 s ago:".to_owned()]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (r) the raw frame, on the wire — 16b cut Q.2
+//
+// The observer rule, read off the JSON a panel renderer decodes rather than off
+// the sentence a line client prints: a row with no reading carries `condition:
+// null`, and `scan_tables` lists no table for it — so a renderer cannot label a
+// marker with a chassis the platform has not earned even if it wanted to.
+// ---------------------------------------------------------------------------
+
+/// The contact rows of a `status_frame` payload, as a panel would read them.
+fn json_contacts(payload: &serde_json::Value) -> Vec<serde_json::Value> {
+    payload
+        .get("contacts")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_wire_frame_gives_an_unread_row_a_null_condition_and_no_table() {
+    let match_id = tacsim::arena_task::MatchId(1);
+
+    // (1) A return that is held and `Unknown`.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(NEAR.0, NEAR.1), None),
+        ],
+        &[],
+    );
+    let mut tape: Vec<u8> = Vec::new();
+    let _ = arena.step(0, &[], &[]);
+    let frame = pulse(&mut arena, PULSE_MS, &mut tape)
+        .unwrap_or_else(|| panic!("the watcher was sent a frame"));
+    let payload = cockpit::status_frame(match_id, &frame);
+    let rows = json_contacts(&payload);
+    assert_eq!(rows.len(), 1);
+    for row in &rows {
+        assert_eq!(
+            row.get("class").and_then(serde_json::Value::as_str),
+            Some("unknown")
+        );
+        assert_eq!(
+            row.get("condition"),
+            Some(&serde_json::Value::Null),
+            "an unresolved return published a reading: {row}"
+        );
+    }
+    assert_eq!(
+        payload.get("scan_tables"),
+        Some(&serde_json::json!([])),
+        "an unresolved return published a chassis: {payload}"
+    );
+
+    // (2) Classified, and outside the close look: still no reading, still no
+    //     table. This is the row `scan_tables` exists for — building the list
+    //     from the *classified* contacts would have published the chassis here.
+    let (_, far) = scan_frame(FAR);
+    let payload = cockpit::status_frame(match_id, &far);
+    for row in json_contacts(&payload) {
+        assert_eq!(
+            row.get("class").and_then(serde_json::Value::as_str),
+            Some("blue")
+        );
+        assert_eq!(row.get("condition"), Some(&serde_json::Value::Null));
+    }
+    assert_eq!(payload.get("scan_tables"), Some(&serde_json::json!([])));
+
+    // (3) Classified and looked at: the reading, its table index, its compact
+    //     band spelling and the age of the look — and exactly one table.
+    let (_, near) = scan_frame(NEAR);
+    let payload = cockpit::status_frame(match_id, &near);
+    let rows = json_contacts(&payload);
+    let read = rows
+        .first()
+        .and_then(|row| row.get("condition"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    assert_eq!(
+        read.get("table").and_then(serde_json::Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        read.get("bands").and_then(serde_json::Value::as_str),
+        Some("g"),
+        "the fixture tank has one section and it is whole"
+    );
+    assert!(
+        read.get("age_ms")
+            .and_then(serde_json::Value::as_i64)
+            .is_some(),
+        "the look's age is on the wire: {read}"
+    );
+    assert_eq!(
+        payload.get("scan_tables"),
+        Some(&serde_json::json!([["hull"]])),
+        "the one chassis the platform has read: {payload}"
+    );
+    // Still no exact figure anywhere on the row: doc 16 §3.6's coarse reading.
+    for row in &rows {
+        for key in ["armor", "armor_max", "internals", "internals_max"] {
+            assert!(row.get(key).is_none(), "a contact row carried {key}: {row}");
+        }
     }
 }

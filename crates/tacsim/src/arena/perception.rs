@@ -27,6 +27,23 @@
 //!    schedules a [`DueKind::Share`], which hands its classified contacts to
 //!    teammates inside `share_range_cells` with line of sight (step 5, W6).
 //!
+//! # The close look (16b cut Q.2)
+//!
+//! Step 4 has one more thing in it. A contact that is **classified** and that the
+//! pass found inside `condition_reach_permille` of the effective reach step 3
+//! just used earns a [`crate::arena::condition::Reading`] — the target's
+//! per-section bands, with the timestamp of the look — which is what `SCAN`
+//! prints. It costs one comparison per candidate that has already passed every
+//! other test and a thirteen-byte copy per contact that earns one; no new trace,
+//! no new cell probe.
+//!
+//! It is written **after** the classification arm and not beside the plot, so the
+//! pass that classifies is also the pass that takes the first reading. A refresh
+//! that does not earn a new look **carries the old one forward** with its own
+//! older stamp rather than dropping it, because knowledge goes stale rather than
+//! vanishing; and a share hands over the sharer's **own** reading under the same
+//! strictly-newer rule the plot follows, so there is still no second hop.
+//!
 //! # The mesh is continuous, and what that costs
 //!
 //! The share runs on **every** pass of a unit that has something to say, not only
@@ -553,6 +570,26 @@ struct Detection {
     /// contact records is the substep boundary's position and not the position at
     /// whatever later moment somebody reads the contact.
     seen_at: SeenPose,
+    /// **The observer is inside the close-look reach** (16b cut Q.2; doc 16 §2
+    /// W5): `range ≤ reach_cm × condition_reach_permille / 1000`, against the
+    /// **same** effective reach step 3 just tested — the ground's signature
+    /// factor, the thermal term and the jamming scale all already folded into it.
+    ///
+    /// One comparison per candidate that has already passed every other test, and
+    /// no new trace and no new cell probe: a target that is concealed, cold or
+    /// jammed is that much harder to read for exactly the reason it is harder to
+    /// see. It is what earns a [`crate::arena::condition::Reading`], and nothing
+    /// else reads it.
+    close: bool,
+    /// **What the target's hull read at this sighting** (16b cut Q.2), off the
+    /// same snapshot every test above was decided against.
+    ///
+    /// Carried on the detection rather than read at the write, because the write
+    /// happens while the contact store is mutably borrowed and a second read of
+    /// the unit vector there would be a read of a *later* moment than the one the
+    /// detection was decided at. It is [`UnitState::condition`], which is a cache
+    /// and costs a copy of two integers.
+    condition: crate::arena::condition::Condition,
 }
 
 /// **One classified contact, as the mesh carries it** (16b cut F.3; doc 16 §3.6
@@ -684,6 +721,8 @@ impl Arena {
             target,
             team,
             seen_at,
+            close,
+            condition,
         } in found.into_iter().flatten()
         {
             let id = draw_contact_id(seed, observer, target);
@@ -707,9 +746,18 @@ impl Arena {
                     }
                     held.last_seen_ms = t_ms;
                     held.seen_at = seen_at;
+                    // **16b cut Q.2**: the `OwnSighting` is rebuilt whole on
+                    // every refresh, so the reading has to be carried across it
+                    // or a pass that did not earn a new look would *delete* the
+                    // last one — and a platform that drives out to 900 m would
+                    // lose what it read at 200 m, which is the opposite of the
+                    // rule that knowledge goes stale rather than vanishing. It
+                    // keeps its own older stamp; only a fresh look moves that.
+                    let read_before = held.own_seen.and_then(|own| own.condition);
                     held.own_seen = Some(OwnSighting {
                         at_ms: t_ms,
                         plot: seen_at,
+                        condition: read_before,
                     });
                     if held.class == Classification::Unknown
                         && t_ms.saturating_sub(held.first_seen_ms) >= classify_after_ms
@@ -737,6 +785,30 @@ impl Arena {
                             Some((label.encode(), value)),
                         ));
                         counters.classified = counters.classified.saturating_add(1);
+                    }
+                    // **16b cut Q.2: the close look, written AFTER the
+                    // classification arm.** The plot above is written before the
+                    // class is tested, and a reading written beside it would
+                    // record nothing on the very pass that classified the
+                    // contact — the pilot would be told `Contact X2 identified:
+                    // BA, blue.` and then `No reading on BA yet` about a tank
+                    // they are looking straight at. Here the class is whatever
+                    // this pass just made it, so the pass that classifies is also
+                    // the pass that takes the first reading.
+                    //
+                    // Both fields move together and only together: what this
+                    // platform's own sensors read is what it may put on the mesh
+                    // (doc 16 §2 W6), and what it holds is that or a teammate's,
+                    // whichever is newer.
+                    if close && matches!(held.class, Classification::Classified { .. }) {
+                        let reading = Some(crate::arena::condition::Reading {
+                            at_ms: t_ms,
+                            condition,
+                        });
+                        held.seen_condition = reading;
+                        if let Some(own) = held.own_seen.as_mut() {
+                            own.condition = reading;
+                        }
                     }
                 }
                 None => {
@@ -854,6 +926,11 @@ impl Arena {
         let attenuation = jam.map_or(sensor.max_attenuation, |jam| {
             jam.budget(sensor.max_attenuation)
         });
+        // **16b cut Q.2**: the fraction of a detection's own effective reach that
+        // is near enough to read a target's bands off, read once for the pass.
+        // Its validation is Q.7's, so it is taken `.min(1000)` here: the widest a
+        // close look can be is *everything this platform can detect*.
+        let close_permille = self.sensors_cfg.condition_reach_permille.min(1_000);
         let mut found: Vec<Detection> = Vec::new();
         for id in self.index.in_range(&watcher.pose, cull, &self.units) {
             if id == observer {
@@ -895,7 +972,8 @@ impl Arena {
             if let Some(jam) = jam {
                 reach_cm = jam.scale(reach_cm);
             }
-            if range_cm(&watcher.pose, &target.pose) > reach_cm {
+            let range = range_cm(&watcher.pose, &target.pose);
+            if range > reach_cm {
                 continue;
             }
             // Step 2: the atlas trace over the arena's own cell grid.
@@ -913,6 +991,13 @@ impl Arena {
                 // 16b cut F.3: the plot, off the same snapshot every test above
                 // was decided against.
                 seen_at: SeenPose::of(target),
+                // **16b cut Q.2**: the close look, against the reach the range
+                // test above was decided with — see [`Detection::close`].
+                close: range
+                    <= reach_cm
+                        .saturating_mul(u64::from(close_permille))
+                        .saturating_div(1_000),
+                condition: target.condition,
             });
         }
         Some(found)
@@ -1108,6 +1193,39 @@ impl Arena {
                             held.last_seen_ms = shared.own.at_ms;
                             held.seen_at = shared.own.plot;
                         }
+                        // **16b cut Q.2**: the reading follows the same rule, and
+                        // follows it **independently** of the plot — against its
+                        // own stamp. A sharer whose sighting is older than the
+                        // receiver's may still have had a closer look at some
+                        // earlier moment, and a receiver that has only ever seen
+                        // the target from 900 m holds no reading at all; the
+                        // strictly-newer test is per reading, so neither of them
+                        // can overwrite the other's fresher look. The receiver's
+                        // own `own_seen.condition` is untouched, which is what
+                        // stops a mesh reading being relayed a second hop.
+                        //
+                        // The one thing carried across the replacement is
+                        // destruction: a section the receiver's **own gunner**
+                        // watched come apart is written into the reading it
+                        // holds with the old look's stamp (it is not a look), so
+                        // a teammate's share taken between that look and the
+                        // fire is stamped newer while knowing strictly less.
+                        // `Condition::keeping_destroyed` is why `SCAN` cannot
+                        // contradict the line the pilot was just sent, however
+                        // the mesh is shaped around them.
+                        if let Some(reading) = shared.own.condition
+                            && held
+                                .seen_condition
+                                .is_none_or(|had| reading.at_ms > had.at_ms)
+                        {
+                            let bands = held.seen_condition.map_or(reading.condition, |had| {
+                                reading.condition.keeping_destroyed(had.condition)
+                            });
+                            held.seen_condition = Some(crate::arena::condition::Reading {
+                                condition: bands,
+                                ..reading
+                            });
+                        }
                         if held.class == Classification::Unknown {
                             held.class = Classification::Classified { team };
                             journal.push((
@@ -1143,6 +1261,12 @@ impl Arena {
                                 // is a mesh copy, and cut F.3's first rule stops
                                 // it being relayed on.
                                 own_seen: None,
+                                // **16b cut Q.2**: the sharer's own reading, as
+                                // it stands — a fresh row has nothing to be
+                                // newer than. It is `None` for a sharer that has
+                                // never had a close look, which is what makes a
+                                // mesh-only contact publish no chassis at all.
+                                seen_condition: shared.own.condition,
                             },
                         );
                         // Two transitions in one moment, both true of the teammate:
@@ -1347,6 +1471,35 @@ pub struct FrameContact {
     /// A cell and not a pose: the map's resolution is what the map may show, so a
     /// marker carries exactly the precision the window already prints and no more.
     pub cell: Option<(u16, u16)>,
+    /// **What this platform has read off the target's hull**, and how long ago
+    /// (16b cut Q.2), or `None` for a contact it has never had a close look at
+    /// while it was classified.
+    ///
+    /// **The section vocabulary lives inside the `Option`.** A section id is a
+    /// chassis tell — `left_track` against `left_leg` — so a row with no reading
+    /// must be unable to publish one *by construction* rather than by a renderer
+    /// remembering not to. [`FrameCondition::table`] indexes
+    /// [`crate::arena::step::Frame::scan_tables`], which is built from the rows
+    /// that carry a reading and from no others.
+    pub condition: Option<FrameCondition>,
+}
+
+/// **One contact's reading, as a pilot's frame carries it** (16b cut Q.2; doc 16
+/// §3.6 "What a pilot sees").
+///
+/// Three integers, `Copy` with the row it rides on. The bands are meaningless
+/// without the section ids they are in the order of, which is why the table index
+/// is in here: see [`FrameContact::condition`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameCondition {
+    /// Which of [`crate::arena::step::Frame::scan_tables`] names these sections.
+    pub table: u8,
+    /// The bands, in that table's order.
+    pub bands: crate::arena::condition::Condition,
+    /// How old the **look** is, arena milliseconds — `now` less the reading's own
+    /// stamp, which is older than the plot's whenever the platform has held the
+    /// target since without getting close enough to read it again.
+    pub age_ms: i64,
 }
 
 /// **A contact, as a notice names it** (16b cut Q.1): the stable id a panel keys
@@ -1416,6 +1569,16 @@ pub enum NoticeKind {
     /// **One of this platform's sections is gone** (16b cut F.2), with what that
     /// costs the tank.
     SectionLost,
+    /// **A section of the target this platform is shooting at is gone** (16b cut
+    /// Q.2; doc 16 §2 W5), said to the **shooter** and only for a contact it holds
+    /// and has told apart.
+    ///
+    /// The owner's first hand-played match found the gap: an attacker read `Hit on
+    /// …` and `Miss on …` over and over and then `… destroyed.`, with nothing in
+    /// between to say the rounds were doing anything. This is the thing in
+    /// between, and it is the *only* thing about the target's damage a gunner is
+    /// ever told — a section word, never a facet and never a number.
+    TargetSectionLost,
     /// **The arena refused an order at apply** (16b cut F.2; doc 16 §5's
     /// *refusals*), after the world had authorised it.
     Refused,
@@ -1448,6 +1611,7 @@ impl NoticeKind {
             NoticeKind::Kill => "kill",
             NoticeKind::Struck => "struck",
             NoticeKind::SectionLost => "section_lost",
+            NoticeKind::TargetSectionLost => "target_section_lost",
             NoticeKind::Refused => "refused",
             NoticeKind::Blocked => "blocked",
             NoticeKind::PowerOnline => "power_online",
@@ -1500,6 +1664,14 @@ pub enum RefusalDetail {
 /// [`FrameNotice::Blocked`] carries a cause and never the cell's occupant, because
 /// an occupied cell may hold a unit this platform has not detected.
 ///
+/// **16b cut Q.2** is the other direction of the same rule. A gunner may be told
+/// which section of the target a round found ([`FrameNotice::Hit`]'s `section`)
+/// and which section came apart ([`FrameNotice::TargetSectionLost`]) — and only
+/// for a contact their platform **holds and has told apart**, because a section
+/// id is a chassis vocabulary and a section word on an unidentified blip is
+/// identification by gunfire. It is never a facet and never a number: what the
+/// round did inside that section is the victim's own gauges.
+///
 /// # The hysteresis rule, in one sentence
 ///
 /// A `lost` notice is **held for one further pass** (`sensors.pass_ms`) before it
@@ -1545,6 +1717,18 @@ pub enum FrameNotice {
     Hit {
         /// The contact, where the platform still holds one.
         contact: Option<Named>,
+        /// **Which section the round found** (16b cut Q.2), set only when the
+        /// shooter holds the target **and that contact is classified at the
+        /// moment this is staged**.
+        ///
+        /// The gate is classification and not merely holding, because a section
+        /// id is a **chassis vocabulary**: `Hit on X2: left_track.` tells a gunner
+        /// the blip is tracked rather than legged, which is identification by
+        /// gunfire and is what doc 16 §2 W5 prices at `classify_after_ms` of
+        /// looking. It is the ledger's own `hit` section — a struck-through engine
+        /// says `engine`, because that is the section the round found — and never
+        /// the facet and never a number.
+        section: Option<SmolStr>,
     },
     /// **A round of this platform's went nowhere** (16b cut F.2), with the
     /// ledger's own reason word ([`crate::arena::damage::MISS_REASONS`]).
@@ -1588,6 +1772,20 @@ pub enum FrameNotice {
         /// Its consequences, in authored order.
         consequences: Vec<SmolStr>,
     },
+    /// **A section of the target went** (16b cut Q.2), said to the shooter under
+    /// the same held-and-classified gate [`FrameNotice::Hit`]'s section word is.
+    ///
+    /// It carries the section and **nothing else about the target** — no
+    /// consequence list, which is the victim's own physical knowledge, and no
+    /// number. An unheld or an unidentified target earns no line at all rather
+    /// than a line with the word left out: a gunner who is told *something* went
+    /// has still been told the blip has sections.
+    TargetSectionLost {
+        /// The contact, as the shooter's platform names it.
+        contact: Named,
+        /// The section the ledger's `section_destroyed` names.
+        section: SmolStr,
+    },
     /// **The arena refused an order at apply** (16b cut F.2).
     Refused {
         /// The order's own word (`startup`, `lock`, `fire`).
@@ -1622,6 +1820,7 @@ impl FrameNotice {
             FrameNotice::Kill { .. } => NoticeKind::Kill,
             FrameNotice::Struck { .. } => NoticeKind::Struck,
             FrameNotice::SectionLost { .. } => NoticeKind::SectionLost,
+            FrameNotice::TargetSectionLost { .. } => NoticeKind::TargetSectionLost,
             FrameNotice::Refused { .. } => NoticeKind::Refused,
             FrameNotice::Blocked { .. } => NoticeKind::Blocked,
             FrameNotice::PowerOnline => NoticeKind::PowerOnline,
@@ -1649,14 +1848,45 @@ impl FrameNotice {
         }
     }
 
+    /// **The section of the TARGET this notice names** (16b cut Q.2), where it
+    /// names one at all.
+    ///
+    /// Exactly the two gunner's words: [`FrameNotice::Hit`]'s section, which is
+    /// `Some` only under the held-and-classified gate, and
+    /// [`FrameNotice::TargetSectionLost`]'s. It is **not** the victim's own
+    /// [`FrameNotice::Struck`] or [`FrameNotice::SectionLost`]: those are the
+    /// crew reading their own gauges and carry a facet and a consequence list
+    /// that this key's readers — a panel highlighting the section a gunner just
+    /// took off a target — must not be handed.
+    ///
+    /// A renderer therefore never has to parse a sentence to know which section a
+    /// line is about, which is the one-owner-per-sentence rule this module's head
+    /// states.
+    #[must_use]
+    pub fn section(&self) -> Option<&SmolStr> {
+        match self {
+            FrameNotice::Hit { section, .. } => section.as_ref(),
+            FrameNotice::TargetSectionLost { section, .. } => Some(section),
+            FrameNotice::Contact { .. }
+            | FrameNotice::Locked { .. }
+            | FrameNotice::Miss { .. }
+            | FrameNotice::Kill { .. }
+            | FrameNotice::Struck { .. }
+            | FrameNotice::SectionLost { .. }
+            | FrameNotice::Refused { .. }
+            | FrameNotice::Blocked { .. }
+            | FrameNotice::PowerOnline => None,
+        }
+    }
+
     /// The pair, where the notice carries one.
     #[must_use]
     pub const fn named(&self) -> Option<Named> {
         match self {
-            FrameNotice::Contact { contact, .. } | FrameNotice::Locked { contact } => {
-                Some(*contact)
-            }
-            FrameNotice::Hit { contact }
+            FrameNotice::Contact { contact, .. }
+            | FrameNotice::Locked { contact }
+            | FrameNotice::TargetSectionLost { contact, .. } => Some(*contact),
+            FrameNotice::Hit { contact, .. }
             | FrameNotice::Miss { contact, .. }
             | FrameNotice::Kill { contact } => *contact,
             FrameNotice::Struck { .. }

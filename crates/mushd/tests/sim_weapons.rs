@@ -330,6 +330,42 @@ fn designator_of(listing: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// **What a shooter's outcome line may say about the target's hull** (16b cut
+/// Q.2).
+///
+/// A `Hit on <name>: <section>.` names one of the stock tank's five sections and
+/// nothing else; a `Miss on <name>: <reason>.` names the ledger's own reason and
+/// no section at all. Both spellings carry a colon, so the check has to know
+/// which sentence it is reading — the single cannon round in the test below is
+/// deliberately not a certainty (`content/resolution.json` caps a hit at 950 per
+/// mille and the draw's seed carries a process-local salt), and a check that
+/// assumed a hit would red the suite about one run in twenty for a reason that
+/// has nothing to do with this cut.
+fn assert_section_word(outcome: &str) {
+    const STOCK: [&str; 5] = ["hull", "turret", "left_track", "right_track", "engine"];
+    if let Some(tail) = outcome.strip_prefix("Hit on ") {
+        let struck = tail
+            .split_once(": ")
+            .map(|(_, section)| section.trim_end_matches('.'))
+            .unwrap_or_else(|| panic!("the hit names no section: {outcome}"));
+        assert!(
+            STOCK.contains(&struck),
+            "the outcome named something that is not one of the stock tank's sections: {outcome}"
+        );
+        return;
+    }
+    assert!(
+        outcome.starts_with("Miss on "),
+        "neither a hit nor a miss: {outcome}"
+    );
+    for section in STOCK {
+        assert!(
+            !outcome.contains(section),
+            "a miss named a section of the target: {outcome}"
+        );
+    }
+}
+
 /// Walk both pilots into the simulator lobby and put staff in the lobby with them.
 async fn open_the_centre(god: &mut Term) {
     let listing = ask(god, "@find Simulator Lobby", "END OF LIST").await;
@@ -557,6 +593,57 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
         "and carries nothing about the target's own tank: {outcome}"
     );
 
+    // **16b cut Q.2**: the shooter's line names the section the round found,
+    // because by now the contact has been told apart. A section id is a chassis
+    // vocabulary, so the word is the price of identification and not of holding.
+    //
+    // The single cannon round is **not** a certainty — `content/resolution.json`
+    // caps a hit at 950 per mille on purpose and the draw's seed is folded with a
+    // process-local salt — so the claim is made of whichever line the draw
+    // produced, and the *hit* case is pinned unconditionally below off the ten
+    // round burst, which this file already relies on for exactly this reason.
+    assert_section_word(&outcome);
+
+    // And `SCAN`, which is the other half of the owner's ask: the enemy's status,
+    // section by section, in words and never in numbers. It defaults to the
+    // platform's lock, so it is asked with no argument at all.
+    //
+    // The wait is on the **last** section and not on the header: `SCAN`'s answer
+    // is a header line and then the run of bands, wrapped at the damage block's
+    // own width and sent as separate lines, so a reader that stopped at the
+    // header — or at the first run — would be reading half an answer and would
+    // pass whatever the rest of it said. The stock tank's five sections do not
+    // fit on one 76-column line, which is what makes that a real risk here.
+    let scanned = poll(&mut ada, "SCAN", &named, "turret").await;
+    assert!(
+        scanned.contains(&format!("Scan of {named}, read ")),
+        "SCAN named the lock: {scanned}"
+    );
+    let bands = scanned
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains("green") || line.contains("yellow") || line.contains("red"))
+        .collect::<Vec<&str>>()
+        .join(" ");
+    assert!(!bands.is_empty(), "SCAN printed no bands: {scanned}");
+    for section in ["hull", "turret", "left_track", "right_track", "engine"] {
+        assert!(
+            bands.contains(section),
+            "SCAN left out the {section}: {bands}"
+        );
+    }
+    assert!(
+        !bands.chars().any(|c| c.is_ascii_digit()),
+        "SCAN printed a number: {bands}"
+    );
+    // The same verb, against a name the platform does not hold: the one
+    // byte-identical refusal, and nothing about a contact.
+    let refused = ask(&mut ada, "SCAN ZZ", "No such contact.").await;
+    assert!(
+        !refused.contains("Scan of") && !refused.contains("not identified"),
+        "SCAN of an unheld name said something about a contact: {refused}"
+    );
+
     // Then the coaxial, whose pull is a ten-round burst: at this range one of
     // them lands, so the victim's half of the surface is exercised without the
     // test depending on a single draw. Both waits are taken from a mark, because
@@ -567,6 +654,23 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     let taking = bo.mark();
     say(&mut ada, "FIRE machine_gun", "Firing machine_gun").await;
     ada.expect_after(burst, "Hit on ").await;
+
+    // **16b cut Q.2**, deterministically: the burst lands, so every outcome line
+    // it produced is read and each is checked for the section word. This is the
+    // hit half of `assert_section_word`, taken where a hit is guaranteed.
+    let landed = strip_ansi(&ada.seen[burst..]);
+    let outcomes: Vec<&str> = landed
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("Hit on ") || line.starts_with("Miss on "))
+        .collect();
+    assert!(
+        outcomes.iter().any(|line| line.starts_with("Hit on ")),
+        "the burst landed nothing:\n{landed}"
+    );
+    for line in &outcomes {
+        assert_section_word(line);
+    }
 
     // The victim: their own section and facet, and what is left there, with
     // nothing whatever about Ada (`observer_rule.rs` asserts that absence surface

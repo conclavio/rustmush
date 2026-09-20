@@ -71,7 +71,11 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
 ///    `u64`, the target's `u32`, the class byte (`0` unknown, `1` classified red,
-///    `2` classified blue), `first_seen_ms` and `last_seen_ms` as `i64`.
+///    `2` classified blue), `first_seen_ms` and `last_seen_ms` as `i64`; then the
+///    plot's five integers, the own sighting (a presence byte, its stamp, its own
+///    plot and **its reading**) and **the reading the platform holds** — a reading
+///    being a presence byte, the look's `i64` stamp, the packed bands as `u32` and
+///    the packed section count as `u8` (16b cut Q.2).
 /// 4. **The designator book** (16b cut Q.1), in its own two `BTreeMap`s' order:
 ///    the count of `next` rows as `u64`, then per row the viewer's `u32` and the
 ///    number as `u16`; then the count of issued numbers as `u64`, then per issued
@@ -138,6 +142,20 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// would then show the pilot different names for the same tank. Folding the book
 /// catches it at the substep it happened, which is the argument cut F.3 made for
 /// the plot.
+///
+/// **Cut Q.2's extension**: the two readings on every contact. They are the
+/// contact store's own argument again — a close look is taken on a pass and
+/// journals nothing, a share hands one over and journals nothing, and the band a
+/// gunner watched come apart is written in beside a `section_destroyed` that is
+/// about the *victim* and would be byte-identical either way. A replay that got
+/// close a pass earlier, or whose share arrived from a different look, would
+/// otherwise compare equal and then show the two pilots different `SCAN`s.
+///
+/// The *unit's own* [`crate::arena::state::UnitState::condition`] is deliberately
+/// **not** folded, and that is the other half of the same argument: it is a pure
+/// function of the `TacticalUnit` beside it, which M32 journals, so folding it
+/// would make this function a second and weaker copy of that journal — the reason
+/// the opaque unit itself is absent.
 ///
 /// The *callsign* on each unit is deliberately **not** folded: it is a pure
 /// function of the check-out message, resolved once by `Arena::new` and never
@@ -245,9 +263,17 @@ pub fn state_hash(arena: &Arena) -> u64 {
                 hash = fnv1a64_update(hash, &[1_u8]);
                 hash = fnv1a64_update(hash, &own.at_ms.to_le_bytes());
                 hash = fold_plot(hash, &own.plot);
+                // **16b cut Q.2**: what this platform's OWN sensors read, which
+                // is what it may put on the mesh.
+                hash = fold_reading(hash, own.condition);
             }
             None => hash = fnv1a64_update(hash, &[0_u8]),
         }
+        // **16b cut Q.2**: and what it holds, which may be a teammate's. Both are
+        // knowledge that moves with no event of its own — a close look taken one
+        // pass earlier, a share that arrived, a band the gunner watched go — so a
+        // replay that read the same hull a pass sooner must not compare equal.
+        hash = fold_reading(hash, held.seen_condition);
     }
     // **16b cut Q.1**: the provisional numbers, in the book's own map order.
     hash = fnv1a64_update(
@@ -270,6 +296,24 @@ pub fn state_hash(arena: &Arena) -> u64 {
     hash = fnv1a64_update(hash, &(arena.shots.len() as u64).to_le_bytes());
     hash = fnv1a64_update(hash, &arena.ledger.seq().to_le_bytes());
     hash
+}
+
+/// **One contact's reading** (16b cut Q.2): a presence byte, then the look's own
+/// stamp, the packed bands and how many sections are packed.
+///
+/// A contact carries two of them — what this platform's own sensors read and what
+/// it holds, which may be a teammate's — and they are folded by one function so
+/// they cannot fold differently, exactly as [`fold_plot`]'s two plots are.
+fn fold_reading(hash: u64, reading: Option<crate::arena::condition::Reading>) -> u64 {
+    match reading {
+        Some(reading) => {
+            let hash = fnv1a64_update(hash, &[1_u8]);
+            let hash = fnv1a64_update(hash, &reading.at_ms.to_le_bytes());
+            let hash = fnv1a64_update(hash, &reading.condition.bands.to_le_bytes());
+            fnv1a64_update(hash, &[reading.condition.sections])
+        }
+        None => fnv1a64_update(hash, &[0_u8]),
+    }
 }
 
 /// **One contact plot's five integers** (16b cut F.3), in field order.

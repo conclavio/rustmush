@@ -169,6 +169,7 @@
 
 pub mod clock;
 pub mod command;
+pub mod condition;
 pub mod damage;
 pub mod hash;
 pub mod heat;
@@ -190,6 +191,7 @@ pub use clock::{Clock, MIN_SUBSTEP_MS, Tempo, TempoSignals, substep_ms, substeps
 pub use command::{
     MAX_SIGNAL_CONTACTS, SignalContact, SignalReason, SquadDigest, SquadSignal, SquadWatch,
 };
+pub use condition::{Condition, ConditionBand, MAX_SCANNED_SECTIONS, Reading};
 pub use damage::{
     BLOCKED, COVER, DISPERSION, HULL_SECTION, MISS_REASONS, MOVED, REFUSED, TARGET_GONE, WRECK,
     WRECK_CONDITION, is_wreck,
@@ -205,8 +207,9 @@ pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, Ledge
 pub use motion::{MotionOutcome, cos_fx, integrate, sin_fx};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
-    FULL_SIGNATURE_PERMILLE, FrameContact, Named, PerceptionCounters, SensorProfile,
-    SignatureFactor, ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
+    FULL_SIGNATURE_PERMILLE, FrameCondition, FrameContact, Named, PerceptionCounters,
+    SensorProfile, SignatureFactor, ThermalSignature, bearing_mdeg, bearing_of, contact_refusal,
+    sees,
 };
 pub use reflex::{ARRIVE_CELLS, ReflexCounters, ReflexMemory, ReflexState, ReflexUnit};
 pub use resolution::{

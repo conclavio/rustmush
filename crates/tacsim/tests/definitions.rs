@@ -314,6 +314,91 @@ fn a_sensor_row_refuses_an_impossible_signature_and_an_absurd_comms_reach() {
     .expect("a mute sensor is a valid sensor");
 }
 
+/// **16b cut Q.2**: the section ceiling is the RULE behind a gunner's reading,
+/// and both of its refusals say so by name.
+///
+/// `crate::arena::condition::Condition` packs two bits a section into one `u32`,
+/// so sixteen is what a contact can carry without an allocation per contact per
+/// sensor pass; `Condition::of`'s `.take(…)` is a defensive clamp and **this** is
+/// what keeps any unit an arena can hold away from it. A cut that re-widened
+/// `MAX_SECTIONS` without widening the packing would silently truncate a hull on
+/// `SCAN`, so the two constants are asserted equal here as well.
+#[test]
+fn a_unit_declares_between_one_and_sixteen_sections() {
+    assert_eq!(
+        tacsim::definitions::unit::MAX_SECTIONS,
+        tacsim::arena::condition::MAX_SCANNED_SECTIONS,
+        "the authoring bound and the packing bound are one number"
+    );
+    assert_eq!(tacsim::arena::condition::MAX_SCANNED_SECTIONS, 16);
+
+    let pack = tacsim::pack::load_pack(content::LINE_TANK_JSON).expect("the shipped tank loads");
+    let tank = pack
+        .entries()
+        .values()
+        .find_map(|entry| match entry {
+            tacsim::pack::PackEntry::Unit(spec) => Some(spec.clone()),
+            _ => None,
+        })
+        .expect("the pack carries the unit");
+    assert_eq!(tank.sections.len(), 5, "the stock tank's five");
+    tank.check("stock").expect("the shipped spec is valid");
+
+    // A unit with nothing to shoot at is not a unit.
+    let empty = tacsim::definitions::UnitSpec {
+        sections: Vec::new(),
+        ..tank.clone()
+    };
+    let refused = empty.check("empty").expect_err("no sections is refused");
+    assert!(
+        refused
+            .to_string()
+            .contains("a unit declares 1 to 16 sections; 0 is not"),
+        "{refused}"
+    );
+
+    // And one section past what a reading can carry.
+    let wide = tacsim::definitions::UnitSpec {
+        sections: tank
+            .sections
+            .iter()
+            .cycle()
+            .take(tacsim::definitions::unit::MAX_SECTIONS + 1)
+            .cloned()
+            .collect(),
+        ..tank.clone()
+    };
+    let refused = wide
+        .check("wide")
+        .expect_err("seventeen sections is refused");
+    assert!(
+        refused
+            .to_string()
+            .contains("a unit has at most 16 sections; 17 is not"),
+        "{refused}"
+    );
+
+    // Sixteen exactly is the last spec the rule admits, so the clamp and the rule
+    // meet with nothing between them.
+    let full = tacsim::definitions::UnitSpec {
+        sections: tank
+            .sections
+            .iter()
+            .cycle()
+            .take(tacsim::definitions::unit::MAX_SECTIONS)
+            .cloned()
+            .collect(),
+        ..tank
+    };
+    assert_eq!(full.sections.len(), 16);
+    if let Err(refused) = full.check("full") {
+        assert!(
+            !refused.to_string().contains("sections;"),
+            "sixteen sections tripped the ceiling: {refused}"
+        );
+    }
+}
+
 #[test]
 fn the_six_content_kinds_are_the_six_the_pack_format_owns() {
     // A vocabulary claim, so it is pinned outside the file that declares it:

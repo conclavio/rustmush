@@ -230,7 +230,15 @@ pub const MAX_CELL_VALUE: u32 = 100_000;
 /// The most sections one unit may declare here. M32's own cap is far higher;
 /// this is the authoring bound, because every section is a row of the facet
 /// table and a weight in every band.
-pub const MAX_SECTIONS: usize = 32;
+///
+/// **16b cut Q.2 tightened it from 32 to 16**, and named the reason: a gunner's
+/// reading of a target ([`crate::arena::condition::Condition`]) is two bits a
+/// section packed into one `u32`, so sixteen is what a contact can carry without
+/// an allocation per contact per sensor pass. The clamp in `Condition::of` is
+/// defensive; **this** is the rule, so no unit an arena can hold ever reaches it.
+/// Nothing the game ships comes near either bound — the stock tank declares five
+/// and the extension biped seven.
+pub const MAX_SECTIONS: usize = crate::arena::condition::MAX_SCANNED_SECTIONS;
 
 /// The most facets one section may declare.
 pub const MAX_FACETS: usize = 8;
@@ -683,11 +691,20 @@ impl UnitSpec {
     pub fn check(&self, entry: &str) -> Result<(), DefinitionError> {
         crate::definitions::check_label(entry, &self.label)?;
         crate::definitions::check_note(entry, &self.note)?;
-        if self.sections.is_empty() || self.sections.len() > MAX_SECTIONS {
+        if self.sections.is_empty() {
+            return Err(DefinitionError::value(
+                entry,
+                format!("a unit declares 1 to {MAX_SECTIONS} sections; 0 is not"),
+            ));
+        }
+        // **16b cut Q.2**: the ceiling has a sentence of its own, because it is
+        // the rule behind [`crate::arena::condition::Condition`]'s packing rather
+        // than a bound on authoring taste — see [`MAX_SECTIONS`].
+        if self.sections.len() > MAX_SECTIONS {
             return Err(DefinitionError::value(
                 entry,
                 format!(
-                    "a unit declares 1 to {MAX_SECTIONS} sections; {} is not",
+                    "a unit has at most {MAX_SECTIONS} sections; {} is not",
                     self.sections.len()
                 ),
             ));

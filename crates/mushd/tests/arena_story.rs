@@ -1191,9 +1191,27 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     let winner = strip_ansi(&ada.seen);
     assert!(
         // 16b cut Q.1: by the shot the target has been told apart, so the
-        // shooter's line names its callsign.
-        winner.contains(&format!("Hit on {named}.")),
+        // shooter's line names its callsign. **16b cut Q.2**: and the contact is
+        // classified, so the line also names the section the round found — which
+        // section is the facet draw's, so the prefix is what is pinned here and
+        // `sim_weapons.rs` is where the whole sentence's shape is.
+        winner.contains(&format!("Hit on {named}: ")),
         "the shooter was never told a round landed:\n{}",
+        tail(&winner)
+    );
+    // **16b cut Q.2**: and told when a section of the target came apart — the
+    // owner's ask of 2026-09-19. The blue tank is killed by a hull loss, so its
+    // hull is the one section the shooter is certain to watch go.
+    assert!(
+        winner.contains(&format!("{named}'s hull is destroyed.")),
+        "the shooter was never told a section of the target went:\n{}",
+        tail(&winner)
+    );
+    // The gunner's line and the victim's are not the same sentence: the victim's
+    // says what it cost the tank, and the shooter's cannot.
+    assert!(
+        !winner.contains("The hull is destroyed"),
+        "the shooter was shown the victim's own consequence list:\n{}",
         tail(&winner)
     );
     assert!(

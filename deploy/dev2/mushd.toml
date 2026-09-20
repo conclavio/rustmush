@@ -124,6 +124,14 @@ lost_after_passes = 3
 # (16b cut Q.1) true names a contact by team and centre slot (BA) at detection:
 # the other side is legible classify_after_ms before identification is earned.
 designate_on_detection = false
+# (16b cut Q.2) what SCAN reads off a target: per section, its facets' armour and
+# its internals against their maxima, per mille, green at or above the first floor
+# and yellow at or above the second.
+condition_green_permille = 667
+condition_yellow_permille = 334
+# (16b cut Q.2) the close look: a pass records bands only inside this fraction of
+# the effective reach the range test just used.
+condition_reach_permille = 500
 
 [tacsim.resolution]
 paths = []

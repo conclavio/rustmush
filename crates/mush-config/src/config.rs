@@ -91,6 +91,9 @@
 //! | `[tacsim.sensors].max_signature_factor` | `1.5` | the ceiling on a target's signature factor; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism) |
 //! | `[tacsim.sensors].lost_after_passes` | `3` | **16b cut S.1** (doc 16 §3.6): passes a contact may go unrefreshed before it is lost; the TTL is `pass_ms × lost_after_passes` |
 //! | `[tacsim.sensors].designate_on_detection` | `false` | **16b cut Q.1** (doc 16 §3.6, W5, §5): name a contact by team and centre slot (`BA`) the moment it is detected, instead of by a provisional `X<n>` until it is classified. On, the other side's tanks are legible `classify_after_ms` before the rule allows |
+//! | `[tacsim.sensors].condition_green_permille` | `667` | **16b cut Q.2** (doc 16 §3.6): at or above this fraction of what it holds whole, a section reads `green` on `SCAN` |
+//! | `[tacsim.sensors].condition_yellow_permille` | `334` | **16b cut Q.2**: at or above this fraction a section reads `yellow`, below it `red` |
+//! | `[tacsim.sensors].condition_reach_permille` | `500` | **16b cut Q.2** (doc 16 §2 W5): how near a target must be, as a fraction of the sensor's effective reach, before a pass reads its bands at all — the close look |
 //! | `[tacsim.resolution].paths` | `[]` | **16b cut G** (doc 16 §4): the resolution tables (hit curve, error terms, `p_min`, `p_max`); parsed and **inert** until cut W reads them |
 //! | `[tacsim.harness].units` | `300` | **16b cut G** (doc 16 §1 A2): units the scale harness places and moves |
 //! | `[tacsim.harness].fighting` | `24` | how many of those are fighting |
@@ -1199,6 +1202,24 @@ pub struct TacsimSensorsCfg {
     /// `classify_after_ms` before the rule allows, so the other side's tanks are
     /// legible off an unresolved return.
     pub designate_on_detection: bool,
+    /// **At or above this fraction of what it holds whole, a section reads
+    /// `green` on `SCAN`** (16b cut Q.2; doc 16 §3.6), per mille.
+    ///
+    /// The three keys below are the numbers behind the gunner's
+    /// green/yellow/red/destroyed reading. They are configuration rather than a
+    /// Rust table so the owner can tune them with a server-child restart and no
+    /// build, and rather than shipped content because shipped content is compiled
+    /// into the binary and an operator pack cannot override a shipped id. The
+    /// engine reads each `.min(1000)`.
+    pub condition_green_permille: u32,
+    /// **At or above this fraction, a section reads `yellow`** (16b cut Q.2), per
+    /// mille; below it, `red`.
+    pub condition_yellow_permille: u32,
+    /// **How near a target has to be before a sensor pass reads its bands at
+    /// all** (16b cut Q.2; doc 16 §2 W5), as a fraction of the effective reach the
+    /// range test just used — signature, thermal and jamming terms included. A
+    /// close look, so a per-section reading is not free at the edge of detection.
+    pub condition_reach_permille: u32,
 }
 
 impl Default for TacsimSensorsCfg {
@@ -1208,6 +1229,9 @@ impl Default for TacsimSensorsCfg {
             max_signature_factor: 1.5,
             lost_after_passes: 3,
             designate_on_detection: false,
+            condition_green_permille: 667,
+            condition_yellow_permille: 334,
+            condition_reach_permille: 500,
         }
     }
 }

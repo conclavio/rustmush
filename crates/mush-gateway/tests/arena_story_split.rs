@@ -643,6 +643,27 @@ async fn the_story_is_the_same_story_through_the_gateway() {
         "the lock and its percentage crossed the boundary: {locked}"
     );
 
+    // **16b cut Q.2**: the name the row reads once it has been told apart, which
+    // is not `held` — `held` was scraped at the first detection and is the
+    // provisional `X<n>`. Every sentence a gunner is told about the target's hull
+    // is gated on classification, so the assertions below have to be against the
+    // classified spelling or they would be about the wrong half of the match.
+    let mut classified = String::new();
+    for _ in 0..RETRY_BUDGET {
+        let seen = ada.ask_whole("CONTACTS").await;
+        if seen.contains("blue")
+            && let Some(id) = designator_of(&seen)
+        {
+            classified = id;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        !classified.is_empty() && classified != held,
+        "the contact never crossed the boundary as a classified row"
+    );
+
     // ---- the fight -----------------------------------------------------
     let fight_mark = ada.mark();
     let mut shots: i64 = 0;
@@ -756,8 +777,16 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     // victim is told where it landed and nothing about who fired.
     let winner = strip_ansi(&ada.seen);
     assert!(
-        winner.contains(&format!("Hit on {held}.")),
+        // **16b cut Q.2**: the shooter's line names the section the round found
+        // for a contact it has told apart, so the prefix is what crosses.
+        winner.contains(&format!("Hit on {classified}: ")),
         "the shooter's outcome line never crossed the boundary:\n{winner}"
+    );
+    // **16b cut Q.2**: and so does the section the gunner watched come apart. The
+    // blue tank dies of a hull loss, so its hull is the certain one.
+    assert!(
+        winner.contains(&format!("{classified}'s hull is destroyed.")),
+        "the shooter's section-destroyed line never crossed the boundary:\n{winner}"
     );
     let loser = strip_ansi(&bo.seen);
     assert!(

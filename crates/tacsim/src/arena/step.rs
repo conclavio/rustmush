@@ -59,7 +59,8 @@ use crate::arena::intents::{
 use crate::arena::ledger::{EventKind, LedgerChunk};
 use crate::arena::motion::integrate;
 use crate::arena::perception::{
-    FrameContact, FrameNotice, Named, Notice, NoticeKind, PerceptionCounters, RefusalDetail,
+    FrameCondition, FrameContact, FrameNotice, Named, Notice, NoticeKind, PerceptionCounters,
+    RefusalDetail,
 };
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::state::{
@@ -124,6 +125,21 @@ pub struct Frame {
     /// renders it; nothing about an undetected unit is in it, which is the whole
     /// observer rule on this surface.
     pub contacts: Vec<FrameContact>,
+    /// **The section vocabularies the readings on [`Frame::contacts`] are in**
+    /// (16b cut Q.2; doc 16 §3.6), one entry per distinct section-id list, indexed
+    /// by [`crate::arena::perception::FrameCondition::table`].
+    ///
+    /// Built from the contacts **whose `condition` is `Some`** and from no
+    /// others. Not from the classified ones: a contact classified over the mesh
+    /// that nobody has had a close look at carries no reading, and publishing its
+    /// chassis would hand the pilot the one fact the close look is the price of.
+    /// A frame whose scope holds no reading carries an empty table list.
+    ///
+    /// A target's section ids are read off the live unit as a **static fact about
+    /// the machine** — the same declared exception the silhouette is — because the
+    /// vocabulary is what the bands are in the order of and it does not move while
+    /// a match runs.
+    pub scan_tables: Vec<Vec<SmolStr>>,
     /// **What the pilot is told once** (16b cut S.2; doc 16 §3.6: *notices fire
     /// once per transition with hysteresis*), in the order the transitions
     /// happened.
@@ -259,6 +275,12 @@ impl Frame {
             && self.blocked == other.blocked
             && self.tempo == other.tempo
             && self.contacts == other.contacts
+            // **16b cut Q.2**: the readings ride the contacts, which are already
+            // compared in full, and the tables are what those readings are in the
+            // order of — so a table list that moved with no contact moving would
+            // be a panel drawing the wrong section names. Two `Vec<Vec<SmolStr>>`
+            // of at most one entry per distinct chassis in the scope.
+            && self.scan_tables == other.scan_tables
             && self.lock == other.lock
             && self.heat == other.heat
             // **16b cut F.2**: the damage surface is compared, so a round that
@@ -1024,7 +1046,9 @@ impl Arena {
                 continue;
             };
             let lock = unit.lock;
-            let contacts = self.frame_contacts(unit.id);
+            // 16b cut Q.2: the scope and the vocabularies its readings are in,
+            // built in one walk (`Arena::frame_scope`).
+            let (contacts, scan_tables) = self.frame_scope(unit.id);
             // **16b cut W.1, re-shaped by cut F.2**: the lock's own target, range
             // and cover. Cut W.1 needed only the range — the band each weapon's
             // lock falls in — and read it off the contact list the frame already
@@ -1048,6 +1072,7 @@ impl Arena {
                     blocked: unit.held,
                     tempo,
                     contacts,
+                    scan_tables,
                     // Per platform, so two pilots in one tank are both told.
                     notices: self
                         .pending_notices
@@ -1186,8 +1211,21 @@ impl Arena {
             } => {
                 // The shooter sees the round land, and nothing about what it did:
                 // a gunner reads the strike, not the target's internals.
+                //
+                // **16b cut Q.2** gave it the one word that is not the target's
+                // internals: which section the round found. The gate is
+                // `classified` and not merely `held`, because a section id is a
+                // chassis vocabulary — see `FrameNotice::Hit`'s `section`.
                 let held = self.named_target(unit, target);
-                self.stage_notice(unit, FrameNotice::Hit { contact: held });
+                let named_section = (held.is_some() && self.target_classified(unit, target))
+                    .then(|| section.clone());
+                self.stage_notice(
+                    unit,
+                    FrameNotice::Hit {
+                        contact: held,
+                        section: named_section,
+                    },
+                );
                 // The victim reads their own tank. **Nothing about the shooter** —
                 // no id, no bearing, no team, no weapon: where a round came from
                 // is a thing only a sensor may tell.
@@ -1234,6 +1272,28 @@ impl Arena {
                         consequences,
                     },
                 );
+                // **16b cut Q.2**: and the gunner's half of it, under the same
+                // held-and-classified gate the section word on a hit is under,
+                // and only when the round in flight is what did it — a section
+                // lost to anything else is nobody's shot, which is the rule the
+                // kill line below already follows.
+                if let Some((shooter, target)) = *in_flight
+                    && target == unit
+                    && self.target_classified(shooter, target)
+                    && let Some(named) = self.named_target(shooter, target)
+                {
+                    self.stage_notice(
+                        shooter,
+                        FrameNotice::TargetSectionLost {
+                            contact: named,
+                            section: section.clone(),
+                        },
+                    );
+                    // The gunner's own eyes: a section this platform watched come
+                    // apart is `destroyed` on its own reading from now on, so
+                    // `SCAN` cannot contradict the line the pilot was just sent.
+                    self.observe_section_lost(shooter, target, section);
+                }
             }
             // The kill line the shooter is owed, and only when the round in flight
             // is what did it: a unit destroyed by anything else is nobody's shot.
@@ -1492,6 +1552,57 @@ impl Arena {
         Some(self.name_of(viewer, id))
     }
 
+    /// **Whether this platform has told that target apart, right now** (16b cut
+    /// Q.2) — the gate on every word a gunner is told about the target's hull.
+    ///
+    /// Read off the live contact and not off a flag, for the reason
+    /// `Arena::designator_for` is: a contact is not a durable object, so a target
+    /// that was classified, lost and re-detected is `Unknown` again and the
+    /// section words stop until it has been told apart a second time.
+    fn target_classified(&self, viewer: ObjId, target: ObjId) -> bool {
+        self.contacts
+            .id_of(viewer, target)
+            .and_then(|id| self.contacts.get(viewer, id))
+            .is_some_and(|held| matches!(held.class, Classification::Classified { .. }))
+    }
+
+    /// **Write what the gunner watched happen into the reading they hold** (16b
+    /// cut Q.2): that section's band becomes
+    /// [`crate::arena::condition::ConditionBand::Destroyed`].
+    ///
+    /// The **stamp is untouched**, and so is `own_seen.condition`. The stamp is
+    /// the age of the *look*, and this is not a look — it is one fact observed
+    /// through a gunsight, folded into a picture that is otherwise as old as it
+    /// says it is. Leaving `own_seen` alone is what keeps it off the mesh: what a
+    /// teammate is handed is what this platform's sensors read, not what its
+    /// gunner inferred from a fire.
+    ///
+    /// A platform with no reading is left with none: a gunner who has never been
+    /// close enough to read the hull has not earned a picture by shooting at it.
+    ///
+    /// The index is the section's position in the **target's** own section order,
+    /// which is the order every band on that contact is in.
+    fn observe_section_lost(&mut self, viewer: ObjId, target: ObjId, section: &str) {
+        let Some(index) = self.unit(target).and_then(|state| {
+            state
+                .unit
+                .sections()
+                .position(|(id, _)| id.as_str() == section)
+        }) else {
+            return;
+        };
+        let Some(id) = self.contacts.id_of(viewer, target) else {
+            return;
+        };
+        if let Some(held) = self.contacts.get_mut(viewer, id)
+            && let Some(reading) = held.seen_condition.as_mut()
+        {
+            reading.condition = reading
+                .condition
+                .with_band(index, crate::arena::condition::ConditionBand::Destroyed);
+        }
+    }
+
     /// **What one platform holds, as its pilots' frame carries it** (16b cut S.1;
     /// doc 16 §3.6 "What a pilot sees"), in contact-id order.
     ///
@@ -1514,31 +1625,82 @@ impl Arena {
     /// there is no unit for it to be a fact about.
     #[must_use]
     pub fn frame_contacts(&self, platform: ObjId) -> Vec<FrameContact> {
+        self.frame_scope(platform).0
+    }
+
+    /// **The section vocabularies one platform's readings are in** (16b cut
+    /// Q.2), the companion of [`Arena::frame_contacts`] and the other half of
+    /// [`Frame::scan_tables`].
+    ///
+    /// The two are built by one walk ([`Arena::frame_scope`]); this is the
+    /// caller that wants only the tables, exactly as `frame_contacts` is the one
+    /// that wants only the rows.
+    #[must_use]
+    pub fn frame_scan_tables(&self, platform: ObjId) -> Vec<Vec<SmolStr>> {
+        self.frame_scope(platform).1
+    }
+
+    /// **The scope and the section vocabularies its readings are in** (16b cut
+    /// Q.2), built together because a [`FrameCondition`]'s `table` is an index
+    /// into the list beside it and the two cannot be built apart without one of
+    /// them being able to name a row the other does not have.
+    ///
+    /// A table is added by the **first** row that carries a reading in that
+    /// chassis's vocabulary, and a second row on the same chassis re-uses the
+    /// index — so a frame holding four stock tanks carries one table. A row with
+    /// no reading contributes nothing, which is the whole of the rule
+    /// [`Frame::scan_tables`] states.
+    fn frame_scope(&self, platform: ObjId) -> (Vec<FrameContact>, Vec<Vec<SmolStr>>) {
         let Some(from) = self.unit(platform) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
-        self.contacts
-            .of(platform)
-            .filter_map(|(id, held)| {
-                // A contact whose target has left the match is dropped: only the
-                // unit's presence is read here, never its pose.
-                let _ = self.unit(held.target)?;
-                Some(FrameContact {
-                    id: *id,
-                    // **16b cut Q.1**: read off the live contact, so a row that
-                    // has been re-acquired and not yet re-classified is `X<n>`
-                    // again, and the alias is what keeps a lock taken under that
-                    // number typable after the rename.
-                    designator: self.designator_for(platform, held),
-                    alias: self.alias_for(platform, held),
-                    class: held.class,
-                    bearing_mdeg: held.seen_at.bearing_from(&from.pose),
-                    range_cm: held.seen_at.range_from(&from.pose),
-                    age_ms: self.now_ms.saturating_sub(held.last_seen_ms),
-                    cell: held.seen_at.cell(&self.definition.terrain),
-                })
-            })
-            .collect()
+        let mut tables: Vec<Vec<SmolStr>> = Vec::new();
+        let mut rows: Vec<FrameContact> = Vec::new();
+        for (id, held) in self.contacts.of(platform) {
+            // A contact whose target has left the match is dropped: only the
+            // unit's presence is read here, never its pose.
+            let Some(target) = self.unit(held.target) else {
+                continue;
+            };
+            // **16b cut Q.2**: the reading, and the chassis vocabulary it is in —
+            // resolved only for a row that has one, so a row with no reading
+            // cannot put a section id on the frame at all.
+            let condition = held.seen_condition.map(|reading| {
+                let names: Vec<SmolStr> = target
+                    .unit
+                    .sections()
+                    .map(|(section, _)| SmolStr::new(section.as_str()))
+                    .collect();
+                let table = match tables.iter().position(|held| *held == names) {
+                    Some(at) => at,
+                    None => {
+                        tables.push(names);
+                        tables.len().saturating_sub(1)
+                    }
+                };
+                FrameCondition {
+                    table: u8::try_from(table).unwrap_or(u8::MAX),
+                    bands: reading.condition,
+                    age_ms: self.now_ms.saturating_sub(reading.at_ms),
+                }
+            });
+            rows.push(FrameContact {
+                id: *id,
+                // **16b cut Q.1**: read off the live contact, so a row that
+                // has been re-acquired and not yet re-classified is `X<n>`
+                // again, and the alias is what keeps a lock taken under that
+                // number typable after the rename.
+                designator: self.designator_for(platform, held),
+                alias: self.alias_for(platform, held),
+                class: held.class,
+                bearing_mdeg: held.seen_at.bearing_from(&from.pose),
+                range_cm: held.seen_at.range_from(&from.pose),
+                age_ms: self.now_ms.saturating_sub(held.last_seen_ms),
+                cell: held.seen_at.cell(&self.definition.terrain),
+                condition,
+            });
+        }
+        (rows, tables)
     }
 
     /// **What one tank has left, as its own pilots' frame carries it** (16b cut

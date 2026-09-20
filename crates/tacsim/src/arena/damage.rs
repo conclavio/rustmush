@@ -613,9 +613,9 @@ impl Arena {
                 ));
                 return;
             };
-            if let Some(state) = self.unit_mut(shot.target) {
-                state.unit = post;
-            }
+            // **16b cut Q.2**: through the one writer, so the band cache the
+            // gunner's `SCAN` reads moves with the round that changed it.
+            self.set_unit(shot.target, post);
         }
         if let Some(state) = self.unit_mut(shot.shooter) {
             state.hits = state.hits.saturating_add(1);

@@ -297,6 +297,16 @@ lost_after_passes = 3              # (16b cut S.1) passes a contact may go unref
 # detected: the other side's tanks are legible classify_after_ms before doc 16 W5
 # says identification is earned, on the acquired notice, CONTACTS, the map and a panel.
 designate_on_detection = false     # (16b cut Q.1) false shows an unresolved return as X1, X2 ... until it is classified
+# (16b cut Q.2) what SCAN turns a target's M32 cells into: per section, the sum of
+# its facets' armour and its internals against their maxima, per mille, read at or
+# above the first floor as green, at or above the second as yellow, below as red; a
+# section whose condition is not intact, or whose internals are spent, is destroyed.
+condition_green_permille = 667     # (16b cut Q.2) at or above this, a section reads green
+condition_yellow_permille = 334    # (16b cut Q.2) at or above this, yellow; below it, red
+# (16b cut Q.2) a CLOSE LOOK: a pass records bands only for a classified contact
+# inside this fraction of the effective reach the range test just used -- signature,
+# thermal and jamming terms already in it -- so a reading is earned and not free.
+condition_reach_permille = 500     # (16b cut Q.2) half the reach the platform can detect at
 
 [tacsim.resolution]                # (16b cut G) where the hit-resolution tables live
 # The hit curve, the error terms, p_min and p_max: the per-mille no-dice

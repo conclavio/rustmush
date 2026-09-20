@@ -80,6 +80,7 @@ use mush_tactics::{
 };
 use smol_str::SmolStr;
 use tacsim::arena::clock::Tempo;
+use tacsim::arena::condition::{Condition, ConditionBand, Reading};
 use tacsim::arena::damage::{self, UnitReturn};
 use tacsim::arena::intents::{Control, Intent, IntentKind};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
@@ -2059,6 +2060,9 @@ fn scripted_arena() -> Arena {
             own_seen: Some(OwnSighting {
                 at_ms: i64::MAX / 4,
                 plot: plot_of(&arena, BLUE),
+                // 16b cut Q.2: no close look has been taken; this fixture is
+                // about a shot and not about what a gunner can read.
+                condition: None,
             }),
             ..ShadowContact::sighted(
                 BLUE,
@@ -2384,6 +2388,17 @@ fn told(out: &StepOutput, pilot: ObjId) -> Vec<String> {
         .collect()
 }
 
+/// The frames one pilot was sent by one pulse — the same projection [`told`]
+/// takes, stopped one step earlier, for the tests that read the wire payload a
+/// panel decodes rather than the sentence a line client prints.
+fn seen_by(out: &StepOutput, pilot: ObjId) -> Vec<tacsim::arena::step::Frame> {
+    out.frames
+        .iter()
+        .filter(|(who, _)| *who == pilot)
+        .map(|(_, frame)| frame.clone())
+        .collect()
+}
+
 /// Warm the duel, hand red a contact on blue, and fire once — answering every
 /// notice line each pilot was sent from the shot to its arrival.
 fn one_shot(arena: &mut Arena, bytes: &mut Vec<u8>) -> BTreeMap<ObjId, Vec<String>> {
@@ -2431,9 +2446,12 @@ fn the_shooter_is_told_the_round_landed_and_the_victim_where_it_landed() {
     let victim = heard.get(&BLUE_PILOT).cloned().unwrap_or_default();
     let contact = contact_of(RED, BLUE);
 
-    // The shooter: the round landed, on the contact their own platform holds.
+    // The shooter: the round landed, on the contact their own platform holds —
+    // and, since **16b cut Q.2**, which section it found. The contact is
+    // classified (`hold` plants it so), which is what earns the word; the section
+    // is the turret for the reason the victim's line below is pinned to it.
     assert!(
-        shooter.contains(&format!("Hit on {}.", named(&arena, RED, BLUE))),
+        shooter.contains(&format!("Hit on {}: turret.", named(&arena, RED, BLUE))),
         "the shooter was told the round landed: {shooter:?}"
     );
     // And nothing about what it did. A gunner sees the strike, not the internals.
@@ -2623,9 +2641,28 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
             >= 2,
         "{heard:?}"
     );
-    // The shooter was never told the target was destroyed, because it was not.
+    // **16b cut Q.2**: the shooter was told the turret went, once — the owner's
+    // ask of 2026-09-19, which was that an attacker read nothing between
+    // `Hit on …` and `… destroyed.` The line is the ledger's one
+    // `section_destroyed` projected through the shooter's contact, so it cannot
+    // be said once per round that lands on the spent section afterwards.
+    let watched: Vec<&String> = shooter
+        .iter()
+        .filter(|line| line.ends_with("turret is destroyed."))
+        .collect();
+    assert_eq!(
+        watched,
+        vec![&format!(
+            "{}'s turret is destroyed.",
+            named(&arena, RED, BLUE)
+        )],
+        "{shooter:?}"
+    );
+    // The shooter was never told the *tank* was destroyed, because it was not.
     assert!(
-        !shooter.iter().any(|line| line.contains("destroyed")),
+        !shooter
+            .iter()
+            .any(|line| line.contains("destroyed") && !line.contains("turret")),
         "{shooter:?}"
     );
 }
@@ -3767,5 +3804,762 @@ fn the_advertised_chance_is_read_off_the_plot_and_the_shot_off_the_tank() {
         "blue is crossing at 15 m/s: {} against {}",
         taken.error_urad,
         advice.error_urad
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (n8) the cross-tempo property, with the gunner's words and the readings in it
+//      — 16b cut Q.2
+//
+// 16b §11 makes this mandatory for every cut that changes arena behaviour, and
+// this cut changes five things the property is about: the section word on a hit,
+// the `target_section_lost` line, the reading a close look records, the reading a
+// share carries, and the band the gunner's own round writes in. All five are
+// folded into the state hash through the contact store, and all five are things a
+// pilot reads.
+//
+// So the run below is scripted to contain all five at once — a shooter, a BLIND
+// teammate that can only ever learn what the mesh hands it, and a target whose
+// turret is taken apart round by round while both of them watch.
+// ---------------------------------------------------------------------------
+
+/// **The blind teammate** (16b cut Q.2): a red tank with no sensor of its own, so
+/// everything on its scope arrived over the mesh and a reading it holds can only
+/// be the one the shooter's own sight took.
+const MATE: ObjId = ObjId(13);
+
+/// Its pilot. `arena_of` seats `ObjId(1000 + n)` in the order the units are
+/// handed over, so the trio below is red, blue, mate.
+const MATE_PILOT: ObjId = ObjId(1_002);
+
+/// The shooter's sight, with enough reach for the duel's forty metres to be both
+/// a detection and a **close look**, and a mesh short enough that only the tank
+/// standing beside it hears anything.
+///
+/// `sight()` reaches five cells, which is fifty metres: the duel is inside it but
+/// the close look — half the effective reach, `condition_reach_permille` — is
+/// twenty-five, so nothing would ever be read. Ten cells makes the close look
+/// fifty metres and the duel's forty a look.
+fn scan_sight() -> SensorProfile {
+    SensorProfile {
+        max_range_cells: 10,
+        share_range_cells: 5,
+        ..sight()
+    }
+}
+
+/// **Two red tanks and a blue one**, with every round sent to the blue turret.
+///
+/// The turret and not the hull, for the reason
+/// `a_section_is_destroyed_once_however_many_rounds_find_it_afterwards` picks it:
+/// 140 of rear armour and 150 of internals against 120 a round, so the third
+/// round finishes it and its consequence takes blue's (non-existent) weapons
+/// rather than the tank. The match therefore runs on past the section that went,
+/// which is what lets the checkpoints below sit at fixed arena timestamps instead
+/// of at whatever moment a kill happened to end the run.
+fn meshed_trio() -> Arena {
+    let mut arena = arena_of(
+        vec![
+            CustodyUnit {
+                sensor: Some(scan_sight()),
+                ..tank(
+                    RED,
+                    Team::Red,
+                    centre(RED_CELL.0, RED_CELL.1),
+                    vec![cannon()],
+                )
+            },
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(BLUE_CELL.0, BLUE_CELL.1),
+                Vec::new(),
+            ),
+            CustodyUnit {
+                // Blind: it runs a pass (that is where its contacts expire) and
+                // detects nothing, so its scope is the mesh and nothing else.
+                sensor: None,
+                ..tank(
+                    MATE,
+                    Team::Red,
+                    centre(RED_CELL.0 - 1, RED_CELL.1),
+                    Vec::new(),
+                )
+            },
+        ],
+        &[],
+        &match_cfg(),
+    );
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.profile.bands = state
+            .profile
+            .bands
+            .iter()
+            .map(|band| BandProfile {
+                sections: vec![(SmolStr::new("turret"), 1)],
+                ..band.clone()
+            })
+            .collect();
+    }
+    arena
+}
+
+/// The scripted log: all three tanks start up, and the shooter locks and fires
+/// four times.
+///
+/// **Every beat is at a multiple of five seconds of arena time**, which is a pulse
+/// boundary at 5,000, 1,000 and 500 ms alike — the rule every cross-tempo script
+/// in this tree follows, because a beat at any other millisecond would be
+/// delivered at a different arena time at each cadence and the three runs would
+/// diverge for the script's reasons and not the engine's. The first shot is at ten
+/// seconds, comfortably past `classify_after_ms`, so every round in the run is
+/// fired at a contact the shooter has told apart.
+fn scan_script() -> Vec<Beat> {
+    let contact = contact_of(RED, BLUE);
+    let mut beats = vec![Beat {
+        t_ms: 0,
+        intents: vec![
+            intent(RED, IntentKind::Startup, 1),
+            intent(BLUE, IntentKind::Startup, 2),
+            intent(MATE, IntentKind::Startup, 3),
+        ],
+    }];
+    for (n, at) in [10_000_i64, 15_000, 20_000, 25_000].into_iter().enumerate() {
+        let seq = u64::try_from(n)
+            .unwrap_or(0)
+            .saturating_mul(2)
+            .saturating_add(4);
+        beats.push(Beat {
+            t_ms: at,
+            intents: vec![
+                intent(RED, IntentKind::Lock { contact }, seq),
+                intent(
+                    RED,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                    },
+                    seq + 1,
+                ),
+            ],
+        });
+    }
+    beats
+}
+
+/// **What one platform's scope says about the target's hull at one moment**: the
+/// compact band spelling and the age of the *look* behind it, or `None` for a
+/// platform holding no reading.
+type ScanColumn = (i64, ObjId, Option<(String, i64)>);
+
+/// What one replay of [`scan_script`] produced.
+#[derive(Debug, PartialEq, Eq)]
+struct Scanned {
+    events: Vec<Line>,
+    hashes: Vec<u64>,
+    notices: BTreeMap<ObjId, Vec<String>>,
+    /// Every checkpoint, at multiples of five seconds of arena time.
+    columns: Vec<ScanColumn>,
+    pulses: u32,
+}
+
+/// Drive [`meshed_trio`] through [`scan_script`] at `cadence_ms`, with the tempo
+/// pinned, recording the ledger, the substep hashes, every pilot's lines and both
+/// red platforms' readings at every five-second checkpoint.
+fn scanned(cadence_ms: i64, until_ms: i64) -> Scanned {
+    let mut arena = meshed_trio();
+    let script = scan_script();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut notices: BTreeMap<ObjId, Vec<String>> = BTreeMap::new();
+    let mut columns: Vec<ScanColumn> = Vec::new();
+    let mut wall = 0_i64;
+    let mut next = 0_usize;
+    let mut pulses = 0_u32;
+    let mut ended = false;
+    let absorb_notices = |out: &StepOutput, into: &mut BTreeMap<ObjId, Vec<String>>| {
+        for (pilot, frame) in &out.frames {
+            let lines = tacsim::match_::cockpit::notice_lines(frame);
+            if !lines.is_empty() {
+                into.entry(*pilot).or_default().extend(lines);
+            }
+        }
+    };
+    loop {
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        let mut intents: Vec<Intent> = Vec::new();
+        while let Some(beat) = script.get(next) {
+            if beat.t_ms > arena.now_ms {
+                break;
+            }
+            intents.extend(beat.intents.iter().cloned());
+            next += 1;
+        }
+        if !intents.is_empty() {
+            // A zero-length pulse, so a scripted order resolves at exactly the
+            // millisecond the script names at every cadence.
+            let out = arena.step(wall, &[] as &[Control], &intents);
+            absorb(&out, &mut bytes);
+            absorb_notices(&out, &mut notices);
+            hashes.extend(arena.substep_hashes.iter().copied());
+            pulses = pulses.saturating_add(1);
+            ended = out.ended.is_some();
+        }
+        if ended || arena.now_ms >= until_ms {
+            break;
+        }
+        wall += cadence_ms;
+        let out = arena.step(wall, &[] as &[Control], &[]);
+        absorb(&out, &mut bytes);
+        absorb_notices(&out, &mut notices);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        pulses = pulses.saturating_add(1);
+        // The checkpoint: every five seconds of ARENA time, which is a pulse
+        // boundary at 5,000, 1,000 and 500 ms alike.
+        if arena.now_ms % 5_000 == 0 {
+            for platform in [RED, MATE] {
+                columns.push((arena.now_ms, platform, reading_of(&arena, platform, BLUE)));
+            }
+        }
+        if out.ended.is_some() || arena.now_ms >= until_ms {
+            break;
+        }
+    }
+    let log = events(&mut arena, &mut bytes);
+    Scanned {
+        events: log
+            .iter()
+            .map(|event| {
+                (
+                    event.t_ms,
+                    serde_json::to_string(&event.kind).unwrap_or_default(),
+                    event.draw.clone(),
+                    event.hash,
+                )
+            })
+            .collect(),
+        hashes,
+        notices,
+        columns,
+        pulses,
+    }
+}
+
+/// The band spelling and the look's age, off the frame `platform`'s pilot would
+/// be sent — so a checkpoint reads the same surface `SCAN` reads and not the
+/// store behind it.
+fn reading_of(arena: &Arena, platform: ObjId, target: ObjId) -> Option<(String, i64)> {
+    let id = contact_of(platform, target);
+    arena
+        .frame_contacts(platform)
+        .into_iter()
+        .find(|row| row.id == id)
+        .and_then(|row| row.condition)
+        .map(|reading| (reading.bands.letters(), reading.age_ms))
+}
+
+#[test]
+fn one_meshed_engagement_at_three_cadences_is_one_set_of_gunners_words_and_readings() {
+    let mut runs: Vec<(i64, Scanned)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        runs.push((cadence, scanned(cadence, 35_000)));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    let shooter = first.notices.get(&RED_PILOT).cloned().unwrap_or_default();
+
+    // ---- the run really carried the five things this cut moved -------------
+
+    // 1. The section word, on a contact the shooter has told apart.
+    let named = "BA";
+    assert!(
+        shooter
+            .iter()
+            .any(|line| line == &format!("Hit on {named}: turret.")),
+        "the gunner was never told which section a round found: {shooter:?}"
+    );
+    // 2. The target-section line, once, and never the victim's own sentence.
+    assert_eq!(
+        shooter
+            .iter()
+            .filter(|line| *line == &format!("{named}'s turret is destroyed."))
+            .count(),
+        1,
+        "{shooter:?}"
+    );
+    assert!(
+        !shooter.iter().any(|line| line.starts_with("The turret")),
+        "the gunner was shown the victim's own consequence list: {shooter:?}"
+    );
+    // ...which the victim really was sent, so the two halves are two sentences.
+    let victim = first.notices.get(&BLUE_PILOT).cloned().unwrap_or_default();
+    assert!(
+        victim
+            .iter()
+            .any(|line| line.starts_with("The turret is destroyed")),
+        "{victim:?}"
+    );
+    // 3 and 4. Both red platforms held a reading, and the blind one's can only
+    //          have come over the mesh.
+    let held = |platform: ObjId| -> Vec<(i64, Option<(String, i64)>)> {
+        first
+            .columns
+            .iter()
+            .filter(|(_, who, _)| *who == platform)
+            .map(|(t_ms, _, reading)| (*t_ms, reading.clone()))
+            .collect()
+    };
+    let shooters = held(RED);
+    let blind = held(MATE);
+    assert!(
+        shooters.iter().any(|(_, reading)| reading.is_some()),
+        "the shooter never read the target: {shooters:?}"
+    );
+    assert!(
+        blind.iter().any(|(_, reading)| reading.is_some()),
+        "the mesh never carried a reading to the blind teammate: {blind:?}"
+    );
+    // 5. The band the gunner watched go is `destroyed` on its own reading. The
+    //    stock tank's sections read `engine, hull, left_track, right_track,
+    //    turret`, so the turret is the fifth letter — and every other round went
+    //    to the turret too, so nothing else moved.
+    let last = shooters
+        .iter()
+        .filter_map(|(_, reading)| reading.clone())
+        .next_back()
+        .unwrap_or_else(|| panic!("the shooter held a reading: {shooters:?}"));
+    assert_eq!(last.0, "ggggd", "{shooters:?}");
+
+    // ---- the guard: three cadences really are three runs -------------------
+    let counts: Vec<u32> = runs.iter().map(|(_, run)| run.pulses).collect();
+    assert!(
+        counts.windows(2).all(|pair| pair.first() != pair.get(1)),
+        "the three replays ran the same number of pulses: {counts:?}"
+    );
+
+    // ---- and they agree, event for event, hash for hash, line for line -----
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the events differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hashes differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.notices, first.notices,
+            "the pilots' lines differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.columns, first.columns,
+            "the readings differ at {cadence} ms"
+        );
+    }
+
+    // The blind teammate was told about the contact and about nothing else: it
+    // fired nothing, so it has no gunner's words at all.
+    let watcher = first.notices.get(&MATE_PILOT).cloned().unwrap_or_default();
+    assert!(!watcher.is_empty(), "the mesh told the teammate nothing");
+    for line in &watcher {
+        assert!(
+            !line.starts_with("Hit on") && !line.contains("is destroyed"),
+            "the teammate was told about a round it did not fire: {line}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (n9) the gunner's own eyes — 16b cut Q.2
+// ---------------------------------------------------------------------------
+
+/// Plant a reading on `viewer`'s contact on `target`: every section green, taken
+/// at `at_ms`.
+///
+/// By hand, because the point of the tests below is what happens to a reading the
+/// platform is **not** refreshing. `duel()`'s sight reaches five cells and the two
+/// tanks are four apart, so the close look — half that reach — never covers them
+/// and no pass in these runs can take a reading of its own. Anything that changes
+/// in the bands below is therefore the gunner's own round and nothing else.
+fn plant_reading(arena: &mut Arena, viewer: ObjId, target: ObjId, at_ms: i64) -> Condition {
+    let green = Condition::default().with_band(4, ConditionBand::Green);
+    let id = contact_of(viewer, target);
+    if let Some(held) = arena.contacts.get_mut(viewer, id) {
+        held.seen_condition = Some(Reading {
+            at_ms,
+            condition: green,
+        });
+        if let Some(own) = held.own_seen.as_mut() {
+            own.condition = held.seen_condition;
+        }
+    }
+    green
+}
+
+/// What `viewer` holds on `target`, straight out of the store.
+fn contact_state(arena: &Arena, viewer: ObjId, target: ObjId) -> ShadowContact {
+    let id = contact_of(viewer, target);
+    arena
+        .contacts
+        .get(viewer, id)
+        .copied()
+        .unwrap_or_else(|| panic!("#{} holds no contact on #{}", viewer.0, target.0))
+}
+
+/// Fire at the turret until it is gone, answering every line the shooter was
+/// sent **and every frame it was sent** — the second is what the wire-surface
+/// test below reads, so the notices a panel decodes are the notices this same
+/// run produced.
+fn shoot_the_turret_off(
+    arena: &mut Arena,
+    bytes: &mut Vec<u8>,
+    wall: i64,
+) -> (Vec<String>, Vec<tacsim::arena::step::Frame>) {
+    let contact = contact_of(RED, BLUE);
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.profile.bands = state
+            .profile
+            .bands
+            .iter()
+            .map(|band| BandProfile {
+                sections: vec![(SmolStr::new("turret"), 1)],
+                ..band.clone()
+            })
+            .collect();
+    }
+    let mut shooter: Vec<String> = Vec::new();
+    let mut frames: Vec<tacsim::arena::step::Frame> = Vec::new();
+    let mut wall_ms = wall;
+    let mut fired = 0_u32;
+    while fired < 4 {
+        wall_ms += 500;
+        let ready = arena
+            .unit(RED)
+            .is_some_and(|state| state.weapon_ready("cannon", arena.now_ms));
+        let intents = if ready {
+            fired += 1;
+            vec![
+                intent(RED, IntentKind::Lock { contact }, u64::from(fired) * 2),
+                intent(
+                    RED,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                    },
+                    u64::from(fired) * 2 + 1,
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
+        let out = pulse(arena, wall_ms, &intents, bytes);
+        shooter.extend(told(&out, RED_PILOT));
+        frames.extend(seen_by(&out, RED_PILOT));
+        // The contact is kept alive by hand, exactly as the sibling tests keep
+        // it: what is under test is the reading, not the time to live.
+        if let Some(held) = arena.contacts.get_mut(RED, contact) {
+            held.last_seen_ms = arena.now_ms;
+        }
+    }
+    for _ in 0..8 {
+        wall_ms += 500;
+        let out = pulse(arena, wall_ms, &[], bytes);
+        shooter.extend(told(&out, RED_PILOT));
+        frames.extend(seen_by(&out, RED_PILOT));
+        if let Some(held) = arena.contacts.get_mut(RED, contact) {
+            held.last_seen_ms = arena.now_ms;
+        }
+    }
+    (shooter, frames)
+}
+
+#[test]
+fn a_section_the_gunner_watched_go_is_written_into_the_reading_they_hold() {
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let _ = hold(&mut arena, RED, BLUE);
+    let planted = plant_reading(&mut arena, RED, BLUE, 1_000);
+    assert_eq!(planted.letters(), "ggggg", "the planted reading is whole");
+
+    let (shooter, _) = shoot_the_turret_off(&mut arena, &mut bytes, wall);
+    assert!(
+        shooter
+            .iter()
+            .any(|line| line == &format!("{}'s turret is destroyed.", named(&arena, RED, BLUE))),
+        "the gunner was never told the turret went: {shooter:?}"
+    );
+
+    let held = contact_state(&arena, RED, BLUE);
+    let read = held
+        .seen_condition
+        .unwrap_or_else(|| panic!("the reading survived"));
+    // The turret is the fifth section in the stock tank's own order (`engine,
+    // hull, left_track, right_track, turret`), and it is the only band that
+    // moved: `SCAN` cannot contradict the line the pilot was just sent, and it
+    // cannot invent anything else either.
+    assert_eq!(read.condition.letters(), "ggggd");
+    // **The stamp is untouched.** This is not a look — it is one fact seen
+    // through a gunsight folded into a picture that is otherwise as old as it
+    // says it is, and a reading that claimed to be fresh would be the gunner
+    // being told their twenty-second-old picture is current.
+    assert_eq!(read.at_ms, 1_000, "the look's own stamp moved");
+    // And what may travel on the mesh is untouched too: a teammate is handed what
+    // this platform's **sensors** read, never what its gunner inferred.
+    assert_eq!(
+        held.own_seen.and_then(|own| own.condition),
+        Some(Reading {
+            at_ms: 1_000,
+            condition: planted
+        }),
+        "the gunner's inference reached the mesh"
+    );
+}
+
+#[test]
+fn a_gunner_with_no_reading_earns_none_by_shooting() {
+    // The other half of the rule: the write-in corrects a picture, it does not
+    // create one. A platform that has never been close enough to read the hull
+    // has not earned a per-section picture by setting fire to part of it.
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let _ = hold(&mut arena, RED, BLUE);
+    assert!(
+        contact_state(&arena, RED, BLUE).seen_condition.is_none(),
+        "the fixture starts with no reading"
+    );
+    let (shooter, _) = shoot_the_turret_off(&mut arena, &mut bytes, wall);
+    assert!(
+        shooter
+            .iter()
+            .any(|line| line.ends_with("turret is destroyed.")),
+        "{shooter:?}"
+    );
+    assert!(
+        contact_state(&arena, RED, BLUE).seen_condition.is_none(),
+        "shooting a section off bought the gunner a reading"
+    );
+    // ...and the frame says so, in the words `SCAN` prints.
+    let row = arena
+        .frame_contacts(RED)
+        .into_iter()
+        .find(|row| row.id == contact_of(RED, BLUE))
+        .unwrap_or_else(|| panic!("the row is still held"));
+    assert!(row.condition.is_none());
+}
+
+#[test]
+fn the_wire_frame_carries_the_new_notice_with_its_designator_and_its_section() {
+    // The sentence is the line client's; **this** is what the TUI and the web
+    // decode, and Q.3 freezes it into the one fixture set all three renderers
+    // read. So the kind word, the designator and the section are pinned as
+    // *fields* — a panel that wants to flash the section a gunner just took off
+    // a target must never have to parse it back out of `text`.
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let _ = hold(&mut arena, RED, BLUE);
+    let designator = named(&arena, RED, BLUE);
+    let (_, frames) = shoot_the_turret_off(&mut arena, &mut bytes, wall);
+
+    let notices: Vec<serde_json::Value> = frames
+        .iter()
+        .map(|frame| tacsim::match_::cockpit::status_frame(tacsim::arena_task::MatchId(1), frame))
+        .filter_map(|payload| {
+            payload
+                .get("notices")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
+        .flatten()
+        .collect();
+    let lost: Vec<&serde_json::Value> = notices
+        .iter()
+        .filter(|notice| {
+            notice.get("kind").and_then(serde_json::Value::as_str) == Some("target_section_lost")
+        })
+        .collect();
+    assert_eq!(lost.len(), 1, "one notice, once: {notices:?}");
+    let notice = lost.first().unwrap_or_else(|| panic!("one notice"));
+    assert_eq!(
+        notice.get("designator").and_then(serde_json::Value::as_str),
+        Some(designator.as_str())
+    );
+    assert_eq!(
+        notice.get("section").and_then(serde_json::Value::as_str),
+        Some("turret")
+    );
+    assert_eq!(
+        notice.get("text").and_then(serde_json::Value::as_str),
+        Some(format!("{designator}'s turret is destroyed.").as_str())
+    );
+    assert!(
+        notice.get("contact").is_some_and(|id| !id.is_null()),
+        "the row key a panel matches against: {notice}"
+    );
+
+    // The gunner's hit lines carry the same key, under the same gate; every
+    // other kind carries `null` there, the victim's own two included, because
+    // what a round did inside this tank is the status block's and not a
+    // notice's.
+    let hits: Vec<&serde_json::Value> = notices
+        .iter()
+        .filter(|notice| notice.get("kind").and_then(serde_json::Value::as_str) == Some("hit"))
+        .collect();
+    assert!(!hits.is_empty(), "no hit notice: {notices:?}");
+    for hit in hits {
+        assert_eq!(
+            hit.get("section").and_then(serde_json::Value::as_str),
+            Some("turret"),
+            "a classified hit published no section: {hit}"
+        );
+    }
+    for notice in &notices {
+        let kind = notice
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if kind == "hit" || kind == "target_section_lost" {
+            continue;
+        }
+        assert_eq!(
+            notice.get("section"),
+            Some(&serde_json::Value::Null),
+            "{kind} published a section of the target: {notice}"
+        );
+    }
+}
+
+/// Hand `viewer` an **unidentified** contact on `target` — [`hold`]'s twin, and
+/// the state every gate in this cut is about.
+///
+/// A contact is not a durable object: this is exactly what a platform holds after
+/// a first detection, and again after a classified contact is lost and
+/// re-detected, so it is a state a live shooter reaches over and over.
+fn hold_unknown(arena: &mut Arena, viewer: ObjId, target: ObjId) -> ContactId {
+    let id = contact_of(viewer, target);
+    let now = arena.now_ms;
+    arena.contacts.insert(
+        viewer,
+        id,
+        ShadowContact::sighted(target, Classification::Unknown, now, plot_of(arena, target)),
+    );
+    id
+}
+
+#[test]
+fn an_unidentified_target_earns_no_section_word_and_no_section_lost_line() {
+    // **The gate this whole sub-cut exists for.** A section id is a chassis
+    // vocabulary — `left_track` against `left_leg` — so `Hit on X1: left_track.`
+    // would tell a gunner the blip is tracked rather than legged, which is
+    // identification by gunfire and is what doc 16 §2 W5 prices at
+    // `classify_after_ms` of looking. The same word in
+    // `X1's left_track is destroyed.` gives away exactly as much.
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let _ = hold_unknown(&mut arena, RED, BLUE);
+    // The shooter's own sight is taken off it, so no pass of this run can tell
+    // the return apart behind the test's back — which is the state under test
+    // and, on a live map, a gunner firing on a plot a teammate handed over.
+    // `shoot_the_turret_off` keeps the row alive by hand, exactly as its
+    // siblings do.
+    if let Some(state) = arena.unit_mut(RED) {
+        state.sensor = None;
+    }
+    let (shooter, _) = shoot_the_turret_off(&mut arena, &mut bytes, wall);
+    assert!(
+        matches!(
+            contact_state(&arena, RED, BLUE).class,
+            Classification::Unknown
+        ),
+        "the contact classified itself: the gate is not under test"
+    );
+
+    // The run really did what it is here to prove something about: a section
+    // came apart, and the victim was told so.
+    let journal = events(&mut arena, &mut bytes);
+    assert!(
+        count(&journal, "section_destroyed") >= 1,
+        "no section was destroyed: {shooter:?}"
+    );
+
+    // The shooter is told the rounds landed, by the platform's own name for the
+    // return and with no section word on any of them...
+    let hits: Vec<&String> = shooter
+        .iter()
+        .filter(|line| line.starts_with("Hit on "))
+        .collect();
+    assert!(!hits.is_empty(), "the gunner was told nothing: {shooter:?}");
+    let designator = named(&arena, RED, BLUE);
+    for line in &hits {
+        assert_eq!(
+            *line,
+            &format!("Hit on {designator}."),
+            "a section word on a return the platform has not identified"
+        );
+    }
+    // ...and not one word about the section that came apart.
+    for line in &shooter {
+        assert!(
+            !line.contains("is destroyed."),
+            "an unidentified target earned a section-destroyed line: {line}"
+        );
+    }
+
+    // Nor was anything written into a reading on its behalf: the write-in is
+    // under the same gate as the line it corrects.
+    assert!(
+        contact_state(&arena, RED, BLUE).seen_condition.is_none(),
+        "an unidentified contact earned hashed state off a gunner's shot"
+    );
+}
+
+#[test]
+fn the_three_things_a_gunner_can_be_told_about_where_a_round_went() {
+    // The two ungated sentences, pinned where they are built. The third —
+    // `Hit on BA: turret.` — is what every fixture above produces; these two are
+    // the states a duel cannot be driven into on purpose, because a contact that
+    // is held is held and one that is not is not.
+    let mut arena = duel();
+    let mut bytes: Vec<u8> = Vec::new();
+    let wall = warm(&mut arena, &mut bytes);
+    let contact = hold(&mut arena, RED, BLUE);
+    let out = pulse(&mut arena, wall + 500, &[], &mut bytes);
+    let frame = out
+        .frames
+        .iter()
+        .find(|(who, _)| *who == RED_PILOT)
+        .map(|(_, frame)| frame.clone())
+        .unwrap_or_else(|| panic!("the red pilot was sent a frame"));
+    let rows = tacsim::match_::cockpit::frame_contacts(&frame);
+    let named = tacsim::arena::perception::Named {
+        id: contact,
+        designator: tacsim::arena::state::Designator::Provisional(2),
+    };
+    let line = |notice: tacsim::arena::perception::FrameNotice| {
+        tacsim::match_::cockpit::notice_line(&frame, &notice, &rows)
+    };
+    assert_eq!(
+        line(tacsim::arena::perception::FrameNotice::Hit {
+            contact: Some(named),
+            section: None,
+        }),
+        "Hit on X2."
+    );
+    assert_eq!(
+        line(tacsim::arena::perception::FrameNotice::Hit {
+            contact: None,
+            section: None,
+        }),
+        "Hit."
+    );
+    // And the third, off the same builder, so the three live side by side.
+    assert_eq!(
+        line(tacsim::arena::perception::FrameNotice::Hit {
+            contact: Some(named),
+            section: Some(SmolStr::new("turret")),
+        }),
+        "Hit on X2: turret."
     );
 }

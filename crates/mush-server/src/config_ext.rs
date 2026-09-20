@@ -335,6 +335,11 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             lost_after_passes: cfg.sensors.lost_after_passes,
             // 16b cut Q.1: the provisional-designator switch.
             designate_on_detection: cfg.sensors.designate_on_detection,
+            // 16b cut Q.2: the three numbers behind `SCAN`'s bands and the close
+            // look that earns one, mapped straight across.
+            condition_green_permille: cfg.sensors.condition_green_permille,
+            condition_yellow_permille: cfg.sensors.condition_yellow_permille,
+            condition_reach_permille: cfg.sensors.condition_reach_permille,
         },
         resolution: tacsim::config::ResolutionConfig {
             paths: cfg
@@ -927,6 +932,9 @@ mod tests {
              max_signature_factor = 2.25\n\
              lost_after_passes = 5\n\
              designate_on_detection = true\n\
+             condition_green_permille = 700\n\
+             condition_yellow_permille = 300\n\
+             condition_reach_permille = 400\n\
              [tacsim.resolution]\n\
              paths = [\"  content/resolution.json  \"]\n\
              [tacsim.harness]\n\
@@ -997,6 +1005,10 @@ mod tests {
                 // 16b cut Q.1: the provisional-designator switch, mapped
                 // straight across.
                 designate_on_detection: true,
+                // 16b cut Q.2: and the three `SCAN` numbers, likewise.
+                condition_green_permille: 700,
+                condition_yellow_permille: 300,
+                condition_reach_permille: 400,
             }
         );
         assert_eq!(

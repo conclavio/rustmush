@@ -1,6 +1,6 @@
 # The cockpit
 
-The eleven verbs you fly a tank with, in the order a pilot uses them. They work
+The twelve verbs you fly a tank with, in the order a pilot uses them. They work
 while you are at the station of a tank a running match has deployed, and nowhere
 else — `help simulator` is how you get there.
 
@@ -15,6 +15,8 @@ else — `help simulator` is how you get there.
   RANGE [<contact>]   how far away a contact plotted; your lock if you name
                       none.
   BEARING [<contact>] which way a contact plotted; your lock if you name none.
+  SCAN [<contact>]    what is left of a contact, section by section; your lock
+                      if you name none.
   FIRE [<weapon>]     shoot your lock; the cannon unless you name another.
   WEAPONSTATUS        every weapon: ready or cycling, its rounds, its own chance
                       against your lock, and that lock's range band.
@@ -100,6 +102,33 @@ read the same plot every other surface reads, and both say so when it is going
 stale: `Range to BA: 430 m, plotted 4 s ago.` With no lock and no name they
 answer `No lock: LOCK a contact first, or name one.`
 
+`SCAN` is what is left of one contact, section by section:
+
+  SCAN BA          Scan of BA, read 2 s ago:
+                     engine green, hull yellow, left_track green,
+                     right_track destroyed, turret red
+
+Four words and never a number: **green** is most of a section still there,
+**yellow** is about a third to two thirds of it gone, **red** is worse, and
+**destroyed** is a section that has stopped being one. It is a reading and not a
+tether — `read 2 s ago` is the age of the **look**, which is older than the plot
+whenever you have held the contact since without getting close.
+
+A reading is earned twice over. The contact has to be **identified**, because a
+section name says what kind of machine it is:
+
+  SCAN X2          X2 is not identified yet; there is nothing to read.
+
+— and your platform has to have had a **close look** at it, which is well inside
+the range it can merely detect things at:
+
+  SCAN BA          No reading on BA yet: close the range for a look.
+
+Drive closer and look again. A teammate's reading reaches you over the mesh the
+same way their plot does, and it is as old as *their* look; and a section you
+watched one of your own rounds take apart reads `destroyed` from that moment,
+without waiting for another look.
+
 `VIEW` draws the same picture as a map: terrain glyphs, `@` for you, `?` for a
 contact nothing has classified, `+` for your side and `x` for the other.
 
@@ -113,9 +142,15 @@ worth: `Locked on BA, 62% to hit.` `WEAPONSTATUS` gives the same number per
 weapon, because a weapon's chance is its own.
 
 `FIRE` shoots the lock with the cannon; `FIRE mg` names another weapon. You are
-told what your round did and nothing more: `Hit on BA.`, `Miss on BA: the target
-moved.`, `BA destroyed.` Which section you struck and what the target had left
-is the target's business, not yours.
+told what your round did and nothing more: `Hit on BA: turret.`, `Miss on BA:
+the target moved.`, `BA's turret is destroyed.`, `BA destroyed.` The **section**
+is all of it: what the round did to that section, and what the target has left
+inside it, is the target's business and not yours.
+
+The section word is only there for a contact you have **identified**, for the
+reason `SCAN` needs one: a section name says what kind of machine you are
+shooting at. A return you have not told apart reads `Hit on X2.`, and a target
+your platform is not holding at all reads `Hit.`
 
 What you are told about your **own** tank is the other way round and complete:
 
