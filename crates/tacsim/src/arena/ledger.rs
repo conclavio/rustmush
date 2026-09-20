@@ -85,6 +85,18 @@ pub enum EventKind {
         /// The unit.
         unit: ObjId,
     },
+    /// **A unit's startup finished and its power is up** (16b cut Q.1; doc 16
+    /// §3.3 "Startup"), at the [`crate::arena::state::DueKind::StartupComplete`]
+    /// event's own arena timestamp.
+    ///
+    /// Journalled only when the flip `starting → online` actually happens, so a
+    /// unit whose startup was overtaken (a wreck, a second `STARTUP`) writes no
+    /// line. It is what the pilot's `Power online.` is a projection of, exactly as
+    /// every other notice is a projection of a journalled event.
+    PowerOnline {
+        /// The unit.
+        unit: ObjId,
+    },
     /// Every `ledger.summary_ms` of arena time, in every tempo: every unit as
     /// `(unit, x_cm, y_cm, z_cm, heading_mdeg)`. **There is no per-pulse `moved`
     /// event** (doc 16 §4) — this cadence is the position record.
@@ -313,6 +325,7 @@ impl EventKind {
             EventKind::MatchStarted => "match_started",
             EventKind::Tempo { .. } => "tempo",
             EventKind::Startup { .. } => "startup",
+            EventKind::PowerOnline { .. } => "power_online",
             EventKind::PositionSummary { .. } => "position_summary",
             EventKind::Blocked { .. } => "blocked",
             EventKind::Detected { .. } => "detected",

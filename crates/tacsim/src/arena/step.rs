@@ -59,7 +59,7 @@ use crate::arena::intents::{
 use crate::arena::ledger::{EventKind, LedgerChunk};
 use crate::arena::motion::integrate;
 use crate::arena::perception::{
-    FrameContact, FrameNotice, Notice, NoticeKind, PerceptionCounters, RefusalDetail,
+    FrameContact, FrameNotice, Named, Notice, NoticeKind, PerceptionCounters, RefusalDetail,
 };
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::state::{
@@ -83,6 +83,17 @@ use crate::arena::weapons::FrameWeapon;
 pub struct Frame {
     /// The tank the pilot is in.
     pub unit: ObjId,
+    /// **What everybody who has told this tank apart calls it** (16b cut Q.1):
+    /// its own team letter and centre slot. `STATUS` opens with it, so a pilot
+    /// can answer "who is `RA`?" about themselves.
+    pub callsign: crate::arena::state::Designator,
+    /// **The arena cell the tank is standing in** (16b cut Q.1), or `None` for a
+    /// pose off the window.
+    ///
+    /// The window's own resolution and no finer, exactly as a contact's `cell`
+    /// is: it is what a panel's map draws the pilot's own marker at without
+    /// having to divide a pose by a cell size it would have to be told.
+    pub cell: Option<(u16, u16)>,
     /// **The side it is on** (16b cut S.2), so the cockpit can draw a classified
     /// contact as a friend or as a hostile without asking the world which team the
     /// pilot's slot was on. The platform's own side is never a secret from its
@@ -123,8 +134,14 @@ pub struct Frame {
     /// later `CONTACTS` re-rendering the remembered frame does not repeat it.
     pub notices: Vec<FrameNotice>,
     /// **The contact the platform is locked on** (16b cut W.1; doc 16 §5's status
-    /// block: *current lock*), by its opaque id — the only name a pilot may use for
-    /// it, and always one of [`Frame::contacts`].
+    /// block: *current lock*), by its row key, and always one of
+    /// [`Frame::contacts`].
+    ///
+    /// **16b cut Q.1**: the key is not a pilot's handle any more. A pilot names a
+    /// contact by the short designator its row carries
+    /// ([`crate::arena::perception::FrameContact::designator`]), and a lock taken
+    /// under a provisional number survives the rename precisely because what the
+    /// arena holds is this id and not the word that was typed.
     pub lock: Option<ContactId>,
     /// **What the platform carries** (16b cut W.1; doc 16 §5: *ammunition and ready
     /// state per weapon*), in component order, with the lock's band where there is a
@@ -226,6 +243,13 @@ impl Frame {
     pub fn same_as(&self, other: &Frame) -> bool {
         self.unit == other.unit
             && self.team == other.team
+            // 16b cut Q.1: both are surfaces a pilot reads — the callsign on
+            // `STATUS`'s first line, the cell on a panel's map — so both decide
+            // whether a frame is sent. The callsign never moves in a match and
+            // the cell moves once a cell, so neither costs a frame anybody would
+            // not already have been sent.
+            && self.callsign == other.callsign
+            && self.cell == other.cell
             && self.pose.x_cm == other.pose.x_cm
             && self.pose.y_cm == other.pose.y_cm
             && self.pose.z_cm == other.pose.z_cm
@@ -501,7 +525,12 @@ impl Arena {
                         // the cockpit could only ever say it against the frame it
                         // held *before* the order, which is why a first `LOCK`
                         // was silent.
-                        Ok(()) => self.stage_notice(id, FrameNotice::Locked { contact }),
+                        // 16b cut Q.1: named off the live contact at the moment
+                        // the lock resolved.
+                        Ok(()) => {
+                            let named = self.name_of(id, contact);
+                            self.stage_notice(id, FrameNotice::Locked { contact: named });
+                        }
                         Err(refusal) => self.stage_refusal(id, "lock", refusal, None),
                     },
                     IntentKind::Fire { ref weapon } => {
@@ -743,13 +772,24 @@ impl Arena {
             match event.kind {
                 // Doc 16 §3.3 "Startup": `match.startup_ms` after `STARTUP` was
                 // accepted. `resolve_startup` already journalled the transition
-                // into `starting`, and doc 16 §4's kind list has no second event
-                // for reaching `online`.
+                // into `starting`.
+                //
+                // **16b cut Q.1** gave the far end its own event. Doc 16 §4's
+                // kind list had no `power_online`, so the moment a tank became
+                // driveable was the one transition in the engine nothing recorded
+                // and nobody was told about: the owner's first hand-played match
+                // found it by typing `HEADING` until one of them stopped being
+                // refused. The line is journalled at the **event's** timestamp
+                // and only on the real flip, so a startup overtaken by a wreck
+                // writes nothing, and `stage_pilot_notice` projects the pilot's
+                // `Power online.` off it exactly as every other notice is a
+                // projection of a journalled event.
                 DueKind::StartupComplete { unit } => {
                     if let Some(state) = self.unit_mut(unit)
                         && state.power == Power::Starting
                     {
                         state.power = Power::Online;
+                        notices.push((event.t_ms, EventKind::PowerOnline { unit }, None));
                     }
                 }
                 // Doc 16 §4: every unit, every `ledger.summary_ms` of arena time,
@@ -997,6 +1037,10 @@ impl Arena {
                 Frame {
                     unit: unit.id,
                     team: unit.team,
+                    // 16b cut Q.1: the platform's own public name, and the cell
+                    // it is standing in.
+                    callsign: unit.callsign,
+                    cell: self.definition.terrain.cell_of(&unit.pose),
                     pose: unit.pose.clone(),
                     speed_cms: unit.speed_cms,
                     power: unit.power,
@@ -1074,30 +1118,59 @@ impl Arena {
                 viewer, contact, ..
             } => {
                 if self.held_losses.remove(&(viewer, contact)).is_some() {
+                    // **16b cut Q.1**: a loss cancelled inside the hysteresis
+                    // window stays silent, exactly as it did — even though the
+                    // re-acquired contact is `Unknown` again and its row now
+                    // reads `X2` where it read `BA`. The flip is not a
+                    // transition anybody is told about; its re-classification
+                    // three seconds later says `Contact X2 identified: BA, blue.`
+                    // and that is the line for it.
                     return;
                 }
                 self.stage_notice(
                     viewer,
                     FrameNotice::Contact {
                         kind: NoticeKind::Acquired,
-                        contact,
+                        contact: self.name_of(viewer, contact),
                         class: Classification::Unknown,
+                        was: None,
                     },
                 );
             }
             EventKind::Classified {
                 viewer,
                 contact,
+                target,
                 team,
-                ..
-            } => self.stage_notice(
-                viewer,
-                FrameNotice::Contact {
-                    kind: NoticeKind::Classified,
-                    contact,
-                    class: Classification::Classified { team },
-                },
-            ),
+            } => {
+                // **16b cut Q.1**: what the row was called a moment ago, so the
+                // rename is one sentence and not two rows a pilot has to match
+                // up. `None` for a contact that was never provisional — a mesh
+                // arrival, or a match run with `designate_on_detection` on — and
+                // the renderer then says nothing at all, because the acquisition
+                // already read `New contact RB: …`.
+                let was = if self.sensors_cfg.designate_on_detection {
+                    None
+                } else {
+                    self.designators
+                        .provisional(viewer, target)
+                        .map(crate::arena::state::Designator::Provisional)
+                };
+                self.stage_notice(
+                    viewer,
+                    FrameNotice::Contact {
+                        kind: NoticeKind::Classified,
+                        contact: self.name_of(viewer, contact),
+                        class: Classification::Classified { team },
+                        was,
+                    },
+                );
+            }
+            // **16b cut Q.1**: the far end of `STARTUP`, said to the platform's
+            // own pilots and to nobody else.
+            EventKind::PowerOnline { unit } => {
+                self.stage_notice(unit, FrameNotice::PowerOnline);
+            }
             // **16b cut F.2**, the four combat arms. Each is produced where its
             // event is produced, at that event's own arena timestamp, so the list
             // a scripted run gives a pilot is the same at every cadence.
@@ -1113,7 +1186,7 @@ impl Arena {
             } => {
                 // The shooter sees the round land, and nothing about what it did:
                 // a gunner reads the strike, not the target's internals.
-                let held = self.contacts.id_of(unit, target);
+                let held = self.named_target(unit, target);
                 self.stage_notice(unit, FrameNotice::Hit { contact: held });
                 // The victim reads their own tank. **Nothing about the shooter** —
                 // no id, no bearing, no team, no weapon: where a round came from
@@ -1135,7 +1208,7 @@ impl Arena {
             }
             EventKind::Miss { ref reason, .. } => {
                 if let Some((shooter, target)) = *in_flight {
-                    let held = self.contacts.id_of(shooter, target);
+                    let held = self.named_target(shooter, target);
                     self.stage_notice(
                         shooter,
                         FrameNotice::Miss {
@@ -1168,13 +1241,33 @@ impl Arena {
                 if let Some((shooter, target)) = *in_flight
                     && target == unit
                 {
-                    let held = self.contacts.id_of(shooter, target);
+                    let held = self.named_target(shooter, target);
                     self.stage_notice(shooter, FrameNotice::Kill { contact: held });
                 }
             }
             EventKind::Lost {
-                viewer, contact, ..
+                viewer,
+                contact,
+                target,
             } => {
+                // **16b cut Q.1**: the row is already gone, so the name it read
+                // as comes from the side table `sensor_pass` filled at the
+                // expiry, and the entry is taken out here — this scan is what
+                // drains it, so nothing the expiry put there survives the
+                // substep. (It is *not* empty when this substep's hash is taken
+                // a few lines above; it does not have to be, because the table
+                // is not folded — see `Arena::lost_designators`.) The fallback
+                // is the book's own number, which is what a `lost` produced by
+                // anything that did not go through the expiry would honestly be
+                // called.
+                let named = Named {
+                    id: contact,
+                    designator: self.lost_designators.remove(&(viewer, contact)).unwrap_or(
+                        crate::arena::state::Designator::Provisional(
+                            self.designators.provisional(viewer, target).unwrap_or(0),
+                        ),
+                    ),
+                };
                 // **16b cut W.1**: a lock is *a lock on a contact the platform
                 // holds* (doc 16 §3.5), so a contact that stops being held is a lock
                 // that stops being one. This is the one place it can be done: the
@@ -1195,13 +1288,16 @@ impl Arena {
                         viewer,
                         FrameNotice::Contact {
                             kind: NoticeKind::LockLost,
-                            contact,
+                            contact: named,
                             class: Classification::Unknown,
+                            was: None,
                         },
                     );
                 }
-                self.held_losses
-                    .insert((viewer, contact), t_ms.saturating_add(window_ms));
+                self.held_losses.insert(
+                    (viewer, contact),
+                    (t_ms.saturating_add(window_ms), named.designator),
+                );
             }
             _ => {}
         }
@@ -1341,13 +1437,15 @@ impl Arena {
     /// there is nobody it is a fact about any more.
     fn sweep_held_losses(&mut self) {
         let now = self.now_ms;
-        let due: Vec<(ObjId, ContactId)> = self
+        // 16b cut Q.1: the designator travels with the deadline, because the
+        // contact row the name could have been read off went at the expiry.
+        let due: Vec<(ObjId, ContactId, crate::arena::state::Designator)> = self
             .held_losses
             .iter()
-            .filter(|(_, at)| **at <= now)
-            .map(|((viewer, contact), _)| (*viewer, *contact))
+            .filter(|(_, (at, _))| *at <= now)
+            .map(|((viewer, contact), (_, named))| (*viewer, *contact, *named))
             .collect();
-        for (viewer, contact) in due {
+        for (viewer, contact, designator) in due {
             self.held_losses.remove(&(viewer, contact));
             if self.unit(viewer).is_none() {
                 continue;
@@ -1356,11 +1454,42 @@ impl Arena {
                 viewer,
                 FrameNotice::Contact {
                     kind: NoticeKind::Lost,
-                    contact,
+                    contact: Named {
+                        id: contact,
+                        designator,
+                    },
                     class: Classification::Unknown,
+                    was: None,
                 },
             );
         }
+    }
+
+    /// **The pair one contact id is named by right now** (16b cut Q.1), for a
+    /// notice staged while the row is still held.
+    ///
+    /// A row the platform no longer holds cannot happen on the arms that call it
+    /// — a `detected` or a `classified` is staged in the same substep the store
+    /// was written in — and answers `X0`, a name nothing resolves, rather than
+    /// taking the arena down.
+    fn name_of(&self, viewer: ObjId, contact: ContactId) -> Named {
+        Named {
+            id: contact,
+            designator: self
+                .contacts
+                .get(viewer, contact)
+                .map_or(crate::arena::state::Designator::Provisional(0), |held| {
+                    self.designator_for(viewer, held)
+                }),
+        }
+    }
+
+    /// **The contact one platform holds a target under, named** (16b cut Q.1), or
+    /// `None` when it holds none — which is what makes a shooter's line read
+    /// `Hit.` rather than `Hit on BA.`
+    fn named_target(&self, viewer: ObjId, target: ObjId) -> Option<Named> {
+        let id = self.contacts.id_of(viewer, target)?;
+        Some(self.name_of(viewer, id))
     }
 
     /// **What one platform holds, as its pilots' frame carries it** (16b cut S.1;
@@ -1396,6 +1525,12 @@ impl Arena {
                 let _ = self.unit(held.target)?;
                 Some(FrameContact {
                     id: *id,
+                    // **16b cut Q.1**: read off the live contact, so a row that
+                    // has been re-acquired and not yet re-classified is `X<n>`
+                    // again, and the alias is what keeps a lock taken under that
+                    // number typable after the rename.
+                    designator: self.designator_for(platform, held),
+                    alias: self.alias_for(platform, held),
                     class: held.class,
                     bearing_mdeg: held.seen_at.bearing_from(&from.pose),
                     range_cm: held.seen_at.range_from(&from.pose),

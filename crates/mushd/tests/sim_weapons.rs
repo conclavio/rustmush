@@ -315,12 +315,18 @@ fn dbref_of(listing: &str, name: &str) -> u32 {
         .unwrap_or_else(|| panic!("no dbref for {name:?} in:\n{listing}"))
 }
 
-/// The opaque contact id in a `CONTACTS` listing: the sixteen base-16 digits
-/// `ContactId` renders as, and the only name a pilot may use for a contact.
-fn contact_id_of(listing: &str) -> Option<String> {
+/// **The short designator in a `CONTACTS` listing** (16b cut Q.1): the first
+/// word of a contact row, which is `X<n>` while the return is unresolved and
+/// the team's letter with the target's centre slot once it has been told apart.
+///
+/// It replaces the sixteen-digit scraper this helper used to be. The digits are
+/// not printed anywhere a pilot can see any more, and a designator is what
+/// `LOCK`, `RANGE` and `BEARING` take.
+fn designator_of(listing: &str) -> Option<String> {
     listing
-        .split_whitespace()
-        .find(|word| word.len() == 16 && u64::from_str_radix(word, 16).is_ok())
+        .lines()
+        .find(|line| line.contains("bearing ") && line.contains("(rel "))
+        .and_then(|line| line.split_whitespace().next())
         .map(str::to_owned)
 }
 
@@ -398,7 +404,7 @@ async fn wait_for_contact(term: &mut Term) -> String {
             == 0
         {
             let seen = strip_ansi(&term.seen[mark..]);
-            if let Some(id) = contact_id_of(&seen) {
+            if let Some(id) = designator_of(&seen) {
                 return id;
             }
         }
@@ -534,8 +540,14 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
         .find(|line| line.starts_with("Hit on ") || line.starts_with("Miss on "))
         .map(str::to_owned)
         .unwrap_or_else(|| panic!("the shooter was told nothing about their round:\n{seen}"));
+    // **16b cut Q.1**: by the time the round lands the contact has been told
+    // apart, so the row — and the line — answer to the target's slot designator
+    // and not to the provisional number the lock was taken under. The lock
+    // itself survived the rename, which is what the `FIRE` above proves; the
+    // name the pilot is *told* is the current one.
+    let named = wait_for_contact(&mut ada).await;
     assert!(
-        outcome.contains(&contact),
+        outcome.contains(&named),
         "the outcome names the contact it holds and never the unit: {outcome}"
     );
     assert!(

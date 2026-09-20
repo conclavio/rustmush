@@ -273,8 +273,13 @@ pub fn centre(w: &World) -> Option<&Centre> {
 
 /// The configured `[tacsim.arena]` and `[tacsim.match]` blocks, which every
 /// transition past `Selection` needs and which cut K.2's `BOARD` does not carry.
+///
+/// **16b cut Q.1** made it `pub(crate)`: `RANGE` and `BEARING` read
+/// `[tacsim.sensors].pass_ms` to decide whether a plot is stale enough to say so,
+/// and reading the configuration through the one accessor is what keeps the
+/// cockpit from growing a second copy of where the blocks live.
 #[must_use]
-fn configs(w: &World) -> Option<(ArenaConfig, MatchConfig, SensorsConfig)> {
+pub(crate) fn configs(w: &World) -> Option<(ArenaConfig, MatchConfig, SensorsConfig)> {
     let cfg = w.module_state::<crate::TacsimStore>()?.config();
     Some((cfg.arena.clone(), cfg.match_.clone(), cfg.sensors.clone()))
 }
@@ -828,11 +833,20 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
             return Err(SimError::Unavailable);
         };
         for team in Team::ALL {
-            let mut units: Vec<ObjId> = centre
+            // **16b cut Q.1**: the pod index travels with the unit. It is the
+            // only place in the tree that knows which slot fielded which tank, so
+            // `Arena::new` can resolve `RA`, `BC` and a pilot and their teammates
+            // call one machine by one name.
+            let mut units: Vec<crate::match_::Fielded> = centre
                 .slots
                 .iter()
                 .filter(|slot| slot.team == team)
-                .filter_map(|slot| slot.unit)
+                .filter_map(|slot| {
+                    slot.unit.map(|unit| crate::match_::Fielded {
+                        unit,
+                        slot: slot.index,
+                    })
+                })
                 .collect();
             if units.is_empty() {
                 return Err(SimError::EmptySide(team.as_str()));
@@ -860,10 +874,16 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
                     {
                         continue;
                     }
+                    // 16b cut Q.1: an AI-filled pod carries its own index too, so
+                    // a machine in red pod 3 is `RC`, exactly as a pilot in that
+                    // pod would be.
                     if let Some(tank) = centre::tank_for_slot(ctx.w, team, index)
-                        && !units.contains(&tank)
+                        && !units.iter().any(|fielded| fielded.unit == tank)
                     {
-                        units.push(tank);
+                        units.push(crate::match_::Fielded {
+                            unit: tank,
+                            slot: index,
+                        });
                     }
                 }
             }
@@ -1224,8 +1244,17 @@ pub fn status_lines(w: &World) -> Vec<String> {
             } else {
                 ""
             };
+            // **16b cut Q.1**: the callsign the tank in that pod will answer to,
+            // beside the index the board has always printed. It withholds
+            // nothing — the letter is one piece of arithmetic on an index that is
+            // already here — and it is what lets a pilot who hears `BA` on the
+            // radio find out who that is.
+            let callsign = crate::arena::state::Designator::Slot {
+                team,
+                slot: u16::from(slot.index),
+            };
             pilots.push(format!(
-                "{}: {}{pod}{seated}",
+                "{} ({callsign}): {}{pod}{seated}",
                 slot.index,
                 display_name(w, slot.pilot)
             ));

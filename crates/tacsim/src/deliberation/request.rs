@@ -100,7 +100,15 @@ pub struct SquadBrief {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BriefContact {
-    /// The opaque id, rendered as the sixteen base-16 digits a pilot sees.
+    /// The opaque contact id, rendered as its sixteen base-16 digits.
+    ///
+    /// **16b cut Q.1 deliberately left this alone.** A pilot no longer sees or
+    /// types the sixteen digits anywhere — a contact is a short designator now
+    /// (`BA`, `X2`) — but this is an **LLM surface and not a pilot's**: the model
+    /// is handed the ids in the brief and names one back in `order_of`, and an
+    /// opaque, collision-free handle is exactly what that round trip wants. The
+    /// cut's "no sixteen-digit word" rule is therefore scoped to text sent to a
+    /// *session*, which this is not, and `ContactId`'s `Display` stays for it.
     pub id: String,
     /// `unknown`, `friendly` or `hostile` — **relative to the squad**, because
     /// which side is red is not something a commander needs to be told.

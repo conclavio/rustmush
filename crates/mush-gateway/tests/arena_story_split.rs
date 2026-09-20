@@ -121,7 +121,7 @@ const MAX_SHOTS: usize = 30;
 const OVER: &str = "is over (red)";
 /// The parser's refusal, which is the sentinel's answer.
 const HUH: &str = "Huh?";
-/// The one line the nine cockpit selectors refuse with once the check-in has
+/// The one line the eleven cockpit selectors refuse with once the check-in has
 /// opened the hatches.
 const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit.";
 
@@ -500,11 +500,18 @@ fn domain_of(listing: &str, host: &str) -> u64 {
         .unwrap_or_else(|| panic!("no domain hosted on {host:?} in:\n{listing}"))
 }
 
-/// The opaque contact id in a `CONTACTS` listing.
-fn contact_id_of(listing: &str) -> Option<String> {
+/// **The short designator in a `CONTACTS` listing** (16b cut Q.1): the first
+/// word of a contact row, which is `X<n>` while the return is unresolved and
+/// the team's letter with the target's centre slot once it has been told apart.
+///
+/// It replaces the sixteen-digit scraper this helper used to be. The digits are
+/// not printed anywhere a pilot can see any more, and a designator is what
+/// `LOCK`, `RANGE` and `BEARING` take.
+fn designator_of(listing: &str) -> Option<String> {
     listing
-        .split(|c: char| !c.is_ascii_hexdigit())
-        .find(|word| word.len() == 16 && u64::from_str_radix(word, 16).is_ok())
+        .lines()
+        .find(|line| line.contains("bearing ") && line.contains("(rel "))
+        .and_then(|line| line.split_whitespace().next())
         .map(str::to_owned)
 }
 
@@ -609,7 +616,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     let mut held = String::new();
     for _ in 0..RETRY_BUDGET {
         let seen = ada.ask_whole("CONTACTS").await;
-        if let Some(id) = contact_id_of(&seen) {
+        if let Some(id) = designator_of(&seen) {
             held = id;
             break;
         }

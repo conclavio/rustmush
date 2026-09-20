@@ -38,6 +38,10 @@ use mush_tactics::{
     UnitSpec,
 };
 use smol_str::SmolStr;
+use std::collections::BTreeMap;
+
+use tacsim::arena::clock::Tempo;
+use tacsim::arena::intents::{Control, Intent, IntentKind};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
 use tacsim::arena::perception::{
     FrameNotice, Notice, NoticeKind, PerceptionCounters, SensorProfile, SignatureFactor,
@@ -46,7 +50,8 @@ use tacsim::arena::perception::{
 use tacsim::arena::rng::{DrawLabel, draw, draw_contact_id};
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, ContactId, CustodyOut, CustodyUnit,
-    DueKind, EntryZone, Pilot, SeenPose, Team, TerrainCell, TrackedRules, WeaponSummary,
+    Designator, DueKind, EntryZone, Pilot, SeenPose, Team, TerrainCell, TrackedRules,
+    WeaponSummary,
 };
 use tacsim::arena::step::Frame;
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
@@ -235,12 +240,23 @@ fn tank(id: ObjId, team: Team, pose: Pose, sensor: Option<SensorProfile>) -> Cus
         profile: tacsim::arena::resolution::UnitProfile::default(),
         gunnery: 0,
         controller: tacsim::arena::state::Controller::Pilot,
+        // 16b cut Q.1: no pod behind it.
+        slot: 0,
         unit: tactical_unit(id),
     }
 }
 
 /// The 80 by 80 window with `paint`ed cells and one pilot per unit.
 fn arena_of(units: Vec<CustodyUnit>, paint: &[(u16, u16, TerrainCell)]) -> Arena {
+    arena_with_sensors(units, paint, &SensorsConfig::default())
+}
+
+/// The same, over a named `[tacsim.sensors]` block (16b cut Q.1's switch).
+fn arena_with_sensors(
+    units: Vec<CustodyUnit>,
+    paint: &[(u16, u16, TerrainCell)],
+    sensors: &SensorsConfig,
+) -> Arena {
     let mut cells = vec![ground(); usize::from(SIDE) * usize::from(SIDE)];
     for (x, y, painted) in paint {
         if let Some(slot) = cells.get_mut(usize::from(*y) * usize::from(SIDE) + usize::from(*x)) {
@@ -291,7 +307,7 @@ fn arena_of(units: Vec<CustodyUnit>, paint: &[(u16, u16, TerrainCell)]) -> Arena
         },
         &ArenaConfig::default(),
         &MatchConfig::default(),
-        &SensorsConfig::default(),
+        sensors,
     )
     .expect("the perception arena opens")
 }
@@ -1050,7 +1066,7 @@ fn watching() -> Arena {
 }
 
 #[test]
-fn the_frame_renders_a_contact_as_an_opaque_id_a_band_and_two_bearings() {
+fn the_frame_renders_a_contact_as_a_designator_a_band_and_two_bearings() {
     let mut arena = watching();
     let mut tape: Vec<u8> = Vec::new();
     let frame = pulse(&mut arena, PULSE_MS, &mut tape).expect("the acquiring pulse sends a frame");
@@ -1061,6 +1077,11 @@ fn the_frame_renders_a_contact_as_an_opaque_id_a_band_and_two_bearings() {
     let row = rows.first().cloned().expect("one row");
     let id = draw_contact_id(arena.seed, EYE, MARK);
     assert_eq!(row.id, id, "the opaque id is the arena's own");
+    // **16b cut Q.1**: the row's own name is the short designator, and while the
+    // return is unknown that is this platform's first provisional number. No
+    // alias: the number *is* the designator.
+    assert_eq!(row.designator, Designator::Provisional(1));
+    assert_eq!(row.alias, None);
     assert_eq!(row.class.as_str(), "unknown", "not told apart yet");
     assert!(!row.friendly, "an unknown return is nobody's");
     // Due east of a platform facing north: 090 absolute, 090 relative.
@@ -1070,9 +1091,16 @@ fn the_frame_renders_a_contact_as_an_opaque_id_a_band_and_two_bearings() {
     assert_eq!(row.band.as_str(), "close");
     assert_eq!(row.cell, Some((40, 10)), "the marker's cell");
     assert_eq!(row.age_ms, arena.now_ms - 4, "held since its first pass");
+    // **16b cut Q.1**: the line names the designator where it used to name the
+    // sixteen digits, and the digits are not in it at all.
     assert!(
-        row.render().contains(&id.to_string()),
-        "the line names the opaque id: {}",
+        row.render().starts_with("X1  "),
+        "the line names the designator: {}",
+        row.render()
+    );
+    assert!(
+        !row.render().contains(&id.to_string()),
+        "and never the sixteen digits: {}",
         row.render()
     );
     // No dbref of any shape: the id is the only handle, and a `#` in this line
@@ -1161,7 +1189,9 @@ fn a_contact_row_reports_its_range_in_metres_rounded_to_fifty() {
         (60_000, 600),
     ] {
         assert_eq!(
-            cockpit::range_m_rounded(range_cm),
+            // 16b cut Q.1 made the step an argument: a contact row still reads
+            // fifty, and a lock reads ten.
+            cockpit::range_m_rounded(range_cm, cockpit::CONTACT_RANGE_STEP_M),
             metres,
             "{range_cm} cm rounded the wrong way"
         );
@@ -1304,7 +1334,14 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
     let id = draw_contact_id(arena.seed, EYE, MARK);
     assert_eq!(lines.len(), 1);
     let line = lines.first().cloned().unwrap_or_default();
-    assert!(line.contains(&id.to_string()), "{line}");
+    // **16b cut Q.1**: the sentence names the short designator and never the
+    // sixteen digits. The contact is still unknown on the acquiring pulse, so it
+    // is this platform's first provisional number.
+    assert!(line.contains("X1"), "{line}");
+    assert!(
+        !line.contains(&id.to_string()),
+        "the sixteen digits are not a pilot's word any more: {line}"
+    );
     assert!(line.contains("close"), "the band the notice quotes: {line}");
     assert!(
         !line.contains(&format!("#{}", MARK.0)),
@@ -1318,16 +1355,102 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
             line
         );
     }
-    // A `lost` notice names the id and nothing else: the contact is not in the
-    // frame's list any more, so there is no bearing to quote.
+    // A `lost` notice names the designator and nothing else: the contact is not
+    // in the frame's list any more, so there is no bearing to quote — and (16b
+    // cut Q.1) the name it read as was captured at the expiry, because the row
+    // it could have been read off is gone.
     let gone = FrameNotice::Contact {
         kind: NoticeKind::Lost,
-        contact: id,
+        contact: tacsim::arena::perception::Named {
+            id,
+            designator: Designator::Provisional(1),
+        },
         class: Classification::Unknown,
+        was: None,
     };
+    assert_eq!(cockpit::notice_line(&frame, &gone, &[]), "Contact X1 lost.");
+
+    // **And one notice renders to nothing** (16b cut Q.1). A `classified` whose
+    // contact was never provisional is a mesh arrival, whose acquisition line has
+    // already read `New contact BA: …` — there is no rename to say, so the
+    // sentence is empty. An empty sentence owes the pilot nothing, which is why
+    // it is dropped from `notice_lines` **and** from the panel's own array: a
+    // renderer drawing that array would otherwise draw a blank row. The
+    // classification is still there to be read off the contact's class.
+    let named = tacsim::arena::perception::Named {
+        id,
+        designator: Designator::Slot {
+            team: Team::Blue,
+            slot: 1,
+        },
+    };
+    let silent = FrameNotice::Contact {
+        kind: NoticeKind::Classified,
+        contact: named,
+        class: Classification::Classified { team: Team::Blue },
+        was: None,
+    };
+    assert_eq!(cockpit::notice_line(&frame, &silent, &[]), "");
+    let mut carrying = frame.clone();
+    carrying.notices = vec![silent];
+    assert!(
+        cockpit::notice_lines(&carrying).is_empty(),
+        "a notice with no sentence was said anyway"
+    );
+    let payload = cockpit::status_frame(tacsim::arena_task::MatchId(1), &carrying);
     assert_eq!(
-        cockpit::notice_line(&frame, &gone, &[]),
-        format!("Contact {id} lost.")
+        payload
+            .get("notices")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "a notice with no sentence reached a panel as a blank row: {payload}"
+    );
+    // The same notice with a name to quote is one sentence, said and carried.
+    carrying.notices = vec![FrameNotice::Contact {
+        kind: NoticeKind::Classified,
+        contact: named,
+        class: Classification::Classified { team: Team::Blue },
+        was: Some(Designator::Provisional(1)),
+    }];
+    assert_eq!(
+        cockpit::notice_lines(&carrying),
+        vec!["Contact X1 identified: BA, blue.".to_owned()]
+    );
+    let payload = cockpit::status_frame(tacsim::arena_task::MatchId(1), &carrying);
+    assert_eq!(
+        payload
+            .get("notices")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "{payload}"
+    );
+    // **And a renamed row's `alias` is spelled the way a pilot would type it**
+    // (16b cut Q.1): `X1`, not the bare number — it is the other word `LOCK`
+    // accepts, so a panel that offered `1` would be offering something the verb
+    // refuses.
+    for contact in &mut carrying.contacts {
+        contact.designator = Designator::Slot {
+            team: Team::Blue,
+            slot: 1,
+        };
+        contact.alias = Some(1);
+    }
+    let payload = cockpit::status_frame(tacsim::arena_task::MatchId(1), &carrying);
+    let row = payload
+        .get("contacts")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|rows| rows.first())
+        .unwrap_or_else(|| panic!("the one row: {payload}"));
+    assert_eq!(
+        row.get("designator").and_then(serde_json::Value::as_str),
+        Some("BA")
+    );
+    assert_eq!(
+        row.get("alias").and_then(serde_json::Value::as_str),
+        Some("X1"),
+        "the alias is the word LOCK takes and not the number behind it: {payload}"
     );
 }
 
@@ -1871,4 +1994,656 @@ fn a_share_carries_the_sharers_own_plot_and_never_a_teammates() {
         (theirs.x_cm, theirs.y_cm),
         "RELAY was told a position only EYE ever observed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// (n) the short designator — 16b cut Q.1
+//
+// The owner played the centre by hand and found that `lock 29b81a…` is not a
+// thing a person types while being shot at. A contact is named by a short
+// designator now: a viewer-scoped `X<n>` until the platform has told it apart,
+// then the target's public callsign — its team's letter and its centre slot.
+//
+// The property that costs the most to get right is the one this block spends
+// most of its lines on: **the name is read off the live contact and never off a
+// flag**. A contact is not durable — expiry removes the row and the next
+// detection re-inserts it `Unknown` under the same id — so anything remembered
+// about "this has been classified" would put the team and the pod on a blip the
+// platform has just re-found.
+// ---------------------------------------------------------------------------
+
+/// What one viewer's frame calls a target right now.
+fn calls(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<String> {
+    let id = draw_contact_id(arena.seed, viewer, target);
+    arena
+        .frame_contacts(viewer)
+        .into_iter()
+        .find(|row| row.id == id)
+        .map(|row| row.designator.to_string())
+}
+
+/// The alias beside it — the number a renamed row still answers to.
+fn alias_of(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<u16> {
+    let id = draw_contact_id(arena.seed, viewer, target);
+    arena
+        .frame_contacts(viewer)
+        .into_iter()
+        .find(|row| row.id == id)
+        .and_then(|row| row.alias)
+}
+
+#[test]
+fn provisional_numbers_are_per_viewer_in_first_seen_order_and_never_reused() {
+    // `EYE` looks at two targets thirty cells out, and `MATE` at one of them.
+    // `MARK` is numbered first because the pass walks the index in unit-id order
+    // and `MARK` (#9) sorts before `RELAY` (#21) — the whole point of that order
+    // being deterministic.
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+            tank(RELAY, Team::Blue, centre(40, 20), None),
+            tank(MATE, Team::Red, centre(12, 10), Some(visual())),
+        ],
+        &[],
+    );
+    pass(&mut arena, EYE, 1, 0);
+    // One number per target its own sensors found, in unit-id order: `MARK` (#9),
+    // then its own teammate `MATE` (#13), then `RELAY` (#21). A teammate is a
+    // return like any other until the classification tells it apart.
+    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("X1"));
+    assert_eq!(calls(&arena, EYE, MATE).as_deref(), Some("X2"));
+    assert_eq!(calls(&arena, EYE, RELAY).as_deref(), Some("X3"));
+    // A second viewer counts from one of its own: `MATE`'s `X1` is not `EYE`'s.
+    pass(&mut arena, MATE, 1, 10);
+    assert_eq!(calls(&arena, MATE, EYE).as_deref(), Some("X1"));
+    // A number never moves: two more passes change nothing.
+    for (seq, t_ms) in [(2_u64, 1_000_i64), (3, 2_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+    }
+    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("X1"));
+    assert_eq!(calls(&arena, EYE, RELAY).as_deref(), Some("X3"));
+}
+
+#[test]
+fn a_contact_is_named_by_its_live_class_across_a_loss_and_a_re_detection() {
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &[],
+    );
+    // Detect, then classify at 3,000 ms of continuous holding.
+    pass(&mut arena, EYE, 1, 0);
+    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("X1"));
+    assert_eq!(alias_of(&arena, EYE, MARK), None, "the number IS the name");
+    for (seq, t_ms) in [(2_u64, 1_000_i64), (3, 2_000), (4, 3_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+    }
+    // Blue's only unit takes blue's first free slot, in unit-id order.
+    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("BA"));
+    assert_eq!(
+        alias_of(&arena, EYE, MARK),
+        Some(1),
+        "the number the lock was taken under stays typable"
+    );
+
+    // Out of every reach, and held until the time to live runs out.
+    place(&mut arena, MARK, centre(SIDE - 1, SIDE - 1), 0);
+    for (seq, t_ms) in [(5_u64, 4_000_i64), (6, 5_000), (7, 6_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+    }
+    assert_eq!(calls(&arena, EYE, MARK), None, "the contact never expired");
+
+    // **The critical case.** It comes back, and it is an unresolved return
+    // again: the row reads the provisional number it always had, and NOT the
+    // team and the slot.
+    place(&mut arena, MARK, centre(40, 10), 0);
+    pass(&mut arena, EYE, 8, 7_000);
+    assert_eq!(
+        calls(&arena, EYE, MARK).as_deref(),
+        Some("X1"),
+        "a re-acquired blip was named by team and slot"
+    );
+    assert_eq!(alias_of(&arena, EYE, MARK), None);
+    // And it earns the name back only at its SECOND classification.
+    for (seq, t_ms) in [(9_u64, 8_000_i64), (10, 9_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+        assert_eq!(
+            calls(&arena, EYE, MARK).as_deref(),
+            Some("X1"),
+            "named early at {t_ms}"
+        );
+    }
+    pass(&mut arena, EYE, 11, 10_000);
+    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("BA"));
+}
+
+#[test]
+fn a_mesh_arrival_carries_the_slot_name_and_consumes_no_number() {
+    // `MATE` sees `MARK` and shares it; `EYE` is inside `MATE`'s mesh and its own
+    // sight cannot reach `MARK`.
+    // `MATE`'s sight reaches sixteen cells, which at `ground` stopped is 14,400 cm:
+    // it holds `MARK` twelve cells east and cannot see `RELAY` sixteen cells west,
+    // so the only thing that reaches `EYE` over the mesh is `MARK`. `EYE`'s own
+    // sight is five cells, which reaches `RELAY` and nothing else.
+    let mate_sight = SensorProfile {
+        max_range_cells: 16,
+        ..visual()
+    };
+    let mut arena = arena_of(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(short_sight())),
+            tank(MATE, Team::Red, centre(30, 10), Some(mate_sight)),
+            tank(MARK, Team::Blue, centre(42, 10), None),
+            tank(RELAY, Team::Blue, centre(14, 10), None),
+        ],
+        &[],
+    );
+    for (seq, t_ms) in [(1_u64, 0_i64), (2, 1_000), (3, 2_000), (4, 3_000)] {
+        pass(&mut arena, MATE, seq, t_ms);
+    }
+    // A mesh copy arrives classified, so it renders the slot name at once — and
+    // no number was issued for it, which is what makes the sequence mean "things
+    // my own sensors found, in order".
+    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("BA"));
+    assert_eq!(
+        alias_of(&arena, EYE, MARK),
+        None,
+        "a mesh arrival was given a number it never showed"
+    );
+    assert_eq!(arena.designators.provisional(EYE, MARK), None);
+
+    // **Contiguity.** `EYE`'s own short sight finds the near target, which takes
+    // the FIRST number: the mesh-first one consumed none.
+    pass(&mut arena, EYE, 1, 0);
+    assert_eq!(calls(&arena, EYE, RELAY).as_deref(), Some("X1"));
+
+    // And when the mesh copy expires and `EYE`'s **own** sight later finds the
+    // same target, that is the insert that issues a number — the NEXT one, so the
+    // sequence has no hole in it. A row refreshed in place issues nothing, which
+    // is why the copy has to go first.
+    place(&mut arena, MARK, centre(SIDE - 1, SIDE - 1), 0);
+    for (seq, t_ms) in [
+        (2_u64, 4_000_i64),
+        (3, 5_000),
+        (4, 6_000),
+        (5, 7_000),
+        (6, 8_000),
+    ] {
+        pass(&mut arena, EYE, seq, t_ms);
+    }
+    assert_eq!(
+        calls(&arena, EYE, MARK),
+        None,
+        "the mesh copy never expired"
+    );
+    if let Some(state) = arena.unit_mut(EYE) {
+        state.sensor = Some(visual());
+    }
+    place(&mut arena, MARK, centre(40, 10), 0);
+    pass(&mut arena, EYE, 7, 9_000);
+    assert_eq!(
+        arena.designators.provisional(EYE, MARK),
+        Some(2),
+        "a target this platform's own sight found takes the next number"
+    );
+    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("X2"));
+}
+
+#[test]
+fn a_slot_is_taken_explicitly_then_by_unit_id_and_a_duplicate_is_refused() {
+    // Explicit slots win, and the slot-0 units take the lowest free ones in
+    // unit-id order. `RELAY` (#21) is fielded from pod 1, so `MARK` (#9) — which
+    // sorts first — has to take pod 2.
+    let mut units = vec![
+        tank(MARK, Team::Blue, centre(40, 10), None),
+        tank(RELAY, Team::Blue, centre(41, 10), None),
+        tank(BLIND, Team::Blue, centre(42, 10), None),
+        tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+    ];
+    if let Some(unit) = units.get_mut(1) {
+        unit.slot = 1;
+    }
+    let arena = arena_of(units, &[]);
+    let named = |id: ObjId| {
+        arena
+            .unit(id)
+            .map(|state| state.callsign.to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(named(RELAY), "BA", "the explicit slot");
+    assert_eq!(named(MARK), "BB");
+    assert_eq!(named(BLIND), "BC");
+    assert_eq!(named(EYE), "RA", "a side counts its own slots");
+
+    // Twenty-seven a side rolls into two letters.
+    let mut wide: Vec<CustodyUnit> = Vec::new();
+    for n in 0..27_u32 {
+        let mut unit = tank(
+            ObjId(100 + n),
+            Team::Red,
+            centre(u16::try_from(n).unwrap_or(0), 40),
+            None,
+        );
+        unit.slot = u8::try_from(n + 1).unwrap_or(0);
+        wide.push(unit);
+    }
+    let wide = arena_of(wide, &[]);
+    assert_eq!(
+        wide.unit(ObjId(126))
+            .map(|state| state.callsign.to_string()),
+        Some("RAA".to_owned()),
+        "slot 27 rolls past Z"
+    );
+
+    // Two units of one side in one pod would answer to one name, and that is a
+    // refusal and not a rename.
+    let mut clash = vec![
+        tank(MARK, Team::Blue, centre(40, 10), None),
+        tank(RELAY, Team::Blue, centre(41, 10), None),
+    ];
+    for unit in &mut clash {
+        unit.slot = 2;
+    }
+    let refused = Arena::new(
+        CustodyOut {
+            definition: arena.definition.clone(),
+            units: clash,
+            pilots: Vec::new(),
+            resolution: tacsim::match_::stock_resolution(),
+            seed: 2_350,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(tacsim::arena::state::ArenaError::DuplicateSlot {
+                team: "blue",
+                slot: 2
+            })
+        ),
+        "two units in one pod: {refused:?}"
+    );
+}
+
+#[test]
+fn the_switch_names_a_contact_at_detection_and_issues_no_number() {
+    let sensors = SensorsConfig {
+        designate_on_detection: true,
+        ..SensorsConfig::default()
+    };
+    let mut arena = arena_with_sensors(
+        vec![
+            tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+            tank(MARK, Team::Blue, centre(40, 10), None),
+        ],
+        &[],
+        &sensors,
+    );
+    let (_, journal) = pass(&mut arena, EYE, 1, 0);
+    assert_eq!(kinds(&journal), vec!["detected"]);
+    // The team and the pod, at the first pass — `classify_after_ms` before doc 16
+    // W5 says identification is earned, which is exactly what the key costs.
+    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("BA"));
+    assert_eq!(alias_of(&arena, EYE, MARK), None);
+    assert_eq!(
+        arena.designators.provisional(EYE, MARK),
+        None,
+        "a provisional number was issued that nothing could ever show"
+    );
+    // The classification still happens in the arena; only the naming stopped
+    // waiting for it.
+    for (seq, t_ms) in [(2_u64, 1_000_i64), (3, 2_000)] {
+        pass(&mut arena, EYE, seq, t_ms);
+    }
+    let (_, journal) = pass(&mut arena, EYE, 4, 3_000);
+    assert_eq!(kinds(&journal), vec!["classified"]);
+    assert_eq!(calls(&arena, EYE, MARK).as_deref(), Some("BA"));
+}
+
+// ---------------------------------------------------------------------------
+// (o) the cross-tempo property, with the designators in it — 16b cut Q.1
+//
+// 16b §11 makes this mandatory for every cut that changes arena behaviour, and
+// this cut changes three things the property is about: the `power_online` event
+// (a new ledger line, so every later `seq` and therefore every later hash
+// moves), the designator book (folded into the state hash), and what a pilot is
+// told about a contact (the notice lines).
+//
+// So the run below is scripted to contain all three — a `STARTUP` that finishes,
+// a classification, and a loss — and the three cadences have to agree on the
+// event list, the hash sequence, the per-pilot lines **and** the designator
+// column each pilot's scope reads at every checkpoint.
+// ---------------------------------------------------------------------------
+
+/// One order, at one arena millisecond.
+fn intent(unit: ObjId, kind: IntentKind, seq: u64) -> Intent {
+    Intent {
+        unit,
+        channel: kind.channel_required(),
+        epoch: 1,
+        kind,
+        seq,
+    }
+}
+
+/// The seed `arena_of` opens every fixture window with, so the script can name
+/// the contact the lock below is taken on.
+const SCRIPT_SEED: u64 = 2_350;
+
+/// The scripted log: both tanks start up, the watcher locks the return three
+/// seconds after it has been told apart, and fifteen seconds in — five seconds
+/// after the ten-second startup finishes — the target drives east out of the
+/// watcher's reach, which is what produces the loss.
+///
+/// The lock is in the script because the **name a loss is said under** is the one
+/// thing in this cut that cannot be read off any surviving state: the row is gone
+/// by the time the notice is staged, and the designator has to have been captured
+/// at the expiry. A loss and a broken lock are the two sentences that prove that
+/// capture, and both of them are here.
+///
+/// **Every beat is at a multiple of five seconds of arena time**, which is a
+/// pulse boundary at 5,000, 1,000 and 500 ms alike. A beat at any other
+/// millisecond would be delivered at a different arena time at each cadence and
+/// the three runs would diverge for a reason that is the script's and not the
+/// engine's — the same rule `resolution.rs`' own replay driver follows.
+fn designator_script() -> Vec<(i64, Vec<Intent>)> {
+    vec![
+        (
+            0,
+            vec![
+                intent(EYE, IntentKind::Startup, 1),
+                intent(MARK, IntentKind::Startup, 2),
+            ],
+        ),
+        (
+            10_000,
+            vec![intent(
+                EYE,
+                IntentKind::Lock {
+                    contact: draw_contact_id(SCRIPT_SEED, EYE, MARK),
+                },
+                3,
+            )],
+        ),
+        (
+            15_000,
+            vec![
+                intent(MARK, IntentKind::Heading { mdeg: 90_000 }, 4),
+                intent(MARK, IntentKind::Speed { cms: 1_000 }, 5),
+            ],
+        ),
+    ]
+}
+
+/// The arena the script is run on: a ten-cell sight, so the target is held at
+/// five cells, classified three seconds later, and lost once it has driven past
+/// a hundred metres.
+fn designator_arena() -> Arena {
+    arena_of(
+        vec![
+            tank(
+                EYE,
+                Team::Red,
+                centre(10, 10),
+                // Ten cells of reach, and seven seconds to tell a return apart
+                // rather than the shipped three: a five-second checkpoint then
+                // falls inside the provisional phase and another inside the
+                // classified one, so the column this test compares really moves.
+                Some(SensorProfile {
+                    max_range_cells: 10,
+                    classify_after_ms: 7_000,
+                    ..visual()
+                }),
+            ),
+            tank(MARK, Team::Blue, centre(15, 10), None),
+        ],
+        &[],
+    )
+}
+
+/// One ledger line, normalised for comparison: its arena timestamp, its kind and
+/// fields as JSON, the draw where one was made, and the substep hash. The `seq`
+/// is dropped because it is the one field a different number of pulses could
+/// legitimately renumber.
+type Line = (i64, String, Option<(String, u64)>, u64);
+
+/// What one replay of the script produced.
+#[derive(Debug, PartialEq, Eq)]
+struct Cadenced {
+    /// Every ledger line, in order.
+    events: Vec<Line>,
+    /// Every substep hash, in order.
+    hashes: Vec<u64>,
+    /// Every line each pilot was sent, in order.
+    notices: BTreeMap<ObjId, Vec<String>>,
+    /// **The designator column each platform's scope read** at every checkpoint
+    /// — a multiple of five seconds of arena time, which is a pulse boundary at
+    /// all three cadences.
+    columns: Vec<(i64, ObjId, Vec<String>)>,
+    /// How many pulses it took, which is the guard that the three runs really
+    /// were three cadences.
+    pulses: u32,
+}
+
+/// Drive `arena` through the script at `cadence_ms` until `until_ms` of arena
+/// time, with the tempo pinned so the cadence under test is the cadence that
+/// runs.
+fn cadenced(cadence_ms: i64, until_ms: i64) -> Cadenced {
+    let mut arena = designator_arena();
+    let script = designator_script();
+    let mut tape: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut notices: BTreeMap<ObjId, Vec<String>> = BTreeMap::new();
+    let mut columns: Vec<(i64, ObjId, Vec<String>)> = Vec::new();
+    let mut wall = 0_i64;
+    let mut next = 0_usize;
+    let mut pulses = 0_u32;
+    loop {
+        arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+        let mut orders: Vec<Intent> = Vec::new();
+        while let Some((t_ms, beat)) = script.get(next) {
+            if *t_ms > arena.now_ms {
+                break;
+            }
+            orders.extend(beat.iter().cloned());
+            next += 1;
+        }
+        if !orders.is_empty() {
+            // A zero-length pulse, so a scripted order resolves at exactly the
+            // millisecond the script names at every cadence.
+            let out = arena.step(wall, &[] as &[Control], &orders);
+            for chunk in &out.ledger_chunks {
+                tape.extend_from_slice(&chunk.bytes);
+            }
+            for (pilot, frame) in &out.frames {
+                let lines = cockpit::notice_lines(frame);
+                if !lines.is_empty() {
+                    notices.entry(*pilot).or_default().extend(lines);
+                }
+            }
+            hashes.extend(arena.substep_hashes.iter().copied());
+            pulses = pulses.saturating_add(1);
+        }
+        if arena.now_ms >= until_ms {
+            break;
+        }
+        wall += cadence_ms;
+        let out = arena.step(wall, &[] as &[Control], &[]);
+        for chunk in &out.ledger_chunks {
+            tape.extend_from_slice(&chunk.bytes);
+        }
+        for (pilot, frame) in &out.frames {
+            let lines = cockpit::notice_lines(frame);
+            if !lines.is_empty() {
+                notices.entry(*pilot).or_default().extend(lines);
+            }
+        }
+        hashes.extend(arena.substep_hashes.iter().copied());
+        pulses = pulses.saturating_add(1);
+        // The checkpoint: every five seconds of ARENA time, which is a pulse
+        // boundary at 5,000, 1,000 and 500 ms alike.
+        if arena.now_ms % 5_000 == 0 {
+            for platform in [EYE, MARK] {
+                let column: Vec<String> = arena
+                    .frame_contacts(platform)
+                    .into_iter()
+                    .map(|row| row.designator.to_string())
+                    .collect();
+                columns.push((arena.now_ms, platform, column));
+            }
+        }
+        if out.ended.is_some() || arena.now_ms >= until_ms {
+            break;
+        }
+    }
+    let log = events(&mut arena, &mut tape);
+    Cadenced {
+        events: log
+            .iter()
+            .map(|event| {
+                (
+                    event.t_ms,
+                    serde_json::to_string(&event.kind).unwrap_or_default(),
+                    event.draw.clone(),
+                    event.hash,
+                )
+            })
+            .collect(),
+        hashes,
+        notices,
+        columns,
+        pulses,
+    }
+}
+
+#[test]
+fn one_scripted_approach_at_three_cadences_is_one_list_one_hash_and_one_column() {
+    let mut runs: Vec<(i64, Cadenced)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        runs.push((cadence, cadenced(cadence, 35_000)));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+
+    // The run is worth comparing: it really did carry all three of the things
+    // this cut moved.
+    let kinds: Vec<String> = first
+        .events
+        .iter()
+        .filter_map(|(_, json, _, _)| {
+            let value: serde_json::Value = serde_json::from_str(json).ok()?;
+            Some(value.get("kind")?.as_str()?.to_owned())
+        })
+        .collect();
+    for wanted in ["power_online", "detected", "classified", "lost"] {
+        assert!(
+            kinds.iter().any(|kind| kind == wanted),
+            "the script produced no {wanted}: {kinds:?}"
+        );
+    }
+    // `power_online` is one line per started unit, at one arena millisecond.
+    let online: Vec<i64> = first
+        .events
+        .iter()
+        .filter(|(_, json, _, _)| json.contains("\"power_online\""))
+        .map(|(t_ms, _, _, _)| *t_ms)
+        .collect();
+    assert_eq!(
+        online,
+        vec![10_000, 10_000],
+        "both tanks came online at the startup's own timestamp"
+    );
+    // And the pilot was told, once, in the tank's own words.
+    assert!(
+        first.notices.get(&ObjId(1_000)).is_some_and(|lines| lines
+            .iter()
+            .filter(|line| *line == "Power online.")
+            .count()
+            == 1),
+        "{:?}",
+        first.notices
+    );
+    // The designator column really moved: `X1`, then the slot name, then nothing.
+    let watcher: Vec<(i64, Vec<String>)> = first
+        .columns
+        .iter()
+        .filter(|(_, platform, _)| *platform == EYE)
+        .map(|(t_ms, _, column)| (*t_ms, column.clone()))
+        .collect();
+    assert!(
+        watcher
+            .iter()
+            .any(|(_, column)| column == &["X1".to_owned()]),
+        "the scope never read a provisional number: {watcher:?}"
+    );
+    assert!(
+        watcher
+            .iter()
+            .any(|(_, column)| column == &["BA".to_owned()]),
+        "the scope never read the slot name: {watcher:?}"
+    );
+    assert!(
+        watcher.iter().any(|(_, column)| column.is_empty()),
+        "the contact was never lost: {watcher:?}"
+    );
+
+    // **The name a loss is said under** (16b cut Q.1's critical mechanism). The
+    // row is gone by the time `Lost` and `LockLost` are staged, so if the
+    // designator were not captured at the expiry the pilot who had been calling
+    // this tank `BA` for a quarter of a minute would be told `Contact X1 lost.`
+    // — and all three cadences would agree on the wrong name, which is why the
+    // equality below cannot be what proves it.
+    let told = first
+        .notices
+        .get(&ObjId(1_000))
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        told.iter().any(|line| line.starts_with("Locked on BA")),
+        "the lock was never taken under the slot name: {told:?}"
+    );
+    assert!(
+        told.iter()
+            .any(|line| line == "Lock on BA broken: contact gone."),
+        "the broken lock was said under the name the row had at the expiry: {told:?}"
+    );
+    assert!(
+        told.iter().any(|line| line == "Contact BA lost."),
+        "the loss was said under the name the row had at the expiry: {told:?}"
+    );
+
+    // The guard the sibling tests carry: three cadences really are three
+    // different numbers of pulses, so an equality below is a property and not a
+    // tautology.
+    let counts: Vec<u32> = runs.iter().map(|(_, run)| run.pulses).collect();
+    assert!(
+        counts.windows(2).all(|pair| pair.first() != pair.get(1)),
+        "the three replays ran the same number of pulses: {counts:?}"
+    );
+
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the events differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hashes differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.notices, first.notices,
+            "the pilots' lines differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.columns, first.columns,
+            "the designator column differs at {cadence} ms"
+        );
+    }
 }

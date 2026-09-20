@@ -121,6 +121,9 @@ pass_ms = 1000
 # The only float; the host reads it as per mille (1.5 -> 1500).
 max_signature_factor = 1.5
 lost_after_passes = 3
+# (16b cut Q.1) true names a contact by team and centre slot (BA) at detection:
+# the other side is legible classify_after_ms before identification is earned.
+designate_on_detection = false
 
 [tacsim.resolution]
 paths = []

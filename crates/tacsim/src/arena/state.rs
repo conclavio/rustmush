@@ -261,6 +261,24 @@ impl Team {
             Team::Blue => Team::Red,
         }
     }
+
+    /// **The letter a side's callsigns carry** (16b cut Q.1; doc 16 §3.6): `R`
+    /// for red, `B` for blue, so a classified contact reads `RA`, `BC`.
+    ///
+    /// A `const fn` over the closed enum and **never the first character of a
+    /// display name**: the letter is part of the one name every viewer calls a
+    /// unit by, so it has to be a fact about the team and not about whatever a
+    /// pack happened to call it. A third side is a compile error here and a
+    /// failing test in [`Designator`]'s own module, which is where the rule that
+    /// the letters are distinct and none of them is
+    /// [`PROVISIONAL_PREFIX`] is written down.
+    #[must_use]
+    pub const fn letter(&self) -> char {
+        match self {
+            Team::Red => 'R',
+            Team::Blue => 'B',
+        }
+    }
 }
 
 /// A left or right side of a unit — the argument of doc 16 §3.3's
@@ -881,6 +899,16 @@ pub struct CustodyUnit {
     /// **Who flies it** (16b cut N.1). The check-out sets [`Controller::Reflex`]
     /// for a unit with no seated pilot and [`Controller::Pilot`] otherwise.
     pub controller: Controller,
+    /// **The centre slot this unit was fielded from**, 1-based (16b cut Q.1), or
+    /// `0` for a unit no lobby placed — a staff `@arena/start`, a fixture, the
+    /// harness's field of three hundred.
+    ///
+    /// It is what [`Designator::Slot`] renders, so a pilot's `BA` is the pod
+    /// `SIM STATUS` prints as `1` on blue. A `0` is not a designator: [`Arena::new`]
+    /// gives every such unit the lowest free slot of its team in unit-id order, so
+    /// a harness unit and a staff-fielded tank have stable callsigns with no lobby
+    /// at all.
+    pub slot: u8,
     /// M32 unit truth, carried opaque: cut A applies no plan to it (D-16-6).
     pub unit: TacticalUnit,
 }
@@ -935,6 +963,15 @@ pub struct UnitState {
     pub id: ObjId,
     /// Its side.
     pub team: Team,
+    /// **The name every viewer that has told it apart calls it by** (16b cut
+    /// Q.1): always a [`Designator::Slot`], resolved once at check-out from
+    /// [`CustodyUnit::slot`] and fixed for the match.
+    ///
+    /// It is **not** folded into [`crate::arena::hash::state_hash`] on its own: it
+    /// is a pure function of the custody message, it never moves, and two replays
+    /// of one check-out resolve it identically — the same argument
+    /// `slope_limit_pct` makes.
+    pub callsign: Designator,
     /// Its pose: whole centimetres and millidegrees (doc 16 §3.2).
     pub pose: Pose,
     /// Its current speed along its heading, cm/s. **Negative is reverse.**
@@ -1111,6 +1148,137 @@ impl std::fmt::Display for ContactId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:016x}", self.0)
     }
+}
+
+/// **The letter a provisional designator opens with** (16b cut Q.1).
+///
+/// Pinned distinct from every [`Team::letter`] by a unit test below, so `X2` can
+/// never be read as a slot on some later side.
+pub const PROVISIONAL_PREFIX: char = 'X';
+
+/// **The short name a pilot reads and types a contact by** (16b cut Q.1; doc 16
+/// §3.6 "What a pilot sees").
+///
+/// The owner's first hand-played match found the defect this type answers:
+/// `LOCK 29b81a…` is sixteen base-16 digits to type in the heat of a fight, and
+/// nothing shorter existed. So a contact is shown — and resolved — as one of two
+/// things:
+///
+/// * [`Designator::Provisional`] — `X1`, `X2`, …, numbered **per viewer** in the
+///   order that platform's own sensors first found things. It is viewer-scoped
+///   and says nothing about the target at all, which is exactly what a platform
+///   holding an unclassified return knows.
+/// * [`Designator::Slot`] — the team's letter and the unit's centre slot in
+///   bijective base 26 (`RA`, `BC`, `BAA` past twenty-six a side). It is the
+///   **same for every viewer**, which is the point: once a tank has been told
+///   apart, two pilots on one side are talking about `BA` and mean one machine.
+///
+/// **Which one a contact renders as is read off the live contact and never off a
+/// flag.** A contact is not durable — [`ShadowContacts::expire`] removes the row
+/// and the next detection re-inserts it `Unknown` under the same id — so a sticky
+/// "has been classified" bit would name a fresh blip by team and slot. See
+/// [`DesignatorBook`] and `Arena::designator_for`.
+///
+/// No `serde`: it is a rendering of arena state, and every wire form carries the
+/// string [`std::fmt::Display`] produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Designator {
+    /// A viewer-scoped number, from `1` (`X1`).
+    Provisional(u16),
+    /// A team letter and a 1-based centre slot (`RA`).
+    Slot {
+        /// The side.
+        team: Team,
+        /// The slot, from `1`.
+        slot: u16,
+    },
+}
+
+impl std::fmt::Display for Designator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Designator::Provisional(n) => write!(f, "{PROVISIONAL_PREFIX}{n}"),
+            Designator::Slot { team, slot } => {
+                write!(f, "{}{}", team.letter(), bijective_base26(*slot))
+            }
+        }
+    }
+}
+
+/// **A 1-based slot in bijective base 26** (16b cut Q.1): `1` is `A`, `26` is
+/// `Z`, `27` is `AA`.
+///
+/// Bijective and not ordinary base 26, because there is no zero slot: the sequence
+/// has to run `Z`, `AA` rather than `Z`, `BA`, and every slot has exactly one
+/// spelling. A slot of `0` — which [`Arena::new`] never produces, since it resolves
+/// every unit onto a slot from `1` — renders as the empty string rather than
+/// panicking, so a malformed designator is a name nothing resolves and not a
+/// crash.
+fn bijective_base26(slot: u16) -> String {
+    let mut left = u32::from(slot);
+    let mut letters: Vec<char> = Vec::new();
+    while left > 0 {
+        // `(left - 1) % 26` is under 26, so the narrowing is exact and the
+        // fallback is unreachable.
+        let index = u8::try_from((left.saturating_sub(1)) % 26).unwrap_or(0);
+        letters.push(char::from(b'A'.saturating_add(index)));
+        left = left.saturating_sub(1) / 26;
+    }
+    letters.reverse();
+    letters.into_iter().collect()
+}
+
+/// **Give every unit its public callsign** (16b cut Q.1), over the sorted unit
+/// vector [`Arena::new`] has just built.
+///
+/// Two passes per side, and the order is the whole of why a replay agrees:
+///
+/// 1. **Explicit slots first.** A unit the lobby fielded from pod `n` takes slot
+///    `n`, whatever else is on the side. Two units of one side in one slot is
+///    [`ArenaError::DuplicateSlot`] — they would answer to one name.
+/// 2. **Then the rest, in unit-id order**, each taking the lowest slot of its
+///    side that pass 1 did not claim and pass 2 has not. That is what gives a
+///    staff `@arena/start`, an AI-filled pod with no centre row and the harness's
+///    field of three hundred stable callsigns with no lobby at all.
+///
+/// The vector arrives sorted by id, so pass 2's "in unit-id order" needs no sort
+/// of its own.
+///
+/// # Errors
+///
+/// [`ArenaError::DuplicateSlot`], naming the side and the slot.
+fn resolve_callsigns(states: &mut [UnitState]) -> Result<(), ArenaError> {
+    for team in Team::ALL {
+        let mut taken: Vec<u16> = Vec::new();
+        for state in states.iter().filter(|state| state.team == team) {
+            let Designator::Slot { slot, .. } = state.callsign else {
+                continue;
+            };
+            if slot == 0 {
+                continue;
+            }
+            if taken.contains(&slot) {
+                return Err(ArenaError::DuplicateSlot {
+                    team: team.as_str(),
+                    slot: u8::try_from(slot).unwrap_or(u8::MAX),
+                });
+            }
+            taken.push(slot);
+        }
+        let mut next: u16 = 1;
+        for state in states.iter_mut().filter(|state| state.team == team) {
+            if state.callsign != (Designator::Slot { team, slot: 0 }) {
+                continue;
+            }
+            while taken.contains(&next) {
+                next = next.saturating_add(1);
+            }
+            state.callsign = Designator::Slot { team, slot: next };
+            taken.push(next);
+            next = next.saturating_add(1);
+        }
+    }
+    Ok(())
 }
 
 /// How much a viewer knows about what it is holding (doc 16 §3.6).
@@ -1466,6 +1634,97 @@ impl ShadowContacts {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// **The provisional numbers one match has issued** (16b cut Q.1), per viewer.
+///
+/// It holds numbers and **nothing else** — no class, no "has been classified"
+/// flag, no team. That is the whole of its design, and it is the correction the
+/// plan's first draft needed: a contact is not a durable object
+/// ([`ShadowContacts::expire`] removes the row and the next detection re-inserts
+/// it [`Classification::Unknown`] under the same id), so any bit that outlived the
+/// row would name a freshly re-acquired blip by team and slot on every surface
+/// that reads it. What a viewer *now* knows is read off the live contact
+/// (`Arena::designator_for`); this only answers *which number this platform's own
+/// sensors gave that target the first time they found it*.
+///
+/// **One writer**: `Arena::sensor_pass`'s `None` arm — the insert of an `Unknown`
+/// contact by the platform's own sensors — and only while
+/// `[tacsim.sensors].designate_on_detection` is off. A mesh arrival writes
+/// nothing, so a number always means *something my own sensors found*, and the
+/// sequence stays contiguous: a mesh-first target that later expires and is found
+/// by this platform's own sight takes the next number then.
+///
+/// A number is **never reused** and a re-detected target **keeps** its number —
+/// the same continuity the sixteen-digit id always had, since
+/// `crate::arena::rng::draw_contact_id` mints one id per `(viewer, target)` pair
+/// for the match.
+///
+/// **It is folded into [`crate::arena::hash::state_hash`]** (that function's own
+/// note says why): it moves without a distinguishable ledger event, because a
+/// mesh `detected` and a sensor `detected` are the same ledger line. It is not
+/// journalled: the ledger names units by object id, which is the canon's
+/// vocabulary, and a replay in a pilot's own vocabulary is not this cut's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DesignatorBook {
+    /// The next number each viewer will issue, from `1`.
+    next: BTreeMap<ObjId, u16>,
+    /// `(viewer, target)` to the number that viewer gave that target.
+    of: BTreeMap<(ObjId, ObjId), u16>,
+}
+
+impl DesignatorBook {
+    /// The number `viewer` holds `target` under, minting the viewer's next one if
+    /// it holds none.
+    ///
+    /// Saturating at [`u16::MAX`], which a match cannot reach: a viewer would have
+    /// to detect 65,535 distinct targets, and the arena's own unit cap is far
+    /// under that.
+    pub fn assign(&mut self, viewer: ObjId, target: ObjId) -> u16 {
+        if let Some(held) = self.of.get(&(viewer, target)) {
+            return *held;
+        }
+        let next = self.next.entry(viewer).or_insert(1);
+        let issued = *next;
+        *next = next.saturating_add(1);
+        self.of.insert((viewer, target), issued);
+        issued
+    }
+
+    /// The number `viewer` holds `target` under, if it holds one.
+    #[must_use]
+    pub fn provisional(&self, viewer: ObjId, target: ObjId) -> Option<u16> {
+        self.of.get(&(viewer, target)).copied()
+    }
+
+    /// The `next` table, viewer ascending — [`crate::arena::hash::state_hash`]'s
+    /// walk.
+    pub fn counters(&self) -> impl Iterator<Item = (ObjId, u16)> {
+        self.next.iter().map(|(viewer, next)| (*viewer, *next))
+    }
+
+    /// How many viewers have issued a number — the hash's length prefix, read off
+    /// the map rather than by counting the iterator, because the hash runs once a
+    /// substep.
+    #[must_use]
+    pub fn counters_len(&self) -> usize {
+        self.next.len()
+    }
+
+    /// How many numbers have been issued in all, likewise.
+    #[must_use]
+    pub fn issued_len(&self) -> usize {
+        self.of.len()
+    }
+
+    /// Every issued number as `(viewer, target, n)`, viewer then target
+    /// ascending — the `BTreeMap`'s own order, which is why the hash folds it
+    /// without a sort.
+    pub fn issued(&self) -> impl Iterator<Item = (ObjId, ObjId, u16)> {
+        self.of
+            .iter()
+            .map(|((viewer, target), n)| (*viewer, *target, *n))
     }
 }
 
@@ -1860,6 +2119,18 @@ pub enum ArenaError {
     /// No units were handed over.
     #[error("no units were handed over: an arena with no units has no match to run")]
     NoUnits,
+    /// **16b cut Q.1** — two units of one side were fielded from one centre slot,
+    /// so they would answer to one callsign.
+    #[error(
+        "two units on the {team} side were handed over in slot {slot}: a slot is one unit, and a \
+         callsign is one unit's name"
+    )]
+    DuplicateSlot {
+        /// The side.
+        team: &'static str,
+        /// The repeated slot.
+        slot: u8,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -1885,6 +2156,30 @@ pub struct Arena {
     pub epochs: EpochTable,
     /// The per-viewer shadow contacts (cut S fills it).
     pub contacts: ShadowContacts,
+    /// **The provisional numbers this match has issued** (16b cut Q.1). See
+    /// [`DesignatorBook`]: numbers and nothing else, written at one site, folded
+    /// into the state hash.
+    pub designators: DesignatorBook,
+    /// **The designator a contact carried at the moment it expired** (16b cut
+    /// Q.1), `(viewer, contact)` to what the row read as.
+    ///
+    /// A `lost` notice is staged *after* the row is gone, so the class that
+    /// decides between `BA` and `X2` is no longer readable anywhere. It is
+    /// captured in `Arena::sensor_pass` from the record
+    /// [`ShadowContacts::expire`] hands back and taken out again by the
+    /// `EventKind::Lost` arm of the staging scan — so it is filled and drained
+    /// **inside one substep's event list** and never survives the substep it was
+    /// filled in.
+    ///
+    /// It is deliberately **not** empty at every hash point: the substep takes its
+    /// record before the staging scan runs, so a substep in which a contact
+    /// expired is hashed with that row's name still in here. That costs nothing,
+    /// because the table is not folded into [`crate::arena::hash::state_hash`] at
+    /// all — its contents are a function of state the hash already folds (the
+    /// expiry is the contact store's own change; the name is read off the book and
+    /// the callsign), so folding it would add no information and would make the
+    /// hash a function of where the drain sits.
+    pub lost_designators: BTreeMap<(ObjId, ContactId), Designator>,
     /// The scheduled events.
     pub due: DueHeap,
     /// The streaming match ledger.
@@ -1984,7 +2279,11 @@ pub struct Arena {
     /// — the sweep happens at pulse boundaries, so folding it would make the hash a
     /// function of the tempo, which is exactly what the cross-tempo property
     /// refuses.
-    pub held_losses: BTreeMap<(ObjId, ContactId), i64>,
+    ///
+    /// **16b cut Q.1** put the designator in the value beside the deadline: the
+    /// row is already gone when the notice is finally said, so the name it read
+    /// as has to be carried from the expiry that took it.
+    pub held_losses: BTreeMap<(ObjId, ContactId), (i64, Designator)>,
     /// **The state hash of every substep of the pulse just run**, in order, and
     /// cleared at the start of each pulse (doc 16 §3.1 "Determinism": *each substep
     /// produces a state hash recorded with its pulse*).
@@ -2156,6 +2455,14 @@ impl Arena {
             states.push(UnitState {
                 id: unit.id,
                 team: unit.team,
+                // **16b cut Q.1**: the slot as it was handed over, carried here
+                // unresolved — `resolve_callsigns` below turns a `0` into the
+                // lowest free slot of the team once every unit is in hand and the
+                // vector is in unit-id order.
+                callsign: Designator::Slot {
+                    team: unit.team,
+                    slot: u16::from(unit.slot),
+                },
                 desired_heading_mdeg: unit.pose.heading_mdeg,
                 pose: unit.pose,
                 speed_cms: 0,
@@ -2242,6 +2549,10 @@ impl Arena {
         {
             return Err(ArenaError::DuplicateUnit { unit: duplicate });
         }
+        // **16b cut Q.1**: every unit's public callsign, resolved once, here —
+        // after the sort, so the fallback order is unit-id order and a replay of
+        // one check-out resolves the same names.
+        resolve_callsigns(&mut states)?;
         let mut epochs = EpochTable::new();
         for pilot in &pilots {
             if states
@@ -2341,6 +2652,8 @@ impl Arena {
             units: states,
             epochs,
             contacts: ShadowContacts::new(),
+            designators: DesignatorBook::default(),
+            lost_designators: BTreeMap::new(),
             due,
             ledger: Ledger::new(&arena_cfg.ledger),
             index,
@@ -2509,6 +2822,101 @@ impl Arena {
 mod tests {
     use super::*;
     use crate::arena::test_support::{arena_of, custody, ground, pose, tank};
+
+    /// **16b cut Q.1**: the letters are the whole of what keeps a provisional
+    /// designator and a slot designator apart, so they have to be pairwise
+    /// distinct and none of them may be [`PROVISIONAL_PREFIX`]. A third side is a
+    /// failing test here with the fix beside it.
+    #[test]
+    fn every_team_letter_is_distinct_and_none_of_them_is_the_provisional_prefix() {
+        let letters: Vec<char> = Team::ALL.iter().map(|team| team.letter()).collect();
+        for (at, letter) in letters.iter().enumerate() {
+            assert_ne!(
+                *letter,
+                PROVISIONAL_PREFIX,
+                "{:?} spells its callsigns with the provisional prefix",
+                Team::ALL.get(at)
+            );
+            assert!(
+                letters.iter().skip(at + 1).all(|other| other != letter),
+                "two sides share the letter {letter}"
+            );
+        }
+    }
+
+    /// The spelling of a designator, at each of the three shapes that matter: the
+    /// provisional number, a slot inside the alphabet, and the first slot past it.
+    #[test]
+    fn a_designator_spells_a_number_a_letter_and_the_roll_past_z() {
+        assert_eq!(Designator::Provisional(1).to_string(), "X1");
+        assert_eq!(Designator::Provisional(12).to_string(), "X12");
+        for (slot, spelling) in [
+            (1_u16, "RA"),
+            (2, "RB"),
+            (12, "RL"),
+            (26, "RZ"),
+            (27, "RAA"),
+            (28, "RAB"),
+            (52, "RAZ"),
+            (53, "RBA"),
+        ] {
+            assert_eq!(
+                Designator::Slot {
+                    team: Team::Red,
+                    slot,
+                }
+                .to_string(),
+                spelling
+            );
+        }
+        assert_eq!(
+            Designator::Slot {
+                team: Team::Blue,
+                slot: 3,
+            }
+            .to_string(),
+            "BC"
+        );
+        // A slot of zero is a name nothing resolves, not a panic: `Arena::new`
+        // never produces one.
+        assert_eq!(
+            Designator::Slot {
+                team: Team::Blue,
+                slot: 0,
+            }
+            .to_string(),
+            "B"
+        );
+    }
+
+    /// **16b cut Q.1**: a number is the viewer's own, issued in first-seen order,
+    /// never reused, and kept for the target it was issued for.
+    #[test]
+    fn the_book_numbers_per_viewer_in_first_seen_order_and_never_reuses_one() {
+        let mut book = DesignatorBook::default();
+        assert_eq!(book.provisional(ObjId(1), ObjId(9)), None);
+        assert_eq!(book.assign(ObjId(1), ObjId(9)), 1);
+        assert_eq!(book.assign(ObjId(1), ObjId(4)), 2);
+        // The same pair answers the same number for ever.
+        assert_eq!(book.assign(ObjId(1), ObjId(9)), 1);
+        assert_eq!(book.provisional(ObjId(1), ObjId(9)), Some(1));
+        // A second viewer counts from one of its own.
+        assert_eq!(book.assign(ObjId(2), ObjId(4)), 1);
+        assert_eq!(book.provisional(ObjId(2), ObjId(9)), None);
+        // The walks the hash folds, in map order.
+        assert_eq!(
+            book.counters().collect::<Vec<(ObjId, u16)>>(),
+            vec![(ObjId(1), 3), (ObjId(2), 2)]
+        );
+        assert_eq!(
+            book.issued().collect::<Vec<(ObjId, ObjId, u16)>>(),
+            vec![
+                (ObjId(1), ObjId(4), 2),
+                (ObjId(1), ObjId(9), 1),
+                (ObjId(2), ObjId(4), 1),
+            ]
+        );
+    }
 
     #[test]
     fn terrain_refuses_a_grid_that_is_not_its_dimensions() {

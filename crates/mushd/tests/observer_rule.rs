@@ -145,7 +145,14 @@ impl Server {
 }
 
 /// A fast arena, as `sim_cockpit.rs` configures one.
-fn tacsim_config() -> tacsim::TacsimConfig {
+///
+/// **16b cut Q.1**: `designate` is `[tacsim.sensors].designate_on_detection`, the
+/// one key that relaxes the observer rule — it names a contact by its team and
+/// centre slot at the first pass instead of by this platform's own provisional
+/// number. It is a parameter rather than a constant because the key is shipped
+/// into the rendered instance template and an operator can turn it on, and a
+/// surface nothing has ever run end to end is a surface nobody has checked.
+fn tacsim_config(designate: bool) -> tacsim::TacsimConfig {
     let mut cfg = tacsim::TacsimConfig {
         enabled: true,
         ..tacsim::TacsimConfig::default()
@@ -156,6 +163,7 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     cfg.arena.ledger.summary_ms = 200;
     cfg.match_.startup_ms = 300;
     cfg.match_.board_timeout_ms = 120_000;
+    cfg.sensors.designate_on_detection = designate;
     cfg
 }
 
@@ -163,17 +171,25 @@ fn tacsim_config() -> tacsim::TacsimConfig {
 fn module_list(
     onboarding: &mush_core::OnboardingConfig,
     llm: &Arc<LlmService>,
+    designate: bool,
 ) -> Vec<Box<dyn GameModule>> {
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
-    mods.push(modules::tacsim_module(tacsim_config()));
+    mods.push(modules::tacsim_module(tacsim_config(designate)));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
 }
 
+/// The shipped composition, with the observer rule at its default strength.
 async fn boot(tag: &str) -> Server {
+    boot_with(tag, false).await
+}
+
+/// The same composition over a named `[tacsim.sensors].designate_on_detection`
+/// (16b cut Q.1).
+async fn boot_with(tag: &str, designate: bool) -> Server {
     let dir = scratch_dir(tag);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     store
@@ -232,7 +248,8 @@ async fn boot(tag: &str) -> Server {
     );
 
     let mut engine =
-        Engine::with_modules(world, registry, module_list(&onboarding, &llm)).expect("modules");
+        Engine::with_modules(world, registry, module_list(&onboarding, &llm, designate))
+            .expect("modules");
     modules::boot_modules(&mut engine, &*store)
         .await
         .expect("module boot");
@@ -772,6 +789,60 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     names_nothing(&seen, red, blue, "the other pilot's `CONTACTS`");
     let seen = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
     names_nothing(&seen, red, blue, "the pilot's `CONTACTS`");
+
+    // **16b cut Q.1: naming a contact you do not hold tells you nothing.**
+    //
+    // A designator is short and guessable in a way sixteen base-16 digits were
+    // not — `BA` is the blue side's first pod, and anybody who has read the
+    // board knows that — so the refusal has to be the load-bearing part. Every
+    // shape of name the platform does not hold takes the same path, byte for
+    // byte: a slot designator whose tank is out there and undetected, a
+    // provisional number nothing has issued, a designator of a tank that does
+    // not exist, the sixteen digits that used to be typable, and a word that is
+    // not a designator at all.
+    let mut refusals: Vec<String> = Vec::new();
+    for line in [
+        "LOCK BA",
+        "LOCK RA",
+        "LOCK X1",
+        "LOCK ZZ",
+        "LOCK ffffffffffffffff",
+        "LOCK zzzz",
+        "RANGE BA",
+        "BEARING BA",
+    ] {
+        let seen = ask(&mut ada, line, NO_SUCH_CONTACT).await;
+        refusals.push(seen.trim_start_matches(line).trim().to_owned());
+    }
+    let first = refusals.first().cloned().unwrap_or_default();
+    for (line, answer) in [
+        "LOCK BA",
+        "LOCK RA",
+        "LOCK X1",
+        "LOCK ZZ",
+        "LOCK ffffffffffffffff",
+        "LOCK zzzz",
+        "RANGE BA",
+        "BEARING BA",
+    ]
+    .into_iter()
+    .zip(refusals.iter())
+    {
+        assert_eq!(
+            answer, &first,
+            "{line} answered something other than the one byte-identical refusal"
+        );
+    }
+    assert_eq!(first, NO_SUCH_CONTACT, "and the refusal is that sentence");
+    // With no lock and no name the two read verbs say their own line, which is
+    // NOT `FIRE`'s: `FIRE` takes a weapon and never a contact.
+    for line in ["RANGE", "BEARING"] {
+        let seen = ask(&mut ada, line, "No lock").await;
+        assert!(
+            seen.contains("No lock: LOCK a contact first, or name one."),
+            "{line} with neither a lock nor a name:\n{seen}"
+        );
+    }
     let seen = ask(&mut ada, "VIEW", "Arena window").await;
     names_nothing(&seen, red, blue, "the pilot's `VIEW`");
     assert!(
@@ -795,37 +866,66 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // -----------------------------------------------------------------
     // Detection: drive toward each other until the pass finds something.
     // -----------------------------------------------------------------
+    // **16b cut Q.1**: everything the red pilot is sent from here to the first
+    // held row, with nothing of their own typing in it but `CONTACTS`. The
+    // assertions below about what may not reach a pilot are measured over this
+    // window rather than over the whole transcript, which carries the refusal
+    // battery's own echoes.
+    let detect_mark = ada.mark();
     drive(&mut ada, 90).await;
     drive(&mut bo, 270).await;
-    let mut held = String::new();
-    for _ in 0..DRIVE_BUDGET {
-        // Either answer ends the wait: a contact line carries a bearing, and an
-        // empty scope says so. Polling on one needle alone would block for the
-        // whole step timeout on the ordinary case.
-        let mark = ada.mark();
-        ada.send_line("CONTACTS").await;
-        if ada
-            .expect_one_of_after(mark, &["bearing", NO_CONTACTS])
-            .await
-            == 0
-        {
-            held = strip_ansi(&ada.seen[mark..]);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+
+    // **The wait is on the acquisition notice, not on a poll of `CONTACTS`.**
+    //
+    // Doc 16 §3.6's `acquired` is pushed the moment the pass finds something,
+    // while she is driving and without her asking — so there is no round trip
+    // between the detection and this read, and the name in it is the name the
+    // return was given when it was found. A `CONTACTS` poll would be a race
+    // against `classify_after_ms`, three seconds, and losing it would silently
+    // move this window past the rename: the provisional phase would go unproved
+    // rather than fail.
+    ada.expect_after(detect_mark, "New contact ").await;
+    // Everything the pilot was sent from the drive to that notice, and nothing
+    // after it — the window every pre-classification assertion is measured over.
+    let unresolved = strip_ansi(&ada.seen[detect_mark..ada.seen.len()]);
+    names_nothing(&unresolved, red, blue, "the acquisition notice");
+
+    // **The provisional phase, which is what W5 buys** — asserted, never skipped.
+    //
+    // There is no mesh in a two-tank match, so every contact either platform
+    // holds is one its own sensors found, and such a return is unresolved for the
+    // sensor's whole `classify_after_ms` before it is told apart. So the name the
+    // acquisition quoted is a provisional one; a run in which it is not is this
+    // cut breaking.
+    //
+    // While the return is held and not yet told apart the row is this platform's
+    // own `X<n>`, nothing the pilot has been sent says which side it is or which
+    // pod it came out of, and `LOCK BA` is still the byte-identical refusal —
+    // because a row carries the slot designator only while its contact is
+    // classified *now*. The refusal is typed in the same breath as the notice, so
+    // it is answered while the row really is unknown.
+    let provisional = acquired_designator(&unresolved)
+        .unwrap_or_else(|| panic!("a designator in the acquisition notice:\n{unresolved}"));
     assert!(
-        !held.is_empty(),
-        "the two tanks never detected each other in {DRIVE_BUDGET} polls"
+        provisional.starts_with('X'),
+        "an unresolved return was named by team and slot when it was found: \
+         {provisional}\n{unresolved}"
+    );
+    assert!(
+        !unresolved.contains("BA"),
+        "the blue side's slot spelling reached the pilot before classification:\n{unresolved}"
+    );
+    assert!(
+        !names_side(&unresolved, "blue"),
+        "the other side's word reached the pilot before classification:\n{unresolved}"
+    );
+    let refused = ask(&mut ada, "LOCK BA", NO_SUCH_CONTACT).await;
+    assert_eq!(
+        refused.trim_start_matches("LOCK BA").trim(),
+        NO_SUCH_CONTACT,
+        "a slot designator resolved against a row that is still unknown"
     );
 
-    // The first thing that crossed was the notice — doc 16 §3.6's `acquired`,
-    // on its own line, while she was driving and without her asking.
-    names_nothing(&held, red, blue, "the acquisition notice");
-    assert!(
-        strip_ansi(&ada.seen).contains("New contact"),
-        "the acquisition notice reached the pilot:\n{held}"
-    );
     // And then the table. `" s"` is the age column, which only the row has.
     let held = ask(&mut ada, "CONTACTS", " s").await;
     names_nothing(&held, red, blue, "the pilot's held `CONTACTS`");
@@ -897,11 +997,37 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         range_m <= inside_m,
         "the band and the range disagree, so they are not one plot: {row}"
     );
+    // **16b cut Q.1 inverted this assertion.** It used to read "the opaque
+    // sixteen-digit id is the contact's only name"; the digits are not a pilot's
+    // word any more, and nothing a session is *sent* carries one. Scoped to what
+    // is sent deliberately, and measured from `detect_mark` so the only lines in
+    // it are the pilot's own `CONTACTS` and what the arena answered: the ledger,
+    // the world's own mirror and the LLM squad brief all still carry the
+    // sixteen digits, and none of them is a pilot.
+    let sent = strip_ansi(&ada.seen[detect_mark..]);
+    no_sixteen_digit_word(&sent, "everything the pilot was sent while detecting");
+
+    // **16b cut Q.1: the far end of `STARTUP`.** `drive` typed `STARTUP` inside
+    // this window, so the line that says the sequence finished is in it — and it
+    // is a notice addressed to the platform's own pilots, so it reaches the other
+    // pilot about *their* tank and neither watcher about either.
     assert!(
-        held.split(|c: char| !c.is_ascii_hexdigit())
-            .any(|word| word.len() == 16),
-        "the opaque sixteen-digit id is the contact's only name:\n{held}"
+        sent.contains("Power online."),
+        "the pilot was never told their power came up:\n{sent}"
     );
+    assert!(
+        strip_ansi(&bo.seen).contains("Power online."),
+        "the other pilot was never told about their own tank"
+    );
+    for (who, transcript) in [
+        ("the bystander", strip_ansi(&cy.seen)),
+        ("the staffer", strip_ansi(&god.seen)),
+    ] {
+        assert!(
+            !transcript.contains("Power online."),
+            "{who} was told a tank came online"
+        );
+    }
     assert!(
         held.contains("unknown") || held.contains("blue"),
         "a class word, or `unknown` until it classifies:\n{held}"
@@ -911,13 +1037,16 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // id is the one refusal. The arena's phase 4 still drops the `Lock` order — cut
     // W is what gives it an effect — so what is asserted here is the resolution and
     // the refusal, which is S.2's half of the verb.
-    let contact = held
-        .split(|c: char| !c.is_ascii_hexdigit())
-        .find(|word| word.len() == 16)
-        .unwrap_or_else(|| panic!("a contact id to lock in:\n{held}"))
-        .to_owned();
+    //
+    // 16b cut Q.1: the lock is taken under the **provisional** number read off the
+    // first listing, which is what the rename block below then proves survives.
+    let contact = provisional.clone();
     let seen = ask(&mut ada, &format!("LOCK {contact}"), "Locking").await;
-    assert!(seen.contains(&contact), "{seen}");
+    // The echo of the typed line is in this slice, so the needle is the *answer*'s
+    // own word rather than the designator — which the rename block below pins as a
+    // whole sentence, under both spellings.
+    assert!(seen.contains("Locking "), "{seen}");
+    no_sixteen_digit_word(&seen, "the answer to a `LOCK`");
     let mine = ask(&mut ada, &format!("LOCK {contact}"), "Locking").await;
     let unowned = ask(&mut ada, "LOCK ffffffffffffffff", NO_SUCH_CONTACT).await;
     let malformed = ask(&mut ada, "LOCK zzzz", NO_SUCH_CONTACT).await;
@@ -925,8 +1054,87 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     assert_eq!(
         unowned.trim_start_matches("LOCK ffffffffffffffff").trim(),
         malformed.trim_start_matches("LOCK zzzz").trim(),
-        "one byte-identical refusal for an id this platform does not hold, whatever \
+        "one byte-identical refusal for a name this platform does not hold, whatever \
          shape it came in"
+    );
+
+    // **16b cut Q.1: the rename, and what survives it.**
+    //
+    // Three seconds of holding the return is enough to tell it apart. The row
+    // then reads the target's public callsign, the rename is one line quoting
+    // what the pilot has been calling it, the new spelling is accepted
+    // case-folded, and the **provisional number the lock was taken under still
+    // resolves** — which is the whole reason the book keeps it.
+    // The *row* has to be re-read after the rename, not the transcript: the
+    // `identified` notice arrives on its own and a window that merely contains
+    // the word `blue` may still carry the `X<n>` row printed before it.
+    let mut classified = String::new();
+    for _ in 0..RETRY_BUDGET {
+        let seen = ask(&mut ada, "CONTACTS", "(rel ").await;
+        if seen.contains("blue") {
+            classified = seen;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        !classified.is_empty(),
+        "the return was never told apart in {RETRY_BUDGET} polls"
+    );
+    let renamed = designator_of(&classified)
+        .unwrap_or_else(|| panic!("a contact designator in:\n{classified}"));
+    assert_ne!(
+        renamed, contact,
+        "the classified row still reads as the provisional number:\n{classified}"
+    );
+    assert!(
+        strip_ansi(&ada.seen).contains(&format!("Contact {contact} identified: {renamed}, blue.")),
+        "the rename is one sentence quoting both names:\n{classified}"
+    );
+    let folded = ask(
+        &mut ada,
+        &format!("LOCK {}", renamed.to_ascii_lowercase()),
+        "Locking",
+    )
+    .await;
+    assert!(
+        folded.contains(&format!("Locking {renamed}.")),
+        "a designator is case-folded on the way in:\n{folded}"
+    );
+    let alias = ask(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    assert!(
+        alias.contains(&format!("Locking {renamed}.")),
+        "the number the lock was taken under still resolves, and answers the new \
+         name:\n{alias}"
+    );
+    // And the two read verbs answer about the lock with no argument at all, and
+    // they answer with a **number**: the prefix alone would be satisfied by a
+    // sentence that had stopped saying how far away anything was. The locked
+    // reading is to the nearest ten metres (16b cut Q.1's `LOCK_RANGE_STEP_M`);
+    // the step the lock earns is pinned exactly, against the row's own coarse
+    // figure, in `tacsim/tests/resolution.rs`, which can hold the plot still and
+    // this scripted run cannot.
+    let ranged = ask(&mut ada, "RANGE", "Range to").await;
+    let head = format!("Range to {renamed}: ");
+    let tail = ranged
+        .split_once(&head)
+        .map(|(_, tail)| tail.to_owned())
+        .unwrap_or_else(|| panic!("RANGE defaults to the lock:\n{ranged}"));
+    let metres: u64 = tail
+        .split_whitespace()
+        .next()
+        .and_then(|word| word.parse().ok())
+        .unwrap_or_else(|| panic!("a range in metres: {tail}"));
+    assert_eq!(metres % 10, 0, "a locked plot reads to ten metres: {tail}");
+    let bearing = ask(&mut ada, "BEARING", "Bearing to").await;
+    let head = format!("Bearing to {renamed}: ");
+    let tail = bearing
+        .split_once(&head)
+        .map(|(_, tail)| tail.to_owned())
+        .unwrap_or_else(|| panic!("BEARING defaults to the lock:\n{bearing}"));
+    assert!(
+        tail.starts_with(|c: char| c.is_ascii_digit()) && tail.contains("° (rel "),
+        "a bearing absolute and off the platform's own nose: {tail}"
     );
     // And the map draws a marker for it without naming anything — once the contact
     // is inside the window, which is narrower (78 cells) than the sensor reaches
@@ -951,6 +1159,153 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     names_nothing(&seen, red, blue, "the staffer's `look` after detection");
     let seen = look_web(&mut web).await;
     names_nothing(&seen, red, blue, "the web client's `look` after detection");
+
+    say(&mut ada, "SIM ABORT", "aborts match").await;
+}
+
+/// **The observer rule with the switch on** (16b cut Q.1;
+/// `[tacsim.sensors].designate_on_detection`).
+///
+/// The key is shipped as `false` into the rendered instance template and into
+/// `deploy/dev2`, so an operator can turn it on with a server-child restart and no
+/// build — and what it turns on is a *relaxation of the observer rule on four
+/// player-facing surfaces at once*. `tacsim/tests/perception.rs` proves what the
+/// arena does with it; this is the composition a pilot would actually be sitting
+/// in, so that the conditioned half of the rule has a lens of its own rather than
+/// a library test and an operator's hope.
+///
+/// With the switch on the return is named by its team and centre slot at the
+/// **first** pass: no provisional number is ever issued, `LOCK BA` resolves before
+/// `classify_after_ms` has run at all, and there is no rename to say — the
+/// `classified` transition still happens in the arena and still reaches the black
+/// box, and the pilot is simply not told a second time what they are already
+/// calling it. What does **not** relax: the sixteen digits are still not a pilot's
+/// word, and a name the platform does not hold is still the one refusal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition() {
+    let server = boot_with("observer-designate", true).await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
+    close_the_gap(&mut god, red, blue, domain).await;
+    take_off(&mut ada, &mut bo).await;
+
+    // Before anything is held, the refusal is what it always was: the switch
+    // relaxes what a *held* contact is called and nothing else.
+    let refused = ask(&mut ada, "LOCK BA", NO_SUCH_CONTACT).await;
+    assert_eq!(
+        refused.trim_start_matches("LOCK BA").trim(),
+        NO_SUCH_CONTACT,
+        "the switch made an undetected tank nameable"
+    );
+
+    let detect_mark = ada.mark();
+    drive(&mut ada, 90).await;
+    drive(&mut bo, 270).await;
+    let mut held = String::new();
+    let mut first_end = detect_mark;
+    for _ in 0..DRIVE_BUDGET {
+        let mark = ada.mark();
+        ada.send_line("CONTACTS").await;
+        if ada.expect_one_of_after(mark, &["(rel ", NO_CONTACTS]).await == 0 {
+            held = strip_ansi(&ada.seen[mark..]);
+            first_end = ada.seen.len();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        !held.is_empty(),
+        "the two tanks never detected each other in {DRIVE_BUDGET} polls"
+    );
+
+    // **The first row already carries the slot designator.** The blue tank is in
+    // slot 1 of its side, so the name is the team letter and the first slot.
+    let named = designator_of(&held).unwrap_or_else(|| panic!("a contact designator in:\n{held}"));
+    assert_eq!(
+        named, "BA",
+        "with the switch on the first pass names the target's team and pod:\n{held}"
+    );
+    // And no provisional number was issued: nothing the pilot has been sent
+    // carries one, and the row itself is not an `X<n>`.
+    let sent = strip_ansi(&ada.seen[detect_mark..first_end]);
+    for n in 1_u16..=4 {
+        let provisional = format!("X{n}");
+        assert!(
+            !sent.contains(&provisional),
+            "a provisional number was issued with the switch on ({provisional}):\n{sent}"
+        );
+    }
+    // The digits are still nobody's handle, switch or no switch.
+    no_sixteen_digit_word(&sent, "everything the pilot was sent with the switch on");
+
+    // The slot spelling resolves at once — before `classify_after_ms` could have
+    // run — and it is the only spelling there is, so the number is refused.
+    let seen = ask(&mut ada, &format!("LOCK {named}"), "Locking").await;
+    assert!(
+        seen.contains(&format!("Locking {named}.")),
+        "the slot designator resolves at the first pass:\n{seen}"
+    );
+    let refused = ask(&mut ada, "LOCK X1", NO_SUCH_CONTACT).await;
+    assert_eq!(
+        refused.trim_start_matches("LOCK X1").trim(),
+        NO_SUCH_CONTACT,
+        "a provisional number resolved against a book that never issued one"
+    );
+
+    // The read verbs answer about the lock, under the same name — once the arena
+    // has recorded it. Phase 4 takes the order and the cockpit reads the lock back
+    // off the **next** frame, so a bare `RANGE` sent in the same breath as the
+    // `LOCK` is honestly answered `No lock…`: a wait, not a failure (16b cut K.2's
+    // mirror).
+    for _ in 0..DRIVE_BUDGET {
+        if ask_whole(&mut ada, "WEAPONSTATUS")
+            .await
+            .contains("Locked on")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let ranged = ask(&mut ada, "RANGE", "Range to").await;
+    assert!(
+        ranged.contains(&format!("Range to {named}: ")),
+        "RANGE defaults to the lock:\n{ranged}"
+    );
+    let bearing = ask(&mut ada, "BEARING", "Bearing to").await;
+    assert!(
+        bearing.contains(&format!("Bearing to {named}: ")),
+        "BEARING defaults to the lock:\n{bearing}"
+    );
+
+    // **And there is never a rename to say.** The classification still happens —
+    // the row's class word turns into the side — but the pilot is told nothing
+    // about it, because the name it has been calling the contact does not change.
+    let mut classified = String::new();
+    for _ in 0..RETRY_BUDGET {
+        let seen = ask(&mut ada, "CONTACTS", "(rel ").await;
+        if seen.contains("blue") {
+            classified = seen;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        !classified.is_empty(),
+        "the return was never told apart in {RETRY_BUDGET} polls"
+    );
+    assert_eq!(
+        designator_of(&classified).as_deref(),
+        Some("BA"),
+        "the name moved across a classification that had nothing to rename:\n{classified}"
+    );
+    let whole = strip_ansi(&ada.seen);
+    assert!(
+        !whole.contains(" identified: "),
+        "a rename was said for a contact that was never provisional:\n{whole}"
+    );
 
     say(&mut ada, "SIM ABORT", "aborts match").await;
 }
@@ -1008,7 +1363,8 @@ async fn power_up(term: &mut Term) {
     panic!("the tank never came online");
 }
 
-/// Wait until `CONTACTS` holds something, and answer the opaque id.
+/// Wait until `CONTACTS` holds something, and answer the row's short designator
+/// (16b cut Q.1).
 async fn first_contact(term: &mut Term) -> String {
     for _ in 0..DRIVE_BUDGET {
         let mark = term.mark();
@@ -1016,22 +1372,62 @@ async fn first_contact(term: &mut Term) -> String {
         if term
             .expect_one_of_after(
                 mark,
-                &["bearing", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
+                // 16b cut Q.1: the relative bearing, which only a row carries —
+                // the acquisition notice quotes an absolute bearing of its own.
+                &["(rel ", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
             )
             .await
             == 0
         {
             let seen = strip_ansi(&term.seen[mark..]);
-            if let Some(id) = seen
-                .split(|c: char| !c.is_ascii_hexdigit())
-                .find(|word| word.len() == 16)
-            {
-                return id.to_owned();
+            if let Some(named) = designator_of(&seen) {
+                return named;
             }
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     panic!("nothing was ever detected")
+}
+
+/// **The short designator in a `CONTACTS` listing** (16b cut Q.1): the first word
+/// of a contact row, `X<n>` while the return is unresolved and the team letter
+/// with the target's centre slot once it has been told apart.
+fn designator_of(listing: &str) -> Option<String> {
+    listing
+        .lines()
+        .find(|line| line.contains("bearing ") && line.contains("(rel "))
+        .and_then(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+}
+
+/// **The designator an acquisition notice quoted** (16b cut Q.1): the word after
+/// `New contact `, whether the sentence goes on to a bearing (`New contact X1:
+/// bearing 090°, effective.`) or stops there (`New contact X1.`).
+///
+/// This is the one reading of the name that cannot lose a race with
+/// `classify_after_ms`: the notice is pushed at the detection, so what it says is
+/// what the return was called when it was found, however late the test reads it.
+fn acquired_designator(sent: &str) -> Option<String> {
+    sent.split_once("New contact ")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split([':', '.', ' ', '\r', '\n']).next())
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+}
+
+/// **Nothing a session is sent carries a sixteen-digit contact id** (16b cut
+/// Q.1), which is the inverse of the assertion cut S.2 wrote.
+///
+/// The digits are still the arena's own identity and still travel in the ledger,
+/// in the world's frame mirror and in the LLM squad brief. None of those is a
+/// pilot, and this is about pilots.
+fn no_sixteen_digit_word(seen: &str, what: &str) {
+    for word in seen.split(|c: char| !c.is_ascii_hexdigit()) {
+        assert!(
+            word.len() != 16 || u64::from_str_radix(word, 16).is_err(),
+            "{what} carried a sixteen-digit contact id ({word}):\n{seen}"
+        );
+    }
 }
 
 /// Every word that would betray the shooting to somebody outside the cockpit that
@@ -1231,8 +1627,16 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
         target.contains("Hit on the "),
         "the target was told nothing about the rounds that hit it:\n{target}"
     );
-    // The contact id *the target itself* holds the shooter under is the one id a
-    // leak would most plausibly carry, so it is named explicitly.
+    // The name *the target itself* holds the shooter under is the one a leak
+    // would most plausibly carry, so it is named explicitly.
+    //
+    // **16b cut Q.1** took the shooter's own name for the target off both lists
+    // below, and the reason is the cut's: a slot designator is the **target's
+    // own public callsign** — doc 16 §5's amendment makes it lobby knowledge —
+    // so "the victim must not read `BA`" is a rule about the victim's own name
+    // and proves nothing. What must not cross is who fired, which is what
+    // `bos_contact`, the tank's name, its object number and its side are here
+    // for.
     let bos_contact = first_contact(&mut bo).await;
     let told: Vec<&str> = target
         .lines()
@@ -1243,7 +1647,6 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
         for leak in [
             RED_TANK.to_string(),
             format!("#{red}"),
-            contact.clone(),
             bos_contact.clone(),
             "bearing".to_string(),
             "cannon".to_string(),
@@ -1261,10 +1664,26 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
             "a hit notice named the shooter's side: {line}"
         );
     }
+    // Over the target's WHOLE transcript, so `bos_contact` is deliberately not on
+    // this list: the target's own `CONTACTS` is in the window, and its own scope
+    // is exactly where that name belongs. The per-line list above is where it
+    // has to be absent.
+    //
+    // **16b cut Q.1** puts the shooter's own sentences back on it in the shape
+    // they are actually said in. The bare designator could not stay — under this
+    // cut it is the victim's own public callsign, which the victim's own
+    // `CONTACTS` legitimately prints — but `Hit on BA.` is a whole sentence only
+    // the *shooter* is ever sent, and nothing the victim does can produce it. It
+    // is listed under both spellings, because the contact was told apart while
+    // the rounds were in the air and the sentence names whatever the row read as
+    // at the moment it was staged.
+    let shot_at = first_contact(&mut ada).await;
     for leak in [
         RED_TANK.to_string(),
         format!("#{red}"),
-        contact.clone(),
+        format!("Hit on {contact}."),
+        format!("Hit on {shot_at}."),
+        format!("{shot_at} destroyed."),
         "Firing".to_string(),
         "Locked on".to_string(),
         "to hit".to_string(),

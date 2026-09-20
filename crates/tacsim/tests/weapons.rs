@@ -278,6 +278,8 @@ fn scout(id: ObjId, team: Team, pose: Pose, weapons: Vec<WeaponSummary>) -> Cust
         profile: tacsim::arena::resolution::UnitProfile::default(),
         gunnery: 0,
         controller: tacsim::arena::state::Controller::Pilot,
+        // 16b cut Q.1: no pod behind it.
+        slot: 0,
         unit: tactical_unit(id),
     }
 }
@@ -1000,10 +1002,16 @@ fn a_contact_the_platform_loses_clears_the_lock_with_one_notice() {
     assert!(
         cockpit::notice_line(
             &any,
+            // 16b cut Q.1: a notice names the contact by id and by the short
+            // designator its sentence says.
             &tacsim::arena::perception::FrameNotice::Contact {
                 kind: NoticeKind::LockLost,
-                contact,
+                contact: tacsim::arena::perception::Named {
+                    id: contact,
+                    designator: tacsim::arena::state::Designator::Provisional(1),
+                },
                 class: Classification::Unknown,
+                was: None,
             },
             &[]
         )

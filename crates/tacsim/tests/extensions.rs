@@ -382,6 +382,8 @@ fn unit_of(
         profile: tacsim::match_::unit_profile(catalog, &cells),
         gunnery: 0,
         controller: tacsim::arena::state::Controller::Pilot,
+        // 16b cut Q.1: no pod behind it.
+        slot: 0,
         unit: cells,
     }
 }

@@ -90,6 +90,7 @@
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.5` | the ceiling on a target's signature factor; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism) |
 //! | `[tacsim.sensors].lost_after_passes` | `3` | **16b cut S.1** (doc 16 §3.6): passes a contact may go unrefreshed before it is lost; the TTL is `pass_ms × lost_after_passes` |
+//! | `[tacsim.sensors].designate_on_detection` | `false` | **16b cut Q.1** (doc 16 §3.6, W5, §5): name a contact by team and centre slot (`BA`) the moment it is detected, instead of by a provisional `X<n>` until it is classified. On, the other side's tanks are legible `classify_after_ms` before the rule allows |
 //! | `[tacsim.resolution].paths` | `[]` | **16b cut G** (doc 16 §4): the resolution tables (hit curve, error terms, `p_min`, `p_max`); parsed and **inert** until cut W reads them |
 //! | `[tacsim.harness].units` | `300` | **16b cut G** (doc 16 §1 A2): units the scale harness places and moves |
 //! | `[tacsim.harness].fighting` | `24` | how many of those are fighting |
@@ -1190,6 +1191,14 @@ pub struct TacsimSensorsCfg {
     /// the band is stated in passes and follows the cadence rather than drifting
     /// from it when `pass_ms` moves. Zero is read as one.
     pub lost_after_passes: u32,
+    /// **Name a contact by team and centre slot at detection** (16b cut Q.1),
+    /// rather than by a provisional `X<n>` until it has been classified.
+    ///
+    /// Off, which is doc 16 W5 and §5: identification is earned, and a frame
+    /// names no unit it has not told apart. On, a pilot reads `BA`
+    /// `classify_after_ms` before the rule allows, so the other side's tanks are
+    /// legible off an unresolved return.
+    pub designate_on_detection: bool,
 }
 
 impl Default for TacsimSensorsCfg {
@@ -1198,6 +1207,7 @@ impl Default for TacsimSensorsCfg {
             pass_ms: 1_000,
             max_signature_factor: 1.5,
             lost_after_passes: 3,
+            designate_on_detection: false,
         }
     }
 }

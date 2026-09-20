@@ -333,6 +333,8 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
                 cfg.sensors.max_signature_factor,
             )?,
             lost_after_passes: cfg.sensors.lost_after_passes,
+            // 16b cut Q.1: the provisional-designator switch.
+            designate_on_detection: cfg.sensors.designate_on_detection,
         },
         resolution: tacsim::config::ResolutionConfig {
             paths: cfg
@@ -924,6 +926,7 @@ mod tests {
              pass_ms = 750\n\
              max_signature_factor = 2.25\n\
              lost_after_passes = 5\n\
+             designate_on_detection = true\n\
              [tacsim.resolution]\n\
              paths = [\"  content/resolution.json  \"]\n\
              [tacsim.harness]\n\
@@ -991,6 +994,9 @@ mod tests {
                 pass_ms: 750,
                 max_signature_factor_permille: 2_250,
                 lost_after_passes: 5,
+                // 16b cut Q.1: the provisional-designator switch, mapped
+                // straight across.
+                designate_on_detection: true,
             }
         );
         assert_eq!(

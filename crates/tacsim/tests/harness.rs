@@ -1812,6 +1812,8 @@ fn tacsim_harness_arena_step() {
             // unit is the state doc 16 §3.8's released seat leaves behind, so it is
             // not a shape the engine has to invent for the harness.
             controller: tacsim::arena::state::Controller::Reflex,
+            // 16b cut Q.1: no pod behind it.
+            slot: 0,
             unit: harness_unit(id),
         });
     }
@@ -2867,6 +2869,8 @@ fn tacsim_harness_llm_cost_run() {
             profile: harness_profile(),
             gunnery: 2,
             controller: tacsim::arena::state::Controller::Reflex,
+            // 16b cut Q.1: no pod behind it.
+            slot: 0,
             unit: harness_unit(id),
         });
     }

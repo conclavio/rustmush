@@ -171,7 +171,7 @@ const OVER: &str = "is over (red)";
 const NO_CONTACTS: &str = "No contacts.";
 /// The parser's refusal, which is the sentinel's answer.
 const HUH: &str = "Huh?";
-/// The one line the nine cockpit selectors refuse with once the pilot is no
+/// The one line the eleven cockpit selectors refuse with once the pilot is no
 /// longer at the station of a deployed unit — which is what they all become the
 /// moment the check-in opens the hatches.
 const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit.";
@@ -464,12 +464,18 @@ fn domain_of(listing: &str, host: &str) -> u64 {
         .unwrap_or_else(|| panic!("no domain hosted on {host:?} in:\n{listing}"))
 }
 
-/// The opaque contact id in a `CONTACTS` listing: the sixteen base-16 digits
-/// `ContactId` renders as, and the only name a pilot may use for a contact.
-fn contact_id_of(listing: &str) -> Option<String> {
+/// **The short designator in a `CONTACTS` listing** (16b cut Q.1): the first
+/// word of a contact row, which is `X<n>` while the return is unresolved and
+/// the team's letter with the target's centre slot once it has been told apart.
+///
+/// It replaces the sixteen-digit scraper this helper used to be. The digits are
+/// not printed anywhere a pilot can see any more, and a designator is what
+/// `LOCK`, `RANGE` and `BEARING` take.
+fn designator_of(listing: &str) -> Option<String> {
     listing
-        .split(|c: char| !c.is_ascii_hexdigit())
-        .find(|word| word.len() == 16 && u64::from_str_radix(word, 16).is_ok())
+        .lines()
+        .find(|line| line.contains("bearing ") && line.contains("(rel "))
+        .and_then(|line| line.split_whitespace().next())
         .map(str::to_owned)
 }
 
@@ -488,7 +494,7 @@ fn number_after(hay: &str, prefix: &str) -> u64 {
 /// `WEAPONSTATUS`' cannon row, **or nothing** because the cockpit is gone.
 ///
 /// The settling hit opens the hatch inside the same pulse, so a read issued a
-/// breath after the last shot is answered by the nine selectors' one refusal
+/// breath after the last shot is answered by the eleven selectors' one refusal
 /// rather than by a weapon table. That is not a failure and it is not a retry: it
 /// is the end of the fight, and this is the reader that can say so.
 async fn read_cannon_rounds(term: &mut Term) -> Option<i64> {
@@ -905,7 +911,12 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         if ada
             .expect_one_of_after(
                 mark,
-                &["bearing", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
+                // **16b cut Q.1**: `(rel ` and not `bearing`, because the
+                // acquisition notice now says `New contact X1: bearing 090°,
+                // effective.` and would satisfy a `bearing` needle before the
+                // `CONTACTS` row this loop is waiting for arrives. Only a row
+                // carries the relative bearing.
+                &["(rel ", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
             )
             .await
             == 0
@@ -920,8 +931,8 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         "the two tanks never detected each other:\n{}",
         tail(&strip_ansi(&ada.seen))
     );
-    let contact = contact_id_of(&held)
-        .unwrap_or_else(|| panic!("a contact id in:\n{held}"))
+    let contact = designator_of(&held)
+        .unwrap_or_else(|| panic!("a contact designator in:\n{held}"))
         .to_owned();
     names_nothing(&held, red, blue, "the red pilot's held `CONTACTS`");
 
@@ -936,6 +947,16 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     assert!(
         strip_ansi(&ada.seen).contains(&format!("Contact {contact} identified")),
         "and the classification notice did too:\n{classified}"
+    );
+    // **16b cut Q.1**: the rename. Once the return has been told apart it answers
+    // to the target's public callsign, and that is the name every line about it
+    // says from here on; the provisional number stays typable, which is what the
+    // `LOCK {contact}` below exercises.
+    let named = designator_of(&classified)
+        .unwrap_or_else(|| panic!("a contact designator in:\n{classified}"));
+    assert_ne!(
+        named, contact,
+        "the classified row still reads as the provisional number:\n{classified}"
     );
 
     // -----------------------------------------------------------------
@@ -979,10 +1000,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
 
     say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
     let locked = poll_whole(&mut ada, "WEAPONSTATUS", "Locked on").await;
-    assert!(
-        locked.contains(&contact),
-        "the lock is the contact: {locked}"
-    );
+    assert!(locked.contains(&named), "the lock is the contact: {locked}");
     assert!(
         locked.contains("% to hit"),
         "doc 16 §3.5 step 5's percentage, before any shot: {locked}"
@@ -999,7 +1017,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     let mut readings: Vec<(i64, i64)> = Vec::new();
     for _ in 0..MAX_SHOTS {
         // `FIRE` while the breech is busy is refused for the cycle and nothing
-        // else; once the check-in has opened the hatch the nine selectors refuse
+        // else; once the check-in has opened the hatch the eleven selectors refuse
         // together, which is how this loop learns the fight is over.
         let mut fired = false;
         for _ in 0..RETRY_BUDGET {
@@ -1172,12 +1190,14 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // the blue tank had left: the two halves of the same shot never cross.
     let winner = strip_ansi(&ada.seen);
     assert!(
-        winner.contains(&format!("Hit on {contact}.")),
+        // 16b cut Q.1: by the shot the target has been told apart, so the
+        // shooter's line names its callsign.
+        winner.contains(&format!("Hit on {named}.")),
         "the shooter was never told a round landed:\n{}",
         tail(&winner)
     );
     assert!(
-        winner.contains(&format!("{contact} destroyed.")),
+        winner.contains(&format!("{named} destroyed.")),
         "nor that the target went:\n{}",
         tail(&winner)
     );

@@ -93,7 +93,7 @@ const LOAD: i64 = 40;
 
 /// The line every witness in the centre reads when a match is settled.
 const OVER: &str = "is over";
-/// The one line the nine cockpit selectors refuse with once the hatches open.
+/// The one line the eleven cockpit selectors refuse with once the hatches open.
 const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit.";
 /// A line the parser refuses, used to bracket a multi-line answer.
 const SENTINEL: &str = "zzz-sentinel";
@@ -383,11 +383,18 @@ async fn easting_m(term: &mut Term) -> i64 {
         .unwrap_or_else(|| panic!("no easting in:\n{seen}"))
 }
 
-/// The opaque contact id in a `CONTACTS` listing.
-fn contact_id_of(listing: &str) -> Option<String> {
+/// **The short designator in a `CONTACTS` listing** (16b cut Q.1): the first
+/// word of a contact row, which is `X<n>` while the return is unresolved and
+/// the team's letter with the target's centre slot once it has been told apart.
+///
+/// It replaces the sixteen-digit scraper this helper used to be. The digits are
+/// not printed anywhere a pilot can see any more, and a designator is what
+/// `LOCK`, `RANGE` and `BEARING` take.
+fn designator_of(listing: &str) -> Option<String> {
     listing
-        .split_whitespace()
-        .find(|word| word.len() == 16 && u64::from_str_radix(word, 16).is_ok())
+        .lines()
+        .find(|line| line.contains("bearing ") && line.contains("(rel "))
+        .and_then(|line| line.split_whitespace().next())
         .map(str::to_owned)
 }
 
@@ -478,7 +485,7 @@ async fn wait_for_contact(term: &mut Term) -> String {
             .expect_one_of_after(mark, &["bearing", "No contacts."])
             .await
             == 0
-            && let Some(id) = contact_id_of(&strip_ansi(&term.seen[mark..]))
+            && let Some(id) = designator_of(&strip_ansi(&term.seen[mark..]))
         {
             return id;
         }

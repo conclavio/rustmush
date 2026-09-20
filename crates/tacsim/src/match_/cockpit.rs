@@ -54,10 +54,10 @@
 //! # The verbs are contextual, and the gate is what makes them so
 //!
 //! There is no such thing as a verb that exists only in a cockpit: the command
-//! table is global. So the eleven verbs are registered globally and
+//! table is global. So the thirteen verbs are registered globally and
 //! [`CockpitGate`] refuses each of them, with one line, wherever it does not
 //! mean anything — `BOARD` outside a team room, `EXIT` outside a pod, and the
-//! nine cockpit selectors to anyone who is not focused on a station of a
+//! eleven cockpit selectors to anyone who is not focused on a station of a
 //! **deployed** unit. A pilot who has boarded but whose match has not started
 //! yet is in that last case on purpose: there is no arena to order until the
 //! trigger fires.
@@ -95,7 +95,7 @@ use crate::arena::damage;
 use crate::arena::intents::{ControlState, IntentKind};
 use crate::arena::motion::BlockedCause;
 use crate::arena::perception::{FrameNotice, NoticeKind, RefusalDetail};
-use crate::arena::state::{Channel, Classification, ContactId, Power};
+use crate::arena::state::{Channel, Classification, ContactId, Designator, Power};
 use crate::arena::step::Frame;
 use crate::arena_bridge::{
     ArenaRegistry, CockpitFrame, FRAME_FEED, IntentRefusal, NOTICE_CATEGORY, forward_intent,
@@ -119,10 +119,15 @@ pub const BOARD_VERB: &str = "board";
 /// free and is what a pilot will type.
 pub const EXIT_VERB: &str = "exit";
 
-/// The nine cockpit selectors, in doc 16 §3.7's order. Registered lowercase
-/// because the command table folds case on the way in (`Registry::lookup_idx`),
-/// so doc 16's capitals and a tired pilot's lower case are one verb.
-pub const COCKPIT_VERBS: [&str; 9] = [
+/// The cockpit selectors, in doc 16 §3.7's order. Registered lowercase because
+/// the command table folds case on the way in (`Registry::lookup_idx`), so doc
+/// 16's capitals and a tired pilot's lower case are one verb.
+///
+/// **16b cut Q.1** added the last two. Doc 16 §3.7 listed nine; the owner's first
+/// hand-played match wanted the two questions a pilot asks about a contact once
+/// they have one — *how far* and *which way* — as verbs rather than as columns to
+/// re-read `CONTACTS` for.
+pub const COCKPIT_VERBS: [&str; 11] = [
     "startup",
     "heading",
     "speed",
@@ -132,6 +137,8 @@ pub const COCKPIT_VERBS: [&str; 9] = [
     "fire",
     "weaponstatus",
     "status",
+    "range",
+    "bearing",
 ];
 
 /// The station id one pod's pilot holds **on the tank** (doc 16 §3.3).
@@ -228,6 +235,15 @@ pub const POWER_STARTING: &str = "Power is still coming up; hold on.";
 /// [`POWER_NOT_ONLINE`] does.
 pub const NO_LOCK: &str = "No lock: LOCK a contact first.";
 
+/// **The line the read verbs refuse with for want of both a lock and a name**
+/// (16b cut Q.1).
+///
+/// [`NO_LOCK`] is **`FIRE`'s** line and is not touched: `FIRE` takes a weapon and
+/// never a contact, so telling its pilot they could "name one" instead would be a
+/// lie about what the verb accepts. `RANGE` and `BEARING` do take a contact, so
+/// they get their own sentence and both are pinned.
+pub const NO_LOCK_OR_NAME: &str = "No lock: LOCK a contact first, or name one.";
+
 /// **The words `FIRE` refuses with while the breech is busy** (16b cut W.1; doc 16
 /// §3.7: *cycling*). The seconds left follow it, so the const is the stable needle
 /// and the line is the useful sentence.
@@ -315,6 +331,10 @@ pub enum CockpitError {
     /// No lock (doc 16 §3.7).
     #[error("{NO_LOCK}")]
     NoLock,
+    /// No lock and no contact named, for a read verb that takes either (16b cut
+    /// Q.1).
+    #[error("{NO_LOCK_OR_NAME}")]
+    NoLockOrName,
     /// The named weapon's cycle has not finished (16b cut W.1).
     #[error("{CYCLING}: {secs} s to go.")]
     Cycling {
@@ -431,8 +451,9 @@ fn require_power(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
 ///
 /// **16b cut S.1 filled the arena side** — the sensor pass mints the ids and
 /// mirrors them into [`Frame::contacts`] — and **this is cut S.2's read of it**:
-/// the opaque id unchanged, the class as `unknown` or as the side the platform has
-/// resolved, the bearing in whole degrees both absolute and relative to the
+/// the row key unchanged and never printed, the short designator 16b cut Q.1 gave
+/// a pilot to read and type, the class as `unknown` or as the side the platform
+/// has resolved, the bearing in whole degrees both absolute and relative to the
 /// platform's own heading, the range as one of [`range_band`]'s four words, and
 /// the age in whole seconds.
 ///
@@ -459,11 +480,15 @@ pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
         .iter()
         .map(|held| ContactRow {
             id: held.id,
+            // 16b cut Q.1: the short name and the number behind it, both as the
+            // arena resolved them off the live contact.
+            designator: held.designator,
+            alias: held.alias,
             class: SmolStr::new(class_word(held.class)),
             bearing_deg: held.bearing_mdeg / 1_000,
             relative_deg: relative_mdeg(frame.pose.heading_mdeg, held.bearing_mdeg) / 1_000,
             band: SmolStr::new(range_band(held.range_cm, bands)),
-            range_m: range_m_rounded(held.range_cm),
+            range_m: range_m_rounded(held.range_cm, CONTACT_RANGE_STEP_M),
             age_ms: held.age_ms,
             cell: held.cell,
             friendly: held.class.team() == Some(frame.team),
@@ -486,11 +511,25 @@ pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
 /// one number.
 pub const CONTACT_RANGE_STEP_M: u64 = 50;
 
-/// A contact's range in metres, rounded to the nearest
-/// [`CONTACT_RANGE_STEP_M`] (16b cut F.3). Half a step rounds up.
+/// **How finely a *locked* contact's range is reported**, metres (16b cut Q.1).
+///
+/// A lock is a fire-control solution: the platform is tracking one return
+/// continuously and resolving a hit chance against it every pulse, so the range
+/// it can quote about that one contact is better than the range it quotes about
+/// the rest of the scope. It is a second step past doc 16 §3.6's band-only
+/// wording, recorded here beside the first for the owner to revisit, and it is
+/// what makes `RANGE` worth typing after `LOCK`.
+pub const LOCK_RANGE_STEP_M: u64 = 10;
+
+/// A contact's range in metres, rounded to the nearest `step` (16b cut F.3;
+/// 16b cut Q.1 made the step an argument). Half a step rounds up.
+///
+/// The step is the caller's because there are two: [`CONTACT_RANGE_STEP_M`] for
+/// a row on the scope, [`LOCK_RANGE_STEP_M`] for the one contact the platform is
+/// locked on.
 #[must_use]
-pub fn range_m_rounded(range_cm: u64) -> u64 {
-    let step = CONTACT_RANGE_STEP_M.max(1);
+pub fn range_m_rounded(range_cm: u64, step_m: u64) -> u64 {
+    let step = step_m.max(1);
     let metres = range_cm / 100;
     metres
         .saturating_add(step / 2)
@@ -569,8 +608,17 @@ pub fn range_band(range_cm: u64, bands_cm: &[u32]) -> &'static str {
 /// One contact, as a pilot is told about it (doc 16 §3.6 "What a pilot sees").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContactRow {
-    /// The opaque arena id, which is the only name a pilot may use.
+    /// The opaque arena id. **16b cut Q.1**: the stable row key a panel
+    /// re-identifies a row by, never printed and never typed — see
+    /// [`ContactRow::designator`] and [`resolve_designator`].
     pub id: ContactId,
+    /// **The short name the pilot reads and types** (16b cut Q.1): `BA` while the
+    /// contact is classified now, `X2` while it is not.
+    pub designator: Designator,
+    /// **The provisional number this row's target still answers to** (16b cut
+    /// Q.1), where the row is naming it by slot and a number was issued. It is
+    /// what makes `LOCK X2` keep working after the rename.
+    pub alias: Option<u16>,
     /// `unknown`, or the side the platform has resolved.
     pub class: SmolStr,
     /// Bearing, degrees clockwise from north.
@@ -599,13 +647,17 @@ pub struct ContactRow {
 impl ContactRow {
     /// The line `CONTACTS` prints for this row.
     ///
-    /// **16b cut F.3** put the range in it, between the band and the age:
-    /// `<id>  <class>  bearing 090° (rel 000°)  close  300 m  1 s`.
+    /// **16b cut F.3** put the range in it, between the band and the age, and
+    /// **16b cut Q.1** put the short designator where the sixteen digits were,
+    /// left-aligned in a column of four so `X2` and `BA` line up with `RAA`:
+    /// `BA  blue  bearing 090° (rel 000°)  close  300 m  1 s`.
     #[must_use]
     pub fn render(&self) -> String {
+        // Rendered first: `Designator`'s own `Display` writes straight to the
+        // formatter, so a width on it would be ignored.
+        let named = self.designator.to_string();
         format!(
-            "{}  {}  bearing {:03}° (rel {:03}°)  {}  {} m  {} s",
-            self.id,
+            "{named:<4}{}  bearing {:03}° (rel {:03}°)  {}  {} m  {} s",
             self.class,
             self.bearing_deg,
             self.relative_deg,
@@ -647,6 +699,12 @@ impl ContactRow {
 /// names the contact its own platform holds and never a unit; a victim's line
 /// names the victim's own section and facet and carries no id, no bearing, no team
 /// and no weapon; a blocked line names a cause and never a cell's occupant.
+///
+/// **16b cut Q.1**: every contact is named by its short designator and never by
+/// the sixteen digits, and **one notice renders to nothing** — a `classified`
+/// whose contact was never provisional, which is a mesh arrival whose
+/// acquisition already read `New contact RB: …`. An empty answer means *say
+/// nothing*, and [`notice_lines`] is where that is honoured.
 #[must_use]
 pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> String {
     match notice {
@@ -654,26 +712,37 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
             kind,
             contact,
             class,
+            was,
         } => {
-            let row = rows.iter().find(|row| row.id == *contact);
+            let row = rows.iter().find(|row| row.id == contact.id);
+            let named = contact.designator;
             match kind {
                 NoticeKind::Acquired => match row {
                     Some(row) => format!(
-                        "New contact {}: bearing {:03}°, {}.",
-                        row.id, row.bearing_deg, row.band
+                        "New contact {named}: bearing {:03}°, {}.",
+                        row.bearing_deg, row.band
                     ),
-                    None => format!("New contact {contact}."),
+                    None => format!("New contact {named}."),
                 },
-                NoticeKind::Classified => {
-                    format!("Contact {contact} identified: {}.", class_word(*class))
-                }
+                // **16b cut Q.1**: the rename, in one sentence, quoting what the
+                // pilot has been calling it. A classification that was never
+                // provisional — a mesh arrival, or a match run with
+                // `designate_on_detection` on — says **nothing**: its acquisition
+                // already read `New contact RB: …`, and a second line renaming
+                // `RB` to `RB` is noise.
+                NoticeKind::Classified => match was {
+                    Some(was) => {
+                        format!("Contact {was} identified: {named}, {}.", class_word(*class))
+                    }
+                    None => String::new(),
+                },
                 // 16b cut W.1: the lock broke because the contact stopped being
                 // held. Said at once, because the pilot's next `FIRE` is going to
                 // be refused for it.
-                NoticeKind::LockLost => format!("Lock on {contact} broken: contact gone."),
+                NoticeKind::LockLost => format!("Lock on {named} broken: contact gone."),
                 // `Lost`, and anything a later cut puts in the contact arm
                 // without a sentence of its own.
-                _ => format!("Contact {contact} lost."),
+                _ => format!("Contact {named} lost."),
             }
         }
         // 16b cut F.2: doc 16 §3.5 step 5's percentage, said when the lock
@@ -686,22 +755,25 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
         // against a contact the pilot has already stopped aiming at, and both
         // lines would name the same id. The bare sentence is the honest answer
         // for a lock that was taken and then replaced inside one pulse.
-        FrameNotice::Locked { contact } => match frame_lock(frame) {
-            Some(held) if held == *contact => {
-                lock_line(frame).unwrap_or_else(|| format!("Locked on {contact}."))
+        FrameNotice::Locked { contact } => {
+            let named = contact.designator;
+            match frame_lock(frame) {
+                Some(held) if held == contact.id => {
+                    lock_line(frame).unwrap_or_else(|| format!("Locked on {named}."))
+                }
+                _ => format!("Locked on {named}."),
             }
-            _ => format!("Locked on {contact}."),
-        },
+        }
         FrameNotice::Hit { contact } => match contact {
-            Some(contact) => format!("Hit on {contact}."),
+            Some(contact) => format!("Hit on {}.", contact.designator),
             None => "Hit.".to_owned(),
         },
         FrameNotice::Miss { contact, reason } => match contact {
-            Some(contact) => format!("Miss on {contact}: {}.", miss_words(reason)),
+            Some(contact) => format!("Miss on {}: {}.", contact.designator, miss_words(reason)),
             None => format!("Miss: {}.", miss_words(reason)),
         },
         FrameNotice::Kill { contact } => match contact {
-            Some(contact) => format!("{contact} destroyed."),
+            Some(contact) => format!("{} destroyed.", contact.designator),
             None => "Target destroyed.".to_owned(),
         },
         FrameNotice::Struck {
@@ -756,6 +828,9 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
             // what a pilot does about it is drive round rather than give up.
             BlockedCause::TooSteep => "Held: the slope ahead is too steep for the tank.".to_owned(),
         },
+        // **16b cut Q.1**: the far end of `STARTUP`. Three words, because the
+        // only thing a pilot waiting on the sequence wants is to know it is over.
+        FrameNotice::PowerOnline => "Power online.".to_owned(),
     }
 }
 
@@ -862,6 +937,10 @@ pub(crate) fn refusal_line(
 
 /// Every line the notices on one frame print, in order — what the bridge says and
 /// what a read verb's frame carries, from one place.
+///
+/// **16b cut Q.1**: a notice that renders to nothing is dropped rather than said
+/// as a blank line (see [`notice_line`]). The filter is here, at the one funnel
+/// every spoken line goes through, so there is one rule and not one per caller.
 #[must_use]
 pub fn notice_lines(frame: &Frame) -> Vec<String> {
     let rows = frame_contacts(frame);
@@ -869,6 +948,7 @@ pub fn notice_lines(frame: &Frame) -> Vec<String> {
         .notices
         .iter()
         .map(|notice| notice_line(frame, notice, &rows))
+        .filter(|line| !line.is_empty())
         .collect()
 }
 
@@ -918,13 +998,32 @@ pub fn frame_lock(frame: &Frame) -> Option<ContactId> {
 /// stale track costs, and `resolve_seen` has the argument.
 #[must_use]
 pub fn lock_line(frame: &Frame) -> Option<String> {
-    let contact = frame_lock(frame)?;
+    // 16b cut Q.1: the short name, off the frame's own row for that contact — a
+    // lock is always one of the rows, because the arena clears a lock the moment
+    // its contact stops being held.
+    let named = lock_designator(frame)?;
     Some(
         match fired_by_default(&frame.weapons).and_then(|weapon| weapon.p_permille) {
-            Some(permille) => format!("Locked on {contact}, {}% to hit.", permille / 10),
-            None => format!("Locked on {contact}."),
+            Some(permille) => format!("Locked on {named}, {}% to hit.", permille / 10),
+            None => format!("Locked on {named}."),
         },
     )
+}
+
+/// **The designator of the contact the platform is locked on** (16b cut Q.1), or
+/// `None` with no lock.
+///
+/// Read off the frame's own contact list rather than carried beside the lock, so
+/// the name in `WEAPONSTATUS`'s lock line, in `RANGE`'s answer and in the row
+/// `CONTACTS` prints is one string resolved once.
+#[must_use]
+pub fn lock_designator(frame: &Frame) -> Option<Designator> {
+    let contact = frame_lock(frame)?;
+    frame
+        .contacts
+        .iter()
+        .find(|held| held.id == contact)
+        .map(|held| held.designator)
 }
 
 /// **The weapon a bare `FIRE` would fire** (16b cut F.2): [`DEFAULT_WEAPON`], else
@@ -1468,7 +1567,7 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 }
 
 // ---------------------------------------------------------------------------
-// K3: the nine cockpit verbs
+// K3: the eleven cockpit verbs
 // ---------------------------------------------------------------------------
 
 /// `STARTUP` — bring power up (doc 16 §3.3). Idempotent: the arena's own
@@ -1566,13 +1665,155 @@ fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
     let held = last_frame(ctx.w, actor)
         .map(|held| frame_contacts(&held.frame))
         .unwrap_or_default();
-    let contact = parse_contact(rest)
-        .filter(|id| held.iter().any(|row| row.id == *id))
-        .ok_or(CockpitError::NoSuchContact)?;
+    // **16b cut Q.1**: the word is a designator, not sixteen digits, and the
+    // resolution is against the platform's own rows — so an id that names
+    // nothing, an id that names somebody else's contact and an id that has
+    // expired all take one path, byte for byte.
+    let contact = resolve_designator(&held, rest).ok_or(CockpitError::NoSuchContact)?;
+    let named = held
+        .iter()
+        .find(|row| row.id == contact)
+        .map(|row| row.designator.to_string())
+        .unwrap_or_default();
     forward_intent(ctx, actor, unit, IntentKind::Lock { contact })?;
-    let line = format!("Locking {contact}.");
+    let line = format!("Locking {named}.");
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, line);
     Ok(())
+}
+
+/// **`RANGE [<designator>]`** — how far away one contact plotted (16b cut Q.1;
+/// doc 16 §3.6, the owner's ask of 2026-09-19).
+///
+/// The named contact, else the platform's lock, else [`NO_LOCK_OR_NAME`]. It
+/// reads the **last frame's plot** and nothing else — the same figure
+/// `CONTACTS` and `WEAPONSTATUS` are reading — so three surfaces cannot give
+/// three distances.
+///
+/// A locked contact earns [`LOCK_RANGE_STEP_M`] and the rest of the scope
+/// [`CONTACT_RANGE_STEP_M`]: a lock is a fire-control solution and the platform
+/// is tracking that one return continuously.
+fn range(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    let held = last_frame(ctx.w, actor);
+    let (frame, row) = named_row(held.as_ref(), rest)?;
+    let line = range_line(frame, &row, pass_ms(ctx.w));
+    say_and_frame(ctx, held.as_ref(), vec![line], false);
+    Ok(())
+}
+
+/// **The sentence `RANGE` says** (16b cut Q.1), split out from the world read the
+/// way [`stale_clause`] is — so the step a lock earns and the staleness clause are
+/// one pure function, and the branch between the two steps can be pinned against a
+/// plot held still rather than against a live approach.
+///
+/// A locked contact earns [`LOCK_RANGE_STEP_M`] and the rest of the scope
+/// [`CONTACT_RANGE_STEP_M`]: a lock is a fire-control solution and the platform is
+/// tracking that one return continuously.
+#[must_use]
+pub fn range_line(frame: &Frame, row: &ContactRow, pass_ms: i64) -> String {
+    let locked = frame_lock(frame) == Some(row.id);
+    let step = if locked {
+        LOCK_RANGE_STEP_M
+    } else {
+        CONTACT_RANGE_STEP_M
+    };
+    let metres = frame
+        .contacts
+        .iter()
+        .find(|contact| contact.id == row.id)
+        .map_or(row.range_m, |contact| {
+            range_m_rounded(contact.range_cm, step)
+        });
+    format!(
+        "Range to {}: {metres} m{}.",
+        row.designator,
+        stale_clause(row.age_ms, pass_ms)
+    )
+}
+
+/// **`BEARING [<designator>]`** — which way one contact plotted (16b cut Q.1),
+/// absolute and off the platform's own nose. The same rules [`range`] follows.
+fn bearing(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
+    let actor = ctx.actor;
+    let held = last_frame(ctx.w, actor);
+    let (_, row) = named_row(held.as_ref(), rest)?;
+    let line = bearing_line(&row, pass_ms(ctx.w));
+    say_and_frame(ctx, held.as_ref(), vec![line], false);
+    Ok(())
+}
+
+/// **The sentence `BEARING` says** (16b cut Q.1), for the reason [`range_line`] is
+/// its own function. A bearing has one step, so this is the designator, the two
+/// degrees and the staleness clause.
+#[must_use]
+pub fn bearing_line(row: &ContactRow, pass_ms: i64) -> String {
+    format!(
+        "Bearing to {}: {:03}° (rel {:03}°){}.",
+        row.designator,
+        row.bearing_deg,
+        row.relative_deg,
+        stale_clause(row.age_ms, pass_ms)
+    )
+}
+
+/// **The contact a read verb is about** (16b cut Q.1): the one the pilot named,
+/// else the platform's lock.
+///
+/// # Errors
+///
+/// [`CockpitError::NoSuchContact`] for a word that resolves to nothing — the one
+/// byte-identical refusal — and [`CockpitError::NoLockOrName`] when nothing was
+/// named and there is no lock to fall back on.
+fn named_row<'a>(
+    held: Option<&'a CockpitFrame>,
+    rest: &str,
+) -> Result<(&'a Frame, ContactRow), CockpitError> {
+    let named = rest.trim();
+    // A platform the arena has not spoken to yet holds nothing, and the two
+    // refusals have to stay in the right order even then: a **name** takes the
+    // one byte-identical `No such contact.` whether the scope is empty or
+    // missing, because a pilot who could tell those two apart could tell a name
+    // that exists from one that does not.
+    let frame = match held {
+        Some(held) => &held.frame,
+        None if named.is_empty() => return Err(CockpitError::NoLockOrName),
+        None => return Err(CockpitError::NoSuchContact),
+    };
+    let rows = frame_contacts(frame);
+    let id = if named.is_empty() {
+        frame_lock(frame).ok_or(CockpitError::NoLockOrName)?
+    } else {
+        resolve_designator(&rows, named).ok_or(CockpitError::NoSuchContact)?
+    };
+    rows.into_iter()
+        .find(|row| row.id == id)
+        .ok_or(CockpitError::NoSuchContact)
+        .map(|row| (frame, row))
+}
+
+/// **How old a plot has to be before a read verb says so** (16b cut Q.1): the
+/// sensor pass's own period, read the way [`lobby::configs`] reads it.
+///
+/// A plot older than one pass is a plot the platform did not refresh last time it
+/// looked, which is exactly when a pilot needs to know they are shooting at a
+/// memory. The sentence is [`stale_clause`]'s; this is the only world read the two
+/// read verbs make.
+fn pass_ms(w: &World) -> i64 {
+    lobby::configs(w).map_or(1_000_i64, |(_, _, sensors)| {
+        i64::from(sensors.pass_ms.max(1))
+    })
+}
+
+/// **The clause itself** (16b cut Q.1), split out from the configuration read so
+/// the sentence can be pinned without a world: `, plotted 4 s ago` past the
+/// threshold, and nothing at or under it.
+#[must_use]
+pub fn stale_clause(age_ms: i64, pass_ms: i64) -> String {
+    if age_ms > pass_ms.max(1) {
+        format!(", plotted {} s ago", age_ms / 1_000)
+    } else {
+        String::new()
+    }
 }
 
 /// `FIRE [<weapon>]` — shoot the lock (doc 16 §3.7).
@@ -1682,6 +1923,10 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
         Some(held) => {
             let frame = &held.frame;
             let mut lines = vec![
+                // **16b cut Q.1**, first: the name everybody who has told this
+                // tank apart is calling it by. A pilot asked "who is RA?" over
+                // the radio needs one place to look.
+                format!("Callsign {}.", frame.callsign),
                 format!(
                     "{}: power {}, {} kph, heading {}°{}",
                     display_name(ctx.w, unit),
@@ -1883,7 +2128,13 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
         .iter()
         .map(|row| {
             serde_json::json!({
+                // 16b cut Q.1: `id` stays the stable row key a panel matches on
+                // across pulses and is never displayed; `designator` is what a
+                // person reads and types, and `alias` is the number behind a
+                // renamed row.
                 "id": row.id.to_string(),
+                "designator": row.designator.to_string(),
+                "alias": row.alias.map(|n| Designator::Provisional(n).to_string()),
                 "class": row.class.as_str(),
                 "bearing_deg": row.bearing_deg,
                 "relative_deg": row.relative_deg,
@@ -1898,15 +2149,23 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
             })
         })
         .collect();
+    // 16b cut Q.1: a notice that renders to nothing owes the pilot nothing, so it
+    // is left out here for the reason `notice_lines` drops it — a panel drawing
+    // this array would otherwise draw a blank row.
     let notices: Vec<serde_json::Value> = frame
         .notices
         .iter()
-        .map(|notice| {
-            serde_json::json!({
+        .filter_map(|notice| {
+            let text = notice_line(frame, notice, &rows);
+            if text.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({
                 "kind": notice.kind().as_str(),
                 "contact": notice.contact().map(|id| id.to_string()),
-                "text": notice_line(frame, notice, &rows),
-            })
+                "designator": notice.designator().map(|named| named.to_string()),
+                "text": text,
+            }))
         })
         .collect();
     let weapons: Vec<serde_json::Value> = frame_weapons(frame)
@@ -1951,10 +2210,23 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
         })
         .collect();
     let chosen = fired_by_default(&frame.weapons).and_then(|weapon| weapon.p_permille);
+    // 16b cut Q.1: the lock's own name and its finer range, resolved once.
+    let lock_designator = lock_designator(frame);
+    let lock_range_m = frame_lock(frame).and_then(|contact| {
+        frame
+            .contacts
+            .iter()
+            .find(|held| held.id == contact)
+            .map(|held| range_m_rounded(held.range_cm, LOCK_RANGE_STEP_M))
+    });
     serde_json::json!({
         "schema": { "id": FRAME_SCHEMA, "version": FRAME_VERSION },
         "match": match_id.0,
         "unit": frame.unit.0,
+        // 16b cut Q.1: the platform's own public name, and the arena cell it is
+        // standing in — what a panel's map draws the `@` at.
+        "callsign": frame.callsign.to_string(),
+        "cell": frame.cell.map(|(x, y)| [x, y]),
         "x_cm": frame.pose.x_cm,
         "y_cm": frame.pose.y_cm,
         "z_cm": frame.pose.z_cm,
@@ -1966,6 +2238,8 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
         "blocked": frame.blocked,
         "tempo": frame.tempo.as_str(),
         "lock": frame_lock(frame).map(|id| id.to_string()),
+        "lock_designator": lock_designator.map(|named| named.to_string()),
+        "lock_range_m": lock_range_m,
         "lock_p_permille": chosen,
         "lock_percent": chosen.map(|permille| permille / 10),
         "contacts": contacts,
@@ -2059,37 +2333,9 @@ pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json
         "glyph": YOU_GLYPH,
         "you": true,
     })];
-    // **16b cut S.2**: the platform's own contacts, at their last known cell, one
-    // marker each, clipped to the window the pilot is looking at. The `name` is
-    // the class word and the `id` is the opaque contact id — the marker carries no
-    // object number and no unit name, which is the observer rule on the map.
-    for row in frame_contacts(frame) {
-        let Some((mx, my)) = row.cell else {
-            continue;
-        };
-        if mx < x0 || my < y0 {
-            continue;
-        }
-        let (dx, dy) = (mx.saturating_sub(x0), my.saturating_sub(y0));
-        if dx >= width || dy >= height {
-            continue;
-        }
-        units.push(serde_json::json!({
-            "id": row.id.to_string(),
-            "name": row.class.as_str(),
-            "cell": [u32::from(dx), u32::from(dy)],
-            "glyph": row.glyph(),
-            "you": false,
-        }));
-        // The legend gains a glyph only when the window actually carries one: a
-        // legend that always advertised `hostile` would tell a pilot with an empty
-        // scope what a full one looks like, which is one more thing than they hold.
-        let label = match row.glyph() {
-            FRIEND_GLYPH => "friendly",
-            HOSTILE_GLYPH => "hostile",
-            _ => "contact",
-        };
-        let entry = serde_json::json!([row.glyph(), label]);
+    let (markers, glyphs) = contact_markers(frame, (x0, y0), (width, height));
+    units.extend(markers);
+    for entry in glyphs {
         if !legend.contains(&entry) {
             legend.push(entry);
         }
@@ -2117,6 +2363,66 @@ pub fn view_frame(ctx: &Ctx<'_>, match_id: MatchId, frame: &Frame) -> serde_json
         object.insert("you".to_owned(), serde_json::json!(you));
     }
     payload
+}
+
+/// **The contact markers a window carries, and the legend entries they earn**
+/// (16b cut S.2), clipped to the window `origin` and `size` name and with cells
+/// relative to the window's own corner.
+///
+/// Split out of [`view_frame`] because it is the one part of a window that is a
+/// pure function of the frame — the terrain, the pilot's own marker and the
+/// display name all need a world, and the observer rule on the map is entirely
+/// about what goes in *here*.
+///
+/// **The observer rule on this surface.** A marker carries a cell, a glyph, the
+/// class word as its `name`, and — since **16b cut Q.1** — the short designator
+/// as its `id`: the grid shape's `id` is display text (the atlas's own markers
+/// carry `#5` in it), so a panel that labels a marker labels it with the word the
+/// pilot types and never with the sixteen digits. No object number, no unit name,
+/// nothing the platform has not resolved.
+///
+/// The legend gains a glyph only when the window actually carries one: a legend
+/// that always advertised `hostile` would tell a pilot with an empty scope what a
+/// full one looks like, which is one more thing than they hold.
+#[must_use]
+pub fn contact_markers(
+    frame: &Frame,
+    origin: (u16, u16),
+    size: (u16, u16),
+) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let (x0, y0) = origin;
+    let (width, height) = size;
+    let mut markers: Vec<serde_json::Value> = Vec::new();
+    let mut legend: Vec<serde_json::Value> = Vec::new();
+    for row in frame_contacts(frame) {
+        let Some((mx, my)) = row.cell else {
+            continue;
+        };
+        if mx < x0 || my < y0 {
+            continue;
+        }
+        let (dx, dy) = (mx.saturating_sub(x0), my.saturating_sub(y0));
+        if dx >= width || dy >= height {
+            continue;
+        }
+        markers.push(serde_json::json!({
+            "id": row.designator.to_string(),
+            "name": row.class.as_str(),
+            "cell": [u32::from(dx), u32::from(dy)],
+            "glyph": row.glyph(),
+            "you": false,
+        }));
+        let label = match row.glyph() {
+            FRIEND_GLYPH => "friendly",
+            HOSTILE_GLYPH => "hostile",
+            _ => "contact",
+        };
+        let entry = serde_json::json!([row.glyph(), label]);
+        if !legend.contains(&entry) {
+            legend.push(entry);
+        }
+    }
+    (markers, legend)
 }
 
 // ---------------------------------------------------------------------------
@@ -2287,22 +2593,54 @@ fn cms_to_kph(cms: i32) -> i32 {
     cms.saturating_mul(36) / 1_000
 }
 
-/// One contact id, as a pilot may type it: the sixteen base-16 digits
-/// [`ContactId`] renders as, with or without their leading zeros.
-fn parse_contact(rest: &str) -> Option<ContactId> {
-    let word = rest.trim();
-    if word.is_empty() || word.len() > 16 {
+/// **The contact a pilot's word names** (16b cut Q.1), or `None`.
+///
+/// It replaces cut K.2's `parse_contact`, and it **replaces** it: the sixteen
+/// base-16 digits stop being typable altogether (16b §0.2 — no second lane). The
+/// owner's first hand-played match is the reason: `lock 29b81a…` is not a thing a
+/// person types while being shot at.
+///
+/// Two spellings resolve, both case-folded and trimmed:
+///
+/// * the row's **current** designator — `BA` while that contact is classified
+///   now, `X2` while it is not;
+/// * the row's **alias** rendered `X<n>`, which is the number the platform gave
+///   the target before it was told apart, so a lock taken as `X2` is still
+///   `LOCK X2` afterwards.
+///
+/// Everything else is `None`, and every `None` is the one byte-identical
+/// [`NO_SUCH_CONTACT`]. There is deliberately no second wording for *well formed
+/// but not held*: because a row carries the slot designator only while its
+/// contact is classified **now**, `LOCK BA` against an unheld, a still-unknown or
+/// a re-acquired-unknown `BA` has to be indistinguishable from `LOCK ZZ`, or the
+/// refusal itself would say which tanks are out there.
+///
+/// The arena still only ever receives `IntentKind::Lock { contact: ContactId }`,
+/// so a lock taken under one spelling survives the rename by construction.
+#[must_use]
+pub fn resolve_designator(rows: &[ContactRow], word: &str) -> Option<ContactId> {
+    let named = word.trim();
+    if named.is_empty() {
         return None;
     }
-    u64::from_str_radix(word, 16).ok().map(ContactId)
+    rows.iter()
+        .find(|row| {
+            row.designator.to_string().eq_ignore_ascii_case(named)
+                || row.alias.is_some_and(|n| {
+                    Designator::Provisional(n)
+                        .to_string()
+                        .eq_ignore_ascii_case(named)
+                })
+        })
+        .map(|row| row.id)
 }
 
 // ---------------------------------------------------------------------------
 // The gate and the dispatch
 // ---------------------------------------------------------------------------
 
-/// **The contextual gate**: the eleven verbs exist everywhere and mean something
-/// in a team room, in a pod, and at a deployed unit's station.
+/// **The contextual gate**: the thirteen verbs exist everywhere and mean
+/// something in a team room, in a pod, and at a deployed unit's station.
 ///
 /// One line each, and nothing else refused: a gate that is asked about `look`
 /// stands aside, and a world with no centre at all lets `BOARD` through to the
@@ -2340,7 +2678,7 @@ impl mush_core::CommandGate for CockpitGate {
         // line (twice on the alias path) while `where_in_centre` resolves the
         // content latch up to eleven times — three rooms and then all eight pods.
         // A gate asked about `look` must cost what it always cost: two string
-        // compares and a nine-element scan, and no world read at all.
+        // compares and an eleven-element scan, and no world read at all.
         let ours = verb.eq_ignore_ascii_case(BOARD_VERB)
             || verb.eq_ignore_ascii_case(EXIT_VERB)
             || COCKPIT_VERBS
@@ -2418,7 +2756,7 @@ fn refusal(error: CockpitError) -> CmdError {
     CmdError::msg(error.to_string())
 }
 
-/// Run one cockpit verb: resolve the station first, so every one of the nine
+/// Run one cockpit verb: resolve the station first, so every one of the eleven
 /// answers the same way to somebody who is not flying.
 fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError> {
     let Some((unit, _station)) = flying(ctx.w, ctx.actor) else {
@@ -2435,6 +2773,10 @@ fn cockpit_command(ctx: &mut Ctx<'_>, verb: &'static str) -> Result<(), CmdError
         "fire" => fire(ctx, unit, &rest),
         "weaponstatus" => weapon_status(ctx, unit),
         "status" => status(ctx, unit),
+        // 16b cut Q.1: the two read verbs, off the same plot every other surface
+        // reads.
+        "range" => range(ctx, &rest),
+        "bearing" => bearing(ctx, &rest),
         // Not reachable: the table below registers exactly `COCKPIT_VERBS`, and
         // this arm is the closed-set proof rather than a panic.
         _ => Err(CockpitError::OutsideCockpit),
@@ -2455,12 +2797,21 @@ fn cockpit_help(verb: &str) -> String {
                     Refused until power is online."
             .to_owned(),
         "view" => "VIEW                the arena window around your platform, as a map.".to_owned(),
-        "contacts" => "CONTACTS            what your platform holds: its opaque id, its class, \
+        // 16b cut Q.1: the id is a designator now, and the help says so — a pilot
+        // who reads `opaque id` will go looking for sixteen digits that are not
+        // printed anywhere.
+        "contacts" => "CONTACTS            what your platform holds: its designator, its class, \
                        bearing, range band, range and how old the plot is."
             .to_owned(),
-        "lock" => {
-            "LOCK <contact>      hold one of your contacts by the id CONTACTS prints.".to_owned()
-        }
+        "lock" => "LOCK <contact>      hold one of your contacts by the designator CONTACTS \
+                   prints (BA, or X2 before it is identified)."
+            .to_owned(),
+        "range" => "RANGE [<contact>]   how far away a contact plotted; your lock if you name \
+                    none. A locked contact reads to the nearest ten metres."
+            .to_owned(),
+        "bearing" => "BEARING [<contact>] which way a contact plotted, absolute and off your own \
+                      nose; your lock if you name none."
+            .to_owned(),
         "fire" => "FIRE [<weapon>]     shoot your lock; the cannon unless you name another weapon."
             .to_owned(),
         // 16b cut F.2 gave both of these more to say, and a help line that
@@ -2474,7 +2825,7 @@ fn cockpit_help(verb: &str) -> String {
     }
 }
 
-/// Register the cockpit on the **tacsim** module: eleven verbs and one gate.
+/// Register the cockpit on the **tacsim** module: thirteen verbs and one gate.
 ///
 /// The state the verbs read is [`ArenaRegistry`]'s and [`MatchBook`]'s, both
 /// registered by [`crate::arena_bridge::register`], so nothing here declares a
@@ -2485,10 +2836,12 @@ fn cockpit_help(verb: &str) -> String {
 /// [`ModError`] if one of the verb names is already taken.
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     // `BOARD` writes a station document, a placement, a billet and (at the
-    // trigger) cut T.3's whole check-out; `EXIT` writes the same in reverse. The
-    // nine selectors stage one arena intent each and write nothing at all, but
-    // they are registered on the same lane as their two neighbours rather than
-    // split across two classifications for one subsystem.
+    // trigger) cut T.3's whole check-out; `EXIT` writes the same in reverse. Of
+    // the eleven selectors, five stage one arena intent each and the other six —
+    // cut Q.1's `RANGE` and `BEARING` among them — only read the last frame;
+    // none of the eleven writes anything at all. They are registered on the same
+    // lane as their two neighbours rather than split across two classifications
+    // for one subsystem.
     reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
@@ -2711,15 +3064,132 @@ mod tests {
         assert_eq!(kph_to_cms(i32::MAX), i32::MAX / 3_600);
     }
 
+    /// **16b cut Q.1**: a contact id still *renders* as its sixteen digits — the
+    /// ledger, the deliberation brief and the frame's row key all carry that
+    /// string — and it is no longer something a pilot can **type**. The parse
+    /// half went with `parse_contact`; nothing replaced it in a second lane.
     #[test]
-    fn a_contact_id_parses_as_the_sixteen_digits_it_renders_as() {
+    fn a_contact_id_still_renders_as_sixteen_digits_and_is_no_longer_typable() {
         let id = ContactId(0x0123_4567_89ab_cdef);
         assert_eq!(id.to_string(), "0123456789abcdef");
-        assert_eq!(parse_contact(&id.to_string()), Some(id));
-        assert_eq!(parse_contact(" 1 "), Some(ContactId(1)));
-        assert_eq!(parse_contact(""), None);
-        assert_eq!(parse_contact("nope"), None);
-        assert_eq!(parse_contact("00000000000000001"), None, "over sixteen");
+        let rows = vec![row(
+            id,
+            Designator::Slot {
+                team: crate::arena::state::Team::Blue,
+                slot: 1,
+            },
+            Some(2),
+        )];
+        assert_eq!(resolve_designator(&rows, &id.to_string()), None);
+        assert_eq!(resolve_designator(&rows, "1"), None);
+    }
+
+    /// One row, with only the three fields [`resolve_designator`] reads.
+    fn row(id: ContactId, designator: Designator, alias: Option<u16>) -> ContactRow {
+        ContactRow {
+            id,
+            designator,
+            alias,
+            class: SmolStr::new_static("blue"),
+            bearing_deg: 87,
+            relative_deg: 32,
+            band: SmolStr::new_static("effective"),
+            range_m: 450,
+            age_ms: 2_000,
+            cell: Some((4, 4)),
+            friendly: false,
+        }
+    }
+
+    /// **16b cut Q.1**: the two spellings a pilot may type, case-folded and
+    /// trimmed, and nothing else.
+    #[test]
+    fn a_designator_resolves_by_its_current_name_or_by_the_number_behind_it() {
+        let id = ContactId(7);
+        let slot = Designator::Slot {
+            team: crate::arena::state::Team::Blue,
+            slot: 1,
+        };
+        let rows = vec![row(id, slot, Some(2))];
+        for word in ["BA", "ba", " Ba ", "X2", "x2"] {
+            assert_eq!(resolve_designator(&rows, word), Some(id), "{word}");
+        }
+        for word in ["", "ZZ", "X1", "B", "BAA", "2"] {
+            assert_eq!(resolve_designator(&rows, word), None, "{word}");
+        }
+        // A row that is still provisional has no alias, and its slot spelling
+        // resolves against nothing: `LOCK BA` on an unknown `BA` is refused
+        // exactly as `LOCK ZZ` is.
+        let unknown = vec![row(id, Designator::Provisional(2), None)];
+        assert_eq!(resolve_designator(&unknown, "X2"), Some(id));
+        assert_eq!(resolve_designator(&unknown, "BA"), None);
+    }
+
+    /// The row `CONTACTS` prints, and the column the designator sits in.
+    #[test]
+    fn a_contact_row_renders_its_designator_in_a_column_of_four() {
+        let slot = Designator::Slot {
+            team: crate::arena::state::Team::Blue,
+            slot: 1,
+        };
+        assert_eq!(
+            row(ContactId(7), slot, Some(2)).render(),
+            "BA  blue  bearing 087° (rel 032°)  effective  450 m  2 s"
+        );
+        let mut unknown = row(ContactId(7), Designator::Provisional(12), None);
+        unknown.class = SmolStr::new_static("unknown");
+        assert_eq!(
+            unknown.render(),
+            "X12 unknown  bearing 087° (rel 032°)  effective  450 m  2 s"
+        );
+    }
+
+    /// **16b cut Q.1**: two steps, one rounding rule. A lock earns ten metres and
+    /// the rest of the scope fifty; half a step rounds up either way.
+    #[test]
+    fn a_range_rounds_to_its_own_step_and_a_lock_earns_the_finer_one() {
+        assert_eq!(CONTACT_RANGE_STEP_M, 50);
+        assert_eq!(LOCK_RANGE_STEP_M, 10);
+        // 434 m: 450 at fifty, 430 at ten.
+        assert_eq!(range_m_rounded(43_400, CONTACT_RANGE_STEP_M), 450);
+        assert_eq!(range_m_rounded(43_400, LOCK_RANGE_STEP_M), 430);
+        // Half a step up.
+        assert_eq!(range_m_rounded(2_500, CONTACT_RANGE_STEP_M), 50);
+        assert_eq!(range_m_rounded(500, LOCK_RANGE_STEP_M), 10);
+        // A step of zero is read as one rather than dividing by it.
+        assert_eq!(range_m_rounded(43_400, 0), 434);
+    }
+
+    /// **16b cut Q.1**: `FIRE`'s line is untouched, and the read verbs have their
+    /// own — `FIRE` takes a weapon and never a contact, so "or name one" would
+    /// be a lie to its pilot.
+    #[test]
+    fn the_read_verbs_refusal_is_its_own_and_fires_is_unchanged() {
+        assert_eq!(NO_LOCK, "No lock: LOCK a contact first.");
+        assert_eq!(
+            NO_LOCK_OR_NAME,
+            "No lock: LOCK a contact first, or name one."
+        );
+        assert_ne!(NO_LOCK, NO_LOCK_OR_NAME);
+        assert_eq!(CockpitError::NoLock.to_string(), NO_LOCK);
+        assert_eq!(CockpitError::NoLockOrName.to_string(), NO_LOCK_OR_NAME);
+    }
+
+    /// **16b cut Q.1**: a plot older than one sensor pass says so, and a live one
+    /// says nothing — a track that announced `plotted 0 s ago` on every line
+    /// would be noise where the point is a warning.
+    #[test]
+    fn a_read_verb_says_how_stale_a_plot_is_only_once_it_is() {
+        assert_eq!(stale_clause(0, 1_000), "");
+        assert_eq!(stale_clause(1_000, 1_000), "", "one pass is not stale yet");
+        assert_eq!(stale_clause(1_001, 1_000), ", plotted 1 s ago");
+        assert_eq!(stale_clause(4_200, 1_000), ", plotted 4 s ago");
+        // A cadence of zero is read as one rather than dividing by it, so two
+        // milliseconds are already past it.
+        assert_eq!(stale_clause(1, 0), "");
+        assert_eq!(stale_clause(2, 0), ", plotted 0 s ago");
+        // And it is a clause, not a sentence: the full stop is the caller's.
+        assert!(!stale_clause(4_200, 1_000).ends_with('.'));
     }
 
     #[test]
@@ -2733,6 +3203,10 @@ mod tests {
                 "{verb}'s help names it"
             );
         }
-        assert_eq!(COCKPIT_VERBS.len(), 9, "doc 16 section 3.7's nine");
+        assert_eq!(
+            COCKPIT_VERBS.len(),
+            11,
+            "doc 16 section 3.7's nine, and cut Q.1's two read verbs"
+        );
     }
 }

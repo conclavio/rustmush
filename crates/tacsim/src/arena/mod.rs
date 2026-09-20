@@ -205,8 +205,8 @@ pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, Ledge
 pub use motion::{MotionOutcome, cos_fx, integrate, sin_fx};
 pub use path::{PathFailure, PathResult, PathScratch, min_move_cost, path_with};
 pub use perception::{
-    FULL_SIGNATURE_PERMILLE, FrameContact, PerceptionCounters, SensorProfile, SignatureFactor,
-    ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
+    FULL_SIGNATURE_PERMILLE, FrameContact, Named, PerceptionCounters, SensorProfile,
+    SignatureFactor, ThermalSignature, bearing_mdeg, bearing_of, contact_refusal, sees,
 };
 pub use reflex::{ARRIVE_CELLS, ReflexCounters, ReflexMemory, ReflexState, ReflexUnit};
 pub use resolution::{
@@ -218,10 +218,11 @@ pub use slope::{
 };
 pub use state::{
     Arena, ArenaDefinition, ArenaError, ArenaTerrain, Channel, Classification, ContactId,
-    Controller, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, DueEvent, DueHeap, DueKind,
-    EndReason, EntryZone, EpochTable, HeatState, KeySpot, MatchEnd, MotionLimits, NO_SUCH_CONTACT,
-    Pilot, Power, ShadowContact, ShadowContacts, Side, StopReason, Team, TerrainCell, TrackedRules,
-    UnitState, Waypoint, Waypoints, WeaponSummary,
+    Controller, CustodyOut, CustodyUnit, DEFAULT_SENSOR_HEIGHT_CM, Designator, DesignatorBook,
+    DueEvent, DueHeap, DueKind, EndReason, EntryZone, EpochTable, HeatState, KeySpot, MatchEnd,
+    MotionLimits, NO_SUCH_CONTACT, PROVISIONAL_PREFIX, Pilot, Power, ShadowContact, ShadowContacts,
+    Side, StopReason, Team, TerrainCell, TrackedRules, UnitState, Waypoint, Waypoints,
+    WeaponSummary,
 };
 pub use step::{Frame, FrameHeat, FrameSlots, StepOutput};
 pub use weapons::{FrameBand, FrameWeapon, Shot, WeaponBand};
@@ -404,6 +405,9 @@ pub(crate) mod test_support {
             // 16b cut N.1: a fixture tank is a pilot's until a test says otherwise,
             // which is the check-out's rule for a unit with a seat.
             controller: crate::arena::state::Controller::Pilot,
+            // 16b cut Q.1: no lobby fielded it, so `Arena::new` gives it the
+            // lowest free slot of its team in unit-id order.
+            slot: 0,
             unit: tactical_unit(id),
         }
     }

@@ -1,6 +1,6 @@
 # The cockpit
 
-The nine verbs you fly a tank with, in the order a pilot uses them. They work
+The eleven verbs you fly a tank with, in the order a pilot uses them. They work
 while you are at the station of a tank a running match has deployed, and nowhere
 else — `help simulator` is how you get there.
 
@@ -10,12 +10,17 @@ else — `help simulator` is how you get there.
   SPEED <kph>         make way at that speed; a negative speed reverses.
   VIEW                the arena window around your platform, as a map.
   CONTACTS            what your platform holds.
-  LOCK <contact>      hold one of your contacts by the id CONTACTS prints.
+  LOCK <contact>      hold one of your contacts by the designator CONTACTS
+                      prints.
+  RANGE [<contact>]   how far away a contact plotted; your lock if you name
+                      none.
+  BEARING [<contact>] which way a contact plotted; your lock if you name none.
   FIRE [<weapon>]     shoot your lock; the cannon unless you name another.
   WEAPONSTATUS        every weapon: ready or cycling, its rounds, its own chance
                       against your lock, and that lock's range band.
-  STATUS              power, speed, heading, position, the arena's tempo, and
-                      your armour and internals section by section.
+  STATUS              your callsign, power, speed, heading, position, the
+                      arena's tempo, and your armour and internals section by
+                      section.
 
 `EXIT` climbs out. Once the match is running that is final: see
 `help simulator`.
@@ -29,6 +34,10 @@ asked for. A climb costs its slope on top of that, so the same order up a bank
 of one in three makes about 31 and the tank is slowest where the ground is
 steepest; a descent costs nothing extra.
 
+`STARTUP` takes a few seconds and tells you when it is over: `Power online.`
+Until then `HEADING` and `SPEED` are refused with `Power is still coming up;
+hold on.`, so there is nothing to do but wait for the line.
+
 Ground a tank cannot enter stops it, and the cockpit says so once per stop —
 `Held: the ground ahead will not take the tank.` for impassable ground,
 `Held: something is in the way.` for another unit, `Held: this is the edge of
@@ -40,35 +49,72 @@ one-way door. `STATUS` carries `HELD` until you order something that frees it.
 Deep water is impassable to a tracked tank; the proving ground has one ford, on
 the east-west road.
 
+## Names
+
+Every tank in a match has a **callsign**: its side's letter and its pod, so red
+pod 1 is `RA`, red pod 2 is `RB`, blue pod 3 is `BC`. `STATUS` opens with
+yours, and `SIM STATUS` prints each pod's beside its number, so a callsign on
+the radio is a person you can look up.
+
+A contact your sensors have found but not yet told apart has no callsign to
+give you, so your platform numbers it for itself: `X1`, `X2`, in the order your
+own sensors found things. Those numbers are **yours** — your teammate's `X1` is
+not your `X1` — and they are never reused. Three seconds of holding a return is
+enough to tell it apart, and then it takes its real name:
+
+  Contact X2 identified: BA, blue.
+
+After that the row reads `BA`, and **both** spellings keep working: `LOCK X2`
+and `LOCK BA` are the same contact. If you lose the contact and find it again it
+is an unknown return once more, so it reads `X2` again and says `identified`
+again when it resolves.
+
+A contact you do not hold has no name you can type. `LOCK BA` before your
+sensors have found `BA` answers `No such contact.` — the same line as a name
+that means nothing at all, deliberately, because a refusal that told you `BA`
+existed would be telling you where the other side is.
+
 ## Seeing
 
 `CONTACTS` is your platform's own picture and nothing else — no object numbers,
 no names, no pilots. One row a contact:
 
-  c4  tank  bearing 087° (rel 032°)  effective  450 m  2 s
+  BA  blue  bearing 087° (rel 032°)  effective  450 m  2 s
 
-the opaque id `LOCK` takes, what the contact has been classified as, its true
+the designator `LOCK` takes, what the contact has been classified as, its true
 bearing and its bearing relative to your hull, the range band of the weapon a
 bare `FIRE` fires, its range rounded to 50 m, and how old the plot is. A contact
 is drawn **where it was last seen**, not where it is now, and the age is how
 stale that is. A teammate's sighting reaches you only while their own sensors
 still hold it.
 
+`RANGE` and `BEARING` ask about one contact without re-reading the whole scope.
+Name one, or name none and get your lock:
+
+  RANGE BA         Range to BA: 430 m.
+  BEARING          Bearing to BA: 087° (rel 357°).
+
+Your **lock** reads to the nearest 10 m rather than 50: it is a fire-control
+solution and the platform is tracking that one return continuously. Both verbs
+read the same plot every other surface reads, and both say so when it is going
+stale: `Range to BA: 430 m, plotted 4 s ago.` With no lock and no name they
+answer `No lock: LOCK a contact first, or name one.`
+
 `VIEW` draws the same picture as a map: terrain glyphs, `@` for you, `?` for a
 contact nothing has classified, `+` for your side and `x` for the other.
 
-Contacts arrive and leave on their own: `New contact c4: bearing 087°,
-effective.`, `Contact c4 identified: tank.`, `Contact c4 lost.`
+Contacts arrive and leave on their own: `New contact X2: bearing 087°,
+effective.`, `Contact X2 identified: BA, blue.`, `Contact BA lost.`
 
 ## Shooting
 
-`LOCK <id>` holds a contact. When the lock resolves you are told what it is
-worth: `Locked on c4, 62% to hit.` `WEAPONSTATUS` gives the same number per
+`LOCK <contact>` holds a contact. When the lock resolves you are told what it is
+worth: `Locked on BA, 62% to hit.` `WEAPONSTATUS` gives the same number per
 weapon, because a weapon's chance is its own.
 
 `FIRE` shoots the lock with the cannon; `FIRE mg` names another weapon. You are
-told what your round did and nothing more: `Hit on c4.`, `Miss on c4: the target
-moved.`, `c4 destroyed.` Which section you struck and what the target had left
+told what your round did and nothing more: `Hit on BA.`, `Miss on BA: the target
+moved.`, `BA destroyed.` Which section you struck and what the target had left
 is the target's business, not yours.
 
 What you are told about your **own** tank is the other way round and complete:

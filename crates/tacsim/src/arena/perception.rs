@@ -141,8 +141,8 @@ use crate::arena::index::range_cm;
 use crate::arena::ledger::EventKind;
 use crate::arena::rng::{DrawLabel, draw, draw_contact_id};
 use crate::arena::state::{
-    Arena, Classification, ContactId, DueKind, OwnSighting, Power, SeenPose, ShadowContact, Team,
-    UnitState,
+    Arena, Classification, ContactId, Designator, DueKind, OwnSighting, Power, SeenPose,
+    ShadowContact, Team, UnitState,
 };
 
 /// The factor of a target that hides nothing, per mille.
@@ -582,6 +582,55 @@ impl Arena {
         pass.saturating_mul(passes)
     }
 
+    /// **The short name one viewer's frame gives one contact it holds** (16b cut
+    /// Q.1; doc 16 §3.6 "What a pilot sees").
+    ///
+    /// It is read off the **live** contact and off nothing else: the target's
+    /// public callsign while `held.class` is `Classified` *now* (or while
+    /// `[tacsim.sensors].designate_on_detection` is on), and the viewer's own
+    /// provisional number otherwise.
+    ///
+    /// That is the correction this cut's design needed. A contact is not a
+    /// durable object — `ShadowContacts::expire` removes the row and the next
+    /// detection re-inserts it `Unknown` under the same id — so a "has been
+    /// classified" bit kept anywhere that outlived the row would put the team and
+    /// the slot on a blip the platform has just re-found and not yet told apart.
+    /// Reading the class here means a re-acquired contact reads `X2` again, and
+    /// says so again three seconds later.
+    ///
+    /// A missing number cannot happen by construction: `sensor_pass` issues one
+    /// at the same insert that makes a contact provisional. If one were missing
+    /// anyway the row renders `X0`, which resolves against nothing, rather than
+    /// taking the arena down.
+    #[must_use]
+    pub fn designator_for(&self, viewer: ObjId, held: &ShadowContact) -> Designator {
+        let named = self.sensors_cfg.designate_on_detection
+            || matches!(held.class, Classification::Classified { .. });
+        if named && let Some(target) = self.unit(held.target) {
+            return target.callsign;
+        }
+        Designator::Provisional(
+            self.designators
+                .provisional(viewer, held.target)
+                .unwrap_or(0),
+        )
+    }
+
+    /// **The number behind a row that is currently naming its target by slot**
+    /// (16b cut Q.1) — `X<n>` stays typable after the rename, and the
+    /// `identified` line quotes it.
+    ///
+    /// `None` while the row is itself provisional (the number *is* the
+    /// designator) and for a contact that was never provisional at all, which is
+    /// a mesh arrival.
+    #[must_use]
+    pub fn alias_for(&self, viewer: ObjId, held: &ShadowContact) -> Option<u16> {
+        match self.designator_for(viewer, held) {
+            Designator::Slot { .. } => self.designators.provisional(viewer, held.target),
+            Designator::Provisional(_) => None,
+        }
+    }
+
     /// The observer's eye and the target's, as the atlas trace wants them: each
     /// unit's cell and its own `sensor_height_cm` (doc 16 §3.2 "Line of sight").
     fn eye_of(&self, unit: &UnitState) -> Option<Eye> {
@@ -691,6 +740,17 @@ impl Arena {
                     }
                 }
                 None => {
+                    // **16b cut Q.1**: the one site the designator book is
+                    // written. A number is issued exactly when this platform's
+                    // **own** sensors first insert an unresolved return, so the
+                    // sequence means "things my sight found, in order" and stays
+                    // contiguous; a mesh arrival (`Arena::share_pass`) writes
+                    // nothing and consumes nothing. With the switch on no
+                    // provisional is ever issued, because nothing ever renders
+                    // one.
+                    if !self.sensors_cfg.designate_on_detection {
+                        self.designators.assign(observer, target);
+                    }
                     self.contacts.insert(
                         observer,
                         id,
@@ -716,6 +776,16 @@ impl Arena {
         // a refresh and is lost, and one refreshed more recently is not.
         let cutoff = t_ms.saturating_sub(self.contact_ttl_ms()).saturating_add(1);
         for (id, lost) in self.contacts.expire(observer, cutoff) {
+            // **16b cut Q.1**: the name the row was carrying, captured here and
+            // nowhere else. `lost` is the record `expire` handed back, so its
+            // class is still readable; by the time the `lost` event is staged the
+            // row is gone and nothing could tell `BA` from `X2` any more. The
+            // staging scan of this same substep takes the entry out again, so
+            // nothing put here survives the substep — and nothing reads it
+            // anywhere else, the state hash included
+            // (`Arena::lost_designators`).
+            let named = self.designator_for(observer, &lost);
+            self.lost_designators.insert((observer, id), named);
             journal.push((
                 t_ms,
                 EventKind::Lost {
@@ -1233,8 +1303,24 @@ pub fn bearing_of(dx: i64, dy: i64) -> u32 {
 /// S.2 renders it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameContact {
-    /// The opaque id, the only name a pilot may use for it.
+    /// The opaque id. **16b cut Q.1 stopped it being a pilot's handle**: it is
+    /// the stable row key a panel re-identifies a row by across pulses, and
+    /// nothing prints it or parses it any more — see
+    /// [`FrameContact::designator`].
     pub id: ContactId,
+    /// **The short name the pilot reads and types** (16b cut Q.1), read off this
+    /// contact's class *now* through `Arena::designator_for`: the team's letter
+    /// and the target's centre slot while the contact is classified, a
+    /// viewer-scoped `X<n>` while it is not.
+    pub designator: Designator,
+    /// **The provisional number this platform gave this target**, where it gave
+    /// one and the row is currently naming the target by its slot (16b cut Q.1).
+    ///
+    /// It is what makes a lock taken as `X2` still typable as `X2` after the
+    /// rename, and what the `identified` line quotes. `None` when the row is
+    /// already provisional (the number is the designator), and when no number was
+    /// ever issued — a contact that arrived over the mesh.
+    pub alias: Option<u16>,
     /// `unknown`, or the side the platform has resolved.
     pub class: Classification,
     /// Bearing from the platform, millidegrees clockwise from north.
@@ -1261,6 +1347,23 @@ pub struct FrameContact {
     /// A cell and not a pose: the map's resolution is what the map may show, so a
     /// marker carries exactly the precision the window already prints and no more.
     pub cell: Option<(u16, u16)>,
+}
+
+/// **A contact, as a notice names it** (16b cut Q.1): the stable id a panel keys
+/// a row on, and the short name the sentence says.
+///
+/// Both, and not one or the other, because they answer different questions. The
+/// id is what a renderer matches against `Frame::contacts` and what survives the
+/// rename; the designator is what the pilot reads and types, and it is **captured
+/// at staging**, off the live contact, so a notice says what the contact was
+/// called at the moment the thing happened rather than what it is called by the
+/// time the frame is rendered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Named {
+    /// The opaque contact id — the row key, never printed.
+    pub id: ContactId,
+    /// What the pilot reads it as.
+    pub designator: Designator,
 }
 
 /// **Which transition a pilot is being told about** (16b cut S.2; doc 16 §3.6:
@@ -1319,6 +1422,14 @@ pub enum NoticeKind {
     /// **Motion stopped the platform** (16b cut F.2; doc 16 §3.4 step 4: *one
     /// `blocked` notice per stop*).
     Blocked,
+    /// **The platform's power finished coming up** (16b cut Q.1; doc 16 §3.3
+    /// "Startup"), said to that platform's own pilots at the arena timestamp the
+    /// flip happened.
+    ///
+    /// The owner's first hand-played match found the gap: `STARTUP` said the
+    /// sequence had begun and then nothing said it had finished, so the way to
+    /// find out was to keep typing `HEADING` until one of them was not refused.
+    PowerOnline,
 }
 
 impl NoticeKind {
@@ -1339,6 +1450,7 @@ impl NoticeKind {
             NoticeKind::SectionLost => "section_lost",
             NoticeKind::Refused => "refused",
             NoticeKind::Blocked => "blocked",
+            NoticeKind::PowerOnline => "power_online",
         }
     }
 }
@@ -1376,9 +1488,13 @@ pub enum RefusalDetail {
 /// line through the one renderer, `crate::match_::cockpit::notice_line`.
 ///
 /// **The observer rule is the shape of this type.** A contact notice carries the
-/// opaque id and the class and **nothing about the target** — no object number, no
-/// name, no pose — because a notice is the first thing a pilot is ever told about a
-/// contact. A [`FrameNotice::Struck`] carries the victim's own section and facet
+/// row key, the short designator ([`Named`]) and the class, and **nothing else
+/// about the target** — no object number, no unit name, no pose — because a
+/// notice is the first thing a pilot is ever told about a contact. **16b cut
+/// Q.1** is why the designator is not a leak: it is read off the contact's class
+/// at the moment the notice is staged, so it is this platform's own `X<n>` until
+/// the contact has been told apart, and the target's *public* callsign — team
+/// letter and centre slot, which doc 16 §5 makes lobby knowledge — only after. A [`FrameNotice::Struck`] carries the victim's own section and facet
 /// and **nothing about the shooter**: where a round came from is a thing only a
 /// sensor may tell, so there is no field here for it to be leaked through. A
 /// [`FrameNotice::Blocked`] carries a cause and never the cell's occupant, because
@@ -1399,37 +1515,49 @@ pub enum FrameNotice {
     Contact {
         /// Which transition.
         kind: NoticeKind,
-        /// The contact it is about, by its opaque id.
-        contact: ContactId,
+        /// The contact it is about: the row key and the short name it carried at
+        /// the moment of the transition (16b cut Q.1).
+        contact: Named,
         /// What the platform knows of it at the moment of the notice.
         class: Classification,
+        /// **What it used to be called** (16b cut Q.1), set only on
+        /// [`NoticeKind::Classified`] and only when the platform had given the
+        /// target a provisional number: the `identified` line says
+        /// `Contact X2 identified: BA, blue.`, so a pilot who locked `X2` knows
+        /// which return just acquired a name.
+        ///
+        /// `None` for a classification that was never provisional — a contact
+        /// that arrived classified over the mesh, or a match run with
+        /// `designate_on_detection` on — and then **no line is said at all**: the
+        /// acquisition already read `New contact RB: …`.
+        was: Option<Designator>,
     },
     /// **The platform's lock resolved** (16b cut F.2): the percentage rides the
     /// frame this notice arrives on, so the line is the same one `WEAPONSTATUS`
     /// prints and never a second estimate.
     Locked {
         /// The contact now locked.
-        contact: ContactId,
+        contact: Named,
     },
     /// **A round of this platform's landed** (16b cut F.2), named by the contact
     /// the shooter's platform holds the target under — `None` when it holds none
     /// any more, and then the pilot is told only that the round landed.
     Hit {
         /// The contact, where the platform still holds one.
-        contact: Option<ContactId>,
+        contact: Option<Named>,
     },
     /// **A round of this platform's went nowhere** (16b cut F.2), with the
     /// ledger's own reason word ([`crate::arena::damage::MISS_REASONS`]).
     Miss {
         /// The contact, where the platform still holds one.
-        contact: Option<ContactId>,
+        contact: Option<Named>,
         /// The reason, as the black box records it.
         reason: SmolStr,
     },
     /// **A round of this platform's finished the target** (16b cut F.2).
     Kill {
         /// The contact, where the platform still holds one.
-        contact: Option<ContactId>,
+        contact: Option<Named>,
     },
     /// **This platform was hit** (16b cut F.2): the pilot's own tank's section
     /// and facet, which is physical knowledge, and what is left of them.
@@ -1476,6 +1604,10 @@ pub enum FrameNotice {
         /// Why it stopped.
         cause: crate::arena::motion::BlockedCause,
     },
+    /// **Power finished coming up** (16b cut Q.1; doc 16 §3.3 "Startup"), said to
+    /// the platform's own pilots. It carries nothing: the transition is the whole
+    /// of it.
+    PowerOnline,
 }
 
 impl FrameNotice {
@@ -1492,13 +1624,34 @@ impl FrameNotice {
             FrameNotice::SectionLost { .. } => NoticeKind::SectionLost,
             FrameNotice::Refused { .. } => NoticeKind::Refused,
             FrameNotice::Blocked { .. } => NoticeKind::Blocked,
+            FrameNotice::PowerOnline => NoticeKind::PowerOnline,
         }
     }
 
-    /// The contact this notice names, where it names one. Never a unit and never
-    /// a name: the opaque id is the only handle a pilot is ever given.
+    /// The contact this notice names, where it names one — the **row key**, which
+    /// a panel matches against `Frame::contacts` and nothing prints (16b cut
+    /// Q.1). What the pilot reads is [`FrameNotice::designator`].
     #[must_use]
     pub const fn contact(&self) -> Option<ContactId> {
+        match self.named() {
+            Some(named) => Some(named.id),
+            None => None,
+        }
+    }
+
+    /// **The short name this notice's sentence says** (16b cut Q.1), where it
+    /// names a contact at all. Never a unit and never an object number.
+    #[must_use]
+    pub const fn designator(&self) -> Option<Designator> {
+        match self.named() {
+            Some(named) => Some(named.designator),
+            None => None,
+        }
+    }
+
+    /// The pair, where the notice carries one.
+    #[must_use]
+    pub const fn named(&self) -> Option<Named> {
         match self {
             FrameNotice::Contact { contact, .. } | FrameNotice::Locked { contact } => {
                 Some(*contact)
@@ -1509,7 +1662,8 @@ impl FrameNotice {
             FrameNotice::Struck { .. }
             | FrameNotice::SectionLost { .. }
             | FrameNotice::Refused { .. }
-            | FrameNotice::Blocked { .. } => None,
+            | FrameNotice::Blocked { .. }
+            | FrameNotice::PowerOnline => None,
         }
     }
 }

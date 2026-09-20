@@ -72,11 +72,15 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
 ///    `u64`, the target's `u32`, the class byte (`0` unknown, `1` classified red,
 ///    `2` classified blue), `first_seen_ms` and `last_seen_ms` as `i64`.
-/// 4. The tempo byte (`0` quiet, `1` alert, `2` engaged).
-/// 5. `now_ms`, `i64`.
-/// 6. The due-event count, `u64`.
-/// 7. **The in-flight shot count** (16b cut W.1), `u64`.
-/// 8. The ledger's event sequence, `u64`.
+/// 4. **The designator book** (16b cut Q.1), in its own two `BTreeMap`s' order:
+///    the count of `next` rows as `u64`, then per row the viewer's `u32` and the
+///    number as `u16`; then the count of issued numbers as `u64`, then per issued
+///    number the viewer's `u32`, the target's `u32` and the number as `u16`.
+/// 5. The tempo byte (`0` quiet, `1` alert, `2` engaged).
+/// 6. `now_ms`, `i64`.
+/// 7. The due-event count, `u64`.
+/// 8. **The in-flight shot count** (16b cut W.1), `u64`.
+/// 9. The ledger's event sequence, `u64`.
 ///
 /// **Why the contacts are in it** (16b cut S.1). Doc 16 §3.1 makes the arena the
 /// single writer for *unit poses, unit condition cells, contacts, orders,
@@ -123,6 +127,32 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// centimetre of pose. The *limit* beside it is deliberately not folded: it is
 /// read once at check-out and never moves, and every refusal it causes is a pose
 /// that is already in here.
+///
+/// **Cut Q.1's extension**: the designator book. It is the same argument the
+/// contact store makes, one step further. A number is issued when a platform's
+/// own sensors first insert an `Unknown` contact — and that insert journals an
+/// `EventKind::Detected` which is **byte for byte the shape a mesh arrival
+/// journals**, so the ledger's sequence moves identically whether a number was
+/// issued or not. A replay whose blip was found by its own sight where the
+/// original took it off the mesh would otherwise compare equal, and the two runs
+/// would then show the pilot different names for the same tank. Folding the book
+/// catches it at the substep it happened, which is the argument cut F.3 made for
+/// the plot.
+///
+/// The *callsign* on each unit is deliberately **not** folded: it is a pure
+/// function of the check-out message, resolved once by `Arena::new` and never
+/// moved, so two replays of one custody message agree on it by construction —
+/// the same argument `slope_limit_pct` makes.
+///
+/// Neither is the transient `lost_designators` table, and the reason is not that
+/// it is empty here: the record below is taken **before** the staging scan that
+/// drains it, so in a substep where a contact expired the table is holding that
+/// row's name at this very line. It is not folded because its contents are a
+/// function of state this hash already folds — the expiry that filled it is the
+/// contact store's own change, and the name it carries is read off the book and
+/// the callsign — and because it never survives the substep it was filled in, so
+/// nothing it holds can reach a later one. Folding it would add no information
+/// and would make the hash a function of *where* the drain sits.
 #[must_use]
 pub fn state_hash(arena: &Arena) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
@@ -218,6 +248,21 @@ pub fn state_hash(arena: &Arena) -> u64 {
             }
             None => hash = fnv1a64_update(hash, &[0_u8]),
         }
+    }
+    // **16b cut Q.1**: the provisional numbers, in the book's own map order.
+    hash = fnv1a64_update(
+        hash,
+        &(arena.designators.counters_len() as u64).to_le_bytes(),
+    );
+    for (viewer, next) in arena.designators.counters() {
+        hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &next.to_le_bytes());
+    }
+    hash = fnv1a64_update(hash, &(arena.designators.issued_len() as u64).to_le_bytes());
+    for (viewer, target, n) in arena.designators.issued() {
+        hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &target.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &n.to_le_bytes());
     }
     hash = fnv1a64_update(hash, &[arena.clock.tempo().code()]);
     hash = fnv1a64_update(hash, &arena.now_ms.to_le_bytes());
@@ -411,6 +456,32 @@ mod tests {
             unit.slope_limit_pct = Some(45);
         }
         assert_eq!(state_hash(&limited), base);
+    }
+
+    /// **16b cut Q.1's extension**: a provisional number moves without a
+    /// distinguishable ledger event — a mesh `detected` and a sensor `detected`
+    /// are one shape — so the book has to move the hash. The unit's own callsign
+    /// does not: it is a function of the check-out and never moves.
+    #[test]
+    fn the_hash_folds_the_designator_book_and_not_the_callsigns() {
+        let base = state_hash(&two_tanks());
+        let mut issued = two_tanks();
+        assert_eq!(issued.designators.assign(ObjId(4), ObjId(9)), 1);
+        assert_ne!(state_hash(&issued), base, "a number went unhashed");
+        // Two viewers that issued the same number for different targets are not
+        // one state.
+        let mut other = two_tanks();
+        assert_eq!(other.designators.assign(ObjId(9), ObjId(4)), 1);
+        assert_ne!(state_hash(&other), state_hash(&issued));
+        // The callsign is a fact about the check-out, not about the match.
+        let mut renamed = two_tanks();
+        if let Some(unit) = renamed.unit_mut(ObjId(9)) {
+            unit.callsign = crate::arena::state::Designator::Slot {
+                team: Team::Blue,
+                slot: 9,
+            };
+        }
+        assert_eq!(state_hash(&renamed), base);
     }
 
     #[test]

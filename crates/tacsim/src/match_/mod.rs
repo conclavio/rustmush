@@ -311,13 +311,38 @@ pub fn seq_from_document(value: &serde_json::Value) -> u64 {
 // Check-out: the `Boarding -> Running` trigger
 // ---------------------------------------------------------------------------
 
+/// **One unit a side fields, and the pod it came out of** (16b cut Q.1).
+///
+/// The slot is what [`crate::arena::state::Designator::Slot`] renders, so the
+/// `BA` a pilot locks is the pod `SIM STATUS` prints as `1` on blue. `0` is *no
+/// pod*: a staff `@arena/start`, a fixture, the harness's field of three
+/// hundred — and `Arena::new` then gives the unit the lowest free slot of its
+/// team in unit-id order, so every unit in every match has a stable callsign
+/// whether a lobby fielded it or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fielded {
+    /// The unit.
+    pub unit: ObjId,
+    /// Its 1-based centre slot, or `0`.
+    pub slot: u8,
+}
+
+impl Fielded {
+    /// A unit no lobby placed.
+    #[must_use]
+    pub const fn unslotted(unit: ObjId) -> Fielded {
+        Fielded { unit, slot: 0 }
+    }
+}
+
 /// One side of a match, as [`start`] is given it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Side {
     /// Which side.
     pub team: Team,
-    /// Its units, in the order they were named.
-    pub units: Vec<ObjId>,
+    /// Its units, in the order they were named, each with the centre slot it was
+    /// fielded from (16b cut Q.1).
+    pub units: Vec<Fielded>,
 }
 
 /// Why a match could not start. Every variant names the subject.
@@ -434,19 +459,20 @@ pub fn start(
                 max: match_cfg.max_slots_per_side,
             });
         }
-        for unit in &side.units {
-            if seen.contains(unit) {
-                return Err(StartError::DuplicateUnit(*unit));
+        for fielded in &side.units {
+            let unit = fielded.unit;
+            if seen.contains(&unit) {
+                return Err(StartError::DuplicateUnit(unit));
             }
-            seen.push(*unit);
-            mush_sim::deployed::refuse_if_deployed(ctx.w, *unit)?;
+            seen.push(unit);
+            mush_sim::deployed::refuse_if_deployed(ctx.w, unit)?;
             // "Is it a unit at all" before "is it placed": an object that is
             // neither wants the first answer, not the second.
-            if mush_tactics::module::unit_of(ctx.w, *unit).is_none() {
-                return Err(StartError::NotAUnit(*unit));
+            if mush_tactics::module::unit_of(ctx.w, unit).is_none() {
+                return Err(StartError::NotAUnit(unit));
             }
-            if mush_sim::pose_of(ctx.w, *unit).is_none() {
-                return Err(StartError::NotPlaced(*unit));
+            if mush_sim::pose_of(ctx.w, unit).is_none() {
+                return Err(StartError::NotPlaced(unit));
             }
         }
     }
@@ -470,18 +496,19 @@ pub fn start(
     for side in sides {
         let mut roster = TeamRoster {
             team: side.team,
-            units: side.units.clone(),
+            units: side.units.iter().map(|fielded| fielded.unit).collect(),
             pilots: Vec::new(),
         };
-        for unit in &side.units {
-            let cells = mush_tactics::module::unit_of(ctx.w, *unit)
-                .ok_or(StartError::NotAUnit(*unit))?
+        for fielded in &side.units {
+            let unit = fielded.unit;
+            let cells = mush_tactics::module::unit_of(ctx.w, unit)
+                .ok_or(StartError::NotAUnit(unit))?
                 .clone();
-            let world_pose = mush_sim::pose_of(ctx.w, *unit).map(|(_, pose)| pose);
+            let world_pose = mush_sim::pose_of(ctx.w, unit).map(|(_, pose)| pose);
             let pose = arena_def::opening_pose(&definition, side.team, world_pose, &mut taken)
                 .ok_or(StartError::NoEntryCell(side.team.as_str()))?;
             custody_units.push(CustodyUnit {
-                id: *unit,
+                id: unit,
                 team: side.team,
                 pose,
                 mobility: tracked_rules(&cells),
@@ -491,23 +518,27 @@ pub fn start(
                 // **16b cut W.2**: what the unit presents and what a hit may
                 // strike, and the gunnery the `PilotProfile` seam gives its shots.
                 profile: arena_def::unit_profile(&catalog, &cells),
-                gunnery: gunnery_of(ctx, *unit),
+                gunnery: gunnery_of(ctx, unit),
                 // **16b cut N.1** (doc 16 §6): a tank with nobody in it is the
                 // reflex controller's. That is the whole of how a lobby fields AI —
                 // `SIM START` puts the unclaimed pods' tanks on the sides and they
                 // arrive here with no seated pilot — and it is also what the
                 // harness's field of 300 is.
-                controller: if seated_pilots(ctx, *unit).is_empty() {
+                controller: if seated_pilots(ctx, unit).is_empty() {
                     crate::arena::state::Controller::Reflex
                 } else {
                     crate::arena::state::Controller::Pilot
                 },
+                // **16b cut Q.1**: the pod it came out of, carried straight
+                // across — the lobby is the only thing that knows it, and
+                // `Arena::new` is the only thing that resolves it into a name.
+                slot: fielded.slot,
                 unit: cells,
             });
-            for (pilot, station) in seated_pilots(ctx, *unit) {
-                roster.pilots.push((pilot, *unit));
+            for (pilot, station) in seated_pilots(ctx, unit) {
+                roster.pilots.push((pilot, unit));
                 pilots.push(Pilot {
-                    unit: *unit,
+                    unit,
                     pilot,
                     station,
                     epoch: 1,

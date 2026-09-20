@@ -477,6 +477,8 @@ fn tank(id: ObjId, team: Team, pose: Pose, weapons: Vec<WeaponSummary>) -> Custo
         profile: line_tank_profile(),
         gunnery: 1,
         controller: tacsim::arena::state::Controller::Pilot,
+        // 16b cut Q.1: no pod behind it.
+        slot: 0,
         unit: line_tank_unit(id),
     }
 }
@@ -570,6 +572,31 @@ fn intent(unit: ObjId, kind: IntentKind, seq: u64) -> Intent {
 /// The contact id `viewer` holds `target` under in this match.
 fn contact_of(viewer: ObjId, target: ObjId) -> ContactId {
     draw_contact_id(SEED, viewer, target)
+}
+
+/// **One unit's public callsign** (16b cut Q.1) — what every viewer that has told
+/// it apart calls it, and what a kill line says after the contact is gone.
+fn callsign(arena: &Arena, unit: ObjId) -> String {
+    arena
+        .unit(unit)
+        .map(|state| state.callsign.to_string())
+        .unwrap_or_else(|| panic!("#{} is not in the match", unit.0))
+}
+
+/// **The short name one platform's own frame gives a target** (16b cut Q.1).
+///
+/// Every pilot-facing line names a contact by its designator now, and the
+/// designator is read off the live contact's class — so a test that pinned the
+/// sixteen digits asks for this instead, off the same arena the line came from,
+/// rather than hard-coding `BA` and quietly passing when the naming breaks.
+fn named(arena: &Arena, viewer: ObjId, target: ObjId) -> String {
+    let id = contact_of(viewer, target);
+    arena
+        .frame_contacts(viewer)
+        .into_iter()
+        .find(|row| row.id == id)
+        .map(|row| row.designator.to_string())
+        .unwrap_or_else(|| panic!("#{} holds no contact on #{}", viewer.0, target.0))
 }
 
 /// One pulse with `intents`, absorbing the ledger.
@@ -960,7 +987,9 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
     // The one sentence `LOCK` and `WEAPONSTATUS` both print.
     let line = tacsim::match_::cockpit::lock_line(&frame)
         .unwrap_or_else(|| panic!("a held lock has a line"));
-    assert!(line.contains(&contact.to_string()), "{line}");
+    // 16b cut Q.1: the short designator, never the sixteen digits.
+    assert!(line.contains(&named(&arena, RED, BLUE)), "{line}");
+    assert!(!line.contains(&contact.to_string()), "{line}");
     assert!(line.contains("95% to hit"), "{line}");
     // And the panel's own copy of the same number.
     let payload = tacsim::match_::cockpit::status_frame(tacsim::arena_task::MatchId(1), &frame);
@@ -976,6 +1005,191 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
             .and_then(serde_json::Value::as_u64),
         Some(95)
     );
+    // **16b cut Q.1's additions to the same payload**, asserted here because the
+    // TUI (Q.4) and the web (Q.5) are both pinned to this shape by Q.3's fixture
+    // set: a golden blessed off a wrong payload would agree with itself for ever.
+    assert_eq!(
+        payload.get("callsign").and_then(serde_json::Value::as_str),
+        Some(callsign(&arena, RED).as_str()),
+        "the platform's own public name: {payload}"
+    );
+    assert_eq!(
+        payload.get("cell").and_then(serde_json::Value::as_array),
+        frame
+            .cell
+            .map(|(x, y)| vec![serde_json::json!(x), serde_json::json!(y)])
+            .as_ref(),
+        "the cell a panel draws the `@` in: {payload}"
+    );
+    let designator = named(&arena, RED, BLUE);
+    assert_eq!(
+        payload
+            .get("lock_designator")
+            .and_then(serde_json::Value::as_str),
+        Some(designator.as_str()),
+        "the lock's own name, the one `lock_line` says: {payload}"
+    );
+    // The lock keeps its sixteen digits as the row key beside it, never displayed.
+    assert_eq!(
+        payload.get("lock").and_then(serde_json::Value::as_str),
+        Some(contact.to_string().as_str())
+    );
+    let plot = frame
+        .contacts
+        .iter()
+        .find(|held| held.id == contact)
+        .unwrap_or_else(|| panic!("the frame's own row for the lock"));
+    let coarse = tacsim::match_::cockpit::range_m_rounded(
+        plot.range_cm,
+        tacsim::match_::cockpit::CONTACT_RANGE_STEP_M,
+    );
+    let fine = tacsim::match_::cockpit::range_m_rounded(
+        plot.range_cm,
+        tacsim::match_::cockpit::LOCK_RANGE_STEP_M,
+    );
+    assert_ne!(
+        coarse, fine,
+        "the fixture was chosen so the finer step is visible: {} cm",
+        plot.range_cm
+    );
+    assert_eq!(
+        payload
+            .get("lock_range_m")
+            .and_then(serde_json::Value::as_u64),
+        Some(fine),
+        "the lock reads to ten metres and the scope to fifty: {payload}"
+    );
+    let row = payload
+        .get("contacts")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|rows| rows.first())
+        .unwrap_or_else(|| panic!("the one contact's row: {payload}"));
+    assert_eq!(
+        row.get("id").and_then(serde_json::Value::as_str),
+        Some(contact.to_string().as_str()),
+        "the stable row key stays the sixteen digits"
+    );
+    assert_eq!(
+        row.get("designator").and_then(serde_json::Value::as_str),
+        Some(designator.as_str())
+    );
+    assert_eq!(
+        row.get("range_m").and_then(serde_json::Value::as_u64),
+        Some(coarse),
+        "a scope row keeps the coarse step"
+    );
+    // The alias is the number behind a renamed row, spelled as the pilot would
+    // have typed it — and `null` while the number IS the name.
+    let alias = row.get("alias").cloned().unwrap_or(serde_json::Value::Null);
+    if designator.starts_with('X') {
+        assert_eq!(alias, serde_json::Value::Null, "{payload}");
+    } else {
+        assert_eq!(alias, serde_json::json!("X1"), "{payload}");
+    }
+    // And a notice carries the name beside the row key.
+    let notice = payload
+        .get("notices")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|notices| {
+            notices.iter().find(|notice| {
+                notice.get("kind").and_then(serde_json::Value::as_str) == Some("locked")
+            })
+        })
+        .unwrap_or_else(|| panic!("the lock's own notice: {payload}"));
+    assert_eq!(
+        notice.get("contact").and_then(serde_json::Value::as_str),
+        Some(contact.to_string().as_str())
+    );
+    assert_eq!(
+        notice.get("designator").and_then(serde_json::Value::as_str),
+        Some(designator.as_str())
+    );
+
+    // **The two read verbs' own sentences** (16b cut Q.1), off this same frame.
+    //
+    // The verbs are `named_row` and then these: the step a lock earns lives here,
+    // so inverting the branch fails here rather than in a live approach where the
+    // plot moves between the two readings.
+    let rows = tacsim::match_::cockpit::frame_contacts(&frame);
+    let held_row = rows
+        .iter()
+        .find(|row| row.id == contact)
+        .cloned()
+        .unwrap_or_else(|| panic!("the contact's own row"));
+    assert_eq!(
+        tacsim::match_::cockpit::range_line(&frame, &held_row, 1_000),
+        format!("Range to {designator}: {fine} m."),
+        "a locked contact reads to the nearest ten metres"
+    );
+    let mut unlocked = frame.clone();
+    unlocked.lock = None;
+    assert_eq!(
+        tacsim::match_::cockpit::range_line(&unlocked, &held_row, 1_000),
+        format!("Range to {designator}: {coarse} m."),
+        "and the rest of the scope to fifty"
+    );
+    assert_eq!(
+        tacsim::match_::cockpit::bearing_line(&held_row, 1_000),
+        format!(
+            "Bearing to {designator}: {:03}° (rel {:03}°).",
+            held_row.bearing_deg, held_row.relative_deg
+        )
+    );
+    // And the staleness clause, which is a clause of both sentences and not a
+    // sentence of its own: a plot older than one sensor pass says how old it is.
+    let mut stale = held_row.clone();
+    stale.age_ms = 4_200;
+    assert_eq!(
+        tacsim::match_::cockpit::range_line(&frame, &stale, 1_000),
+        format!("Range to {designator}: {fine} m, plotted 4 s ago.")
+    );
+    assert_eq!(
+        tacsim::match_::cockpit::bearing_line(&stale, 1_000),
+        format!(
+            "Bearing to {designator}: {:03}° (rel {:03}°), plotted 4 s ago.",
+            stale.bearing_deg, stale.relative_deg
+        )
+    );
+    assert_eq!(
+        tacsim::match_::cockpit::range_line(&frame, &stale, 5_000),
+        format!("Range to {designator}: {fine} m."),
+        "a plot inside the pass it was taken in says nothing about its age"
+    );
+
+    // **And the map's marker for the same contact** (16b cut Q.1): the grid
+    // shape's `id` is display text, so it is the designator and never the
+    // sixteen digits; the `name` is still the class word and nothing else.
+    let (markers, glyphs) = tacsim::match_::cockpit::contact_markers(&frame, (0, 0), (SIDE, SIDE));
+    let marker = markers
+        .first()
+        .unwrap_or_else(|| panic!("one marker for the one contact: {markers:?}"));
+    assert_eq!(
+        marker.get("id").and_then(serde_json::Value::as_str),
+        Some(designator.as_str())
+    );
+    assert_eq!(
+        marker.get("name").and_then(serde_json::Value::as_str),
+        Some(held_row.class.as_str()),
+        "a marker says the class word and nothing more about what is standing there"
+    );
+    assert!(
+        !serde_json::Value::Array(markers.clone())
+            .to_string()
+            .contains(&contact.to_string()),
+        "the sixteen digits reached the map: {markers:?}"
+    );
+    assert_eq!(
+        marker.get("cell").and_then(serde_json::Value::as_array),
+        held_row
+            .cell
+            .map(|(x, y)| vec![
+                serde_json::json!(u32::from(x)),
+                serde_json::json!(u32::from(y))
+            ])
+            .as_ref(),
+        "the plot's own cell, off the window's corner"
+    );
+    assert!(!glyphs.is_empty(), "the window earned a legend entry");
     // With no lock there is no line and no number, rather than a nought that means
     // *unknown*.
     let mut bare = frame.clone();
@@ -2219,7 +2433,7 @@ fn the_shooter_is_told_the_round_landed_and_the_victim_where_it_landed() {
 
     // The shooter: the round landed, on the contact their own platform holds.
     assert!(
-        shooter.contains(&format!("Hit on {contact}.")),
+        shooter.contains(&format!("Hit on {}.", named(&arena, RED, BLUE))),
         "the shooter was told the round landed: {shooter:?}"
     );
     // And nothing about what it did. A gunner sees the strike, not the internals.
@@ -2302,9 +2516,11 @@ fn a_miss_carries_the_ledgers_own_reason_in_plain_words() {
     let mut bytes: Vec<u8> = Vec::new();
     let heard = one_shot(&mut arena, &mut bytes);
     let shooter = heard.get(&RED_PILOT).cloned().unwrap_or_default();
-    let contact = contact_of(RED, BLUE);
     assert!(
-        shooter.contains(&format!("Miss on {contact}: the target is behind cover.")),
+        shooter.contains(&format!(
+            "Miss on {}: the target is behind cover.",
+            named(&arena, RED, BLUE)
+        )),
         "the shooter was told why: {shooter:?}"
     );
     // And the victim is told nothing at all: a miss is not a thing that happened
@@ -2707,7 +2923,12 @@ fn each_weapon_carries_its_own_chance_and_the_lock_quotes_the_one_fire_would_tak
         .unwrap_or_else(|| panic!("a held lock has a line"));
     assert_eq!(
         line,
-        format!("Locked on {contact}, {}% to hit.", row("cannon") / 10),
+        // 16b cut Q.1: the short designator where the sixteen digits were.
+        format!(
+            "Locked on {}, {}% to hit.",
+            named(&arena, RED, BLUE),
+            row("cannon") / 10
+        ),
         "`LOCK` quotes the weapon a bare `FIRE` fires"
     );
     // And the notice the arena staged when the lock resolved says the same thing.
@@ -2755,18 +2976,29 @@ fn two_locks_in_one_pulse_each_name_their_own_contact() {
         .filter(|line| line.starts_with("Locked on "))
         .collect();
     assert_eq!(lines.len(), 2, "one line per lock taken: {lines:?}");
-    assert!(
-        lines[0].starts_with(&format!("Locked on {first}")),
-        "the first lock named the second one's contact: {lines:?}"
-    );
-    assert!(
-        lines[1].starts_with(&format!("Locked on {second}")),
-        "{lines:?}"
+    // **16b cut Q.1**: the *identity* half of this property moved off the line
+    // and onto the notice. Both of these contacts are held on the same tank, so
+    // both legitimately render `BA` — a designator names the target, not the row
+    // — and what the notice must still get right is which contact it was staged
+    // for. That is the id it carries, and the two are distinct.
+    let staged: Vec<ContactId> = out
+        .frames
+        .iter()
+        .filter(|(pilot, _)| *pilot == RED_PILOT)
+        .flat_map(|(_, frame)| frame.notices.iter())
+        .filter(|notice| notice.kind() == tacsim::arena::perception::NoticeKind::Locked)
+        .filter_map(tacsim::arena::perception::FrameNotice::contact)
+        .collect();
+    assert_eq!(
+        staged,
+        vec![first, second],
+        "the first lock's notice named the second one's contact"
     );
     // The superseded lock is said bare: quoting a chance against a contact the
     // pilot has already stopped aiming at would be the same lie cut W.2's stale
     // frame told.
-    assert_eq!(lines[0], format!("Locked on {first}."));
+    let named = named(&arena, RED, BLUE);
+    assert_eq!(lines[0], format!("Locked on {named}."));
     assert!(lines[1].contains("% to hit"), "{lines:?}");
 }
 
@@ -2774,7 +3006,6 @@ fn two_locks_in_one_pulse_each_name_their_own_contact() {
 fn the_shooter_is_told_when_the_round_finishes_the_target() {
     let mut arena = scripted_arena();
     let run = replay(&mut arena, 1_000, 45_000, &script());
-    let contact = contact_of(RED, BLUE);
     let shooter = run.notices.get(&RED_PILOT).cloned().unwrap_or_default();
     let victim = run.notices.get(&BLUE_PILOT).cloned().unwrap_or_default();
     assert_eq!(
@@ -2785,7 +3016,9 @@ fn the_shooter_is_told_when_the_round_finishes_the_target() {
         "the script kills the blue tank"
     );
     assert!(
-        shooter.contains(&format!("{contact} destroyed.")),
+        // 16b cut Q.1: the kill line names the target by its public callsign,
+        // which is what the shooter had it classified as.
+        shooter.contains(&format!("{} destroyed.", callsign(&arena, BLUE))),
         "the shooter was told the target went: {shooter:?}"
     );
     // The victim's last word is their own hull, and it names the consequence.
@@ -3043,7 +3276,10 @@ fn the_percentage_is_printed_when_the_lock_resolves() {
     );
     let lines = told(&out, RED_PILOT);
     assert!(
-        lines.contains(&format!("Locked on {contact}, 95% to hit.")),
+        lines.contains(&format!(
+            "Locked on {}, 95% to hit.",
+            named(&arena, RED, BLUE)
+        )),
         "the first lock prints the chance: {lines:?}"
     );
 }

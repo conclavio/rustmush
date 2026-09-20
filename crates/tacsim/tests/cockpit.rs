@@ -890,6 +890,67 @@ async fn lock_refuses_every_id_identically_and_fire_refuses_for_want_of_one() {
     assert!(said.contains("no weapon called"), "{said}");
 }
 
+/// **16b cut Q.1: the two read verbs, and what they refuse with.**
+///
+/// The two tanks open 240 cells apart against a sixty-cell sight, so nothing is
+/// held — which is exactly the state the refusals are about. `RANGE` and
+/// `BEARING` take a contact, so they get their own line for "no lock and no
+/// name", and `FIRE`'s stays what it was: `FIRE` takes a **weapon** and never a
+/// contact, so telling its pilot they could name one would be a lie.
+///
+/// Every shape of name the platform does not hold takes one path: a slot
+/// designator whose tank is out there and undetected, a provisional number
+/// nothing issued, a designator of nothing at all, and the sixteen digits that
+/// stopped being typable with this cut.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn range_and_bearing_refuse_with_their_own_line_and_one_refusal_for_a_name() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+
+    for verb in ["range", "bearing"] {
+        let said = rig.say(0, verb);
+        assert!(
+            said.contains(cockpit::NO_LOCK_OR_NAME),
+            "{verb} with neither a lock nor a name: {said}"
+        );
+        assert!(
+            !said.contains(cockpit::NO_LOCK),
+            "{verb} answered FIRE's line: {said}"
+        );
+    }
+    // `FIRE`'s own line is untouched, and the two are different sentences.
+    let said = rig.say(0, "fire");
+    assert!(said.contains(cockpit::NO_LOCK), "{said}");
+    assert_ne!(cockpit::NO_LOCK, cockpit::NO_LOCK_OR_NAME);
+
+    let mut answers: Vec<String> = Vec::new();
+    for verb in ["lock", "range", "bearing"] {
+        let mut one: Vec<String> = Vec::new();
+        for name in ["ba", "BA", "X1", "ZZ", "0123456789abcdef", "zzzz"] {
+            let said = rig.say(0, &format!("{verb} {name}"));
+            assert!(
+                said.contains(cockpit::NO_SUCH_CONTACT),
+                "{verb} {name}: {said}"
+            );
+            one.push(said);
+        }
+        let first = one.first().cloned().unwrap_or_default();
+        for said in &one {
+            assert_eq!(
+                said, &first,
+                "{verb} answered two different refusals for two names it does not hold"
+            );
+        }
+        answers.push(first);
+    }
+    // And the three verbs answer the same sentence as one another.
+    let first = answers.first().cloned().unwrap_or_default();
+    for said in &answers {
+        assert_eq!(said, &first, "the three verbs refuse differently");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // (7) `EXIT`
 // ---------------------------------------------------------------------------

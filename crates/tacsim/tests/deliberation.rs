@@ -256,6 +256,8 @@ fn tank(id: ObjId, team: Team, pose: Pose, controller: Controller) -> CustodyUni
         profile: tacsim::arena::resolution::UnitProfile::default(),
         gunnery: 0,
         controller,
+        // 16b cut Q.1: no pod behind it.
+        slot: 0,
         unit: tactical_unit(id),
     }
 }

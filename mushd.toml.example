@@ -293,6 +293,10 @@ pass_ms = 1000                     # arena ms between one unit's passes, stagger
 # the host converts this ONCE, at boot, into per mille -- 1.5 becomes 1500.
 max_signature_factor = 1.5         # the ceiling on a target's signature factor, which also bounds the candidate cull radius
 lost_after_passes = 3              # (16b cut S.1) passes a contact may go unrefreshed before it is lost: the TTL is pass_ms x this
+# (16b cut Q.1) true names a contact by team and centre slot (BA) the moment it is
+# detected: the other side's tanks are legible classify_after_ms before doc 16 W5
+# says identification is earned, on the acquired notice, CONTACTS, the map and a panel.
+designate_on_detection = false     # (16b cut Q.1) false shows an unresolved return as X1, X2 ... until it is classified
 
 [tacsim.resolution]                # (16b cut G) where the hit-resolution tables live
 # The hit curve, the error terms, p_min and p_max: the per-mille no-dice

@@ -109,14 +109,24 @@ pub fn start(
         .ok_or(ArenaVerbError::Usage(USAGE))?
         .to_owned();
     let (red, blue) = rhs.split_once('/').ok_or(ArenaVerbError::Usage(USAGE))?;
+    // **16b cut Q.1**: the staff shortcut fields no pods, so every unit goes over
+    // with slot `0` and `Arena::new` gives it the lowest free slot of its team in
+    // unit-id order. A `@arena/start` match therefore has callsigns too, and they
+    // are the same on a replay.
     let sides = vec![
         Side {
             team: crate::arena::state::Team::Red,
-            units: parse_units(red)?,
+            units: parse_units(red)?
+                .into_iter()
+                .map(super::Fielded::unslotted)
+                .collect(),
         },
         Side {
             team: crate::arena::state::Team::Blue,
-            units: parse_units(blue)?,
+            units: parse_units(blue)?
+                .into_iter()
+                .map(super::Fielded::unslotted)
+                .collect(),
         },
     ];
     // **16b cut K.1.** The shortcut runs through the same machine the lobby
@@ -430,6 +440,8 @@ fn arm_panic_for_seed(
                 profile: crate::arena::resolution::UnitProfile::default(),
                 gunnery: 0,
                 controller: crate::arena::state::Controller::Pilot,
+                // 16b cut Q.1: no pod behind it.
+                slot: 0,
                 unit: cells,
             }],
             pilots: Vec::new(),

@@ -447,6 +447,21 @@ pub struct SensorsConfig {
     /// Zero is read as one: a contact lost the instant it is not refreshed is a
     /// contact nothing can hold.
     pub lost_after_passes: u32,
+    /// **Name a contact by team and slot the moment it is detected** (16b cut
+    /// Q.1), instead of by a provisional `X<n>` until it is classified.
+    ///
+    /// Off, and off is doc 16's reading: W5 is that identification is *earned*,
+    /// and §5 is that nothing in a frame identifies another unit before it has
+    /// been told apart. On, a pilot reads `BA` at the first pass —
+    /// `classify_after_ms` earlier than the rule allows — so the team is legible
+    /// off a return the platform has not resolved, on four surfaces at once (the
+    /// acquired notice, `CONTACTS`, the map label and a panel's list). The
+    /// classification still happens in the arena; only the *naming* stops waiting
+    /// for it.
+    ///
+    /// It is a configuration key and not a constant so that the owner can try the
+    /// other reading on a box with a server-child restart and no build.
+    pub designate_on_detection: bool,
 }
 
 impl Default for SensorsConfig {
@@ -456,6 +471,7 @@ impl Default for SensorsConfig {
             // 1.5 × 1000.
             max_signature_factor_permille: 1_500,
             lost_after_passes: 3,
+            designate_on_detection: false,
         }
     }
 }
