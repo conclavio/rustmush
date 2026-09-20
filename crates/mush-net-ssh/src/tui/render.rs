@@ -23,7 +23,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use super::panels::{ChanMsg, PanelStore, rich_plain};
+use super::panels::{ARENA_MAP_FEED, ChanMsg, PanelStore, rich_plain};
 use super::sheet::{Glyphs, SheetRow, sheet_rows};
 
 /// The speaker gutter's width (plan §7).
@@ -73,6 +73,14 @@ impl PaneRow {
             selectable: true,
         }
     }
+
+    /// The row's plain text, spans joined (16b cut Q.4). What a caller that
+    /// wants to READ a pane — a golden, the map parity test — asks for, rather
+    /// than walking `line.spans` itself.
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
 }
 
 /// A pane's rendered rows.
@@ -115,6 +123,15 @@ pub struct RenderCtx<'a> {
     pub store: &'a PanelStore,
     /// The channel the backlog pane shows.
     pub selected_channel: Option<&'a str>,
+    /// **The pane's inner rect, `(width, height)`** (16b cut Q.4), where the
+    /// caller knows it: [`super::app::TuiApp::draw_pane`] passes the rect it is
+    /// about to paint into, and the input paths (scrolling, the highlighted
+    /// row) pass `None` because they ask what the rows ARE, not how many fit.
+    ///
+    /// Only [`render_cockpit_map_rows`] reads it: a map is the one pane whose
+    /// CONTENT is a function of its size — the window it carves out of the
+    /// arena — rather than a list the pane scrolls.
+    pub pane: Option<(u16, u16)>,
 }
 
 impl RenderCtx<'_> {
@@ -2100,6 +2117,476 @@ pub fn render_unit_delta_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
 }
 
 // ---------------------------------------------------------------------------
+// The cockpit screen (16b cut Q.4; doc 16 §5).
+//
+// Six panes over ONE feed, `arena.cockpit`, plus the pulled `arena.map` the map
+// pane composes with. Nothing here names a unit, a player or an object number:
+// every word on the screen comes out of the frame, which is already filtered by
+// the arena's own observer rule (doc 16 §1, §3.6) — a contact is its designator,
+// its class word and its plot, and that is all there is to print.
+// ---------------------------------------------------------------------------
+
+/// The one line every cockpit pane shows for a frame that says the viewer holds
+/// no seat (16b cut Q.3's `seated: false`, the last frame a pilot is sent).
+pub const NOT_IN_A_COCKPIT: &str = "Not in a cockpit.";
+
+/// What the map pane says while the PULLED `arena.map` of this match has not
+/// arrived (16b cut Q.3: nothing ever pushes that feed).
+pub const WAITING_FOR_THE_MAP: &str = "Waiting for the arena map...";
+
+/// The window the map pane carves when nothing told it how big its pane is —
+/// the same seventy-eight by twenty `VIEW` sends, which is what a line client
+/// prints and what the committed fixtures are composed at.
+///
+/// It is a fallback and not a guess about the terminal: the map pane is not
+/// `selectable` and never scrolls (it renders exactly its area), so the only
+/// callers that reach it are the input paths, which ask what the rows ARE and
+/// never how many of them fit.
+pub const COCKPIT_MAP_FALLBACK: (u16, u16) = (78, 20);
+
+/// The rows the map pane spends on its own chrome: the heading above the grid
+/// and the marker legend below it. They come out of the pane's height, so the
+/// pane renders exactly its area — a pilot standing on the arena's south edge
+/// is drawn on the window's LAST row, and a pane that overran by two would clip
+/// the one marker the screen exists to show.
+const MAP_CHROME_ROWS: u16 = 2;
+
+/// Whether a cockpit or map frame is one for a seated pilot.
+///
+/// `seated` is present ONLY on the cleared frame, so its absence is the normal
+/// case and `false` is the one that empties the screen.
+fn seated(data: &Value) -> bool {
+    data.get("seated").and_then(Value::as_bool) != Some(false)
+}
+
+/// A `u64`-ish field as a `usize`, `0` when it is missing or malformed.
+fn cell_num(data: &Value, key: &str) -> usize {
+    data.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0)
+}
+
+/// An `[x, y]` arena cell, `None` for a null or malformed one.
+fn cell_pair(v: Option<&Value>) -> Option<(usize, usize)> {
+    let arr = v?.as_array()?;
+    let x = usize::try_from(arr.first()?.as_u64()?).ok()?;
+    let y = usize::try_from(arr.get(1)?.as_u64()?).ok()?;
+    Some((x, y))
+}
+
+/// The glyph a contact is drawn with, by the ONE rule the server already
+/// follows (`tacsim::match_::cockpit::ContactRow::glyph`): unknown before side,
+/// then friendly or hostile. The cockpit frame carries `class` and `friendly`,
+/// so a compositor derives it rather than carrying a second table that could
+/// disagree with the server's.
+fn contact_glyph(contact: &Value) -> char {
+    let class = contact.get("class").and_then(Value::as_str).unwrap_or("");
+    if class == "unknown" {
+        '?'
+    } else if contact
+        .get("friendly")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        '+'
+    } else {
+        'x'
+    }
+}
+
+/// The degree mark a heading or a bearing carries, or nothing at all on a
+/// terminal that told us its charset is not UTF-8 (`LANG=C` and friends, see
+/// [`crate::caps::detect_utf8`]).
+///
+/// It has to degrade like every other non-ASCII glyph on this surface. The TUI
+/// paints CELLS: a terminal that renders `\u{b0}`'s two bytes as two glyphs
+/// pushes every column after it one to the right, and the pane borders stop
+/// lining up for the rest of the frame. A line client can wear that; a
+/// full-screen one cannot.
+fn degree(utf8: bool) -> &'static str {
+    if utf8 { "\u{b0}" } else { "" }
+}
+
+/// The style one scan band letter is printed in (`g`/`y`/`r`/`d`, 16b cut Q.2).
+fn band_style(letter: char, depth: ColorDepth) -> Style {
+    let mut style = Style::default();
+    if letter == 'd' {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if matches!(depth, ColorDepth::None) {
+        return style;
+    }
+    match letter {
+        'g' => style.fg(Color::Indexed(2)),
+        'y' => style.fg(Color::Indexed(3)),
+        'r' | 'd' => style.fg(Color::Indexed(1)),
+        _ => style,
+    }
+}
+
+/// The designator a row prints, sanitized: server text on a pane border and in
+/// a prefill, so it is cut to what a designator can be.
+fn designator_of(contact: &Value) -> String {
+    truncate_chars(
+        &clean(
+            contact
+                .get("designator")
+                .and_then(Value::as_str)
+                .unwrap_or("?"),
+        ),
+        8,
+    )
+}
+
+/// **The map pane** (16b cut Q.4; doc 16 §5): the arena's terrain windowed on
+/// the pilot, with the frame's own contacts drawn on it, north-up.
+///
+/// `data` is the `arena.cockpit` keyframe; the terrain comes out of the store's
+/// `arena.map`, and the two are composed here rather than server-side, which is
+/// what makes the map free to redraw as fast as frames arrive. **No JSON is
+/// cloned**: [`mush_ansi::window_rows`] expands only the rows the window shows.
+///
+/// # The composition, which the web client must match glyph for glyph
+///
+/// 1. The window is `mush_ansi::viewport(map width, map height, the cockpit
+///    frame's own `cell`, grid width, grid height)` — centred on the platform
+///    and clamped to the arena, the SAME rule `VIEW` uses and differing only in
+///    size. It answers `(x0, y0, w, h)`. The grid's size is the pane's, less
+///    [`MAP_CHROME_ROWS`]; with no pane it is [`COCKPIT_MAP_FALLBACK`], the
+///    seventy-eight by twenty the committed fixtures are composed at.
+/// 2. The terrain is `window_rows(map rows, map width, map height, x0, y0, w,
+///    h)`: row `0` is the window's SOUTH row, each exactly `w` glyphs.
+/// 3. The markers go down in the order 16b cut Q.3 fixed — the pilot's own `@`
+///    first, then the contacts in the frame's own order — each at its ABSOLUTE
+///    cell less the window origin, and a later marker overwrites an earlier one
+///    on the same cell. A contact whose `cell` is null or outside the window is
+///    not drawn (it is still in the contacts pane).
+/// 4. A contact's glyph is [`contact_glyph`]'s: `?` unknown, `+` friendly, `x`
+///    hostile.
+/// 5. The rows print NORTH-UP: `y` from `h - 1` down to `0`.
+///
+/// The rows this returns are, in order: the heading line, exactly `h` grid rows,
+/// then the marker legend. The parity test reads the `h` in the middle.
+#[must_use]
+pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if !seated(data) {
+        return PaneRows::one(NOT_IN_A_COCKPIT);
+    }
+    let Some(map) = ctx
+        .store
+        .get(ARENA_MAP_FEED)
+        .filter(|map| seated(map) && map.get("match") == data.get("match"))
+    else {
+        return PaneRows::one(WAITING_FOR_THE_MAP);
+    };
+    let width = cell_num(map, "width");
+    let height = cell_num(map, "height");
+    let empty = Vec::new();
+    let rows = map.get("rows").and_then(Value::as_array).unwrap_or(&empty);
+    let (grid_w, grid_h) = match ctx.pane {
+        Some((w, h)) => (w, h.saturating_sub(MAP_CHROME_ROWS).max(1)),
+        None => COCKPIT_MAP_FALLBACK,
+    };
+    let you = cell_pair(data.get("cell"));
+    let (x0, y0, w, h) =
+        mush_ansi::viewport(width, height, you, usize::from(grid_w), usize::from(grid_h));
+    let mut grid = mush_ansi::window_rows(rows, width, height, x0, y0, w, h);
+    // The pilot's own marker first, then the contacts in frame order: a later
+    // marker overwrites an earlier one on the same cell.
+    if let Some(cell) = you {
+        put_marker(&mut grid, (x0, y0), cell, '@');
+    }
+    let mut legend: Vec<String> = Vec::new();
+    if let Some(contacts) = data.get("contacts").and_then(Value::as_array) {
+        for contact in contacts {
+            let Some(cell) = cell_pair(contact.get("cell")) else {
+                continue;
+            };
+            let glyph = contact_glyph(contact);
+            if put_marker(&mut grid, (x0, y0), cell, glyph) {
+                legend.push(format!("{glyph} {}", designator_of(contact)));
+            }
+        }
+    }
+    let sep = if ctx.utf8 { "\u{2014}" } else { "-" };
+    let mut out = vec![PaneRow::plain(Line::from(Span::styled(
+        format!(
+            "Map {sep} heading {:03}{}",
+            cell_num(data, "heading_deg"),
+            degree(ctx.utf8)
+        ),
+        Style::default().add_modifier(Modifier::BOLD),
+    )))];
+    for y in (0..h).rev() {
+        let row: String = grid.get(y).map(|r| r.iter().collect()).unwrap_or_default();
+        out.push(PaneRow::plain(Line::from(Span::raw(row))));
+    }
+    out.push(PaneRow::plain(Line::from(dim_span_owned(
+        &legend.join("  "),
+    ))));
+    PaneRows { rows: out }
+}
+
+/// Write `glyph` into the window at an ABSOLUTE arena `cell`, answering whether
+/// it landed. A cell south or west of the window's origin, or past its far
+/// corner, is not drawn — it is still listed in the contacts pane.
+fn put_marker(
+    grid: &mut [Vec<char>],
+    origin: (usize, usize),
+    cell: (usize, usize),
+    glyph: char,
+) -> bool {
+    let (x0, y0) = origin;
+    let (x, y) = cell;
+    if x < x0 || y < y0 {
+        return false;
+    }
+    match grid.get_mut(y - y0).and_then(|row| row.get_mut(x - x0)) {
+        Some(slot) => {
+            *slot = glyph;
+            true
+        }
+        None => false,
+    }
+}
+
+/// **The status pane** (16b cut Q.4): the callsign the whole arena calls this
+/// tank by, then what the platform is doing and what it is holding.
+#[must_use]
+pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if !seated(data) {
+        return PaneRows::default();
+    }
+    let system = ctx.tag("system");
+    let mut rows = vec![PaneRow::plain(Line::from(Span::styled(
+        format!(
+            "Callsign {}",
+            truncate_chars(
+                &clean(data.get("callsign").and_then(Value::as_str).unwrap_or("?")),
+                8
+            )
+        ),
+        Style::default().add_modifier(Modifier::BOLD),
+    )))];
+    let held = if data.get("blocked").and_then(Value::as_bool) == Some(true) {
+        "  HELD"
+    } else {
+        ""
+    };
+    rows.push(PaneRow::plain(Line::from(Span::raw(format!(
+        "power {}{held}",
+        clean(data.get("power").and_then(Value::as_str).unwrap_or("?"))
+    )))));
+    rows.push(PaneRow::plain(Line::from(Span::raw(format!(
+        "{} kph  heading {:03}{}",
+        data.get("speed_kph").and_then(Value::as_i64).unwrap_or(0),
+        cell_num(data, "heading_deg"),
+        degree(ctx.utf8)
+    )))));
+    // 16b cut X.1: heat is a line of its own, and only for a platform that
+    // carries it — the frame leaves the key null otherwise.
+    if let Some(heat) = data.get("heat").filter(|h| !h.is_null()) {
+        let over = if heat.get("overheated").and_then(Value::as_bool) == Some(true) {
+            "  OVERHEATED"
+        } else {
+            ""
+        };
+        rows.push(PaneRow::plain(Line::from(Span::raw(format!(
+            "heat {}/{}{over}",
+            heat.get("heat").and_then(Value::as_i64).unwrap_or(0),
+            heat.get("max").and_then(Value::as_i64).unwrap_or(0),
+        )))));
+    }
+    rows.push(PaneRow::plain(Line::from(Span::styled(
+        format!(
+            "tempo {}",
+            clean(data.get("tempo").and_then(Value::as_str).unwrap_or("?"))
+        ),
+        system,
+    ))));
+    let lock = match data.get("lock_designator").and_then(Value::as_str) {
+        Some(named) => {
+            let mut line = format!("Lock {}", truncate_chars(&clean(named), 8));
+            if let Some(range) = data.get("lock_range_m").and_then(Value::as_u64) {
+                line.push_str(&format!("  {range} m"));
+            }
+            if let Some(percent) = data.get("lock_percent").and_then(Value::as_u64) {
+                line.push_str(&format!("  {percent}%"));
+            }
+            line
+        }
+        None => "No lock".to_string(),
+    };
+    rows.push(PaneRow::plain(Line::from(Span::raw(lock))));
+    PaneRows { rows }
+}
+
+/// **The damage pane** (16b cut Q.4): one row per section, in the layout
+/// `tacsim::match_::cockpit::section_lines` prints — the condition word, the
+/// internals, then each facet's armour. A pilot's own tank is outside the
+/// observer rule entirely (doc 16 §3.6), so this is the whole of it.
+#[must_use]
+pub fn render_cockpit_damage_rows(data: &Value, _ctx: &RenderCtx<'_>) -> PaneRows {
+    if !seated(data) {
+        return PaneRows::default();
+    }
+    let Some(sections) = data.get("sections").and_then(Value::as_array) else {
+        return PaneRows::default();
+    };
+    let mut rows = Vec::with_capacity(sections.len());
+    for section in sections {
+        let mut line = format!(
+            "{}  {}  {}/{}",
+            clean(section.get("id").and_then(Value::as_str).unwrap_or("?")),
+            clean(
+                section
+                    .get("condition")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+            ),
+            section
+                .get("internals")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            section
+                .get("internals_max")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+        );
+        if let Some(facets) = section.get("facets").and_then(Value::as_array) {
+            for facet in facets {
+                line.push_str(&format!(
+                    "  {} {}/{}",
+                    clean(facet.get("id").and_then(Value::as_str).unwrap_or("?")),
+                    facet.get("armor").and_then(Value::as_i64).unwrap_or(0),
+                    facet.get("armor_max").and_then(Value::as_i64).unwrap_or(0),
+                ));
+            }
+        }
+        rows.push(PaneRow::plain(Line::from(Span::raw(line))));
+    }
+    PaneRows { rows }
+}
+
+/// **The weapons pane** (16b cut Q.4): what each weapon is, whether its cycle
+/// has finished, what it has left, and its OWN chance against the lock (16b cut
+/// F.2's item 4) where a lock gives one.
+#[must_use]
+pub fn render_cockpit_weapons_rows(data: &Value, _ctx: &RenderCtx<'_>) -> PaneRows {
+    if !seated(data) {
+        return PaneRows::default();
+    }
+    let Some(weapons) = data.get("weapons").and_then(Value::as_array) else {
+        return PaneRows::default();
+    };
+    if weapons.is_empty() {
+        return PaneRows::one("(no weapon)");
+    }
+    let mut rows = Vec::with_capacity(weapons.len());
+    for weapon in weapons {
+        let ready = if weapon.get("ready").and_then(Value::as_bool) == Some(true) {
+            "ready".to_string()
+        } else {
+            format!(
+                "{} s",
+                weapon
+                    .get("ready_in_ms")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    .saturating_add(999)
+                    / 1_000
+            )
+        };
+        let chance = match weapon.get("percent").and_then(Value::as_u64) {
+            Some(percent) => format!("  {percent}%"),
+            None => String::new(),
+        };
+        rows.push(PaneRow::plain(Line::from(Span::raw(format!(
+            "{}  {ready}  {}/{}{chance}",
+            clean(weapon.get("id").and_then(Value::as_str).unwrap_or("?")),
+            weapon.get("rounds").and_then(Value::as_i64).unwrap_or(0),
+            weapon
+                .get("rounds_max")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+        )))));
+    }
+    PaneRows { rows }
+}
+
+/// **The contacts pane** (16b cut Q.4): one selectable row per contact —
+/// `Enter` prefills `lock <designator>`, `s` prefills `scan <designator>` — and,
+/// under a contact this platform has had a close look at, one row of its scan.
+///
+/// The scan row reads its section words out of `scan_tables[condition.table]`
+/// (16b cut Q.2) and colours each by its band. A word not green also carries its
+/// band letter, so a colourless terminal loses nothing: damage is the thing this
+/// row exists to show.
+#[must_use]
+pub fn render_cockpit_contacts_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if !seated(data) {
+        return PaneRows::default();
+    }
+    let Some(contacts) = data.get("contacts").and_then(Value::as_array) else {
+        return PaneRows::default();
+    };
+    if contacts.is_empty() {
+        return PaneRows::one("(no contacts)");
+    }
+    let empty = Vec::new();
+    let tables = data
+        .get("scan_tables")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let mut rows = Vec::new();
+    for contact in contacts {
+        let named = designator_of(contact);
+        rows.push(PaneRow::selectable(
+            Line::from(vec![
+                Span::styled(
+                    format!("{named:<4}"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(
+                    "{}  {:03}{}  {}  {} m  {} s",
+                    clean(contact.get("class").and_then(Value::as_str).unwrap_or("?")),
+                    cell_num(contact, "bearing_deg"),
+                    degree(ctx.utf8),
+                    clean(contact.get("band").and_then(Value::as_str).unwrap_or("?")),
+                    contact.get("range_m").and_then(Value::as_u64).unwrap_or(0),
+                    contact.get("age_s").and_then(Value::as_i64).unwrap_or(0),
+                )),
+            ]),
+            format!("lock {named}"),
+            named,
+        ));
+        if let Some(scan) = scan_spans(contact, tables, ctx.depth) {
+            rows.push(PaneRow::plain(Line::from(scan)));
+        }
+    }
+    PaneRows { rows }
+}
+
+/// One contact's scan row, or `None` when this platform holds no reading of it.
+fn scan_spans(contact: &Value, tables: &[Value], depth: ColorDepth) -> Option<Vec<Span<'static>>> {
+    let condition = contact.get("condition").filter(|c| !c.is_null())?;
+    let table = tables.get(cell_num(condition, "table"))?.as_array()?;
+    let bands = condition.get("bands").and_then(Value::as_str)?;
+    let mut spans = vec![Span::raw("  ".to_string())];
+    for (letter, section) in bands.chars().zip(table) {
+        let word = clean(section.as_str().unwrap_or("?"));
+        let text = if letter == 'g' {
+            format!("{word} ")
+        } else {
+            format!("{word}/{letter} ")
+        };
+        spans.push(Span::styled(text, band_style(letter, depth)));
+    }
+    (spans.len() > 1).then_some(spans)
+}
+
+// ---------------------------------------------------------------------------
 // Chrome.
 // ---------------------------------------------------------------------------
 
@@ -2625,6 +3112,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let data = serde_json::json!({
             "folder": "inbox",
@@ -2679,6 +3167,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let list = serde_json::json!({
             "schema": { "id": "jobs", "version": 1, "shape": "list",
@@ -2788,6 +3277,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let rows: Vec<Value> = (0..300)
             .map(|i| serde_json::json!({ "id": i, "title": format!("row {i}") }))
@@ -2842,6 +3332,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let view = serde_json::json!({
             "schema": { "id": "actions", "version": 1, "shape": "list",
@@ -3107,6 +3598,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let data = f1();
 
@@ -3218,6 +3710,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let unringed = RenderCtx {
             store: &empty,
@@ -3273,6 +3766,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let journal = texts(&render_unit_journal_rows(&Value::Null, &ctx));
         assert_eq!(journal.len(), 6, "{journal:?}");
@@ -3319,6 +3813,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let before = texts(&render_unit_delta_rows(&Value::Null, &ctx));
         assert_eq!(before[0], "#7 rev 4  gauss");
@@ -3338,6 +3833,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let after = texts(&render_unit_delta_rows(&f1(), &ctx));
         assert_eq!(after[0], "rev 4  gauss", "the subject is held: no prefix");
@@ -3376,6 +3872,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let data = f1();
 
@@ -3469,6 +3966,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         assert_eq!(
             texts(&render_unit_sections_compact_rows(&f1(), &ctx)).len(),
@@ -3539,6 +4037,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let view = |truncated: Option<bool>| {
             let mut v = serde_json::json!({
@@ -3576,6 +4075,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         let mut cut = f1();
         cut["capabilities"] = serde_json::json!([
@@ -3623,6 +4123,7 @@ mod tests {
             utf8: true,
             store: &store,
             selected_channel: None,
+            pane: None,
         };
         // The elision marker is an ordinary ring row: it keeps its delta's
         // object, revision and cause, and it sits LAST within its own delta,
@@ -3729,5 +4230,409 @@ mod tests {
             seven.contains(" 1 scene ") && seven.contains(" 7 actions "),
             "{seven}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The cockpit panes (16b cut Q.4; doc 16 §5)
+    // -----------------------------------------------------------------------
+
+    /// A 40-by-30 arena of open grass with a wall down column 10.
+    fn yard() -> Value {
+        let rows: Vec<Value> = (0..30)
+            .map(|_| serde_json::json!([[".", 10], ["#", 1], [".", 29]]))
+            .collect();
+        serde_json::json!({
+            "schema": { "id": "arena.map", "version": 1, "shape": "terrain", "retain": "latest" },
+            "match": 3, "surface": "yard", "cell_cm": 1000,
+            "width": 40, "height": 30, "origin_cell": [0, 0],
+            "rows": rows, "legend": [[".", "grass"], ["#", "wall"]]
+        })
+    }
+
+    fn cockpit(cell: Value, contacts: Value) -> Value {
+        serde_json::json!({
+            "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+            "match": 3, "callsign": "RA", "cell": cell, "heading_deg": 90,
+            "power": "online", "blocked": false, "speed_kph": 20, "tempo": "alert",
+            "heat": null, "lock_designator": null, "contacts": contacts,
+            "scan_tables": [["engine", "hull", "turret"]],
+            "sections": [], "weapons": []
+        })
+    }
+
+    /// A contact as the wire carries one — the sixteen-digit arena id
+    /// included, because the row that must never print it is the one assertion
+    /// worth making here (16b cut Q.1's `no_sixteen_digit_word`, on this
+    /// surface).
+    fn contact(designator: &str, class: &str, friendly: bool, cell: Value) -> Value {
+        serde_json::json!({
+            "id": "2222222222222222",
+            "designator": designator, "class": class, "friendly": friendly, "cell": cell,
+            "bearing_deg": 90, "band": "close", "range_m": 50, "age_s": 0, "condition": null
+        })
+    }
+
+    fn map_rows(frame: &Value, map: Option<&Value>, pane: (u16, u16)) -> Vec<String> {
+        let theme = AnsiTheme::classic();
+        let mut store = PanelStore::new();
+        if let Some(map) = map {
+            store.apply_panel(
+                &mush_proto::SmolStr::new_static("arena.map"),
+                mush_proto::PanelFrameKind::Keyframe,
+                map,
+                0,
+            );
+        }
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: Some(pane),
+        };
+        render_cockpit_map_rows(frame, &ctx)
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect()
+    }
+
+    /// 16b cut Q.4: the window follows the platform and CLAMPS at the arena's
+    /// edge — the same rule `VIEW` uses — so a tank in a corner is drawn at its
+    /// own cell rather than at the middle of a window that ran off the map.
+    #[test]
+    fn the_cockpit_window_follows_the_pilot_and_clamps_at_the_edge() {
+        let map = yard();
+        // A ten-by-ten window (twelve rows of pane, two of chrome) in the
+        // middle: the platform is drawn at the window's centre.
+        let rows = map_rows(
+            &cockpit(serde_json::json!([20, 15]), serde_json::json!([])),
+            Some(&map),
+            (10, 12),
+        );
+        assert_eq!(rows.len(), 12, "a head, ten rows, a legend");
+        // x0 = 20 - 5 = 15, y0 = 15 - 5 = 10; the marker is at (5, 5) of the
+        // window. The rows print north-up under one heading row, so window row
+        // `y` is at index `h - y`: 10 - 5 = 5.
+        assert_eq!(rows.get(5).and_then(|r| r.chars().nth(5)), Some('@'));
+
+        // The south-west corner: both axes clamp to zero, and the platform is
+        // drawn at its OWN cell — including on the window's very last row,
+        // which is the row a pane that overran its area would clip.
+        let rows = map_rows(
+            &cockpit(serde_json::json!([1, 0]), serde_json::json!([])),
+            Some(&map),
+            (10, 12),
+        );
+        assert_eq!(
+            rows.get(10).and_then(|r| r.chars().nth(1)),
+            Some('@'),
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows.get(1).map(String::len),
+            Some(10),
+            "ten columns, north-up: {rows:?}"
+        );
+
+        // The north-east corner: x0 = 40 - 10 = 30, y0 = 30 - 10 = 20.
+        let rows = map_rows(
+            &cockpit(serde_json::json!([39, 29]), serde_json::json!([])),
+            Some(&map),
+            (10, 12),
+        );
+        assert_eq!(rows.get(1).and_then(|r| r.chars().nth(9)), Some('@'));
+
+        // A window wider than the arena takes the whole arena, wall included.
+        let rows = map_rows(
+            &cockpit(serde_json::json!([5, 5]), serde_json::json!([])),
+            Some(&map),
+            (200, 200),
+        );
+        assert_eq!(rows.len(), 32, "a head, thirty rows, a legend");
+        assert_eq!(rows.get(1).and_then(|r| r.chars().nth(10)), Some('#'));
+    }
+
+    /// 16b cut Q.4: the marker order — the pilot first, then the contacts in
+    /// the frame's own order, a later marker overwriting an earlier one — and a
+    /// contact off the window is not drawn and not in the legend (it is still
+    /// in the contacts pane, which is where the pilot reads it).
+    #[test]
+    fn markers_go_down_in_frame_order_and_a_contact_off_the_window_is_not_drawn() {
+        let map = yard();
+        let frame = cockpit(
+            serde_json::json!([20, 15]),
+            serde_json::json!([
+                contact("X2", "unknown", false, serde_json::json!([18, 15])),
+                contact("BA", "blue", false, serde_json::json!([22, 16])),
+                contact("RB", "red", true, serde_json::json!([18, 15])),
+                contact("X9", "unknown", false, serde_json::json!([39, 29])),
+                contact("X8", "unknown", false, Value::Null),
+            ]),
+        );
+        let rows = map_rows(&frame, Some(&map), (10, 12));
+        // x0 = 15, y0 = 10.
+        assert_eq!(
+            rows.get(5).and_then(|r| r.chars().nth(3)),
+            Some('+'),
+            "RB came after X2 on the same cell and overwrote it: {rows:?}"
+        );
+        assert_eq!(rows.get(4).and_then(|r| r.chars().nth(7)), Some('x'));
+        assert_eq!(rows.get(5).and_then(|r| r.chars().nth(5)), Some('@'));
+        // The legend is the markers that landed, in frame order.
+        assert_eq!(rows.last().map(String::as_str), Some("? X2  x BA  + RB"));
+        // A contact in a far corner and one with no plot at all are neither
+        // drawn nor named on the map.
+        for off in ["X9", "X8"] {
+            assert!(
+                !rows.last().is_some_and(|l| l.contains(off)),
+                "{off} is off the window: {rows:?}"
+            );
+        }
+    }
+
+    /// 16b cut Q.4: with no map of this match the pane says it is waiting, and
+    /// a cleared frame is the one-line empty state on the map and nothing at
+    /// all on the others.
+    #[test]
+    fn the_cockpit_panes_wait_for_the_ground_and_empty_on_a_cleared_frame() {
+        let frame = cockpit(serde_json::json!([5, 5]), serde_json::json!([]));
+        assert_eq!(
+            map_rows(&frame, None, (20, 12)),
+            vec![WAITING_FOR_THE_MAP.to_string()]
+        );
+        // A map of ANOTHER match is not this ground.
+        let mut elsewhere = yard();
+        elsewhere["match"] = serde_json::json!(4);
+        assert_eq!(
+            map_rows(&frame, Some(&elsewhere), (20, 12)),
+            vec![WAITING_FOR_THE_MAP.to_string()]
+        );
+
+        let cleared = serde_json::json!({
+            "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
+            "seated": false
+        });
+        assert_eq!(
+            map_rows(&cleared, Some(&yard()), (20, 12)),
+            vec![NOT_IN_A_COCKPIT.to_string()]
+        );
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+        };
+        for render in [
+            render_cockpit_status_rows,
+            render_cockpit_damage_rows,
+            render_cockpit_weapons_rows,
+            render_cockpit_contacts_rows,
+        ] {
+            assert!(
+                render(&cleared, &ctx).rows.is_empty(),
+                "a cleared frame empties every other pane"
+            );
+        }
+    }
+
+    /// 16b cut Q.4: the status, damage, weapons and contacts panes read the
+    /// frame and nothing else — and a contact this platform has had a close
+    /// look at carries its scan words, read through `scan_tables`.
+    #[test]
+    fn the_cockpit_panes_read_the_frame_and_the_scan_table() {
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::new();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+        };
+        let mut frame = cockpit(
+            serde_json::json!([5, 5]),
+            serde_json::json!([
+                { "id": "1111111111111111",
+                  "designator": "BA", "class": "blue", "friendly": false, "cell": [7, 7],
+                  "bearing_deg": 45, "band": "effective", "range_m": 450, "age_s": 1,
+                  "condition": { "table": 0, "bands": "gyr", "age_ms": 2000 } },
+                contact("X2", "unknown", false, Value::Null)
+            ]),
+        );
+        frame["blocked"] = serde_json::json!(true);
+        frame["heat"] = serde_json::json!({ "heat": 90, "max": 100, "overheated": true });
+        frame["lock_designator"] = serde_json::json!("BA");
+        frame["lock_range_m"] = serde_json::json!(430);
+        frame["lock_percent"] = serde_json::json!(62);
+        frame["sections"] = serde_json::json!([
+            { "id": "hull", "condition": "intact", "internals": 60, "internals_max": 60,
+              "facets": [ { "id": "front", "armor": 55, "armor_max": 80 } ] },
+            { "id": "turret", "condition": "destroyed", "internals": 0, "internals_max": 30,
+              "facets": [] }
+        ]);
+        frame["weapons"] = serde_json::json!([
+            { "id": "cannon", "ready": true, "ready_in_ms": 0, "rounds": 14, "rounds_max": 20,
+              "percent": 62 },
+            { "id": "machine_gun", "ready": false, "ready_in_ms": 900, "rounds": 380,
+              "rounds_max": 500, "percent": null }
+        ]);
+
+        let status: Vec<String> = render_cockpit_status_rows(&frame, &ctx)
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect();
+        assert_eq!(
+            status,
+            vec![
+                "Callsign RA".to_string(),
+                "power online  HELD".to_string(),
+                "20 kph  heading 090\u{b0}".to_string(),
+                "heat 90/100  OVERHEATED".to_string(),
+                "tempo alert".to_string(),
+                "Lock BA  430 m  62%".to_string(),
+            ]
+        );
+        // A platform with no lock says so, and one with no heat has no row.
+        let mut cold = frame.clone();
+        cold["lock_designator"] = Value::Null;
+        cold["heat"] = Value::Null;
+        let status: Vec<String> = render_cockpit_status_rows(&cold, &ctx)
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect();
+        assert_eq!(status.len(), 5);
+        assert_eq!(status.last().map(String::as_str), Some("No lock"));
+
+        let damage: Vec<String> = render_cockpit_damage_rows(&frame, &ctx)
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect();
+        assert_eq!(
+            damage,
+            vec![
+                "hull  intact  60/60  front 55/80".to_string(),
+                "turret  destroyed  0/30".to_string(),
+            ]
+        );
+
+        let weapons: Vec<String> = render_cockpit_weapons_rows(&frame, &ctx)
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect();
+        assert_eq!(
+            weapons,
+            vec![
+                "cannon  ready  14/20  62%".to_string(),
+                "machine_gun  1 s  380/500".to_string(),
+            ]
+        );
+
+        let contacts = render_cockpit_contacts_rows(&frame, &ctx);
+        let rows: Vec<String> = contacts.rows.iter().map(PaneRow::text).collect();
+        assert_eq!(
+            rows,
+            vec![
+                "BA  blue  045\u{b0}  effective  450 m  1 s".to_string(),
+                // The scan words, read through `scan_tables[0]`: green needs no
+                // mark, and everything else carries its band letter so a
+                // terminal with no colour loses nothing.
+                "  engine hull/y turret/r ".to_string(),
+                "X2  unknown  090\u{b0}  close  50 m  0 s".to_string(),
+            ]
+        );
+        assert_eq!(
+            contacts.rows.first().and_then(|r| r.prefill.clone()),
+            Some("lock BA".to_string())
+        );
+        assert_eq!(
+            contacts.rows.first().and_then(|r| r.row_key.clone()),
+            Some("BA".to_string())
+        );
+        assert!(
+            contacts.rows.get(1).is_some_and(|r| !r.selectable),
+            "the scan row is a continuation, not a target"
+        );
+        // Nothing in any pane prints the contact's arena id — and both of this
+        // frame's contacts carry one, so the needle has something behind it.
+        for row in &rows {
+            for id in ["1111111111111111", "2222222222222222"] {
+                assert!(!row.contains(id), "the contacts pane leaked {id}: {row:?}");
+            }
+        }
+    }
+
+    /// 16b cut Q.4: the degree mark degrades with every other non-ASCII glyph
+    /// on this surface.
+    ///
+    /// The TUI paints cells. A terminal that told us its charset is not UTF-8
+    /// (`LANG=C`) would render `\u{b0}`'s two bytes as two glyphs and every
+    /// column after it — the pane's own right border included — would sit one
+    /// to the right for the rest of the frame.
+    #[test]
+    fn nothing_on_the_cockpit_is_non_ascii_without_utf8() {
+        let theme = AnsiTheme::classic();
+        let map = yard();
+        let mut store = PanelStore::new();
+        store.apply_panel(
+            &mush_proto::SmolStr::new_static("arena.map"),
+            mush_proto::PanelFrameKind::Keyframe,
+            &map,
+            0,
+        );
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::None,
+            utf8: false,
+            store: &store,
+            selected_channel: None,
+            pane: Some((20, 12)),
+        };
+        let frame = cockpit(
+            serde_json::json!([20, 15]),
+            serde_json::json!([contact("X2", "unknown", false, serde_json::json!([18, 15]))]),
+        );
+        let mut rows: Vec<String> = render_cockpit_map_rows(&frame, &ctx)
+            .rows
+            .iter()
+            .map(PaneRow::text)
+            .collect();
+        assert_eq!(
+            rows.first().map(String::as_str),
+            Some("Map - heading 090"),
+            "the em dash AND the degree mark degrade: {rows:?}"
+        );
+        for render in [
+            render_cockpit_status_rows,
+            render_cockpit_damage_rows,
+            render_cockpit_weapons_rows,
+            render_cockpit_contacts_rows,
+        ] {
+            rows.extend(render(&frame, &ctx).rows.iter().map(PaneRow::text));
+        }
+        assert!(
+            rows.iter().any(|r| r.contains("heading 090")),
+            "the status row painted: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("X2  unknown  090  close")),
+            "the contacts row painted: {rows:?}"
+        );
+        for row in &rows {
+            assert!(
+                row.is_ascii(),
+                "a terminal with no UTF-8 is sent ASCII only: {row:?}"
+            );
+        }
     }
 }

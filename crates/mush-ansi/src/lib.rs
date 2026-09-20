@@ -45,7 +45,9 @@ mod theme;
 mod wrap;
 
 pub use color::{ANSI16_RGB, PALETTE_256, downgrade, nearest_16, nearest_256, sgr};
-pub use panel::{GRID_MAX_COLUMNS, GRID_MAX_ROWS, expand_rows, grid_lines, is_grid, viewport};
+pub use panel::{
+    GRID_MAX_COLUMNS, GRID_MAX_ROWS, expand_rows, grid_lines, is_grid, viewport, window_rows,
+};
 pub use render::{fmt_duration, render};
 pub use theme::{AnsiTheme, merge_styles};
 pub use wrap::{MIN_HANG_BODY, RESET, ansi_len, wrap, wrap_indent};

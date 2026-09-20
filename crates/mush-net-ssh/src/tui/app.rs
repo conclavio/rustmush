@@ -9,7 +9,7 @@
 //! bytes after the lock drops (invariant T2).
 //!
 //! **Modes** (D-I-17). The app starts in **nav** mode, where bare keys act:
-//! `1`–`9` switch screens, `Tab`/`Shift-Tab` move pane focus, arrows and
+//! `0`–`9` switch screens, `Tab`/`Shift-Tab` move pane focus, arrows and
 //! `PgUp`/`PgDn` scroll the focused pane, `g`/`G` jump, `?` opens help,
 //! `Esc` closes an overlay, and every other key is the screen's own binding
 //! or — on the scene screen — a one-letter exit (D-I-19). `Enter` enters
@@ -39,15 +39,15 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use serde_json::Value;
 
 use super::keys::{Key, KeyParser};
-use super::panels::{ChanMsg, PanelOutcome, PanelStore, UNIT_FEED};
+use super::panels::{ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, PanelOutcome, PanelStore, UNIT_FEED};
 use super::render::{
     Entry, GUTTER_W, PaneRows, RenderCtx, dim_span_owned, legend_line, render_backlog_rows,
     render_channels_rows, render_event, render_rolls_rows, render_sheet_rows, render_vitals_rows,
     render_who_rail, status_line, tab_strip, vitals_line, wrap_spans,
 };
 use super::screen::{
-    BorderRole, GLOBAL_KEYS, JUMP_KEYS, KeyAction, LocalAction, PaneContent, PaneId, PaneSlot,
-    PaneSpec, Screen, ScreenId, builtin_screens, validate_screens,
+    BorderRole, COCKPIT_SCREEN, GLOBAL_KEYS, JUMP_KEYS, KeyAction, LocalAction, PaneContent,
+    PaneId, PaneSlot, PaneSpec, Screen, ScreenId, builtin_screens, validate_screens,
 };
 use crate::line::LineBuffer;
 
@@ -86,6 +86,18 @@ const BACKLOG_LATCH_S: i64 = 5;
 /// `mush_core::request::MAX_OPEN_REQUESTS_PER_SUBJECT`. Past it the newest
 /// is dropped, as the engine refuses to open one.
 const MAX_OPEN_REQUESTS_PER_SUBJECT: usize = 32;
+/// **Seconds between two asks for the arena's terrain** (16b cut Q.4).
+///
+/// `arena.map` is PULLED and never pushed (16b cut Q.3), it is never in the
+/// session's resume ring, and a reconnected or newly-seated pilot therefore
+/// holds none. The cockpit frame says which match the ground belongs to, so
+/// holding a frame of match M with no map of M is exactly the condition that
+/// asks — and it asks again on the same terms, so a dropped or throttled
+/// answer heals on the next pulse instead of leaving a dark map for the
+/// session. Two seconds because a frame arrives twice a second at the quiet
+/// tempo and up to ten times a second at the engaged one: without the latch a
+/// slow link would be asked for the whole ground ten times a second.
+pub const MAP_HEAL_LATCH_S: i64 = 2;
 
 /// Nav or input (D-I-17).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,12 +217,16 @@ struct Palette {
     selected: usize,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct PaneUi {
     /// Rows scrolled from the top (text panes).
     scroll: usize,
     /// The highlighted selectable row's index into the pane's rows.
     selected: usize,
+    /// **The `row_key` of the row the player picked** (16b cut Q.4), which is
+    /// what the index is re-derived from on every render — see
+    /// [`TuiApp::anchored`].
+    selected_key: Option<String>,
 }
 
 /// A client-local command (`/clear`, `/help`, `/history`, `/notui`) the
@@ -285,6 +301,22 @@ pub struct TuiApp {
     answering: Option<(u64, String)>,
     thinking: Vec<(String, i64)>,
     composing: Vec<(String, i64)>,
+    /// When the pulled `arena.map` was last asked for, Unix seconds (16b cut
+    /// Q.4). An aging latch, not a flag — see [`MAP_HEAL_LATCH_S`].
+    map_asked_at: Option<i64>,
+    /// The match the last such ask was for (16b cut Q.4). The latch re-arms
+    /// on a match CHANGE and on nothing else: an answer that keeps coming back
+    /// wrong — the unseated one, or ground of a match that has ended — must
+    /// not re-arm it, or the ask would go out once per answer instead of once
+    /// per [`MAP_HEAL_LATCH_S`], which is the storm the latch exists to stop.
+    map_asked_for: Option<i64>,
+    /// The match id the cockpit screen has already been switched to for (16b
+    /// cut Q.4). It is set once per match, so a pilot who walks away from the
+    /// screen is never dragged back to it by the next pulse.
+    cockpit_switched: Option<i64>,
+    /// **Whether a frame has ever said this viewer is seated** (16b cut Q.4):
+    /// the gate on the tenth tab, described on [`Self::screen_available`].
+    cockpit_seat: bool,
 }
 
 fn system_clock() -> i64 {
@@ -351,6 +383,10 @@ impl TuiApp {
             answering: None,
             thinking: Vec::new(),
             composing: Vec::new(),
+            map_asked_at: None,
+            map_asked_for: None,
+            cockpit_switched: None,
+            cockpit_seat: false,
         })
     }
 
@@ -362,6 +398,52 @@ impl TuiApp {
     /// Record what the server announced before the TUI opened.
     pub fn set_manifest(&mut self, manifest: TuiManifest) {
         self.manifest = manifest;
+        self.leave_a_screen_this_server_does_not_have();
+    }
+
+    /// **Whether a screen exists for THIS viewer** (16b cut Q.4).
+    ///
+    /// A screen with no [`Screen::gate`] always does. A gated one needs two
+    /// things: the server publishes the feed — an EMPTY manifest is a hello
+    /// that has not landed, and over SSH one never does, so it counts as
+    /// published — and, for the cockpit, the one gate there is, a frame has
+    /// said this viewer is SEATED.
+    ///
+    /// The second half is the observer rule on the tab strip (doc 16 §1). Both
+    /// the push and the query answer `seated: false` to anyone who is not in a
+    /// cockpit, so a bystander in `@tui` on an arena server has no cockpit tab
+    /// at all, rather than one that would tell them a match is being fought.
+    /// The flag is STICKY for the session ([`Self::cockpit_seat`]): the cleared
+    /// frame is the last one a pilot gets, and it still has to find a screen to
+    /// render its empty state on.
+    fn screen_available(&self, screen: &Screen) -> bool {
+        match screen.gate {
+            None => true,
+            Some(feed) => {
+                (self.manifest.panels.is_empty() || manifest_has(&self.manifest, feed))
+                    && (feed != COCKPIT_FEED || self.cockpit_seat)
+            }
+        }
+    }
+
+    /// The screens this server has, in table order.
+    fn available_screens(&self) -> impl Iterator<Item = &Screen> {
+        self.screens.iter().filter(|s| self.screen_available(s))
+    }
+
+    /// A hello that takes a gated screen away leaves the player standing on a
+    /// tab that is no longer drawn: put them back on the first screen, which is
+    /// never gated.
+    fn leave_a_screen_this_server_does_not_have(&mut self) {
+        let gone = self
+            .screens
+            .iter()
+            .find(|s| s.id == self.active)
+            .is_some_and(|s| !self.screen_available(s));
+        if gone && let Some(first) = self.screens.first().map(|s| s.id) {
+            self.active = first;
+            self.focus = 0;
+        }
     }
 
     /// Update capabilities (color depth / geometry) on resize.
@@ -489,8 +571,48 @@ impl TuiApp {
     fn pane_ui(&self, pane: PaneId) -> PaneUi {
         self.pane_ui
             .get(&(self.active, pane))
-            .copied()
+            .cloned()
             .unwrap_or_default()
+    }
+
+    /// **The index the highlight actually rests on** (16b cut Q.4).
+    ///
+    /// [`PaneUi::selected`] is an index into rows that are re-rendered from
+    /// whatever the feed holds *now*. On a list that changes on a human
+    /// timescale an index is fine; the cockpit's contacts arrive as fast as
+    /// the arena pulses and grow a scan row under any contact that gains a
+    /// close look (16b cut Q.2), so a row inserted above the highlight would
+    /// slide it onto a neighbour — and `Enter` would open the box with another
+    /// contact's `lock`. The row's KEY is what the player picked, so the index
+    /// follows the key wherever the row moved to. A key that is gone (the
+    /// contact was lost) leaves the index where it was, and `selected_row`'s
+    /// own fallback takes it from there.
+    fn anchored(&self, pane: PaneId, rows: &PaneRows) -> usize {
+        let ui = self.pane_ui(pane);
+        let Some(key) = ui.selected_key.as_deref() else {
+            return ui.selected;
+        };
+        if rows
+            .rows
+            .get(ui.selected)
+            .and_then(|r| r.row_key.as_deref())
+            == Some(key)
+        {
+            return ui.selected;
+        }
+        rows.rows
+            .iter()
+            .position(|r| r.selectable && r.row_key.as_deref() == Some(key))
+            .unwrap_or(ui.selected)
+    }
+
+    /// Move a pane's highlight to `index`, remembering the row's key so the
+    /// next render finds it again — see [`Self::anchored`].
+    fn remember_selection(&mut self, pane: PaneId, index: usize, rows: &PaneRows) {
+        let key = rows.rows.get(index).and_then(|r| r.row_key.clone());
+        let ui = self.pane_ui_mut(pane);
+        ui.selected = index;
+        ui.selected_key = key;
     }
 
     // ---- events -----------------------------------------------------------
@@ -540,6 +662,18 @@ impl TuiApp {
             if feed.ends_with(".vitals") {
                 q.push((feed.clone(), empty()));
             }
+        }
+        // **16b cut Q.4**: the cockpit feed is asked for once on entry, where
+        // the server publishes it. The arena PUSHES a frame only when one
+        // changes (`Frame::same_as`), so a pilot sitting still in a powered
+        // tank would otherwise wait for the first thing to move before their
+        // screen existed at all. Anyone who is not in a cockpit is answered
+        // `seated: false`, which is what keeps the tenth tab off a bystander's
+        // strip. An empty manifest is a hello that has not landed — and over
+        // SSH one never does — so it still asks, exactly as `comsys` and
+        // `scenes` above do.
+        if self.manifest.panels.is_empty() || manifest_has(&self.manifest, COCKPIT_FEED) {
+            q.push((COCKPIT_FEED.to_string(), empty()));
         }
         q.extend(self.screen_queries());
         q
@@ -595,6 +729,19 @@ impl TuiApp {
                 Some(feed) => self.manifest.panels.is_empty() || manifest_has(&self.manifest, feed),
                 None => true,
             })
+            // **16b cut Q.4**: the arena's terrain is the one `on_enter` ask
+            // that is not cheap — a whole surface, priced at up to 256 KiB —
+            // and the ground does not move. A map of the match the held frame
+            // names is already the right one, so entering the cockpit again
+            // (or switching back to it) never re-pulls it; when none is held,
+            // this IS the self-heal's ask and `follow_the_cockpit` arms the
+            // latch on it.
+            .filter(|(n, _)| {
+                n != ARENA_MAP_FEED
+                    || !self
+                        .cockpit_match()
+                        .is_some_and(|m| self.holds_the_ground(m))
+            })
             .collect();
         // Interface plan I8: a pane over a module feed (a dotted name) the
         // manifest carries is subscribed on entry — the contacts table — and
@@ -634,6 +781,119 @@ impl TuiApp {
             }
         }
         q
+    }
+
+    /// **What one `arena.cockpit` keyframe asks of the client** (16b cut Q.4;
+    /// doc 16 §5): the terrain it is drawn on, and — once per match — the
+    /// screen it is drawn on.
+    ///
+    /// * **The map is pulled.** 16b cut Q.3 registered `arena.map` with its
+    ///   feed handle dropped, so nothing ever pushes it and it is never in the
+    ///   session's resume ring. A frame of match M with no held map of M is
+    ///   the condition that asks, throttled to one ask per
+    ///   [`MAP_HEAL_LATCH_S`]; a map of another match is dropped first,
+    ///   because stale ground under live markers is worse than none. Only a
+    ///   CHANGE of match re-arms that latch ([`Self::map_asked_for`]): an
+    ///   answer that keeps coming back wrong would otherwise buy itself a
+    ///   fresh ask on every pulse, which is the one thing the latch is for.
+    /// * **The screen opens itself**, once per match id. A pilot who then
+    ///   presses `1` and stays on the scene is left alone: the next pulse does
+    ///   not drag them back. The screen is opened FIRST, because its `on_enter`
+    ///   carries an `arena.map` ask of its own and one terrain is enough: the
+    ///   heal below takes that ask as its own and arms the latch on it.
+    /// * **A cleared frame** (`seated: false`, the last one a pilot gets)
+    ///   drops the map and re-arms both, so the next match starts clean.
+    fn follow_the_cockpit(&mut self, frame: &Value, now: i64) -> Vec<(String, Value)> {
+        let mut queries = Vec::new();
+        let seated = frame.get("seated").and_then(Value::as_bool) != Some(false);
+        let Some(match_id) = frame
+            .get("match")
+            .and_then(Value::as_i64)
+            .filter(|_| seated)
+        else {
+            // The seat is gone. The flag does NOT go with it: the tab has to
+            // stand one more paint so the empty state has a screen to be on.
+            self.panels.forget(ARENA_MAP_FEED);
+            self.map_asked_at = None;
+            self.map_asked_for = None;
+            self.cockpit_switched = None;
+            return queries;
+        };
+        self.cockpit_seat = true;
+        let holds_the_ground = self.holds_the_ground(match_id);
+        if !holds_the_ground && self.panels.get(ARENA_MAP_FEED).is_some() {
+            // Another match's terrain, or the unseated answer: drop it, because
+            // stale ground under live markers is worse than none. The latch is
+            // NOT touched here — a wrong answer is the case it guards.
+            self.panels.forget(ARENA_MAP_FEED);
+        }
+        if self.cockpit_switched != Some(match_id) {
+            self.cockpit_switched = Some(match_id);
+            queries.extend(self.open_the_cockpit_screen());
+        }
+        if !holds_the_ground {
+            // A new match asks on this very frame rather than waiting out a
+            // latch armed for the old one; otherwise the latch AGES, so an
+            // answer that never came (a throttled query is dropped in silence
+            // by the bridge) costs one stale window, not the session.
+            let fresh_match = self.map_asked_for != Some(match_id);
+            let due = fresh_match
+                || self
+                    .map_asked_at
+                    .is_none_or(|at| !(0..MAP_HEAL_LATCH_S).contains(&now.saturating_sub(at)));
+            // The screen that just opened asks for the terrain itself. That
+            // ask IS this one: arm the latch on it rather than sending a second.
+            let already = queries.iter().any(|(n, _)| n == ARENA_MAP_FEED);
+            if due || already {
+                self.map_asked_at = Some(now);
+                self.map_asked_for = Some(match_id);
+                if !already {
+                    queries.push((
+                        ARENA_MAP_FEED.to_string(),
+                        Value::Object(serde_json::Map::new()),
+                    ));
+                }
+            }
+        }
+        queries
+    }
+
+    /// **Whether the store holds the terrain of `match_id`** (16b cut Q.4).
+    ///
+    /// One pulled `arena.map` serves every redraw of a match, so this is the
+    /// condition both the self-heal above and the screen's own `on_enter` ask
+    /// are gated on: a map that is already held is never asked for twice.
+    fn holds_the_ground(&self, match_id: i64) -> bool {
+        self.panels
+            .get(ARENA_MAP_FEED)
+            .and_then(|map| map.get("match"))
+            .and_then(Value::as_i64)
+            == Some(match_id)
+    }
+
+    /// The match the held `arena.cockpit` frame belongs to, if there is one
+    /// and it is a seated frame (16b cut Q.4).
+    fn cockpit_match(&self) -> Option<i64> {
+        let frame = self.panels.get(COCKPIT_FEED)?;
+        if frame.get("seated").and_then(Value::as_bool) == Some(false) {
+            return None;
+        }
+        frame.get("match").and_then(Value::as_i64)
+    }
+
+    /// Switch to the cockpit screen, answering its hydration queries. Nothing
+    /// when it is already showing, and nothing on a server whose manifest does
+    /// not carry the feed — that screen has no tab either.
+    fn open_the_cockpit_screen(&mut self) -> Vec<(String, Value)> {
+        if self.active == COCKPIT_SCREEN
+            || !self.available_screens().any(|s| s.id == COCKPIT_SCREEN)
+        {
+            return Vec::new();
+        }
+        self.active = COCKPIT_SCREEN;
+        self.focus = 0;
+        self.help = false;
+        self.screen_queries()
     }
 
     /// Apply one event to the app state. Returns read-only queries the app
@@ -704,6 +964,13 @@ impl TuiApp {
                     "commands.list" => self.set_commands(data),
                     "comsys" if *kind == PanelFrameKind::Keyframe => self.set_aliases(data),
                     "npc.thinking" => self.set_thinking(data, now),
+                    // 16b cut Q.4: the cockpit frame is the one that says which
+                    // match this pilot is in, so it is where the map is pulled
+                    // from and where the screen opens itself.
+                    COCKPIT_FEED if *kind == PanelFrameKind::Keyframe => {
+                        let asks = self.follow_the_cockpit(data, now);
+                        queries.extend(asks);
+                    }
                     _ => {}
                 }
                 return queries;
@@ -793,6 +1060,10 @@ impl TuiApp {
             }
             OutputEvent::Hello { panels, .. } => {
                 self.manifest.panels.clone_from(panels);
+                // 16b cut Q.4: a world restarted without its arena takes the
+                // cockpit tab with it, and the player must not be left standing
+                // on a screen that is no longer drawn.
+                self.leave_a_screen_this_server_does_not_have();
                 // Interface plan I12: a world restarted behind the gateway
                 // re-sends its hello. Clearing the LATCH here is belt and
                 // braces that costs nothing — `narrative.backlog` is answered
@@ -1176,7 +1447,7 @@ impl TuiApp {
 
     fn nav_key(&mut self, key: Key, r: &mut InputResult) {
         match key {
-            Key::Char(c @ '1'..='9') => self.switch_screen(c as u8 - b'0', r),
+            Key::Char(c @ '0'..='9') => self.switch_screen(c as u8 - b'0', r),
             Key::Enter => self.enter_input(None),
             Key::Char(c @ ('"' | ':' | ';' | '\\')) => self.enter_input(Some(c.to_string())),
             Key::Char('/') => {
@@ -1193,7 +1464,7 @@ impl TuiApp {
             Key::Char('g') => self.jump_focused(false, r),
             Key::Char('G') => self.jump_focused(true, r),
             Key::Char('?') | Key::Alt('?') => self.help = true,
-            Key::Alt(c @ '1'..='9') => self.switch_screen(c as u8 - b'0', r),
+            Key::Alt(c @ '0'..='9') => self.switch_screen(c as u8 - b'0', r),
             Key::Char(c) | Key::Alt(c) => self.screen_key(c, r),
             _ => r.redraw = false,
         }
@@ -1258,7 +1529,7 @@ impl TuiApp {
     fn input_key(&mut self, key: Key, r: &mut InputResult) {
         if let Key::Alt(c) = key {
             match c {
-                '1'..='9' => self.switch_screen(c as u8 - b'0', r),
+                '0'..='9' => self.switch_screen(c as u8 - b'0', r),
                 '?' => self.help = true,
                 _ => self.screen_key(c, r),
             }
@@ -1524,9 +1795,12 @@ impl TuiApp {
         self.mode = Mode::Nav;
     }
 
+    /// A screen digit. A digit this server has no screen for — an unregistered
+    /// one, or a gated one the manifest does not carry (16b cut Q.4) — is inert
+    /// rather than an error: the tab is not drawn either.
     fn switch_screen(&mut self, digit: u8, r: &mut InputResult) {
         let id = ScreenId(digit);
-        if !self.screens.iter().any(|s| s.id == id) {
+        if !self.available_screens().any(|s| s.id == id) {
             r.redraw = false;
             return;
         }
@@ -1565,7 +1839,7 @@ impl TuiApp {
                 }
             }
             _ if spec.selectable => {
-                let rows = self.pane_rows(&spec);
+                let rows = self.pane_rows(&spec, None);
                 let selectable: Vec<usize> = rows
                     .rows
                     .iter()
@@ -1576,13 +1850,10 @@ impl TuiApp {
                 if selectable.is_empty() {
                     return;
                 }
-                let ui = self.pane_ui(spec.id);
-                let pos = selectable
-                    .iter()
-                    .position(|&i| i == ui.selected)
-                    .unwrap_or(0) as isize;
+                let current = self.anchored(spec.id, &rows);
+                let pos = selectable.iter().position(|&i| i == current).unwrap_or(0) as isize;
                 let next = (pos + delta).clamp(0, selectable.len() as isize - 1) as usize;
-                self.pane_ui_mut(spec.id).selected = selectable[next];
+                self.remember_selection(spec.id, selectable[next], &rows);
             }
             _ => {
                 let ui = self.pane_ui_mut(spec.id);
@@ -1607,7 +1878,7 @@ impl TuiApp {
                 }
             }
             _ if spec.selectable => {
-                let rows = self.pane_rows(&spec);
+                let rows = self.pane_rows(&spec, None);
                 let selectable: Vec<usize> = rows
                     .rows
                     .iter()
@@ -1620,7 +1891,7 @@ impl TuiApp {
                 } else {
                     selectable.first()
                 } {
-                    self.pane_ui_mut(spec.id).selected = i;
+                    self.remember_selection(spec.id, i, &rows);
                 }
             }
             _ => {
@@ -1636,10 +1907,10 @@ impl TuiApp {
         if !spec.selectable {
             return None;
         }
-        let rows = self.pane_rows(&spec);
-        let ui = self.pane_ui(spec.id);
+        let rows = self.pane_rows(&spec, None);
+        let at = self.anchored(spec.id, &rows);
         rows.rows
-            .get(ui.selected)
+            .get(at)
             .filter(|r| r.selectable)
             .cloned()
             .or_else(|| rows.rows.into_iter().find(|r| r.selectable))
@@ -1681,11 +1952,11 @@ impl TuiApp {
     fn selected_channel_row(&self) -> Option<super::render::PaneRow> {
         for i in self.channel_pane_indexes() {
             let spec = self.screen().panes[i];
-            let rows = self.pane_rows(&spec);
-            let ui = self.pane_ui(spec.id);
+            let rows = self.pane_rows(&spec, None);
+            let at = self.anchored(spec.id, &rows);
             let row = rows
                 .rows
-                .get(ui.selected)
+                .get(at)
                 .filter(|r| r.row_key.is_some())
                 .or_else(|| rows.rows.iter().find(|r| r.row_key.is_some()))
                 .cloned();
@@ -1711,7 +1982,7 @@ impl TuiApp {
         };
         self.focus = i;
         let spec = self.screen().panes[i];
-        let rows = self.pane_rows(&spec);
+        let rows = self.pane_rows(&spec, None);
         let selectable: Vec<usize> = rows
             .rows
             .iter()
@@ -1722,10 +1993,10 @@ impl TuiApp {
         if selectable.is_empty() {
             return;
         }
-        let cur = self.pane_ui(spec.id).selected;
+        let cur = self.anchored(spec.id, &rows);
         let pos = selectable.iter().position(|&s| s == cur);
         let next = pos.map_or(0, |p| (p + 1) % selectable.len());
-        self.pane_ui_mut(spec.id).selected = selectable[next];
+        self.remember_selection(spec.id, selectable[next], &rows);
     }
 
     /// `^O` (interface plan I7): focus the other channel pane (IC to OOC
@@ -1932,12 +2203,23 @@ impl TuiApp {
             utf8: self.caps.utf8,
             store: &self.panels,
             selected_channel: None,
+            pane: None,
         }
     }
 
     /// The rows a pane shows right now.
-    fn pane_rows(&self, spec: &PaneSpec) -> PaneRows {
-        let ctx = self.render_ctx();
+    ///
+    /// **16b cut Q.4** added `area`, the pane's inner `(width, height)` where
+    /// the caller has one: [`Self::draw_pane`] passes the rect it is about to
+    /// paint into, and the input paths — scrolling, jumping, the highlighted
+    /// row — pass `None`, because they ask what the rows ARE and not how many
+    /// of them fit. Only the cockpit map reads it (`RenderCtx::pane`), and it
+    /// is neither selectable nor scrollable, so no input path ever needs it.
+    fn pane_rows(&self, spec: &PaneSpec, area: Option<(u16, u16)>) -> PaneRows {
+        let ctx = RenderCtx {
+            pane: area,
+            ..self.render_ctx()
+        };
         match spec.content {
             PaneContent::Scrollback | PaneContent::Who => PaneRows::default(),
             PaneContent::Panel { feed, render } => {
@@ -2137,8 +2419,7 @@ impl TuiApp {
             })
             .unwrap_or(0);
         let tabs: Vec<(u8, &str, usize)> = self
-            .screens
-            .iter()
+            .available_screens()
             .map(|s| {
                 let badge = match s.name {
                     "mail" => self.mail_unread,
@@ -2345,16 +2626,21 @@ impl TuiApp {
                 frame.render_widget(Paragraph::new(Text::from(lines)), inner);
             }
             _ => {
-                let rows = self.pane_rows(&spec);
+                // 16b cut Q.4: the one place a pane is told how big it is.
+                let rows = self.pane_rows(&spec, Some((inner.width, inner.height)));
                 let ui = self.pane_ui(spec.id);
+                // 16b cut Q.4: the highlight follows its row's KEY, not the
+                // index it was last at — the rows under it change as fast as
+                // the arena pulses.
+                let selected = self.anchored(spec.id, &rows);
                 let total = rows.rows.len();
                 let h = usize::from(inner.height);
                 let mut scroll = ui.scroll.min(total.saturating_sub(h));
-                if spec.selectable && ui.selected < total {
-                    if ui.selected < scroll {
-                        scroll = ui.selected;
-                    } else if ui.selected >= scroll + h {
-                        scroll = ui.selected + 1 - h;
+                if spec.selectable && selected < total {
+                    if selected < scroll {
+                        scroll = selected;
+                    } else if selected >= scroll + h {
+                        scroll = selected + 1 - h;
                     }
                 }
                 let lines: Vec<Line<'static>> = rows
@@ -2362,7 +2648,7 @@ impl TuiApp {
                     .into_iter()
                     .enumerate()
                     .map(|(i, r)| {
-                        if spec.selectable && i == ui.selected && r.selectable {
+                        if spec.selectable && i == selected && r.selectable {
                             r.line
                                 .style(Style::default().add_modifier(Modifier::REVERSED))
                         } else {
@@ -2568,7 +2854,7 @@ impl TuiApp {
                 format!("{} screen", self.screen().name),
                 Style::default().add_modifier(Modifier::BOLD),
             )),
-            Line::from("1-9 screens   Tab focus   Up/Down PgUp/PgDn scroll   g/G top/bottom"),
+            Line::from("0-9 screens   Tab focus   Up/Down PgUp/PgDn scroll   g/G top/bottom"),
             Line::from("g (or /history) at the top loads older scene history from the server"),
             Line::from("/clear hides what is on screen; @notui then @tui starts a fresh view"),
             Line::from(
@@ -2721,6 +3007,8 @@ fn pane_feed(content: PaneContent) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicI64, Ordering};
+
     use super::*;
     use mush_proto::{
         ClientKind, ColorDepth, NarrativeKind, NoticeAction, NoticeSeverity, ObjRef, PromptSpec,
@@ -3260,7 +3548,8 @@ mod tests {
             data: serde_json::json!({ "secret": "never-shown-\u{7}text" }),
         });
         assert!(app.panels().get("mystery.feed").is_some());
-        for screen in 1..=9u8 {
+        // 16b cut Q.4 made `0` a screen: every one of the ten, not nine.
+        for screen in 0..=9u8 {
             app.feed_input(&[b'0' + screen]);
             let text = super::super::frame_text(&mut app, 120, 34);
             assert!(!text.contains("never-shown"), "screen {screen}");
@@ -3368,7 +3657,8 @@ mod tests {
             here: true,
             doing: None,
         }]));
-        for screen in 1..=9u8 {
+        // 16b cut Q.4 made `0` a screen: every one of the ten, not nine.
+        for screen in 0..=9u8 {
             app.feed_input(&[b'0' + screen]);
             for (w, h) in [
                 (1u16, 1u16),
@@ -4801,5 +5091,408 @@ mod tests {
             vec![(1, "test".into(), RespondChoice::Text("Fenris".into()))]
         );
         assert!(super::super::frame_text(&mut app, 120, 34).contains("sure?"));
+    }
+
+    // -----------------------------------------------------------------------
+    // The cockpit screen (16b cut Q.4; doc 16 §5)
+    // -----------------------------------------------------------------------
+
+    /// The canonical scene 16b cut Q.3 committed, which all three renderers
+    /// read. Rust `include_str!`s it exactly as `screen.rs` does the run
+    /// allowlist; vitest reads it natively.
+    const COCKPIT_FIXTURE: &str =
+        include_str!("../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json");
+    const ARENA_MAP_FIXTURE: &str =
+        include_str!("../../../../web/src/lib/fixtures/cockpit/arena_map.json");
+
+    fn arena_json(text: &str) -> Value {
+        serde_json::from_str(text).expect("a committed fixture is JSON")
+    }
+
+    fn arena_keyframe(feed: &'static str, data: Value) -> OutputEvent {
+        OutputEvent::Panel {
+            feed: SmolStr::new_static(feed),
+            kind: PanelFrameKind::Keyframe,
+            data,
+        }
+    }
+
+    /// The cleared cockpit 16b cut Q.3 sends when the seat goes: two keys.
+    fn cockpit_cleared() -> OutputEvent {
+        arena_keyframe(
+            COCKPIT_FEED,
+            serde_json::json!({
+                "schema": { "id": COCKPIT_FEED, "version": 1, "retain": "latest" },
+                "seated": false
+            }),
+        )
+    }
+
+    /// A server that publishes both arena feeds.
+    fn arena_manifest() -> TuiManifest {
+        TuiManifest {
+            panels: vec![COCKPIT_FEED.to_string(), ARENA_MAP_FEED.to_string()],
+            character: None,
+        }
+    }
+
+    /// An app on such a server, at the shared fixed clock.
+    fn arena_app() -> TuiApp {
+        let mut app = app();
+        app.set_manifest(arena_manifest());
+        app
+    }
+
+    /// The clock the self-heal test drives. It is an atomic because
+    /// [`TuiApp::set_clock`] takes a plain `fn` pointer, and exactly ONE test
+    /// touches it, so the shared cell cannot race another.
+    static HEAL_CLOCK: AtomicI64 = AtomicI64::new(0);
+
+    fn heal_clock() -> i64 {
+        HEAL_CLOCK.load(Ordering::Relaxed)
+    }
+
+    /// 16b cut Q.4: `@tui` against a world with an arena but no seat of your
+    /// own opens on the SCENE and shows no cockpit tab at all — the tab is a
+    /// held `arena.cockpit` frame, and the arena pushes that to seated pilots
+    /// and to nobody else. With a frame, `0` and `Alt+0` reach it.
+    #[test]
+    fn zero_reaches_the_cockpit_only_for_a_viewer_the_arena_sends_frames_to() {
+        // A bystander on an arena server: the feed is published, no frame has
+        // ever arrived, so there is no tenth tab and the digit is inert.
+        let mut bystander = arena_app();
+        // The arena pushes a frame only when one CHANGES, so entering the TUI
+        // asks for one; a viewer with no seat is answered `seated: false`.
+        assert!(
+            bystander
+                .entry_queries()
+                .iter()
+                .any(|(n, _)| n == COCKPIT_FEED),
+            "the cockpit feed is hydrated on entry"
+        );
+        bystander.feed_input(b"0");
+        assert_eq!(
+            bystander.active_screen(),
+            ScreenId(1),
+            "no frame, no screen: @tui opens on the scene"
+        );
+        let text = super::super::frame_text(&mut bystander, 120, 34);
+        assert!(!text.contains("cockpit"), "no tenth tab:\n{text}");
+
+        let mut seated = arena_app();
+        seated.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        seated.feed_input(b"1");
+        assert_eq!(seated.active_screen(), ScreenId(1));
+        seated.feed_input(b"0");
+        assert_eq!(seated.active_screen(), COCKPIT_SCREEN);
+        seated.feed_input(b"1");
+        // Alt+0 is the same hotkey from the input box.
+        seated.feed_input(b"\x1b0");
+        assert_eq!(seated.active_screen(), COCKPIT_SCREEN);
+        let text = super::super::frame_text(&mut seated, 120, 34);
+        assert!(text.contains("0 cockpit"), "the tenth tab:\n{text}");
+
+        // A world with no arena: the frame could never arrive either.
+        let mut bare = app();
+        bare.set_manifest(TuiManifest {
+            panels: vec!["mail".into()],
+            character: None,
+        });
+        bare.feed_input(b"0");
+        assert_eq!(
+            bare.active_screen(),
+            ScreenId(1),
+            "a digit with no screen is inert"
+        );
+        let text = super::super::frame_text(&mut bare, 120, 34);
+        assert!(!text.contains("cockpit"), "no tenth tab:\n{text}");
+
+        // A hello that takes the feed away while the player is standing on the
+        // screen puts them back on the scene rather than on a tab that is gone.
+        let mut left = arena_app();
+        left.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        assert_eq!(left.active_screen(), COCKPIT_SCREEN);
+        left.apply_event(&OutputEvent::Hello {
+            proto: 1,
+            server: "rustmush test".into(),
+            features: vec![],
+            panels: vec!["mail".into()],
+        });
+        assert_eq!(left.active_screen(), ScreenId(1));
+    }
+
+    /// 16b cut Q.4: the FIRST cockpit frame of a match opens the screen, and
+    /// only the first — a pilot who walks back to the scene stays there.
+    #[test]
+    fn the_first_frame_of_a_match_opens_the_cockpit_and_the_next_one_does_not() {
+        let mut app = arena_app();
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        app.feed_input(b"1");
+        assert_eq!(app.active_screen(), ScreenId(1));
+        for _ in 0..3 {
+            app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        }
+        assert_eq!(
+            app.active_screen(),
+            ScreenId(1),
+            "the pilot left the screen; the next pulse must not drag them back"
+        );
+        // A NEW match opens it again, once.
+        let mut next = arena_json(COCKPIT_FIXTURE);
+        next["match"] = serde_json::json!(8);
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, next.clone()));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        app.feed_input(b"1");
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, next.clone()));
+        assert_eq!(app.active_screen(), ScreenId(1));
+
+        // A cleared frame never opens anything — asked of the pilot who WAS
+        // seated and walked back to the scene, because that is the only app
+        // the cockpit screen is available on at all: on one that has never
+        // been sent a frame the screen is gated away and the guard could not
+        // fail if it tried.
+        app.apply_event(&cockpit_cleared());
+        assert_eq!(
+            app.active_screen(),
+            ScreenId(1),
+            "the seat went; nothing drags the player onto the empty cockpit"
+        );
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(
+            text.contains("0 cockpit"),
+            "the tab still stands, so the empty state has a screen to be on:\n{text}"
+        );
+        // And a seat taken again IS a new seating: the screen opens for it.
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, next));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+    }
+
+    /// 16b cut Q.4: `arena.map` is PULLED. Holding a cockpit frame of match M
+    /// and no map of M is the condition that asks, at most once every
+    /// [`MAP_HEAL_LATCH_S`]; the ask stops once the map is held, and a new
+    /// match drops the old ground and asks again at once.
+    #[test]
+    fn the_map_is_pulled_once_every_two_seconds_until_it_arrives() {
+        let asks = |queries: &[(String, Value)]| -> usize {
+            queries.iter().filter(|(n, _)| n == ARENA_MAP_FEED).count()
+        };
+        HEAL_CLOCK.store(100, Ordering::Relaxed);
+        let mut app = TuiApp::new(caps());
+        app.set_clock(heal_clock);
+        app.set_manifest(arena_manifest());
+        let frame = arena_json(COCKPIT_FIXTURE);
+
+        // The first frame also opens the screen, whose `on_enter` asks for the
+        // terrain too — and ONE terrain is enough: the self-heal takes that ask
+        // as its own rather than pulling the whole surface twice.
+        let q = app.apply_event(&arena_keyframe(COCKPIT_FEED, frame.clone()));
+        assert_eq!(asks(&q), 1, "the first such frame asks exactly once: {q:?}");
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        let q = app.apply_event(&arena_keyframe(COCKPIT_FEED, frame.clone()));
+        assert_eq!(asks(&q), 0, "the same second does not ask again");
+        HEAL_CLOCK.store(100 + MAP_HEAL_LATCH_S - 1, Ordering::Relaxed);
+        let q = app.apply_event(&arena_keyframe(COCKPIT_FEED, frame.clone()));
+        assert_eq!(asks(&q), 0, "inside the latch");
+        HEAL_CLOCK.store(100 + MAP_HEAL_LATCH_S, Ordering::Relaxed);
+        let q = app.apply_event(&arena_keyframe(COCKPIT_FEED, frame.clone()));
+        assert_eq!(asks(&q), 1, "the answer never came: ask again");
+
+        // **An answer that comes back WRONG does not buy a fresh ask.** The
+        // bridge answers `arena.map` with `map_unseated()` whenever it cannot
+        // reach the ground, and that payload carries no `match`: it is dropped
+        // on sight, but the latch is the thing standing between a bridge that
+        // is already struggling and one ask per pulse, so it is not re-armed.
+        let unseated = serde_json::json!({
+            "schema": { "id": ARENA_MAP_FEED, "version": 1, "shape": "terrain",
+                        "retain": "latest" },
+            "seated": false
+        });
+        for pulse in 0..3 {
+            app.apply_event(&arena_keyframe(ARENA_MAP_FEED, unseated.clone()));
+            let q = app.apply_event(&arena_keyframe(COCKPIT_FEED, frame.clone()));
+            assert_eq!(asks(&q), 0, "pulse {pulse} inside the latch: {q:?}");
+            assert!(
+                app.panels().get(ARENA_MAP_FEED).is_none(),
+                "ground that is not this match's is dropped on sight"
+            );
+        }
+        HEAL_CLOCK.store(100 + 2 * MAP_HEAL_LATCH_S, Ordering::Relaxed);
+        let q = app.apply_event(&arena_keyframe(COCKPIT_FEED, frame.clone()));
+        assert_eq!(asks(&q), 1, "and the latch still ages out: {q:?}");
+
+        // The map arrives: the asking stops.
+        app.apply_event(&arena_keyframe(
+            ARENA_MAP_FEED,
+            arena_json(ARENA_MAP_FIXTURE),
+        ));
+        for _ in 0..3 {
+            let q = app.apply_event(&arena_keyframe(COCKPIT_FEED, frame.clone()));
+            assert_eq!(asks(&q), 0, "the ground is held");
+        }
+        // Nor does walking off the screen and back: `on_enter` asks for the
+        // frame, never for ground that is already held.
+        let mut r = app.feed_input(b"1");
+        assert_eq!(asks(&r.queries), 0, "{:?}", r.queries);
+        r = app.feed_input(b"0");
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        assert_eq!(
+            asks(&r.queries),
+            0,
+            "the ground does not move; re-entering never re-pulls it: {:?}",
+            r.queries
+        );
+
+        // A new match is new ground: the old map goes and the ask re-arms on
+        // that very frame, latch or no latch.
+        let mut next = frame.clone();
+        next["match"] = serde_json::json!(8);
+        let q = app.apply_event(&arena_keyframe(COCKPIT_FEED, next));
+        assert_eq!(asks(&q), 1, "a new match asks at once: {q:?}");
+        assert!(
+            app.panels().get(ARENA_MAP_FEED).is_none(),
+            "the old ground was dropped"
+        );
+
+        // The cleared frame (`seated: false`) drops the map with the seat.
+        app.apply_event(&arena_keyframe(
+            ARENA_MAP_FEED,
+            arena_json(ARENA_MAP_FIXTURE),
+        ));
+        app.apply_event(&cockpit_cleared());
+        assert!(app.panels().get(ARENA_MAP_FEED).is_none());
+    }
+
+    /// 16b cut Q.4: the contacts pane is the one selectable pane on the screen
+    /// — `Enter` prefills the highlighted contact's `LOCK`, `s` its `SCAN` —
+    /// and neither sends anything until the player presses Enter.
+    #[test]
+    fn the_contacts_pane_prefills_lock_and_scan_and_sends_neither() {
+        let mut app = arena_app();
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        let contacts = app
+            .screen()
+            .panes
+            .iter()
+            .position(|p| p.id == PaneId("contacts"))
+            .expect("a contacts pane");
+        for _ in 0..contacts {
+            app.feed_input(b"\t");
+        }
+        assert_eq!(app.focused_pane(), Some(PaneId("contacts")));
+        let r = app.feed_input(b"\r");
+        assert!(r.submit.is_empty(), "nothing is sent: {r:?}");
+        assert_eq!(app.input_text(), "lock BA");
+
+        // Esc back to nav, then `s`: the same row, the other verb.
+        app.feed_input(&[0x1b]);
+        let r = app.feed_input(b"s");
+        assert!(r.submit.is_empty(), "nothing is sent: {r:?}");
+        assert_eq!(app.input_text(), "scan BA");
+    }
+
+    /// 16b cut Q.4: **the highlight stays on the contact the player picked**
+    /// while the frame under it changes.
+    ///
+    /// The contacts pane is re-rendered on every arena pulse, and a contact
+    /// that gains a close look (16b cut Q.2) grows a scan row UNDER it, pushing
+    /// everything below down one. A highlight that was only an index would
+    /// slide onto a neighbour — or onto a scan row, which is not selectable at
+    /// all, and `Enter` would then fall back to the first contact and open the
+    /// box with the wrong `lock`.
+    #[test]
+    fn the_highlighted_contact_survives_a_row_appearing_above_it() {
+        let mut app = arena_app();
+        // The scene as it stands before anyone has had a close look: nobody
+        // carries a reading, so the rows are one per contact.
+        let mut frame = arena_json(COCKPIT_FIXTURE);
+        for contact in frame["contacts"].as_array_mut().expect("contacts") {
+            contact["condition"] = Value::Null;
+        }
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, frame.clone()));
+        let contacts = app
+            .screen()
+            .panes
+            .iter()
+            .position(|p| p.id == PaneId("contacts"))
+            .expect("a contacts pane");
+        for _ in 0..contacts {
+            app.feed_input(b"\t");
+        }
+        // Down twice: BA, RB, X3 — the third row.
+        app.feed_input(b"\x1b[B");
+        app.feed_input(b"\x1b[B");
+        app.feed_input(b"\r");
+        assert_eq!(app.input_text(), "lock X3");
+        app.feed_input(&[0x1b]);
+
+        // The next pulse: BA is told apart and grows a scan row, so the row at
+        // index 2 is now BA's scan continuation rather than X3.
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        let r = app.feed_input(b"\r");
+        assert!(r.submit.is_empty(), "nothing is sent: {r:?}");
+        assert_eq!(
+            app.input_text(),
+            "lock X3",
+            "the highlight follows the contact, not the index it sat at"
+        );
+        assert!(
+            super::super::frame_text(&mut app, 120, 34).contains("X3"),
+            "the row is still on the screen"
+        );
+    }
+
+    /// 16b cut Q.4: `seated: false` — the last frame a pilot is sent — is the
+    /// one-line empty state on the map and an empty everything else.
+    #[test]
+    fn a_cleared_frame_empties_the_cockpit() {
+        let mut app = arena_app();
+        app.apply_event(&arena_keyframe(
+            ARENA_MAP_FEED,
+            arena_json(ARENA_MAP_FIXTURE),
+        ));
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(text.contains("Callsign RA"), "{text}");
+        app.apply_event(&cockpit_cleared());
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(
+            text.contains(super::super::render::NOT_IN_A_COCKPIT),
+            "the map pane says so:\n{text}"
+        );
+        for gone in ["Callsign RA", "Lock BA", "cannon", "BA  blue"] {
+            assert!(!text.contains(gone), "{gone:?} survived the clear:\n{text}");
+        }
+    }
+
+    /// 16b cut Q.4: the drop order. Damage first, then the weapons, then the
+    /// contacts; the map, the status and the notices ring survive every
+    /// terminal the TUI paints at.
+    #[test]
+    fn the_cockpit_degrades_damage_then_weapons_then_contacts() {
+        let mut app = arena_app();
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        // It paints at every size the TUI is asked to paint at.
+        for (w, h) in [(1u16, 1u16), (2, 1), (80, 1), (1, 24), (10, 3), (80, 24)] {
+            let _ = super::super::frame_text(&mut app, w, h);
+        }
+        let survivors = |app: &TuiApp, w: u16, h: u16| -> Vec<&'static str> {
+            app.visible_panes(Rect::new(0, 0, w, h))
+                .iter()
+                .map(|p| p.id.0)
+                .collect()
+        };
+        assert_eq!(
+            survivors(&app, 120, 28),
+            vec!["map", "status", "damage", "notices", "weapons", "contacts"]
+        );
+        assert_eq!(
+            survivors(&app, 80, 20),
+            vec!["map", "status", "notices"],
+            "the width drops damage, weapons and contacts in that order"
+        );
+        assert_eq!(survivors(&app, 30, 20), vec!["map"]);
     }
 }

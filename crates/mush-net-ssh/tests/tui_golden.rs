@@ -8,6 +8,10 @@
 
 use std::path::PathBuf;
 
+use mush_ansi::AnsiTheme;
+use mush_net_ssh::tui::panels::PanelStore;
+use mush_net_ssh::tui::render::{RenderCtx, render_cockpit_map_rows};
+use mush_net_ssh::tui::screen::COCKPIT_SCREEN;
 use mush_net_ssh::tui::{TuiApp, TuiManifest, frame_text};
 use mush_proto::{
     ClientCaps, ClientKind, ColorDepth, ExitRef, NarrativeKind, ObjRef, OutputEvent,
@@ -570,4 +574,251 @@ fn the_vitals_strip_paints_the_character_first_and_counts_what_it_cut() {
         "the cells past the edge are gone, not clipped mid-cell: {strip:?}"
     );
     check("tui_vitals_two_feeds_80x24.txt", &text);
+}
+
+// ---------------------------------------------------------------------------
+// The cockpit screen (16b cut Q.4; doc 16 §5)
+// ---------------------------------------------------------------------------
+//
+// One scene, committed under `web/src/lib/fixtures/cockpit/` by 16b cut Q.3 and
+// read by all three renderers. Doc 16 §5 asks for renderer PARITY, and three
+// renderers each pinned to a golden of its own is regression and not parity —
+// so the load-bearing assertion here is not the frame goldens below but
+// `the_cockpit_map_composes_the_committed_grid`: this client's composition of
+// `arena_map.json` + `cockpit_frame.json` at exactly 78 by 20 equals the twenty
+// rows `mush_ansi` prints of the server-side window, byte for byte.
+
+/// The per-pulse cockpit keyframe, feed `arena.cockpit`.
+const COCKPIT_FRAME: &str =
+    include_str!("../../../web/src/lib/fixtures/cockpit/cockpit_frame.json");
+/// The whole arena's terrain, feed `arena.map`, pulled and never pushed.
+const ARENA_MAP: &str = include_str!("../../../web/src/lib/fixtures/cockpit/arena_map.json");
+/// The twenty map rows a line client prints of the window, north-up.
+const VIEW_GRID: &str = include_str!("../../../web/src/lib/fixtures/cockpit/view_grid.txt");
+
+fn fixture(text: &str) -> serde_json::Value {
+    serde_json::from_str(text).expect("a committed fixture is JSON")
+}
+
+fn arena_panel(feed: &'static str, text: &str) -> OutputEvent {
+    OutputEvent::Panel {
+        feed: SmolStr::new_static(feed),
+        kind: PanelFrameKind::Keyframe,
+        data: fixture(text),
+    }
+}
+
+/// A render context over a store holding the committed terrain.
+fn map_ctx<'a>(theme: &'a AnsiTheme, store: &'a PanelStore, pane: (u16, u16)) -> RenderCtx<'a> {
+    RenderCtx {
+        theme,
+        depth: ColorDepth::None,
+        utf8: true,
+        store,
+        selected_channel: None,
+        pane: Some(pane),
+    }
+}
+
+fn store_with_the_ground() -> PanelStore {
+    let mut store = PanelStore::new();
+    store.apply_panel(
+        &SmolStr::new_static("arena.map"),
+        PanelFrameKind::Keyframe,
+        &fixture(ARENA_MAP),
+        0,
+    );
+    store
+}
+
+/// The fixture app on a server that publishes the arena feeds, with the map
+/// pulled and one cockpit frame applied.
+fn cockpit_app() -> TuiApp {
+    let mut app = fixture_app();
+    app.set_manifest(TuiManifest {
+        panels: vec![
+            "wod.vitals".into(),
+            "wod.sheet".into(),
+            "mail".into(),
+            "arena.cockpit".into(),
+            "arena.map".into(),
+        ],
+        character: Some("Nick".into()),
+    });
+    app.apply_event(&arena_panel("arena.map", ARENA_MAP));
+    app.apply_event(&arena_panel("arena.cockpit", COCKPIT_FRAME));
+    app
+}
+
+/// **The parity test** (doc 16 §5): the TUI's composition of the two committed
+/// payloads at exactly 78 by 20 IS the grid a line client prints.
+///
+/// If this ever fails, the first differing cell is a defect in one of the three
+/// compositors (or in the fixture), not a golden to re-bless.
+#[test]
+fn the_cockpit_map_composes_the_committed_grid() {
+    let store = store_with_the_ground();
+    let theme = AnsiTheme::default();
+    // 78 by 22 is the PANE; the renderer keeps two rows for its heading and
+    // its marker legend, so the window it carves is the fixtures' 78 by 20.
+    let ctx = map_ctx(&theme, &store, (78, 22));
+    let rows = render_cockpit_map_rows(&fixture(COCKPIT_FRAME), &ctx);
+    // The heading line, then exactly twenty grid rows, then the marker legend.
+    assert_eq!(rows.rows.len(), 22, "one head, twenty rows, one legend");
+    let grid: String = rows
+        .rows
+        .iter()
+        .skip(1)
+        .take(20)
+        .map(|row| format!("{}\n", row.text()))
+        .collect();
+    let expected = VIEW_GRID.replace("\r\n", "\n");
+    if grid != expected {
+        for (i, (want, got)) in expected.lines().zip(grid.lines()).enumerate() {
+            assert_eq!(
+                want, got,
+                "row {i} (north-up) differs; that is a compositor defect, not a golden"
+            );
+        }
+        panic!("the composed grid and view_grid.txt differ in length:\n{grid}");
+    }
+    // The pilot's own marker, the hostile and the unknown on the building: the
+    // row indexes are from the SOUTH, which is `rows.rows[20 - y]`.
+    let from_south = |y: usize| -> String {
+        rows.rows
+            .get(20 - y)
+            .map(mush_net_ssh::tui::render::PaneRow::text)
+            .unwrap_or_default()
+    };
+    assert_eq!(from_south(4).chars().nth(6), Some('@'));
+    assert_eq!(from_south(14).chars().nth(36), Some('x'));
+    assert_eq!(from_south(9).chars().nth(2), Some('+'));
+    assert_eq!(
+        from_south(7).chars().nth(14),
+        Some('?'),
+        "the unknown contact's marker beats the building it stands on"
+    );
+    assert_eq!(from_south(7).chars().nth(13), Some('#'));
+    // X4 plots at (50, 33), off a twenty-row window: not drawn, and not in the
+    // marker legend either — it is still in the contacts pane.
+    let legend = rows.rows.last().map(|row| row.text()).unwrap_or_default();
+    assert_eq!(legend, "x BA  + RB  ? X3", "{legend:?}");
+    assert!(!legend.contains("X4"));
+}
+
+/// The composition at a NON-ZERO window origin, which the committed fixture
+/// cannot catch (its own origin is `[0, 0]`): a marker's `cell` is ABSOLUTE and
+/// a compositor must subtract the window's corner from it.
+#[test]
+fn a_window_away_from_the_corner_subtracts_its_own_origin() {
+    let store = store_with_the_ground();
+    let theme = AnsiTheme::default();
+    // Small enough that the platform's cell does not clamp to a corner; two
+    // rows of the twelve are the pane's own chrome, so the window is 20 by 10.
+    let ctx = map_ctx(&theme, &store, (20, 12));
+    let mut frame = fixture(COCKPIT_FRAME);
+    frame["cell"] = serde_json::json!([60, 40]);
+    frame["contacts"] = serde_json::json!([
+        { "designator": "BA", "class": "blue", "friendly": false, "cell": [55, 38],
+          "bearing_deg": 45, "band": "close", "range_m": 100, "age_s": 1, "condition": null },
+        { "designator": "X9", "class": "unknown", "friendly": false, "cell": [6, 4],
+          "bearing_deg": 0, "band": "far", "range_m": 900, "age_s": 9, "condition": null }
+    ]);
+    let rows = render_cockpit_map_rows(&frame, &ctx);
+    assert_eq!(rows.rows.len(), 12, "one head, ten rows, one legend");
+    let from_south = |y: usize| -> String {
+        rows.rows
+            .get(10 - y)
+            .map(mush_net_ssh::tui::render::PaneRow::text)
+            .unwrap_or_default()
+    };
+    // x0 = 60 - 20/2 = 50, y0 = 40 - 10/2 = 35, both inside the 96x64 arena.
+    assert_eq!(
+        from_south(5).chars().nth(10),
+        Some('@'),
+        "the pilot at 60,40"
+    );
+    assert_eq!(
+        from_south(3).chars().nth(5),
+        Some('x'),
+        "the contact at 55,38 draws at 5,3 of the window"
+    );
+    let legend = rows.rows.last().map(|row| row.text()).unwrap_or_default();
+    assert_eq!(
+        legend, "x BA",
+        "the contact back at the arena's corner is off this window"
+    );
+}
+
+/// The whole screen at the two budget sizes, on a server that publishes the
+/// arena feeds. The FIRST cockpit frame of a match opens the screen by itself,
+/// which is what the `active_screen` assertion pins.
+#[test]
+fn the_cockpit_screen_paints_at_both_budget_sizes() {
+    let mut app = cockpit_app();
+    assert_eq!(
+        app.active_screen(),
+        COCKPIT_SCREEN,
+        "the first frame of a match opens the screen"
+    );
+    for (w, h) in [(120u16, 34u16), (80, 24)] {
+        let text = frame_text(&mut app, w, h);
+        assert_eq!(text.lines().count(), usize::from(h));
+        for line in text.lines() {
+            assert!(
+                line.chars().count() <= usize::from(w),
+                "{w}x{h}: row too wide: {line:?}"
+            );
+        }
+        check(&format!("tui_cockpit_{w}x{h}.txt"), &text);
+    }
+}
+
+/// The tenth tab exists only where the feed does, and the screen reads the one
+/// frame: the callsign, the lock, the sections, the weapons and the contacts,
+/// with nothing on it that the frame did not carry.
+#[test]
+fn the_cockpit_screen_reads_the_frame_and_nothing_else() {
+    let mut app = cockpit_app();
+    let text = frame_text(&mut app, 120, 34);
+    assert!(text.contains("0 cockpit"), "the tenth tab:\n{text}");
+    for needle in [
+        "Callsign RA",
+        "power online",
+        "43 kph",
+        "heat 40/100",
+        "tempo engaged",
+        "Lock BA  430 m  62%",
+        "cannon  ready  14/20  62%",
+    ] {
+        assert!(text.contains(needle), "missing {needle:?}:\n{text}");
+    }
+    // The contacts pane lists the contact the map could not draw.
+    assert!(
+        text.contains("X4"),
+        "the off-window contact is listed:\n{text}"
+    );
+    // Nothing on the screen names an object or a unit: the frame carries the
+    // unit number and the sixteen-digit contact ids, and neither is printed.
+    //
+    // The unit needle is read OUT of the fixture and asserted in the form the
+    // frame carries it — `"unit": 101`, a JSON number — as well as with the
+    // `#` a dbref would wear. A needle for only the `#` form could not fail:
+    // no renderer would produce it out of a number, and the obvious accident
+    // (printing the field as it stands) would sail past.
+    let unit = fixture(COCKPIT_FRAME)
+        .get("unit")
+        .and_then(serde_json::Value::as_i64)
+        .expect("the fixture carries the platform's object number");
+    for leak in [
+        format!("#{unit}"),
+        unit.to_string(),
+        "1111111111111111".to_string(),
+        "4444444444444444".to_string(),
+    ] {
+        assert!(
+            !text.contains(&leak),
+            "the cockpit leaked {leak:?}:\n{text}"
+        );
+    }
 }

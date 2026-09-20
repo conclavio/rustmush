@@ -52,20 +52,46 @@ fn glyph_of(v: &Value) -> char {
     v.as_str().and_then(|s| s.chars().next()).unwrap_or('?')
 }
 
-/// The grid's rows as strings, row `0` the south edge, each exactly `width`
-/// glyphs (runs past the width are clipped, short rows padded with spaces),
-/// with the units overlaid.
+/// **The glyph rows of one viewport of a run-length `rows` array** (16b cut
+/// Q.4), row `0` the viewport's SOUTH row, each exactly `w` glyphs.
+///
+/// `rows` is the frame's own `[[glyph, run], …]` array and `width`/`height` are
+/// the whole grid's; only the rows `y0..y0 + h` are expanded, and only the
+/// columns `x0..x0 + w` of each are kept. That is the difference that matters
+/// to a panel: [`expand_rows`] materialises the whole grid — 256 by 256 for a
+/// shipped arena — on every redraw, and a pane that shows seventy-eight by
+/// twenty cells of it has no business paying for the other sixty-one thousand.
+///
+/// Out-of-range rows and columns are spaces, so the answer is always `h` rows
+/// of exactly `w` glyphs: a window clamped at an edge, or a short row, pads
+/// rather than running short. Units are NOT overlaid — a compositor that reads
+/// its markers from another frame (the TUI's cockpit map reads them from
+/// `arena.cockpit`) draws them itself.
 #[must_use]
-pub fn expand_rows(data: &Value) -> Vec<Vec<char>> {
-    let width = num(data, "width");
-    let height = num(data, "height");
-    let mut rows: Vec<Vec<char>> = Vec::with_capacity(height);
-    let empty = Vec::new();
-    let raw_rows = data.get("rows").and_then(Value::as_array).unwrap_or(&empty);
-    for y in 0..height {
-        let mut row: Vec<char> = Vec::with_capacity(width);
-        if let Some(runs) = raw_rows.get(y).and_then(Value::as_array) {
+pub fn window_rows(
+    rows: &[Value],
+    width: usize,
+    height: usize,
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+) -> Vec<Vec<char>> {
+    let mut out: Vec<Vec<char>> = Vec::with_capacity(h);
+    let x_end = x0.saturating_add(w);
+    for y in y0..y0.saturating_add(h) {
+        let mut row: Vec<char> = vec![' '; w];
+        if y < height
+            && let Some(runs) = rows.get(y).and_then(Value::as_array)
+        {
+            // The cursor is the absolute column the next run starts at; a run
+            // past `width` is clipped exactly as `expand_rows` clips it, and a
+            // malformed entry is skipped without moving the cursor.
+            let mut col = 0usize;
             for run in runs {
+                if col >= width {
+                    break;
+                }
                 let Some(pair) = run.as_array() else {
                     continue;
                 };
@@ -75,17 +101,30 @@ pub fn expand_rows(data: &Value) -> Vec<Vec<char>> {
                     .and_then(Value::as_u64)
                     .and_then(|n| usize::try_from(n).ok())
                     .unwrap_or(1);
-                for _ in 0..n {
-                    if row.len() >= width {
-                        break;
+                let end = col.saturating_add(n).min(width);
+                for column in col.max(x0)..end.min(x_end) {
+                    if let Some(cell) = row.get_mut(column - x0) {
+                        *cell = glyph;
                     }
-                    row.push(glyph);
                 }
+                col = end;
             }
         }
-        row.resize(width, ' ');
-        rows.push(row);
+        out.push(row);
     }
+    out
+}
+
+/// The grid's rows as strings, row `0` the south edge, each exactly `width`
+/// glyphs (runs past the width are clipped, short rows padded with spaces),
+/// with the units overlaid.
+#[must_use]
+pub fn expand_rows(data: &Value) -> Vec<Vec<char>> {
+    let width = num(data, "width");
+    let height = num(data, "height");
+    let empty = Vec::new();
+    let raw_rows = data.get("rows").and_then(Value::as_array).unwrap_or(&empty);
+    let mut rows = window_rows(raw_rows, width, height, 0, 0, width, height);
     if let Some(units) = data.get("units").and_then(Value::as_array) {
         for unit in units {
             let Some((x, y)) = unit.get("cell").and_then(cell_pair) else {
@@ -308,5 +347,86 @@ mod tests {
         assert_eq!(rows, vec![vec!['#', '#', '#'], vec!['_', ' ', ' ']]);
         assert!(is_grid(&f));
         assert!(!is_grid(&json!({ "schema": { "shape": "list" } })));
+    }
+
+    /// **16b cut Q.4**: one window of a grid is the matching slice of the whole
+    /// one, and the whole one is now built out of it — so a panel that draws
+    /// seventy-eight by twenty cells of a 256-by-256 arena and a line client
+    /// that draws all of it cannot disagree about a single glyph.
+    ///
+    /// Three shapes: a window in the interior, a window clamped at each of the
+    /// four edges, and rows shorter than the declared width (the pad).
+    #[test]
+    fn a_window_is_the_matching_slice_of_the_whole_grid() {
+        // A 40-by-12 grid with a distinct pattern per row, no units: the
+        // comparison is against `expand_rows`' terrain, which units overlay.
+        let rows: Vec<Value> = (0..12)
+            .map(|y| {
+                let glyph = char::from(b'a' + u8::try_from(y % 26).unwrap_or(0));
+                json!([[glyph.to_string(), 7], ["#", 1], [".", 40]])
+            })
+            .collect();
+        let grid = json!({
+            "schema": { "shape": "grid" }, "width": 40, "height": 12,
+            "rows": rows.clone(), "legend": [], "units": [], "you": null
+        });
+        let whole = expand_rows(&grid);
+        let slice = |x0: usize, y0: usize, w: usize, h: usize| -> Vec<Vec<char>> {
+            (y0..y0 + h)
+                .map(|y| {
+                    whole
+                        .get(y)
+                        .map(|row| row.iter().skip(x0).take(w).copied().collect())
+                        .unwrap_or_default()
+                })
+                .collect()
+        };
+        for (x0, y0, w, h) in [
+            (5usize, 3usize, 9usize, 4usize),
+            (0, 0, 40, 12),
+            (0, 0, 6, 2),
+            (34, 8, 6, 4),
+            (0, 8, 6, 4),
+            (34, 0, 6, 4),
+        ] {
+            assert_eq!(
+                window_rows(&rows, 40, 12, x0, y0, w, h),
+                slice(x0, y0, w, h),
+                "window {x0},{y0} {w}x{h}"
+            );
+        }
+        // Past the grid's own edge: spaces, never a short row.
+        let over = window_rows(&rows, 40, 12, 38, 10, 5, 4);
+        assert_eq!(over.len(), 4);
+        for row in &over {
+            assert_eq!(row.len(), 5);
+        }
+        assert_eq!(over.get(2).map(|r| r.as_slice()), Some([' '; 5].as_slice()));
+        assert_eq!(
+            over.first().and_then(|r| r.get(2..)),
+            Some([' ', ' ', ' '].as_slice()),
+            "the columns past the width pad too"
+        );
+
+        // A row shorter than the declared width pads; a run longer than it is
+        // clipped; and both agree with `expand_rows`.
+        let short = json!({
+            "schema": { "shape": "grid" }, "width": 6, "height": 3,
+            "rows": [[["#", 99]], [["_", 2]], []],
+            "legend": [], "units": [], "you": null
+        });
+        let short_rows = short
+            .get("rows")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            window_rows(&short_rows, 6, 3, 0, 0, 6, 3),
+            expand_rows(&short)
+        );
+        assert_eq!(
+            window_rows(&short_rows, 6, 3, 1, 1, 3, 2),
+            vec![vec!['_', ' ', ' '], vec![' ', ' ', ' ']]
+        );
     }
 }

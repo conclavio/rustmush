@@ -2253,11 +2253,11 @@ fn tui_names_nothing(seen: &str, red: u32, blue: u32) {
 /// is the one the line client already has: the bystander standing in the muster
 /// room, asked to `look` before the match and again while it runs.
 ///
-/// What this does **not** cover, and why: the TUI binds no screen to
-/// `arena.cockpit`, so there is no full-screen cockpit panel for this cut to
-/// assert about (16b cut Q.4 builds one; 16b cut Q.3 only renamed the feed and
-/// added `arena.map` beside it). The pilot's arena window on a terminal is
-/// `VIEW`'s line-rendered grid, which the test above asserts.
+/// What this covers is the bystander's SCENE screen, which is the narrative
+/// surface. The full-screen cockpit — the tenth screen 16b cut Q.4 bound to
+/// `arena.cockpit` — has a lens of its own below
+/// ([`the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found`]),
+/// with a pilot in the seat and this same bystander at the tab strip.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tui_witness_is_shown_the_tanks_and_then_nothing_about_the_two_in_the_match() {
     let server = boot("observer-tui").await;
@@ -2304,4 +2304,135 @@ async fn a_tui_witness_is_shown_the_tanks_and_then_nothing_about_the_two_in_the_
     tui_names_nothing(&seen, red, blue);
 
     say(&mut ada, "SIM ABORT", "aborts match").await;
+}
+
+/// **The cockpit on the full-screen surface** (doc 16 §1: *the TUI panels*, §5;
+/// 16b cut Q.4).
+///
+/// The witness above is a bystander, and the note it used to carry was that
+/// there was nothing more to ask: the TUI bound no screen to `arena.cockpit`,
+/// so there was no full-screen cockpit panel to assert about. 16b cut Q.4 built
+/// one — a tenth screen on digit `0`, its map composed on the client out of the
+/// pulled terrain and the frame's own markers — and this is its lens.
+///
+/// Two witnesses, each asked the question the rule is about:
+///
+/// * **Ada**, a pilot sitting in her own cockpit with the full screen up, asked
+///   twice: once with the other tank seventy cells away and outside every
+///   reach, when her screen must carry no trace of it at all — no name, no
+///   object number, no designator, not the callsign it answers to on its own
+///   side — and once after it has driven into her sensor's reach, when it must
+///   carry the designator her own platform issued and nothing else.
+/// * **Cy**, a bystander on the same arena server, who has no seat: the arena
+///   pushes `arena.cockpit` to seated pilots and to nobody else, so the tenth
+///   tab is not on his tab strip at all and the digit that would reach it does
+///   nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
+    let server = boot("observer-cockpit").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+    let (red, blue, _muster, domain) = seat_the_witnesses(&mut god).await;
+    close_the_gap(&mut god, red, blue, domain).await;
+    take_off(&mut ada, &mut bo).await;
+    // Her power comes up in LINE mode, before the full screen takes over: a
+    // cold platform's sensors find nothing, and the question here is what a
+    // WARM one's screen says about a tank it has not found yet.
+    power_up(&mut ada).await;
+
+    // ---- the bystander's tab strip -------------------------------------
+    //
+    // Asked first, while the arena still holds nothing of his: he has no seat
+    // now and is given none later, so his answer cannot go stale.
+    let opened = cy.mark();
+    cy.send_line("@tui").await;
+    // The right-hand block of the tab strip carries the character's own name,
+    // and at eighty columns nothing else on the scene screen does — so this is
+    // the strip itself having painted, not some pane that mentions him.
+    cy.expect_after(opened, "Cy").await;
+    let strip = squeezed(&cy.seen[opened..]);
+    assert!(
+        strip.contains("89"),
+        "the ungated tabs are on the strip:\n{strip}"
+    );
+    assert!(
+        !strip.contains("890"),
+        "a bystander is sent no cockpit frame and earns no tenth tab:\n{strip}"
+    );
+    // And the digit itself is inert: nothing a cockpit pane would ever say
+    // appears after it.
+    let pressed = cy.mark();
+    cy.send_line("0").await;
+    cy.expect_after(pressed, "history").await;
+    let after_zero = squeezed(&cy.seen[pressed..]);
+    for cockpit_word in ["Callsign", "Notinacockpit", "Waitingforthearena"] {
+        assert!(
+            !after_zero.contains(cockpit_word),
+            "the digit reached a cockpit for a bystander ({cockpit_word}):\n{after_zero}"
+        );
+    }
+
+    // ---- the pilot, before anything has been found ----------------------
+    let opened = ada.mark();
+    ada.send_line("@tui").await;
+    // `Callsign` is the status pane's first row, and it paints on the cockpit
+    // screen alone — which the FIRST frame of the match opens by itself.
+    ada.expect_after(opened, "Callsign").await;
+    let before = squeezed(&ada.seen[opened..]);
+    assert!(
+        before.contains("CallsignRA"),
+        "her own tank's callsign is hers to have:\n{before}"
+    );
+    assert!(
+        before.contains("Nolock"),
+        "the status pane painted whole:\n{before}"
+    );
+    tui_names_nothing(&before, red, blue);
+    // The id scraper reads the text with its SPACES still in it. Its mechanism
+    // is a split on every non-hex-digit character, and squeezing a screen puts
+    // the words hard against each other: `BA 1111111111111111 blue` squeezed is
+    // one nineteen-character hex-ish word, and an assertion on a word's LENGTH
+    // would sail past the very id it is looking for.
+    no_sixteen_digit_word(
+        &strip_ansi(&ada.seen[opened..]),
+        "the TUI cockpit before detection",
+    );
+    for trace in ["X1", "BA"] {
+        assert!(
+            !before.contains(trace),
+            "the screen carried {trace:?} before anything was detected:\n{before}"
+        );
+    }
+    // **The pulled terrain arrived.** `arena.map` is answered only to a query
+    // the client sends itself, so this one needle covers the whole seam — the
+    // cockpit frame asking, the gateway forwarding, the bridge answering, and
+    // the store keeping it — and its absence is what a dark map looks like.
+    // The heading line replaces the placeholder the pane opens on, and nothing
+    // else on this screen prints a capital `Map`.
+    ada.expect_after(opened, "Map").await;
+    let with_ground = squeezed(&ada.seen[opened..]);
+    assert!(
+        with_ground.contains("Mapheading") || with_ground.contains("Map\u{2014}heading"),
+        "the map pane composed the pulled ground:\n{with_ground}"
+    );
+
+    // ---- and after the other tank drives into reach ---------------------
+    let closing = ada.mark();
+    drive(&mut bo, 270).await;
+    // The provisional designator her own platform issued, or the callsign the
+    // row is renamed to the moment the return is told apart: either is a word
+    // she may have, and nothing else on the screen may identify the tank.
+    let named = ada.expect_one_of_after(closing, &["X1", "BA"]).await;
+    let after = squeezed(&ada.seen[closing..]);
+    assert!(
+        after.contains(if named == 0 { "X1" } else { "BA" }),
+        "{after}"
+    );
+    tui_names_nothing(&after, red, blue);
+    no_sixteen_digit_word(
+        &strip_ansi(&ada.seen[closing..]),
+        "the TUI cockpit after detection",
+    );
 }

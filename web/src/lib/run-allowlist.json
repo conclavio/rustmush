@@ -6,10 +6,17 @@
   "+roll/last",
   "+scene",
   "+sheet",
+  "bearing",
+  "contacts",
   "help",
   "i",
   "inventory",
   "l",
   "look",
+  "range",
+  "scan",
+  "status",
+  "view",
+  "weaponstatus",
   "who"
 ]

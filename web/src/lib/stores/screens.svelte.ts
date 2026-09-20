@@ -59,6 +59,13 @@ export interface ScreenDef {
  * the other); both are pinned to the committed fixture `run-allowlist.json`
  * beside this file — by a vitest here and a Rust test there — until K8.5's
  * read-only classification can replace the hand-keeping.
+ *
+ * 16b cut Q.4 added the cockpit's seven, which are the seven of the twelve
+ * cockpit verbs that only read: `VIEW`, `CONTACTS`, `STATUS`, `WEAPONSTATUS`,
+ * `SCAN`, `RANGE` and `BEARING` all answer off the last frame the arena
+ * published and stage no intent. The other five — `STARTUP`, `HEADING`,
+ * `SPEED`, `LOCK`, `FIRE` — each stage one, so none of them is here and none
+ * of them is a bare key: the cockpit screen only ever PREFILLS them.
  */
 export const RUN_ALLOWLIST: readonly string[] = [
   "look",
@@ -74,6 +81,13 @@ export const RUN_ALLOWLIST: readonly string[] = [
   "+recap",
   "+roll/last",
   "help",
+  "view",
+  "contacts",
+  "status",
+  "weaponstatus",
+  "scan",
+  "range",
+  "bearing",
 ];
 
 const hasPanel = (g: GateInput, p: string): boolean => g.panels.includes(p);

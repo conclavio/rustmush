@@ -16,11 +16,15 @@
 
 use serde_json::Value;
 
-use super::panels::{CONTACTS_FEED, MAP_FEED, UNIT_FEED};
+use super::panels::{ARENA_MAP_FEED, COCKPIT_FEED, CONTACTS_FEED, MAP_FEED, UNIT_FEED};
 use super::render::{PaneRows, RenderCtx};
 
-/// The most screens a TUI can register (the hotkey digits `1`–`9`).
-pub const MAX_SCREENS: usize = 9;
+/// The most screens a TUI can register (the hotkey digits `0`–`9`).
+///
+/// **16b cut Q.4** took the tenth: nine screens spent `1`–`9`, and the cockpit
+/// doc 16 §5 asks for had nowhere to go. `0` is the digit a keyboard puts after
+/// `9`, and the tab strip reads `1 … 9 0` for that reason.
+pub const MAX_SCREENS: usize = 10;
 /// The most panes one screen may declare.
 pub const MAX_PANES_PER_SCREEN: usize = 8;
 
@@ -31,8 +35,8 @@ pub const RESERVED_EXIT_KEYS: [char; 7] = ['n', 'e', 's', 'w', 'u', 'd', 'o'];
 /// The keys every screen inherits and may not rebind (§7 of the plan):
 /// the digits, the mode triggers, the palette, help, and the pane-jump
 /// letters.
-pub const GLOBAL_KEYS: [char; 15] = [
-    '1', '2', '3', '4', '5', '6', '7', '8', '9', '"', ':', ';', '\\', '/', '?',
+pub const GLOBAL_KEYS: [char; 16] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '"', ':', ';', '\\', '/', '?',
 ];
 /// `g` / `G` jump a pane to its top and bottom in nav mode.
 pub const JUMP_KEYS: [char; 2] = ['g', 'G'];
@@ -50,6 +54,13 @@ pub const JUMP_KEYS: [char; 2] = ['g', 'G'];
 /// both are pinned to the committed fixture `web/src/lib/run-allowlist.json`
 /// — asserted below and by a vitest — until K8.5's read-only classification
 /// can replace the hand-keeping.
+/// **16b cut Q.4** added the cockpit's seven, which are the seven of the twelve
+/// cockpit verbs that only read: `VIEW`, `CONTACTS`, `STATUS`, `WEAPONSTATUS`,
+/// `SCAN`, `RANGE` and `BEARING` all answer off the last frame the arena
+/// published and stage no intent (`tacsim::match_::cockpit::register` says so
+/// in as many words). The other five — `STARTUP`, `HEADING`, `SPEED`, `LOCK`,
+/// `FIRE` — each stage one, so none of them is here and none of them is a bare
+/// key: the cockpit screen only ever PREFILLS them.
 pub const RUN_ALLOWLIST: &[&str] = &[
     "look",
     "l",
@@ -64,6 +75,13 @@ pub const RUN_ALLOWLIST: &[&str] = &[
     "+recap",
     "+roll/last",
     "help",
+    "view",
+    "contacts",
+    "status",
+    "weaponstatus",
+    "scan",
+    "range",
+    "bearing",
 ];
 
 /// The body of a declared-but-unproduced pane (interface plan I8), two rows
@@ -75,9 +93,12 @@ pub const AWAITING_WEAPONS: &str = "awaiting a weapons-cycle\nprojection (plan \
 /// The comms pane's declaration.
 pub const AWAITING_COMMS: &str = "awaiting a station comms\nprojection (plan \u{a7}9)";
 
-/// A screen's hotkey digit, `1..=9`.
+/// A screen's hotkey digit, `0..=9` (16b cut Q.4 took `0` for the cockpit).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ScreenId(pub u8);
+
+/// The cockpit screen's digit (16b cut Q.4; doc 16 §5).
+pub const COCKPIT_SCREEN: ScreenId = ScreenId(0);
 
 /// A pane's stable name within its screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -243,6 +264,15 @@ pub struct Screen {
     /// which it is; `visible_panes` never reads this, so no survivor set
     /// depends on it.
     pub right_shares_surplus: bool,
+    /// **The panel feed this screen needs to exist at all** (16b cut Q.4),
+    /// mirroring the web's per-screen `gate`.
+    ///
+    /// `None` is a screen every viewer has. `Some(feed)` is a screen that
+    /// exists only for a viewer whose server publishes `feed` AND who holds a
+    /// frame of it (`TuiApp::screen_available`): its tab is not drawn and its
+    /// digit is inert otherwise, so a server with no arena never grows a tenth
+    /// tab and a bystander on one never sees a cockpit they do not sit in.
+    pub gate: Option<&'static str>,
 }
 
 impl Screen {
@@ -259,19 +289,27 @@ impl Screen {
     }
 }
 
-/// The nine built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
-/// 6 intel, 7 actions, 8 damage, 9 unit.
+/// The ten built-in screens: 1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls,
+/// 6 intel, 7 actions, 8 damage, 9 unit, 0 cockpit.
 ///
 /// Screens 8 and 9 read one feed, `tactics.unit`, and name nothing in it:
 /// every label, id and word on them comes out of the frame, so a ruleset that
 /// publishes the feed gets both screens without a client change.
+///
+/// **The cockpit is LAST** (16b cut Q.4) and not first: [`super::app::TuiApp`]
+/// opens on `screens.first()`, which must stay the scene, and a tab strip
+/// reading `1 … 9 0` is a keyboard's order rather than a number's. It is the
+/// one gated screen — [`Screen::gate`] — so a world with no arena never grows
+/// a tenth tab.
 #[must_use]
 pub fn builtin_screens() -> Vec<Screen> {
     use super::render::{
-        render_actions_rows, render_intel_rows, render_mail_rows, render_map_rows,
-        render_scene_rows, render_unit_components_rows, render_unit_delta_rows,
-        render_unit_journal_rows, render_unit_plant_rows, render_unit_sections_compact_rows,
-        render_unit_sections_rows, render_view_rows,
+        render_actions_rows, render_cockpit_contacts_rows, render_cockpit_damage_rows,
+        render_cockpit_map_rows, render_cockpit_status_rows, render_cockpit_weapons_rows,
+        render_intel_rows, render_mail_rows, render_map_rows, render_scene_rows,
+        render_unit_components_rows, render_unit_delta_rows, render_unit_journal_rows,
+        render_unit_plant_rows, render_unit_sections_compact_rows, render_unit_sections_rows,
+        render_view_rows,
     };
     let unit_query = || vec![(UNIT_FEED, Value::Object(serde_json::Map::new()))];
     vec![
@@ -361,6 +399,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             // The WHO rail and its neighbours are rails, designed at their
             // own width: Main takes the surplus, as it always has.
             right_shares_surplus: false,
+            gate: None,
         },
         Screen {
             id: ScreenId(2),
@@ -384,6 +423,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             exits_are_keys: false,
             on_enter: vec![],
             right_shares_surplus: false,
+            gate: None,
         },
         Screen {
             id: ScreenId(3),
@@ -422,6 +462,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             exits_are_keys: false,
             on_enter: vec![("mail.list", Value::Object(serde_json::Map::new()))],
             right_shares_surplus: false,
+            gate: None,
         },
         Screen {
             id: ScreenId(4),
@@ -474,6 +515,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             exits_are_keys: false,
             on_enter: vec![("comsys.state", Value::Object(serde_json::Map::new()))],
             right_shares_surplus: false,
+            gate: None,
         },
         Screen {
             id: ScreenId(5),
@@ -516,6 +558,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             exits_are_keys: false,
             on_enter: vec![],
             right_shares_surplus: false,
+            gate: None,
         },
         Screen {
             id: ScreenId(6),
@@ -542,6 +585,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             exits_are_keys: false,
             on_enter: vec![("intel.list", Value::Object(serde_json::Map::new()))],
             right_shares_surplus: false,
+            gate: None,
         },
         Screen {
             id: ScreenId(7),
@@ -575,6 +619,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             exits_are_keys: false,
             on_enter: vec![("legal.actions", Value::Object(serde_json::Map::new()))],
             right_shares_surplus: false,
+            gate: None,
         },
         // 8 damage — the after-action report (interface plan I8): the unit as
         // the ruleset judged it, the newest `@unit/damage` before/after table
@@ -650,6 +695,7 @@ pub fn builtin_screens() -> Vec<Screen> {
             // rows are whole lines: it takes the width the section map, which
             // is one short line per part, does not need.
             right_shares_surplus: true,
+            gate: None,
         },
         // 9 unit — the unit at a glance. Four panes read the feed; the other
         // three are declared placeholders naming the projection each waits on
@@ -781,6 +827,182 @@ pub fn builtin_screens() -> Vec<Screen> {
             // The contacts table's own header is 49 columns wide; the compact
             // section map is one short line per section.
             right_shares_surplus: true,
+            gate: None,
+        },
+        // 0 cockpit — doc 16 §5's full-screen surface (16b cut Q.4): the map
+        // the pilot is flying over, what the platform is doing, what is left of
+        // it, what it can shoot with and what it holds. Six panes over the one
+        // `arena.cockpit` feed, which the arena pushes every pulse, plus the
+        // `arena.map` terrain the map pane composes onto — pulled once, because
+        // the ground does not move.
+        //
+        // The screen names nothing the frame does not: a contact is its
+        // designator, its class word and its plot (doc 16 §1, §3.6).
+        Screen {
+            id: COCKPIT_SCREEN,
+            name: "cockpit",
+            panes: vec![
+                PaneSpec {
+                    id: PaneId("map"),
+                    title: "map",
+                    role: BorderRole::Unit,
+                    slot: PaneSlot::Main,
+                    content: PaneContent::Panel {
+                        feed: COCKPIT_FEED,
+                        render: render_cockpit_map_rows,
+                    },
+                    min_w: 40,
+                    min_h: 6,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("status"),
+                    title: "status",
+                    role: BorderRole::Unit,
+                    slot: PaneSlot::Left,
+                    content: PaneContent::Panel {
+                        feed: COCKPIT_FEED,
+                        render: render_cockpit_status_rows,
+                    },
+                    min_w: 34,
+                    min_h: 6,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("damage"),
+                    title: "damage",
+                    role: BorderRole::Danger,
+                    slot: PaneSlot::Left,
+                    content: PaneContent::Panel {
+                        feed: COCKPIT_FEED,
+                        render: render_cockpit_damage_rows,
+                    },
+                    min_w: 34,
+                    min_h: 5,
+                    selectable: false,
+                },
+                // F.2's contract stands: the arena's `Sys` lines already land in
+                // the scrollback ring, so this screen shows that ring and never
+                // prints the frame's own `notices[].text` a second time. It
+                // rides the Left column so the map keeps the whole Main one —
+                // the map is what this screen exists for.
+                PaneSpec {
+                    id: PaneId("notices"),
+                    title: "notices",
+                    role: BorderRole::Ic,
+                    slot: PaneSlot::Left,
+                    content: PaneContent::Scrollback,
+                    min_w: 34,
+                    min_h: 3,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("weapons"),
+                    title: "weapons",
+                    role: BorderRole::Danger,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Panel {
+                        feed: COCKPIT_FEED,
+                        render: render_cockpit_weapons_rows,
+                    },
+                    min_w: 34,
+                    min_h: 4,
+                    selectable: false,
+                },
+                PaneSpec {
+                    id: PaneId("contacts"),
+                    title: "contacts",
+                    role: BorderRole::Neutral,
+                    slot: PaneSlot::Right,
+                    content: PaneContent::Panel {
+                        feed: COCKPIT_FEED,
+                        render: render_cockpit_contacts_rows,
+                    },
+                    min_w: 34,
+                    min_h: 4,
+                    selectable: true,
+                },
+            ],
+            // Every `Run` here is one of the seven cockpit verbs that only
+            // read; the five that stage an intent are PREFILLS, so no bare key
+            // ever steers, fires or locks — the player still presses Enter.
+            keys: vec![
+                KeyBinding {
+                    key: 'k',
+                    label: "lock",
+                    action: KeyAction::Prefill("lock "),
+                },
+                KeyBinding {
+                    key: 'f',
+                    label: "fire",
+                    action: KeyAction::Prefill("fire "),
+                },
+                KeyBinding {
+                    key: 'h',
+                    label: "heading",
+                    action: KeyAction::Prefill("heading "),
+                },
+                // `m` for the help's own words — "make way at that speed" —
+                // because `s` is the scan-a-row key below and `p` reads as page.
+                KeyBinding {
+                    key: 'm',
+                    label: "speed",
+                    action: KeyAction::Prefill("speed "),
+                },
+                KeyBinding {
+                    key: 'v',
+                    label: "view",
+                    action: KeyAction::Run("view"),
+                },
+                KeyBinding {
+                    key: 'c',
+                    label: "contacts",
+                    action: KeyAction::Run("contacts"),
+                },
+                KeyBinding {
+                    key: 't',
+                    label: "status",
+                    action: KeyAction::Run("status"),
+                },
+                KeyBinding {
+                    key: 'w',
+                    label: "weapons",
+                    action: KeyAction::Run("weaponstatus"),
+                },
+                KeyBinding {
+                    key: 'r',
+                    label: "range",
+                    action: KeyAction::Run("range"),
+                },
+                KeyBinding {
+                    key: 'b',
+                    label: "bearing",
+                    action: KeyAction::Run("bearing"),
+                },
+                KeyBinding {
+                    key: 'n',
+                    label: "scan",
+                    action: KeyAction::Run("scan"),
+                },
+                KeyBinding {
+                    key: 's',
+                    label: "scan row",
+                    action: KeyAction::PrefillRow("scan "),
+                },
+            ],
+            // The map and the status go last: a cockpit with neither is not a
+            // cockpit. Damage first, then the weapons, then the contacts.
+            degrade: vec![PaneId("damage"), PaneId("weapons"), PaneId("contacts")],
+            exits_are_keys: false,
+            on_enter: vec![
+                (COCKPIT_FEED, Value::Object(serde_json::Map::new())),
+                (ARENA_MAP_FEED, Value::Object(serde_json::Map::new())),
+            ],
+            // The contacts pane carries whole rows — a designator, a class, a
+            // bearing, a band, a range and an age — and `draw_pane` neither
+            // wraps nor scrolls sideways.
+            right_shares_surplus: true,
+            gate: Some(COCKPIT_FEED),
         },
     ]
 }
@@ -799,8 +1021,8 @@ pub fn validate_screens(screens: &[Screen]) -> Result<(), String> {
     }
     let mut seen_ids = Vec::new();
     for s in screens {
-        if !(1..=9).contains(&s.id.0) {
-            return Err(format!("screen {:?} is not a digit 1-9", s.name));
+        if !(0..=9).contains(&s.id.0) {
+            return Err(format!("screen {:?} is not a digit 0-9", s.name));
         }
         if seen_ids.contains(&s.id) {
             return Err(format!("screen digit {} is used twice", s.id.0));
@@ -877,15 +1099,16 @@ mod tests {
         assert!(mail.binding('s').is_some() && mail.binding('d').is_some());
     }
 
-    /// I8: nine screens is the cap, and the two tactical ones sit inside every
-    /// bound the probe enforces — pane count, unique pane ids, a `degrade`
-    /// order that names only panes it has, and no `Run` off the read-only
-    /// list (`@unit` is staff-gated and mutating: it is only ever a prefill).
+    /// I8: ten screens is the cap (16b cut Q.4 took `0` for the cockpit), and
+    /// the two tactical ones sit inside every bound the probe enforces — pane
+    /// count, unique pane ids, a `degrade` order that names only panes it has,
+    /// and no `Run` off the read-only list (`@unit` is staff-gated and
+    /// mutating: it is only ever a prefill).
     #[test]
-    fn nine_screens_validate_and_the_tactical_two_stay_inside_every_cap() {
+    fn ten_screens_validate_and_the_tactical_two_stay_inside_every_cap() {
         let screens = builtin_screens();
-        assert_eq!(screens.len(), 9);
-        validate_screens(&screens).expect("nine built-ins are valid");
+        assert_eq!(screens.len(), 10);
+        validate_screens(&screens).expect("ten built-ins are valid");
         assert_eq!(
             screens.len(),
             MAX_SCREENS,
@@ -980,13 +1203,140 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(bound, ["look", "inventory", "+roll/last", "+contacts"]);
+        // 16b cut Q.4 bound the cockpit's seven read verbs; the five that stage
+        // an arena intent are prefills and are not on the list at all.
+        assert_eq!(
+            bound,
+            [
+                "look",
+                "inventory",
+                "+roll/last",
+                "+contacts",
+                "view",
+                "contacts",
+                "status",
+                "weaponstatus",
+                "range",
+                "bearing",
+                "scan",
+            ]
+        );
         for verb in &bound {
             assert!(
                 RUN_ALLOWLIST.contains(verb),
                 "{verb} is bound but not listed"
             );
         }
+        for staged in ["startup", "heading", "speed", "lock", "fire"] {
+            assert!(
+                !RUN_ALLOWLIST.contains(&staged),
+                "{staged} stages an arena intent and may not ride a bare key"
+            );
+        }
+    }
+
+    /// **The cockpit screen** (16b cut Q.4; doc 16 §5): it is LAST so the app
+    /// still opens on the scene, it is the one gated screen, its map and status
+    /// survive every degrade, and no key on it sends an order.
+    #[test]
+    fn the_cockpit_screen_is_last_gated_and_orders_nothing_from_a_bare_key() {
+        let screens = builtin_screens();
+        assert_eq!(
+            screens.first().map(|s| s.id),
+            Some(ScreenId(1)),
+            "the app opens on `screens.first()`, which must stay the scene"
+        );
+        let cockpit = screens.last().expect("a last screen");
+        assert_eq!(cockpit.id, COCKPIT_SCREEN);
+        assert_eq!(cockpit.name, "cockpit");
+        assert_eq!(cockpit.gate, Some(COCKPIT_FEED));
+        assert!(
+            screens.iter().filter(|s| s.gate.is_some()).count() == 1,
+            "the cockpit is the one gated screen"
+        );
+        assert_eq!(
+            cockpit.on_enter,
+            vec![
+                (COCKPIT_FEED, Value::Object(serde_json::Map::new())),
+                (ARENA_MAP_FEED, Value::Object(serde_json::Map::new())),
+            ],
+            "the frame and the terrain it is drawn on"
+        );
+        assert!(cockpit.panes.len() <= MAX_PANES_PER_SCREEN);
+        // Damage, then weapons, then contacts; the map and the status are not
+        // in the order at all, so nothing can drop them.
+        assert_eq!(
+            cockpit.degrade,
+            vec![PaneId("damage"), PaneId("weapons"), PaneId("contacts")]
+        );
+        for kept in ["map", "status"] {
+            assert!(
+                !cockpit.degrade.contains(&PaneId(kept)),
+                "{kept} must survive every degrade"
+            );
+        }
+        for d in &cockpit.degrade {
+            assert!(cockpit.pane(*d).is_some(), "degrade names {}", d.0);
+        }
+        // Every pane but the notices ring reads the one feed.
+        for pane in &cockpit.panes {
+            match pane.content {
+                PaneContent::Scrollback => assert_eq!(pane.id, PaneId("notices")),
+                PaneContent::Panel { feed, .. } => assert_eq!(feed, COCKPIT_FEED),
+                _ => panic!("the cockpit declares only panel panes and the ring"),
+            }
+        }
+        assert!(
+            cockpit
+                .pane(PaneId("contacts"))
+                .is_some_and(|p| p.selectable),
+            "Enter prefills the highlighted contact's LOCK"
+        );
+        // Nothing that changes the world rides a bare key: the five staging
+        // verbs are prefills, and `s` prefills a row's SCAN.
+        for binding in &cockpit.keys {
+            match binding.action {
+                KeyAction::Run(cmd) => assert!(
+                    [
+                        "view",
+                        "contacts",
+                        "status",
+                        "weaponstatus",
+                        "scan",
+                        "range",
+                        "bearing"
+                    ]
+                    .contains(&cmd),
+                    "{cmd:?} is not one of the seven read verbs"
+                ),
+                KeyAction::Prefill(line) => assert!(
+                    ["lock ", "fire ", "heading ", "speed "].contains(&line),
+                    "{line:?}"
+                ),
+                KeyAction::PrefillRow(line) => assert_eq!(line, "scan "),
+                KeyAction::Local(_) => panic!("the cockpit declares no local action"),
+            }
+        }
+    }
+
+    /// The id range moved with the tenth screen: `0` is a digit now and `10`
+    /// still is not.
+    #[test]
+    fn the_digit_range_takes_zero_and_stops_at_nine() {
+        let mut screens = builtin_screens();
+        if let Some(screen) = screens.first_mut() {
+            screen.id = ScreenId(10);
+        }
+        let err = validate_screens(&screens).unwrap_err();
+        assert!(err.contains("is not a digit 0-9"), "{err}");
+        let mut screens = builtin_screens();
+        let eleventh = screens.first().cloned().expect("a screen");
+        screens.push(eleventh);
+        assert!(
+            validate_screens(&screens)
+                .unwrap_err()
+                .contains("exceed MAX_SCREENS")
+        );
     }
 
     #[test]

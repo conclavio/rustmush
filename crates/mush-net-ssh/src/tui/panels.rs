@@ -46,6 +46,16 @@ pub const CONTACTS_FEED: &str = "tactics.contacts";
 /// The tactical map (doc 14 §6, S4): a grid-shaped keyframe of the window
 /// the viewer stands on, rendered by the same lines line mode prints.
 pub const MAP_FEED: &str = "atlas.map";
+/// **The arena cockpit** (doc 16 §5; 16b cut Q.3 named it): the per-pulse
+/// keyframe a seated pilot is pushed, and the one feed the cockpit screen
+/// reads. `seated: false` is the last frame a pilot gets, and it clears the
+/// screen.
+pub const COCKPIT_FEED: &str = "arena.cockpit";
+/// **The arena's terrain** (16b cut Q.3): the whole ground, PULLED and never
+/// pushed, which the map pane composes the cockpit frame's markers onto. A
+/// resumed client holds none and must re-ask (see
+/// [`super::app::MAP_HEAL_LATCH_S`]).
+pub const ARENA_MAP_FEED: &str = "arena.map";
 /// How long a resync request stays latched before another delta may ask
 /// again. The SSH bridge drops a throttled query silently (no reply, not
 /// even an error), so a latch cleared only by the replacement keyframe is
@@ -116,6 +126,14 @@ impl PanelStore {
     #[must_use]
     pub fn state(&self, feed: &str) -> Option<&PanelState> {
         self.feeds.get(feed)
+    }
+
+    /// **Drop a feed's held frame** (16b cut Q.4): the arena map of a match
+    /// that is over describes ground the pilot is no longer on, and a stale map
+    /// under live markers is worse than no map — the pane says it is waiting
+    /// and the self-heal asks for the new one.
+    pub fn forget(&mut self, feed: &str) {
+        self.feeds.remove(feed);
     }
 
     /// Feed names held, sorted.

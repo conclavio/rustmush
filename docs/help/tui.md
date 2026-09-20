@@ -7,11 +7,12 @@ the **default** and is not going anywhere.
 `@tui` is an optional full-screen alternative for terminal clients, rendered
 server-side over your SSH connection. It is built from **numbered screens**
 of titled panes: a scene screen with your scrollback, the room and who is
-about; a sheet screen; mail; channels; rolls; intel; actions; and two
+about; a sheet screen; mail; channels; rolls; intel; actions; two
 tactical screens — a damage report and a unit view, whose **grid** pane is
 the map of the window your scene stands on when one is open (`help map`) —
 that show your unit whenever you hold a station on one (they are always in
-the strip).
+the strip); and, on digit **0**, a **cockpit** for a pilot in a simulator
+match, which appears the first time a match sends you a frame.
 Everything you type still runs the same commands and reaches the same world;
 the TUI is only a different way to *see* it.
 
@@ -46,13 +47,16 @@ Every nav hotkey is still reachable while the box is open as **Alt+key**:
 Alt+3 switches to the mail screen where a bare `3` did, Alt+n walks north.
 (On a terminal whose Alt key is not "Meta", Esc then the key does the same
 in two strokes: Esc closes the box and keeps what you typed as a draft, and
-the key acts.) F1–F9 also switch screens from either mode.
+the key acts.) F1–F9 also switch screens from either mode; the cockpit is on
+`0` and `Alt+0`, which no function key doubles.
 
 ## Keys
 
 Nav mode (the box is closed):
 
-  1-9          Switch to that screen (the tab strip along the top).
+  0-9          Switch to that screen (the tab strip along the top). The
+               strip reads `1 … 9 0`, which is the order of the digits on
+               a keyboard.
   Enter        Open the input box. If the focused pane has a highlighted row
                — a mail message, an action, a channel — the box opens with
                that row's command ready (`@mail 3`, `+act brace`, `pub `).
@@ -77,7 +81,7 @@ Input mode (the box is open):
   Left/Right, Home/End, Ctrl-A/E, Backspace, Delete, Ctrl-W (kill word),
   Ctrl-U (kill to start), Up/Down (history), Tab (complete a command name).
   /            On an empty box, opens the command palette.
-  Alt+key      The key's nav action (Alt+1 … Alt+9, Alt+? help, Alt+letter).
+  Alt+key      The key's nav action (Alt+0 … Alt+9, Alt+? help, Alt+letter).
 
 From either mode:
 
@@ -174,6 +178,27 @@ reads the scene back, and is not taken as the line you were composing.
              capabilities each one gives, and its unit-wide readings with
              the current mobility mode. `r` refreshes, `c` runs `+contacts`,
              `d` opens `@unit/damage `.
+  0 cockpit  Your simulator cockpit, the whole of what the panel tells you,
+             updating by itself as the arena sends it. The arena's ground
+             fills the middle, drawn around your own tank (`@`) with your
+             contacts on it — `x` hostile, `+` friendly, `?` not told apart
+             yet — and the line under it says which glyph is which. On the
+             left: your callsign, your power, speed and heading, your heat,
+             the arena's tempo, your lock, what is left of your tank section
+             by section, and the arena's own lines as they arrive. On the
+             right: your weapons with their cycle, rounds and chance, and
+             your contacts — bearing, band, range, how old the plot is, and
+             the sections of any you have had a close look at.
+             `v` `c` `t` `w` `r` `b` `n` run VIEW, CONTACTS, STATUS,
+             WEAPONSTATUS, RANGE, BEARING and SCAN; `k` `f` `h` `m` open the
+             box with `lock `, `fire `, `heading ` and `speed ` ready, and
+             none of those is sent until you press Enter. On the contacts
+             pane, Enter opens the box with `lock <contact>` ready and `s`
+             with `scan <contact>`; neither goes in until you press Enter
+             on it. The tab appears the first time a match sends you a
+             frame, and the screen opens itself then; both stay for the
+             rest of this `@tui` session, and once you are out of the
+             cockpit the screen reads `Not in a cockpit.`
 
 The two tactical screens are always in the tab strip, and they are honest
 when there is nothing to show: with no station and no unit of your own they
