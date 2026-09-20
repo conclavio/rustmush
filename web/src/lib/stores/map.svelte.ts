@@ -11,6 +11,39 @@ import type { AtlasMapFrame, MapUnit } from "../proto";
 /** The `atlas.map` feed id. */
 export const MAP_FEED = "atlas.map";
 
+/**
+ * **The terrain palette**, one colour a glyph (`mush_atlas::TerrainClass::glyph`
+ * is the whole list). The glyph is the fact and the colour is only how it is
+ * painted: nothing here knows a rule, and an unpainted glyph is the void.
+ *
+ * One table, two canvases (16b cut Q.5): the atlas map and the arena's cockpit
+ * map draw the same ground from the same server-side vocabulary, so a second
+ * copy would be a second answer to "what colour is a wood". The five classes
+ * cut Q.5 added — light and heavy woods, deep water, ice, regolith — used to
+ * fall through to the void on the atlas canvas, which drew nothing at all for a
+ * cell that has terrain.
+ */
+export const TERRAIN_COLOURS: Readonly<Record<string, string>> = {
+  " ": "transparent",
+  ".": "#6b6b6b",
+  ",": "#7a5a3a",
+  '"': "#3f7a3a",
+  "~": "#2a5c8a",
+  _: "#a89a7a",
+  x: "#8a6a4a",
+  "=": "#4a4a4a",
+  ":": "#c2a86b",
+  "^": "#7d7d7d",
+  "#": "#1f1f1f",
+  "+": "#c78a3a",
+  D: "#8c7b5a",
+  t: "#2f5f33",
+  T: "#1f4423",
+  W: "#173d5e",
+  i: "#9fc4d8",
+  r: "#6f6558",
+};
+
 /** The most notes kept. */
 export const MAP_NOTES = 20;
 

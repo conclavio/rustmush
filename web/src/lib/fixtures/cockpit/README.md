@@ -1,6 +1,6 @@
 # The canonical cockpit fixtures (16b cut Q.3; doc 16 §5)
 
-One scene, four files, read by all three renderers. Doc 16 §5 asks for renderer
+One scene, read by all three renderers. Doc 16 §5 asks for renderer
 parity, and three renderers each pinned to a golden of its own is regression and
 not parity — so there is exactly one set here, and no copies to drift. Rust
 `include_str!`s these files (the way `mush-net-ssh`'s TUI reads
@@ -12,12 +12,19 @@ not parity — so there is exactly one set here, and no copies to drift. Rust
 | `arena_map.json` | the whole arena's terrain, feed `arena.map`, pulled and never pushed | `tacsim::match_::cockpit::map_frame` |
 | `view_frame.json` | the 78×20 window `VIEW` sends, the two composed server-side | `tacsim::match_::cockpit::view_window` |
 | `view_grid.txt` | the twenty map rows a line client prints of it, north-up | `mush_ansi::panel::grid_lines` |
+| `web_view_model.txt` | every line the web's cockpit screen prints for that frame (16b cut Q.5) | `web/src/lib/cockpit.ts`'s `cockpitViewLines` |
 
-Re-bless all four with `TACSIM_BLESS=1`:
+Re-bless the first four with `TACSIM_BLESS=1`:
 
 ```
 cargo test -p tacsim   --test cockpit   # the three JSON files
 cargo test -p mush-ansi --test golden   # view_grid.txt
+```
+
+`web_view_model.txt` is the web's own, and is blessed from `web/`:
+
+```
+COCKPIT_BLESS=1 npx vitest run src/lib/cockpit.test.ts
 ```
 
 ## What a renderer is held to

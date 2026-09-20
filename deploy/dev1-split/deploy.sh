@@ -7,7 +7,9 @@
 # ../dev1.
 #
 # Idempotent: safe to re-run for a redeploy. On a redeploy it does the
-# hold-the-connections HOT restart (reload, not restart) — see step 9.
+# hold-the-connections HOT restart (reload, not restart) — see step 9 — unless
+# GATEWAY_RESTART=1 is set, which is the flag for a commit that moved the
+# GATEWAY half itself (see README.md here for which those are).
 #
 # NOTE (web): as of M16d the gateway ALSO serves the web client (HTTPS :6790) on
 # the same session layer as SSH, and web connections survive the hot restart too.
@@ -23,6 +25,31 @@ DEV1="$SELF/../dev1"                      # shared redis/instance.env/cert setup
 INSTANCE_DIR="$SELF/../instance"          # the shared template + render.sh
 
 echo "== rustmush dev1 SPLIT (hot-restart) deploy =="
+
+# 0. Preflight: the EMBEDDED WEB CLIENT (16b cut Q.5).
+#
+#    `web/dist` is git-ignored, so `git archive HEAD | tar -x` never ships it;
+#    `crates/mush-net-web/build.rs` embeds whatever is there and errors only
+#    when `web/dist/index.html` is MISSING. A tree that still has last
+#    deploy's bundle therefore builds clean, starts clean, and serves the OLD
+#    client — the one failure mode of this recipe that leaves no trace
+#    anywhere. Refuse it here, before anything is installed, started or
+#    reloaded, so a stale SPA is a failed deploy and not a mystery.
+#
+#    The bundle may be built on this box or shipped from the dev box (see
+#    ../README.md); either way it has to be NEWER than web/src.
+WEB="$BUILD/web"
+DIST="$WEB/dist/index.html"
+if [ ! -f "$DIST" ]; then
+  echo "FATAL: $DIST is missing — build the web client first: cd $WEB && npm ci && npm run build" >&2
+  exit 1
+fi
+STALE="$(find "$WEB/src" -type f -newer "$DIST" -print -quit 2>/dev/null || true)"
+if [ -n "$STALE" ]; then
+  echo "FATAL: $DIST is older than $STALE — rebuild the web client: cd $WEB && npm ci && npm run build" >&2
+  exit 1
+fi
+echo "web bundle: $DIST is newer than $WEB/src"
 
 # 1. Service user (shared across mush instances).
 if ! id mush >/dev/null 2>&1; then
@@ -121,6 +148,13 @@ if [ -f "$ROOT/dev1.env" ]; then chown root:mush "$ROOT/dev1.env"; chmod 640 "$R
 #    where the gateway is ALREADY running does the HOT restart: `reload` sends
 #    SIGHUP, which restarts only the server child while every SSH connection is
 #    held (M16c) — players see "restarting"/"reconnected", not a drop.
+#
+#    GATEWAY_RESTART=1 asks for a full `systemctl restart` instead (16b cut
+#    Q.5). SIGHUP restarts only the CHILD, so a commit that changed the gateway
+#    half — the embedded SPA, the web or SSH ingress, the session layer, the
+#    renderer, the wire types or the IPC boundary — is still running the old
+#    code after a reload, in the one half nothing says so. Connections drop
+#    once; that is the price of the half that holds them having moved.
 systemctl daemon-reload
 systemctl enable --now redis-dev1mush.service
 sleep 1
@@ -134,11 +168,16 @@ fi
 
 systemctl enable dev1mush-gateway.service
 if systemctl is-active --quiet dev1mush-gateway.service; then
-  echo "gateway already up — HOT restart (SIGHUP): holding connections"
-  systemctl reload dev1mush-gateway.service
+  if [ "${GATEWAY_RESTART:-0}" = "1" ]; then
+    echo "GATEWAY_RESTART=1 — FULL restart: connections drop once, both halves come up new"
+    systemctl restart dev1mush-gateway.service
+  else
+    echo "gateway already up — HOT restart (SIGHUP): holding connections"
+    systemctl reload dev1mush-gateway.service
+  fi
 else
   systemctl start dev1mush-gateway.service
 fi
 sleep 2
 systemctl --no-pager --lines=0 status dev1mush-gateway.service | head -4 || true
-echo "== done. ssh -p 6789 play@$EXT_IP  |  web https://$EXT_IP:6790  (hot-restart: systemctl reload dev1mush-gateway) =="
+echo "== done. ssh -p 6789 play@$EXT_IP  |  web https://$EXT_IP:6790  (hot-restart: systemctl reload dev1mush-gateway; gateway-half change: GATEWAY_RESTART=1) =="

@@ -14,6 +14,7 @@
   import ActionsPanel from "./ActionsPanel.svelte";
   import ChannelTabs from "./ChannelTabs.svelte";
   import ChannelView from "./ChannelView.svelte";
+  import CockpitScreen from "./CockpitScreen.svelte";
   import GenericViewScreen from "./GenericViewScreen.svelte";
   import NotificationTray from "./NotificationTray.svelte";
   import RequestModal from "./RequestModal.svelte";
@@ -73,6 +74,10 @@
         // answered, the screen is a loading line and no rows (the ring does
         // render under the no-subject line, so that case still counts).
         return app.unit.answered ? app.unit.journal.length : 0;
+      case "cockpit":
+        // What the pilot's own platform holds — a count the payload carries
+        // and nothing else knows (16b cut Q.5).
+        return app.cockpit.frame?.contacts.length ?? 0;
       default:
         return 0;
     }
@@ -183,6 +188,8 @@
           <LlmPanel {app} />
         {:else if active.id === "unit"}
           <UnitScreen {app} />
+        {:else if active.id === "cockpit"}
+          <CockpitScreen {app} />
         {:else if active.viewFeed}
           <GenericViewScreen {app} feed={active.viewFeed} />
         {:else}
@@ -237,7 +244,7 @@
       >
         <h2>{active.label} screen</h2>
         <dl>
-          <dt>1–9</dt><dd>switch screens (Alt+digit from the box)</dd>
+          <dt>0–9</dt><dd>switch screens (Alt+digit from the box); 0 is the cockpit</dd>
           <dt>Enter</dt><dd>open the box; sends and stays; empty Enter closes it</dd>
           <dt>" : ; \</dt><dd>open the box with that speech trigger typed</dd>
           <dt>/</dt><dd>the command palette (^K from anywhere)</dd>

@@ -5,29 +5,16 @@
   // the picture and the text can never disagree for one viewer at one
   // instant. Nothing here knows a rule: the glyph is the fact.
   import type { GameApp } from "$lib/game.svelte";
-  import { expandRows } from "$lib/stores/map.svelte";
+  import { expandRows, TERRAIN_COLOURS } from "$lib/stores/map.svelte";
 
   let { app }: { app: GameApp } = $props();
 
   const frame = $derived(app.map.frame);
   const notes = $derived(app.map.notes);
 
-  /** Colours by glyph; an unknown glyph is the void. */
-  const COLOURS: Record<string, string> = {
-    " ": "transparent",
-    ".": "#6b6b6b",
-    ",": "#7a5a3a",
-    '"': "#3f7a3a",
-    "~": "#2a5c8a",
-    _: "#a89a7a",
-    x: "#8a6a4a",
-    "=": "#4a4a4a",
-    ":": "#c2a86b",
-    "^": "#7d7d7d",
-    "#": "#1f1f1f",
-    "+": "#c78a3a",
-    D: "#8c7b5a",
-  };
+  /** Colours by glyph; an unknown glyph is the void. One table for both map
+   * canvases since 16b cut Q.5 — see `TERRAIN_COLOURS`. */
+  const COLOURS = TERRAIN_COLOURS;
 
   let canvas: HTMLCanvasElement | undefined = $state();
 

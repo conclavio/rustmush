@@ -34,10 +34,12 @@ import {
   roomLines,
 } from "./render";
 import { isOwnRoll } from "./roll";
+import { ARENA_MAP_FEED, COCKPIT_FEED } from "./cockpit";
 import { exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
 import { ChannelsStore } from "./stores/channels.svelte";
+import { CockpitStore } from "./stores/cockpit.svelte";
 import { CommandsStore } from "./stores/commands.svelte";
 import { LegalActionsStore } from "./stores/actions.svelte";
 import { GenericViewStore, isViewFeed } from "./stores/genericview.svelte";
@@ -94,6 +96,8 @@ type PendingReq =
   | { kind: "view"; feed: string }
   | { kind: "unit"; feed: string }
   | { kind: "contacts" }
+  | { kind: "cockpit" }
+  | { kind: "arena.map" }
   | { kind: "scenes" };
 
 const HELP_LINES = [
@@ -102,7 +106,7 @@ const HELP_LINES = [
   "  /history        — load the page of scene history above what you see",
   "  /theme [dark|light|system] — switch theme (no argument: toggle)",
   "  /help           — this card",
-  "Keys while nothing has focus: 1-9 screens, Enter opens the box,",
+  "Keys while nothing has focus: 1-9 and 0 screens, Enter opens the box,",
   '  " : ; \\ open it with that trigger, / the palette, ? the key help,',
   "  a letter runs the screen's own command (the chips at the bottom),",
   "  n/e/s/w/u/d/o walk the room's exits on the scene screen.",
@@ -162,6 +166,23 @@ export function hydrationQueries(
       q: { t: "panel_subscribe", d: { feed: CONTACTS_FEED } },
     });
   }
+  // The two arena feeds (16b cut Q.5; doc 16 §5). Both are `panel_subscribe`
+  // queries; both answer `seated: false` to anyone who is not in a cockpit, so
+  // asking costs a bystander one empty frame and tells them nothing. The map is
+  // asked for here because a re-attach holds no terrain — it is pulled and
+  // never pushed, so it is never in the resume ring.
+  if (session.hasPanel(COCKPIT_FEED)) {
+    out.push({
+      pending: { kind: "cockpit" },
+      q: { t: "panel_subscribe", d: { feed: COCKPIT_FEED } },
+    });
+  }
+  if (session.hasPanel(ARENA_MAP_FEED)) {
+    out.push({
+      pending: { kind: "arena.map" },
+      q: { t: "panel_subscribe", d: { feed: ARENA_MAP_FEED } },
+    });
+  }
   if (session.hasPanel("scenes")) {
     out.push({ pending: { kind: "scenes" }, q: { t: "panel_subscribe", d: { feed: "scenes" } } });
   }
@@ -200,6 +221,7 @@ export class GameApp {
   commands = new CommandsStore();
   vitals = new VitalsStore();
   map = new MapStore();
+  cockpit = new CockpitStore();
   presence = new PresenceStore();
   genericViews = new GenericViewStore();
   requests = new RequestStore();
@@ -238,6 +260,9 @@ export class GameApp {
   #nextToast = 1;
   #seenActionCommits = new Set<string>();
   #actionCommitOrder: string[] = [];
+  /** A match's once-per-match cockpit switch, owed but not yet taken (16b cut
+   * Q.5); see `#followTheCockpit` for why it can wait a pulse. */
+  #cockpitSwitchDue = false;
 
   constructor(opts: GameAppOptions = {}) {
     this.client = new WsClient({
@@ -416,6 +441,8 @@ export class GameApp {
     this.screens.clearFeedScreens();
     this.commands.clear();
     this.vitals.clear();
+    this.cockpit.clear();
+    this.#cockpitSwitchDue = false;
     this.genericViews.clear();
     this.requests.clear();
     this.notifications.clear();
@@ -608,7 +635,14 @@ export class GameApp {
       this.#screenRefused(UNIT_SCREEN.def.label, this.screens.registerFeedScreen(UNIT_SCREEN));
     }
     for (const { pending, q } of hydrationQueries(this.session)) {
-      this.#req(pending, q);
+      const sent = this.#req(pending, q);
+      if (sent && pending.kind === "arena.map") {
+        // The hello pass pulls the arena's ground (16b cut Q.5), and that ask
+        // ARMS the cockpit store's latch: the first frame to arrive would
+        // otherwise find it unarmed and pull the whole terrain a second time,
+        // on the socket that has just reopened.
+        this.cockpit.noteMapAsked(Date.now());
+      }
     }
     if (this.session.hasPanel("legal.actions")) {
       this.#requestLegalActions();
@@ -719,6 +753,13 @@ export class GameApp {
           // unwired propagation layer is not scrollback clutter.
           return;
         }
+        if (pending?.kind === "cockpit" || pending?.kind === "arena.map") {
+          // A refusal to either arena feed (16b cut Q.5): the cockpit screen
+          // renders `Not in a cockpit.` / `Waiting for the arena map...` on
+          // its own, and the map ask repeats on its own latch — a bystander's
+          // hello pass must not print a line for asking.
+          return;
+        }
         // The generic reply-error line, demoted like every other
         // server-driven system line (I5-C14).
         this.scrollback.push("ev-sys ev-demoted", [renderRich(event.d)], ts);
@@ -797,6 +838,18 @@ export class GameApp {
       this.llm.applyKeyframe(d.data);
     } else if (d.feed === "commands.list") {
       this.commands.apply(d.data);
+    } else if (d.feed === COCKPIT_FEED) {
+      // The cockpit (16b cut Q.5; doc 16 §5). Every frame is a whole-state
+      // keyframe — a `VIEW` composite too, which is the same payload with a
+      // grid this client does not read — so there is no delta arm.
+      if (d.kind === "keyframe") {
+        this.#followTheCockpit(d.data);
+      }
+    } else if (d.feed === ARENA_MAP_FEED) {
+      // The terrain under it: pulled, never pushed, one per match.
+      if (d.kind === "keyframe") {
+        this.cockpit.applyMap(d.data);
+      }
     } else if (d.feed === MAP_FEED) {
       // The tactical map (S4): a keyframe replaces the whole grid; a delta
       // moves the units on it and says what happened.
@@ -820,6 +873,50 @@ export class GameApp {
       }
     }
     // Unknown feeds (future modules): ignored — additive evolution.
+  }
+
+  /**
+   * **What one `arena.cockpit` keyframe asks of this client** (16b cut Q.5;
+   * doc 16 §5): the terrain it is drawn on, and — once per match — the screen
+   * it is drawn on.
+   *
+   * The store owns both latches (see `CockpitStore`); this is the one place
+   * that acts on them, so a frame arriving bare, inside a reply, or replayed
+   * out of the resume ring all go the same way. The screen is opened first and
+   * the ask goes out after it, so a pilot sees the cockpit while the ground is
+   * still on the wire and `Waiting for the arena map...` in its place.
+   *
+   * The one thing the switch WAITS for is a half-typed line. This client has a
+   * single composer and the scene screen mounts it, so switching away unmounts
+   * it and takes the draft, the sticky Say/Pose mode (D-I-8) and the history
+   * buffer with it — all three live in `Composer.svelte`'s component state and
+   * none of them is written anywhere. This is the only server-driven screen
+   * switch in the client, so it is also the only one that could do that to
+   * someone mid-sentence. The switch is owed rather than spent: a pilot who is
+   * typing keeps the box, and the next pulse — a second later at most — opens
+   * the cockpit for them.
+   */
+  #followTheCockpit(data: unknown): void {
+    if (this.cockpit.applyFrame(data)) {
+      this.#cockpitSwitchDue = true;
+    }
+    if (!this.cockpit.seated) {
+      // The cleared frame: the seat is gone and an unspent switch goes with it.
+      this.#cockpitSwitchDue = false;
+    } else if (this.#cockpitSwitchDue && !(this.screens.inputFocused && this.composer !== null)) {
+      // Only an actually mounted, actually focused box holds the switch up:
+      // `inputFocused` is written by the composer's own focus/blur handlers, so
+      // without the second clause a flag left set by a box that went away would
+      // keep the cockpit shut for the whole match.
+      this.#cockpitSwitchDue = false;
+      this.screens.switchTo("cockpit", this.gate);
+    }
+    if (this.cockpit.needsMap(Date.now())) {
+      this.#req(
+        { kind: "arena.map" },
+        { t: "panel_subscribe", d: { feed: ARENA_MAP_FEED } },
+      );
+    }
   }
 
   /** Fetch the next older narrative backlog page (interface plan I12) — the

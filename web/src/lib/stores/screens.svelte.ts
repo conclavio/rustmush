@@ -1,13 +1,19 @@
 // Screens (interface plan I4, D-I-7, D-I-17, D-I-18, D-I-19): the
 // top-level concept of the browser client. The built-ins share their names
 // and digits with the TUI (1 scene, 2 sheet, 3 mail, 4 chan, 5 rolls, 7
-// actions; 8 build and 9 llm are the web's own; 6 intel is the TUI's), and
-// a ruleset screen registers by a panel-feed suffix so it appears only
-// when the server's manifest carries the feed. One binding table per
-// screen, with the same `local` / `prefill` / `run` kinds and the same
-// read-only rule for `run` as the TUI (`RUN_ALLOWLIST`, checked by
+// actions, 0 cockpit; 8 build and 9 llm are the web's own; 6 intel is the
+// TUI's), and a ruleset screen registers by a panel-feed suffix so it
+// appears only when the server's manifest carries the feed. One binding
+// table per screen, with the same `local` / `prefill` / `run` kinds and the
+// same read-only rule for `run` as the TUI (`RUN_ALLOWLIST`, checked by
 // `validateScreens`).
+//
+// 16b cut Q.5 added the tenth digit. `0` is LAST in the strip — the order of
+// the digits on a keyboard, and the same order the TUI's tab bar reads — so
+// it sorts after 9 rather than before 1, and `activeDef`'s fallback is still
+// the scene screen and not the cockpit.
 
+import { COCKPIT_FEED } from "../cockpit";
 import { GLOBAL_KEYS, JUMP_KEYS, RESERVED_EXIT_KEYS } from "../keys";
 
 /** What a bound key does (D-I-18). `toggle` flips the active screen's own
@@ -172,7 +178,44 @@ export const BUILTIN_SCREENS: readonly ScreenDef[] = [
     exitsAreKeys: false,
     gate: (g) => hasPanel(g, "llm.dashboard"),
   },
+  // The cockpit (16b cut Q.5; doc 16 §5), LAST in the table and last in the
+  // strip, on the tenth digit the TUI gave it. Gated on the manifest alone:
+  // the frame and the query both answer `seated: false` to anyone who is not
+  // in a cockpit, and the screen's own empty state (`Not in a cockpit.`) is
+  // byte-identical whether a match is being fought or not, so a bystander's
+  // tab tells them nothing (doc 16 §1).
+  //
+  // None of the five ORDERING verbs is here: `STARTUP`, `HEADING`, `SPEED`,
+  // `LOCK` and `FIRE` each stage an intent, so each is a prefill and none of
+  // them is on `RUN_ALLOWLIST` — a bare key on this screen never fires a gun.
+  {
+    id: "cockpit",
+    digit: 0,
+    label: "cockpit",
+    keys: [
+      { key: "k", label: "lock", action: { kind: "prefill", line: "lock " } },
+      { key: "f", label: "fire", action: { kind: "prefill", line: "fire " } },
+      { key: "h", label: "heading", action: { kind: "prefill", line: "heading " } },
+      { key: "m", label: "speed", action: { kind: "prefill", line: "speed " } },
+      { key: "s", label: "scan a contact", action: { kind: "prefill", line: "scan " } },
+      { key: "v", label: "view", action: { kind: "run", cmd: "view" } },
+      { key: "c", label: "contacts", action: { kind: "run", cmd: "contacts" } },
+      { key: "t", label: "status", action: { kind: "run", cmd: "status" } },
+      { key: "w", label: "weapons", action: { kind: "run", cmd: "weaponstatus" } },
+      { key: "r", label: "range", action: { kind: "run", cmd: "range" } },
+      { key: "b", label: "bearing", action: { kind: "run", cmd: "bearing" } },
+      { key: "n", label: "scan the lock", action: { kind: "run", cmd: "scan" } },
+    ],
+    exitsAreKeys: false,
+    gate: (g) => hasPanel(g, COCKPIT_FEED),
+  },
 ];
+
+/** Where a screen sits in the strip: `0` reads LAST, as it does on a keyboard
+ * and in the TUI's tab bar. */
+function stripOrder(def: ScreenDef): number {
+  return def.digit === 0 ? 10 : def.digit;
+}
 
 /** A ruleset screen: present only when a manifest feed ends with `suffix`. */
 export interface FeedScreen {
@@ -230,8 +273,11 @@ export function validateScreens(defs: readonly ScreenDef[]): string | null {
       return `screen ${s.id} declared twice`;
     }
     ids.add(s.id);
-    if (!Number.isInteger(s.digit) || s.digit < 1 || s.digit > 9) {
-      return `screen ${s.id}: digit ${s.digit} is not 1-9`;
+    // 16b cut Q.5 opened the range to the tenth digit the cockpit takes; a
+    // ruleset screen still gets one of 1-9, because `freeDigit` hands out
+    // nothing else.
+    if (!Number.isInteger(s.digit) || s.digit < 0 || s.digit > 9) {
+      return `screen ${s.id}: digit ${s.digit} is not 0-9`;
     }
     if (digits.has(s.digit)) {
       return `screen ${s.id}: digit ${s.digit} used twice`;
@@ -327,7 +373,7 @@ export class ScreensStore {
       .filter((f) => gate.panels.some((p) => p.endsWith(f.suffix)))
       .map((f) => f.def);
     return [...BUILTIN_SCREENS.filter((s) => s.gate(gate)), ...feedDefs].sort(
-      (a, b) => a.digit - b.digit,
+      (a, b) => stripOrder(a) - stripOrder(b),
     );
   }
 

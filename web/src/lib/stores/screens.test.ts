@@ -21,6 +21,8 @@ const full: GateInput = {
   features: ["mail", "channels"],
 };
 const bare: GateInput = { panels: [], features: [] };
+/** A server that also publishes the arena's cockpit feed (16b cut Q.5). */
+const arena: GateInput = { panels: [...full.panels, "arena.cockpit"], features: full.features };
 
 describe("validateScreens", () => {
   it("accepts the built-ins and refuses a mutating run, a reserved letter, a global key", () => {
@@ -48,6 +50,10 @@ describe("validateScreens", () => {
     expect(validateScreens([BUILTIN_SCREENS[0]!, { ...BUILTIN_SCREENS[1]!, digit: 1 }])).toContain(
       "used twice",
     );
+    // 16b cut Q.5 opened the range to the cockpit's tenth digit; ten is still
+    // not a digit.
+    expect(validateScreens([{ ...BUILTIN_SCREENS[0]!, digit: 10 }])).toContain("is not 0-9");
+    expect(validateScreens([{ ...BUILTIN_SCREENS[0]!, digit: -1 }])).toContain("is not 0-9");
   });
 });
 
@@ -55,6 +61,7 @@ describe("ScreensStore", () => {
   it("shares the TUI's digits and gates screens on the manifest", () => {
     const s = new ScreensStore();
     const digits = Object.fromEntries(s.available(full).map((d) => [d.id, d.digit]));
+    // No cockpit here: this manifest carries no `arena.cockpit` (16b cut Q.5).
     expect(digits).toEqual({
       scene: 1,
       sheet: 2,
@@ -92,6 +99,52 @@ describe("ScreensStore", () => {
     expect(s.switchDigit(6, withUnit)).toBe(true);
     const bad: ScreenDef = { ...def, id: "bad", digit: 6 };
     expect(s.registerFeedScreen({ suffix: ".x", def: bad })).toContain("used twice");
+  });
+
+  it("the cockpit takes digit 0, reads LAST in the strip, and is gated on the feed", () => {
+    const s = new ScreensStore();
+    // Absent from a manifest without the feed — a server with no arena has no
+    // cockpit tab at all.
+    expect(s.available(full).some((d) => d.id === "cockpit")).toBe(false);
+    expect(s.switchDigit(0, full)).toBe(false);
+    // Present with it, on 0, and LAST: the strip reads `1 … 9 0`, which is the
+    // order of the digits on a keyboard and the order the TUI's tab bar reads.
+    const ids = s.available(arena).map((d) => d.id);
+    expect(ids[ids.length - 1]).toBe("cockpit");
+    expect(s.available(arena).find((d) => d.id === "cockpit")?.digit).toBe(0);
+    expect(s.switchDigit(0, arena)).toBe(true);
+    expect(s.active).toBe("cockpit");
+    // …and the fallback is still the scene screen, never the cockpit. This has
+    // to be asked of a gate the cockpit PASSES: under `full` it is filtered out
+    // by its own gate before the sort is consulted, so that case says nothing
+    // about the order. A viewer whose active screen vanished must not land in
+    // a cockpit they are not seated in, which is what a raw `a.digit - b.digit`
+    // sort would do.
+    s.active = "a screen that went away";
+    expect(s.activeDef(arena).id).toBe("scene");
+    expect(s.activeDef(full).id).toBe("scene");
+    // The twelve keys: the seven read-only verbs run, the five orders only
+    // prefill, and no order verb is on the allowlist.
+    const keys = s.available(arena).find((d) => d.id === "cockpit")?.keys ?? [];
+    expect(keys.filter((b) => b.action.kind === "run").map((b) => b.action)).toEqual([
+      { kind: "run", cmd: "view" },
+      { kind: "run", cmd: "contacts" },
+      { kind: "run", cmd: "status" },
+      { kind: "run", cmd: "weaponstatus" },
+      { kind: "run", cmd: "range" },
+      { kind: "run", cmd: "bearing" },
+      { kind: "run", cmd: "scan" },
+    ]);
+    expect(keys.filter((b) => b.action.kind === "prefill").map((b) => b.key)).toEqual([
+      "k",
+      "f",
+      "h",
+      "m",
+      "s",
+    ]);
+    for (const verb of ["startup", "heading", "speed", "lock", "fire"]) {
+      expect(RUN_ALLOWLIST).not.toContain(verb);
+    }
   });
 
   it("exits are keys on the scene screen only", () => {
@@ -199,7 +252,21 @@ describe("the run allowlist", () => {
     const bound = [...BUILTIN_SCREENS, UNIT_SCREEN.def]
       .flatMap((s) => s.keys)
       .flatMap((b) => (b.action.kind === "run" ? [b.action.cmd.split(/\s+/)[0] ?? ""] : []));
-    expect(bound).toEqual(["look", "inventory", "+roll/last", "+contacts"]);
+    // 16b cut Q.5 bound the cockpit's seven read-only verbs, which 16b cut Q.4
+    // had already put on the list for the TUI's copy of the same screen.
+    expect(bound).toEqual([
+      "look",
+      "inventory",
+      "+roll/last",
+      "view",
+      "contacts",
+      "status",
+      "weaponstatus",
+      "range",
+      "bearing",
+      "scan",
+      "+contacts",
+    ]);
     for (const verb of bound) {
       expect(fixture).toContain(verb);
     }

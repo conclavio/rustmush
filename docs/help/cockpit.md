@@ -175,5 +175,29 @@ you know which one they answer: `FIRE refused. Still cycling: 4 s to go.`,
 first.` No other order is answered that way — `HEADING` and `SPEED` are refused
 at the cockpit and nowhere else.
 
-See also: `help simulator`, `help chargen` (gunnery is the rating the shot
-reads).
+## The cockpit screen
+
+Both full-screen clients put the whole of this on **screen 0**, updating by
+itself as the arena sends it — press `0` in `@tui` (`help tui`), or click the
+`0 cockpit` tab in the browser. In `@tui` the tab appears the first time a match
+sends you a frame and stays for the rest of that session; in the browser it is
+there whenever the server runs the simulator. Either way the screen opens itself
+on that first frame, and after that it is yours to leave and come back to; in
+the browser it waits while you are typing, so a half-written line is never taken
+out from under you. Out of a cockpit it reads `Not in a cockpit.`
+
+It shows what the panel tells you and nothing else: the arena's ground drawn
+around your own tank, with your contacts on it — `x` hostile, `+` friendly, `?`
+not told apart yet — then your callsign, power, speed, heading, heat, the
+arena's tempo and your lock; what is left of your tank section by section; your
+weapons with their cycle, rounds and chance; and your contacts with their
+bearing, band, range, plot age and the sections of any you have had a close look
+at. In the browser the map has a zoom and draws a ring around your lock, and
+clicking a contact's designator — or its `scan` button — puts `lock BA` or
+`scan BA` in the box ready to send; the browser's box lives on the scene screen,
+so a prefill takes you there and `0` brings you back. Nothing on the screen is
+sent until you press Enter: the seven reading verbs are the only ones a bare key
+runs, and `STARTUP`, `HEADING`, `SPEED`, `LOCK` and `FIRE` are always typed.
+
+See also: `help simulator`, `help tui`, `help chargen` (gunnery is the rating
+the shot reads).

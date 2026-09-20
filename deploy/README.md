@@ -171,6 +171,22 @@ ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build && ~/.cargo/bin/cargo build --rele
 ssh -i $KEY $VPS 'bash /opt/rustmush/dev1/build/deploy/dev1-split/deploy.sh'
 ```
 
+The SPA line is **not** optional: `web/dist` is git-ignored, so the archive
+never carries it, and `crates/mush-net-web/build.rs` embeds whatever is on disk
+and errors only when `index.html` is missing entirely. Since 16b cut Q.5
+`deploy.sh` refuses to start or reload anything when the shipped bundle is
+missing or older than `web/src`, and names the npm command — the bundle can be
+built on the box (`cd …/build/web && npm ci && npm run build`, Node 22) or
+shipped as above.
+
+A commit that moved the **gateway half** — `web/`, `mush-gateway`,
+`mush-net-*`, `mush-session`, `mush-ansi`, `mush-proto`, `mush-ipc` — needs a
+full restart, because SIGHUP restarts only the server child and the gateway
+process would keep running the old binary. Set `GATEWAY_RESTART=1` on the
+deploy line (`ssh … 'GATEWAY_RESTART=1 bash …/deploy/dev1-split/deploy.sh'`) and
+connections drop once. Everything else stays a `reload`
+([`dev1-split/README.md`](dev1-split/README.md) has the table).
+
 The deploy script is the redeploy because the config is rendered: it re-resolves
 the external IP, rewrites `instance.env`, **re-renders `mushd.toml`** from the
 shipped template and preflights it with both halves before it touches the unit,

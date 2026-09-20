@@ -1,0 +1,22 @@
+Map — heading 045°
+x BA  + RB  ? X3
+Callsign RA
+power online
+43 kph  heading 045°
+heat 40/100
+tempo engaged
+Lock BA  430 m  62%
+engine  intact  40/40
+hull  intact  60/60  front 55/80  rear 30/30
+left_track  intact  6/24  left 4/24
+right_track  destroyed  0/24  right 0/24
+turret  intact  30/30  top 18/20
+cannon  ready  14/20  62%
+machine_gun  1 s  380/500  21%
+BA  blue  045°  effective  450 m  1 s
+  engine hull left_track/y right_track/r turret/d 
+RB  red  270°  close  100 m  0 s
+X3  unknown  315°  close  200 m  3 s
+X4  unknown  030°  effective  600 m  6 s
+X4 new contact
+BA section destroyed: turret

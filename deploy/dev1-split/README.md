@@ -61,6 +61,12 @@ exist). Ship the current tree + build BOTH binaries + run this deploy:
 VPS=root@conclav.io ; KEY=./hostinger
 # ship the committed source (adds this dir + dev1/instance.env + the template)
 git archive HEAD | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build'
+# build the WEB CLIENT FIRST. `web/dist` is git-ignored, so the archive above
+# never carries it, and `crates/mush-net-web/build.rs` embeds whatever is on
+# disk — a tree with last deploy's bundle builds clean and serves the OLD
+# client. This needs Node 22 on the box; if it is not there, build the bundle
+# on the dev box and ship it instead (see "Building the SPA elsewhere" below).
+ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build/web && npm ci && npm run build'
 # build the TWO split binaries (release). The gateway serves the web client
 # (HTTPS :6790) now, so it needs --features tls to terminate TLS from the on-disk
 # cert/key; the server is the game half (no web) and needs no tls.
@@ -73,6 +79,7 @@ ssh -i $KEY $VPS 'bash /opt/rustmush/dev1/build/deploy/dev1-split/deploy.sh'
 
 ```bash
 git archive HEAD | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build'
+ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build/web && npm ci && npm run build'
 ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build && ~/.cargo/bin/cargo build --release -p mush-gateway --features tls && ~/.cargo/bin/cargo build --release -p mush-server'
 # SIGHUP the gateway → it restarts ONLY the server child from the fresh binary,
 # holding every SSH AND web connection. NOT `restart` — that would drop them.
@@ -81,6 +88,38 @@ ssh -i $KEY $VPS 'systemctl reload dev1mush-gateway'
 
 `deploy.sh` also does the hot restart on a re-run (it `reload`s when the gateway
 is already up), so re-running it is equivalent.
+
+### Which half moved: `reload` or `restart` (16b cut Q.5)
+
+SIGHUP restarts only the **server child**. The gateway process itself keeps
+running the binary it was started with — so a commit that changed the GATEWAY
+half is still live as old code after a reload, in the one half nothing says so.
+Pick by what the commit touched:
+
+| the commit touched | what to run |
+|---|---|
+| `web/`, `crates/mush-gateway`, `crates/mush-net-*`, `crates/mush-session`, `crates/mush-ansi`, `crates/mush-proto`, `crates/mush-ipc` | `GATEWAY_RESTART=1 bash …/deploy/dev1-split/deploy.sh` (or `systemctl restart dev1mush-gateway`) — **connections drop once** |
+| anything else (the game: `mush-server`, `tacsim`, modules, content, config) | `bash …/deploy/dev1-split/deploy.sh` — `reload`, connections held |
+
+`web/` is on the restart list because the SPA is **embedded in the gateway
+binary** (`crates/mush-net-web`), not served from disk.
+
+### Building the SPA elsewhere
+
+`deploy.sh` refuses to start or reload anything when `web/dist/index.html` is
+missing, or older than the newest file under `web/src` — `web/dist` is
+git-ignored, so `git archive` never ships it and a stale bundle would otherwise
+embed in silence. It does **not** run npm itself, so if the box has no Node 22,
+build the bundle on the dev box and ship it:
+
+```bash
+npm --prefix web ci && npm --prefix web run build
+tar -c -C web dist | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build/web'
+```
+
+The refusal names the command either way; the check is on the mtimes of the
+shipped files, so a bundle built elsewhere and untarred after the source
+satisfies it.
 
 ## Operate
 

@@ -11,8 +11,12 @@
 // extracted, matching ws.test.ts's convention — a shared file is premature
 // until a second consumer wants one.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { cockpitView, cockpitViewLines, composeWindow } from "./cockpit";
 import { GameApp, type ComposerHandle } from "./game.svelte";
 import type { Envelope, OutputEvent, Query, ViewEnvelope } from "./proto";
 import { UNIT_RESYNC_MS } from "./stores/unit.svelte";
@@ -1126,5 +1130,255 @@ describe("an authoritative action commit", () => {
     expect(ws.sentJson().filter((f) => f.t === "ack")).toHaveLength(2);
     expect(app.scrollback.entries).toHaveLength(1);
     expect(ws.reqs()).toHaveLength(before);
+  });
+});
+
+// The cockpit on the web (16b cut Q.5; doc 16 §5). Two `#routePanel` branches,
+// two hydration queries, the once-per-match screen switch and the 2 s map
+// self-heal — and the observer rule over the whole of what the screen prints.
+describe("the cockpit feeds", () => {
+  const COCKPIT_FEED = "arena.cockpit";
+  const ARENA_MAP_FEED = "arena.map";
+
+  const cockpitFrame = (): Record<string, unknown> =>
+    JSON.parse(
+      readFileSync(resolve(process.cwd(), "src/lib/fixtures/cockpit/cockpit_frame.json"), "utf8"),
+    ) as Record<string, unknown>;
+  const arenaMap = (): Record<string, unknown> =>
+    JSON.parse(
+      readFileSync(resolve(process.cwd(), "src/lib/fixtures/cockpit/arena_map.json"), "utf8"),
+    ) as Record<string, unknown>;
+  const viewFrame = (): Record<string, unknown> =>
+    JSON.parse(
+      readFileSync(resolve(process.cwd(), "src/lib/fixtures/cockpit/view_frame.json"), "utf8"),
+    ) as Record<string, unknown>;
+
+  const ARENA_PANELS = [COCKPIT_FEED, ARENA_MAP_FEED];
+
+  it("hydrates both feeds, and neither on a server that publishes neither", () => {
+    const { ws } = boot(ARENA_PANELS);
+    expect(ws.reqs().map(feedOf)).toEqual([null, null, COCKPIT_FEED, ARENA_MAP_FEED]);
+    const bare = boot([SHEET_FEED]);
+    expect(bare.ws.reqs().map(feedOf).filter((f) => f !== null)).toEqual([]);
+  });
+
+  it("routes a pushed frame and a pulled map, and opens the screen once a match", () => {
+    const { app, ws } = boot(ARENA_PANELS);
+    const before = ws.reqs().length;
+    expect(app.screens.active).toBe("scene");
+
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+
+    expect(app.cockpit.seated).toBe(true);
+    expect(app.cockpit.matchId).toBe(7);
+    expect(app.screens.active).toBe("cockpit"); // the first frame opens it
+    // …and asks for nothing: the hello pass already pulled the ground, and
+    // that ask armed the latch.
+    expect(ws.reqs().slice(before)).toHaveLength(0);
+
+    ws.deliver(panel(4, ARENA_MAP_FEED, "keyframe", arenaMap()));
+    expect(app.cockpit.holdsTheGround).toBe(true);
+
+    // A pilot who walks away is not dragged back by the next pulse, and the
+    // held ground is never asked for again.
+    app.screens.switchTo("scene", app.gate);
+    ws.deliver(panel(5, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(app.screens.active).toBe("scene");
+    expect(ws.reqs().slice(before)).toHaveLength(0);
+  });
+
+  it("takes a VIEW composite as one more status frame", () => {
+    const { app, ws } = boot(ARENA_PANELS);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", viewFrame()));
+    expect(app.cockpit.seated).toBe(true);
+    expect(app.cockpit.frame?.callsign).toBe("RA");
+    expect(app.cockpit.frame?.contacts).toHaveLength(4);
+  });
+
+  it("pulls the whole arena's terrain ONCE on an attach, not twice", () => {
+    // The hello pass asks for the ground (it is pulled and never pushed, so a
+    // re-attach holds none), and that ask ARMS the store's latch. Before the
+    // fix the first cockpit frame found the latch unarmed and asked again, so
+    // a pilot re-attaching mid-match was sent the whole terrain twice on a
+    // socket that had only just reopened.
+    const at = (ms: number) => vi.setSystemTime(new Date(ms));
+    at(100_000); // the hello pass's ask is stamped here
+    const { ws } = boot(ARENA_PANELS);
+    const asks = (): number => ws.reqs().filter((r) => feedOf(r) === ARENA_MAP_FEED).length;
+    expect(asks()).toBe(1);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(asks()).toBe(1);
+    // The hello's ask is a wildcard, not a free pass: if it is never answered
+    // the self-heal still takes over on its own cadence.
+    at(102_000);
+    ws.deliver(panel(4, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(asks()).toBe(2);
+  });
+
+  it("re-asks for a dropped map at most once every 2 s", () => {
+    const at = (ms: number) => vi.setSystemTime(new Date(ms));
+    at(100_000);
+    const { ws } = boot(ARENA_PANELS);
+    // The hello pass already asked once, stamped at 100 s; that ask covers the
+    // first frame's match, so the SELF-HEAL's asks are counted from there and
+    // begin only once it has aged out.
+    const base = ws.reqs().filter((r) => feedOf(r) === ARENA_MAP_FEED).length;
+    expect(base).toBe(1);
+    const asks = (): number =>
+      ws.reqs().filter((r) => feedOf(r) === ARENA_MAP_FEED).length - base;
+
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(asks()).toBe(0); // the hello's ask still stands
+    // Inside the latch: nothing, however many pulses arrive.
+    at(101_000);
+    ws.deliver(panel(4, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(asks()).toBe(0);
+    at(102_000);
+    ws.deliver(panel(5, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(asks()).toBe(1);
+    // The unseated answer is dropped and does NOT buy a fresh ask.
+    ws.deliver(
+      panel(6, ARENA_MAP_FEED, "keyframe", {
+        schema: { id: "arena.map", version: 1, shape: "terrain", retain: "latest" },
+        seated: false,
+      }),
+    );
+    at(102_500);
+    ws.deliver(panel(7, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(asks()).toBe(1);
+    // The real ground stops the asking for good.
+    ws.deliver(panel(8, ARENA_MAP_FEED, "keyframe", arenaMap()));
+    at(200_000);
+    ws.deliver(panel(9, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(asks()).toBe(1);
+  });
+
+  it("waits out a half-typed line before it opens the screen", () => {
+    // The only server-driven screen switch in this client. The web has ONE
+    // composer and the scene screen mounts it, so switching away unmounts it
+    // and takes the draft, the sticky mode and the history buffer with it —
+    // none of which is written anywhere. The switch is owed, not spent.
+    const { app, ws } = boot(ARENA_PANELS);
+    // A box that is mounted AND has focus: both, because `inputFocused` is
+    // written by the composer's own handlers and a flag left set by a box that
+    // went away must not keep the cockpit shut for a whole match.
+    app.composer = {
+      focus: () => {},
+      blur: () => {},
+      cycleMode: () => {},
+      text: () => "pose x",
+      setText: () => {},
+    };
+    app.screens.inputFocused = true;
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(app.cockpit.seated).toBe(true); // the panel is live either way
+    expect(app.screens.active).toBe("scene");
+    // …and the very next pulse, once the box is let go, takes it.
+    app.screens.inputFocused = false;
+    ws.deliver(panel(4, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(app.screens.active).toBe("cockpit");
+    // Still once per match: a pilot who walks away is not dragged back.
+    app.screens.switchTo("scene", app.gate);
+    ws.deliver(panel(5, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(app.screens.active).toBe("scene");
+  });
+
+  it("a prefill takes the pilot to the box, which lives on the scene screen", () => {
+    // What `CockpitScreen`'s contact click and its five prefill keys do, pinned
+    // where it can be read: `focusComposer` switches to the scene screen
+    // because that is where this client's one composer is mounted. It is the
+    // web's uniform behaviour (the unit screen's `@unit/damage ` does the
+    // same) and the documented one (`docs/help/cockpit.md`); a screen-local
+    // input row is the open question, and this is the assertion it would
+    // change.
+    const { app, ws } = boot(ARENA_PANELS);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(app.screens.active).toBe("cockpit");
+    app.focusComposer("lock BA");
+    expect(app.screens.active).toBe("scene");
+  });
+
+  it("a cleared frame empties the panel; a Sys refusal stays out of scrollback", () => {
+    const { app, ws } = boot(ARENA_PANELS);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    ws.deliver(panel(4, ARENA_MAP_FEED, "keyframe", arenaMap()));
+    const lines = app.scrollback.entries.length;
+
+    ws.deliver(
+      panel(5, COCKPIT_FEED, "keyframe", {
+        schema: { id: "arena.cockpit", version: 1, retain: "latest" },
+        seated: false,
+      }),
+    );
+    expect(app.cockpit.seated).toBe(false);
+    expect(app.cockpit.map).toBeNull();
+    expect(app.cockpit.notices).toEqual([]);
+
+    // A refusal answering either arena query is the panel's business: the
+    // screen prints its own empty state and nothing lands in scrollback.
+    const mapReq = ws.reqs().filter((r) => feedOf(r) === ARENA_MAP_FEED).pop()!;
+    ws.deliver(reply(6, mapReq.id, SYS_REFUSAL));
+    expect(app.scrollback.entries).toHaveLength(lines);
+  });
+
+  it("the observer rule: the screen's whole text carries nothing outside the payload", () => {
+    const { app, ws } = boot([...ARENA_PANELS, UNIT_FEED, CONTACTS_FEED, SHEET_FEED]);
+    // Seed every other store the shell holds with a decoy identity. A client
+    // that joined a contact to a name it happened to know would break doc 16
+    // §1 without the server ever sending a wrong byte.
+    app.who.replace([{ name: "Decoy", idle: 0, conn: 0, doing: null } as never], Date.now());
+    app.presence.applyComposing("Decoy", true, Date.now());
+    ws.deliver(
+      panel(2, UNIT_FEED, "keyframe", {
+        object: { id: "#909", name: "Decoy" },
+        revision: 1,
+        state: "ok",
+        sections: [],
+        cells: [],
+        components: [],
+        capabilities: [],
+      }),
+    );
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    ws.deliver(panel(4, ARENA_MAP_FEED, "keyframe", arenaMap()));
+
+    const frame = app.cockpit.frame!;
+    const win = composeWindow(app.cockpit.map!, frame, 78, 20);
+    const text = [
+      ...cockpitViewLines(cockpitView(frame, win, app.cockpit.notices)),
+      ...win.grid,
+    ].join("\n");
+
+    expect(text).not.toContain("Decoy");
+    expect(text).not.toContain("#909");
+    expect(text).not.toContain("#101"); // the pilot's own object number either
+    // No contact id, no lock's copy of one: a sixteen-digit word never prints.
+    expect(text).not.toMatch(/[0-9a-f]{16}/);
+    // And none of the arena's own sentences, which the scrollback already owns.
+    expect(text).not.toContain("New contact X4: bearing 030");
+    expect(text).not.toContain("BA's turret is destroyed.");
+  });
+
+  it("CockpitScreen.svelte touches nothing on the app but the cockpit", () => {
+    // The component-level half of the rule, as a probe: `environment: "node"`
+    // has no DOM to mount into, and the strings it would render are pinned
+    // above through the same pure functions it calls. What a probe adds is
+    // that it calls nothing else.
+    //
+    // It is a WHITELIST and not a list of forbidden names on purpose: a
+    // blocklist passes for every member it forgets, and `GameApp` grows. The
+    // two below are the whole of what the screen may reach for — the payload
+    // it was handed, and the box it prefills. Anything else, an identity store
+    // or a send path, fails here.
+    const src = readFileSync(
+      resolve(process.cwd(), "src/components/CockpitScreen.svelte"),
+      "utf8",
+    );
+    const reached = new Set([...src.matchAll(/\bapp\.(\w+)/g)].map((m) => m[1]));
+    expect([...reached].sort()).toEqual(["cockpit", "focusComposer"]);
+    // And nothing on this screen sends: the five ordering verbs prefill only.
+    for (const send of ["app.submit", "app.runBinding", "app.client", "app.act("]) {
+      expect(src, `CockpitScreen calls ${send}`).not.toContain(send);
+    }
   });
 });

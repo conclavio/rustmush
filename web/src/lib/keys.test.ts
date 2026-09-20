@@ -26,7 +26,16 @@ describe("navIntent", () => {
       kind: "screen",
       digit: 3,
     });
-    expect(navIntent(k("0"), exits, bindings)).toBeNull();
+    // 16b cut Q.5: `0` is the cockpit's digit, the one the TUI gave it. It is
+    // still INERT on a server that publishes no cockpit — no available screen
+    // has it, so `ScreensStore.switchDigit` refuses and `GameApp.act` answers
+    // `false` — but the key model always answers the intent.
+    expect(navIntent(k("0"), exits, bindings)).toEqual({ kind: "screen", digit: 0 });
+    expect(navIntent(k("0", { inField: true }), exits, bindings)).toBeNull();
+    expect(navIntent(k("0", { inField: true, alt: true }), exits, bindings)).toEqual({
+      kind: "screen",
+      digit: 0,
+    });
   });
 
   it("a bare key while the composer is focused is the composer's", () => {

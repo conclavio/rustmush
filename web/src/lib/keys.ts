@@ -8,8 +8,10 @@
 
 import type { RoomView } from "./proto";
 
-/** Keys every screen inherits and may not rebind (plan §7). */
+/** Keys every screen inherits and may not rebind (plan §7). `0` joined them in
+ * 16b cut Q.5, with the cockpit screen the TUI put on the same digit. */
 export const GLOBAL_KEYS: ReadonlySet<string> = new Set([
+  "0",
   "1",
   "2",
   "3",
@@ -104,7 +106,10 @@ function bareIntent(
   bindings: ReadonlySet<string>,
   fromBox: boolean,
 ): NavIntent | null {
-  if (/^[1-9]$/.test(key)) {
+  // 16b cut Q.5: `0` is the cockpit's digit. It is INERT on a server that
+  // publishes no cockpit — `switchDigit` finds no available screen with it, so
+  // `GameApp.act` answers `false` and the key falls through to the browser.
+  if (/^[0-9]$/.test(key)) {
     return { kind: "screen", digit: Number(key) };
   }
   if (key === "?") {

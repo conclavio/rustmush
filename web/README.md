@@ -121,6 +121,7 @@ src/
 │   ├── VitalsBoard.svelte    # every `.vitals` frame as widgets + recent rolls (I6)
 │   ├── UnitScreen.svelte     # the unit screen: damage / unit layouts over the `.unit` frame (I8, probed)
 │   ├── UnitSectionMap.svelte # one block per section: state glyph + condition word + cell gauges (I8, probed)
+│   ├── CockpitScreen.svelte  # screen 0: the arena cockpit — canvas map, status, damage, weapons, contacts (16b Q.5)
 │   ├── widgets/              # Gauge, TrackBoxes, KeyValue, Table — ruleset-blind (I6, probed)
 │   ├── ChannelView.svelte    # one channel's backlog/live view + alias input
 │   ├── WhoRail.svelte        # who table, idle ticking, refresh
@@ -136,6 +137,7 @@ src/
     ├── ws.ts                 # WsClient: connect/send/dispatch/resume/keepalive/backoff
     ├── game.svelte.ts        # GameApp: WsClient → stores wiring, Req routing, /commands, the shell's actions
     ├── keys.ts               # the modal key model (I4): bare keys vs Alt+key, exits as keys
+    ├── cockpit.ts            # the arena feeds' types + decoders, the ONE map composition, the view model (16b Q.5)
     ├── palette.ts            # palette ranking (exact prefix first)
     ├── composer.ts           # sticky-mode line shaping + the "renders as" preview
     ├── composing.ts          # the composing signal (start once, stop on send/idle)
@@ -154,11 +156,17 @@ src/
 
 The browser is a set of **numbered screens** (`$lib/stores/screens.svelte.ts`)
 sharing names and digits with the SSH TUI where both have the screen: 1
-scene, 2 sheet, 3 mail, 4 chan, 5 rolls, 7 actions, 8 build, 9 llm. The TUI's
+scene, 2 sheet, 3 mail, 4 chan, 5 rolls, 7 actions, 8 build, 9 llm, 0
+cockpit. The TUI's
 6 is its intel screen and its 8 and 9 are the tactical damage and unit
 screens; here 6 is the one digit the built-ins leave free, and since
 interface cut I8 a server that
-publishes a `.unit` feed claims it for the **unit** screen (see below). Each
+publishes a `.unit` feed claims it for the **unit** screen (see below).
+16b cut Q.5 took the tenth digit for the **cockpit** screen, which is last in
+the strip — `1 … 9 0`, the order of the digits on a keyboard, and the order
+the TUI's tab bar reads — so `activeDef`'s fallback is still the scene screen;
+`freeDigit` still hands out only 1–9, so a ruleset screen can never take it.
+Each
 screen is gated on the hello's manifest; a ruleset screen registers by a
 panel-feed suffix (`registerFeedScreen`) and appears only when the server
 publishes that feed. One binding table per screen — `local` / `prefill` /
@@ -173,12 +181,14 @@ That verb list (`RUN_ALLOWLIST`) is one of two hand-kept copies — the TUI's
 verb added to one and not the other fails a build instead of drifting in
 silence. The look-back took two entries off it: `@mail <n>` marks the
 message read and `+orders` writes work orders, and neither belonged on a
-list whose whole promise is that a bare key mutates nothing. Four verbs are
-actually bound (`look`, `inventory`, `+roll/last`, `+contacts`); the rest
-are reserved for the screens a ruleset declares.
+list whose whole promise is that a bare key mutates nothing. Eleven verbs are
+actually bound: `look`, `inventory`, `+roll/last` and `+contacts`, plus the
+cockpit screen's seven reading verbs (`view`, `contacts`, `status`,
+`weaponstatus`, `range`, `bearing`, `scan`) since 16b cut Q.5; the rest are
+reserved for the screens a ruleset declares.
 
 The shell is **modal** (D-I-17): input mode is "the composer has focus".
-While nothing has focus, `1`–`9` switch screens, `Enter` opens the composer
+While nothing has focus, `1`–`9` and `0` switch screens, `Enter` opens the composer
 (in the TUI a highlighted row prefills it; the web has no row selection —
 its rows are buttons), `"` `:` `;` `\` open it with the trigger
 typed, `/` opens the palette, `?` the key help, the room's one-letter exits
@@ -418,6 +428,68 @@ a feed, so the browser always gets the server's default subject (its own
 object, or the unit it is stationed on) or a polite refusal, which renders
 inside the panel. Targeting `#n` needs a new `Query` variant and a proto
 regeneration — out of I8's no-wire-change boundary.
+
+## The cockpit screen (16b cut Q.5, doc 16 §5)
+
+Screen `0`, present when the hello's manifest carries `arena.cockpit`, and
+opened by itself on the FIRST seated frame of each match id (never again for
+that id — a pilot who switches away is not dragged back by the next pulse).
+
+**Two feeds, by what changes.** `arena.cockpit` is a whole-state keyframe
+pushed per arena pulse; `arena.map` is the whole arena's terrain, **pulled and
+never pushed**, so it is not in the session's resume ring either. `CockpitStore`
+owns the self-heal: a frame of match M with no held map of M asks for one, at
+most once every `MAP_ASK_MS` (2 s), until it has it; a map of another match and
+the unseated answer are dropped rather than drawn, and dropping one does not
+re-arm the latch. The hello pass's own `arena.map` query counts as the first
+ask (`noteMapAsked`) — it is armed before any frame has named a match, and the
+server answers it with the ground of whichever match this pilot is seated in —
+so a re-attaching pilot is not sent the whole arena's terrain twice on a socket
+that has just reopened. `seated: false` — the last frame a pilot gets — clears
+everything. `GameApp.#followTheCockpit` is the one place that acts on it, so a
+frame arriving bare, inside a reply, or replayed out of the ring goes the same
+way.
+
+The once-per-match switch to screen 0 is the **only** server-driven screen
+switch in this client, and it waits out a half-typed line: this client has one
+composer, the scene screen mounts it, and unmounting takes the draft, the
+sticky Say/Pose mode and the history buffer with it. While
+`screens.inputFocused` the switch is owed rather than spent, and the next pulse
+takes it.
+
+**One composition, three renderers.** `$lib/cockpit.ts`'s `composeWindow(map,
+frame, cols, rows)` is the rule the TUI's `render_cockpit_map_rows` and the
+server's `view_window` also run, differing only in the size asked for: centred
+on the pilot, clamped to the arena, the pilot's `@` down first and the contacts
+in frame order after it, last write wins. The committed fixtures under
+`src/lib/fixtures/cockpit/` are read by all three, and `cockpit.test.ts`'s
+parity case pins this client's composition of `arena_map.json` +
+`cockpit_frame.json` at exactly 78 by 20 against `view_grid.txt`, byte for byte
+— the same file `mush-net-ssh/tests/tui_golden.rs` is held to. Three renderers
+each pinned to a golden of its own would be regression; one file all three must
+reproduce is parity. `web_view_model.txt` beside it is this client's own
+addition: the whole of the screen's text for that frame (re-bless with
+`COCKPIT_BLESS=1 npx vitest run src/lib/cockpit.test.ts`).
+
+**The observer rule is in the type.** `CockpitFrame` keeps no contact `id`, no
+`lock` digits, no `unit` object number and no notice `text`: a renderer cannot
+leak a field its decoder never kept. The notices ring is composed from `kind` +
+`designator` + `section`, because the arena already sent each sentence to the
+scrollback as a `Sys` line and one sentence has one owner. The screen looks
+nothing up in another store — `game.test.ts` seeds a decoy name and object
+number into who/presence/unit and asserts neither reaches the rendered text,
+and a probe pins that `CockpitScreen.svelte` reads only `app.cockpit`.
+
+**Nothing is sent by a key.** The seven reading verbs (`view`, `contacts`,
+`status`, `weaponstatus`, `range`, `bearing`, `scan`) are on `RUN_ALLOWLIST`
+and run; the five ordering verbs (`startup`, `heading`, `speed`, `lock`, `fire`)
+are not on it and only ever prefill — including the contact table's click and
+its `scan` button. A prefill goes through `focusComposer`, which switches to the
+scene screen, because that is where the one composer is: the pilot types Enter
+there and `0` back. That is the web's uniform behaviour (the unit screen's
+`@unit/damage ` does the same) and it is where the TUI, which keeps the pilot on
+screen 0, diverges — a screen-local input row is the open question, pinned as it
+stands by `game.test.ts`'s "a prefill takes the pilot to the box".
 
 ## WsClient (`src/lib/ws.ts`)
 

@@ -80,4 +80,29 @@ describe("hydrationQueries", () => {
     const bare = hydrationQueries(session(["comsys"]));
     expect(bare.map((q) => q.pending.kind)).toEqual(["who", "comsys.state", "commands"]);
   });
+
+  it("subscribes both arena feeds, after the contacts list and ahead of scenes", () => {
+    // 16b cut Q.5: two more discrete arms. The cockpit's map is asked for on
+    // the hello pass because it is PULLED and never pushed, so it is not in
+    // the resume ring and a re-attach holds no terrain at all.
+    const qs = hydrationQueries(
+      session(["comsys", "tactics.contacts", "arena.cockpit", "arena.map", "scenes"]),
+    );
+    expect(qs.map((q) => q.pending.kind)).toEqual([
+      "who",
+      "comsys.state",
+      "commands",
+      "contacts",
+      "cockpit",
+      "arena.map",
+      "scenes",
+    ]);
+    // A server with the cockpit but no map feed asks only for the cockpit.
+    const one = hydrationQueries(session(["arena.cockpit"]));
+    expect(one.map((q) => q.pending.kind)).toEqual(["who", "commands", "cockpit"]);
+    // …and a server with neither asks for neither.
+    const none = hydrationQueries(session(["comsys"]));
+    expect(none.map((q) => q.pending.kind)).not.toContain("cockpit");
+    expect(none.map((q) => q.pending.kind)).not.toContain("arena.map");
+  });
 });

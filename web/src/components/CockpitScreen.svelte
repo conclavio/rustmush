@@ -1,0 +1,486 @@
+<script lang="ts">
+  // The cockpit screen (16b cut Q.5; doc 16 §5): the whole of what the arena
+  // tells one pilot, updating by itself as the frames arrive — the ground
+  // around the tank with the contacts on it, what the platform is doing, what
+  // is left of it, what it can shoot with, what it holds, and the arena's own
+  // notices.
+  //
+  // It renders ONLY what the payload carries. There is no lookup by id into
+  // any other store — not who, not presence, not the unit feed, not the atlas
+  // map — because the observer rule (doc 16 §1) is that nothing tells a pilot
+  // anything about a unit their platform has not detected, and a client that
+  // joined a contact to a name it happened to know would break it without the
+  // server ever sending a wrong byte. `$lib/cockpit`'s decoder does not even
+  // keep the fields that could leak: no contact `id`, no `lock` digits, no
+  // `unit` object number, no notice `text`.
+  //
+  // Every string printed here comes out of `cockpitView`, and the canvas draws
+  // from `composeWindow` — both pure, both pinned by vitest against the
+  // committed fixtures, so what the test reads is what the player sees.
+  import type { GameApp } from "$lib/game.svelte";
+  import {
+    COCKPIT_VIEW_CELLS,
+    COCKPIT_ZOOM_CELLS,
+    cockpitView,
+    composeWindow,
+    contactText,
+    damageText,
+    NOT_IN_A_COCKPIT,
+    scanText,
+    WAITING_FOR_THE_MAP,
+    type ComposedWindow,
+    type Marker,
+  } from "$lib/cockpit";
+  import { TERRAIN_COLOURS } from "$lib/stores/map.svelte";
+
+  let { app }: { app: GameApp } = $props();
+
+  /** What a marker is painted in. The four kinds are the whole vocabulary:
+   * nothing has classified it, your side, the other side, and you. */
+  const MARKER_COLOURS: Record<Marker["kind"], string> = {
+    you: "#f2c94c",
+    unknown: "#b9a23a",
+    friendly: "#4fa86a",
+    hostile: "#e05a5a",
+  };
+
+  /** The viewport, in arena cells; `+`/`−` step through `COCKPIT_ZOOM_CELLS`. */
+  let cells = $state(COCKPIT_VIEW_CELLS);
+  let canvas: HTMLCanvasElement | undefined = $state();
+
+  const frame = $derived(app.cockpit.frame);
+  const ground = $derived(app.cockpit.holdsTheGround ? app.cockpit.map : null);
+
+  const win = $derived<ComposedWindow | null>(
+    frame !== null && ground !== null ? composeWindow(ground, frame, cells, cells) : null,
+  );
+  const view = $derived(frame === null ? null : cockpitView(frame, win, app.cockpit.notices));
+
+  /** The drawn size of one cell: big enough to see, small enough that a 256
+   * cell window still fits a phone. */
+  const CANVAS_MAX = 560;
+  const cellPx = $derived(
+    win === null ? 0 : Math.max(2, Math.min(12, Math.floor(CANVAS_MAX / Math.max(win.w, win.h, 1)))),
+  );
+
+  function zoom(delta: number): void {
+    const at = COCKPIT_ZOOM_CELLS.indexOf(cells);
+    const next = COCKPIT_ZOOM_CELLS[Math.min(COCKPIT_ZOOM_CELLS.length - 1, Math.max(0, at + delta))];
+    if (next !== undefined) {
+      cells = next;
+    }
+  }
+
+  /** Prefill the composer with an order; the player presses Enter. None of the
+   * five ordering verbs is ever SENT by this screen. */
+  function prefill(line: string): void {
+    app.focusComposer(line);
+  }
+
+  $effect(() => {
+    const w = win;
+    const c = canvas;
+    const f = frame;
+    if (!w || !c || !f) return;
+    const px = cellPx;
+    c.width = w.w * px;
+    c.height = w.h * px;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, c.width, c.height);
+    // The ground first, from the marker-free rows: a contact standing on a
+    // wall must not repaint the wall as whatever its own glyph means.
+    for (let row = 0; row < w.h; row += 1) {
+      const line = w.terrain[row] ?? "";
+      for (let col = 0; col < w.w; col += 1) {
+        const colour = TERRAIN_COLOURS[line.charAt(col)] ?? "transparent";
+        if (colour === "transparent") continue;
+        ctx.fillStyle = colour;
+        ctx.fillRect(col * px, row * px, px, px);
+      }
+    }
+    // Then the markers, in the order they were composed, so a later one covers
+    // an earlier one here exactly as it does in the glyph rows.
+    for (const marker of w.markers) {
+      const cx = marker.x * px + px / 2;
+      // `marker.y` counts from the SOUTH; the canvas paints north-up.
+      const cy = (w.h - 1 - marker.y) * px + px / 2;
+      const colour = MARKER_COLOURS[marker.kind];
+      ctx.fillStyle = colour;
+      if (marker.kind === "you") {
+        // A wedge, pointing the way the tank is pointing (0° is north).
+        const r = Math.max(3, px * 0.9);
+        const a = (f.heading_deg * Math.PI) / 180;
+        ctx.beginPath();
+        ctx.moveTo(cx + r * Math.sin(a), cy - r * Math.cos(a));
+        ctx.lineTo(cx + r * 0.7 * Math.sin(a + 2.5), cy - r * 0.7 * Math.cos(a + 2.5));
+        ctx.lineTo(cx + r * 0.7 * Math.sin(a - 2.5), cy - r * 0.7 * Math.cos(a - 2.5));
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(cx, cy, Math.max(2, px * 0.45), 0, Math.PI * 2);
+        ctx.fill();
+        if (marker.designator === f.lock_designator) {
+          ctx.lineWidth = Math.max(1, px * 0.2);
+          ctx.strokeStyle = "#fff8dc";
+          ctx.beginPath();
+          ctx.arc(cx, cy, Math.max(4, px * 0.85), 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      if (px >= 6) {
+        ctx.fillStyle = colour;
+        ctx.font = `${Math.max(8, px)}px ui-monospace, monospace`;
+        ctx.textBaseline = "middle";
+        ctx.fillText(marker.designator, cx + px * 0.8, cy);
+      }
+    }
+  });
+</script>
+
+<div class="cockpit">
+  {#if frame === null || view === null}
+    <p class="muted pad">{NOT_IN_A_COCKPIT}</p>
+  {:else}
+    <section class="mapbox" aria-label="arena map">
+      <header>
+        <strong>{view.heading}</strong>
+        <span class="grow"></span>
+        <span class="dim">{cells} cells</span>
+        <button type="button" class="zoom" aria-label="zoom in" onclick={() => zoom(-1)}>−</button>
+        <button type="button" class="zoom" aria-label="zoom out" onclick={() => zoom(1)}>+</button>
+      </header>
+      {#if win === null}
+        <p class="muted">{WAITING_FOR_THE_MAP}</p>
+      {:else}
+        <div class="canvas-wrap">
+          <canvas
+            bind:this={canvas}
+            aria-label="arena window"
+            style="width: {win.w * cellPx}px; height: {win.h * cellPx}px"
+          ></canvas>
+        </div>
+        {#if view.legend.length > 0}
+          <p class="legendline">{view.legend}</p>
+        {/if}
+      {/if}
+    </section>
+
+    <div class="panes">
+      <section class="pane" aria-label="status">
+        <h4 class="pt">status</h4>
+        {#each view.status as line, i (i)}
+          <p class="line">{line}</p>
+        {/each}
+      </section>
+
+      <section class="pane" aria-label="damage">
+        <h4 class="pt">damage</h4>
+        {#each view.damage as row, i (i)}
+          <p class="line" title={damageText(row)}>
+            <span class="rowid">{row.id}</span>
+            <span class="cond">{row.condition}</span>
+            <span class="frac">{row.internals}</span>
+          </p>
+          <div class="bar" data-kind="inside">
+            <span class="fill" style="width: {row.pct}%"></span>
+          </div>
+          {#each row.facets as facet, f (f)}
+            <div class="facet">
+              <span class="barlabel">{facet.id} {facet.armor}</span>
+              <div class="bar" data-kind="armour">
+                <span class="fill" style="width: {facet.pct}%"></span>
+              </div>
+            </div>
+          {/each}
+        {/each}
+        {#if view.damage.length === 0}
+          <p class="muted">Nothing here.</p>
+        {/if}
+      </section>
+
+      <section class="pane" aria-label="weapons">
+        <h4 class="pt">weapons</h4>
+        {#each view.weapons as line, i (i)}
+          <p class="line">{line}</p>
+        {/each}
+      </section>
+
+      <section class="pane wide" aria-label="contacts">
+        <h4 class="pt">contacts</h4>
+        {#each view.contacts as row, i (i)}
+          <div class="contact">
+            <button
+              type="button"
+              class="desig"
+              title={contactText(row)}
+              onclick={() => prefill(`lock ${row.designator}`)}>{row.designator}</button
+            >
+            <span class="detail">{row.detail}</span>
+            <button type="button" class="scanbtn" onclick={() => prefill(`scan ${row.designator}`)}
+              >scan</button
+            >
+          </div>
+          {#if row.chips.length > 0}
+            <p class="chips" title={scanText(row.chips)}>
+              {#each row.chips as chip, i (i)}
+                <span class="chip" data-band={chip.band}>{chip.word}</span>
+              {/each}
+            </p>
+          {/if}
+        {/each}
+        {#if view.contacts.length === 0}
+          <p class="line">(no contacts)</p>
+        {/if}
+      </section>
+
+      <section class="pane wide" aria-label="notices">
+        <h4 class="pt">notices</h4>
+        {#each view.notices.slice(-12) as line, i (i)}
+          <p class="line dim">{line}</p>
+        {/each}
+        {#if view.notices.length === 0}
+          <p class="muted">Nothing yet.</p>
+        {/if}
+      </section>
+    </div>
+  {/if}
+</div>
+
+<style>
+  .cockpit {
+    height: 100%;
+    overflow-y: auto;
+    padding: 0.6rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .mapbox {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-panel);
+    padding: 0.4rem 0.6rem;
+  }
+
+  .mapbox header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+  }
+
+  .grow {
+    flex: 1;
+  }
+
+  .zoom {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--fg-muted);
+    cursor: pointer;
+    font: inherit;
+    line-height: 1;
+    padding: 0.05rem 0.4rem;
+  }
+
+  .zoom:hover {
+    color: var(--fg);
+  }
+
+  .canvas-wrap {
+    overflow: auto;
+    max-height: 52vh;
+    margin: 0.3rem 0;
+  }
+
+  canvas {
+    image-rendering: pixelated;
+    display: block;
+    background: var(--bg);
+  }
+
+  .legendline {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--fg-muted);
+  }
+
+  .panes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    gap: 0.6rem;
+    align-items: start;
+  }
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-panel);
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  .pane.wide {
+    grid-column: span 2;
+  }
+
+  @media (max-width: 800px) {
+    .pane.wide {
+      grid-column: auto;
+    }
+  }
+
+  .pt {
+    margin: 0 0 0.1rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+    font-weight: 600;
+  }
+
+  .line {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    white-space: pre;
+  }
+
+  .rowid {
+    display: inline-block;
+    min-width: 7rem;
+  }
+
+  .cond {
+    color: var(--fg-muted);
+    display: inline-block;
+    min-width: 6rem;
+  }
+
+  .frac {
+    color: var(--fg-muted);
+  }
+
+  .bar {
+    height: 0.4rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 0 0 0.25rem;
+  }
+
+  .fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+  }
+
+  .bar[data-kind="armour"] .fill {
+    background: var(--accent-dim);
+  }
+
+  .facet {
+    margin-left: 0.8rem;
+  }
+
+  .barlabel {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--fg-muted);
+  }
+
+  .contact {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+  }
+
+  .desig {
+    background: none;
+    border: none;
+    border-bottom: 1px dotted var(--border);
+    color: var(--accent);
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    padding: 0;
+    min-width: 2.5rem;
+    text-align: left;
+  }
+
+  .detail {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    flex: 1;
+    white-space: pre;
+  }
+
+  .scanbtn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--fg-muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.7rem;
+    padding: 0 0.45rem;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem;
+    margin: 0 0 0.25rem 0.5rem;
+  }
+
+  .chip {
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 0 0.3rem;
+    border: 1px solid var(--border);
+  }
+
+  .chip[data-band="green"] {
+    color: var(--success);
+  }
+
+  .chip[data-band="yellow"] {
+    color: var(--warn);
+  }
+
+  .chip[data-band="red"] {
+    color: var(--error);
+  }
+
+  .chip[data-band="destroyed"] {
+    color: var(--error);
+    opacity: 0.6;
+    text-decoration: line-through;
+  }
+
+  .muted {
+    color: var(--fg-muted);
+    font-size: 0.85rem;
+    margin: 0;
+  }
+
+  .dim {
+    color: var(--fg-muted);
+  }
+
+  .pad {
+    padding: 0.8rem;
+  }
+</style>
