@@ -2448,12 +2448,42 @@ struct Cadenced {
     pulses: u32,
 }
 
+/// **One beat of a replay script** (16b cut Q.1; 16b cut D.4 gave it `places`):
+/// the orders it delivers, and where it puts units at the same arena
+/// millisecond.
+///
+/// The placements are the fixture's own hand on the field. They are applied when
+/// the beat is consumed, which is at exactly the arena millisecond the script
+/// names **at every cadence** — the beats are all multiples of five seconds, and
+/// 5,000, 1,000 and 500 ms all divide it — so the three replays put the target in
+/// the same cell at the same moment and any difference in what follows is the
+/// engine's. A treeline flicker cannot be scripted any other way: it needs the
+/// target outside the reach for exactly three passes and inside it for the
+/// fourth, and an accelerating tank cannot be steered that finely.
+struct Beat {
+    t_ms: i64,
+    intents: Vec<Intent>,
+    places: Vec<(ObjId, Pose)>,
+}
+
 /// Drive `arena` through the script at `cadence_ms` until `until_ms` of arena
 /// time, with the tempo pinned so the cadence under test is the cadence that
 /// runs.
 fn cadenced(cadence_ms: i64, until_ms: i64) -> Cadenced {
-    let mut arena = designator_arena();
-    let script = designator_script();
+    let script: Vec<Beat> = designator_script()
+        .into_iter()
+        .map(|(t_ms, intents)| Beat {
+            t_ms,
+            intents,
+            places: Vec::new(),
+        })
+        .collect();
+    replayed(designator_arena(), &script, cadence_ms, until_ms)
+}
+
+/// The driver itself (16b cut D.4 split it out of [`cadenced`], which is now one
+/// fixture's call of it).
+fn replayed(mut arena: Arena, script: &[Beat], cadence_ms: i64, until_ms: i64) -> Cadenced {
     let mut tape: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
     let mut notices: BTreeMap<ObjId, Vec<String>> = BTreeMap::new();
@@ -2464,11 +2494,15 @@ fn cadenced(cadence_ms: i64, until_ms: i64) -> Cadenced {
     loop {
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
         let mut orders: Vec<Intent> = Vec::new();
-        while let Some((t_ms, beat)) = script.get(next) {
-            if *t_ms > arena.now_ms {
+        while let Some(beat) = script.get(next) {
+            if beat.t_ms > arena.now_ms {
                 break;
             }
-            orders.extend(beat.iter().cloned());
+            orders.extend(beat.intents.iter().cloned());
+            // 16b cut D.4: the fixture's own hand, at the beat's arena time.
+            for (unit, pose) in &beat.places {
+                place(&mut arena, *unit, pose.clone(), 0);
+            }
             next += 1;
         }
         if !orders.is_empty() {
@@ -3382,5 +3416,650 @@ fn the_wire_frame_gives_an_unread_row_a_null_condition_and_no_table() {
         for key in ["armor", "armor_max", "internals", "internals_max"] {
             assert!(row.get(key).is_none(), "a contact row carried {key}: {row}");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (q) what a contact is called when it flickers, and what a mesh re-arrival
+//     costs the pilot in lines — 16b cut D.4 (`B-20`, `B-21`, `T-19`)
+//
+// Cut Q.1 made the name a function of the LIVE contact, which is right and has
+// two rough edges the owner's play found:
+//
+// * a contact that had been told apart and comes straight back is silently
+//   renamed from `BA` to `X2`, and `LOCK BA` then answers `No such contact.` for
+//   three seconds with nothing to say why (`B-20`, 16c section 5 Q16);
+// * a target this platform numbered in an EARLIER hold and now receives over the
+//   mesh prints `New contact BA` and at once `Contact X2 identified: BA`, because
+//   the `was` field read the permanent book instead of the hold in front of the
+//   pilot (`B-21`).
+//
+// Both are read off the pilot's own lines here, through `Arena::step` and the one
+// renderer, because what the cut is about is what a person reads.
+// ---------------------------------------------------------------------------
+
+/// A red teammate nearer to `EYE` than `MARK` is, so that `MARK` takes the
+/// platform's **second** provisional number and the sentences below read `X2`.
+const DECOY: ObjId = ObjId(7);
+
+/// The three tanks the flicker is played out between. `EYE` is seat 0, so its
+/// pilot is `ObjId(1_000)` and [`pulse`] hands back its frames.
+fn flicker_units() -> Vec<CustodyUnit> {
+    vec![
+        tank(EYE, Team::Red, centre(10, 10), Some(visual())),
+        tank(DECOY, Team::Red, centre(10, 14), None),
+        tank(MARK, Team::Blue, centre(15, 10), None),
+    ]
+}
+
+/// Every line `EYE`'s pilot was sent over one-second pulses `pulses`, with
+/// whatever pose `at` names applied to `MARK` before each.
+///
+/// The placement is a function of arena time rather than a script of intents
+/// because the property is about a *treeline*: what matters is that the contact
+/// is out of reach for exactly three passes and inside it for the fourth, and
+/// driving a tank there and back inside 3,000 ms is a fixture about acceleration.
+fn flicker_lines(
+    arena: &mut Arena,
+    pulses: std::ops::RangeInclusive<i64>,
+    at: impl Fn(i64) -> Option<Pose>,
+) -> (Vec<String>, Option<Frame>) {
+    let mut tape: Vec<u8> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    let mut last: Option<Frame> = None;
+    for n in pulses {
+        if let Some(pose) = at(arena.now_ms) {
+            place(arena, MARK, pose, 0);
+        }
+        if let Some(frame) = pulse(arena, PULSE_MS * n, &mut tape) {
+            lines.extend(cockpit::notice_lines(&frame));
+            last = Some(frame);
+        }
+    }
+    (lines, last)
+}
+
+#[test]
+fn a_classified_contact_that_flickers_back_to_a_number_says_so_once() {
+    let mut arena = arena_of(flicker_units(), &[]);
+    let _ = arena.step(0, &[] as &[Control], &[]);
+
+    // Held from the first pass and told apart at 3,004; out of reach through the
+    // pass that expires it (6,004) and back for the next one (7,004), which is
+    // the hysteresis window the flicker rule names.
+    let (lines, _) = flicker_lines(&mut arena, 1..=12, |now| {
+        if (3_500..6_500).contains(&now) {
+            Some(away())
+        } else if now >= 6_500 {
+            Some(centre(15, 10))
+        } else {
+            None
+        }
+    });
+
+    // The regression is said, once, under both names — the one the pilot has
+    // been typing and the one the row reads now.
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| *line == "BA is unidentified again: X2.")
+            .count(),
+        1,
+        "the regression was not said exactly once: {lines:?}"
+    );
+    // And nothing was said about the loss or the re-acquisition themselves: the
+    // flicker is still a flicker.
+    assert!(
+        !lines.iter().any(|line| line == "Contact BA lost."),
+        "the cancelled loss was announced: {lines:?}"
+    );
+    let regression = lines
+        .iter()
+        .position(|line| line == "BA is unidentified again: X2.")
+        .unwrap_or_else(|| panic!("the regression was never said: {lines:?}"));
+    assert!(
+        !lines
+            .iter()
+            .skip(regression)
+            .any(|line| line.starts_with("New contact X2")),
+        "the re-acquisition was announced: {lines:?}"
+    );
+    // The name comes back at the SECOND classification, `classify_after_ms`
+    // after the re-detection at 7,004 — and it is the same sentence cut Q.1
+    // writes for a first classification, because that is what it is.
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| *line == "Contact X2 identified: BA, blue.")
+            .count(),
+        2,
+        "once at 3,004 and once at 10,004: {lines:?}"
+    );
+
+    // **The old name is never an alias** (16c section 6). Between the two
+    // classifications the row reads `X2` and nothing answers to `BA`, so
+    // `LOCK BA` is the one byte-identical refusal: accepting it would tell the
+    // pilot BA is still out there.
+    let mut rewound = arena_of(flicker_units(), &[]);
+    let _ = rewound.step(0, &[] as &[Control], &[]);
+    let (_, held) = flicker_lines(&mut rewound, 1..=9, |now| {
+        if (3_500..6_500).contains(&now) {
+            Some(away())
+        } else if now >= 6_500 {
+            Some(centre(15, 10))
+        } else {
+            None
+        }
+    });
+    let held = held.unwrap_or_else(|| panic!("the re-acquiring pulse sent a frame"));
+    let rows = cockpit::frame_contacts(&held);
+    assert!(
+        rows.iter()
+            .any(|row| row.designator == Designator::Provisional(2)),
+        "the row does not read X2 at all: {rows:?}"
+    );
+    assert_eq!(
+        cockpit::resolve_designator(&rows, "BA"),
+        None,
+        "the old name resolved: {rows:?}"
+    );
+    assert_eq!(
+        cockpit::resolve_designator(&rows, "X2"),
+        Some(draw_contact_id(rewound.seed, EYE, MARK)),
+        "the number the row reads now does not resolve: {rows:?}"
+    );
+}
+
+#[test]
+fn a_flicker_that_keeps_its_name_is_silent_however_the_name_was_earned() {
+    // (1) A contact that was never told apart: it reads `X2` before the loss and
+    //     `X2` after it, so there is no regression to say and cut Q.1's silence
+    //     is intact.
+    let mut arena = arena_of(flicker_units(), &[]);
+    let _ = arena.step(0, &[] as &[Control], &[]);
+    let (lines, _) = flicker_lines(&mut arena, 1..=6, |now| {
+        if (500..3_500).contains(&now) {
+            Some(away())
+        } else if now >= 3_500 {
+            Some(centre(15, 10))
+        } else {
+            None
+        }
+    });
+    assert!(
+        !lines.iter().any(|line| line.contains("unidentified again")),
+        "an X-row that flickered was announced: {lines:?}"
+    );
+
+    // (2) And the same flicker of a CLASSIFIED contact under
+    //     `designate_on_detection`, where a row is called `BA` from the first
+    //     pass: the name does not move, so nothing is said.
+    let sensors = SensorsConfig {
+        designate_on_detection: true,
+        ..SensorsConfig::default()
+    };
+    let mut named = arena_with_sensors(flicker_units(), &[], &sensors);
+    let _ = named.step(0, &[] as &[Control], &[]);
+    let (lines, _) = flicker_lines(&mut named, 1..=9, |now| {
+        if (3_500..6_500).contains(&now) {
+            Some(away())
+        } else if now >= 6_500 {
+            Some(centre(15, 10))
+        } else {
+            None
+        }
+    });
+    assert!(
+        !lines.iter().any(|line| line.contains("unidentified again")),
+        "the switch's own rows are never renamed: {lines:?}"
+    );
+}
+
+#[test]
+fn a_loss_that_outlasts_the_window_is_still_a_loss_and_then_a_new_contact() {
+    let mut arena = arena_of(flicker_units(), &[]);
+    let _ = arena.step(0, &[] as &[Control], &[]);
+    // Away far longer than the window, so the held loss is swept and said, and
+    // the return is an acquisition of a row nothing remembers.
+    let (lines, _) = flicker_lines(&mut arena, 1..=16, |now| {
+        if (3_500..12_500).contains(&now) {
+            Some(away())
+        } else if now >= 12_500 {
+            Some(centre(15, 10))
+        } else {
+            None
+        }
+    });
+    let loss = lines
+        .iter()
+        .position(|line| line == "Contact BA lost.")
+        .unwrap_or_else(|| panic!("the loss was never said: {lines:?}"));
+    // The LAST of them: the row was acquired once at the opening pass too, and
+    // what this property is about is the acquisition after the loss.
+    let again = lines
+        .iter()
+        .rposition(|line| line.starts_with("New contact X2:"))
+        .unwrap_or_else(|| panic!("the return was never said: {lines:?}"));
+    assert!(loss < again, "out of order: {lines:?}");
+    assert!(
+        !lines.iter().any(|line| line.contains("unidentified again")),
+        "a loss past the window said the regression as well: {lines:?}"
+    );
+}
+
+/// **The mesh fixture** (16b cut D.4, `B-21` and `T-19`).
+///
+/// `EYE` is slow to tell a return apart (ten seconds against `MATE`'s three) and
+/// sees far; `MATE` stands between the two and sees twenty-five cells. So the
+/// share is what classifies `EYE`'s **own** hold in the opening seconds, and a
+/// later re-arrival over the same mesh is a row `EYE`'s own sensors never opened.
+fn mesh_rename_arena() -> Arena {
+    arena_of(
+        vec![
+            tank(
+                EYE,
+                Team::Red,
+                centre(10, 10),
+                Some(SensorProfile {
+                    classify_after_ms: 10_000,
+                    ..visual()
+                }),
+            ),
+            tank(
+                MATE,
+                Team::Red,
+                centre(20, 10),
+                Some(SensorProfile {
+                    max_range_cells: 25,
+                    ..visual()
+                }),
+            ),
+            tank(MARK, Team::Blue, centre(42, 10), None),
+        ],
+        &[],
+    )
+}
+
+/// Whether the hold `viewer` has on `target` was opened under a number.
+fn numbered(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<bool> {
+    let id = draw_contact_id(arena.seed, viewer, target);
+    arena.contacts.get(viewer, id).map(|held| held.numbered)
+}
+
+#[test]
+fn a_share_renames_a_hold_this_platform_opened_and_a_mesh_arrival_is_one_line() {
+    let mut arena = mesh_rename_arena();
+    let _ = arena.step(0, &[] as &[Control], &[]);
+    let mut tape: Vec<u8> = Vec::new();
+    let mut said: Vec<String> = Vec::new();
+    let mut acquired_class: Vec<Classification> = Vec::new();
+
+    // ---- phase 1: this platform's own sight opens the hold, the mesh names it
+    for n in 1..=5 {
+        if let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) {
+            said.extend(cockpit::notice_lines(&frame));
+        }
+    }
+    assert_eq!(
+        numbered(&arena, EYE, MARK),
+        Some(true),
+        "this platform's own sensors opened the hold"
+    );
+    assert!(
+        said.contains(&"Contact X1 identified: BA, blue.".to_owned()),
+        "a share that classified this platform's own row said no rename: {said:?}"
+    );
+
+    // ---- phase 2: everybody loses it, well past the hysteresis window
+    place(&mut arena, MARK, away(), 0);
+    for n in 6..=14 {
+        let _ = pulse(&mut arena, PULSE_MS * n, &mut tape);
+    }
+    assert_eq!(numbered(&arena, EYE, MARK), None, "the row never expired");
+
+    // ---- phase 3: it comes back where only `MATE` can see it
+    if let Some(state) = arena.unit_mut(EYE) {
+        state.sensor = Some(SensorProfile {
+            max_range_cells: 15,
+            classify_after_ms: 10_000,
+            ..visual()
+        });
+    }
+    place(&mut arena, MARK, centre(42, 10), 0);
+    let mut arrival: Vec<String> = Vec::new();
+    for n in 15..=25 {
+        if let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) {
+            arrival.extend(cockpit::notice_lines(&frame));
+            for notice in &frame.notices {
+                if let FrameNotice::Contact {
+                    kind: NoticeKind::Acquired,
+                    contact,
+                    class,
+                    ..
+                } = notice
+                    && contact.id == draw_contact_id(arena.seed, EYE, MARK)
+                {
+                    acquired_class.push(*class);
+                }
+            }
+        }
+    }
+
+    // **`B-21`**: the copy arrived classified, so the pilot reads one line.
+    assert_eq!(
+        numbered(&arena, EYE, MARK),
+        Some(false),
+        "a mesh insert was marked as numbered"
+    );
+    assert_eq!(
+        arrival
+            .iter()
+            .filter(|line| line.starts_with("New contact BA"))
+            .count(),
+        1,
+        "the mesh arrival was not one line: {arrival:?}"
+    );
+    assert!(
+        !arrival.iter().any(|line| line.contains("identified:")),
+        "the mesh arrival was announced as a rename of a row nobody is looking at: {arrival:?}"
+    );
+    // The book still holds the number from the earlier hold — which is exactly
+    // why the `was` may not be read off it.
+    assert_eq!(arena.designators.provisional(EYE, MARK), Some(1));
+
+    // **`T-19`**: and the acquisition carries the class the row actually has.
+    assert_eq!(
+        acquired_class,
+        vec![Classification::Classified { team: Team::Blue }],
+        "a mesh arrival's acquisition said `unknown` about a row already told apart"
+    );
+}
+
+/// **The other direction of the same cancel, and it is silent** (16b cut D.4,
+/// `B-20`).
+///
+/// `B-20`'s line is staged where a held loss is cancelled, and a cancel has two
+/// directions. [`Arena::share_pass`] journals a `detected` for a row it inserts
+/// already `Classified`, keyed on the same contact id the loss was keyed on, so a
+/// mesh copy landing inside the hysteresis window cancels the loss with the live
+/// row reading `BA` where the loss carried `X1`. The **name moved** — the wrong
+/// way. A contact that has just been told apart is not `unidentified again`, so
+/// the arm is gated on the live row still being `Unknown` as well as on the name,
+/// and this pilot reads no regression at all.
+///
+/// The fixture is the stagger itself: passes are scheduled at `id % pass_ms`
+/// (`Arena::schedule_first_passes`), so `MATE` (13) passes nine milliseconds
+/// after `EYE` (4) and its share lands well inside the one-pass window `EYE`'s
+/// expiry opened. That `Contact X1 lost.` is never said is the proof the window
+/// really was open when the copy arrived.
+#[test]
+fn a_mesh_share_inside_the_window_cancels_the_loss_and_says_no_regression() {
+    let mut arena = arena_of(
+        vec![
+            // Sees eight cells and never tells a return apart on its own, so its
+            // hold on `MARK` is an `X1` for the whole of that hold's life.
+            tank(
+                EYE,
+                Team::Red,
+                centre(10, 10),
+                Some(SensorProfile {
+                    max_range_cells: 8,
+                    classify_after_ms: 10_000_000,
+                    ..visual()
+                }),
+            ),
+            // A relay and not an eye: one cell of sight, so it detects nothing of
+            // its own and cannot classify `EYE`'s row in place before the loss —
+            // the mesh range is the sight's `share_range_cells`, which is why it
+            // carries a profile at all. It stands fifteen cells off, outside
+            // `EYE`'s own eight, so the only number `EYE` ever issues is `MARK`'s.
+            tank(
+                MATE,
+                Team::Red,
+                centre(25, 10),
+                Some(SensorProfile {
+                    max_range_cells: 1,
+                    ..visual()
+                }),
+            ),
+            tank(MARK, Team::Blue, centre(15, 10), None),
+        ],
+        &[],
+    );
+    let _ = arena.step(0, &[] as &[Control], &[]);
+    let mut tape: Vec<u8> = Vec::new();
+    let mut said: Vec<String> = Vec::new();
+
+    // ---- this platform's own sight opens the hold, and it stays a number
+    for n in 1..=4 {
+        if let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) {
+            said.extend(cockpit::notice_lines(&frame));
+        }
+    }
+    assert_eq!(
+        numbered(&arena, EYE, MARK),
+        Some(true),
+        "this platform's own sensors opened the hold"
+    );
+    assert!(
+        said.iter().any(|line| line.starts_with("New contact X1:")),
+        "the number was never on the pilot's scope: {said:?}"
+    );
+
+    // ---- it goes away, and `EYE`'s hold runs out its three passes
+    place(&mut arena, MARK, away(), 0);
+    for n in 5..=6 {
+        if let Some(frame) = pulse(&mut arena, PULSE_MS * n, &mut tape) {
+            said.extend(cockpit::notice_lines(&frame));
+        }
+    }
+    assert!(
+        numbered(&arena, EYE, MARK).is_some(),
+        "the hold expired a pulse early, so the plant below is outside the window"
+    );
+
+    // ---- the teammate's classified copy, planted a pulse before it is shared
+    //
+    // The hand is the fixture's: what the property is about is what the *engine*
+    // does with a share that lands inside the window, and a legitimate
+    // classification here would have been shared a pass earlier and renamed
+    // `EYE`'s own row before it was ever lost.
+    let theirs = draw_contact_id(arena.seed, MATE, MARK);
+    arena.contacts.insert(
+        MATE,
+        theirs,
+        tacsim::arena::state::ShadowContact::sighted(
+            MARK,
+            Classification::Classified { team: Team::Blue },
+            6_000,
+            SeenPose::default(),
+        ),
+    );
+
+    // ---- one pulse carries both: `EYE` expires at 6,004 and the share lands at
+    // 6,013, nine milliseconds inside the thousand the window is open for.
+    let mut after: Vec<String> = Vec::new();
+    if let Some(frame) = pulse(&mut arena, PULSE_MS * 7, &mut tape) {
+        after.extend(cockpit::notice_lines(&frame));
+    }
+    assert_eq!(
+        numbered(&arena, EYE, MARK),
+        Some(false),
+        "the row `EYE` holds now is not the mesh's copy, so the fixture missed its window"
+    );
+    assert!(
+        !after.iter().any(|line| line.contains("unidentified again")),
+        "a contact that had just been told apart was called unidentified: {after:?}"
+    );
+    assert!(
+        !after.iter().any(|line| line.contains("lost")),
+        "the loss was said, so the share landed outside the window and this fixture \
+         proves nothing about the cancel: {after:?}"
+    );
+    // What the pilot reads for the whole exchange, in full: the cancel is a
+    // cancel, so the acquisition is not said either, exactly as it was before this
+    // cut. (`B-21` leaves the rename unsaid because the row `EYE` holds now is a
+    // mesh insert; that the pilot's column goes from `X1` to `BA` with no line is
+    // recorded for the reviewer and is not this arm's to fix.)
+    assert!(
+        after.is_empty(),
+        "the cancelled loss said something: {after:?}"
+    );
+    // And the column reads the live name alone: the number is gone with the hold
+    // that carried it, and `EYE` never learned an alias either way.
+    let column: Vec<String> = arena
+        .frame_contacts(EYE)
+        .into_iter()
+        .map(|row| row.designator.to_string())
+        .collect();
+    assert!(column.contains(&"BA".to_owned()), "the column: {column:?}");
+    assert!(!column.contains(&"X1".to_owned()), "the column: {column:?}");
+}
+
+// ---------------------------------------------------------------------------
+// (r) the flicker at three cadences — 16b cut D.4's mandatory cross-tempo test
+//
+// 16b section 11 makes this mandatory for every cut that changes arena
+// behaviour, and D.4 changes three things the property is about: what a pilot is
+// told when a classified contact comes back a number (`B-20`), whether the hold
+// was opened under one (`B-21`, folded into the state hash) and the class an
+// acquisition carries (`T-19`).
+//
+// The cadence is five seconds a pass and one pass of loss band, so that the
+// whole flicker — detect, classify, expire, re-detect inside the hysteresis
+// window — happens between beats that are multiples of five seconds and
+// therefore land at one arena millisecond at 5,000, 1,000 and 500 ms alike.
+// ---------------------------------------------------------------------------
+
+/// A five-second pass and a one-pass loss band (16b cut D.4), so the whole
+/// flicker fits between two beats the three cadences agree on.
+fn flicker_sensors() -> SensorsConfig {
+    SensorsConfig {
+        pass_ms: 5_000,
+        lost_after_passes: 1,
+        ..SensorsConfig::default()
+    }
+}
+
+/// `EYE` sees ten cells and takes a whole pass to tell a return apart; `MARK`
+/// stands five cells east of it, which is inside that reach.
+fn flicker_replay_arena() -> Arena {
+    arena_with_sensors(
+        vec![
+            tank(
+                EYE,
+                Team::Red,
+                centre(10, 10),
+                Some(SensorProfile {
+                    max_range_cells: 10,
+                    classify_after_ms: 5_000,
+                    ..visual()
+                }),
+            ),
+            tank(MARK, Team::Blue, centre(15, 10), None),
+        ],
+        &[],
+        &flicker_sensors(),
+    )
+}
+
+/// Out of every reach at ten seconds, back at fifteen: the pass at 10,004
+/// expires a contact last seen at 5,004, and the pass at 15,004 re-acquires it
+/// inside the one-pass hysteresis window that ends at 15,004.
+fn flicker_replay_script() -> Vec<Beat> {
+    vec![
+        Beat {
+            t_ms: 10_000,
+            intents: Vec::new(),
+            places: vec![(MARK, away())],
+        },
+        Beat {
+            t_ms: 15_000,
+            intents: Vec::new(),
+            places: vec![(MARK, centre(15, 10))],
+        },
+    ]
+}
+
+#[test]
+fn one_scripted_flicker_at_three_cadences_is_one_list_one_hash_and_one_column() {
+    let script = flicker_replay_script();
+    let mut runs: Vec<(i64, Cadenced)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        runs.push((
+            cadence,
+            replayed(flicker_replay_arena(), &script, cadence, 25_000),
+        ));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+
+    // The run is worth comparing: the pilot really did read the whole story.
+    let told = first
+        .notices
+        .get(&ObjId(1_000))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        told,
+        vec![
+            "New contact X1: bearing 090°, effective.".to_owned(),
+            "Contact X1 identified: BA, blue.".to_owned(),
+            "BA is unidentified again: X1.".to_owned(),
+            "Contact X1 identified: BA, blue.".to_owned(),
+        ],
+        "the flicker's own four lines, in order"
+    );
+    // And the black box has the loss the pilot was never told about.
+    assert_eq!(
+        first
+            .events
+            .iter()
+            .filter(|(_, json, _, _)| json.contains("\"kind\":\"lost\""))
+            .map(|(t_ms, _, _, _)| *t_ms)
+            .collect::<Vec<i64>>(),
+        vec![10_004],
+        "the expiry is recorded at its own arena millisecond"
+    );
+    // The designator column really moved: `X1`, the slot name, nothing, `X1`.
+    let watcher: Vec<Vec<String>> = first
+        .columns
+        .iter()
+        .filter(|(_, platform, _)| *platform == EYE)
+        .map(|(_, _, column)| column.clone())
+        .collect();
+    assert!(
+        watcher.iter().any(|column| column == &["BA".to_owned()]),
+        "the scope never read the slot name: {watcher:?}"
+    );
+    assert!(
+        watcher.iter().any(Vec::is_empty),
+        "the contact was never lost: {watcher:?}"
+    );
+
+    // The guard: three cadences really are three different numbers of pulses.
+    let counts: Vec<u32> = runs.iter().map(|(_, run)| run.pulses).collect();
+    assert!(
+        counts.windows(2).all(|pair| pair.first() != pair.get(1)),
+        "the three replays ran the same number of pulses: {counts:?}"
+    );
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the events differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hashes differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.notices, first.notices,
+            "the pilots' lines differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.columns, first.columns,
+            "the designator column differs at {cadence} ms"
+        );
     }
 }

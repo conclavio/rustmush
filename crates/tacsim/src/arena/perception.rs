@@ -507,6 +507,57 @@ impl Jamming {
     }
 }
 
+/// **What one platform's own receiver is running under** (16b cut D.4, `B-22`;
+/// doc 16 §9 items 4 and 5; 16c §5 Q17: *it knows its own receiver is degraded; it
+/// does not know who or from where*).
+///
+/// It is the [`Jamming`] fold [`Arena::detections`] already made for the pass —
+/// the observer's own filter recovered out of it — read as two numbers about the
+/// platform's own machine and nothing else. There is **no source, no bearing, no
+/// team, no object number and no designator** on this type, so there is nothing
+/// for a later renderer to leak: a pilot is told their sight is being interfered
+/// with and is told nothing whatever about the pod.
+///
+/// `None` on [`UnitState::receiver`] means one of exactly three things, and the
+/// pilot is told nothing in any of them beyond the one `Receiver clear.` the
+/// transition owes:
+///
+/// 1. no pod reached the platform at its last pass;
+/// 2. a pod reached it and the platform's own filter recovered the whole fold, so
+///    the pass ran the arithmetic an unjammed pass runs, to the centimetre;
+/// 3. the platform ran no pass at all — it is a wreck, it carries no sight, it is
+///    not in the match, or its pose is off the window. **The receiver is off, not
+///    clear**, which is why that case journals nothing.
+///
+/// # The two declared limits (16c §5 Q17, put to the owner)
+///
+/// The three integers are an instrument reading, and an instrument reading is
+/// something a pilot can act on:
+///
+/// * **the edge is walkable** — a pilot who drives until the line flips has found
+///   the boundary of a bubble, which is a fact about the ground rather than about
+///   the pod;
+/// * **a deeper degradation is readable** — two stacked pods read `0 of 40` where
+///   one reads `15 of 40`, so a pilot can tell that more than one emitter is
+///   folded at their own cell.
+///
+/// Neither says **whose** the emitters are or **where** they stand, which is the
+/// whole of Q17's sentence. The cheap tightening, if the owner wants it, is to
+/// print a thresholded word (`degraded` / `severely degraded`) on `STATUS` and on
+/// the frame and to keep the integers off the wire; it is deliberately not built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Receiver {
+    /// The attenuation budget the last pass actually ran with —
+    /// [`Jamming::budget`] of the sight's own `max_attenuation`.
+    pub budget: u8,
+    /// What that budget is when nothing is jamming: the sight's own
+    /// `max_attenuation`.
+    pub budget_max: u8,
+    /// What is left of every target's signature factor, per mille — the fold's
+    /// own [`Jamming::signature_permille`], after the filter.
+    pub reach_permille: u16,
+}
+
 /// **What one pulse's perception cost** (16b cut S.1; doc 16 §2 W4 and W6: *traces
 /// and cell probes per pulse under `harness.max_traces_per_pulse`*, *share
 /// operations per pulse bounded*).
@@ -607,6 +658,24 @@ struct Shared {
     own: OwnSighting,
 }
 
+/// **What steps 1 to 3 of one pass produced, and the fold they were decided
+/// under** (16b cut D.4, `B-22`).
+///
+/// [`Arena::detections`] made the jamming fold for its own two terms and then
+/// dropped it, so [`Arena::sensor_pass`] had no way to say whether the platform's
+/// receiver was degraded except by calling [`Arena::jamming_at`] a **second**
+/// time — which would re-run the index query and bump `jam_checks` once per unit
+/// in range, doubling a perception counter the harness prints. So the fold is
+/// carried out of the function that already made it, and no counter moves.
+struct Sweep {
+    /// The candidates that passed every test.
+    found: Vec<Detection>,
+    /// The jamming the observer was standing in, **recovered** by its own filter —
+    /// the value [`Jamming::budget`] and [`Jamming::scale`] were read from.
+    /// `None` is no live pod in reach.
+    jam: Option<Jamming>,
+}
+
 impl Arena {
     /// **The time-to-live of a contact**, arena milliseconds (doc 16 §3.6 step 4):
     /// `sensors.pass_ms × sensors.lost_after_passes`, each read as at least one so
@@ -705,7 +774,54 @@ impl Arena {
         journal: &mut Vec<Notice>,
     ) -> bool {
         // ---- the read half: who is detected, decided against one snapshot ----
-        let found = self.detections(observer, counters);
+        let sweep = self.detections(observer, counters);
+
+        // ---- the platform's own receiver (16b cut D.4, `B-22`) ----
+        //
+        // Read off the fold `detections` has just handed back, and never by asking
+        // `jamming_at` again: a second call would re-run the index query and count
+        // `jam_checks` twice. See [`Sweep`].
+        //
+        // A pass that did not run at all writes `None` with **no event and no
+        // notice**: a wreck's receiver is off rather than clear, and a wreck is
+        // told nothing (doc 16 §3.3). That is a silent move of hashed state, which
+        // is exactly why [`UnitState::receiver`] is folded into the state hash.
+        let next_receiver = sweep.as_ref().and_then(|sweep| {
+            let max = self.unit(observer)?.sensor.as_ref()?.max_attenuation;
+            let jam = sweep.jam?;
+            let budget = jam.budget(max);
+            // A filter that recovered the whole bubble leaves a pass that is the
+            // unjammed pass to the centimetre, so the receiver is not degraded:
+            // saying otherwise would be telling a pilot about a pod their own
+            // machine has entirely answered.
+            if budget == max && jam.signature_permille == FULL_SIGNATURE_PERMILLE {
+                return None;
+            }
+            Some(Receiver {
+                budget,
+                budget_max: max,
+                reach_permille: u16::try_from(jam.signature_permille).unwrap_or(u16::MAX),
+            })
+        });
+        let had_receiver = self.unit(observer).and_then(|state| state.receiver);
+        if had_receiver != next_receiver {
+            if let Some(state) = self.unit_mut(observer) {
+                state.receiver = next_receiver;
+            }
+            // The **transition** and not the numbers: a pilot driving deeper into
+            // one bubble is already degraded and has nothing new to be told.
+            if sweep.is_some() && had_receiver.is_some() != next_receiver.is_some() {
+                journal.push((
+                    t_ms,
+                    EventKind::Receiver {
+                        unit: observer,
+                        degraded: next_receiver.is_some(),
+                    },
+                    None,
+                ));
+            }
+        }
+        let found = sweep.map(|sweep| sweep.found);
 
         // ---- the write half: the store, then the loss band ----
         let gap_ms = i64::from(self.sensors_cfg.pass_ms.max(1));
@@ -820,14 +936,21 @@ impl Arena {
                     // nothing and consumes nothing. With the switch on no
                     // provisional is ever issued, because nothing ever renders
                     // one.
+                    //
+                    // **16b cut D.4** (`B-21`): and the one site
+                    // [`ShadowContact::numbered`] is set. It records that **this
+                    // hold** was opened under a provisional number, which is what
+                    // the `identified` line's `was` has to be read off: the book
+                    // is permanent and a target this platform numbered in an
+                    // earlier hold and now received over the mesh is not a rename
+                    // of anything the pilot is looking at.
+                    let mut opened =
+                        ShadowContact::sighted(target, Classification::Unknown, t_ms, seen_at);
                     if !self.sensors_cfg.designate_on_detection {
                         self.designators.assign(observer, target);
+                        opened.numbered = true;
                     }
-                    self.contacts.insert(
-                        observer,
-                        id,
-                        ShadowContact::sighted(target, Classification::Unknown, t_ms, seen_at),
-                    );
+                    self.contacts.insert(observer, id, opened);
                     journal.push((
                         t_ms,
                         EventKind::Detected {
@@ -887,11 +1010,12 @@ impl Arena {
     ///
     /// `None` when the observer runs no pass at all: it is not in this match, it is
     /// a wreck, it carries no sensor, or its pose is off the window.
-    fn detections(
-        &self,
-        observer: ObjId,
-        counters: &mut PerceptionCounters,
-    ) -> Option<Vec<Detection>> {
+    ///
+    /// **16b cut D.4** made the answer a [`Sweep`] rather than the vector alone, so
+    /// that the jamming fold this function makes for its own two terms leaves with
+    /// it. Nothing else changed: the fold is the same one value, made once, and
+    /// [`Arena::jamming_at`] is still called exactly once a pass.
+    fn detections(&self, observer: ObjId, counters: &mut PerceptionCounters) -> Option<Sweep> {
         let watcher = self.unit(observer)?;
         if watcher.limits.wreck {
             return None;
@@ -1000,7 +1124,7 @@ impl Arena {
                 condition: target.condition,
             });
         }
-        Some(found)
+        Some(Sweep { found, jam })
     }
 
     /// **The jamming one observer at `pose` is standing in** (16b cut X.4; doc 16
@@ -1315,6 +1439,11 @@ impl Arena {
                                 // never had a close look, which is what makes a
                                 // mesh-only contact publish no chassis at all.
                                 seen_condition: shared.own.condition,
+                                // **16b cut D.4** (`B-21`): a mesh arrival was
+                                // never a number on this platform's scope, so
+                                // its classification is not a rename and the
+                                // `identified` line is not said.
+                                numbered: false,
                             },
                         );
                         // Two transitions in one moment, both true of the teammate:
@@ -1587,6 +1716,19 @@ pub enum NoticeKind {
     Classified,
     /// A contact it held has gone, and stayed gone (see [`FrameNotice`]).
     Lost,
+    /// **A contact the platform had told apart has gone back to being a number**
+    /// (16b cut D.4, `B-20`; 16c §5 Q16), said when a loss cancelled inside the
+    /// hysteresis window re-inserted the row under a *different* name.
+    ///
+    /// The flicker itself is still silent — a contact that goes behind a treeline
+    /// and comes straight back costs the pilot no lines — but a flicker that costs
+    /// the platform its **classification** is not the same event: `LOCK BA` starts
+    /// answering `No such contact.` and nothing else would say why.
+    ///
+    /// The old name is quoted and is **never** made an alias: accepting `BA` for
+    /// the row would tell the pilot BA is still out there, which doc 16 §3.6's one
+    /// byte-identical refusal exists to hide (16c §6).
+    Unidentified,
     /// **The platform's lock broke** because the contact it was on stopped being
     /// held (16b cut W.1; doc 16 §3.5: a shot needs *a lock on a contact the platform
     /// holds*).
@@ -1662,6 +1804,14 @@ pub enum NoticeKind {
     /// **This platform can neither move nor shoot** (16b cut D.2, `B-03`), said to
     /// its own pilots off the ledger's `unit_disabled`.
     OwnDisabled,
+    /// **This platform's own receiver is being interfered with** (16b cut D.4,
+    /// `B-22`), said to its own pilots off the ledger's `receiver`.
+    ///
+    /// The platform's own machine, and nothing about the pod: see [`Receiver`].
+    ReceiverDegraded,
+    /// **This platform's own receiver is running clean again** (16b cut D.4,
+    /// `B-22`).
+    ReceiverClear,
 }
 
 impl NoticeKind {
@@ -1673,6 +1823,7 @@ impl NoticeKind {
             NoticeKind::Acquired => "acquired",
             NoticeKind::Classified => "classified",
             NoticeKind::Lost => "lost",
+            NoticeKind::Unidentified => "unidentified",
             NoticeKind::LockLost => "lock_lost",
             NoticeKind::Locked => "locked",
             NoticeKind::Hit => "hit",
@@ -1687,6 +1838,11 @@ impl NoticeKind {
             NoticeKind::PowerOnline => "power_online",
             NoticeKind::OwnDestroyed => "destroyed",
             NoticeKind::OwnDisabled => "disabled",
+            // **16b cut D.4**: the wire words are chosen so that the web ring's
+            // fallback — the wire word with its underscores opened — reads
+            // correctly with no client change.
+            NoticeKind::ReceiverDegraded => "receiver_degraded",
+            NoticeKind::ReceiverClear => "receiver_clear",
         }
     }
 }
@@ -1908,6 +2064,16 @@ pub enum FrameNotice {
     /// its own pilots. It carries nothing, for the reason
     /// [`FrameNotice::OwnDestroyed`] does.
     OwnDisabled,
+    /// **This platform's own receiver crossed into or out of interference** (16b
+    /// cut D.4, `B-22`), said to its own pilots.
+    ///
+    /// One `bool` and nothing else: the numbers ride [`crate::arena::step::Frame`]
+    /// where the pilot's other instruments do, and there is no field here a
+    /// source, a bearing, a side or an object number could be carried in.
+    Receiver {
+        /// Whether the receiver is now degraded.
+        degraded: bool,
+    },
 }
 
 impl FrameNotice {
@@ -1929,6 +2095,9 @@ impl FrameNotice {
             FrameNotice::PowerOnline => NoticeKind::PowerOnline,
             FrameNotice::OwnDestroyed => NoticeKind::OwnDestroyed,
             FrameNotice::OwnDisabled => NoticeKind::OwnDisabled,
+            // 16b cut D.4: one transition, two words.
+            FrameNotice::Receiver { degraded: true } => NoticeKind::ReceiverDegraded,
+            FrameNotice::Receiver { degraded: false } => NoticeKind::ReceiverClear,
         }
     }
 
@@ -2055,7 +2224,9 @@ impl FrameNotice {
             | FrameNotice::Blocked { .. }
             | FrameNotice::PowerOnline
             | FrameNotice::OwnDestroyed
-            | FrameNotice::OwnDisabled => None,
+            | FrameNotice::OwnDisabled
+            // 16b cut D.4: the pilot's own receiver is not a section of anything.
+            | FrameNotice::Receiver { .. } => None,
         }
     }
 
@@ -2076,7 +2247,10 @@ impl FrameNotice {
             | FrameNotice::Blocked { .. }
             | FrameNotice::PowerOnline
             | FrameNotice::OwnDestroyed
-            | FrameNotice::OwnDisabled => None,
+            | FrameNotice::OwnDisabled
+            // **16b cut D.4**: the receiver notice names no contact, by
+            // construction — there is no field on it for one.
+            | FrameNotice::Receiver { .. } => None,
         }
     }
 }

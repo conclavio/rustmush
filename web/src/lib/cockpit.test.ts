@@ -80,7 +80,8 @@ describe("the decoders", () => {
     expect(frame.wreck).toBe(false);
     expect(frame.immobile).toBe(false);
     expect(frame.lock_designator).toBe("BA");
-    expect(frame.lock_range_m).toBe(430);
+    // 16b cut D.4 (16c `T-20`): derived from the locked row's own plot age.
+    expect(frame.lock_range_m).toBe(440);
     expect(frame.lock_percent).toBe(62);
     expect(frame.contacts.map((c) => c.designator)).toEqual(["BA", "RB", "X3", "X4"]);
     expect(frame.contacts[0]?.condition).toEqual({ table: 0, bands: "ggyrd", age_ms: 2000 });
@@ -405,7 +406,10 @@ describe("the view model", () => {
       // 16b cut D.2 (16c `T-59`): this platform's own scope, not the arena's
       // one global cadence word.
       "scope hostile",
-      "Lock BA  430 m  62%",
+      // 16b cut D.4 (16c `T-20`): the lock reads to what the plot's own age
+      // can carry — 1,200 ms is 20 m of drift, so a 20 m step, and 430 rounds
+      // half up to 440.
+      "Lock BA  440 m  62%",
     ]);
     expect(weaponLines(frame)).toEqual([
       "cannon  ready  14/20  62%",

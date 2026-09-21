@@ -658,7 +658,8 @@ pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
 /// one number.
 pub const CONTACT_RANGE_STEP_M: u64 = 50;
 
-/// **How finely a *locked* contact's range is reported**, metres (16b cut Q.1).
+/// **The finest a *locked* contact's range is ever reported**, metres (16b cut
+/// Q.1; 16b cut D.4 made it the floor rather than the step).
 ///
 /// A lock is a fire-control solution: the platform is tracking one return
 /// continuously and resolving a hit chance against it every pulse, so the range
@@ -666,7 +667,54 @@ pub const CONTACT_RANGE_STEP_M: u64 = 50;
 /// the rest of the scope. It is a second step past doc 16 §3.6's band-only
 /// wording, recorded here beside the first for the owner to revisit, and it is
 /// what makes `RANGE` worth typing after `LOCK`.
+///
+/// [`lock_range_step_m`] is what a lock's range is actually rounded to: this is
+/// the floor it clamps up from, which is what a plot taken this instant is worth.
 pub const LOCK_RANGE_STEP_M: u64 = 10;
+
+/// **The fastest thing the catalog fields**, metres a second, rounded up (16b cut
+/// D.4, `T-20`).
+///
+/// 17 m/s is about 60 kph, which is over the stock tank's 54 and over every other
+/// hull the game ships. It is the drift term of [`lock_range_step_m`]: the
+/// furthest a plot's subject could have got since the plot was taken.
+pub const PLOT_DRIFT_M_PER_S: i64 = 17;
+
+/// **How finely a locked contact's range may honestly be reported**, metres,
+/// given a plot `age_ms` old (16b cut D.4, `T-20`; 16c §5 Q28: *derived from the
+/// plot's age, floor 10 m*).
+///
+/// `LOCK_RANGE_STEP_M` was a fixed 10 m, which is finer than a plot one pass old
+/// can carry: a target making 60 kph has moved 17 m in the second since the
+/// sighting, so a 10 m figure quoted about it is three significant digits of
+/// which the last one is invented.
+///
+/// The step is the drift, `age_ms × `[`PLOT_DRIFT_M_PER_S`]` / 1000`, rounded
+/// **up** to a multiple of ten and clamped into
+/// `LOCK_RANGE_STEP_M..=CONTACT_RANGE_STEP_M`: a plot up to 647 ms old keeps
+/// 10 m, a one-second plot gets 20 m, two seconds gets 40 m, and about two and a
+/// half seconds and older reads at the ordinary scope step, because a lock on a
+/// plot that stale is not a better fire-control solution than any other row.
+///
+/// **It publishes nothing new.** The one number it is a function of — the
+/// `age_ms` on the contact's own row — is already on the frame the pilot holds,
+/// and is the same `1 s` `CONTACTS` prints. It is deliberately **not** priced off
+/// `[tacsim.sensors].pass_ms`, which a pilot has never been sent.
+///
+/// The **metres** are a different matter and a client must not compute them: a
+/// contact row publishes `range_m` already rounded to [`CONTACT_RANGE_STEP_M`],
+/// so re-rounding that to this step gives the coarse figure back (450 m where the
+/// lock reads 440). The lock's own metres are published once, as the frame's
+/// `lock_range_m`, and `RANGE` prints the same call of the same function — which
+/// is the whole of `T-20`'s *one function* rule.
+#[must_use]
+pub fn lock_range_step_m(age_ms: i64) -> u64 {
+    let drift_m = age_ms.max(0).saturating_mul(PLOT_DRIFT_M_PER_S) / 1_000;
+    let step = drift_m.saturating_add(9) / 10 * 10;
+    u64::try_from(step)
+        .unwrap_or(CONTACT_RANGE_STEP_M)
+        .clamp(LOCK_RANGE_STEP_M, CONTACT_RANGE_STEP_M)
+}
 
 /// A contact's range in metres, rounded to the nearest `step` (16b cut F.3;
 /// 16b cut Q.1 made the step an argument). Half a step rounds up.
@@ -990,6 +1038,16 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
                     }
                     None => String::new(),
                 },
+                // **16b cut D.4** (`B-20`): the other direction of the same
+                // sentence. A contact that was told apart and has come back a
+                // number is quoted under both names, because the pilot has been
+                // typing the first one — and the first one stops working the
+                // moment this line is printed, which is the whole reason it is
+                // printed. It is **not** an alias: see `resolve_designator`.
+                NoticeKind::Unidentified => match was {
+                    Some(was) => format!("{was} is unidentified again: {named}."),
+                    None => String::new(),
+                },
                 // 16b cut W.1: the lock broke because the contact stopped being
                 // held. Said at once, because the pilot's next `FIRE` is going to
                 // be refused for it.
@@ -1130,6 +1188,15 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
         // no idea whether the match was still going on.
         FrameNotice::OwnDestroyed => OWN_DESTROYED.to_owned(),
         FrameNotice::OwnDisabled => OWN_DISABLED.to_owned(),
+        // **16b cut D.4** (`B-22`): the pilot's own machine. It says that the
+        // sight is being interfered with and nothing whatever about the pod — no
+        // source, no bearing, no side, no id — which is 16c §5 Q17's own sentence.
+        FrameNotice::Receiver { degraded } => if *degraded {
+            RECEIVER_DEGRADED
+        } else {
+            RECEIVER_CLEAR
+        }
+        .to_owned(),
     }
 }
 
@@ -1158,6 +1225,38 @@ pub const OWN_DESTROYED: &str = "Your tank is destroyed. The match runs on witho
 /// (16b cut D.2, `B-03`).
 pub const OWN_DISABLED: &str = "Your tank can neither move nor shoot. The match runs on: wait it \
                                 out, EXIT to the team room, or SIM ABORT to call it off.";
+
+/// **The line a pilot reads when their own receiver goes into interference** (16b
+/// cut D.4, `B-22`).
+///
+/// It names no source, because the platform has none to name: the fold is read at
+/// the pilot's own cell and nothing about the emitter reaches it
+/// ([`crate::arena::perception::Receiver`]).
+pub const RECEIVER_DEGRADED: &str = "Receiver degraded: something is jamming the sight.";
+
+/// **The line a pilot reads when their own receiver comes back out of it** (16b
+/// cut D.4, `B-22`).
+pub const RECEIVER_CLEAR: &str = "Receiver clear.";
+
+/// **`STATUS`'s receiver line** (16b cut D.4, `B-22`), split out of the verb the
+/// way [`range_line`] is, so the one sentence can be pinned against a value
+/// rather than against a booted server.
+///
+/// The budget the platform's last pass really ran with against what that budget
+/// is when nothing is jamming, and what is left of the reach. Three integers
+/// about the pilot's own machine and **nothing about the emitter**: no source, no
+/// bearing, no side, no cell, no object number and no designator, which is 16c
+/// §5 Q17 read literally. See [`crate::arena::perception::Receiver`] for the two
+/// limits the integers are declared to have.
+#[must_use]
+pub fn receiver_line(receiver: crate::arena::perception::Receiver) -> String {
+    format!(
+        "  receiver degraded: {} of {} through cover, {}% reach",
+        receiver.budget,
+        receiver.budget_max,
+        receiver.reach_permille / 10
+    )
+}
 
 /// **A miss reason in plain words** (16b cut F.2), one per
 /// [`crate::arena::damage::MISS_REASONS`] — the ledger's own vocabulary read as a
@@ -2173,14 +2272,16 @@ fn range(ctx: &mut Ctx<'_>, rest: &str) -> Result<(), CockpitError> {
 /// one pure function, and the branch between the two steps can be pinned against a
 /// plot held still rather than against a live approach.
 ///
-/// A locked contact earns [`LOCK_RANGE_STEP_M`] and the rest of the scope
-/// [`CONTACT_RANGE_STEP_M`]: a lock is a fire-control solution and the platform is
-/// tracking that one return continuously.
+/// A locked contact earns [`lock_range_step_m`] of its own plot's age and the rest
+/// of the scope [`CONTACT_RANGE_STEP_M`]: a lock is a fire-control solution and
+/// the platform is tracking that one return continuously — but no finer than the
+/// plot in front of the pilot can carry (16b cut D.4, `T-20`). The age is the row's
+/// own, which is the `1 s` `CONTACTS` already prints.
 #[must_use]
 pub fn range_line(frame: &Frame, row: &ContactRow, pass_ms: i64) -> String {
     let locked = frame_lock(frame) == Some(row.id);
     let step = if locked {
-        LOCK_RANGE_STEP_M
+        lock_range_step_m(row.age_ms)
     } else {
         CONTACT_RANGE_STEP_M
     };
@@ -2549,6 +2650,15 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
                         ""
                     }
                 ));
+            }
+            // **16b cut D.4** (`B-22`): a line of its own, after the heat and only
+            // for a platform whose own last pass ran under interference. The three
+            // integers are the pilot's own instrument — the budget the pass really
+            // used against what it has when nothing is jamming, and what is left
+            // of the reach — and nothing here says whose the emitter is or where
+            // it stands ([`crate::arena::perception::Receiver`]).
+            if let Some(receiver) = frame.receiver {
+                lines.push(receiver_line(receiver));
             }
             // **16b cut F.2**: doc 16 §5's *armor and internals per section as
             // current over max*, one line per section and wrapped to eighty
@@ -2971,12 +3081,15 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     let chosen = fired_by_default(&frame.weapons).and_then(|weapon| weapon.p_permille);
     // 16b cut Q.1: the lock's own name and its finer range, resolved once.
     let lock_designator = lock_designator(frame);
+    // **16b cut D.4** (`T-20`): the same step `RANGE` uses, off the same row's own
+    // age — one function, so the verb, the frame and the two panels' lock lines
+    // cannot give two distances.
     let lock_range_m = frame_lock(frame).and_then(|contact| {
         frame
             .contacts
             .iter()
             .find(|held| held.id == contact)
-            .map(|held| range_m_rounded(held.range_cm, LOCK_RANGE_STEP_M))
+            .map(|held| range_m_rounded(held.range_cm, lock_range_step_m(held.age_ms)))
     });
     serde_json::json!({
         // 16b cut Q.3: `retain` tells the session ring that this keyframe
@@ -3030,6 +3143,15 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
             "heat": heat.heat,
             "max": heat.max,
             "overheated": heat.overheated(),
+        })),
+        // **16b cut D.4** (`B-22`): what the platform's own receiver is running
+        // under, or `null`. A fact about the pilot's own machine, with no source,
+        // no bearing, no side and no object number on it
+        // ([`crate::arena::perception::Receiver`]).
+        "receiver": frame.receiver.map(|receiver| serde_json::json!({
+            "budget": receiver.budget,
+            "budget_max": receiver.budget_max,
+            "reach_percent": receiver.reach_permille / 10,
         })),
     })
 }

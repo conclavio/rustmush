@@ -2666,3 +2666,195 @@ async fn the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field() {
     }
     no_sixteen_digit_word(&unattended, "the unattended announcement");
 }
+
+/// **One frame carrying one contact row and nothing else** (16b cut D.4), so the
+/// one renderer can be asked for a sentence without a booted arena.
+///
+/// `notice_line` reads the frame for a lock's percentage and for the friendly
+/// mark and reads neither on a contact notice, so every field below is a value
+/// the sentence under test cannot reach.
+fn d4_stub_frame(lock: tacsim::arena::state::ContactId) -> tacsim::arena::step::Frame {
+    let schema = mush_core::DefinitionRef::new(
+        mush_core::DefinitionKey::new(
+            mush_core::OwnerId::new("tacsim").expect("a canonical owner"),
+            mush_core::DefinitionKind::new("schema").expect("a canonical kind"),
+            mush_core::DefinitionId::new("tacsim.arena.observer").expect("a canonical id"),
+        ),
+        1,
+        mush_core::DefinitionDigest::from_bytes([0_u8; 32]),
+    )
+    .expect("version 1 is not zero");
+    let posture =
+        mush_sim::RulesValue::new(schema, serde_json::json!({})).expect("an empty posture");
+    tacsim::arena::step::Frame {
+        unit: mush_core::ObjId(101),
+        callsign: tacsim::arena::state::Designator::Slot {
+            team: tacsim::arena::state::Team::Red,
+            slot: 1,
+        },
+        cell: Some((6, 4)),
+        team: tacsim::arena::state::Team::Red,
+        pose: mush_sim::data::Pose::at(6_500, 4_500, 0, posture),
+        speed_cms: 0,
+        power: tacsim::arena::state::Power::Online,
+        blocked: false,
+        wreck: false,
+        immobile: false,
+        tempo: tacsim::arena::clock::Tempo::Quiet,
+        sight_cm: 60_000,
+        contacts: Vec::new(),
+        scan_tables: Vec::new(),
+        notices: Vec::new(),
+        lock: Some(lock),
+        weapons: Vec::new(),
+        sections: Vec::new(),
+        heat: None,
+        receiver: None,
+    }
+}
+
+/// **16b cut D.4's two new surfaces name the pilot's own machine and the names
+/// that pilot has already been sent** (doc 16 §1, §3.6; 16c §5 Q16 and Q17).
+///
+/// Two different halves of the same rule.
+///
+/// **The receiver** (`B-22`) is a fact about the pilot's own platform, which doc
+/// 16 §5 puts outside the observer rule entirely — as `sections`, `heat` and
+/// `sight_m` already are. What the rule still forbids is the other half of the
+/// moment: **who** is jamming, and **from where**. So the check is on the shape
+/// as much as on the words — `FrameNotice::Receiver` has no field a contact, an
+/// object number, a bearing, a cell or a side could be carried in, and the
+/// sentence and the `STATUS` line carry none of them either.
+///
+/// It is deliberately **not** checked for "no count": the three integers are
+/// `B-22`'s own fix (*the observer's own attenuation budget against its unjammed
+/// value*) and they are there on purpose. `crate::arena::perception::Receiver`'s
+/// doc comment declares what they let a pilot infer — the edge of a bubble is
+/// walkable, and a deeper degradation is readable — and 16c §5 Q17 carries both
+/// to the owner with the tightening named.
+///
+/// **The regression line** (`B-20`) is the other half: it names two designators
+/// and nothing else, and both of them are names this pilot has already been sent
+/// — the one their own row is reading now, and the one it read a moment ago,
+/// which they have been typing. And the one it read a moment ago **stops
+/// working** the instant the line is printed, because accepting it would say BA
+/// is still out there.
+///
+/// The frame-JSON half of the receiver — that the key is `null` on a clean
+/// platform and exactly three integers on a jammed one — is `tacsim`'s own
+/// `d4_the_frame_carries_a_receiver_key_and_the_clean_scene_is_null`, which has
+/// the one scene every renderer is held to.
+#[test]
+fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
+    use tacsim::arena::perception::{FrameNotice, Named, NoticeKind, Receiver};
+    use tacsim::arena::state::{Classification, ContactId, Designator, Team};
+    use tacsim::match_::cockpit;
+
+    // (1) The two sentences and the `STATUS` line, whole.
+    let receiver = Receiver {
+        budget: 15,
+        budget_max: 40,
+        reach_permille: 600,
+    };
+    for line in [
+        cockpit::RECEIVER_DEGRADED.to_owned(),
+        cockpit::RECEIVER_CLEAR.to_owned(),
+        cockpit::receiver_line(receiver),
+    ] {
+        no_sixteen_digit_word(&line, "the receiver's own line");
+        for leak in [
+            "bearing", "cell", "contact", "red", "blue", "team", "X1", "X2", "RA", "BA", "#",
+            "pod", "jammer", "emitter",
+        ] {
+            assert!(
+                !line.contains(leak),
+                "the receiver's line leaked {leak:?}:\n{line}"
+            );
+        }
+    }
+    // The `STATUS` line's integers are the platform's own and are there on
+    // purpose — see this test's head.
+    assert_eq!(
+        cockpit::receiver_line(receiver),
+        "  receiver degraded: 15 of 40 through cover, 60% reach"
+    );
+
+    // (2) And the shape: the notice cannot carry a contact, so nothing a
+    //     renderer does with it can name one.
+    for notice in [
+        FrameNotice::Receiver { degraded: true },
+        FrameNotice::Receiver { degraded: false },
+    ] {
+        assert_eq!(notice.contact(), None, "{notice:?}");
+        assert_eq!(notice.designator(), None, "{notice:?}");
+        assert_eq!(notice.named(), None, "{notice:?}");
+        assert_eq!(notice.section(), None, "{notice:?}");
+        assert_eq!(notice.weapon(), None, "{notice:?}");
+        assert_eq!(notice.order(), None, "{notice:?}");
+        assert_eq!(notice.cause(), None, "{notice:?}");
+        assert_eq!(notice.refusal(), None, "{notice:?}");
+    }
+    assert_eq!(
+        FrameNotice::Receiver { degraded: true }.kind().as_str(),
+        "receiver_degraded"
+    );
+    assert_eq!(
+        FrameNotice::Receiver { degraded: false }.kind().as_str(),
+        "receiver_clear"
+    );
+
+    // (3) The regression line, and the refusal that follows it. The row is
+    //     `X2` now and was `BA` a moment ago; both are names this pilot has been
+    //     sent, and nothing else is in the sentence.
+    let id = ContactId(0x1111_1111_1111_1111);
+    let row = tacsim::match_::cockpit::ContactRow {
+        id,
+        designator: Designator::Provisional(2),
+        alias: None,
+        class: smol_str::SmolStr::new("unknown"),
+        bearing_deg: 45,
+        relative_deg: 0,
+        band: smol_str::SmolStr::new("far"),
+        range_m: 450,
+        age_ms: 0,
+        cell: Some((36, 14)),
+        friendly: false,
+    };
+    let regressed = FrameNotice::Contact {
+        kind: NoticeKind::Unidentified,
+        contact: Named {
+            id,
+            designator: Designator::Provisional(2),
+        },
+        class: Classification::Unknown,
+        was: Some(Designator::Slot {
+            team: Team::Blue,
+            slot: 1,
+        }),
+    };
+    assert_eq!(regressed.kind().as_str(), "unidentified");
+    // The sentence itself is pinned in `tacsim`; what is pinned here is that it
+    // carries nothing beyond the two names.
+    let rows = [row.clone()];
+    let line = cockpit::notice_line(&d4_stub_frame(id), &regressed, &rows);
+    no_sixteen_digit_word(&line, "the regression line");
+    for leak in ["bearing", "cell", "045", "450", "blue", "#"] {
+        assert!(
+            !line.contains(leak),
+            "the regression line leaked {leak:?}:\n{line}"
+        );
+    }
+
+    // **And the old name is not an alias.** `LOCK BA` after the line is the one
+    // byte-identical refusal, and `LOCK X2` — the name the row reads now —
+    // resolves.
+    assert_eq!(cockpit::resolve_designator(&rows, "BA"), None);
+    assert_eq!(cockpit::resolve_designator(&rows, "ba"), None);
+    assert_eq!(cockpit::resolve_designator(&rows, "X2"), Some(id));
+    // Which is the sentence the cockpit answers with, spelled out here the way
+    // this file spells every sentence it asserts.
+    assert_eq!(
+        NO_SUCH_CONTACT,
+        tacsim::arena::perception::contact_refusal()
+    );
+}

@@ -5,7 +5,7 @@ power online
 43 kph  heading 045°
 heat 40/100
 scope hostile
-Lock BA  430 m  62%
+Lock BA  440 m  62%
 engine  intact  40/40
 hull  intact  60/60  front 55/80  rear 30/30
 left_track  intact  6/24  left 4/24

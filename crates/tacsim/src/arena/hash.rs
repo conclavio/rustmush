@@ -64,7 +64,9 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///        unit entered its cell by;
 ///    13. **the four motion carries** (16b cut Q.6), in field order: `carry.turn`
 ///        as `u32`, `carry.speed` as `u32`, `carry.east` as `i64` and
-///        `carry.north` as `i64`.
+///        `carry.north` as `i64`;
+///    14. **the platform's own receiver** (16b cut D.4): a presence byte, then
+///        `budget`, `budget_max` and `reach_permille` as `u16`.
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
@@ -85,7 +87,8 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    plot's five integers, the own sighting (a presence byte, its stamp, its own
 ///    plot and **its reading**) and **the reading the platform holds** — a reading
 ///    being a presence byte, the look's `i64` stamp, the packed bands as `u32` and
-///    the packed section count as `u8` (16b cut Q.2).
+///    the packed section count as `u8` (16b cut Q.2); then **whether this hold was
+///    opened under a provisional number** as one byte (16b cut D.4).
 /// 5. **The designator book** (16b cut Q.1), in its own two `BTreeMap`s' order:
 ///    the count of `next` rows as `u64`, then per row the viewer's `u32` and the
 ///    number as `u16`; then the count of issued numbers as `u64`, then per issued
@@ -214,6 +217,26 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// timestamp, never by a per-pulse sweep. Because the staging scan runs **after**
 /// the substep's hash is recorded, a write at substep *k* is first folded at
 /// *k + 1*.
+///
+/// **Cut D.4's extension**: two more, under the same one rule — *persistent state
+/// that decides a notice is hashed*.
+///
+/// [`crate::arena::state::ShadowContact::numbered`] moves with **no
+/// distinguishable ledger event**: a contact opened by this platform's own
+/// sensors and a contact handed over by the mesh both journal an
+/// `EventKind::Detected` of byte-identical shape, so a replay whose blip was
+/// found by its own sight where the original took it off the mesh would compare
+/// equal — and the two runs would then say the `identified` line in one and not
+/// the other. That is cut Q.1's own argument for the designator book, one hold
+/// further in.
+///
+/// [`crate::arena::state::UnitState::receiver`] persists between passes and
+/// decides a notice, and it can move with no ledger line at all: a platform that
+/// stops running passes (a wreck, a shot-off sight) writes `None` silently, which
+/// is a deliberate silence and not an omission. Folding it catches that at the
+/// pass's own timestamp. The `jammer` and `eccm` beside it stay out for the
+/// reason they always did: those are facts about the unit's fit that nothing in a
+/// match moves.
 #[must_use]
 pub fn state_hash(arena: &Arena) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
@@ -263,6 +286,14 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fnv1a64_update(hash, &unit.carry.speed.to_le_bytes());
         hash = fnv1a64_update(hash, &unit.carry.east.to_le_bytes());
         hash = fnv1a64_update(hash, &unit.carry.north.to_le_bytes());
+        // **16b cut D.4**: what this platform's own last pass ran under.
+        match unit.receiver {
+            Some(receiver) => {
+                hash = fnv1a64_update(hash, &[1_u8, receiver.budget, receiver.budget_max]);
+                hash = fnv1a64_update(hash, &receiver.reach_permille.to_le_bytes());
+            }
+            None => hash = fnv1a64_update(hash, &[0_u8]),
+        }
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
     hash = fnv1a64_update(hash, &(arena.spent_said.len() as u64).to_le_bytes());
@@ -346,6 +377,10 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // pass earlier, a share that arrived, a band the gunner watched go — so a
         // replay that read the same hull a pass sooner must not compare equal.
         hash = fold_reading(hash, held.seen_condition);
+        // **16b cut D.4**: whether this hold was opened under a number, which is
+        // what decides the `identified` line and which moves with no
+        // distinguishable event of its own — see this function's head.
+        hash = fnv1a64_update(hash, &[u8::from(held.numbered)]);
     }
     // **16b cut Q.1**: the provisional numbers, in the book's own map order.
     hash = fnv1a64_update(
@@ -695,6 +730,80 @@ mod tests {
         let mut scratch = two_tanks();
         scratch.spent_hits.insert(7);
         assert_eq!(state_hash(&scratch), base, "the scratch was folded");
+    }
+
+    /// **16b cut D.4's extension**: the two facts that move with no
+    /// distinguishable ledger event of their own — whether a hold was opened
+    /// under a number, and what the platform's own receiver is running under.
+    #[test]
+    fn the_hash_folds_whether_a_hold_was_numbered_and_the_platforms_own_receiver() {
+        use crate::arena::perception::Receiver;
+        use crate::arena::state::{Classification, ContactId, SeenPose, ShadowContact};
+
+        let base = state_hash(&two_tanks());
+
+        // `numbered` alone: two arenas identical but for the one byte. A mesh
+        // arrival and a contact this platform's own sight opened journal the same
+        // `detected` line, so this is the only thing that tells them apart.
+        let hold = |numbered: bool| {
+            let mut probe = two_tanks();
+            probe.contacts.insert(
+                ObjId(4),
+                ContactId(7),
+                ShadowContact {
+                    numbered,
+                    ..ShadowContact::sighted(
+                        ObjId(9),
+                        Classification::Unknown,
+                        1_000,
+                        SeenPose::default(),
+                    )
+                },
+            );
+            state_hash(&probe)
+        };
+        assert_ne!(hold(false), base, "the contact itself went unhashed");
+        assert_ne!(hold(true), hold(false), "`numbered` alone went unhashed");
+
+        // `receiver` alone, and each of its three integers on its own: two
+        // stacked pods and one pod are not one state, and neither is a filter
+        // that recovered half the reach.
+        let receiver = Receiver {
+            budget: 15,
+            budget_max: 40,
+            reach_permille: 600,
+        };
+        let with = |receiver: Option<Receiver>| {
+            let mut probe = two_tanks();
+            if let Some(unit) = probe.unit_mut(ObjId(9)) {
+                unit.receiver = receiver;
+            }
+            state_hash(&probe)
+        };
+        assert_ne!(with(Some(receiver)), base, "a receiver went unhashed");
+        for moved in [
+            Receiver {
+                budget: 0,
+                ..receiver
+            },
+            Receiver {
+                budget_max: 100,
+                ..receiver
+            },
+            Receiver {
+                reach_permille: 601,
+                ..receiver
+            },
+        ] {
+            assert_ne!(
+                with(Some(moved)),
+                with(Some(receiver)),
+                "a receiver field went unhashed"
+            );
+        }
+        // And clean again is the same state: the fold is a function of the value
+        // and not of how it got there.
+        assert_eq!(with(None), base);
     }
 
     #[test]

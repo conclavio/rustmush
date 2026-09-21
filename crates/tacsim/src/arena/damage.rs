@@ -678,6 +678,10 @@ impl Arena {
                 EventKind::SectionDestroyed {
                     unit: shot.target,
                     section: struck.section.clone(),
+                    // **16b cut D.4** (`T-08`): the round that did it, carried on
+                    // the line rather than inferred from whatever impact the
+                    // staging scan happened to be holding.
+                    by: Some(shot.shooter),
                     consequences: struck
                         .consequences
                         .iter()
@@ -687,7 +691,7 @@ impl Arena {
                 None,
             ));
             for consequence in &struck.consequences {
-                self.apply_consequence(shot.target, consequence, t_ms, journal);
+                self.apply_consequence(shot.target, consequence, t_ms, Some(shot.shooter), journal);
             }
             self.settle_disabled(shot.target, t_ms, journal);
         }
@@ -905,15 +909,20 @@ impl Arena {
     /// `slow(50)` on an already-slowed tank leaves it at 50 rather than at 25,
     /// because the consequence names the surviving percentage and not a factor to
     /// compound.
+    ///
+    /// **16b cut D.4** (`T-08`) threads `by` through: the shooter whose round
+    /// fired this consequence, or `None` for a consequence applied by anything
+    /// else. It reaches exactly one line, `unit_destroyed`'s.
     pub fn apply_consequence(
         &mut self,
         target: ObjId,
         consequence: &Consequence,
         t_ms: i64,
+        by: Option<ObjId>,
         journal: &mut Vec<Notice>,
     ) {
         match consequence {
-            Consequence::DestroyUnit => self.destroy_unit(target, t_ms, journal),
+            Consequence::DestroyUnit => self.destroy_unit(target, t_ms, by, journal),
             Consequence::Slow { percent } => {
                 if let Some(state) = self.unit_mut(target) {
                     state.limits.slow_pct = state.limits.slow_pct.min((*percent).clamp(1, 100));
@@ -1009,7 +1018,17 @@ impl Arena {
     /// clears their locks and says so once (W.1 put that in the `lost` arm).
     ///
     /// Idempotent: a wreck destroyed again journals nothing.
-    pub fn destroy_unit(&mut self, target: ObjId, t_ms: i64, journal: &mut Vec<Notice>) {
+    ///
+    /// **16b cut D.4** (`T-08`): `by` is the shooter whose round finished it, and
+    /// `None` for a hull destroyed by anything else — which is what the gunner's
+    /// kill line is gated on, in place of the stale `in_flight` it used to read.
+    pub fn destroy_unit(
+        &mut self,
+        target: ObjId,
+        t_ms: i64,
+        by: Option<ObjId>,
+        journal: &mut Vec<Notice>,
+    ) {
         if self.unit(target).is_none_or(|state| state.limits.wreck) {
             return;
         }
@@ -1027,6 +1046,16 @@ impl Arena {
             // although it had fired all match, because the one record of what it
             // spent was thrown away here.
             state.sensor = None;
+            // **16b cut D.4** (`B-22`): and its receiver goes with the sight. The
+            // sensor pass is the only writer of the field, and the retain below
+            // takes this unit's pass off the heap for good, so a wreck that was
+            // degraded when it died would have carried
+            // `receiver degraded: 15 of 40 through cover` on `STATUS` for the rest
+            // of the match — hashed state that never converged. It is turned off
+            // **silently**, with no ledger line and no notice: a wreck's receiver
+            // is off rather than clear, which is the rule `Arena::sensor_pass`
+            // applies to a pass that does not run.
+            state.receiver = None;
         }
         self.contacts.clear_viewer(target);
         self.due.retain(|kind| match kind {
@@ -1049,7 +1078,7 @@ impl Arena {
             self.reflex
                 .adopt(target, crate::arena::reflex::ReflexState::Disabled);
         }
-        journal.push((t_ms, EventKind::UnitDestroyed { unit: target }, None));
+        journal.push((t_ms, EventKind::UnitDestroyed { unit: target, by }, None));
     }
 
     /// **A unit with no weapons and no motion is disabled** (doc 16 §3.8; doc 10
@@ -1404,7 +1433,7 @@ mod tests {
         assert_eq!(struck.consequences, vec![Consequence::DisableMotion]);
         // The hull's rear armour is what was spent, and the engine's internals.
         let mut journal: Vec<Notice> = Vec::new();
-        arena.apply_consequence(BLUE, &Consequence::DisableMotion, 0, &mut journal);
+        arena.apply_consequence(BLUE, &Consequence::DisableMotion, 0, None, &mut journal);
         assert!(
             arena
                 .unit(BLUE)
@@ -1416,13 +1445,20 @@ mod tests {
     fn a_track_slows_the_tank_and_shuts_one_way_of_turning() {
         let mut arena = duel();
         let mut journal: Vec<Notice> = Vec::new();
-        arena.apply_consequence(BLUE, &Consequence::Slow { percent: 50 }, 0, &mut journal);
+        arena.apply_consequence(
+            BLUE,
+            &Consequence::Slow { percent: 50 },
+            0,
+            None,
+            &mut journal,
+        );
         arena.apply_consequence(
             BLUE,
             &Consequence::NoTurnToward {
                 side: crate::arena::state::Side::Left,
             },
             0,
+            None,
             &mut journal,
         );
         let state = arena.unit(BLUE).unwrap_or_else(|| panic!("blue"));
@@ -1432,7 +1468,13 @@ mod tests {
             Some(crate::arena::state::Side::Left)
         );
         // Idempotent: the same consequence again does not compound.
-        arena.apply_consequence(BLUE, &Consequence::Slow { percent: 50 }, 0, &mut journal);
+        arena.apply_consequence(
+            BLUE,
+            &Consequence::Slow { percent: 50 },
+            0,
+            None,
+            &mut journal,
+        );
         assert_eq!(
             arena.unit(BLUE).map(|state| state.limits.slow_pct),
             Some(50)
@@ -1643,7 +1685,7 @@ mod tests {
         );
         // And the consequence really lands.
         let mut journal: Vec<Notice> = Vec::new();
-        arena.apply_consequence(BLUE, &Consequence::DestroyUnit, 0, &mut journal);
+        arena.apply_consequence(BLUE, &Consequence::DestroyUnit, 0, None, &mut journal);
         assert!(
             arena.unit(BLUE).is_some_and(|state| state.limits.wreck),
             "the destroy consequence did not wreck it"
@@ -1666,6 +1708,7 @@ mod tests {
                 section: SmolStr::new("turret"),
             },
             0,
+            None,
             &mut journal,
         );
         let state = arena.unit(BLUE).unwrap_or_else(|| panic!("blue"));
@@ -1681,7 +1724,7 @@ mod tests {
         // Not disabled yet: it can still drive.
         arena.settle_disabled(BLUE, 0, &mut journal);
         assert_eq!(arena.unit(BLUE).map(|state| state.disabled), Some(false));
-        arena.apply_consequence(BLUE, &Consequence::DisableMotion, 0, &mut journal);
+        arena.apply_consequence(BLUE, &Consequence::DisableMotion, 0, None, &mut journal);
         arena.settle_disabled(BLUE, 0, &mut journal);
         assert_eq!(arena.unit(BLUE).map(|state| state.disabled), Some(true));
         assert_eq!(
@@ -1725,7 +1768,7 @@ mod tests {
         );
         let before = arena.due.len();
         let mut journal: Vec<Notice> = Vec::new();
-        arena.destroy_unit(BLUE, 500, &mut journal);
+        arena.destroy_unit(BLUE, 500, None, &mut journal);
         let state = arena.unit(BLUE).unwrap_or_else(|| panic!("the wreck"));
         assert!(state.limits.wreck && state.limits.motion_disabled);
         assert_eq!(state.power, Power::Off);
@@ -1756,7 +1799,7 @@ mod tests {
         // The other platform's contact on it is untouched: it expires the ordinary
         // way, which is what clears the lock (W.1's `lost` arm).
         journal.clear();
-        arena.destroy_unit(BLUE, 600, &mut journal);
+        arena.destroy_unit(BLUE, 600, None, &mut journal);
         assert!(journal.is_empty(), "destroyed once");
         assert_eq!(arena.eliminated(), Some(Some(Team::Red)));
     }

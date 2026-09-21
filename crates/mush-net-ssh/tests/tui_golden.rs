@@ -790,7 +790,10 @@ fn the_cockpit_screen_reads_the_frame_and_nothing_else() {
         // 16b cut D.2 (16c `T-59`): this platform's own scope, where the arena's
         // one global cadence word used to be.
         "scope hostile",
-        "Lock BA  430 m  62%",
+        // 16b cut D.4 (16c `T-20`): the lock's range is rounded to what the
+        // plot's own age can carry, and the shared scene's plot is 1,200 ms old
+        // — 20 m of drift, so a 20 m step, and 430 rounds half up to 440.
+        "Lock BA  440 m  62%",
         "cannon  ready  14/20  62%",
     ] {
         assert!(text.contains(needle), "missing {needle:?}:\n{text}");

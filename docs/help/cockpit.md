@@ -113,14 +113,28 @@ lock, and the band your lock falls in on `WEAPONSTATUS`.
 `RANGE` and `BEARING` ask about one contact without re-reading the whole scope.
 Name one, or name none and get your lock:
 
-  RANGE BA         Range to BA: 430 m.
+  RANGE BA         Range to BA: 440 m.
   BEARING          Bearing to BA: 087° (rel 357°).
 
-Your **lock** reads to the nearest 10 m rather than 50: it is a fire-control
-solution and the platform is tracking that one return continuously. Both verbs
-read the same plot every other surface reads, and both say so when it is going
-stale: `Range to BA: 430 m, plotted 4 s ago.` With no lock and no name they
-answer `No lock: LOCK a contact first, or name one.`
+Your **lock** reads finer than 50 m: it is a fire-control solution and the
+platform is tracking that one return continuously. How much finer is what the
+plot in front of you can carry — a fresh one reads to 10 m, a one-second plot to
+20, and a plot a couple of seconds old reads no better than the rest of the
+scope, because a tank making 60 kph has moved seventeen metres in each of those
+seconds. Both verbs read the same plot every other surface reads, and both say so
+when it is going stale: `Range to BA: 450 m, plotted 4 s ago.` With no lock and
+no name they answer `No lock: LOCK a contact first, or name one.`
+
+A contact your sensors had told apart can go back to being a number — it drops
+out of your picture for a moment and comes back unresolved — and your panel says
+so once: `BA is unidentified again: X2.` The old name stops working the instant
+that line is printed, so `LOCK BA` answers `No such contact.` until the contact
+has been told apart a second time; `LOCK X2` is what works meanwhile.
+
+If something is jamming your sight, `STATUS` says so on a line of its own —
+`receiver degraded: 15 of 40 through cover, 60% reach` — and your panel says it
+once on the way in and once on the way out. It is your own machine's reading:
+nothing tells you who is jamming you or from where.
 
 `SCAN` is what is left of one contact, section by section:
 

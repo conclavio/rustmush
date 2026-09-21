@@ -131,7 +131,7 @@
   "lock_designator": "BA",
   "lock_p_permille": 624,
   "lock_percent": 62,
-  "lock_range_m": 430,
+  "lock_range_m": 440,
   "match": 7,
   "notices": [
     {
@@ -168,6 +168,7 @@
     0
   ],
   "power": "online",
+  "receiver": null,
   "rows": [
     [
       [

@@ -85,6 +85,7 @@ use mush_core::CanonicalId;
 use smol_str::SmolStr;
 use tacsim::arena::damage::UnitReturn;
 use tacsim::arena::intents::Refusal;
+use tacsim::arena::perception::FrameNotice;
 use tacsim::arena::resolution::FULL_ATTENUATION;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Classification, CustodyOut, CustodyUnit, EntryZone,
@@ -1085,7 +1086,7 @@ fn fire_consequences(arena: &mut Arena, unit: mush_core::ObjId, section: &str) {
         .expect("the section is in the unit's profile");
     let mut journal = Vec::new();
     for consequence in &consequences {
-        arena.apply_consequence(unit, consequence, 0, &mut journal);
+        arena.apply_consequence(unit, consequence, 0, None, &mut journal);
     }
 }
 
@@ -5694,10 +5695,40 @@ type Q6Final = (mush_core::ObjId, i64, i64, u32, i32, u8, bool, bool);
 
 /// What one Q.6 replay produced — [`ReliefReplay`] without X.6's climb
 /// instruments, which none of these four fixtures climbs anything to measure.
+///
+/// **16b cut D.4** gave it the two things `tests/perception.rs`' own `Cadenced`
+/// has had since cut Q.1 and this one lacked: the ordered list of notices each
+/// **pilot** was staged, and the pulse count. A ledger line and the notice the
+/// pilot reads for it are two different projections — the notice is staged by
+/// `Arena::stage_pilot_notice` and drained per pulse — so a change that staged a
+/// notice to the wrong platform, or on every pass instead of on the transition,
+/// moves no event and no hash and would go unseen here. Every fixture in this
+/// file seats a pilot on every unit ([`q6_arena`]), so the lists exist on all
+/// four replays and cost nothing to compare.
+///
+/// **What is compared is the staged [`FrameNotice`] and not the rendered
+/// sentence**, and the difference matters on exactly these fixtures. A contact
+/// notice renders as `New contact X2: bearing 129°, close.`, and the bearing and
+/// the band are read off the **frame** at render time
+/// (`cockpit::notice_line`) — that is, off where the observer stood at the pulse
+/// boundary the frame was built at. Every fixture here drives its observer, so
+/// the same staged notice legitimately renders a different bearing at 5,000 ms
+/// and at 500 ms. A frame is a per-pulse view by design (doc 16 §3.1) and is in
+/// no cross-tempo comparison; the notice behind it is arena state and is.
 struct Q6Replay {
     events: Vec<ReliefLine>,
     hashes: Vec<u64>,
     finals: Vec<Q6Final>,
+    /// Every notice each pilot was staged, in order. Compared across cadences.
+    notices: std::collections::BTreeMap<mush_core::ObjId, Vec<FrameNotice>>,
+    /// The same notices as the pilot read them. **Not** compared across
+    /// cadences, for the reason above; it is here so a property about a sentence
+    /// can be asserted against a run of the real engine rather than a hand-built
+    /// `FrameNotice`.
+    lines: std::collections::BTreeMap<mush_core::ObjId, Vec<String>>,
+    /// How many pulses it took, which is the guard that the three runs really
+    /// were three cadences.
+    pulses: u32,
 }
 
 impl Q6Replay {
@@ -5722,6 +5753,14 @@ impl Q6Replay {
 fn q6_replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[ReliefBeat]) -> Q6Replay {
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
+    // 16b cut D.4: the pilots' own notices, collected as one ordered list per
+    // pilot over the whole run and never grouped by frame — a pulse that carries
+    // three substeps' notices at 5,000 ms carries them one at a time at 500.
+    let mut notices: std::collections::BTreeMap<mush_core::ObjId, Vec<FrameNotice>> =
+        std::collections::BTreeMap::new();
+    let mut lines: std::collections::BTreeMap<mush_core::ObjId, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut pulses = 0_u32;
     let mut wall = 0_i64;
     let mut next = 0_usize;
     let mut ended = false;
@@ -5747,7 +5786,9 @@ fn q6_replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Relief
             for chunk in &out.ledger_chunks {
                 bytes.extend_from_slice(&chunk.bytes);
             }
+            q6_absorb_notices(&out, &mut notices, &mut lines);
             hashes.extend(arena.substep_hashes.iter().copied());
+            pulses = pulses.saturating_add(1);
             ended = out.ended.is_some();
         }
         if ended || arena.now_ms >= until_ms {
@@ -5758,7 +5799,9 @@ fn q6_replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Relief
         for chunk in &out.ledger_chunks {
             bytes.extend_from_slice(&chunk.bytes);
         }
+        q6_absorb_notices(&out, &mut notices, &mut lines);
         hashes.extend(arena.substep_hashes.iter().copied());
+        pulses = pulses.saturating_add(1);
         if out.ended.is_some() || arena.now_ms >= until_ms {
             break;
         }
@@ -5800,13 +5843,43 @@ fn q6_replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Relief
                 )
             })
             .collect(),
+        notices,
+        lines,
+        pulses,
+    }
+}
+
+/// One pulse's frames folded into the two per-pilot lists (16b cut D.4): the
+/// staged notices, which are arena state and are compared across cadences, and
+/// the sentences the pilot read, which are a per-pulse render and are not.
+fn q6_absorb_notices(
+    out: &tacsim::arena::step::StepOutput,
+    notices: &mut std::collections::BTreeMap<mush_core::ObjId, Vec<FrameNotice>>,
+    lines: &mut std::collections::BTreeMap<mush_core::ObjId, Vec<String>>,
+) {
+    for (pilot, frame) in &out.frames {
+        if frame.notices.is_empty() {
+            continue;
+        }
+        notices
+            .entry(*pilot)
+            .or_default()
+            .extend(frame.notices.iter().cloned());
+        let said = cockpit::notice_lines(frame);
+        if !said.is_empty() {
+            lines.entry(*pilot).or_default().extend(said);
+        }
     }
 }
 
 /// **The three cadences, compared** (16b §11): one scripted log at 5,000, 1,000
-/// and 500 ms gives one event list, one per-substep hash sequence and one final
-/// state — with the sibling tests' differing-pulses guard, which is that every
-/// replay ran to exactly the same arena time.
+/// and 500 ms gives one event list, one per-substep hash sequence, one per-pilot
+/// notice list and one final state — with the sibling tests' differing-pulses
+/// guard, which is that every replay ran to exactly the same arena time **on a
+/// different number of pulses**.
+///
+/// What a notice *renders as* is not in the comparison and [`Q6Replay`] says
+/// why.
 fn q6_three_cadences(
     label: &str,
     until_ms: i64,
@@ -5838,9 +5911,19 @@ fn q6_three_cadences(
             run.hashes.len(),
             first.hashes.len()
         );
+        // 16b cut D.4: and what was staged to each pilot, which no hash folds.
+        assert_eq!(
+            run.notices, first.notices,
+            "{label}: a pilot's notice list differs at {cadence} ms"
+        );
         assert_eq!(
             run.finals, first.finals,
             "{label}: a final pose, limit or speed differs at {cadence} ms"
+        );
+        assert_ne!(
+            run.pulses, first.pulses,
+            "{label}: {cadence} ms ran the same number of pulses as 5,000 ms, so the \
+             comparison above is a tautology"
         );
     }
     let Some((_, first)) = runs.into_iter().next() else {
@@ -6915,4 +6998,513 @@ fn d2_the_reflex_controller_takes_the_cold_gun_from_a_cooked_platform() {
         left.saturating_add(20) > 60,
         "the platform cooled far enough for the laser to become available: {left}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut D.4 — a platform knows its own receiver is degraded (`B-22`)
+//
+// 16c section 5 Q17's default read literally: the platform knows its own
+// receiver and nothing about who is jamming it or from where. The fold is the
+// one `Arena::detections` already made for its two terms, carried out of the
+// function that made it, so `jamming_at` still runs once a pass and no
+// perception counter moves — which is asserted here against the very numbers
+// X.4 and X.5 pinned.
+// ---------------------------------------------------------------------------
+
+/// One sensor pass, with the journal it wrote — [`thermal_pass`] for a property
+/// about a ledger line rather than about a counter.
+fn receiver_pass(
+    arena: &mut Arena,
+    observer: mush_core::ObjId,
+    pass_seq: u64,
+    t_ms: i64,
+) -> (
+    tacsim::arena::perception::PerceptionCounters,
+    Vec<tacsim::arena::perception::Notice>,
+) {
+    let mut counters = tacsim::arena::perception::PerceptionCounters::default();
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    let units = arena.units.clone();
+    arena.index.rebuild(&arena.definition.terrain, &units);
+    arena.sensor_pass(observer, pass_seq, t_ms, &mut counters, &mut journal);
+    (counters, journal)
+}
+
+/// Every `receiver` line one pass journalled, as `(t_ms, degraded)`.
+fn receiver_lines(journal: &[tacsim::arena::perception::Notice]) -> Vec<(i64, bool)> {
+    journal
+        .iter()
+        .filter_map(|(t_ms, kind, _)| match kind {
+            tacsim::arena::ledger::EventKind::Receiver { degraded, .. } => Some((*t_ms, *degraded)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What the observer's own receiver reads after a pass.
+fn receiver_of(
+    arena: &Arena,
+    unit: mush_core::ObjId,
+) -> Option<tacsim::arena::perception::Receiver> {
+    arena.unit(unit).and_then(|state| state.receiver)
+}
+
+/// Put a unit in a cell, the way `tests/perception.rs`' own `place` does.
+fn put(arena: &mut Arena, unit: mush_core::ObjId, cell: (u16, u16)) {
+    if let Some(state) = arena.unit_mut(unit) {
+        state.pose = pose(cell);
+    }
+}
+
+/// What one pilot was told about their receiver over `pulses` half-second pulses,
+/// and what the **same frame** carried in [`tacsim::arena::step::Frame::receiver`]
+/// (16b cut D.4).
+fn drive_receiver(
+    arena: &mut Arena,
+    wall: &mut i64,
+    pulses: u32,
+    told: &mut Vec<(bool, Option<tacsim::arena::perception::Receiver>)>,
+) {
+    for _ in 0..pulses {
+        *wall += 500;
+        let out = arena.step(*wall, &[], &[]);
+        for (seat, frame) in &out.frames {
+            if *seat != mush_core::ObjId(1_000) {
+                continue;
+            }
+            for notice in &frame.notices {
+                if let FrameNotice::Receiver { degraded } = notice {
+                    told.push((*degraded, frame.receiver));
+                }
+            }
+        }
+    }
+}
+
+/// **The pilot is told, on a frame that carries what he is being told about**
+/// (16b cut D.4, `B-22`), off a **running arena** and not a hand-built `Frame`.
+///
+/// Two seams meet here and neither has another test that drives it: `Arena::step`
+/// projects `EventKind::Receiver` into `FrameNotice::Receiver` for the platform
+/// that crossed the edge (`Arena::stage_pilot_notice`), and `Arena::frames` fills
+/// `Frame::receiver` from `UnitState::receiver`. Everything else that mentions a
+/// receiver reads the pass's journal or builds the frame by hand, so without this
+/// the whole pilot-facing half of `B-22` could be deleted and stay green.
+///
+/// Half-second pulses, so no one pulse can hold both crossings: the frame that
+/// says `Receiver degraded` carries the numbers, and the frame that says
+/// `Receiver clear.` carries `None`.
+#[test]
+fn d4_the_frame_that_tells_the_pilot_carries_the_receiver_it_is_telling_him_about() {
+    let catalog = ecm_catalog();
+    let mut arena = jam_field(
+        &catalog,
+        content::LINE_TANK,
+        OUTSIDE_CELL,
+        MARK_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    let mut wall = 0_i64;
+    let mut told: Vec<(bool, Option<tacsim::arena::perception::Receiver>)> = Vec::new();
+
+    // Outside the bubble: nothing to say.
+    drive_receiver(&mut arena, &mut wall, 4, &mut told);
+    assert!(told.is_empty(), "a clean drive told the pilot something");
+
+    // In: one notice, on a frame carrying the fold's own numbers.
+    put(&mut arena, RED, WATCH_CELL);
+    drive_receiver(&mut arena, &mut wall, 4, &mut told);
+    assert_eq!(
+        told,
+        vec![(
+            true,
+            Some(tacsim::arena::perception::Receiver {
+                budget: 40 - JAM_ATTENUATION_COST,
+                budget_max: 40,
+                reach_permille: u16::try_from(JAM_SIGNATURE_PERMILLE).unwrap_or(0),
+            })
+        )],
+        "the degraded frame did not carry the platform's own receiver"
+    );
+    assert_eq!(
+        told.first().and_then(|(_, receiver)| *receiver),
+        receiver_of(&arena, RED),
+        "the frame's receiver is not the unit's"
+    );
+
+    // And out: one notice the other way, on a frame carrying nothing.
+    put(&mut arena, RED, OUTSIDE_CELL);
+    drive_receiver(&mut arena, &mut wall, 4, &mut told);
+    assert_eq!(
+        told.get(1)
+            .map(|(degraded, receiver)| (*degraded, *receiver)),
+        Some((false, None)),
+        "leaving the bubble: {told:?}"
+    );
+    assert_eq!(
+        told.len(),
+        2,
+        "the edge was crossed more than twice: {told:?}"
+    );
+    assert_eq!(receiver_of(&arena, RED), None);
+}
+
+#[test]
+fn d4_the_edge_of_a_bubble_is_one_line_in_and_one_line_out() {
+    let catalog = ecm_catalog();
+    // The observer starts outside the pod's reach, at [`OUTSIDE_CELL`].
+    let mut arena = jam_field(
+        &catalog,
+        content::LINE_TANK,
+        OUTSIDE_CELL,
+        MARK_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    let (_, clean) = receiver_pass(&mut arena, RED, 1, 0);
+    assert!(
+        receiver_lines(&clean).is_empty(),
+        "a clean pass journalled a receiver line"
+    );
+    assert_eq!(receiver_of(&arena, RED), None, "an unjammed platform");
+
+    // Into the bubble: one line, and the numbers are the fold's own.
+    put(&mut arena, RED, WATCH_CELL);
+    let (_, entering) = receiver_pass(&mut arena, RED, 2, 1_000);
+    assert_eq!(
+        receiver_lines(&entering),
+        vec![(1_000, true)],
+        "the transition is one line at the pass's own timestamp"
+    );
+    assert_eq!(
+        receiver_of(&arena, RED),
+        Some(tacsim::arena::perception::Receiver {
+            // 40 of the Mk1 sight's budget less the pod's 25.
+            budget: 40 - JAM_ATTENUATION_COST,
+            budget_max: 40,
+            reach_permille: u16::try_from(JAM_SIGNATURE_PERMILLE).unwrap_or(0),
+        })
+    );
+
+    // Deeper into the same bubble: the numbers do not move, so nothing is said.
+    put(&mut arena, RED, NEAR_CELL);
+    let (_, inside) = receiver_pass(&mut arena, RED, 3, 2_000);
+    assert!(
+        receiver_lines(&inside).is_empty(),
+        "moving inside one bubble said something"
+    );
+
+    // And out again: one line the other way.
+    put(&mut arena, RED, OUTSIDE_CELL);
+    let (_, leaving) = receiver_pass(&mut arena, RED, 4, 3_000);
+    assert_eq!(receiver_lines(&leaving), vec![(3_000, false)]);
+    assert_eq!(receiver_of(&arena, RED), None);
+}
+
+#[test]
+fn d4_two_stacked_pods_move_the_numbers_and_say_nothing() {
+    let catalog = ecm_catalog();
+    let mut arena = jam_field(
+        &catalog,
+        content::LINE_TANK,
+        WATCH_CELL,
+        MARK_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    let (one_pod, first) = receiver_pass(&mut arena, RED, 1, 0);
+    assert_eq!(receiver_lines(&first), vec![(0, true)]);
+    let one = receiver_of(&arena, RED).unwrap_or_else(|| panic!("one pod is a fold"));
+
+    // The second pod is the target's own hull, parked in the cell beside the
+    // first — the spatial index holds one occupant a cell, so two emitters have
+    // to stand in two of them. The costs sum and the factors multiply, so the
+    // observer reads deeper.
+    let pod = arena.unit(POD).and_then(|pod| pod.jammer);
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.jammer = pod;
+        state.power = Power::Online;
+    }
+    put(&mut arena, BLUE, (POD_CELL.0 - 1, POD_CELL.1));
+    let (two_pods, second) = receiver_pass(&mut arena, RED, 2, 1_000);
+    assert!(
+        receiver_lines(&second).is_empty(),
+        "a change of degree inside a bubble is not a transition"
+    );
+    let two = receiver_of(&arena, RED).unwrap_or_else(|| panic!("two pods are a fold"));
+    assert_ne!(
+        two, one,
+        "two stacked pods read the same as one: the numbers are a monotone read of \
+         the fold and this is the declared limit under 16c section 5 Q17"
+    );
+    assert!(two.budget < one.budget && two.reach_permille < one.reach_permille);
+    assert_eq!(
+        two.budget_max, one.budget_max,
+        "the sight itself did not move"
+    );
+    // The scan looked at more units, because there are more of them in reach —
+    // and it still ran exactly once a pass.
+    assert!(two_pods.jam_checks >= one_pod.jam_checks);
+}
+
+#[test]
+fn d4_reading_the_receiver_moved_no_perception_counter() {
+    // The very numbers X.4 and X.5 pinned, re-asserted here: the fold is carried
+    // out of `Arena::detections` rather than made a second time, so `jamming_at`
+    // still runs once a pass and `jam_checks` is what it was.
+    let catalog = ecm_catalog();
+    let belt = [(8_u16, 4_u16, woods())];
+    let mut arena = jam_field(
+        &catalog,
+        content::LINE_TANK_ECM,
+        WATCH_CELL,
+        NEAR_CELL,
+        None,
+        &belt,
+    );
+    let (counters, _) = receiver_pass(&mut arena, RED, 1, 0);
+    assert_eq!(
+        counters.jam_checks, 2,
+        "X.4 pinned two: the observer inside its own bubble and the target four cells out"
+    );
+    assert_eq!(counters.candidates, 1);
+    assert_eq!(counters.traces, 1);
+
+    // And a field with no pod on it never scans at all, receiver or no receiver.
+    let mut stock = jam_field(
+        &catalog,
+        content::LINE_TANK,
+        WATCH_CELL,
+        MARK_CELL,
+        None,
+        &[],
+    );
+    let (bare, journal) = receiver_pass(&mut stock, RED, 1, 0);
+    assert_eq!(bare.jam_checks, 0);
+    assert!(receiver_lines(&journal).is_empty());
+    assert_eq!(receiver_of(&stock, RED), None);
+}
+
+#[test]
+fn d4_a_filter_that_answers_the_whole_bubble_leaves_the_receiver_clean() {
+    let catalog = pod_and_filter_catalog();
+    // A partly recovering filter: the shipped Mk1 filter against the shipped Mk1
+    // pod, which recovers some of both terms and not all of either.
+    let mut partly = jam_field(
+        &catalog,
+        content::LINE_TANK_ECCM,
+        WATCH_CELL,
+        MARK_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    let (_, journal) = receiver_pass(&mut partly, RED, 1, 0);
+    assert_eq!(receiver_lines(&journal), vec![(0, true)]);
+    let recovered = receiver_of(&partly, RED).unwrap_or_else(|| panic!("a partial recovery"));
+    let filter = authored_filter();
+    assert_eq!(
+        recovered,
+        tacsim::arena::perception::Receiver {
+            budget: 40_u8
+                .saturating_sub(JAM_ATTENUATION_COST.saturating_sub(filter.attenuation_recovery)),
+            budget_max: 40,
+            reach_permille: u16::try_from(
+                JAM_SIGNATURE_PERMILLE.saturating_add(filter.signature_recovery_permille)
+            )
+            .unwrap_or(0),
+        },
+        "the receiver reads the RECOVERED fold and not the raw one"
+    );
+
+    // A filter rated past the whole bubble: the pass is the unjammed pass to the
+    // centimetre, so the receiver is not degraded and nothing is said.
+    let mut whole = jam_field(
+        &catalog,
+        content::LINE_TANK_ECCM,
+        WATCH_CELL,
+        MARK_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    if let Some(state) = whole.unit_mut(RED) {
+        state.eccm = Some(tacsim::arena::perception::Eccm {
+            attenuation_recovery: u8::MAX,
+            signature_recovery_permille: tacsim::arena::perception::FULL_SIGNATURE_PERMILLE,
+        });
+    }
+    let (_, silent) = receiver_pass(&mut whole, RED, 1, 0);
+    assert!(
+        receiver_lines(&silent).is_empty(),
+        "a platform that answered the whole bubble was told it was jammed"
+    );
+    assert_eq!(receiver_of(&whole, RED), None);
+}
+
+#[test]
+fn d4_a_pass_that_does_not_run_turns_the_receiver_off_in_silence() {
+    let catalog = ecm_catalog();
+    let mut arena = jam_field(
+        &catalog,
+        content::LINE_TANK,
+        WATCH_CELL,
+        MARK_CELL,
+        Some(POD_CELL),
+        &[],
+    );
+    let (_, first) = receiver_pass(&mut arena, RED, 1, 0);
+    assert_eq!(receiver_lines(&first), vec![(0, true)]);
+    assert!(receiver_of(&arena, RED).is_some());
+
+    // The tank is destroyed while degraded, **through the engine's own
+    // `destroy_unit`** and not by setting the flag by hand: that is the call the
+    // arena makes, and it is the call that takes this unit's sensor pass off the
+    // due heap for good. Nothing is ever going to run a pass for this hull again,
+    // so the receiver has to go off where the sight does.
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    arena.destroy_unit(RED, 500, None, &mut journal);
+    assert!(
+        receiver_lines(&journal).is_empty(),
+        "a wreck was told its receiver was clear"
+    );
+    assert_eq!(
+        receiver_of(&arena, RED),
+        None,
+        "the wreck kept the reading its last live pass took"
+    );
+    assert!(
+        !arena.due.iter().any(|event| matches!(
+            event.kind,
+            tacsim::arena::state::DueKind::SensorPass { unit, .. } if unit == RED
+        )),
+        "the wreck still has a pass scheduled, so this property is about the wrong call"
+    );
+
+    // And the pass that does not run — this one cannot be scheduled any more, so
+    // it is driven by hand — writes `None` in the same silence.
+    let (_, wrecked) = receiver_pass(&mut arena, RED, 2, 1_000);
+    assert!(
+        receiver_lines(&wrecked).is_empty(),
+        "a wreck was told its receiver was clear"
+    );
+    assert_eq!(
+        receiver_of(&arena, RED),
+        None,
+        "the receiver is off, and the state moved silently"
+    );
+}
+
+/// **The receiver's two lines are one list at three cadences** (16b section 11's
+/// mandatory cross-tempo test for 16b cut D.4, `B-22`; doc 16 section 3.1 "Rate
+/// independence").
+///
+/// The same seated tank driving through X.4's bubble and out the far side, at
+/// 5,000, 1,000 and 500 ms. Both of the things this cut added to that drive are
+/// functions of where the tank stood when its pass ran: the `receiver` ledger
+/// line, and `UnitState::receiver` itself, which is folded into the state hash —
+/// so a cadence that ran the pass half a pulse later would journal the
+/// transition at a different arena millisecond and diverge on the hash a substep
+/// after that. [`q6_three_cadences`] compares both.
+#[test]
+fn d4_one_scripted_drive_through_a_bubble_journals_the_receiver_at_three_cadences() {
+    let catalog = ecm_catalog();
+    let script = q6_bubble_script();
+    let first = q6_three_cadences(
+        "d4 receiver",
+        60_000,
+        || q6_bubble_arena(&catalog, content::LINE_TANK),
+        &script,
+    );
+
+    let lines = first.lines("receiver", &["\"unit\":4"]);
+    assert_eq!(
+        lines.len(),
+        2,
+        "the drive did not cross the edge exactly twice: {lines:?}"
+    );
+    let (Some((into_ms, into)), Some((out_ms, out))) = (lines.first(), lines.get(1)) else {
+        panic!("two crossings");
+    };
+    assert!(
+        into.contains("\"degraded\":true"),
+        "the first crossing is into the bubble: {into}"
+    );
+    assert!(
+        out.contains("\"degraded\":false"),
+        "and the second is out of it: {out}"
+    );
+    assert!(into_ms < out_ms, "in at {into_ms}, out at {out_ms}");
+    // Nothing on the line places the pod or names it: the record may carry the
+    // platform, and the pilot's own notice carries neither.
+    for (_, json) in &lines {
+        for leak in ["\"x\"", "\"y\"", "cell", "bearing", "team", "\"target\""] {
+            assert!(
+                !json.contains(leak),
+                "a receiver line carried {leak}: {json}"
+            );
+        }
+    }
+
+    // **And the pilot's half of `B-22`**, which the ledger cannot speak for: the
+    // seated pilot of the tank that made the drive was staged the two notices, in
+    // that order and once each. `q6_three_cadences` has already compared this
+    // very list across the three cadences, so the assertion below holds at all
+    // three.
+    let pilot = mush_core::ObjId(1_000);
+    let staged = first
+        .notices
+        .get(&pilot)
+        .cloned()
+        .unwrap_or_else(|| panic!("the seated pilot was staged nothing at all"));
+    let receiver_staged: Vec<FrameNotice> = staged
+        .iter()
+        .filter(|notice| matches!(notice, FrameNotice::Receiver { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(
+        receiver_staged,
+        vec![
+            FrameNotice::Receiver { degraded: true },
+            FrameNotice::Receiver { degraded: false }
+        ],
+        "the pilot's own receiver notices: {staged:?}"
+    );
+    // Nobody else's pilot was staged one: the notice is the platform's own and
+    // goes to its own seat alone.
+    for (seat, theirs) in &first.notices {
+        assert!(
+            *seat == pilot
+                || !theirs
+                    .iter()
+                    .any(|notice| matches!(notice, FrameNotice::Receiver { .. })),
+            "pilot {seat:?} was told about somebody else's receiver: {theirs:?}"
+        );
+    }
+    // And what the pilot actually read for them, in order: the two sentences,
+    // off a running arena and not a hand-built notice.
+    let said = first
+        .lines
+        .get(&pilot)
+        .cloned()
+        .unwrap_or_else(|| panic!("the seated pilot read nothing at all"));
+    let receiver_said: Vec<&str> = said
+        .iter()
+        .map(String::as_str)
+        .filter(|line| *line == cockpit::RECEIVER_DEGRADED || *line == cockpit::RECEIVER_CLEAR)
+        .collect();
+    assert_eq!(
+        receiver_said,
+        vec![cockpit::RECEIVER_DEGRADED, cockpit::RECEIVER_CLEAR],
+        "the pilot's own receiver lines: {said:?}"
+    );
+    // The sentence itself carries no source: no side, no cell, no bearing, no
+    // object number and no designator.
+    for line in receiver_said {
+        for leak in ["red", "blue", "bearing", "cell", "#", "X1", "BA"] {
+            assert!(
+                !line.contains(leak),
+                "the receiver sentence carried {leak}: {line}"
+            );
+        }
+    }
 }

@@ -1111,6 +1111,21 @@ pub struct UnitState {
     /// It matters only to **this** unit's own pass: a filter is carried by the
     /// observer and recovers nothing for anybody standing beside it.
     pub eccm: Option<Eccm>,
+    /// **What this platform's last sensor pass ran under** (16b cut D.4, `B-22`;
+    /// 16c §5 Q17), or `None` for a receiver that is clean — or off. See
+    /// [`Receiver`] for the three `None`s and the two declared limits.
+    ///
+    /// Written by [`Arena::sensor_pass`] alone, at the pass's own arena
+    /// timestamp, from the fold `Arena::detections` already made. It is read by
+    /// the frame and by the notice and by nothing else: no rule of the arena
+    /// decides anything by it.
+    ///
+    /// Unlike `jammer` and `eccm` beside it, it **is** folded into
+    /// [`crate::arena::hash::state_hash`]: those are facts about the unit's fit
+    /// that never move, and this is state that persists between passes, decides a
+    /// notice, and can move with no ledger line of its own (a pass that stops
+    /// running writes `None` silently).
+    pub receiver: Option<crate::arena::perception::Receiver>,
     /// What it shoots with — the definition rows, in component order.
     ///
     /// **16b cut W.2 made it mutable in one way and one only**: doc 16 §3.3's
@@ -1536,6 +1551,28 @@ pub struct ShadowContact {
     /// It is **not** [`OwnSighting::condition`]: this one may be a teammate's,
     /// and only this platform's own may be put back on the mesh.
     pub seen_condition: Option<crate::arena::condition::Reading>,
+    /// **This hold was opened under a provisional number** (16b cut D.4, `B-21`).
+    ///
+    /// `true` at exactly one site — the `None` arm of [`Arena::sensor_pass`], with
+    /// `[tacsim.sensors].designate_on_detection` off, where
+    /// `Designators::assign` issues or re-uses the number — and never written
+    /// again for the life of the row. `false` for a mesh arrival
+    /// ([`Arena::share_pass`]'s insert) and in [`ShadowContact::sighted`]'s own
+    /// default.
+    ///
+    /// It exists because the designator **book** is permanent and a hold is not.
+    /// `Classified`'s `was` used to read the book, so a target this platform
+    /// numbered in an earlier hold, lost, and then received over the mesh printed
+    /// `New contact BA: …` and at once `Contact X2 identified: BA, blue.` — a
+    /// rename of a row the pilot is not looking at. Read off the hold, a mesh
+    /// arrival says nothing after its acquisition and a row this platform's own
+    /// sensors opened still says the rename.
+    ///
+    /// It **is** folded into [`crate::arena::hash::state_hash`], because it moves
+    /// with no distinguishable ledger event: a mesh `detected` and a sensor
+    /// `detected` are byte for byte the same line, which is the argument cut Q.1
+    /// made for the book itself.
+    pub numbered: bool,
 }
 
 /// **One platform's own sighting of a target** (16b cut F.3): the moment, and
@@ -1590,6 +1627,11 @@ impl ShadowContact {
                 condition: None,
             }),
             seen_condition: None,
+            // **16b cut D.4**: the constructor says nothing about the book, and
+            // the one site that issues a number sets it. A fixture that builds a
+            // contact by hand is therefore a hold with no number behind it, which
+            // is the honest default.
+            numbered: false,
         }
     }
 
@@ -2724,6 +2766,10 @@ impl Arena {
                 thermal,
                 jammer,
                 eccm,
+                // **16b cut D.4**: a unit checks out with a clean receiver and
+                // learns otherwise at its first pass. There is no notice for it:
+                // the transition is what is said, and there has been none.
+                receiver: None,
                 // 16b cut W.1: the two live cells, one row per weapon, laid down
                 // here so that every later lookup is a read of a complete table.
                 // A weapon id declared twice on one unit keeps one row, which is

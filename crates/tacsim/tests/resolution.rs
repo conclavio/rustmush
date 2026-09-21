@@ -1044,10 +1044,16 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
         plot.range_cm,
         tacsim::match_::cockpit::CONTACT_RANGE_STEP_M,
     );
-    let fine = tacsim::match_::cockpit::range_m_rounded(
-        plot.range_cm,
+    // **16b cut D.4** (`T-20`): the lock's step is derived from the plot's own
+    // age, and this frame's plot is fresh, so it is the floor.
+    let fine_step = tacsim::match_::cockpit::lock_range_step_m(plot.age_ms);
+    assert_eq!(
+        fine_step,
         tacsim::match_::cockpit::LOCK_RANGE_STEP_M,
+        "a plot this fresh earns the floor: {} ms",
+        plot.age_ms
     );
+    let fine = tacsim::match_::cockpit::range_m_rounded(plot.range_cm, fine_step);
     assert_ne!(
         coarse, fine,
         "the fixture was chosen so the finer step is visible: {} cm",
@@ -1140,9 +1146,21 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
     // sentence of its own: a plot older than one sensor pass says how old it is.
     let mut stale = held_row.clone();
     stale.age_ms = 4_200;
+    // **16b cut D.4** (`T-20`): a four-second plot cannot carry ten metres — the
+    // target could have moved seventy — so the lock's step is the scope's own by
+    // the time the clause is printed. The clause and the step are two readings of
+    // the same age, which is the point of deriving the step from it.
+    let stale_metres = tacsim::match_::cockpit::range_m_rounded(
+        plot.range_cm,
+        tacsim::match_::cockpit::lock_range_step_m(stale.age_ms),
+    );
+    assert_eq!(
+        stale_metres, coarse,
+        "a four-second lock reads like the scope"
+    );
     assert_eq!(
         tacsim::match_::cockpit::range_line(&frame, &stale, 1_000),
-        format!("Range to {designator}: {fine} m, plotted 4 s ago.")
+        format!("Range to {designator}: {stale_metres} m, plotted 4 s ago.")
     );
     assert_eq!(
         tacsim::match_::cockpit::bearing_line(&stale, 1_000),
@@ -1153,7 +1171,7 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
     );
     assert_eq!(
         tacsim::match_::cockpit::range_line(&frame, &stale, 5_000),
-        format!("Range to {designator}: {fine} m."),
+        format!("Range to {designator}: {stale_metres} m."),
         "a plot inside the pass it was taken in says nothing about its age"
     );
 
@@ -1655,10 +1673,13 @@ fn the_armour_floors_the_overflow_reaches_the_internals_and_the_wreck_is_one_pla
         EventKind::SectionDestroyed {
             unit,
             section,
+            by,
             consequences,
         } => {
             assert_eq!(unit, BLUE);
             assert_eq!(section, "hull");
+            // 16b cut D.4 (`T-08`): the round that did it is on the line.
+            assert_eq!(by, Some(RED));
             assert_eq!(consequences, vec![SmolStr::new("destroy_unit")]);
         }
         other => panic!("not a section: {other:?}"),
@@ -1812,7 +1833,7 @@ fn a_turret_shot_off_takes_the_weapons_and_an_immobile_disarmed_tank_is_disabled
     // Now take its engine out, which is what makes it disabled.
     let mut journal = Vec::new();
     let now = arena.now_ms;
-    arena.apply_consequence(BLUE, &Consequence::DisableMotion, now, &mut journal);
+    arena.apply_consequence(BLUE, &Consequence::DisableMotion, now, None, &mut journal);
     arena.settle_disabled(BLUE, now, &mut journal);
     assert_eq!(arena.unit(BLUE).map(|state| state.disabled), Some(true));
     assert!(
@@ -1839,7 +1860,7 @@ fn team_elimination_ends_the_match_with_the_winner() {
     // match ends.
     let mut journal = Vec::new();
     let now = arena.now_ms;
-    arena.destroy_unit(BLUE, now, &mut journal);
+    arena.destroy_unit(BLUE, now, None, &mut journal);
     assert_eq!(arena.eliminated(), Some(Some(Team::Red)));
     let out = pulse(&mut arena, wall + 500, &[], &mut bytes);
     let end = out.ended.unwrap_or_else(|| panic!("the match ended"));
@@ -1864,8 +1885,8 @@ fn team_elimination_ends_the_match_with_the_winner() {
     // A match whose last two units die together is a draw and not a red win.
     let mut arena = duel();
     let mut journal = Vec::new();
-    arena.destroy_unit(RED, 0, &mut journal);
-    arena.destroy_unit(BLUE, 0, &mut journal);
+    arena.destroy_unit(RED, 0, None, &mut journal);
+    arena.destroy_unit(BLUE, 0, None, &mut journal);
     assert_eq!(arena.eliminated(), Some(None));
 }
 
@@ -3498,7 +3519,7 @@ fn the_returned_units_carry_their_cells_their_poses_and_their_outcomes() {
     if let Some(state) = arena.unit_mut(BLUE) {
         state.ammo.insert(SmolStr::new("cannon"), 12);
     }
-    arena.destroy_unit(BLUE, 1_000, &mut journal);
+    arena.destroy_unit(BLUE, 1_000, None, &mut journal);
     let returned: Vec<UnitReturn> = arena.returned_units();
     assert_eq!(returned.len(), 2);
     let red = returned
@@ -5132,4 +5153,74 @@ fn d2_an_unidentified_gunner_reads_the_same_rounds_on_a_spent_and_a_live_target(
         fresh.notices.get(&BLUE_PILOT),
         "the victim read the same thing either way"
     );
+}
+
+/// **The shooter rides the two destruction lines, at three cadences** (16b
+/// section 11's mandatory cross-tempo test for 16b cut D.4, `T-08`; doc 16
+/// section 3.1 "Rate independence", section 4).
+///
+/// The same scripted duel the engagement property runs, read for the thing this
+/// cut moved: `section_destroyed` and `unit_destroyed` now carry `by`, and the
+/// gunner's two lines are staged off it instead of off whichever impact the
+/// substep's scratch happened to be holding. Both are facts of arena time — the
+/// round resolves at its own due event inside a substep — so the three cadences
+/// have to agree on one event list, one per-substep hash sequence and one
+/// ordered list of lines per pilot.
+#[test]
+fn d4_one_scripted_duel_carries_the_shooter_on_its_ledger_at_three_cadences() {
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = scripted_arena();
+        runs.push((cadence, replay(&mut arena, cadence, 45_000, &script())));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+
+    // The run is worth comparing: it takes a section off and finishes the tank.
+    let carried = |kind: &str| -> Vec<String> {
+        first
+            .events
+            .iter()
+            .filter(|(_, json, _, _)| json.contains(&format!("\"kind\":\"{kind}\"")))
+            .map(|(_, json, _, _)| json.clone())
+            .collect()
+    };
+    let sections = carried("section_destroyed");
+    let units = carried("unit_destroyed");
+    assert_eq!(sections.len(), 1, "one section went: {sections:?}");
+    assert_eq!(units.len(), 1, "and the tank with it: {units:?}");
+    for json in sections.iter().chain(units.iter()) {
+        assert!(
+            json.contains(&format!("\"by\":{}", RED.0)),
+            "the shooter is not on the line: {json}"
+        );
+    }
+    // And the gunner read both of his lines off it.
+    let told = first.notices.get(&RED_PILOT).cloned().unwrap_or_default();
+    assert!(
+        told.iter().any(|line| line.ends_with("destroyed.")),
+        "the gunner was told nothing about the kill: {told:?}"
+    );
+
+    // The guard the sibling tests carry, and then the three equalities.
+    let counts: Vec<u32> = runs.iter().map(|(_, run)| run.pulses).collect();
+    assert!(
+        counts.windows(2).all(|pair| pair.first() != pair.get(1)),
+        "the three replays ran the same number of pulses: {counts:?}"
+    );
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.notices, first.notices,
+            "the pilots' lines differ at {cadence} ms"
+        );
+    }
 }

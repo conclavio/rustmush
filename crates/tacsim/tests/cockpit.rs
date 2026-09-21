@@ -2302,6 +2302,12 @@ mod fixture {
             // would have kept the goldens still and would be a sensor the game
             // cannot field.
             sight_cm: 60_000,
+            // **16b cut D.4**: the fixture's pilot stands in no bubble, so its
+            // own receiver is clean and the payload's `receiver` key is `null`.
+            // The README's rule is that the scene never carries a value the
+            // server does not send, and a degraded receiver would have put a
+            // second `STATUS` line and a fourth panel row into every golden.
+            receiver: None,
             contacts: vec![
                 // Classified hostile, read two seconds ago, and the lock.
                 FrameContact {
@@ -3942,4 +3948,327 @@ async fn d3_exit_says_one_line_to_the_pilot_and_one_to_the_room() {
         !theirs.contains("You climb out of"),
         "the room read the pilot's own line: {theirs}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut D.4 — a lock's range is as fine as the plot allows, and a pilot reads
+// their own receiver (`T-20`, `B-20`, `B-22`)
+// ---------------------------------------------------------------------------
+
+/// **The step a lock's range is rounded to, by the age of the plot it is read
+/// off** (16b cut D.4, `T-20`; 16c section 5 Q28).
+///
+/// The table, at the two ends and at both sides of each boundary the formula
+/// has: the floor a fresh plot keeps, the millisecond it stops keeping it, the
+/// one- and two-second plots, the ceiling and the millisecond it is reached at,
+/// a plot far past it, and a negative age — which nothing produces and which
+/// must not underflow into a fifty-metre step.
+#[test]
+fn d4_the_lock_range_step_is_the_drift_of_the_plot_rounded_up_to_ten() {
+    for (age_ms, step) in [
+        (0_i64, 10_u64),
+        (647, 10),
+        (648, 20),
+        (1_000, 20),
+        (2_000, 40),
+        (2_999, 50),
+        (3_000, 50),
+        (60_000, 50),
+        (-1_000, 10),
+    ] {
+        assert_eq!(
+            cockpit::lock_range_step_m(age_ms),
+            step,
+            "a plot {age_ms} ms old"
+        );
+    }
+    // The two ends are the two constants, so the floor and the ceiling are the
+    // named ones and not numbers that happen to coincide with them.
+    assert_eq!(cockpit::lock_range_step_m(0), cockpit::LOCK_RANGE_STEP_M);
+    assert_eq!(
+        cockpit::lock_range_step_m(i64::MAX),
+        cockpit::CONTACT_RANGE_STEP_M
+    );
+    assert_eq!(cockpit::PLOT_DRIFT_M_PER_S, 17);
+}
+
+/// **The lock's range is the plot's own age against the plot's own range** (16b
+/// cut D.4, `T-20`), and the step is derivable from what the pilot already
+/// holds — which is the whole defence of reading the plot's age.
+///
+/// Over the **raw frame JSON**: the row's `age_ms` is the only input
+/// `lock_range_step_m` has, so the step publishes nothing the pilot has not
+/// already been sent — not the tempo, not `sensors.pass_ms`, not anything else.
+/// `lock_range_m` is then that step against the centimetres the same row was
+/// built from, and `RANGE` prints the same number off the same function.
+///
+/// The **metres** are the one thing a client must not recompute, and the last
+/// block says why: the row's own `range_m` is already rounded to the scope's
+/// 50 m, so re-rounding it to the lock's step gives the coarse figure back. That
+/// is exactly the two-distances-for-one-lock defect `T-20` exists to forbid,
+/// and the frame forbids it by publishing `lock_range_m` itself.
+///
+/// Read for a fresh plot and for two stale ones, because they take different
+/// branches of the clamp.
+#[test]
+fn d4_the_locks_range_reads_the_plots_own_age_and_is_published_not_recomputed() {
+    for age_ms in [0_i64, 1_200, 4_000] {
+        let mut frame = fixture::frame();
+        if let Some(held) = frame.contacts.first_mut() {
+            held.age_ms = age_ms;
+        }
+        let payload = cockpit::status_frame(fixture::MATCH, &frame);
+        let row = payload
+            .get("contacts")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rows| rows.first())
+            .cloned()
+            .unwrap_or_else(|| panic!("the locked contact's own row: {payload}"));
+        // Everything below comes off the JSON the pilot was sent.
+        let wire_age = row
+            .get("age_ms")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or_else(|| panic!("the row's age: {row}"));
+        let wire_metres = row
+            .get("range_m")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("the row's range: {row}"));
+        assert_eq!(wire_age, age_ms);
+        // The step comes off the wire; the centimetres are the row's own, which
+        // is what `status_frame` itself rounds.
+        let derived = cockpit::range_m_rounded(
+            frame
+                .contacts
+                .first()
+                .map(|held| held.range_cm)
+                .unwrap_or_default(),
+            cockpit::lock_range_step_m(wire_age),
+        );
+        assert_eq!(
+            payload
+                .get("lock_range_m")
+                .and_then(serde_json::Value::as_u64),
+            Some(derived),
+            "the lock's range is not the plot's own age against its own range: {payload}"
+        );
+        // The row's own metres are the scope's coarse figure, locked row or not.
+        assert_eq!(wire_metres % cockpit::CONTACT_RANGE_STEP_M, 0);
+
+        // And `RANGE` says the same number: one function, so the verb, the frame
+        // and the two panels' lock lines cannot give two distances.
+        let rows = cockpit::frame_contacts(&frame);
+        let locked = rows
+            .iter()
+            .find(|row| Some(row.id) == frame.lock)
+            .cloned()
+            .unwrap_or_else(|| panic!("the locked row"));
+        assert!(
+            cockpit::range_line(&frame, &locked, 1_000).contains(&format!(": {derived} m")),
+            "{}",
+            cockpit::range_line(&frame, &locked, 1_000)
+        );
+    }
+
+    // And the hazard, named: a client that rebuilt the lock's metres out of the
+    // row's own `range_m` would draw a second distance for one lock. On the
+    // shared scene's 1,200 ms plot the row publishes 450 m, the lock publishes
+    // 440, and re-rounding 450 to the 20 m step the same row's age asks for
+    // gives 460 — three figures for one contact. That is why the metres are
+    // published once and never recomputed.
+    let frame = fixture::frame();
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    let coarse = payload
+        .get("contacts")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|rows| rows.first())
+        .and_then(|row| row.get("range_m"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_else(|| panic!("the locked row's coarse metres: {payload}"));
+    assert_eq!(coarse, 450);
+    assert_eq!(
+        payload
+            .get("lock_range_m")
+            .and_then(serde_json::Value::as_u64),
+        Some(440)
+    );
+    assert_eq!(
+        cockpit::range_m_rounded(
+            coarse.saturating_mul(100),
+            cockpit::lock_range_step_m(1_200)
+        ),
+        460,
+        "the coarse metres re-rounded to the lock's own step are a third figure"
+    );
+}
+
+/// **The canonical scene's lock line moves, and by exactly one step** (16b cut
+/// D.4, `T-20`): `BA` stands at 43,000 cm on a plot 1,200 ms old, which is 20 m
+/// of drift and therefore a 20 m step, and 430 rounds half up to 440.
+///
+/// It is pinned here as well as in the goldens because the goldens are text and
+/// this is the arithmetic behind the one line of them that moved.
+#[test]
+fn d4_the_shared_scenes_lock_reads_four_hundred_and_forty_metres() {
+    let frame = fixture::frame();
+    let held = frame
+        .contacts
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("the scene's lock"));
+    assert_eq!((held.range_cm, held.age_ms), (43_000, 1_200));
+    assert_eq!(cockpit::lock_range_step_m(held.age_ms), 20);
+    assert_eq!(
+        cockpit::status_frame(fixture::MATCH, &frame)
+            .get("lock_range_m")
+            .and_then(serde_json::Value::as_u64),
+        Some(440)
+    );
+}
+
+/// **The canonical scene's pilot stands in no bubble** (16b cut D.4, `B-22`), so
+/// the payload's new key is present and `null` — a panel that reads it has to be
+/// able to tell "clean" from "this server does not send it".
+#[test]
+fn d4_the_frame_carries_a_receiver_key_and_the_clean_scene_is_null() {
+    let frame = fixture::frame();
+    assert_eq!(frame.receiver, None);
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    assert_eq!(
+        payload.get("receiver"),
+        Some(&serde_json::Value::Null),
+        "the key is missing rather than null: {payload}"
+    );
+
+    // With a fold on it: three integers and nothing else at all.
+    let mut jammed = frame.clone();
+    jammed.receiver = Some(tacsim::arena::perception::Receiver {
+        budget: 15,
+        budget_max: 40,
+        reach_permille: 600,
+    });
+    assert!(
+        !frame.same_as(&jammed),
+        "a receiver that changed degree sent no frame"
+    );
+    let payload = cockpit::status_frame(fixture::MATCH, &jammed);
+    assert_eq!(
+        payload.get("receiver"),
+        Some(&serde_json::json!({
+            "budget": 15,
+            "budget_max": 40,
+            "reach_percent": 60,
+        })),
+        "{payload}"
+    );
+}
+
+/// **The three new sentences, verbatim** (16b cut D.4), through the one renderer
+/// every surface composes from.
+#[test]
+fn d4_the_new_sentences_are_these_sentences() {
+    use tacsim::arena::perception::{FrameNotice, Named, NoticeKind};
+    use tacsim::arena::state::{Classification, Designator, Team};
+
+    let frame = fixture::frame();
+    let rows = cockpit::frame_contacts(&frame);
+
+    // `B-20`: the regression, under both names.
+    let regressed = FrameNotice::Contact {
+        kind: NoticeKind::Unidentified,
+        contact: Named {
+            id: frame.lock.unwrap_or_else(|| panic!("the scene's lock")),
+            designator: Designator::Provisional(2),
+        },
+        class: Classification::Unknown,
+        was: Some(Designator::Slot {
+            team: Team::Blue,
+            slot: 1,
+        }),
+    };
+    assert_eq!(
+        cockpit::notice_line(&frame, &regressed, &rows),
+        "BA is unidentified again: X2."
+    );
+    assert_eq!(NoticeKind::Unidentified.as_str(), "unidentified");
+
+    // `B-22`: the pilot's own machine, both ways.
+    assert_eq!(
+        cockpit::notice_line(&frame, &FrameNotice::Receiver { degraded: true }, &rows),
+        "Receiver degraded: something is jamming the sight."
+    );
+    assert_eq!(
+        cockpit::notice_line(&frame, &FrameNotice::Receiver { degraded: false }, &rows),
+        "Receiver clear."
+    );
+    assert_eq!(
+        cockpit::RECEIVER_DEGRADED,
+        "Receiver degraded: something is jamming the sight."
+    );
+    assert_eq!(cockpit::RECEIVER_CLEAR, "Receiver clear.");
+    assert_eq!(NoticeKind::ReceiverDegraded.as_str(), "receiver_degraded");
+    assert_eq!(NoticeKind::ReceiverClear.as_str(), "receiver_clear");
+}
+
+/// **`STATUS`'s receiver line and `RANGE`'s step, through the real verbs** (16b
+/// cut D.4, `B-22` and `T-20`).
+///
+/// The line appears only for a platform whose own last pass ran under
+/// interference, it sits after the heat line, and it carries the platform's own
+/// three integers and nothing whatever about the emitter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d4_status_prints_the_receiver_and_range_reads_the_plots_own_step() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let base = rig.held_frame(0);
+    let scene = fixture::frame();
+
+    // A clean receiver says nothing at all.
+    let mut frame = base.clone();
+    frame.contacts = scene.contacts.clone();
+    frame.lock = scene.lock;
+    frame.receiver = None;
+    rig.push_frame(0, frame.clone());
+    let said = rig.say(0, "status");
+    assert!(!said.contains("receiver"), "{said}");
+
+    // A degraded one is one line, after the heat line where there is one.
+    frame.receiver = Some(tacsim::arena::perception::Receiver {
+        budget: 15,
+        budget_max: 40,
+        reach_permille: 600,
+    });
+    rig.push_frame(0, frame.clone());
+    let said = rig.say(0, "status");
+    assert!(
+        said.contains("  receiver degraded: 15 of 40 through cover, 60% reach"),
+        "{said}"
+    );
+    // No source, no bearing, no side, no cell and no object number on it.
+    let line = said
+        .lines()
+        .find(|line| line.contains("receiver degraded"))
+        .unwrap_or_default()
+        .to_owned();
+    for leak in [
+        "BA", "RB", "X1", "bearing", "blue", "red", "#", "pod", "jammer",
+    ] {
+        assert!(
+            !line.contains(leak),
+            "the receiver line leaked {leak}: {line}"
+        );
+    }
+
+    // And `RANGE` on the lock reads the step the plot's own age allows. The
+    // scene's `BA` is 43,000 cm on a 1,200 ms plot: 20 m of drift, so 440 m.
+    let said = rig.say(0, "range ba");
+    assert!(said.contains("Range to BA: 440 m"), "{said}");
+
+    // A stale plot of the same contact reads at the scope's own step.
+    if let Some(held) = frame.contacts.first_mut() {
+        held.age_ms = 4_000;
+    }
+    rig.push_frame(0, frame);
+    let said = rig.say(0, "range ba");
+    assert!(said.contains("Range to BA: 450 m"), "{said}");
 }

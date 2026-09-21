@@ -220,6 +220,17 @@ pub struct Frame {
     /// pulse later, which is the rule every other `FIRE` refusal already follows
     /// (`crate::match_::cockpit`).
     pub heat: Option<FrameHeat>,
+    /// **What the platform's own receiver is running under** (16b cut D.4,
+    /// `B-22`; doc 16 §9 items 4 and 5), or `None` for a receiver that is clean —
+    /// or off.
+    ///
+    /// [`crate::arena::state::UnitState::receiver`] as its last pass left it. It
+    /// is a fact about the pilot's own machine, the same kind of thing
+    /// [`Frame::sections`], [`Frame::heat`] and [`Frame::sight_cm`] are, so it is
+    /// outside the observer rule entirely — and it carries no source, no bearing,
+    /// no side and no object number, which is what keeps it there. See
+    /// [`crate::arena::perception::Receiver`] for the two declared limits.
+    pub receiver: Option<crate::arena::perception::Receiver>,
 }
 
 /// **One facet's armour, as the pilot's own status block carries it** (16b cut
@@ -331,6 +342,10 @@ impl Frame {
             && self.scan_tables == other.scan_tables
             && self.lock == other.lock
             && self.heat == other.heat
+            // **16b cut D.4**: `STATUS` prints it and a panel draws it, so a
+            // receiver that changed degree inside one bubble — which journals
+            // nothing and says nothing — still sends the pilot the numbers.
+            && self.receiver == other.receiver
             // **16b cut F.2**: the damage surface is compared, so a round that
             // came off the armour sends a frame. It is the cheapest comparison on
             // this list after the integers — a handful of small structs per pilot
@@ -1060,13 +1075,24 @@ impl Arena {
         let hash = state_hash(self);
         self.substep_hashes.push(hash);
         let mut refused = false;
-        // **16b cut F.2**: which impact is being resolved. `EventKind::Miss`
-        // carries the shot's sequence and no shooter — and it may not gain one,
-        // because that would change the bytes of every `miss` line ever written —
-        // but `EventKind::Impact` immediately precedes exactly one `hit` or `miss`
-        // for the same shot and carries both. So the scan reads the impact and the
-        // outcome as the pair they are, which is also how a reader of the black
-        // box has always had to read them.
+        // **16b cut F.2, narrowed by 16b cut D.4 (`T-08`)**: which impact is being
+        // resolved, and it now serves `EventKind::Miss` **alone**.
+        //
+        // A `miss` line carries the shot's sequence and no shooter, and it may not
+        // gain one: that would change the bytes of every `miss` line ever written.
+        // But `EventKind::Impact` immediately precedes exactly one `hit` or `miss`
+        // for the same shot and carries both, so the scan reads the impact and its
+        // outcome as the pair they are — and **clears the pair the moment that
+        // outcome has been staged**, which is what makes the read a read of this
+        // round rather than of whatever round went last.
+        //
+        // Cut F.2 left it set for the rest of the substep, and two later arms —
+        // the gunner's `target_section_lost` and his kill line — read it after the
+        // pair had resolved. Anything that destroyed a section or a hull later in
+        // the same substep and was not that round was credited to it, and since
+        // cut Q.2 one of those arms writes hashed contact state. Both now read
+        // `by` off their own event, which carries the shooter where a round did
+        // it and `None` where nothing did.
         let mut in_flight: Option<(ObjId, ObjId)> = None;
         for (t_ms, kind, draw) in notices {
             // 16b cut S.2: the pilot's notice and the ledger's event come off the
@@ -1226,6 +1252,9 @@ impl Arena {
                         (Some(heat), Some(max)) => Some(FrameHeat { heat, max }),
                         _ => None,
                     },
+                    // 16b cut D.4: the platform's own receiver, as its last
+                    // sensor pass left it.
+                    receiver: unit.receiver,
                 },
             ));
         }
@@ -1278,14 +1307,51 @@ impl Arena {
             EventKind::Detected {
                 viewer, contact, ..
             } => {
-                if self.held_losses.remove(&(viewer, contact)).is_some() {
-                    // **16b cut Q.1**: a loss cancelled inside the hysteresis
-                    // window stays silent, exactly as it did — even though the
-                    // re-acquired contact is `Unknown` again and its row now
-                    // reads `X2` where it read `BA`. The flip is not a
-                    // transition anybody is told about; its re-classification
-                    // three seconds later says `Contact X2 identified: BA, blue.`
-                    // and that is the line for it.
+                if let Some((_, was)) = self.held_losses.remove(&(viewer, contact)) {
+                    // **16b cut D.4** (`B-20`; 16c §5 Q16). A loss cancelled
+                    // inside the hysteresis window is still silent when the row
+                    // comes back under the **same** name — an `X2` that flickered
+                    // behind a treeline, or any contact under
+                    // `designate_on_detection` — which is cut Q.1's rule intact.
+                    //
+                    // It is **not** silent when the name moved. A contact that
+                    // had been told apart comes back `Unknown`, so its row reads
+                    // `X2` where it read `BA`, and `LOCK BA` answers
+                    // `No such contact.` for three seconds with nothing to say
+                    // why. That is a regression the pilot has to be told about,
+                    // and it is one line.
+                    //
+                    // The old name is quoted and never learned: `resolve_designator`
+                    // is untouched, because accepting `BA` for this row would say
+                    // BA is still out there — which is exactly what doc 16 §3.6's
+                    // one byte-identical refusal exists to hide (16c §6).
+                    //
+                    // The test is **the row's own class** and not the name alone,
+                    // because the name can move the other way: `Arena::share_pass`
+                    // journals a `detected` for a mesh insert and that row arrives
+                    // `Classified`, so a hold lost as `X2` and handed back over the
+                    // mesh inside the window reads `BA` here. That is a contact
+                    // becoming *more* identified, and saying
+                    // `X2 is unidentified again: BA.` about it would be the
+                    // sentence backwards. A regression is a row that is `Unknown`
+                    // now, which also makes the notice's own `class` true by
+                    // construction.
+                    let named = self.name_of(viewer, contact);
+                    let regressed = self
+                        .contacts
+                        .resolve(viewer, contact)
+                        .is_some_and(|held| held.class == Classification::Unknown);
+                    if regressed && named.designator != was {
+                        self.stage_notice(
+                            viewer,
+                            FrameNotice::Contact {
+                                kind: NoticeKind::Unidentified,
+                                contact: named,
+                                class: Classification::Unknown,
+                                was: Some(was),
+                            },
+                        );
+                    }
                     return;
                 }
                 self.stage_notice(
@@ -1293,7 +1359,16 @@ impl Arena {
                     FrameNotice::Contact {
                         kind: NoticeKind::Acquired,
                         contact: self.name_of(viewer, contact),
-                        class: Classification::Unknown,
+                        // **16b cut D.4** (`T-19`): the class the row actually
+                        // carries, which is `Classified` for a mesh arrival —
+                        // the acquisition and the classification are one moment
+                        // there, and the notice used to say `Unknown` about a row
+                        // the same substep had already told apart. `notice_line`
+                        // does not read it; the notice object's consumers may.
+                        class: self
+                            .contacts
+                            .resolve(viewer, contact)
+                            .map_or(Classification::Unknown, |held| held.class),
                         was: None,
                     },
                 );
@@ -1310,12 +1385,28 @@ impl Arena {
                 // arrival, or a match run with `designate_on_detection` on — and
                 // the renderer then says nothing at all, because the acquisition
                 // already read `New contact RB: …`.
+                //
+                // **16b cut D.4** (`B-21`) fixed where "never provisional" is
+                // read from. It was the **book**, which is permanent, so a target
+                // this platform numbered in an EARLIER hold and now received over
+                // the mesh — already classified — printed `New contact BA: …` and
+                // at once `Contact X2 identified: BA, blue.`, a rename of a row
+                // the pilot is not looking at. It is read off **this hold**
+                // (`ShadowContact::numbered`) now: a mesh insert says nothing
+                // after its acquisition, and a share that classifies a row this
+                // platform's own sensors opened still says the rename.
                 let was = if self.sensors_cfg.designate_on_detection {
                     None
-                } else {
+                } else if self
+                    .contacts
+                    .resolve(viewer, contact)
+                    .is_some_and(|held| held.numbered)
+                {
                     self.designators
                         .provisional(viewer, target)
                         .map(crate::arena::state::Designator::Provisional)
+                } else {
+                    None
                 };
                 self.stage_notice(
                     viewer,
@@ -1331,6 +1422,11 @@ impl Arena {
             // own pilots and to nobody else.
             EventKind::PowerOnline { unit } => {
                 self.stage_notice(unit, FrameNotice::PowerOnline);
+            }
+            // **16b cut D.4** (`B-22`): the platform's own receiver, said to its
+            // own pilots and to nobody else. One sentence per transition.
+            EventKind::Receiver { unit, degraded } => {
+                self.stage_notice(unit, FrameNotice::Receiver { degraded });
             }
             // **16b cut F.2**, the four combat arms. Each is produced where its
             // event is produced, at that event's own arena timestamp, so the list
@@ -1427,6 +1523,10 @@ impl Arena {
                         },
                     );
                 }
+                // **16b cut D.4** (`T-08`): the pair has resolved, so the scratch
+                // is empty again. Nothing after this line in this substep may be
+                // credited to this round unless its own event says so.
+                *in_flight = None;
             }
             // **16b cut D.2** (`B-03`): the victim's own two lines, off the same
             // journalled events the gunner's kill line comes off, and staged
@@ -1445,9 +1545,15 @@ impl Arena {
                         },
                     );
                 }
+                // 16b cut D.4 (`T-08`): the pair has resolved, as on the `Hit`
+                // arm above. This is the one arm that still reads the scratch.
+                *in_flight = None;
             }
             EventKind::SectionDestroyed {
-                unit, ref section, ..
+                unit,
+                ref section,
+                by,
+                ..
             } => {
                 // The consequences that **fired**, not the authored list the
                 // ledger line carries: `disable_motion_when_all_of` is written
@@ -1464,13 +1570,17 @@ impl Arena {
                 );
                 // **16b cut Q.2**: and the gunner's half of it, under the same
                 // held-and-classified gate the section word on a hit is under,
-                // and only when the round in flight is what did it — a section
-                // lost to anything else is nobody's shot, which is the rule the
-                // kill line below already follows.
-                if let Some((shooter, target)) = *in_flight
-                    && target == unit
-                    && self.target_classified(shooter, target)
-                    && let Some(named) = self.named_target(shooter, target)
+                // and only when a round is what did it — a section lost to
+                // anything else is nobody's shot.
+                //
+                // **16b cut D.4** (`T-08`): off the event's own `by` and not off
+                // the substep's in-flight scratch, which by this line may be a
+                // round that has already resolved. The write below is hashed
+                // state, so a stale read of it is a state divergence and not only
+                // a wrong line.
+                if let Some(shooter) = by
+                    && self.target_classified(shooter, unit)
+                    && let Some(named) = self.named_target(shooter, unit)
                 {
                     self.stage_notice(
                         shooter,
@@ -1482,16 +1592,17 @@ impl Arena {
                     // The gunner's own eyes: a section this platform watched come
                     // apart is `destroyed` on its own reading from now on, so
                     // `SCAN` cannot contradict the line the pilot was just sent.
-                    self.observe_section_lost(shooter, target, section);
+                    self.observe_section_lost(shooter, unit, section);
                 }
             }
-            // The kill line the shooter is owed, and only when the round in flight
-            // is what did it: a unit destroyed by anything else is nobody's shot.
-            EventKind::UnitDestroyed { unit } => {
-                if let Some((shooter, target)) = *in_flight
-                    && target == unit
-                {
-                    let held = self.named_target(shooter, target);
+            // The kill line the shooter is owed, and only when a round is what did
+            // it: a unit destroyed by anything else is nobody's shot.
+            //
+            // **16b cut D.4** (`T-08`): off the event's own `by`, for the reason
+            // the section arm above reads it.
+            EventKind::UnitDestroyed { unit, by } => {
+                if let Some(shooter) = by {
+                    let held = self.named_target(shooter, unit);
                     self.stage_notice(shooter, FrameNotice::Kill { contact: held });
                 }
                 // **16b cut D.2** (`B-03`), after the gunner's line: the pilot in
@@ -2882,6 +2993,8 @@ mod tests {
             &EventKind::SectionDestroyed {
                 unit: ObjId(9),
                 section: SmolStr::new("hull"),
+                // 16b cut D.4 (`T-08`): nothing shot it off.
+                by: None,
                 consequences: Vec::new(),
             },
             &mut in_flight,
@@ -2910,7 +3023,11 @@ mod tests {
         assert_eq!(victims_notices(&mut arena), vec![FrameNotice::OwnDisabled]);
         arena.stage_pilot_notice(
             0,
-            &EventKind::UnitDestroyed { unit: ObjId(9) },
+            // 16b cut D.4 (`T-08`): nobody's round did it, so nobody is credited.
+            &EventKind::UnitDestroyed {
+                unit: ObjId(9),
+                by: None,
+            },
             &mut in_flight,
         );
         assert_eq!(victims_notices(&mut arena), vec![FrameNotice::OwnDestroyed]);
@@ -2919,12 +3036,16 @@ mod tests {
             "somebody else was told: {:?}",
             arena.pending_notices
         );
-        // With a round in flight the gunner's kill line comes first, and the
-        // victim's own line after it.
-        let mut in_flight = Some((A, ObjId(9)));
+        // With the shooter on the event the gunner's kill line comes first, and
+        // the victim's own line after it. **16b cut D.4**: off `by` and no longer
+        // off the substep's in-flight scratch, which is left empty here on
+        // purpose — a stale scratch must not be what credits a kill.
         arena.stage_pilot_notice(
             0,
-            &EventKind::UnitDestroyed { unit: ObjId(9) },
+            &EventKind::UnitDestroyed {
+                unit: ObjId(9),
+                by: Some(A),
+            },
             &mut in_flight,
         );
         assert_eq!(
@@ -2932,5 +3053,209 @@ mod tests {
             vec![FrameNotice::Kill { contact: None }]
         );
         assert_eq!(victims_notices(&mut arena), vec![FrameNotice::OwnDestroyed]);
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut D.4 — the gunner's arms read the shooter off the event (`T-08`)
+    // -----------------------------------------------------------------------
+
+    /// The gunner holding the victim **classified and read**, which is the state
+    /// both of `T-08`'s stale readers need: the section word is gated on the
+    /// classification, and `observe_section_lost` writes into the reading.
+    fn watching_gunner() -> Arena {
+        let mut arena = spent_rig();
+        let id = crate::arena::rng::draw_contact_id(arena.seed, A, ObjId(9));
+        let plot = crate::arena::state::SeenPose::default();
+        arena.contacts.insert(
+            A,
+            id,
+            crate::arena::state::ShadowContact {
+                seen_condition: Some(crate::arena::condition::Reading {
+                    at_ms: 0,
+                    condition: crate::arena::condition::Condition::default()
+                        .with_band(0, crate::arena::condition::ConditionBand::Green),
+                }),
+                ..crate::arena::state::ShadowContact::sighted(
+                    ObjId(9),
+                    Classification::Classified { team: Team::Blue },
+                    0,
+                    plot,
+                )
+            },
+        );
+        arena
+    }
+
+    /// What the gunner has been told since the last drain.
+    fn gunners_notices(arena: &mut Arena) -> Vec<FrameNotice> {
+        arena.pending_notices.remove(&A).unwrap_or_default()
+    }
+
+    /// **`T-08`**: a `section_destroyed` or a `unit_destroyed` that no round did
+    /// is credited to nobody, even when a round resolved on the same target
+    /// earlier in the same substep — and it writes no hashed contact state.
+    #[test]
+    fn d4_a_destroy_no_round_did_is_credited_to_nobody() {
+        let mut arena = watching_gunner();
+        let mut in_flight: Option<(ObjId, ObjId)> = None;
+
+        // The round arrives and resolves. The scratch is set by the impact and
+        // cleared by the outcome, which is the whole of `T-08`'s fix.
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::Impact {
+                shot_seq: 1,
+                unit: A,
+                target: ObjId(9),
+            },
+            &mut in_flight,
+        );
+        assert_eq!(in_flight, Some((A, ObjId(9))));
+        arena.stage_pilot_notice(0, &hit(1, "hull"), &mut in_flight);
+        assert_eq!(in_flight, None, "the `hit` did not clear the pair");
+        let _ = gunners_notices(&mut arena);
+        let _ = victims_notices(&mut arena);
+        let settled = state_hash(&arena);
+
+        // Now something that is not that round takes a section off the same
+        // target, later in the same substep.
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::SectionDestroyed {
+                unit: ObjId(9),
+                section: SmolStr::new("hull"),
+                by: None,
+                consequences: Vec::new(),
+            },
+            &mut in_flight,
+        );
+        assert!(
+            gunners_notices(&mut arena).is_empty(),
+            "the earlier shooter was credited with a section nobody shot off"
+        );
+        assert_eq!(
+            state_hash(&arena),
+            settled,
+            "`observe_section_lost` wrote hashed contact state for a round that had resolved"
+        );
+        // The victim's own line is untouched: it is a fact about their tank.
+        assert!(
+            matches!(
+                victims_notices(&mut arena).first(),
+                Some(FrameNotice::SectionLost { section, .. }) if section == "hull"
+            ),
+            "the victim was not told"
+        );
+
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::UnitDestroyed {
+                unit: ObjId(9),
+                by: None,
+            },
+            &mut in_flight,
+        );
+        assert!(
+            gunners_notices(&mut arena).is_empty(),
+            "a kill was credited to a round that had already resolved"
+        );
+        assert_eq!(victims_notices(&mut arena), vec![FrameNotice::OwnDestroyed]);
+    }
+
+    /// **And with the shooter on the event the two lines are exactly as they
+    /// were** (16b cut D.4, `T-08`): the fix is about *where* the shooter is read
+    /// from and not about what is said.
+    #[test]
+    fn d4_a_destroy_a_round_did_still_names_the_gunner_and_writes_his_reading() {
+        let mut arena = watching_gunner();
+        // The scratch is deliberately empty: nothing here depends on it any more.
+        let mut in_flight: Option<(ObjId, ObjId)> = None;
+        let before = state_hash(&arena);
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::SectionDestroyed {
+                unit: ObjId(9),
+                section: SmolStr::new("hull"),
+                by: Some(A),
+                consequences: Vec::new(),
+            },
+            &mut in_flight,
+        );
+        assert!(
+            matches!(
+                gunners_notices(&mut arena).first(),
+                Some(FrameNotice::TargetSectionLost { section, .. }) if section == "hull"
+            ),
+            "the gunner was told nothing about the section he took off"
+        );
+        assert_ne!(
+            state_hash(&arena),
+            before,
+            "the gunner's own reading was not written"
+        );
+        let _ = victims_notices(&mut arena);
+
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::UnitDestroyed {
+                unit: ObjId(9),
+                by: Some(A),
+            },
+            &mut in_flight,
+        );
+        assert!(
+            matches!(
+                gunners_notices(&mut arena).first(),
+                Some(FrameNotice::Kill { contact: Some(_) })
+            ),
+            "the gunner was not told he had finished the tank"
+        );
+    }
+
+    /// **The scratch serves `miss` alone now** (16b cut D.4, `T-08`): it is set by
+    /// the impact, read by the outcome, and `None` afterwards either way.
+    #[test]
+    fn d4_the_in_flight_pair_is_cleared_by_a_hit_and_by_a_miss() {
+        let mut arena = watching_gunner();
+        let mut in_flight: Option<(ObjId, ObjId)> = None;
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::Impact {
+                shot_seq: 1,
+                unit: A,
+                target: ObjId(9),
+            },
+            &mut in_flight,
+        );
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::Miss {
+                shot_seq: 1,
+                reason: SmolStr::new("dispersion"),
+            },
+            &mut in_flight,
+        );
+        assert!(
+            matches!(
+                gunners_notices(&mut arena).first(),
+                Some(FrameNotice::Miss { .. })
+            ),
+            "the miss was not said"
+        );
+        assert_eq!(in_flight, None, "the `miss` did not clear the pair");
+
+        // And a second `miss` with nothing in flight says nothing at all.
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::Miss {
+                shot_seq: 2,
+                reason: SmolStr::new("dispersion"),
+            },
+            &mut in_flight,
+        );
+        assert!(
+            gunners_notices(&mut arena).is_empty(),
+            "a miss with no impact before it named a shooter"
+        );
     }
 }

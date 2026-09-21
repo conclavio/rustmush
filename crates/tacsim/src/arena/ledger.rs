@@ -155,6 +155,25 @@ pub enum EventKind {
         /// What it was holding.
         target: ObjId,
     },
+    /// **A platform's own receiver crossed into or out of interference** (16b cut
+    /// D.4, `B-22`; doc 16 §9 items 4 and 5), at its sensor pass's own arena
+    /// timestamp.
+    ///
+    /// One line per **transition** and none for a change of degree inside a
+    /// bubble, which is what the pilot's notice is a projection of. The line says
+    /// which platform and whether it is degraded, and — like every other line in
+    /// here — it is the *record*: the black box may name the unit, and what the
+    /// pilot is told carries no source at all
+    /// ([`crate::arena::perception::Receiver`]).
+    ///
+    /// A pass that stops running altogether (a wreck, a sight shot off) writes no
+    /// line: the receiver is off rather than clear.
+    Receiver {
+        /// The platform.
+        unit: ObjId,
+        /// Whether its receiver is now degraded.
+        degraded: bool,
+    },
     /// **A platform locked a contact** (16b cut W.1; doc 16 §3.7's `LOCK`).
     ///
     /// The opaque contact id is what the pilot named; `target` is the object it is
@@ -263,6 +282,16 @@ pub enum EventKind {
         unit: ObjId,
         /// The section.
         section: SmolStr,
+        /// **Who did it** (16b cut D.4, `T-08`): the shooter whose round finished
+        /// the section off, and `None` for a section lost to anything else — a
+        /// test rig's direct call, or a consequence that did not come off a round.
+        ///
+        /// [`EventKind::Impact`] has carried the pair since cut W.1 and this is
+        /// the same fact on the line that needs it: the staging scan used to
+        /// credit whichever impact happened to be in flight, which was a stale
+        /// read the moment anything but a round could destroy a section.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<ObjId>,
         /// Its consequences, by their authored words.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         consequences: Vec<SmolStr>,
@@ -277,6 +306,12 @@ pub enum EventKind {
     UnitDestroyed {
         /// The unit.
         unit: ObjId,
+        /// **Who did it** (16b cut D.4, `T-08`), on the rule
+        /// [`EventKind::SectionDestroyed`]'s `by` follows: the shooter whose round
+        /// finished the tank, and `None` for a hull destroyed by anything else.
+        /// It is what the gunner's kill line is now gated on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<ObjId>,
     },
     /// **A squad's standing order ran out unrenewed** (16b cut N.2; doc 16 §6
     /// "Provider failure": *the visible in-world effect — "mind link dropped, unit
@@ -331,6 +366,7 @@ impl EventKind {
             EventKind::Detected { .. } => "detected",
             EventKind::Classified { .. } => "classified",
             EventKind::Lost { .. } => "lost",
+            EventKind::Receiver { .. } => "receiver",
             EventKind::Locked { .. } => "locked",
             EventKind::Fired { .. } => "fired",
             EventKind::Impact { .. } => "impact",
@@ -718,6 +754,11 @@ mod tests {
                 contact: ContactId(0x0123_4567_89ab_cdef),
                 target: ObjId(9),
             },
+            // 16b cut D.4: the platform's own receiver, on the transition.
+            EventKind::Receiver {
+                unit: ObjId(4),
+                degraded: true,
+            },
             EventKind::Locked {
                 unit: ObjId(4),
                 contact: ContactId(0x0123_4567_89ab_cdef),
@@ -756,10 +797,15 @@ mod tests {
             EventKind::SectionDestroyed {
                 unit: ObjId(9),
                 section: SmolStr::new_static("turret"),
+                // 16b cut D.4: the shooter, where a round did it.
+                by: Some(ObjId(4)),
                 consequences: vec![SmolStr::new_static("remove_weapons")],
             },
             EventKind::UnitDisabled { unit: ObjId(9) },
-            EventKind::UnitDestroyed { unit: ObjId(9) },
+            EventKind::UnitDestroyed {
+                unit: ObjId(9),
+                by: Some(ObjId(4)),
+            },
             EventKind::Lagged { dt_ms: 20_000 },
             EventKind::MatchEnded {
                 reason: EndReason::Elimination {
