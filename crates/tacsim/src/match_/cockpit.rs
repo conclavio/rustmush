@@ -444,10 +444,33 @@ fn last_frame(w: &World, pilot: ObjId) -> Option<CockpitFrame> {
         .cloned()
 }
 
-/// The power state the cockpit will act on: the last frame's, or [`Power::Off`]
-/// for a pilot the arena has not spoken to yet.
-fn power_of(w: &World, pilot: ObjId) -> Power {
-    last_frame(w, pilot).map_or(Power::Off, |held| held.frame.power)
+/// **The power state the cockpit will act on**: the last frame's, or
+/// [`Power::Off`] for a pilot the arena has not spoken to yet.
+///
+/// **16b cut D.1 put the `Starting` hint in front of the `Off` answer.** A frame
+/// at the `Quiet` tempo a match opens in is up to five seconds away, so between
+/// `STARTUP` and the arena's answer every motion verb told the pilot to type
+/// `STARTUP`. Where the mirror says `Off` — or says nothing at all — and the
+/// world has forwarded a `STARTUP` whose hint has not expired
+/// ([`crate::arena_bridge::ArenaRegistry::starting_hint`]), the answer is
+/// [`Power::Starting`]: the pilot is told to wait, which is true, instead of told
+/// to do the thing they have done. Every frame that says anything but `Off`, and
+/// every frame that carries the arena's refusal of that same `STARTUP`, clears
+/// the hint at the bridge before this is read again.
+#[must_use]
+pub fn power_of(w: &World, pilot: ObjId) -> Power {
+    let held = last_frame(w, pilot).map_or(Power::Off, |held| held.frame.power);
+    if held != Power::Off {
+        return held;
+    }
+    let starting = w
+        .module_state::<ArenaRegistry>()
+        .is_some_and(|registry| registry.starting_hint(pilot, w.now()));
+    if starting {
+        Power::Starting
+    } else {
+        Power::Off
+    }
 }
 
 /// Refuse a motion or fire order while the tank is cold.
@@ -469,8 +492,9 @@ fn require_power(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
 /// the row key unchanged and never printed, the short designator 16b cut Q.1 gave
 /// a pilot to read and type, the class as `unknown` or as the side the platform
 /// has resolved, the bearing in whole degrees both absolute and relative to the
-/// platform's own heading, the range as one of [`range_band`]'s four words, and
-/// the age in whole seconds.
+/// platform's own heading, the range as one of [`contact_band`]'s four words
+/// (16b cut D.1: the pilot's word, thirds of the lesser of the platform's own
+/// sight and the fired weapon's reach), and the age in whole seconds.
 ///
 /// Three things a pilot is deliberately **not** given, and each is the observer
 /// rule on this surface: the target's object number, its name, and its team while
@@ -502,7 +526,9 @@ pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
             class: SmolStr::new(class_word(held.class)),
             bearing_deg: held.bearing_mdeg / 1_000,
             relative_deg: relative_mdeg(frame.pose.heading_mdeg, held.bearing_mdeg) / 1_000,
-            band: SmolStr::new(range_band(held.range_cm, bands)),
+            // 16b cut D.1: the pilot's word, thirds of the lesser of the sight
+            // and the weapon's reach — not the commander's [`range_band`].
+            band: SmolStr::new(contact_band(held.range_cm, bands, frame.sight_cm)),
             range_m: range_m_rounded(held.range_cm, CONTACT_RANGE_STEP_M),
             age_ms: held.age_ms,
             cell: held.cell,
@@ -542,6 +568,13 @@ pub const LOCK_RANGE_STEP_M: u64 = 10;
 /// The step is the caller's because there are two: [`CONTACT_RANGE_STEP_M`] for
 /// a row on the scope, [`LOCK_RANGE_STEP_M`] for the one contact the platform is
 /// locked on.
+///
+/// **The answer is never nought** (16b cut D.1). Rounding to the nearest step put
+/// everything inside half a step at `0 m` — under 25 m on a scope row, under 5 m
+/// on a lock — and `0 m` is the one distance a contact cannot be at: a platform
+/// that close is being rammed. It floors at one step, so the coarsest thing the
+/// row can say about a contact on top of you is *one step away*, which is what a
+/// coarse reading is entitled to say.
 #[must_use]
 pub fn range_m_rounded(range_cm: u64, step_m: u64) -> u64 {
     let step = step_m.max(1);
@@ -550,6 +583,39 @@ pub fn range_m_rounded(range_cm: u64, step_m: u64) -> u64 {
         .saturating_add(step / 2)
         .saturating_div(step)
         .saturating_mul(step)
+        .max(step)
+}
+
+/// **What this platform's own scope holds** (16b cut D.1; doc 16 §5, §1).
+///
+/// `STATUS`'s third line ended `; the arena is running {tempo}` — the arena's one
+/// **global** word, raised when anybody anywhere on the map holds a contact. A
+/// pilot sitting in a wreck with an empty scope read `engaged`, which is a fact
+/// about somebody else's fight and exactly the shape of thing doc 16 §1 says a
+/// platform has to earn. The three words are read off this platform's own contact
+/// list and nothing else:
+///
+/// * `hostile` — it holds a contact classified to another team;
+/// * `unidentified` — it holds a contact that is not a classified friend;
+/// * `clear` — it holds nothing, or nothing but classified friends.
+///
+/// The arena's `tempo` stays on the frame, because a panel's own timers read the
+/// cadence off it.
+#[must_use]
+pub fn own_scope(frame: &Frame) -> &'static str {
+    let mut unidentified = false;
+    for held in &frame.contacts {
+        match held.class.team() {
+            Some(team) if team == frame.team => {}
+            Some(_) => return "hostile",
+            None => unidentified = true,
+        }
+    }
+    if unidentified {
+        "unidentified"
+    } else {
+        "clear"
+    }
 }
 
 /// The word a class renders as: `unknown`, or the **side** the platform has
@@ -573,15 +639,10 @@ fn relative_mdeg(heading_mdeg: u32, bearing_mdeg: u32) -> u32 {
     u32::try_from(turn.rem_euclid(360_000)).unwrap_or(0)
 }
 
-/// **The range band of a contact** (doc 16 §3.6: *range band*), read against the
+/// **The COMMANDER's range band** (doc 16 §3.6: *range band*), read against the
 /// **authored bands of the weapon a bare `FIRE` would fire**
 /// ([`crate::arena::weapons::FrameWeapon::bands_cm`], outward, the same list
 /// `WeaponSummary::band_of` walks).
-///
-/// A word and not just a range, because the question a contact's distance answers
-/// is *can I shoot it, nearly, or not at all* — and that question is about a
-/// **weapon**, which is why the bands it is read against are the ones the weapon
-/// declares:
 ///
 /// | word | range |
 /// |---|---|
@@ -595,6 +656,26 @@ fn relative_mdeg(heading_mdeg: u32, bearing_mdeg: u32) -> u32 {
 /// reserved for exactly that — a weapon that declares a reach and authors no
 /// bands answers one band at its reach ([`crate::arena::state::WeaponSummary::bands_cm`]),
 /// so `beyond` never means *this weapon's content is thin*.
+///
+/// **16b cut D.1: this is no longer the word a pilot reads.** The pilot's word is
+/// [`contact_band`], which bands against the *lesser* of this weapon's last band
+/// and the platform's own sight ([`crate::arena::step::Frame::sight_cm`]) — and
+/// on every shipped platform the sight is the lesser by a factor of five, so the
+/// two answers are different distances:
+///
+/// | | `close` out to | `effective` out to |
+/// |---|---|---|
+/// | this function, stock cannon (bands 1.5 km / 3 km) | 500 m | 1,500 m |
+/// | [`contact_band`], stock tank (600 m sight) | 200 m | 400 m |
+///
+/// This one stays where it is because it is **pinned as an inverse**:
+/// [`crate::deliberation::order::RangeBand::ceiling_cm`] is the order schema's
+/// round trip of these same four words, and the reflex controller reads that
+/// ceiling to decide how far to close — so moving this function would move arena
+/// behaviour, which belongs to the cut that re-prices the order ceiling. Its two
+/// callers are the deliberation brief (`deliberation/request.rs`) and that order
+/// schema; the residual — that a lead's `close` and a pilot's `close` are two
+/// distances — is 16c's `T-81`.
 ///
 /// **16b cut F.3 replaced cut S.2's thirds of `Frame`'s `weapon_reach_cm`**, and
 /// deleted the field with it (its one reader was this function). That
@@ -620,6 +701,57 @@ pub fn range_band(range_cm: u64, bands_cm: &[u32]) -> &'static str {
     }
 }
 
+/// **The PILOT's range band** (16b cut D.1; doc 16 §3.6's *range band*, read
+/// against what this platform can actually see).
+///
+/// `CONTACTS` could only ever print two of its four words. The stock cannon's
+/// bands are 1.5 km and 3 km, so [`range_band`] puts `close` at 500 m, `effective`
+/// at 1,500 m and `far` at 3,000 m — while the shipped sight is 60 cells of
+/// 1,000 cm, 600 m, and one mesh hop adds 300 m. The furthest plot any shipped
+/// platform can hold is 900 m, so from acquisition to the kill a contact read
+/// `effective` and then `close`, and `far` and `beyond` could not print at all.
+///
+/// So the word is banded against **the lesser of the sight and the weapon's last
+/// band**, which on every shipped platform is the sight. That makes it **scope
+/// advice**: how far across your own sight the contact is — `close` the nearest
+/// third, `effective` the middle third, `far` the outer third and anything a
+/// teammate is passing you from beyond it. It is a deliberate change of what the
+/// word *answers*, not a side effect: a contact at 450 m, which the cannon makes
+/// comfortably, reads `far`. What the gun makes of the distance is the lock's
+/// `% to hit` and `WEAPONSTATUS`, and `docs/help/cockpit.md` says so in the
+/// pilot's own terms.
+///
+/// The rule, in order:
+///
+/// * no bands at all, or `range_cm` past the last band: `beyond` — still literally
+///   true, because nothing the platform fires reaches it;
+/// * otherwise `limit` is `min(last band, sight_cm)`, and the last band alone when
+///   `sight_cm` is `0` (a platform with no sensor, which holds no contacts anyway);
+/// * `range_cm × 3 ≤ limit`: `close`; else `range_cm × 3 ≤ limit × 2`:
+///   `effective`; else `far`.
+///
+/// On the stock tank that is `close` to 200 m, `effective` to 400 m, `far` beyond
+/// — and a mesh plot past the platform's own sight is `far`.
+#[must_use]
+pub fn contact_band(range_cm: u64, bands_cm: &[u32], sight_cm: u32) -> &'static str {
+    let Some(last) = bands_cm.last() else {
+        return "beyond";
+    };
+    let last = u64::from(*last);
+    if range_cm > last {
+        return "beyond";
+    }
+    let sight = u64::from(sight_cm);
+    let limit = if sight == 0 { last } else { last.min(sight) };
+    if range_cm.saturating_mul(3) <= limit {
+        "close"
+    } else if range_cm.saturating_mul(3) <= limit.saturating_mul(2) {
+        "effective"
+    } else {
+        "far"
+    }
+}
+
 /// One contact, as a pilot is told about it (doc 16 §3.6 "What a pilot sees").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContactRow {
@@ -641,7 +773,8 @@ pub struct ContactRow {
     /// The same bearing off the platform's own nose, degrees clockwise (16b cut
     /// S.2): `0` is dead ahead.
     pub relative_deg: u32,
-    /// The range band's label ([`range_band`]).
+    /// The range band's label ([`contact_band`] — the pilot's word, and **not**
+    /// the commander's [`range_band`]).
     pub band: SmolStr,
     /// **The range to the plot, metres**, rounded to [`CONTACT_RANGE_STEP_M`]
     /// (16b cut F.3) — see [`range_m_rounded`] for why a passive sight reports one
@@ -1076,6 +1209,10 @@ fn fired_by_default(
 /// truth and [`weapons_of`]'s structural read of the M32 component cells is the
 /// answer for a unit no arena holds — a tank in the motor pool, or a pilot who has
 /// boarded and whose arena has not spoken yet.
+///
+/// **An empty answer is an answer** (16b cut D.1): a frame that lists no weapon
+/// means the platform carries none, and [`carried`] does not go looking for an
+/// older one.
 #[must_use]
 pub fn frame_weapons(frame: &Frame) -> Vec<WeaponRow> {
     frame
@@ -1599,12 +1736,54 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 // K3: the twelve cockpit verbs
 // ---------------------------------------------------------------------------
 
-/// `STARTUP` — bring power up (doc 16 §3.3). Idempotent: the arena's own
-/// `resolve_startup` is what decides whether anything changes, and a second
-/// `STARTUP` while `starting` costs one queued action and no refusal.
+/// `STARTUP` — bring power up (doc 16 §3.3).
+///
+/// **16b cut D.1: it reads the mirror first, and it stamps a hint.** It used to
+/// forward the intent whatever the power was and say `Startup sequence begun;
+/// power comes online shortly.` — so a second `STARTUP` on a tank that was
+/// already running said it again and the pilot waited for a `Power online.` that
+/// had already been said and would never come again. Three answers now:
+///
+/// * [`Power::Online`]: `Power is already online.`, and nothing is sent;
+/// * [`Power::Starting`]: [`POWER_STARTING`], and nothing is sent — the arena is
+///   already doing it, whether the mirror knows that from a frame or from the
+///   hint this function stamped;
+/// * [`Power::Off`]: the intent is forwarded as before, the hint is stamped, and
+///   the pilot reads the sentence they always read.
+///
+/// The hint expires one second past a whole `Quiet` period, which is the longest
+/// a frame can be away; a lost `STARTUP` therefore tells the pilot to type it
+/// again, which by then is the true advice. See
+/// [`crate::arena_bridge::ArenaRegistry::starting_hints`] for the four ways it
+/// ends.
 fn startup(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    match power_of(ctx.w, actor) {
+        Power::Online => {
+            ctx.out
+                .sys_to_actor(actor, NOTICE_CATEGORY, "Power is already online.");
+            return Ok(());
+        }
+        Power::Starting => {
+            ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, POWER_STARTING);
+            return Ok(());
+        }
+        Power::Off => {}
+    }
     forward_intent(ctx, actor, unit, IntentKind::Startup)?;
+    // The optimism is stamped only once the order is away: a refused forward is
+    // not a startup in progress.
+    let stands_s =
+        crate::match_::lobby::configs(ctx.w).map_or(HINT_FALLBACK_S, |(arena_cfg, _, _)| {
+            // Whole seconds, rounded up, plus one: the hint must outlast the
+            // longest a frame can be away.
+            let quiet_ms = i64::from(arena_cfg.tempo.quiet_ms).max(0);
+            quiet_ms.saturating_add(999) / 1_000 + 1
+        });
+    let until_s = ctx.w.now().saturating_add(stands_s);
+    if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+        registry.hint_starting(actor, until_s);
+    }
     ctx.out.sys_to_actor(
         actor,
         NOTICE_CATEGORY,
@@ -1612,6 +1791,11 @@ fn startup(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
     );
     Ok(())
 }
+
+/// **How long the `Starting` hint stands** when the configuration cannot be read
+/// (16b cut D.1), seconds: one whole `Quiet` period of the shipped default, plus
+/// one.
+const HINT_FALLBACK_S: i64 = 6;
 
 /// `HEADING <deg>` — 0 to 359, clockwise from north (doc 16 §3.7).
 fn heading(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
@@ -2064,11 +2248,18 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
                     frame.pose.heading_mdeg / 1_000,
                     if frame.blocked { ", HELD" } else { "" }
                 ),
+                // **16b cut D.1**: the pilot's own alert state, off their own
+                // scope, where the arena's one global tempo word used to be
+                // ([`own_scope`]).
                 format!(
-                    "  at {} m east, {} m north; the arena is running {}",
+                    "  at {} m east, {} m north; {}",
                     frame.pose.x_cm / 100,
                     frame.pose.y_cm / 100,
-                    frame.tempo.as_str()
+                    match own_scope(frame) {
+                        "hostile" => "scope holds a hostile",
+                        "unidentified" => "scope holds an unidentified contact",
+                        _ => "scope clear",
+                    }
                 ),
             ];
             // **16b cut X.1**: a line of its own, and only for a platform that
@@ -2303,6 +2494,13 @@ pub const RETAIN_LATEST: &str = "latest";
 /// and the text as a fallback — and a renderer that owns the scrollback should not
 /// print the text again. A frame read back out of the world's mirror carries no
 /// notices at all, because the mirror is stored with them cleared.
+///
+/// **16b cut D.1** added two top-level keys: `sight_m`, the platform's own
+/// nominal sensor reach in metres (`0` for a platform with no sensor), and
+/// `scope`, the pilot's own alert state — `clear`, `unidentified` or `hostile`
+/// ([`own_scope`]). Each contact's `band` is now [`contact_band`]'s word rather
+/// than [`range_band`]'s: thirds of the lesser of `sight_m` and the fired
+/// weapon's reach. `tempo` is unchanged and stays the arena's global word.
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     let rows = frame_contacts(frame);
@@ -2441,6 +2639,16 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
         "power": frame.power.as_str(),
         "blocked": frame.blocked,
         "tempo": frame.tempo.as_str(),
+        // **16b cut D.1**: the platform's own nominal sight, metres — what each
+        // contact's `band` is read against ([`contact_band`]), so a panel can say
+        // why a contact at 450 m reads `far`. A fact about the pilot's own
+        // machine, outside the observer rule.
+        "sight_m": frame.sight_cm / 100,
+        // **16b cut D.1**: the pilot's own alert state ([`own_scope`]) —
+        // `clear`, `unidentified` or `hostile`. `tempo` above stays, because a
+        // panel's own timers read the cadence off it, but it is the arena's one
+        // global word and not this platform's.
+        "scope": own_scope(frame),
         "lock": frame_lock(frame).map(|id| id.to_string()),
         "lock_designator": lock_designator.map(|named| named.to_string()),
         "lock_range_m": lock_range_m,
@@ -2938,13 +3146,24 @@ pub fn weapons_of(w: &World, unit: ObjId) -> Vec<WeaponRow> {
 /// **Every weapon the pilot can name**, live where a frame says so (16b cut W.1).
 ///
 /// The frame's rows while the arena has spoken, and [`weapons_of`]'s structural read
-/// of the M32 components before it has — which is the same fail-closed rule
-/// [`power_of`] follows, and the reason a pilot who has just boarded can still be
-/// told the cannon exists.
+/// of the M32 components **only where there is no frame at all** — the same
+/// fail-closed rule [`power_of`] follows, and the reason a pilot who has just
+/// boarded can still be told the cannon exists.
+///
+/// **16b cut D.1 narrowed the fallback to that one case.** It used to fall back
+/// whenever the frame's list was *empty*, so a pilot whose turret had been shot
+/// off read `cannon ready 40 of 40 round(s)` off the pre-match world record,
+/// typed `FIRE`, was told `Firing cannon.` and learned the truth a pulse later
+/// from the arena's own refusal. An empty list on a live frame is a **fact**: the
+/// arena is the single writer while a match runs (D-16-1), and what it says the
+/// platform carries is what the platform carries. `WEAPONSTATUS` then prints
+/// `This unit carries no weapon.` and `FIRE` refuses in the cockpit with
+/// [`CockpitError::NoSuchWeapon`], which is the same sentence and one pulse
+/// earlier.
 fn carried(w: &World, unit: ObjId, held: Option<&CockpitFrame>) -> Vec<WeaponRow> {
     match held {
-        Some(held) if !held.frame.weapons.is_empty() => frame_weapons(&held.frame),
-        _ => weapons_of(w, unit),
+        Some(held) => frame_weapons(&held.frame),
+        None => weapons_of(w, unit),
     }
 }
 

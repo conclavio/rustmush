@@ -1078,17 +1078,23 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         range_m <= 900,
         "the plot is further than any sight or mesh hop on this map reaches: {row}"
     );
-    // And the band and the range are two readings of **one** plot, so they agree
-    // against the shipped cannon's own edges (1.5 km and 3 km, the list
-    // `range_band` is read against): `close` is inside a third of the inner band.
+    // And the band and the range are two readings of **one** plot, so they agree.
+    //
+    // **16b cut D.1** changed which distance the word is about (`B-25`): it is
+    // thirds of the LESSER of the platform's own sight and the fired weapon's
+    // last band, and on every shipped platform the sight is the lesser — 600 m
+    // against the cannon's 3 km. So `close` is inside 200 m, `effective` inside
+    // 400 m, and `far` is everything out to the 900 m ceiling above, which is
+    // the first time a shipped scope could print that word at all.
     let band = ["close", "effective", "far", "beyond"]
         .into_iter()
         .find(|word| row.contains(word))
         .unwrap_or_else(|| panic!("one band word: {row}"));
     let inside_m = match band {
-        "close" => 500,
-        "effective" => 1_500,
-        _ => panic!("nothing on this map can be plotted past the cannon's inner band: {row}"),
+        "close" => 200,
+        "effective" => 400,
+        "far" => 900,
+        _ => panic!("nothing on this map can be plotted past the cannon's last band: {row}"),
     };
     assert!(
         range_m <= inside_m,
@@ -2434,5 +2440,68 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
     no_sixteen_digit_word(
         &strip_ansi(&ada.seen[closing..]),
         "the TUI cockpit after detection",
+    );
+}
+
+/// **`B-01`: the board is the observer rule too** (16b cut D.1; doc 16 §1, §5).
+///
+/// `SIM STATUS` is the one selector that answers in every state and from every
+/// room of the centre **including the pods**, so it was the one surface on which
+/// a seated pilot could read the other side's standing: `, pod Blue Pod 1,
+/// seated` before, `, left` the moment the human on `BA` dropped and a machine
+/// took the tank. No sensor of theirs told them any of it.
+///
+/// Over the real front door, from inside the pod, because that is where a pilot
+/// types it and because the reader is the whole of the rule.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
+    let server = boot("observer-board").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    seat_the_witnesses(&mut god).await;
+    take_off(&mut ada, &mut bo).await;
+
+    /// One side's row off a board.
+    fn row(board: &str, head: &str) -> String {
+        board
+            .lines()
+            .find(|line| line.trim_start().starts_with(head))
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    // Typed from inside the pod, while the match runs.
+    let board = strip_ansi(&ask(&mut ada, "SIM STATUS", "blue:").await);
+    let red = row(&board, "red:");
+    let blue = row(&board, "blue:");
+    assert!(
+        red.contains(", pod ") && red.contains(", seated"),
+        "a pilot was refused their OWN side's standing: {board}"
+    );
+    // The callsign and the pilot's name stay: both were public through the whole
+    // of `Selection` and neither can change while the match runs.
+    assert!(blue.contains("(BA)") && blue.contains("Bo"), "{board}");
+    for word in [", pod ", ", seated", ", left"] {
+        assert!(
+            !blue.contains(word),
+            "a seated pilot read `{word}` about the other side: {board}"
+        );
+    }
+
+    // Bo climbs out, which mid-match is final and is exactly the fact `B-01` is
+    // about. Ada's board does not move by one byte; staff read the truth.
+    say(&mut bo, "EXIT", "climb").await;
+    let after = strip_ansi(&ask(&mut ada, "SIM STATUS", "blue:").await);
+    assert_eq!(
+        row(&after, "blue:"),
+        blue,
+        "the other side's row moved when its pilot left:\n{after}"
+    );
+    let staff = strip_ansi(&ask(&mut god, "@arena/status", "blue:").await);
+    assert!(
+        row(&staff, "blue:").contains(", left"),
+        "staff were refused the whole board: {staff}"
     );
 }

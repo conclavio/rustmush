@@ -14,6 +14,11 @@ not parity — so there is exactly one set here, and no copies to drift. Rust
 | `view_grid.txt` | the twenty map rows a line client prints of it, north-up | `mush_ansi::panel::grid_lines` |
 | `web_view_model.txt` | every line the web's cockpit screen prints for that frame (16b cut Q.5) | `web/src/lib/cockpit.ts`'s `cockpitViewLines` |
 
+The scene's platform carries the **shipped** 600 m sight (`sight_cm: 60_000`, 60
+cells at 1,000 cm), so two of its four contacts read `far` (16b cut D.1): the
+band word is thirds of the lesser of the sight and the fired weapon's reach, and
+on every platform the game ships the sight is the lesser.
+
 Re-bless the first four with `TACSIM_BLESS=1`:
 
 ```

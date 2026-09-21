@@ -339,7 +339,10 @@ describe("the view model", () => {
     expect(view.damage.map((d) => d.pct)).toEqual([100, 100, 25, 0, 100]);
     expect(view.damage[1]?.facets.map((f) => f.pct)).toEqual([69, 100]);
     expect(view.damage[0]?.facets).toEqual([]);
-    expect(view.contacts.map(contactText)[0]).toBe("BA  blue  045°  effective  450 m  1 s");
+    // 16b cut D.1: the band is the PILOT's word now — thirds of the lesser of
+    // the platform's own 600 m sight and the cannon's reach — so the scene's
+    // 450 m lock reads `far`.
+    expect(view.contacts.map(contactText)[0]).toBe("BA  blue  045°  far  450 m  1 s");
     // The off-window contact is in the table even though no marker drew.
     expect(view.contacts.map((c) => c.designator)).toContain("X4");
     expect(scanText(scanChips(frame.contacts[0]!, frame.scan_tables))).toBe(

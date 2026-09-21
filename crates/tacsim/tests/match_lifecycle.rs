@@ -1176,10 +1176,12 @@ async fn q7_sim_ai_refuses_by_the_sentence_for_each_reason() {
 
     rig.say(0, "sim team red");
     rig.say(1, "sim team red");
-    // Not a lead.
+    // Not a lead. **16b cut D.1** gave the set its own sentence: `NotLead` is
+    // `SIM START`'s, and answering it here told somebody who asked for three
+    // machines that they could not start a match.
     let said = rig.say(1, "sim ai 3");
     assert!(
-        said.contains("Only a side's first pilot or staff can start the match."),
+        said.contains("Only a side's first pilot or staff can set the AI fill."),
         "{said}"
     );
     // Out of range, both ends: the centre has four pods a side.
@@ -1361,8 +1363,11 @@ async fn q8_sim_unit_lists_selects_and_clears_a_choice() {
 async fn q8_sim_unit_refuses_an_unknown_type_no_slot_and_a_wrong_state() {
     let mut rig = Rig::boot(2);
 
-    // No slot at all — the honest line in `Idle` and in a terminal centre.
-    let said = rig.say(0, "sim unit");
+    // No slot at all, and a type named — the honest line in `Idle` and in a
+    // terminal centre. **16b cut D.1** moved the BARE list in front of this gate
+    // (it answers anybody in the centre), so it is the CHOICE that still needs a
+    // slot to put a unit in.
+    let said = rig.say(0, "sim unit biped_mk1");
     assert!(
         said.contains("Claim a slot first: SIM TEAM red|blue."),
         "{said}"
@@ -1785,23 +1790,28 @@ async fn q8_an_ai_filled_pod_flies_the_authored_type_after_a_chooser_left() {
 /// **`SIM UNIT`'s "claim a slot first" is only said where the claim is
 /// accepted** (16b cut Q.8, fixer: correctness Q8-5).
 ///
-/// The bare list needs a claimed slot, and the refusal is `SimError::NoSlot` said
-/// as the thing to do next. `SIM TEAM` is accepted in `Idle`, in `Selection` and
-/// on a terminal centre, and refused in `Boarding` and `Running` — where the
-/// advice was therefore a lie, and the state refusal is what is honest.
+/// Choosing a type needs a claimed slot, and the refusal is `SimError::NoSlot`
+/// said as the thing to do next. `SIM TEAM` is accepted in `Idle`, in
+/// `Selection` and on a terminal centre, and refused in `Boarding` and `Running`
+/// — where the advice was therefore a lie, and the state refusal is what is
+/// honest.
+///
+/// **16b cut D.1** moved the bare list in front of both gates (see
+/// [`d1_the_two_bare_reads_answer_anybody_in_the_centre`]), so every line here
+/// names a type.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn q8_sim_unit_advises_sim_team_only_where_sim_team_is_accepted() {
     let mut rig = Rig::boot(3);
 
     // `Idle`, and then `Selection` with no slot of one's own: true both times.
-    let said = rig.say(2, "sim unit");
+    let said = rig.say(2, "sim unit biped_mk1");
     assert!(
         said.contains("Claim a slot first: SIM TEAM red|blue."),
         "{said}"
     );
     rig.say(0, "sim team red");
     rig.say(1, "sim team blue");
-    let said = rig.say(2, "sim unit");
+    let said = rig.say(2, "sim unit biped_mk1");
     assert!(
         said.contains("Claim a slot first: SIM TEAM red|blue."),
         "{said}"
@@ -1809,7 +1819,7 @@ async fn q8_sim_unit_advises_sim_team_only_where_sim_team_is_accepted() {
 
     rig.say(0, "sim start");
     assert_eq!(rig.state(), MatchState::Boarding);
-    let said = rig.say(2, "sim unit");
+    let said = rig.say(2, "sim unit biped_mk1");
     assert!(
         said.contains(
             "The simulator centre is boarding; that is not something you can do to it now."
@@ -1824,7 +1834,7 @@ async fn q8_sim_unit_advises_sim_team_only_where_sim_team_is_accepted() {
     assert!(!rig.seat(0));
     assert!(rig.seat(1));
     assert_eq!(rig.state(), MatchState::Running);
-    let said = rig.say(2, "sim unit");
+    let said = rig.say(2, "sim unit biped_mk1");
     assert!(said.contains("The simulator centre is running;"), "{said}");
     assert!(!said.contains("SIM TEAM"), "{said}");
 
@@ -1832,7 +1842,7 @@ async fn q8_sim_unit_advises_sim_team_only_where_sim_team_is_accepted() {
     // so there the advice is true again.
     rig.end_match(tacsim::arena::EndReason::Abort);
     assert!(rig.state().is_terminal());
-    let said = rig.say(2, "sim unit");
+    let said = rig.say(2, "sim unit biped_mk1");
     assert!(
         said.contains("Claim a slot first: SIM TEAM red|blue."),
         "{said}"
@@ -1901,5 +1911,325 @@ async fn q8_a_refit_under_the_tacsim_identity_queues_the_tactics_document() {
             if key.as_str() == expected),
         "the one op is this tank's record: {:?}",
         ops[0].op
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut D.1 — the board and the two bare reads
+// ---------------------------------------------------------------------------
+
+/// The `red:` and `blue:` rows of one rendering, in that order.
+fn sides(board: &str) -> (String, String) {
+    let row = |head: &str| {
+        board
+            .lines()
+            .find(|line| line.trim_start().starts_with(head))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    (row("red:"), row("blue:"))
+}
+
+/// A rendering of the board as staff read it.
+fn staff_board(rig: &Rig) -> String {
+    match_::status_lines(rig.tw.world(), match_::BoardReader::Staff).join("\n")
+}
+
+/// **`B-01`: while a match runs a player reads their own side in full and every
+/// other side as index, callsign and name alone** (16b cut D.1; doc 16 §1, §5).
+///
+/// The four readers, **both** states the rule applies in — `Running` and
+/// `Stopping`, which is the whole of the gate — and the two before them that it
+/// does not.
+///
+/// The terminal states are walked last and prove something weaker on purpose,
+/// and the test says which: `release_rows` empties `centre.slots` at the end, so
+/// a terminal board has no slot row at all for the clause to act on and what is
+/// pinned there is the release, not the reader.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d1_the_board_withholds_the_other_sides_standing_while_a_match_runs() {
+    let mut rig = Rig::boot(3);
+
+    // (0) `Selection`: every reader gets the whole board, including the pilot
+    // with no slot at all. The choice is a lobby negotiation and both sides may
+    // read it.
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim unit biped_mk1");
+    for n in 0..3 {
+        let said = rig.say(n, "sim status");
+        assert!(
+            said.contains("[biped_mk1]"),
+            "reader {n} was refused the chassis bracket in Selection: {said}"
+        );
+    }
+
+    // (1) `Boarding`: still the whole board — there is no arena yet, and
+    // `seated` is lobby knowledge.
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    assert!(!rig.seat(0));
+    for n in 0..3 {
+        let said = rig.say(n, "sim status");
+        assert!(
+            said.contains(", seated"),
+            "reader {n} was refused `seated` in Boarding: {said}"
+        );
+    }
+
+    // (2) `Running`.
+    assert!(rig.seat(1));
+    assert_eq!(rig.state(), MatchState::Running);
+
+    // (a) the red pilot: red in full, blue reduced.
+    let said = rig.say(0, "sim status");
+    let (red, blue) = sides(&said);
+    assert!(red.contains(", pod ") && red.contains(", seated"), "{said}");
+    for word in [", pod ", ", seated", ", left", "["] {
+        assert!(
+            !blue.contains(word),
+            "a red pilot read `{word}` on the blue row: {said}"
+        );
+    }
+    assert!(blue.contains("(BA): Pilot1"), "{said}");
+
+    // (b) the blue pilot: the mirror image.
+    let said = rig.say(1, "sim status");
+    let (red, blue) = sides(&said);
+    assert!(
+        blue.contains(", pod ") && blue.contains(", seated"),
+        "{said}"
+    );
+    for word in [", pod ", ", seated", ", left", "["] {
+        assert!(
+            !red.contains(word),
+            "a blue pilot read `{word}` on the red row: {said}"
+        );
+    }
+    assert!(red.contains("(RA): Pilot0"), "{said}");
+
+    // (c) a player in the centre holding no slot: both sides reduced.
+    let said = rig.say(2, "sim status");
+    let (red, blue) = sides(&said);
+    for row in [&red, &blue] {
+        for word in [", pod ", ", seated", ", left", "["] {
+            assert!(
+                !row.contains(word),
+                "a slotless reader read `{word}`: {said}"
+            );
+        }
+    }
+    assert!(
+        red.contains("(RA): Pilot0") && blue.contains("(BA): Pilot1"),
+        "{said}"
+    );
+
+    // (d) staff: both sides in full, in the same state.
+    let board = staff_board(&rig);
+    let (red, blue) = sides(&board);
+    assert!(
+        red.contains(", pod ") && red.contains(", seated"),
+        "{board}"
+    );
+    assert!(
+        blue.contains(", pod ") && blue.contains(", seated"),
+        "{board}"
+    );
+
+    // (3) **A stop in flight** — the window `Stopping` is about. `SIM ABORT`
+    // from a participant sends the stop and moves the **record** to `Stopping`;
+    // the end lands when the arena answers and the egress is pumped, which this
+    // test never does. The **centre** stays `Running` throughout — nothing in
+    // the tree writes `MatchState::Stopping` to a centre (`lobby.rs` writes
+    // `Selection`, `Boarding`, `Running` and whatever `release_rows` is given),
+    // so the gate's `Stopping` arm is there for the day one does and cannot be
+    // reached from here. What this block pins is the reachable half: the slots
+    // are all still on the board, a stop is in flight, and the reader rule still
+    // bites.
+    rig.say(0, "sim abort");
+    assert_eq!(
+        rig.state(),
+        MatchState::Running,
+        "a centre took `Stopping`; the gate's second arm is reachable now and \
+         this block should read the board in it"
+    );
+    let record = rig
+        .centre()
+        .match_id
+        .and_then(|match_id| {
+            rig.tw
+                .world()
+                .module_state::<tacsim::match_::MatchBook>()
+                .and_then(|book| book.get(match_id).map(|record| record.state))
+        })
+        .expect("a running centre has a match on the book");
+    assert_eq!(
+        record,
+        MatchState::Stopping,
+        "the abort did not send the stop, so there is no stop in flight to read \
+         the board under"
+    );
+    assert_eq!(
+        rig.centre().slots.len(),
+        2,
+        "the stop released the rows, so there is nothing left to withhold"
+    );
+    let said = rig.say(0, "sim status");
+    let (red, blue) = sides(&said);
+    assert!(red.contains(", pod ") && red.contains(", seated"), "{said}");
+    for word in [", pod ", ", seated", ", left", "["] {
+        assert!(
+            !blue.contains(word),
+            "a red pilot read `{word}` on the blue row with a stop in flight: {said}"
+        );
+    }
+    assert!(blue.contains("(BA): Pilot1"), "{said}");
+    // And staff still read the whole of it.
+    let board = staff_board(&rig);
+    let (red, blue) = sides(&board);
+    assert!(
+        red.contains(", seated") && blue.contains(", seated"),
+        "staff were reduced while a stop was in flight: {board}"
+    );
+
+    // (4) A terminal centre is public again: the match is over and there is
+    // nothing left for a sensor to have earned. **What is pinned here is the
+    // release**: `release_rows` clears `centre.slots`, so both sides read
+    // `nobody` and the reader clause has no row to act on — a board that reduced
+    // in every state would pass this block too, which is why (3) above is the
+    // proof of the gate and this is not.
+    rig.end_match(tacsim::arena::EndReason::Abort);
+    assert!(rig.state().is_terminal());
+    let board = staff_board(&rig);
+    let (red, blue) = sides(&board);
+    assert!(
+        red.contains("nobody") && blue.contains("nobody"),
+        "the end left a slot row on the board, so the terminal arm below is no \
+         longer vacuous and must be written to test the reader: {board}"
+    );
+    for n in 0..3 {
+        let said = rig.say(n, "sim status");
+        assert_eq!(
+            said.trim_end(),
+            board.trim_end(),
+            "reader {n} was given a different board from staff after the end"
+        );
+    }
+}
+
+/// **`B-28`: the two bare reads answer anybody standing in the centre** (16b cut
+/// D.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d1_the_two_bare_reads_answer_anybody_in_the_centre() {
+    let mut rig = fill_rig(3);
+
+    // `SIM UNIT`, with no slot and in `Idle`: the catalog, and no `Yours:`.
+    let said = rig.say(2, "sim unit");
+    assert!(said.contains("Fieldable units: "), "{said}");
+    assert!(
+        !said.contains("Yours:"),
+        "a reader with no slot was told what they are flying: {said}"
+    );
+    // `SIM AI`, from a non-lead with no slot, in `Idle`.
+    let said = rig.say(2, "sim ai");
+    assert!(said.contains("AI fill: "), "{said}");
+
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    // A non-lead who holds a slot reads both, and the unit read names their own.
+    let said = rig.say(1, "sim unit");
+    assert!(said.contains("Fieldable units: "), "{said}");
+    assert!(said.contains("Yours: line_tank."), "{said}");
+    let said = rig.say(1, "sim ai");
+    assert!(said.contains("AI fill: "), "{said}");
+    // But setting is still the lead's, with its own sentence.
+    let said = rig.say(1, "sim ai 3");
+    assert!(
+        said.contains("Only a side's first pilot or staff can set the AI fill."),
+        "{said}"
+    );
+
+    // And in `Boarding`, where neither read was served at all before this cut.
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    for n in 0..3 {
+        let said = rig.say(n, "sim unit");
+        assert!(
+            said.contains("Fieldable units: "),
+            "reader {n} in Boarding: {said}"
+        );
+        let said = rig.say(n, "sim ai");
+        assert!(said.contains("AI fill: "), "reader {n} in Boarding: {said}");
+    }
+}
+
+/// **`B-30`: the claim line says what `SIM START` will actually do** (16b cut
+/// D.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d1_the_claim_line_branches_on_the_ai_fill() {
+    // With the fill off, the sentence is byte for byte what it always was.
+    let mut rig = Rig::boot(2);
+    let said = rig.say(0, "sim team red");
+    assert!(
+        said.contains(
+            "Pilot0 takes red slot 1. `SIM START` begins the match once both sides have a pilot."
+        ),
+        "{said}"
+    );
+
+    // With it on, `SIM START` needs nobody on the other side.
+    let mut rig = fill_rig(2);
+    let said = rig.say(0, "sim team red");
+    assert!(
+        said.contains(
+            "Pilot0 takes red slot 1. `SIM START` begins the match; the machines take the pods \
+             nobody claims."
+        ),
+        "{said}"
+    );
+    assert!(
+        !said.contains("once both sides have a pilot"),
+        "the old advice is still on a server where it is false: {said}"
+    );
+}
+
+/// **`B-29`: the board's clock is the arena's own, in `m:ss`** (16b cut D.1).
+///
+/// The formatting, at the edges nothing else exercises, and the `0:00` a board
+/// prints before the first `Frames` message arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d1_the_board_prints_the_arena_clock_in_minutes_and_seconds() {
+    for (now_ms, text) in [
+        (0_i64, "0:00"),
+        (-1, "0:00"),
+        (999, "0:00"),
+        (1_000, "0:01"),
+        (59_999, "0:59"),
+        (60_000, "1:00"),
+        (61_500, "1:01"),
+        (3_600_000, "60:00"),
+    ] {
+        assert_eq!(match_::clock_text(now_ms), text, "{now_ms} ms");
+    }
+
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    // `Selection` has no match id, so there is no clock line at all.
+    let said = rig.say(0, "sim status");
+    assert!(!said.contains("arena time"), "{said}");
+
+    rig.say(0, "sim start");
+    assert!(!rig.seat(0));
+    assert!(rig.seat(1));
+    assert_eq!(rig.state(), MatchState::Running);
+    let said = rig.say(0, "sim status");
+    assert!(
+        said.contains("  arena time 0:00"),
+        "a board read before the first frame reads nought: {said}"
+    );
+    assert!(
+        !said.contains(" ms"),
+        "the raw milliseconds are gone from the board: {said}"
     );
 }

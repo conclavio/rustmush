@@ -1088,8 +1088,10 @@ fn the_frame_renders_a_contact_as_a_designator_a_band_and_two_bearings() {
     // Due east of a platform facing north: 090 absolute, 090 relative.
     assert_eq!(row.bearing_deg, 90);
     assert_eq!(row.relative_deg, 90);
-    // 30,000 cm against the cannon's 250,000 cm reach: inside a third of it.
-    assert_eq!(row.band.as_str(), "close");
+    // **16b cut D.1**: the pilot's word is thirds of the LESSER of the sight and
+    // the fired weapon's reach. The fixture sight is 60 cells of 1,000 cm, so the
+    // limit is 60,000 cm and 30,000 cm is the middle third.
+    assert_eq!(row.band.as_str(), "effective");
     assert_eq!(row.cell, Some((40, 10)), "the marker's cell");
     assert_eq!(row.age_ms, arena.now_ms - 4, "held since its first pass");
     // **16b cut Q.1**: the line names the designator where it used to name the
@@ -1176,10 +1178,14 @@ fn a_range_band_is_read_against_the_fired_weapons_own_bands() {
 #[test]
 fn a_contact_row_reports_its_range_in_metres_rounded_to_fifty() {
     // 16b cut F.3: the one named constant, and half a step rounds up.
+    //
+    // **16b cut D.1** (`B-19`) floored the answer at one step: everything inside
+    // half a step used to print `0 m`, and `0 m` is the one distance a contact
+    // cannot be at.
     assert_eq!(cockpit::CONTACT_RANGE_STEP_M, 50);
     for (range_cm, metres) in [
-        (0_u64, 0_u64),
-        (2_400, 0),
+        (0_u64, 50_u64),
+        (2_400, 50),
         (2_500, 50),
         (3_000, 50),
         (7_400, 50),
@@ -1343,7 +1349,12 @@ fn a_notice_is_one_sentence_wherever_it_is_rendered() {
         !line.contains(&id.to_string()),
         "the sixteen digits are not a pilot's word any more: {line}"
     );
-    assert!(line.contains("close"), "the band the notice quotes: {line}");
+    // 16b cut D.1: the acquisition notice quotes the same word `CONTACTS` does,
+    // which is now `contact_band`'s.
+    assert!(
+        line.contains("effective"),
+        "the band the notice quotes: {line}"
+    );
     assert!(
         !line.contains(&format!("#{}", MARK.0)),
         "and never the target: {line}"
@@ -1803,7 +1814,12 @@ fn a_held_contact_is_reported_where_it_was_last_seen_and_ages() {
 
 #[test]
 fn a_contact_row_prints_a_band_and_a_range_in_metres() {
-    // **(m3)**: the band is the fired weapon's own, and the range is beside it.
+    // **(m3)**: the band is a word about the range, and the range is beside it.
+    //
+    // **16b cut D.1** changed which distance the word is about: thirds of the
+    // LESSER of the platform's own sight and the fired weapon's last band. The
+    // fixture sight is 60 cells of 1,000 cm, so the limit is 60,000 cm and not
+    // the cannon's 250,000.
     let mut arena = watching();
     let mut tape: Vec<u8> = Vec::new();
     let frame = pulse(&mut arena, PULSE_MS, &mut tape).expect("the acquiring pulse sends a frame");
@@ -1811,18 +1827,18 @@ fn a_contact_row_prints_a_band_and_a_range_in_metres() {
         .first()
         .cloned()
         .unwrap_or_else(|| panic!("one row"));
-    // 30,000 cm against the fixture cannon's inner band of 150,000 cm: inside a
-    // third of it.
-    assert_eq!(row.band.as_str(), "close");
+    // 30,000 cm against a 60,000 cm sight: the middle third.
+    assert_eq!(row.band.as_str(), "effective");
     assert_eq!(row.range_m, 300, "300 m, to the nearest fifty");
     let line = row.render();
-    assert!(line.contains("close"), "{line}");
+    assert!(line.contains("effective"), "{line}");
     assert!(line.contains("300 m"), "{line}");
     assert!(!line.contains('#'), "never an object number: {line}");
 
-    // Past a third of the inner band the word changes, which is the whole point:
-    // the shipped sight can produce it and cut S.2's thirds-of-the-reach never
-    // could.
+    // Past two thirds of the sight the word changes again — which is the whole
+    // point of `B-25`: before this cut `far` could not print at all on any
+    // shipped platform, because the cannon's own bands put it at 1.5 km and
+    // nothing can be plotted past 900 m.
     place(&mut arena, MARK, centre(61, 10), 0);
     let mut last = None;
     for n in 2..=6 {
@@ -1835,7 +1851,7 @@ fn a_contact_row_prints_a_band_and_a_range_in_metres() {
         .first()
         .cloned()
         .unwrap_or_else(|| panic!("one row"));
-    assert_eq!(row.band.as_str(), "effective");
+    assert_eq!(row.band.as_str(), "far");
     // 51,000 cm is 510 m, and 510 m to the nearest fifty is 500.
     assert_eq!(row.range_m, 500);
     assert!(row.render().contains("500 m"), "{}", row.render());

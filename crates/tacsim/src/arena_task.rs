@@ -18,7 +18,7 @@
 //! world -> task   ArenaMsg::Stop        abort, timeout or void
 //! world -> task   ArenaMsg::LedgerAck   every chunk up to this sequence is durable
 //! task  -> world  ArenaOut::Ledger      one closed chunk of the match's black box
-//! task  -> world  ArenaOut::Frames      the pilots whose view changed this pulse
+//! task  -> world  ArenaOut::Frames      the pilots whose view changed, and the arena's clock
 //! task  -> world  ArenaOut::Lagged      the clock or the egress is behind
 //! task  -> world  ArenaOut::Deliberate  the squads with something new to decide (N.2)
 //! task  -> world  ArenaOut::Ended       the match is over, with its ledger digest
@@ -115,14 +115,53 @@ pub enum ArenaOut {
         /// The chunk.
         chunk: LedgerChunk,
     },
-    /// The pilots whose view changed this pulse, in pilot-id order. Latest-wins
-    /// per pilot inside the arena, so a slow world drops stale frames and never
-    /// events.
+    /// The pilots whose view changed this pulse, in pilot-id order, **and the
+    /// arena's own clock**. Latest-wins per pilot inside the arena, so a slow
+    /// world drops stale frames and never events.
+    ///
+    /// **16b cut D.1 put the clock on it and made the message sendable empty.**
+    /// The board's `arena time` line had nothing per-pulse to mirror from and read
+    /// the last closed ledger chunk's timestamp instead, which is nought for the
+    /// first minutes of a match and a minute stale after that. There is no
+    /// per-pulse frame on a match nobody's view is changing in, so the message
+    /// itself carries the clock and [`Task::publish`] sends it when there is a
+    /// frame **or** when the arena second has moved since the last one it sent.
+    ///
+    /// **What the rule does, stated against the pulse rate and not against the
+    /// tempo.** A pulse is not a period: the task sleeps until `next_due_ms`,
+    /// which is *the earlier of the next period boundary and the next due event*
+    /// (see this module's head), so the pulse rate is
+    /// `min(period, next due event)`. On the shipped config the recurring due
+    /// events are the per-unit sensor pass (`sensors.pass_ms`, 1,000 ms) and the
+    /// reflex decision (`reflex.decide_ms`, 1,000 ms), both under
+    /// `tempo.alert_ms`, so **the pulse rate is about 1,000 ms at all three
+    /// tempos** and the tempo period only bites where a config pushes those
+    /// events out past it.
+    ///
+    /// The clause therefore suppresses an empty message whenever a pulse lands in
+    /// a second the last message already carried — every other pulse at the
+    /// shipped `Engaged` 500 ms period, and none at all where a pulse is a second
+    /// or more apart. Either way the steady state is **at most one empty message
+    /// per match per arena second**, and the board is at worst one arena second
+    /// stale. A config that pushes the sensor pass past the tempo (the
+    /// `arena_task` tests do, to see the clause at all) gets one message a pulse
+    /// at `Alert` and `Quiet` and one every other pulse at `Engaged`, and a board
+    /// one period stale.
+    ///
+    /// **The new steady-state traffic is one small droppable message per match
+    /// per arena second.** A match whose pilots are all parked sent nothing
+    /// before this and now sends an empty `Frames`. It is still `try_send` and
+    /// still droppable: a clock the world missed is superseded by the next
+    /// pulse's.
     Frames {
         /// Which match.
         match_id: MatchId,
-        /// One frame per pilot whose view changed.
+        /// One frame per pilot whose view changed. **May be empty**, when the
+        /// message is carrying nothing but the clock.
         frames: Vec<(ObjId, Frame)>,
+        /// **The arena's own `now_ms` after the step that produced this
+        /// message** (16b cut D.1). Monotonic within a match.
+        now_ms: i64,
     },
     /// The clock absorbed more wall time than the clamp allows, or the egress
     /// is backing up past half of `ledger.max_unflushed_chunks`.
@@ -287,6 +326,7 @@ pub fn spawn_arena(
         backlog_bound,
         buffer_bound,
         stall,
+        last_clock_s: None,
     }));
     Ok((
         ArenaHandle {
@@ -320,6 +360,10 @@ struct Task {
     buffer_bound: usize,
     /// `tempo.stall_ms`.
     stall: Duration,
+    /// **The arena second the last [`ArenaOut::Frames`] carried** (16b cut D.1),
+    /// or `None` before the first one. It is the whole of the clock clause: a
+    /// pulse with no frame in it sends nothing when the second has not moved.
+    last_clock_s: Option<i64>,
 }
 
 /// Add one message to a pre-pulse buffer, dropping the **oldest** when the buffer
@@ -513,13 +557,21 @@ impl Task {
             self.queue_chunk(chunk);
         }
         self.drain_backlog();
-        if !frames.is_empty() {
+        // **16b cut D.1**: the message carries the arena's clock, so it is sent
+        // when there is a frame **or** when the arena second has moved since the
+        // last one — at most one empty message an arena second, whatever the
+        // pulse rate. See [`ArenaOut::Frames`].
+        let now_ms = self.arena.now_ms;
+        let second = now_ms.div_euclid(1_000);
+        if !frames.is_empty() || self.last_clock_s != Some(second) {
+            self.last_clock_s = Some(second);
             // Frames are the one thing doc 16 §3.1 says a slow world may drop:
             // they are a latest-wins view, and the next pulse's frame supersedes
             // this one.
             let _ = self.egress.try_send(ArenaOut::Frames {
                 match_id: self.match_id,
                 frames,
+                now_ms,
             });
         }
         if lagged {

@@ -27,7 +27,7 @@ use mush_proto::OutputEvent;
 use mush_testkit::TestWorld;
 use tacsim::TacsimConfig;
 use tacsim::arena::state::{Channel, Team};
-use tacsim::match_::{self, MatchState, cockpit};
+use tacsim::match_::{self, BoardReader, MatchState, cockpit};
 
 // ---------------------------------------------------------------------------
 // The rig
@@ -214,6 +214,73 @@ impl Rig {
             .module_state::<tacsim::arena_bridge::ArenaRegistry>()
             .and_then(|registry| registry.last_frame(self.pilot(n)))
             .map(|held| held.frame.clone())
+    }
+
+    /// The same, insisting there is one.
+    fn held_frame(&self, n: usize) -> tacsim::arena::step::Frame {
+        self.frame(n).expect("the arena has spoken to that pilot")
+    }
+
+    /// **Hand the world ONE frame through the real egress seam** (16b cut D.1).
+    ///
+    /// [`Rig::pump`] moves whatever the live arena task has produced; this stages
+    /// a frame a test composed and fires the same re-entry, so `on_frames` runs
+    /// the production path over it — the notices, the mirror, the hint's two
+    /// frame-borne ends. Nothing is drained from the task's own egress, so the
+    /// staged frame is the last one `on_frames` sees.
+    ///
+    /// It is the arena's own message on the arena's own seam: no fixture stands
+    /// in for a module (16b §0.4), and there is no other way to put a platform
+    /// with no weapon left, or a refused `STARTUP`, in front of the cockpit.
+    fn push_frame(&mut self, n: usize, frame: tacsim::arena::step::Frame) {
+        let pilot = self.pilot(n);
+        let match_id = self.centre().match_id.expect("a running match");
+        let Some(tasks) = self
+            .tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .map(|registry| registry.tasks().clone())
+        else {
+            panic!("the arena registry is composed");
+        };
+        assert!(
+            tasks.stage(tacsim::arena_task::ArenaOut::Frames {
+                match_id,
+                frames: vec![(pilot, frame)],
+                now_ms: 0,
+            }),
+            "the egress staging table took the frame"
+        );
+        let out = self.tw.apply(mush_core::WorldCommand::ModuleAsyncDone {
+            module: smol_str::SmolStr::new_static(tacsim::arena_bridge::MODULE),
+            actor: GOD,
+            correlation: 0,
+            payload: tacsim::arena_bridge::EGRESS_PAYLOAD.to_owned(),
+        });
+        self.log.extend(out);
+    }
+
+    /// **Whether that pilot's `Starting` hint stands now** (16b cut D.1).
+    fn hinted(&self, n: usize) -> bool {
+        let pilot = self.pilot(n);
+        let now = self.tw.world().now();
+        self.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .is_some_and(|registry| registry.starting_hint(pilot, now))
+    }
+
+    /// Stamp that pilot's hint to expire at an absolute world second (16b cut
+    /// D.1), so a test can reach the expiry without sleeping.
+    fn hint_until(&mut self, n: usize, until_s: i64) {
+        let pilot = self.pilot(n);
+        if let Some(registry) = self
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+        {
+            registry.hint_starting(pilot, until_s);
+        }
     }
 
     fn say(&mut self, n: usize, line: &str) -> String {
@@ -994,7 +1061,14 @@ async fn the_reads_render_the_last_frame_and_the_frame_carries_doc_16_s_shape() 
 
     let said = rig.say(0, "status");
     assert!(said.contains("power off"), "cold at first: {said}");
-    assert!(said.contains("the arena is running"), "{said}");
+    // **16b cut D.1** (`T-59`): the pilot's own alert state, where the arena's
+    // one global tempo word used to be. The two tanks open 240 cells apart and
+    // the stock sight reaches 60, so this platform holds nothing.
+    assert!(said.contains("scope clear"), "{said}");
+    assert!(
+        !said.contains("the arena is running"),
+        "the arena's global tempo word is not the pilot's own state: {said}"
+    );
 
     let said = rig.say(0, "contacts");
     assert!(
@@ -1525,7 +1599,10 @@ async fn exit_mid_match_takes_the_pilot_off_the_frame_roster_and_off_the_binding
         !said.contains("back at your station"),
         "a reconnect reclaimed a seat that was given up: {said}"
     );
-    // And the centre says so: the slot is `left`, not `seated`.
+    // And the centre says so: the slot is `left`, not `seated`. Read by the
+    // ex-pilot themselves, whose own side this is — **16b cut D.1** reduced every
+    // OTHER side's rows while a match runs, so the blue row below is read off the
+    // staff board instead.
     let said = rig.say(0, "sim status");
     let red_row = said
         .lines()
@@ -1542,10 +1619,12 @@ async fn exit_mid_match_takes_the_pilot_off_the_frame_roster_and_off_the_binding
     );
     // And the pilot who stayed is still seated, so `left` is a fact about one
     // slot and not a word the renderer started printing everywhere.
+    let staff = tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff).join("\n");
     assert!(
-        said.lines()
+        staff
+            .lines()
             .any(|line| line.trim_start().starts_with("blue:") && line.contains(", seated")),
-        "{said}"
+        "{staff}"
     );
 }
 
@@ -1582,20 +1661,26 @@ async fn a_pilot_whose_session_ends_mid_match_is_left_on_the_board_too() {
         None,
         "a QUIT left the pilot bound to the match"
     );
-    let said = rig.say(1, "sim status");
-    let red_row = said
+    // **16b cut D.1**: the red row is read off the staff board, because the blue
+    // pilot who is still in the match is not entitled to red's standing while it
+    // runs — which is the whole of `B-01`, and is pinned in
+    // `match_lifecycle.rs`. What this test is about is that the release wrote
+    // `left` at all, and that the renderer prints it.
+    let staff = tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff).join("\n");
+    let red_row = staff
         .lines()
         .find(|line| line.trim_start().starts_with("red:"))
         .unwrap_or_default()
         .to_owned();
     assert!(
         red_row.contains(", left"),
-        "SIM STATUS calls a pilot who quit mid-match seated: {said}"
+        "SIM STATUS calls a pilot who quit mid-match seated: {staff}"
     );
     assert!(
         !red_row.contains(", seated"),
-        "SIM STATUS calls a pilot who quit mid-match seated: {said}"
+        "SIM STATUS calls a pilot who quit mid-match seated: {staff}"
     );
+    let said = rig.say(1, "sim status");
     assert!(
         said.lines()
             .any(|line| line.trim_start().starts_with("blue:") && line.contains(", seated")),
@@ -2171,6 +2256,10 @@ mod fixture {
     /// Red slot 1, `RA`, at the south-west corner, heading north-east, moving,
     /// warm, one track hurt and one destroyed, a cannon loaded and a machine gun
     /// cycling, locked on `BA`, four contacts and two notices.
+    ///
+    /// **16b cut D.1**: the platform carries the shipped 600 m sight, so two of
+    /// its four contacts read `far` — the band is thirds of the lesser of the
+    /// sight and the fired weapon's reach.
     #[must_use]
     pub fn frame() -> Frame {
         Frame {
@@ -2192,6 +2281,12 @@ mod fixture {
             power: Power::Online,
             blocked: false,
             tempo: Tempo::Engaged,
+            // **16b cut D.1**: the SHIPPED sight — 60 cells at the fixture's own
+            // 1,000 cm cell, 600 m — because the README's rule is that the scene
+            // never carries a value the server does not send. A longer sight
+            // would have kept the goldens still and would be a sensor the game
+            // cannot field.
+            sight_cm: 60_000,
             contacts: vec![
                 // Classified hostile, read two seconds ago, and the lock.
                 FrameContact {
@@ -2785,5 +2880,419 @@ fn an_unseated_asker_and_a_cleared_cockpit_read_the_same() {
             },
             "seated": false,
         })
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut D.1 — the panel tells the truth
+// ---------------------------------------------------------------------------
+
+/// **`B-25` and `B-19`: the pilot's band word, and the range floor** (16b cut
+/// D.1). Pure: no world, no arena.
+#[test]
+fn d1_contact_band_is_thirds_of_the_lesser_of_the_sight_and_the_reach() {
+    use tacsim::match_::cockpit::{CONTACT_RANGE_STEP_M, LOCK_RANGE_STEP_M, contact_band};
+
+    // The sight is the lesser: thirds of it, at each edge.
+    let bands = [150_000_u32, 300_000];
+    assert_eq!(contact_band(0, &bands, 60_000), "close");
+    assert_eq!(contact_band(20_000, &bands, 60_000), "close");
+    assert_eq!(contact_band(20_001, &bands, 60_000), "effective");
+    assert_eq!(contact_band(40_000, &bands, 60_000), "effective");
+    assert_eq!(contact_band(40_001, &bands, 60_000), "far");
+    // A plot a teammate passed you from past your own sight is `far` and not
+    // `beyond`: the gun still reaches it.
+    assert_eq!(contact_band(90_000, &bands, 60_000), "far");
+    // Past the last band nothing the platform fires reaches it.
+    assert_eq!(contact_band(300_000, &bands, 60_000), "far");
+    assert_eq!(contact_band(300_001, &bands, 60_000), "beyond");
+    // The WEAPON is the lesser: thirds of the last band.
+    assert_eq!(contact_band(100_000, &bands, 900_000), "close");
+    assert_eq!(contact_band(100_001, &bands, 900_000), "effective");
+    assert_eq!(contact_band(200_001, &bands, 900_000), "far");
+    // A platform with no sensor at all bands against the weapon alone.
+    assert_eq!(contact_band(100_000, &bands, 0), "close");
+    assert_eq!(contact_band(200_001, &bands, 0), "far");
+    // A platform with nothing that fires has nothing in range.
+    assert_eq!(contact_band(0, &[], 60_000), "beyond");
+    assert_eq!(contact_band(u64::MAX, &[u32::MAX], 60_000), "beyond");
+
+    // **The shipped numbers**: the stock cannon's bands and the stock sight.
+    let shipped = [150_000_u32, 300_000];
+    for (range_m, word) in [
+        (200_u64, "close"),
+        (201, "effective"),
+        (400, "effective"),
+        (401, "far"),
+        (900, "far"),
+    ] {
+        assert_eq!(
+            contact_band(range_m * 100, &shipped, 60_000),
+            word,
+            "{range_m} m on the shipped tank"
+        );
+    }
+
+    // `B-19`: a contact is never `0 m` away.
+    assert_eq!(cockpit::range_m_rounded(0, CONTACT_RANGE_STEP_M), 50);
+    assert_eq!(cockpit::range_m_rounded(2_400, CONTACT_RANGE_STEP_M), 50);
+    assert_eq!(cockpit::range_m_rounded(2_500, CONTACT_RANGE_STEP_M), 50);
+    assert_eq!(cockpit::range_m_rounded(2_600, CONTACT_RANGE_STEP_M), 50);
+    assert_eq!(cockpit::range_m_rounded(0, LOCK_RANGE_STEP_M), 10);
+    assert_eq!(cockpit::range_m_rounded(400, LOCK_RANGE_STEP_M), 10);
+}
+
+/// **`T-59`: the scope word is the pilot's own, and the frame carries the
+/// sight** (16b cut D.1), over the canonical scene's raw payload.
+#[test]
+fn d1_the_frame_carries_the_sight_and_the_pilots_own_scope() {
+    use tacsim::arena::state::{Classification, Team};
+
+    let (frame, _, _) = fixture::payloads();
+    assert_eq!(
+        frame.get("sight_m").and_then(serde_json::Value::as_u64),
+        Some(600),
+        "the platform's own nominal sight, metres: {frame}"
+    );
+    assert_eq!(
+        frame.get("scope").and_then(serde_json::Value::as_str),
+        Some("hostile"),
+        "the scene holds a classified blue contact: {frame}"
+    );
+    assert_eq!(
+        frame.get("tempo").and_then(serde_json::Value::as_str),
+        Some("engaged"),
+        "the arena's cadence stays on the wire for a panel's timers: {frame}"
+    );
+
+    // The three words, off three scopes.
+    let mut scene = fixture::frame();
+    assert_eq!(cockpit::own_scope(&scene), "hostile");
+    // Nothing but classified friends.
+    scene
+        .contacts
+        .retain(|held| held.class == Classification::Classified { team: Team::Red });
+    assert!(
+        !scene.contacts.is_empty(),
+        "the friend is still in the list"
+    );
+    assert_eq!(cockpit::own_scope(&scene), "clear");
+    // One unknown return.
+    let mut scene = fixture::frame();
+    scene
+        .contacts
+        .retain(|held| held.class == Classification::Unknown);
+    assert!(!scene.contacts.is_empty());
+    assert_eq!(cockpit::own_scope(&scene), "unidentified");
+    // A wreck's pilot with an empty scope reads `clear` whatever the arena is
+    // doing elsewhere, which is the whole of `T-59`.
+    let mut scene = fixture::frame();
+    scene.contacts.clear();
+    for tempo in [
+        tacsim::arena::clock::Tempo::Quiet,
+        tacsim::arena::clock::Tempo::Alert,
+        tacsim::arena::clock::Tempo::Engaged,
+    ] {
+        scene.tempo = tempo;
+        assert_eq!(cockpit::own_scope(&scene), "clear", "{tempo:?}");
+        let payload = cockpit::status_frame(tacsim::arena_task::MatchId(7), &scene);
+        assert_eq!(
+            payload.get("scope").and_then(serde_json::Value::as_str),
+            Some("clear")
+        );
+    }
+}
+
+/// **`B-02`: an empty weapon list on a live frame is a fact, not a gap** (16b cut
+/// D.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d1_an_empty_weapon_list_on_a_live_frame_is_a_fact() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+
+    // With NO frame at all, the world record is still read: a pilot who has just
+    // boarded is told the cannon exists.
+    let said = rig.say(0, "weaponstatus");
+    assert!(said.contains("cannon"), "{said}");
+    assert!(!said.contains("carries no weapon"), "{said}");
+
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let mut frame = rig.held_frame(0);
+    assert!(!frame.weapons.is_empty(), "the stock tank starts armed");
+    frame.weapons.clear();
+    rig.push_frame(0, frame);
+
+    let said = rig.say(0, "weaponstatus");
+    assert!(
+        said.contains("This unit carries no weapon."),
+        "the frame's empty list fell back to the pre-match world record: {said}"
+    );
+    assert!(
+        !said.contains("round(s)"),
+        "a weapon the platform no longer carries was printed: {said}"
+    );
+    // And `FIRE` refuses in the cockpit, one pulse earlier than the arena would.
+    let said = rig.say(0, "fire");
+    assert!(
+        said.contains("That unit carries no weapon called `cannon`."),
+        "{said}"
+    );
+    assert!(!said.contains("Firing"), "{said}");
+}
+
+/// **`B-06`: `STARTUP` knows what it already did, and the hint has four ends**
+/// (16b cut D.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d1_startup_reads_the_mirror_first_and_the_hint_ends_four_ways() {
+    use tacsim::arena::intents::{IntentKind, Refusal};
+    use tacsim::arena::perception::{FrameNotice, RefusalDetail};
+    use tacsim::arena::state::Power;
+
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    // A frame to compose the rest of this test's frames from. It says nothing
+    // about the hint: what stamps one is the verb below.
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    assert!(!rig.hinted(0), "a frame on its own stamped a startup hint");
+
+    // (0) Cold, and the arena has said nothing about the power yet: the intent
+    // goes and the hint is stamped.
+    let said = rig.say(0, "startup");
+    assert!(
+        said.contains("Startup sequence begun; power comes online shortly."),
+        "{said}"
+    );
+    assert!(rig.hinted(0), "the hint was not stamped");
+
+    // (1) And every motion verb now says WAIT rather than telling the pilot to
+    // type the thing they have just typed.
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains(cockpit::POWER_STARTING), "{said}");
+    let said = rig.say(0, "startup");
+    assert!(said.contains(cockpit::POWER_STARTING), "{said}");
+    assert!(
+        !said.contains("Startup sequence begun"),
+        "a second STARTUP said the sequence had begun again: {said}"
+    );
+
+    // (2) A frame carrying `Off` and no refusal LEAVES it: it may be a batch
+    // staged before the intent arrived.
+    let mut frame = rig.held_frame(0);
+    frame.power = Power::Off;
+    frame.notices.clear();
+    rig.push_frame(0, frame.clone());
+    assert!(rig.hinted(0), "an ordinary cold frame cleared the hint");
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains(cockpit::POWER_STARTING), "{said}");
+
+    // (3) A refusal for ANOTHER order leaves it too.
+    let refusal = |order: &str| FrameNotice::Refused {
+        order: smol_str::SmolStr::new(order),
+        refusal: Refusal::PowerNotOnline,
+        weapon: None,
+        detail: RefusalDetail::None,
+    };
+    let mut cold = frame.clone();
+    cold.notices = vec![refusal("fire")];
+    rig.push_frame(0, cold);
+    assert!(rig.hinted(0), "a refusal of another order cleared the hint");
+
+    // (4) **Refused**: a frame carrying the arena's refusal of THIS order clears
+    // it, so the pilot is not told to hold on for six seconds after reading
+    // `startup refused`.
+    let mut cold = frame.clone();
+    cold.notices = vec![refusal(IntentKind::Startup.as_str())];
+    rig.push_frame(0, cold);
+    assert!(!rig.hinted(0), "the refusing frame did not clear the hint");
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains(cockpit::POWER_NOT_ONLINE), "{said}");
+    assert!(
+        !said.contains(cockpit::POWER_STARTING),
+        "a refused STARTUP still told the pilot to hold on: {said}"
+    );
+
+    // (5) **Confirmed**: any frame whose power is not `Off` clears it.
+    rig.say(0, "startup");
+    assert!(rig.hinted(0));
+    let mut warm = frame.clone();
+    warm.power = Power::Starting;
+    rig.push_frame(0, warm);
+    assert!(!rig.hinted(0), "a `starting` frame did not clear the hint");
+    let said = rig.say(0, "startup");
+    assert!(said.contains(cockpit::POWER_STARTING), "{said}");
+
+    let mut hot = frame.clone();
+    hot.power = Power::Online;
+    rig.push_frame(0, hot);
+    let said = rig.say(0, "startup");
+    assert!(said.contains("Power is already online."), "{said}");
+    assert!(
+        !said.contains("Startup sequence begun"),
+        "STARTUP on a running tank promised a `Power online.` that will never come: {said}"
+    );
+
+    // (6) **Expired**: a hint stamped in the past is not a hint.
+    rig.hint_until(0, -1);
+    assert!(!rig.hinted(0), "an expired hint still stands");
+
+    // (7) **Unbound**: the seat ends, and the optimism goes with it.
+    rig.hint_until(0, i64::MAX);
+    assert!(rig.hinted(0));
+    if let Some(registry) = rig
+        .tw
+        .world_mut()
+        .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+    {
+        registry.unbind_pilot(pilot);
+    }
+    assert!(!rig.hinted(0), "unbinding the pilot left the hint behind");
+}
+
+/// **`B-06`, the hint's fourth end by its OTHER door: the match's own rows go**
+/// (16b cut D.1).
+///
+/// [`ArenaRegistry::unbind_pilot`] is pinned in the test above; this is
+/// [`ArenaRegistry::untrack`], which is what runs when a pilot's station has
+/// already gone — a check-in that could not release the seat, and every pilot on
+/// a void — and it is written on a pilot with a hint and **no remembered frame at
+/// all**, which is the whole of what the sweep has to get right. `untrack` reads
+/// the match's pilots off its own roster *before* emptying it; the obvious
+/// refactor is to key the sweep on `last_frames`, which sits two lines away and
+/// is empty here, and that would leave this hint behind for the next match's
+/// pilot to read as a cold tank coming up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d1_untracking_a_match_drops_a_hint_no_frame_ever_confirmed() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    let pilot = rig.pilot(0);
+    // Nothing has been pumped, so the registry remembers no frame for anybody:
+    // a hint is all there is to find this pilot by.
+    assert!(
+        rig.frame(0).is_none(),
+        "a frame arrived before the test could stamp a hint without one"
+    );
+    rig.hint_until(0, i64::MAX);
+    assert!(rig.hinted(0));
+
+    let match_id = rig
+        .centre()
+        .match_id
+        .expect("a running centre has a match id");
+    if let Some(registry) = rig
+        .tw
+        .world_mut()
+        .module_state_mut::<tacsim::arena_bridge::ArenaRegistry>()
+    {
+        // The roster is what the sweep reads, and this is the row it has to find
+        // the hint by — there is no frame to find it by.
+        assert!(
+            registry.pilots_of(match_id).contains(&pilot),
+            "the pilot is not on the match's roster, so the sweep below would \
+             pass without doing anything"
+        );
+        let _ = registry.untrack(match_id);
+    }
+    assert!(
+        !rig.hinted(0),
+        "untracking the match left behind a hint no frame had ever confirmed"
+    );
+}
+
+/// **`T-59`: each of `STATUS`'s three scope sentences, through the verb** (16b
+/// cut D.1).
+///
+/// [`cockpit::own_scope`]'s three bare words are pinned over the canonical scene
+/// elsewhere; what this pins is the mapping `STATUS` puts them through, whose
+/// third arm is a catch-all — so swapping the two named arms, or dropping one of
+/// them into the catch-all, reads `scope clear` to a pilot holding a hostile and
+/// nothing else in the suite would say so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d1_status_prints_the_sentence_for_each_scope() {
+    use tacsim::arena::state::Classification;
+
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let base = rig.held_frame(0);
+    let scene = fixture::frame();
+
+    // (a) an empty scope.
+    let mut frame = base.clone();
+    frame.contacts.clear();
+    rig.push_frame(0, frame);
+    let said = rig.say(0, "status");
+    assert!(said.contains("; scope clear"), "{said}");
+
+    // (b) returns, none of them resolved.
+    let mut frame = base.clone();
+    frame.contacts = scene
+        .contacts
+        .iter()
+        .filter(|held| held.class == Classification::Unknown)
+        .cloned()
+        .collect();
+    assert!(!frame.contacts.is_empty(), "the scene holds an unknown");
+    rig.push_frame(0, frame);
+    let said = rig.say(0, "status");
+    assert!(
+        said.contains("; scope holds an unidentified contact"),
+        "{said}"
+    );
+    assert!(!said.contains("scope clear"), "{said}");
+
+    // (c) one of them is theirs.
+    let mut frame = base.clone();
+    frame.contacts = scene.contacts.clone();
+    assert_eq!(
+        cockpit::own_scope(&frame),
+        "hostile",
+        "the scene's contacts are read against this platform's own team"
+    );
+    rig.push_frame(0, frame);
+    let said = rig.say(0, "status");
+    assert!(said.contains("; scope holds a hostile"), "{said}");
+    assert!(!said.contains("unidentified"), "{said}");
+}
+
+/// **`B-01`: the withheld fact is the other side's STANDING, and it really is
+/// withheld** (16b cut D.1).
+///
+/// The reduced row is compared byte for byte across the one change that moves a
+/// side's standing while a match runs — a pilot typing `EXIT` — because "no
+/// `seated` in the output" would pass just as well on a board that never said
+/// `seated` about anybody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d1_the_other_sides_row_does_not_move_when_that_side_loses_a_pilot() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+
+    let blue_row = |said: &str| {
+        said.lines()
+            .find(|line| line.trim_start().starts_with("blue:"))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let before = blue_row(&rig.say(0, "sim status"));
+    assert!(before.contains("(BA): Pilot1"), "{before}");
+
+    // The blue pilot climbs out, which mid-match is final.
+    rig.say(1, "exit");
+    assert!(
+        rig.centre()
+            .slots
+            .iter()
+            .any(|slot| slot.team == tacsim::arena::state::Team::Blue && slot.left),
+        "the EXIT did not mark the blue slot as gone"
+    );
+
+    // Staff can see it. The red pilot cannot, and reads exactly what they read
+    // before.
+    let staff = tacsim::match_::status_lines(rig.tw.world(), BoardReader::Staff).join("\n");
+    assert!(blue_row(&staff).contains(", left"), "{staff}");
+    let after = blue_row(&rig.say(0, "sim status"));
+    assert_eq!(
+        before, after,
+        "the red pilot's reading of the blue row moved when blue lost its pilot"
     );
 }

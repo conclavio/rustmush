@@ -97,6 +97,10 @@ fault-injection = []
 [dev-dependencies]
 mush-testkit.workspace = true
 mush-proto.workspace = true
+# 16b cut D.1: `tests/arena_task.rs` pins the clock on `ArenaOut::Frames` at all
+# three tempos, and the slowest of them is a 5,000 ms period. `start_paused`
+# (virtual clock) is what keeps that a test rather than half a minute of sleep.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

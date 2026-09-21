@@ -26,12 +26,16 @@ the same thing this topic does, in fewer words.
                       staff, with at least one pilot a side.
   SIM ABORT           call the match off (any pilot in it, or staff).
   SIM STATUS          the centre: its state, its sides, its slots and its pods.
+                      While a match runs you read your own side in full and
+                      every other side by slot, callsign and pilot alone.
                       The bare word SIM is the same thing.
   SIM AI [n]          how many units a side fields when the machines fill in.
-                      A side's first pilot or staff, before the match starts;
-                      the bare word reads the number.
+                      A side's first pilot or staff sets it, during selection;
+                      the bare word reads the number for anybody in the centre,
+                      in any state.
   SIM UNIT [type]     which unit type your own slot fields. The bare word lists
-                      what this server can field and what you are flying.
+                      what this server can field, for anybody in the centre, and
+                      adds what you are flying if you hold a slot.
 
 A slot belongs to your **account**, not to your character, so an alt cannot take
 a second one. All of these work in the lobby, the two team rooms and the pods,
@@ -57,7 +61,12 @@ has chosen for, so nobody ever inherits anybody else's choice.
 
 Once the match has started the board stops printing anybody's choice: by then
 the tanks have been refitted, and what another machine is remains something
-your own sensors have to tell you.
+your own sensors have to tell you. For the same reason it stops printing the
+other side's *standing* while the match runs: your own side reads in full, and
+every other side is its slot numbers, its callsigns and its pilots' names and
+nothing more — no pod, no `seated`, no `left`. Whether the pilot on `BA` is
+still in that tank is a thing your sensors have to earn. Staff read the whole
+board with `@arena/status`.
 
 What the shipped server can field:
 

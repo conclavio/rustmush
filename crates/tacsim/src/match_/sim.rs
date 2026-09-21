@@ -219,8 +219,11 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             // in any particular state — but it is still of the centre, and the
             // check at the top of this function is what refuses it outside one.
             // `lobby::status_lines` has no location check of its own.
+            // **16b cut D.1**: the board takes a reader, and this one is a
+            // player. While a match runs they read their own side in full and
+            // every other side as index, callsign and pilot name alone.
             let actor = ctx.actor;
-            for row in lobby::status_lines(ctx.w) {
+            for row in lobby::status_lines(ctx.w, lobby::BoardReader::Player(actor)) {
                 ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, row);
             }
             Ok(())

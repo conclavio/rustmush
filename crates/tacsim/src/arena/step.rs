@@ -116,6 +116,23 @@ pub struct Frame {
     pub blocked: bool,
     /// The arena's tempo, so a cockpit can say how often it is being told things.
     pub tempo: Tempo,
+    /// **How far the platform's own sight reaches**, centimetres (16b cut D.1;
+    /// doc 16 §3.6), or `0` for a platform that carries no sensor at all.
+    ///
+    /// The **nominal** reach, and deliberately so: it is
+    /// `SensorProfile::max_range_cells × cell_cm`, the same product
+    /// `Arena::detections` calls `max_range_cm` *before* the target's signature,
+    /// the thermal channel and any jamming shorten it. The reach a real detection
+    /// gets is that figure scaled; this is the size of the scope and not what the
+    /// scope can resolve this second, and it must not be scaled here — a jammed
+    /// reach on the frame is its own piece of work.
+    ///
+    /// It is a fact about the pilot's own machine — the same kind of thing
+    /// [`Frame::sections`] and [`Frame::heat`] are — so it is outside the observer
+    /// rule entirely. [`crate::match_::cockpit::contact_band`] is the one reader:
+    /// the pilot's band word is thirds of the lesser of this and the fired
+    /// weapon's last band.
+    pub sight_cm: u32,
     /// **What the platform holds** (16b cut S.1; doc 16 §3.6 "What a pilot sees"),
     /// in contact-id order — the same order [`crate::arena::state::ShadowContacts`]
     /// iterates in, so two pulses that hold the same set produce the same list.
@@ -274,6 +291,12 @@ impl Frame {
             && self.power == other.power
             && self.blocked == other.blocked
             && self.tempo == other.tempo
+            // **16b cut D.1**: the pilot's band word is read against it, so a
+            // frame that carried a different sight would print different words.
+            // It never moves inside a match — the sensor row and the cell size
+            // are both fixed at check-out — so comparing it costs no frame
+            // anybody would not already have been sent.
+            && self.sight_cm == other.sight_cm
             && self.contacts == other.contacts
             // **16b cut Q.2**: the readings ride the contacts, which are already
             // compared in full, and the tables are what those readings are in the
@@ -1105,6 +1128,15 @@ impl Arena {
                     // 16b cut F.2: the condition, not the substep's flag.
                     blocked: unit.held,
                     tempo,
+                    // **16b cut D.1**: the nominal reach of the platform's own
+                    // sight, `max_range_cells × cell_cm`, and `0` for a hull
+                    // that carries no sensor. The same product
+                    // `Arena::detections` starts from, unscaled — see
+                    // [`Frame::sight_cm`].
+                    sight_cm: unit.sensor.as_ref().map_or(0, |sensor| {
+                        u32::from(sensor.max_range_cells)
+                            .saturating_mul(u32::from(self.definition.terrain.cell_cm()))
+                    }),
                     contacts,
                     scan_tables,
                     // Per platform, so two pilots in one tank are both told.

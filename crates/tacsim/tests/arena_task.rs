@@ -11,7 +11,11 @@
 //!   faulted pulse produced leaves**;
 //! - **(c)** a pulse past `tempo.stall_ms` is voided by the watchdog;
 //! - **(d)** the stop signal ends the task **silently** — no result, no frames,
-//!   no chunks.
+//!   no chunks;
+//! - **(e)** (16b cut D.1) [`ArenaOut::Frames`] carries the arena's clock and is
+//!   sent when there is a frame **or** when the arena second has moved, so a
+//!   match nobody is moving in still publishes its clock — once an arena second,
+//!   never twice.
 //!
 //! # Seeds
 //!
@@ -43,6 +47,9 @@ use tokio::sync::mpsc;
 /// Every seed this file arms an arena with, and which proof owns it. The two
 /// hooks in `arena/step.rs` key on the seed, so a duplicate here would let one
 /// test's fault land in another's match.
+/// **16b cut D.1**: proof (e) arms no hook, so its matches are numbered out of
+/// the way rather than listed here — `2_360 + period_ms` for the idle clock and
+/// `2_371` for the frame that outranks it.
 const SEEDS: [(u64, &str); 4] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
@@ -567,4 +574,252 @@ fn every_proof_has_its_own_match_seed() {
             seen.get(&seed)
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// (e) The clock on `Frames` (16b cut D.1, `B-29`)
+// ---------------------------------------------------------------------------
+
+/// The same check-out with **nobody seated**, so the arena produces no frame at
+/// all and the only thing that can leave on [`ArenaOut::Frames`] is the clock.
+fn unseated_custody(seed: u64) -> CustodyOut {
+    CustodyOut {
+        pilots: Vec::new(),
+        ..custody(seed)
+    }
+}
+
+/// One match with nobody in it, on the current runtime.
+fn start_unseated(
+    seed: u64,
+    arena_cfg: &ArenaConfig,
+    sensors_cfg: &SensorsConfig,
+) -> (ArenaHandle, mpsc::Receiver<ArenaOut>) {
+    let (egress_tx, egress_rx) = mpsc::channel(256);
+    let (handle, _join) = spawn_arena(
+        &tokio::runtime::Handle::current(),
+        MatchId(seed),
+        unseated_custody(seed),
+        arena_cfg,
+        &MatchConfig::default(),
+        sensors_cfg,
+        egress_tx,
+    )
+    .expect("the test check-out is accepted");
+    (handle, egress_rx)
+}
+
+/// A sensors block whose pass cadence is past any window a test here opens: the
+/// pass is a due event for **every** unit, staggered by object id, so on the
+/// defaults it — and not the tempo — is what decides the pulse rate at `Quiet`.
+fn no_passes() -> SensorsConfig {
+    SensorsConfig {
+        pass_ms: 600_000,
+        ..SensorsConfig::default()
+    }
+}
+
+/// An arena whose period is `period_ms` whatever tempo it picks, which is how a
+/// test pins the cadence without having to make two tanks shoot at each other.
+///
+/// The two recurring due events are pushed past any window a test here opens, so
+/// that `next_due_ms` really is the period: the `position_summary` cadence and
+/// the reflex controller's `decide_ms`, which on this fixture's ids falls every
+/// 1,000 ms and would otherwise be what decides the pulse rate at `Quiet`.
+fn arena_at(period_ms: u32) -> ArenaConfig {
+    let mut cfg = ArenaConfig::default();
+    cfg.tempo.quiet_ms = period_ms;
+    cfg.tempo.alert_ms = period_ms;
+    cfg.tempo.engaged_ms = period_ms;
+    cfg.ledger.summary_ms = 600_000;
+    cfg.reflex.decide_ms = 600_000;
+    cfg
+}
+
+/// Every `Frames` message's `(frame count, now_ms)`, in order.
+fn clocks(messages: &[ArenaOut]) -> Vec<(usize, i64)> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ArenaOut::Frames { frames, now_ms, .. } => Some((frames.len(), *now_ms)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **`B-29`: an empty `Frames` carries the arena's clock, and is sent when the
+/// arena SECOND has moved** (16b cut D.1).
+///
+/// **This pins the clause, not the shipped cadence.** The clause is only visible
+/// where a pulse is shorter than a second, and on the shipped config no pulse is:
+/// the per-unit sensor pass and the reflex decision are both due every 1,000 ms
+/// and `next_due_ms` is the earlier of a due event and the period, so the shipped
+/// pulse rate is about 1,000 ms at all three tempos. [`no_passes`] and
+/// [`arena_at`] push those events out past the window so that the period really
+/// is the pulse rate, which is the only way to make a 500 ms pulse and watch the
+/// clause suppress every other one. The gap between two messages is what is
+/// pinned:
+///
+/// * a 500 ms period: the second moves every OTHER pulse, so the gap is
+///   1,000 ms and not 500 — one message an arena second, never two in one;
+/// * a 1,000 ms and a 5,000 ms period: the second has moved at every pulse, so
+///   the gap is the period and it is one message a pulse.
+///
+/// What the shipped config does is pinned by
+/// [`d1_the_shipped_config_publishes_its_clock_about_once_an_arena_second`].
+///
+/// The clock runs on tokio's paused timer, so the arena's own wall reference
+/// moves in whole periods and nothing here sleeps.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn d1_an_idle_match_publishes_its_clock_once_an_arena_second() {
+    for (period_ms, gap_ms) in [(500_u32, 1_000_i64), (1_000, 1_000), (5_000, 5_000)] {
+        // A seed of its own per cadence, and none of the four fault seeds.
+        let seed = 2_360 + u64::from(period_ms);
+        let (_handle, mut rx) = start_unseated(seed, &arena_at(period_ms), &no_passes());
+        let messages = collect(&mut rx, Duration::from_millis(10_050)).await;
+        let clocks = clocks(&messages);
+        assert!(
+            clocks.len() >= 3,
+            "a {period_ms} ms match published no clock at all: {clocks:?}"
+        );
+        for (frames, _) in &clocks {
+            assert_eq!(
+                *frames, 0,
+                "a match nobody is seated in produced a frame: {clocks:?}"
+            );
+        }
+        let mut seconds: Vec<i64> = clocks.iter().map(|(_, now_ms)| now_ms / 1_000).collect();
+        let published = seconds.len();
+        seconds.dedup();
+        assert_eq!(
+            seconds.len(),
+            published,
+            "two clocks in one arena second at {period_ms} ms: {clocks:?}"
+        );
+        // The gap, to within the wall reference's own wobble: the arena's first
+        // pulse establishes the reference and the ones after it land on whole
+        // periods measured from it, so a boundary can sit a few milliseconds
+        // either side of the round number.
+        for pair in clocks.windows(2) {
+            let [(_, first), (_, next)] = pair else {
+                continue;
+            };
+            assert!(
+                (next - first - gap_ms).abs() <= 50,
+                "the clock's cadence at a {period_ms} ms period was {} and not {gap_ms}: \
+                 {clocks:?}",
+                next - first
+            );
+        }
+    }
+}
+
+/// **What the SHIPPED config does with the clock clause** (16b cut D.1, `B-29`).
+///
+/// The test above pins the clause by pushing the recurring due events out of the
+/// way; this one changes nothing at all. On the defaults the per-unit sensor pass
+/// (`sensors.pass_ms`, 1,000 ms) and the reflex decision (`reflex.decide_ms`,
+/// 1,000 ms) are both due more often than `tempo.quiet_ms`, and `next_due_ms` is
+/// the earlier of a due event and the period — so the pulse rate is about a
+/// second whatever tempo the arena picks, and the board's staleness bound is one
+/// arena second and not one tempo period.
+///
+/// That is the figure the seam is sized by and the figure
+/// [`tacsim::arena_task::ArenaOut::Frames`]' own doc states, so it is pinned on
+/// the config the game ships rather than on one no server runs.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn d1_the_shipped_config_publishes_its_clock_about_once_an_arena_second() {
+    let (_handle, mut rx) =
+        start_unseated(2_377, &ArenaConfig::default(), &SensorsConfig::default());
+    let messages = collect(&mut rx, Duration::from_millis(10_050)).await;
+    let clocks = clocks(&messages);
+    assert!(
+        clocks.len() >= 5,
+        "the shipped config published almost no clock in ten seconds: {clocks:?}"
+    );
+    for (frames, _) in &clocks {
+        assert_eq!(
+            *frames, 0,
+            "a match nobody is seated in produced a frame: {clocks:?}"
+        );
+    }
+    // Never twice in one arena second — the clause, doing its one job.
+    let mut seconds: Vec<i64> = clocks.iter().map(|(_, now_ms)| now_ms / 1_000).collect();
+    let published = seconds.len();
+    seconds.dedup();
+    assert_eq!(
+        seconds.len(),
+        published,
+        "two clocks in one arena second on the shipped config: {clocks:?}"
+    );
+    // And never a second and a bit apart, which is the staleness bound: a 5,000
+    // ms gap here would mean the pulse rate really was `tempo.quiet_ms` and the
+    // seam's own doc was over-stating the board's freshness by five times.
+    for pair in clocks.windows(2) {
+        let [(_, first), (_, next)] = pair else {
+            continue;
+        };
+        assert!(
+            next - first <= 1_050,
+            "the shipped board went {} ms without a clock: {clocks:?}",
+            next - first
+        );
+    }
+}
+
+/// **A pulse with a frame in it is sent whatever the second says** (16b cut
+/// D.1), which is the other half of the rule: the clause only ever suppresses an
+/// EMPTY message.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn d1_a_pulse_that_carries_a_frame_is_never_suppressed_by_the_clock() {
+    // The seated match, at the same 500 ms period the test above showed
+    // suppressing every other message.
+    let seed = 2_371;
+    let (handle, mut rx) = start(seed, &arena_at(500));
+    let order = |seq: u64, kind: IntentKind| {
+        ArenaMsg::Intent(Intent {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 1,
+            kind,
+            seq,
+        })
+    };
+    handle
+        .offer(order(1, IntentKind::Startup))
+        .expect("the inbox takes the startup");
+    // Past `match.startup_ms`, so the tank is awake and can be told to move.
+    let warming = collect(&mut rx, Duration::from_millis(11_050)).await;
+    handle
+        .offer(order(2, IntentKind::Heading { mdeg: 90_000 }))
+        .expect("the inbox takes the heading");
+    handle
+        .offer(order(3, IntentKind::Speed { cms: 800 }))
+        .expect("the inbox takes the speed");
+    let moving = collect(&mut rx, Duration::from_millis(3_050)).await;
+    let warm_clocks = clocks(&warming);
+    let clocks = clocks(&moving);
+    assert!(
+        clocks.iter().any(|(frames, _)| *frames > 0),
+        "the moving platform's pilot was never sent a frame: {clocks:?}"
+    );
+    // Two messages half a second apart can only exist because the later one
+    // carried a frame: the clock clause alone would have suppressed it.
+    assert!(
+        clocks
+            .windows(2)
+            .any(|pair| matches!(pair, [(_, first), (frames, next)]
+                if *next - *first < 1_000 && *frames > 0)),
+        "every message was an arena second apart, so the frame branch never \
+         published: {clocks:?}"
+    );
+    // And the clock never goes backwards, across both windows.
+    let all: Vec<(usize, i64)> = warm_clocks.into_iter().chain(clocks).collect();
+    assert!(
+        all.windows(2).all(|pair| match pair {
+            [(_, first), (_, next)] => next >= first,
+            _ => true,
+        }),
+        "the arena's clock went backwards: {all:?}"
+    );
 }

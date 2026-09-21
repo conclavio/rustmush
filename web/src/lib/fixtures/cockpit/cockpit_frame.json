@@ -10,7 +10,7 @@
       "age_ms": 1200,
       "age_s": 1,
       "alias": "X1",
-      "band": "effective",
+      "band": "far",
       "bearing_deg": 45,
       "cell": [
         36,
@@ -50,7 +50,7 @@
       "age_ms": 3500,
       "age_s": 3,
       "alias": null,
-      "band": "close",
+      "band": "effective",
       "bearing_deg": 315,
       "cell": [
         14,
@@ -68,7 +68,7 @@
       "age_ms": 6000,
       "age_s": 6,
       "alias": null,
-      "band": "effective",
+      "band": "far",
       "bearing_deg": 30,
       "cell": [
         50,
@@ -102,7 +102,7 @@
       "designator": "X4",
       "kind": "acquired",
       "section": null,
-      "text": "New contact X4: bearing 030°, effective."
+      "text": "New contact X4: bearing 030°, far."
     },
     {
       "contact": "1111111111111111",
@@ -127,6 +127,7 @@
     "retain": "latest",
     "version": 1
   },
+  "scope": "hostile",
   "sections": [
     {
       "condition": "intact",
@@ -193,6 +194,7 @@
       "internals_max": 30
     }
   ],
+  "sight_m": 600,
   "speed_cms": 1200,
   "speed_kph": 43,
   "tempo": "engaged",

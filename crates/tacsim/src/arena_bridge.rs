@@ -70,7 +70,7 @@ use tokio::task::JoinHandle;
 use crate::arena::clock::Tempo;
 use crate::arena::intents::{Control, ControlState, Intent, IntentKind};
 use crate::arena::ledger::LedgerEvent;
-use crate::arena::state::{Channel, MatchEnd, StopReason};
+use crate::arena::state::{Channel, MatchEnd, Power, StopReason};
 use crate::arena::step::Frame;
 use crate::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId};
 use crate::store::{NS, push_op};
@@ -401,6 +401,16 @@ pub struct MatchMirror {
     pub tempo: Tempo,
     /// The highest arena timestamp any ledger event has carried.
     pub arena_ms: i64,
+    /// **The arena's own clock** (16b cut D.1), as the last
+    /// [`crate::arena_task::ArenaOut::Frames`] reported it, and `end.t_ms` once
+    /// the match has ended. Never lowered.
+    ///
+    /// It is what `SIM STATUS` prints its `arena time m:ss` from.
+    /// [`MatchMirror::arena_ms`] is a different number and stays: that is the
+    /// last **closed ledger chunk's** timestamp, which is what an operator wants
+    /// on `@arena/status` beside the black box's own counts, and it is nought for
+    /// the first minutes of a match.
+    pub now_ms: i64,
     /// How many `lagged` notices the arena has sent.
     pub lagged: u64,
     /// Chunks appended to `log:match.<id>`.
@@ -454,6 +464,36 @@ pub struct ArenaRegistry {
     /// **16b cut K.2**: the last frame each pilot was sent (see
     /// [`CockpitFrame`]).
     last_frames: BTreeMap<ObjId, CockpitFrame>,
+    /// **The one optimistic fact this mirror holds** (16b cut D.1): a pilot whose
+    /// `STARTUP` the world has forwarded but whose arena has not answered yet,
+    /// and the **world second** the optimism runs out at.
+    ///
+    /// Everything else here is a copy of something the arena said (D-16-1: the
+    /// arena is the single writer while a match runs). This one row is the world
+    /// saying *I have just sent that order*, and it exists because a frame at the
+    /// `Quiet` tempo is up to five seconds away — so without it `STARTUP`
+    /// followed by `HEADING` answers `Power not online: STARTUP first.`, which is
+    /// advice to type the thing the pilot has just typed.
+    ///
+    /// **It ends four ways, and only these four:**
+    /// 1. **confirmed** — [`on_frames`] removes it when a frame for that pilot
+    ///    carries `power != Off`;
+    /// 2. **refused** — [`on_frames`] removes it when a frame for that pilot
+    ///    carries a [`crate::arena::perception::FrameNotice::Refused`] whose
+    ///    `order` is `IntentKind::Startup.as_str()`. That frame is the clearing
+    ///    frame: without this arm a refused `STARTUP` would read
+    ///    `startup refused: …` and then `Power is still coming up; hold on.` for
+    ///    the rest of the hint;
+    /// 3. **expired** — the world clock passes the stamped second, which is a
+    ///    `STARTUP` that was lost; the pilot is told to `STARTUP` again, which is
+    ///    then true;
+    /// 4. **unbound** — [`ArenaRegistry::unbind_pilot`] and
+    ///    [`ArenaRegistry::untrack`] drop it wherever they drop
+    ///    [`ArenaRegistry::last_frames`].
+    ///
+    /// A frame carrying `power == Off` and **no** such refusal does *not* clear
+    /// it: a batch staged before the intent arrived is drained after it.
+    starting_hints: BTreeMap<ObjId, i64>,
     /// **16b cut K.2**: the ground each running match is fought over, so `VIEW`
     /// can draw the window without re-deriving a 65,536-cell arena from the
     /// atlas on every look. One `Arc` per match, taken at check-out and dropped
@@ -509,6 +549,7 @@ impl ArenaRegistry {
             pilots: BTreeMap::new(),
             matches: BTreeMap::new(),
             last_frames: BTreeMap::new(),
+            starting_hints: BTreeMap::new(),
             arenas: BTreeMap::new(),
             deliberation: BTreeMap::new(),
         }
@@ -550,12 +591,27 @@ impl ArenaRegistry {
             .filter(|(_, held)| **held == match_id)
             .map(|(unit, _)| *unit)
             .collect();
+        // **16b cut D.1**: read off the roster BEFORE it is emptied, because a
+        // pilot who typed `STARTUP` and never got a frame has a hint and no
+        // remembered frame at all.
+        let pilots: Vec<ObjId> = self
+            .pilots
+            .iter()
+            .filter(|(_, (held, _))| *held == match_id)
+            .map(|(pilot, _)| *pilot)
+            .collect();
         self.units.retain(|_, held| *held != match_id);
         self.pilots.retain(|_, (held, _)| *held != match_id);
         self.epochs.retain(|(unit, _), _| !units.contains(unit));
         // 16b cut K.2: the cockpit's two mirrors go with the match. A frame left
         // behind would be the first thing the *next* match's pilot read.
         self.last_frames.retain(|_, held| held.match_id != match_id);
+        // **16b cut D.1**, the hint's fourth end: it goes wherever the frame it
+        // is an optimistic stand-in for goes. A hint left behind would tell the
+        // *next* match's pilot that their cold tank is coming up.
+        for pilot in pilots {
+            self.starting_hints.remove(&pilot);
+        }
         self.arenas.remove(&match_id);
         // 16b cut N.2: and the deliberation row, for the same reason. An order
         // whose time to live outlives the match it was written for would otherwise
@@ -639,7 +695,33 @@ impl ArenaRegistry {
     /// Answers whether a binding went.
     pub fn unbind_pilot(&mut self, pilot: ObjId) -> bool {
         self.last_frames.remove(&pilot);
+        // **16b cut D.1**, the hint's fourth end: the optimism is about a seat,
+        // and this is where the seat ends.
+        self.starting_hints.remove(&pilot);
         self.pilots.remove(&pilot).is_some()
+    }
+
+    /// **Stamp the `Starting` hint for one pilot** (16b cut D.1), expiring at the
+    /// world second `until_s`. See [`ArenaRegistry::starting_hints`] for the four
+    /// ways it ends.
+    pub fn hint_starting(&mut self, pilot: ObjId, until_s: i64) {
+        self.starting_hints.insert(pilot, until_s);
+    }
+
+    /// **Whether that pilot's `STARTUP` is still outstanding** at the world second
+    /// `now_s` (16b cut D.1). An expired row answers `false` and is left where it
+    /// is — this is a read, and the next write past it overwrites it.
+    #[must_use]
+    pub fn starting_hint(&self, pilot: ObjId, now_s: i64) -> bool {
+        self.starting_hints
+            .get(&pilot)
+            .is_some_and(|until_s| now_s <= *until_s)
+    }
+
+    /// **Forget one pilot's `Starting` hint** (16b cut D.1) — the confirmed, the
+    /// refused and the unbound ends all come through here.
+    pub fn clear_starting_hint(&mut self, pilot: ObjId) {
+        self.starting_hints.remove(&pilot);
     }
 
     /// Publish one `(unit, channel)` epoch into the mirror — cut T.3 seeds it at
@@ -1134,7 +1216,11 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
     };
     for message in tasks.take_staged(MAX_EGRESS_PER_DRAIN) {
         match message {
-            ArenaOut::Frames { match_id, frames } => on_frames(ctx, match_id, frames),
+            ArenaOut::Frames {
+                match_id,
+                frames,
+                now_ms,
+            } => on_frames(ctx, match_id, frames, now_ms),
             ArenaOut::Ledger { match_id, chunk } => {
                 on_chunk(ctx, match_id, chunk.seq, &chunk.bytes);
             }
@@ -1160,7 +1246,13 @@ pub fn drain_egress(ctx: &mut Ctx<'_>) {
 
 /// One pulse's frames: a keyframe per pilot, on the feed, through the loop's
 /// ordinary output path (doc 16 §3.1 — the arena never touches a sink).
-fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) {
+///
+/// **16b cut D.1**: `now_ms` is the arena's own clock at the end of the step that
+/// produced this message, and the message may carry no frame at all — see
+/// [`crate::arena_task::ArenaOut::Frames`]. The mirror takes the clock whether or
+/// not anybody was told anything, which is what makes the board's `arena time`
+/// line move on a match nobody is moving in.
+fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>, now_ms: i64) {
     let Some(feed) = ctx
         .w
         .module_state::<ArenaRegistry>()
@@ -1210,7 +1302,25 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) 
         // own `notices` array carries, so the line client and a panel read one
         // sentence.
         let lines = crate::match_::cockpit::notice_lines(&frame);
+        // **16b cut D.1**: the hint's first two ends, read off this frame before
+        // the mirror is written. `power != Off` is the arena confirming the
+        // `STARTUP`; a `Refused` naming the same order is the arena clearing it,
+        // and that frame is the one the pilot reads the refusal on — so the
+        // sentence and the wait must not both be true. A frame carrying `Off` and
+        // no such refusal leaves the hint alone: it may be a batch staged before
+        // the intent arrived.
+        let confirmed = frame.power != Power::Off;
+        let refused = frame.notices.iter().any(|notice| {
+            matches!(
+                notice,
+                crate::arena::perception::FrameNotice::Refused { order, .. }
+                    if order.as_str() == IntentKind::Startup.as_str()
+            )
+        });
         if let Some(registry) = ctx.w.module_state_mut::<ArenaRegistry>() {
+            if confirmed || refused {
+                registry.clear_starting_hint(pilot);
+            }
             // **Stored with the notices cleared.** The mirror is what `CONTACTS`,
             // `VIEW` and `STATUS` re-render, and a notice re-rendered is a notice
             // said twice; the telling happens here, exactly once.
@@ -1245,6 +1355,11 @@ fn on_frames(ctx: &mut Ctx<'_>, match_id: MatchId, frames: Vec<(ObjId, Frame)>) 
         .and_then(|registry| registry.matches.get_mut(&match_id))
     {
         mirror.frames_sent = mirror.frames_sent.saturating_add(sent);
+        // **16b cut D.1**: the arena's own clock, whether or not anybody was
+        // told anything. `max` rather than a plain write, for the same reason
+        // `arena_ms` takes one: the world drains a queue, and a clock that went
+        // backwards would be a board that did.
+        mirror.now_ms = mirror.now_ms.max(now_ms);
         if let Some(tempo) = tempo {
             mirror.tempo = tempo;
         }
@@ -1490,6 +1605,10 @@ fn on_ended(
     {
         mirror.end = Some(end);
         mirror.arena_ms = mirror.arena_ms.max(end.t_ms);
+        // **16b cut D.1**: the last reading of the arena's clock is the one the
+        // end carries, so a board read after the match stops shows the length of
+        // the fight and not the last pulse before it.
+        mirror.now_ms = mirror.now_ms.max(end.t_ms);
     }
     let digest = digest_text(&digest);
     tracing::info!(
@@ -1693,11 +1812,16 @@ fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
             (None, None) if live.contains(&match_id) => "running".to_owned(),
             (None, None) => "no task".to_owned(),
         };
+        // **16b cut D.1**: the ledger's figure keeps its place — it is what an
+        // operator reads the black box by — and the arena's own clock goes beside
+        // it in the same `m:ss` the board prints, so the two can be told apart at
+        // a glance.
         rows.push(format!(
-            "match {match_id}: {state}, tempo {}, arena {} ms, lagged {}, chunks {} appended / \
-             {} lost, frames {}",
+            "match {match_id}: {state}, tempo {}, arena {} ms, clock {}, lagged {}, chunks {} \
+             appended / {} lost, frames {}",
             mirror.tempo.as_str(),
             mirror.arena_ms,
+            crate::match_::lobby::clock_text(mirror.now_ms),
             mirror.lagged,
             mirror.chunks_appended,
             mirror.chunks_lost,

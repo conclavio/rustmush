@@ -597,7 +597,15 @@ async fn with_ai_fill_on_the_default_size_is_the_larger_side() {
     say(&mut bo, "SIM TEAM red", "takes red slot 2").await;
     say(&mut ada, "SIM START", "is boarding").await;
     say(&mut ada, "red", "Red Room").await;
-    say(&mut bo, "red", "Red Room").await;
+    // **Both pilots walk into the SAME room here**, which is what makes this the
+    // one walk in the tree whose needle has to be the room's own description and
+    // not its name. Bo is standing in the lobby watching Ada leave, so the line
+    // `Ada goes Red Room <R>.` lands in Bo's terminal — and `say` would take that
+    // for Bo's own arrival, return without retrying the transient `COMMIT_PENDING`
+    // Bo's walk can be answered with, and leave Bo in the lobby for `BOARD` to
+    // fail on sixty seconds later. The description cannot be said by anybody
+    // else's movement.
+    say(&mut bo, "red", "Four pods in a row under a red stripe").await;
     say(&mut ada, "BOARD", "climb into").await;
     say(&mut bo, "BOARD", "climb into").await;
     ada.expect("Good hunting").await;

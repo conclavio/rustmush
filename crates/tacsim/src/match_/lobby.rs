@@ -309,6 +309,14 @@ pub enum SimError {
     /// Only a team lead or staff may start.
     #[error("Only a side's first pilot or staff can start the match.")]
     NotLead,
+    /// **`SIM AI <n>` from somebody who leads no side** (16b cut D.1).
+    ///
+    /// [`SimError::NotLead`] is `SIM START`'s sentence and says so; `SIM AI`
+    /// answered it too, so a player who asked the fill to be three was told they
+    /// could not start the match. The bare read is now served to anybody in the
+    /// centre and only the *set* is gated, so this is the sentence for the set.
+    #[error("Only a side's first pilot or staff can set the AI fill.")]
+    NotLeadForAi,
     /// A side has nobody.
     #[error("The {0} side has no pilots; a match takes at least one a side.")]
     EmptySide(&'static str),
@@ -617,13 +625,19 @@ pub fn claim(ctx: &mut Ctx<'_>, team: Team) -> Result<(), SimError> {
         index
     };
     let name = display_name(ctx.w, actor);
+    // **16b cut D.1**: the advice has to be true on the server it is said on.
+    // With the AI fill on, `SIM START` does not wait for a pilot on the other
+    // side — it gives the machines the pods nobody claimed — so the old sentence
+    // told a solo player to go and find an opponent they do not need.
+    let fill = configs(ctx.w).is_some_and(|(_, match_cfg, _)| match_cfg.ai_fill);
+    let advice = if fill {
+        "`SIM START` begins the match; the machines take the pods nobody claims."
+    } else {
+        "`SIM START` begins the match once both sides have a pilot."
+    };
     announce(
         ctx,
-        format!(
-            "{name} takes {} slot {index}. `SIM START` begins the match once both sides have a \
-             pilot.",
-            team.as_str()
-        ),
+        format!("{name} takes {} slot {index}. {advice}", team.as_str()),
     );
     Ok(())
 }
@@ -847,9 +861,16 @@ pub fn authored_unit_type(w: &World, team: Team, index: u8) -> Option<SmolStr> {
 /// **`SIM UNIT [<type>]`** — read or choose the unit type the caller's own slot
 /// will field (16b cut Q.8).
 ///
-/// `Selection` only, and it acts on the **caller's** slot: there is no arguing
-/// about somebody else's machine, and the choice is applied at `SIM START` and
-/// not here, so a lobby that never starts a match writes nothing to any tank.
+/// **Choosing** is `Selection` only, and it acts on the **caller's** slot: there
+/// is no arguing about somebody else's machine, and the choice is applied at
+/// `SIM START` and not here, so a lobby that never starts a match writes nothing
+/// to any tank.
+///
+/// **Listing is anybody's** (16b cut D.1). `None` prints `Fieldable units: …` to
+/// anybody standing in the centre, in any state, slot or no slot, and appends
+/// ` Yours: {type}.` only where the caller holds a slot. The catalog is the
+/// reason to want a slot, so it is not gated behind holding one; the list is the
+/// same one `Selection` printed, which is public.
 ///
 /// Choosing the pod's **authored** type clears the choice rather than recording
 /// it, so `SIM UNIT line_tank` and never having typed `SIM UNIT` at all are the
@@ -857,7 +878,9 @@ pub fn authored_unit_type(w: &World, team: Team, index: u8) -> Option<SmolStr> {
 ///
 /// # Errors
 ///
-/// [`SimError`], as the line the player sees:
+/// [`SimError`], as the line the player sees. The bare list refuses only with
+/// [`SimError::LayerOff`], [`SimError::OutsideCentre`],
+/// [`SimError::UnknownAccount`] and [`SimError::Unavailable`]; a choice then adds
 /// [`SimError::NoSlotToField`] for a caller holding no slot,
 /// [`SimError::WrongState`] outside `Selection`, and
 /// [`SimError::NoSuchUnitType`] for a word the catalog does not carry.
@@ -867,6 +890,36 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
     in_centre(ctx.w, actor)?;
     let account = account_of(ctx.w, actor)?;
     let state = centre(ctx.w).ok_or(SimError::Unavailable)?.state;
+    // **16b cut D.1: the bare list answers anybody in the centre, in any state,
+    // slot or no slot.** The catalog is the reason to want a slot, so refusing to
+    // print it until one is held is the wrong way round; and it is the same list
+    // `SIM UNIT` prints in `Selection`, which is public. The caller's own choice
+    // is appended only where there is a slot to have one.
+    if choice.map(str::trim).is_none_or(str::is_empty) {
+        let ids = fieldable_ids(ctx.w, ctx.reg);
+        if ids.is_empty() {
+            return Err(SimError::Unavailable);
+        }
+        let list: Vec<String> = ids.iter().map(|id| type_word(ctx.w, id.as_str())).collect();
+        let held = centre(ctx.w)
+            .and_then(|centre| centre.slot_of_account(account))
+            .cloned();
+        let mine = held
+            .and_then(|slot| {
+                slot.unit_type
+                    .clone()
+                    .or_else(|| authored_unit_type(ctx.w, slot.team, slot.index))
+            })
+            .map(|id| format!(" Yours: {}.", type_word(ctx.w, id.as_str())))
+            .unwrap_or_default();
+        // To the actor alone: a list is not news the room wants.
+        ctx.out.sys_to_actor(
+            actor,
+            NOTICE_CATEGORY,
+            format!("Fieldable units: {}.{mine}", list.join(", ")),
+        );
+        return Ok(());
+    }
     // **The slot before the state, but only where the advice is true** (16b cut
     // Q.8, fixer: correctness Q8-5).
     //
@@ -892,26 +945,9 @@ pub fn unit_type(ctx: &mut Ctx<'_>, choice: Option<&str>) -> Result<(), SimError
         });
     }
     let authored = authored_unit_type(ctx.w, held.team, held.index);
-    let Some(word) = choice.map(str::trim).filter(|word| !word.is_empty()) else {
-        // The bare read, to the actor alone: a list is not news the room wants.
-        let ids = fieldable_ids(ctx.w, ctx.reg);
-        if ids.is_empty() {
-            return Err(SimError::Unavailable);
-        }
-        let list: Vec<String> = ids.iter().map(|id| type_word(ctx.w, id.as_str())).collect();
-        let mine = held
-            .unit_type
-            .clone()
-            .or(authored)
-            .map(|id| format!(" Yours: {}.", type_word(ctx.w, id.as_str())))
-            .unwrap_or_default();
-        ctx.out.sys_to_actor(
-            actor,
-            NOTICE_CATEGORY,
-            format!("Fieldable units: {}.{mine}", list.join(", ")),
-        );
-        return Ok(());
-    };
+    // The bare read has already answered above (16b cut D.1), so a word is what
+    // is left.
+    let word = choice.map(str::trim).unwrap_or_default();
     let chosen =
         resolve_unit_type(ctx.w, ctx.reg, word).ok_or_else(|| SimError::NoSuchUnitType {
             word: word.to_owned(),
@@ -1687,9 +1723,14 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
 /// **`SIM AI [<n>]`** — read or set how many units each side fields with the AI
 /// fill on (16b cut Q.7).
 ///
-/// A team lead or staff, in `Selection` only: the fill is decided before the
-/// pods lock, because it is what the pods are locked *for*. `None` reads;
+/// **Setting** it is a team lead's or staff's, in `Selection` only: the fill is
+/// decided before the pods lock, because it is what the pods are locked *for*.
 /// `Some(n)` sets, and is announced to the centre the way a claim is.
+///
+/// **Reading it is anybody's** (16b cut D.1). `None` answers `AI fill: {n} a
+/// side.` at once, in any state, to anybody standing in the centre, and only the
+/// layer, the location and the server's own `ai_fill` switch come first. It is
+/// the number the board already prints to the whole room.
 ///
 /// The number is a **side size**, not a machine count: `SIM AI 3` is a three a
 /// side match, so a side with two pilots gets one machine and a side with none
@@ -1698,8 +1739,9 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
 /// # Errors
 ///
 /// [`SimError`], as the line the player sees:
-/// [`SimError::AiOff`] on a server with `[tacsim.match].ai_fill` off,
-/// [`SimError::WrongState`] outside `Selection`, [`SimError::NotLead`] for
+/// [`SimError::AiOff`] on a server with `[tacsim.match].ai_fill` off (both the
+/// read and the set), and then, for the set alone,
+/// [`SimError::WrongState`] outside `Selection`, [`SimError::NotLeadForAi`] for
 /// anyone but a side's first pilot or staff, [`SimError::AiRange`] outside
 /// `1..=slots_per_side`, and [`SimError::AiBelowSide`] under what a side has
 /// already claimed.
@@ -1720,7 +1762,24 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
         return Err(SimError::AiOff);
     }
     let cap = slots_per_side(&match_cfg);
-    let (effective, claimed) = {
+    // **16b cut D.1**: the bare read answers anybody standing in the centre, in
+    // any state, lead or not. It is one number about the server's own settings —
+    // the same number the board's own `AI fill:` line prints to everyone in the
+    // room — and refusing it with `SIM START`'s sentence told a player who asked
+    // a question that they could not start a match.
+    let Some(size) = size else {
+        let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
+        let effective = ai_side_size(centre, &match_cfg);
+        ctx.out.sys_to_actor(
+            actor,
+            NOTICE_CATEGORY,
+            format!("AI fill: {effective} a side."),
+        );
+        return Ok(());
+    };
+    // Setting it is what the state and the lead gate are for, and they are
+    // unchanged.
+    let claimed = {
         let centre = centre(ctx.w).ok_or(SimError::Unavailable)?;
         if centre.state != MatchState::Selection {
             return Err(SimError::WrongState {
@@ -1733,17 +1792,10 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
                 .any(|team| centre.leads_side(*team, account))
         });
         if !staff && !lead {
-            return Err(SimError::NotLead);
+            // 16b cut D.1: `SIM AI`'s own sentence. `NotLead` is `SIM START`'s.
+            return Err(SimError::NotLeadForAi);
         }
-        (ai_side_size(centre, &match_cfg), largest_side(centre))
-    };
-    let Some(size) = size else {
-        ctx.out.sys_to_actor(
-            actor,
-            NOTICE_CATEGORY,
-            format!("AI fill: {effective} a side."),
-        );
-        return Ok(());
+        largest_side(centre)
     };
     if size < 1 || size > cap {
         return Err(SimError::AiRange { max: cap });
@@ -1976,9 +2028,51 @@ fn release_rows(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutco
 // `SIM STATUS`
 // ---------------------------------------------------------------------------
 
+/// **Who is reading the board** (16b cut D.1; doc 16 §1, §5).
+///
+/// `SIM STATUS` is the one selector that answers in every state and from every
+/// room of the centre **including the pods**, so a seated pilot mid-match used to
+/// read the other side's whole roster with `, seated` / `, left` on every row:
+/// they learned that the human on `RA` had dropped and a machine had the tank,
+/// which no sensor of theirs told them. Cut Q.8 bracketed the chassis word to
+/// `Selection` for exactly this reason and left the standing words unbracketed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardReader {
+    /// `@arena/status`: the whole board in every state, byte for byte.
+    Staff,
+    /// A player, by the character that typed the verb. Their own side is their
+    /// own knowledge; every other side is reduced while a match runs.
+    Player(ObjId),
+}
+
 /// **`SIM STATUS`** — the centre, rendered (doc 16 §5).
+///
+/// **16b cut D.1 gave it a reader.** While `centre.state` is `Running` or
+/// `Stopping`, and only for a [`BoardReader::Player`], the reader's **own** side
+/// — the team of their slot — prints in full and every other side prints
+/// **reduced**: `{index} ({callsign}): {pilot name}` and nothing else. No pod, no
+/// `, seated`, no `, left`, no `[type]`. A player holding no slot reads both
+/// sides reduced. [`BoardReader::Staff`], and every other state — `Idle`,
+/// `Selection`, `Boarding` and the three terminal states — get the whole board
+/// exactly as before; `Boarding`'s `seated` is lobby knowledge, because there is
+/// no arena yet and nothing has detected anything.
+///
+/// Nothing in this crate writes `Stopping` to a **centre** — that state lives on
+/// the [`crate::match_::MatchRecord`], which is where an abort parks a match
+/// while its stop is in flight — so the second arm of the gate is for the day a
+/// centre takes it and the reachable window (a stop sent, every slot still on
+/// the board) is read under `Running`.
+///
+/// **The pilot's name stays on a reduced row on purpose.** It was public through
+/// the whole of `Selection` and cannot change while a match runs, so printing it
+/// publishes nothing that was not already known. Q1's "callsigns alone" is read
+/// as *no standing*: what the row withholds is whether that pilot is still in the
+/// tank, which is the only part a sensor would have had to earn.
+///
+/// The `AI fill:` line, the boarding clock, the arena clock and the terminal hint
+/// are the same for every reader.
 #[must_use]
-pub fn status_lines(w: &World) -> Vec<String> {
+pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
     // **16b cut F.4**: the board of a centre that cannot run a match is a
     // healthy-looking screen over nothing, which is how the layer-off world read
     // as working right up to `SIM START`. The read says the true thing instead.
@@ -2011,9 +2105,38 @@ pub fn status_lines(w: &World) -> Vec<String> {
         Some(outcome) => rows.push(format!("{head} — {}", outcome.as_str())),
         None => rows.push(head),
     }
+    // **16b cut D.1**: the side this reader is entitled to read in full while a
+    // match runs. `None` for staff (who read every side in full), and `None` for
+    // a player who holds no slot (who reads every side reduced).
+    let running = matches!(centre.state, MatchState::Running | MatchState::Stopping);
+    let own_side = match reader {
+        BoardReader::Staff => None,
+        BoardReader::Player(actor) => centre.slot_of_pilot(actor).map(|slot| slot.team),
+    };
     for team in Team::ALL {
+        // Staff read every side in full in every state; a player reads a side in
+        // full only when the match is not running or the side is their own.
+        let in_full = match reader {
+            BoardReader::Staff => true,
+            BoardReader::Player(_) => !running || own_side == Some(team),
+        };
         let mut pilots: Vec<String> = Vec::new();
         for slot in centre.slots.iter().filter(|slot| slot.team == team) {
+            // **16b cut D.1**: the reduced row. The index, the callsign and the
+            // pilot's name, and not one byte about where that pilot is or what
+            // the slot is flying.
+            if !in_full {
+                let callsign = crate::arena::state::Designator::Slot {
+                    team,
+                    slot: u16::from(slot.index),
+                };
+                pilots.push(format!(
+                    "{} ({callsign}): {}",
+                    slot.index,
+                    display_name(w, slot.pilot)
+                ));
+                continue;
+            }
             let pod = match slot.pod {
                 Some(pod) => format!(", pod {}", display_name(w, pod)),
                 None => String::new(),
@@ -2098,8 +2221,16 @@ pub fn status_lines(w: &World) -> Vec<String> {
             .max(0);
         rows.push(format!("  boarding closes in {} second(s)", left / 1_000));
     }
-    if let Some(arena_ms) = centre.match_id.and_then(|match_id| arena_ms(w, match_id)) {
-        rows.push(format!("  arena time {arena_ms} ms"));
+    // **16b cut D.1**: the arena's own clock, in minutes and seconds. It used to
+    // print the last closed ledger chunk's timestamp in raw milliseconds, which is
+    // `0 ms` for the first minutes of a match and a minute or more stale after
+    // that; the mirror now carries the clock off every `Frames` message, so this
+    // is at worst one pulse behind. `0:00` until the first message arrives.
+    if let Some(now_ms) = centre
+        .match_id
+        .and_then(|match_id| arena_now_ms(w, match_id))
+    {
+        rows.push(format!("  arena time {}", clock_text(now_ms)));
     }
     // **16b cut F.1**: the way out of a terminal centre, said where somebody
     // reads it. The board still carries the last outcome above; this is the one
@@ -2122,16 +2253,29 @@ pub fn staff_status_rows(w: &World) -> Vec<String> {
         return Vec::new();
     }
     match centre(w) {
-        Some(centre) if *centre != Centre::default() => status_lines(w),
+        // 16b cut D.1: staff read every side in full, in every state.
+        Some(centre) if *centre != Centre::default() => status_lines(w, BoardReader::Staff),
         _ => Vec::new(),
     }
 }
 
-/// The arena's own clock for one match, as the registry's mirror holds it.
-fn arena_ms(w: &World, match_id: MatchId) -> Option<i64> {
+/// The arena's own clock for one match, as the registry's mirror holds it (16b
+/// cut D.1: the per-pulse `now_ms`, not the ledger chunk's timestamp).
+fn arena_now_ms(w: &World, match_id: MatchId) -> Option<i64> {
     w.module_state::<crate::arena_bridge::ArenaRegistry>()
         .and_then(|registry| registry.mirror(match_id))
-        .map(|mirror| mirror.arena_ms)
+        .map(|mirror| mirror.now_ms)
+}
+
+/// **A stretch of arena time as `m:ss`** (16b cut D.1).
+///
+/// Whole minutes, then two digits of seconds. The board and `@arena/status` both
+/// print it, so the two clocks are one spelling. A negative reading — which
+/// nothing produces — floors at `0:00`.
+#[must_use]
+pub fn clock_text(now_ms: i64) -> String {
+    let total_s = now_ms.max(0) / 1_000;
+    format!("{}:{:02}", total_s / 60, total_s % 60)
 }
 
 // ---------------------------------------------------------------------------

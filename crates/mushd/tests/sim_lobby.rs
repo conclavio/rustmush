@@ -86,11 +86,13 @@ impl Drop for Server {
 }
 
 /// A fast tacsim layer with a three-second boarding window.
-fn tacsim_config() -> tacsim::TacsimConfig {
+fn tacsim_config(ai_fill: bool) -> tacsim::TacsimConfig {
     let mut cfg = tacsim::TacsimConfig {
         enabled: true,
         ..tacsim::TacsimConfig::default()
     };
+    // **16b cut D.1**: the claim line and the two bare reads branch on it.
+    cfg.match_.ai_fill = ai_fill;
     cfg.arena.tempo.quiet_ms = 100;
     cfg.arena.tempo.alert_ms = 100;
     cfg.arena.tempo.engaged_ms = 100;
@@ -106,17 +108,23 @@ fn tacsim_config() -> tacsim::TacsimConfig {
 fn module_list(
     onboarding: &mush_core::OnboardingConfig,
     llm: &Arc<LlmService>,
+    ai_fill: bool,
 ) -> Vec<Box<dyn GameModule>> {
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
     mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
-    mods.push(modules::tacsim_module(tacsim_config()));
+    mods.push(modules::tacsim_module(tacsim_config(ai_fill)));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
 }
 
 async fn boot(tag: &str) -> Server {
+    boot_with(tag, false).await
+}
+
+/// The same server, with `[tacsim.match].ai_fill` on or off (16b cut D.1).
+async fn boot_with(tag: &str, ai_fill: bool) -> Server {
     let dir = scratch_dir(tag);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     store
@@ -179,8 +187,8 @@ async fn boot(tag: &str) -> Server {
             .build(),
     );
 
-    let mut engine =
-        Engine::with_modules(world, registry, module_list(&onboarding, &llm)).expect("modules");
+    let mut engine = Engine::with_modules(world, registry, module_list(&onboarding, &llm, ai_fill))
+        .expect("modules");
     modules::boot_modules(&mut engine, &*store)
         .await
         .expect("module boot");
@@ -475,4 +483,159 @@ async fn the_staff_shortcut_runs_a_match_the_centre_knows_about() {
     say(&mut god, "@arena/reset", "centre is reset").await;
     say(&mut god, "@arena/reset", "already idle; nothing changed").await;
     say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+}
+
+/// One answer with the terminal's own wrapping taken back out, so a sentence
+/// longer than the width can be compared as one string (16b cut D.1).
+fn one_line(said: &str) -> String {
+    said.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+// ---------------------------------------------------------------------------
+// (4) 16b cut D.1 — the two bare reads, the claim line and the board's clock
+// ---------------------------------------------------------------------------
+
+/// **`B-28` and `B-30`, over the real front door** (16b cut D.1).
+///
+/// The two reads a player is most likely to type before they know what the
+/// simulator is — "what can I fly?" and "how many machines?" — answered from
+/// every standing a player can have in the centre, and the claim line that says
+/// what `SIM START` will actually do on this server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn d1_the_bare_reads_and_the_claim_line_on_a_server_that_fields_machines() {
+    let server = boot_with("sim-lobby-d1-fill", true).await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+
+    // `Idle`, no slot, not a lead: both reads answer.
+    say(&mut cy, "SIM UNIT", "Fieldable units: ").await;
+    let listing = ask(&mut cy, "SIM UNIT", "Fieldable units: ").await;
+    assert!(
+        !listing.contains("Yours:"),
+        "a reader with no slot was told what they are flying: {listing}"
+    );
+    say(&mut cy, "SIM AI", "AI fill: ").await;
+
+    // **The claim line branches on the fill** (`B-30`): on this server
+    // `SIM START` does not wait for the other side.
+    // The needle is short because the line wraps at the terminal's width; the
+    // whole sentence is compared below, with the wrap taken back out.
+    let said = ask(&mut ada, "SIM TEAM red", "the machines take the pods").await;
+    assert!(
+        one_line(&said).contains(
+            "Ada takes red slot 1. `SIM START` begins the match; the machines take the pods \
+             nobody claims."
+        ),
+        "{said}"
+    );
+    say(&mut bo, "SIM TEAM red", "takes red slot 2").await;
+
+    // A non-lead who holds a slot reads both, and is refused the SET with its
+    // own sentence — not `SIM START`'s.
+    let listing = ask(&mut bo, "SIM UNIT", "Fieldable units: ").await;
+    assert!(listing.contains("Yours: "), "{listing}");
+    say(&mut bo, "SIM AI", "AI fill: ").await;
+    say(
+        &mut bo,
+        "SIM AI 3",
+        "Only a side's first pilot or staff can set the AI fill.",
+    )
+    .await;
+
+    // And in `Boarding`, where neither read was served at all before this cut.
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut cy, "SIM UNIT", "Fieldable units: ").await;
+    say(&mut cy, "SIM AI", "AI fill: ").await;
+    say(&mut ada, "SIM ABORT", "calls the match off").await;
+}
+
+/// **`B-30` the other way round**: with the fill off the claim line is byte for
+/// byte the one it always was (16b cut D.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn d1_with_the_fill_off_the_claim_line_is_unchanged() {
+    let server = boot("sim-lobby-d1-nofill").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+
+    let said = ask(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    assert!(
+        said.contains(
+            "Ada takes red slot 1. `SIM START` begins the match once both sides have a \
+                       pilot."
+        ),
+        "{said}"
+    );
+    assert!(
+        !said.contains("machines take the pods"),
+        "a server with no fill advertised one: {said}"
+    );
+}
+
+/// **`B-29`: the board's clock is the arena's own and it moves** (16b cut D.1).
+///
+/// Nobody drives: the point of the row is that the figure used to be the last
+/// closed ledger chunk's timestamp, which is `0 ms` until a chunk closes and a
+/// minute stale after that. The clock now rides every `Frames` message, and a
+/// match with nobody moving in it still sends one an arena second.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn d1_the_boards_arena_clock_moves_while_nobody_drives() {
+    let server = boot("sim-lobby-d1-clock").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut bo, "blue", "Blue Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    /// The `m:ss` on the board, as whole seconds.
+    fn clock_s(board: &str) -> Option<i64> {
+        let row = board.lines().find(|line| line.contains("arena time "))?;
+        let (_, rest) = row.split_once("arena time ")?;
+        let text = rest.trim();
+        let (minutes, seconds) = text.split_once(':')?;
+        Some(minutes.trim().parse::<i64>().ok()? * 60 + seconds.trim().parse::<i64>().ok()?)
+    }
+
+    let board = ask(&mut ada, "SIM STATUS", "arena time ").await;
+    assert!(
+        !board.contains(" ms"),
+        "the raw milliseconds are still on the board: {board}"
+    );
+    let first = clock_s(&board).unwrap_or_else(|| panic!("an `m:ss` clock on the board: {board}"));
+
+    // Nobody types anything at the tanks. The clock moves anyway.
+    let mut moved = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let board = ask(&mut ada, "SIM STATUS", "arena time ").await;
+        let now = clock_s(&board).unwrap_or_else(|| panic!("an `m:ss` clock: {board}"));
+        assert!(now >= first, "the board's clock went backwards: {board}");
+        if now > first {
+            moved = true;
+            break;
+        }
+    }
+    assert!(
+        moved,
+        "the board's arena clock never moved on a match nobody was driving"
+    );
+
+    // And `@arena/status` keeps the ledger's own figure AND prints the clock
+    // beside it, so an operator can tell the two apart.
+    let staff = ask(&mut god, "@arena/status", "ledger writes awaiting").await;
+    assert!(staff.contains(" ms, clock "), "{staff}");
+
+    say(&mut ada, "SIM ABORT", "aborts match").await;
 }

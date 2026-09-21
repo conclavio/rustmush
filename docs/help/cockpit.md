@@ -20,8 +20,8 @@ else — `help simulator` is how you get there.
   FIRE [<weapon>]     shoot your lock; the cannon unless you name another.
   WEAPONSTATUS        every weapon: ready or cycling, its rounds, its own chance
                       against your lock, and that lock's range band.
-  STATUS              your callsign, power, speed, heading, position, the
-                      arena's tempo, and your armour and internals section by
+  STATUS              your callsign, power, speed, heading, position, what your
+                      own scope holds, and your armour and internals section by
                       section.
 
 `EXIT` climbs out. Once the match is running that is final: see
@@ -81,14 +81,24 @@ existed would be telling you where the other side is.
 `CONTACTS` is your platform's own picture and nothing else — no object numbers,
 no names, no pilots. One row a contact:
 
-  BA  blue  bearing 087° (rel 032°)  effective  450 m  2 s
+  BA  blue  bearing 087° (rel 032°)  far  450 m  2 s
 
 the designator `LOCK` takes, what the contact has been classified as, its true
-bearing and its bearing relative to your hull, the range band of the weapon a
-bare `FIRE` fires, its range rounded to 50 m, and how old the plot is. A contact
-is drawn **where it was last seen**, not where it is now, and the age is how
-stale that is. A teammate's sighting reaches you only while their own sensors
-still hold it.
+bearing and its bearing relative to your hull, a **range band**, its range
+rounded to 50 m, and how old the plot is. A contact is drawn **where it was last
+seen**, not where it is now, and the age is how stale that is. A teammate's
+sighting reaches you only while their own sensors still hold it.
+
+The band word is **how far across your own sight the contact is**: `close` is
+the nearest third of your sensor's reach, `effective` the middle third, `far` the
+outer third and anything a teammate is passing you from beyond it. On a stock
+tank the sight reaches 600 m, so `close` runs to 200 m and `effective` to 400 m.
+
+It is **not** a judgement of your gun. Every gun this game ships out-reaches the
+sight that finds a target for it — the stock cannon makes 3 km and the stock
+sight sees 600 m — so a contact at 450 m reads `far` and is a shot the cannon
+takes comfortably. What the gun makes of the distance is the `% to hit` on your
+lock, and the band your lock falls in on `WEAPONSTATUS`.
 
 `RANGE` and `BEARING` ask about one contact without re-reading the whole scope.
 Name one, or name none and get your lock:
