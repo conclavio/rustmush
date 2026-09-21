@@ -82,8 +82,9 @@ pub use cockpit::{
 pub use lobby::{
     BoardReader, Centre, OUTSIDE_CENTRE, ResetOutcome, SimError, Slot, abort as sim_abort,
     ai as sim_ai, ai_side_size, authored_unit_type, board_deadline, centre as centre_of, claim,
-    clock_text, largest_side, leave, pilot_of, pod_of, reset as reset_centre, slot_seated,
-    slot_vacated, slots_per_side, start as sim_start, status_lines, unit_type as sim_unit_type,
+    clock_text, concede as sim_concede, largest_side, leave, pilot_of, pod_of,
+    reset as reset_centre, slot_seated, slot_vacated, slots_per_side, start as sim_start,
+    status_lines, unattended_deadline, unattended_line, unit_type as sim_unit_type,
 };
 pub use record::{
     MatchOutcome, MatchRecord, MatchState, PoseNumbers, TeamRoster, UnitOutcome, UnitResult,
@@ -674,12 +675,12 @@ fn roll_back(ctx: &mut Ctx<'_>, match_id: MatchId, units: &[ObjId]) {
             tracing::error!(
                 %unit,
                 %error,
-                // 16b cut F.1: no verb clears a marker — `@arena` registers
-                // status, start, intent, abort and reset and none of them touch
-                // one — so the only honest advice is the one thing that does.
+                // 16b cut D.3 (`T-49`): `@arena/release <unit>` is the verb that
+                // clears a marker by hand. Before it, no verb did — `@arena`
+                // registered status, start, intent, abort and reset and none of
+                // them touched one — and the only advice was to restart.
                 "tacsim: a rolled-back check-out could not be undone; the unit keeps its marker, \
-                 and the boot reconciliation is the only thing that clears one, so it stays \
-                 unusable until the server half is restarted"
+                 and `@arena/release <unit>` or a restart of the server half is what clears one"
             );
         }
     }
@@ -978,21 +979,53 @@ pub fn finish(
         // unit the world still holds and the unit the arena hands back, and `None`
         // is either a void or a unit the match never marked.
         let plan = returned.cells.get(&unit).and_then(Option::as_ref);
-        let checked_in = match mush_tactics::custody::check_in(ctx, unit, plan) {
-            Ok(checked_in) => checked_in,
+        // **16b cut D.3 (`B-35`): a refused check-in does not strand the seat.**
+        //
+        // The old arm logged and `continue`d — before `release_seat` — so the
+        // pilot kept the cockpit billet, the control lease and the account focus
+        // on a tank that was no longer in a match, and the pod was unboardable
+        // for the rest of the boot. Now the seat goes first, and then the return
+        // is retried **as a void**: the plan the arena sent is what the strict
+        // encoder refused, and the check-out snapshot is a shape the world wrote
+        // itself, so the retry gives back a unit that is at least real. What is
+        // lost is the match's cells for that one unit, which the `warn` says and
+        // the result record records as `custody_lost`.
+        //
+        // One unit's failure never skips another's release: both arms below stay
+        // inside this loop.
+        let (checked_in, custody_lost) = match mush_tactics::custody::check_in(ctx, unit, plan) {
+            Ok(checked_in) => (checked_in, false),
             Err(error) => {
-                tracing::error!(
-                    %unit,
-                    match_id = match_id.0,
-                    %error,
-                    // 16b cut F.1: see `roll_back` — a marker is cleared by the
-                    // boot reconciliation and by nothing else.
-                    "tacsim: a unit could not be checked in; its marker stays on the record, and \
-                     the boot reconciliation is the only thing that clears one, so it stays \
-                     unusable until the server half is restarted"
-                );
-                results.push(UnitResult::lost(unit));
-                continue;
+                release_seat(ctx, unit);
+                match mush_tactics::custody::check_in(ctx, unit, None) {
+                    Ok(restored) => {
+                        tracing::warn!(
+                            %unit,
+                            match_id = match_id.0,
+                            %error,
+                            "tacsim: a unit's returned cells were refused; its seat is released \
+                             and it is restored from its check-out snapshot, so the arena's \
+                             cells for it are dropped"
+                        );
+                        (restored, true)
+                    }
+                    Err(second) => {
+                        tracing::error!(
+                            %unit,
+                            match_id = match_id.0,
+                            %error,
+                            %second,
+                            // 16b cut D.3 (`T-49`): `@arena/release` is the verb
+                            // that clears one now; the boot reconciliation is no
+                            // longer the only thing that does.
+                            "tacsim: a unit could not be checked in even as a void; its marker \
+                             stays on the record, and `@arena/release <unit>` or a restart of \
+                             the server half is what clears one"
+                        );
+                        results.push(UnitResult::lost(unit));
+                        continue;
+                    }
+                }
             }
         };
         // The pose: the arena's own last numbers on an ordinary end, the
@@ -1020,7 +1053,17 @@ pub fn finish(
                 "tacsim: a checked-in unit could not be re-placed; it keeps its frozen placement"
             );
         }
+        // Idempotent: on the `B-35` retry arm above the seat is already gone, and
+        // this finds no station to hand back.
         release_seat(ctx, unit);
+        // **16b cut D.3 (`B-35`)**: a unit the world could only take back as a
+        // void is `custody_lost` on the record, whatever the arena said about it
+        // — the counters and the outcome beside them describe cells that were
+        // never committed.
+        if custody_lost {
+            results.push(UnitResult::lost(unit));
+            continue;
+        }
         // **16b cut W.2**: doc 16 §4's per-unit row — what became of it and its two
         // counters, off the arena's own message. A unit the message did not name, and
         // every unit on a void, comes back `intact` with no counters, because that is
@@ -1131,7 +1174,12 @@ pub fn release_seats_after_restart(ctx: &mut Ctx<'_>, unit: ObjId) {
 /// account focus pointed at it; the pods and the bodies in them are the lobby's
 /// half (`cockpit::eject_all`, 16b cut F.1). The marker has already been cleared
 /// by the check-in above, so the `deployed` admission site does not refuse it.
-fn release_seat(ctx: &mut Ctx<'_>, unit: ObjId) {
+///
+/// **16b cut D.3 (`T-49`)** made it `pub(crate)`: `@arena/release <unit>` is the
+/// same repair by hand, and a staff verb that cleared a marker without giving the
+/// seat back would leave exactly the half-released pod cut F.1 was paid to
+/// remove.
+pub(crate) fn release_seat(ctx: &mut Ctx<'_>, unit: ObjId) {
     let seats: Vec<(mush_sim::StationId, ObjId)> = ctx
         .w
         .module_state::<mush_sim::SpatialState>()

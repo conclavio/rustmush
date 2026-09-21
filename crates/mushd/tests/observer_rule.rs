@@ -2581,3 +2581,88 @@ fn the_victims_own_lines_name_nothing_but_the_victims_own_tank() {
     assert_eq!(NoticeKind::OwnDestroyed.as_str(), "destroyed");
     assert_eq!(NoticeKind::OwnDisabled.as_str(), "disabled");
 }
+
+/// **16b cut D.3's two new announcements name sides and people, and nothing
+/// else** (doc 16 §1, §5).
+///
+/// A concede and an unattended end are said to the **whole centre** — the three
+/// rooms and the eight pods — so they reach a seated pilot in the middle of a
+/// fight, which is exactly where a leak would matter. Both are built from three
+/// things and no others: a character's display name, a side word, and the match
+/// id. Every one of those is already public — the name and the side through the
+/// whole of `Selection`, the id on every board — and neither sentence has a
+/// field an object number, a cell, a bearing, a designator or a contact could be
+/// carried in.
+///
+/// Over the real front door, from inside the pod, and read over **every byte** of
+/// the losing side's session rather than at one moment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_ends_of_a_match_name_sides_and_pilots_and_nothing_of_the_field() {
+    let server = boot("observer-ends").await;
+    let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+
+    let _ = seat_the_witnesses(&mut god).await;
+    take_off(&mut ada, &mut bo).await;
+
+    // Bo's own object numbers, so the sweep below can look for them by name.
+    let listing = ask(&mut god, &format!("@find {BLUE_TANK}"), "END OF LIST").await;
+    let blue_tank = dbref_of(&listing, BLUE_TANK);
+
+    // From inside the pod: red gives the match up, and blue — the side that did
+    // not — reads the announcement.
+    let mark = bo.mark();
+    say(&mut ada, "SIM CONCEDE", "concedes for the red side").await;
+    bo.expect("Match 1 goes to blue when the arena answers.")
+        .await;
+    bo.expect("Its units are checked in.").await;
+    let heard = strip_ansi(&bo.seen[mark..]);
+
+    // What it DOES say: a person, a side, a match.
+    assert!(heard.contains("Ada concedes for the red side."), "{heard}");
+    // What it may not: any unit, any position, any contact.
+    for leak in [
+        RED_TANK, BLUE_TANK, "bearing", "cell", " m east", " m north",
+    ] {
+        assert!(
+            !heard.contains(leak),
+            "the concede announcement leaked {leak:?}:\n{heard}"
+        );
+    }
+    assert!(
+        !heard.contains(&format!("#{blue_tank}")),
+        "the concede announcement named an object:\n{heard}"
+    );
+    no_sixteen_digit_word(&heard, "the concede announcement");
+
+    // And the board that follows it says who won and why, in the same two public
+    // words and no third.
+    let board = strip_ansi(&ask(&mut bo, "SIM STATUS", "blue:").await);
+    assert!(board.contains("blue wins: red conceded"), "{board}");
+    for leak in [RED_TANK, BLUE_TANK] {
+        assert!(
+            !board.contains(leak),
+            "the terminal board leaked {leak:?}:\n{board}"
+        );
+    }
+    no_sixteen_digit_word(&board, "the terminal board");
+
+    // The unattended end's sentence is the same shape with the person taken out
+    // of it, so there is even less in it: it names the match and nothing else.
+    // Its live proof is `crates/mushd/tests/sim_solo.rs`, which has the 10 s clock
+    // to wait on and sweeps the bytes it really sends; what is pinned here is
+    // that the text carries nothing of the field — read off
+    // **`lobby::unattended_line`, the production sentence**, and not a copy of it
+    // kept in this file, which is a copy that can stop matching what the centre
+    // says without anything failing.
+    let unattended = tacsim::match_::unattended_line(tacsim::arena_task::MatchId(1));
+    assert!(unattended.contains("Match 1 ends:"), "{unattended}");
+    for leak in [RED_TANK, BLUE_TANK, "bearing", "red", "blue", "#"] {
+        assert!(
+            !unattended.contains(leak),
+            "the unattended announcement leaked {leak:?}: {unattended}"
+        );
+    }
+    no_sixteen_digit_word(&unattended, "the unattended announcement");
+}

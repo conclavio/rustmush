@@ -145,6 +145,31 @@ pub struct Centre {
     /// why [`ai_side_size`] reads it as a **floor** under the larger side and
     /// not as a cap on it.
     pub ai_side_size: Option<u8>,
+    /// **When every pilot of this match had left it**, in world milliseconds, or
+    /// `None` while somebody is still aboard (16b cut D.3, `B-33`).
+    ///
+    /// Stamped by [`slot_left`] the moment the last un-`left` slot goes `left`
+    /// during `Running`, read by [`unattended_deadline`] on the lobby's own 1 s
+    /// tick, and cleared by exactly three things: a `Stop { Unattended }` the
+    /// arena accepted, a [`crate::arena_bridge::ControlRefusal::NoMatch`] (the
+    /// match is already gone), and [`release_rows`] (the end arrived by some
+    /// other route). RAM, on this same `MatchBook` slot: no new state slot, and
+    /// nothing about it survives a restart, which is right — a restart leaves an
+    /// `Idle` centre and no match to be unattended.
+    ///
+    /// A centre with **no slots** — a staff `@arena/start`, which [`adopt`] binds
+    /// — is never stamped: there was nobody to leave.
+    ///
+    /// **Nothing un-stamps it today**, because `EXIT` is one-way (doc 16 §11's
+    /// N.1 amendment). Cut Y's reclaim (`N4`) is the first thing that will put a
+    /// pilot back in a seat mid-match, and it **must clear this field** when it
+    /// does, or the match it just gave back would end under the returning pilot.
+    pub unattended_since_ms: Option<i64>,
+    /// Whether the unattended stop has already been logged as undeliverable (16b
+    /// cut D.3, `B-33`), so a lagging match warns once and not once a second.
+    ///
+    /// Cleared wherever [`Centre::unattended_since_ms`] is.
+    pub unattended_warned: bool,
 }
 
 impl Centre {
@@ -185,6 +210,13 @@ impl Centre {
         self.leads
             .iter()
             .any(|(side, lead)| *side == team && *lead == account)
+    }
+
+    /// **Forget that every pilot had left** (16b cut D.3, `B-33`) — the stamp and
+    /// the once-per-match warning together, so the two can never drift apart.
+    fn clear_unattended(&mut self) {
+        self.unattended_since_ms = None;
+        self.unattended_warned = false;
     }
 
     /// The lowest unclaimed slot index on a side, or `None` when it is full.
@@ -317,6 +349,25 @@ pub enum SimError {
     /// centre and only the *set* is gated, so this is the sentence for the set.
     #[error("Only a side's first pilot or staff can set the AI fill.")]
     NotLeadForAi,
+    /// **`SIM CONCEDE` from somebody who is not their side's first pilot** (16b
+    /// cut D.3, `B-33`).
+    ///
+    /// Conceding ends the match for everybody on that side, so it is the lead's
+    /// alone — the same right that starts it. Staff get no special case here:
+    /// `@arena/abort` is theirs, and an operator ending somebody's match as a
+    /// *loss for one side* would be the console choosing who won.
+    #[error("Only a side's first pilot can concede for it.")]
+    NotLeadToConcede,
+    /// **`SIM ABORT` in `Selection` by anyone but staff** (16b cut D.3, `T-60`).
+    ///
+    /// There is no match in `Selection`: the id is not minted, no pod is locked
+    /// and nothing is checked out. One claimant's `SIM ABORT` nevertheless wiped
+    /// every other claimant's slot, which is a lobby's one participant dissolving
+    /// it for the rest — so the sentence names the verb that gives up the one
+    /// thing they hold. Staff may still call a `Selection` off, because a stuck
+    /// lobby is exactly the thing a staff lever is for.
+    #[error("Nothing is running yet. `SIM LEAVE` gives your slot up.")]
+    NothingToAbort,
     /// A side has nobody.
     #[error("The {0} side has no pilots; a match takes at least one a side.")]
     EmptySide(&'static str),
@@ -405,6 +456,13 @@ pub fn slots_per_side(match_cfg: &MatchConfig) -> u8 {
 /// It is the floor under [`ai_side_size`] and the number `SIM AI` refuses to go
 /// below: the fill tops a side up to a count, so a count under what somebody has
 /// already claimed would be an instruction to un-claim a slot.
+///
+/// **16b cut D.3 (`T-51`)**: held inside `1..=PODS_PER_SIDE`, the way
+/// [`ai_side_size`] holds its own answer. No path reaches it — `claim` refuses
+/// past [`slots_per_side`], which is itself clamped to the pods that exist — but
+/// a floor that could exceed the cap it is a floor under is a sum waiting to be
+/// wrong, and a `u8::MAX` out of the `try_from` below would have been a fill of
+/// 255 if anything ever fed it one.
 #[must_use]
 pub fn largest_side(centre: &Centre) -> u8 {
     Team::ALL
@@ -412,7 +470,7 @@ pub fn largest_side(centre: &Centre) -> u8 {
         .map(|team| u8::try_from(centre.side_len(*team)).unwrap_or(u8::MAX))
         .max()
         .unwrap_or(0)
-        .max(1)
+        .clamp(1, PODS_PER_SIDE)
 }
 
 /// **How many units each side fields with the AI fill on** (16b cut Q.7): the
@@ -684,10 +742,10 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
                 centre.leads.push((held.team, heir));
             }
         }
+        // 16b cut D.3 (`T-48`): the zeroing used to happen here, in place, which
+        // made this the second writer of the `Idle` transition. It is [`to_idle`]
+        // below now — the same pair [`reset`] runs, in the same order.
         let emptied = centre.slots.is_empty();
-        if emptied {
-            *centre = Centre::default();
-        }
         (held.team, held.index, held.is_seated(), emptied)
     };
     // **16b cut F.1**: the seat goes with the slot.
@@ -725,6 +783,8 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     // chose, and a match is about to check them out. Only the slot that just went
     // is un-fitted, which is what makes the choice go with the pilot.
     if emptied {
+        // 16b cut D.3 (`T-48`): the one writer of `Idle`, then the tank pass.
+        to_idle(ctx);
         crate::match_::reset_stock_tanks(ctx);
     } else {
         unfit_slot(ctx, team, index);
@@ -774,7 +834,11 @@ fn short_name_is_unique(w: &World, id: &str) -> bool {
 }
 
 /// How the board and every `SIM UNIT` sentence spell one definition id.
-fn type_word(w: &World, id: &str) -> String {
+///
+/// **16b cut D.3 (`T-60`)** made it `pub(crate)`: `STATUS`'s second line brackets
+/// the fitted type when it is not the pod's authored one, and it has to spell it
+/// the way the board does or a pilot would read two names for one chassis.
+pub(crate) fn type_word(w: &World, id: &str) -> String {
     if short_name_is_unique(w, id) {
         short_name(id).to_owned()
     } else {
@@ -1010,8 +1074,8 @@ fn settle_boarding(ctx: &mut Ctx<'_>) {
         (match_id, empty, ready)
     };
     if let Some(team) = empty {
-        release(ctx, MatchState::Aborted, Some(MatchOutcome::Abort));
-        announce(
+        // 16b cut D.3 (`B-32`): through the one pre-`Running` funnel.
+        call_off(
             ctx,
             match team {
                 Some(team) => format!(
@@ -1476,9 +1540,20 @@ pub fn slot_vacated(ctx: &mut Ctx<'_>, match_id: MatchId, pilot: ObjId) -> Resul
 /// Only during `Running`: a seat given up while the centre is `Boarding` is not
 /// final (the pilot may board again), and [`slot_vacated`] is that story.
 ///
+/// **And it is where the unattended clock starts** (16b cut D.3, `B-33`): when
+/// the marking leaves a centre with at least one slot and every one of them
+/// `left`, the moment is stamped on [`Centre::unattended_since_ms`] and
+/// [`unattended_deadline`] ends the match once the configured interval has
+/// passed. A centre with **no** slots — a staff `@arena/start` — is never
+/// stamped, because nobody left it.
+///
+/// A destroyed pilot who stays in their pod is **attending**: nothing here reads
+/// a wreck, only whether somebody gave their seat up.
+///
 /// Answers whether a slot moved, which is nothing anybody prints — it is here so
 /// the caller pays for no borrow it does not need.
 pub(crate) fn slot_left(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
+    let now_ms = ctx.w.now().saturating_mul(1_000);
     let Some(book) = ctx.w.module_state_mut::<MatchBook>() else {
         return false;
     };
@@ -1486,18 +1561,98 @@ pub(crate) fn slot_left(ctx: &mut Ctx<'_>, pilot: ObjId) -> bool {
     if centre.state != MatchState::Running {
         return false;
     }
-    match centre.slots.iter_mut().find(|slot| slot.pilot == pilot) {
+    let moved = match centre.slots.iter_mut().find(|slot| slot.pilot == pilot) {
         Some(slot) if !slot.left => {
             slot.left = true;
             true
         }
         _ => false,
+    };
+    if centre.unattended_since_ms.is_none()
+        && !centre.slots.is_empty()
+        && centre.slots.iter().all(|slot| slot.left)
+    {
+        centre.unattended_since_ms = Some(now_ms);
     }
+    moved
+}
+
+/// Everything [`run`] needs once it has decided the match can be attempted.
+struct Ready {
+    /// The arena definition's id.
+    arena: SmolStr,
+    /// The sides, each with its fielded units.
+    sides: Vec<Side>,
+    /// `[tacsim.arena]`.
+    arena_cfg: ArenaConfig,
+    /// `[tacsim.match]`.
+    match_cfg: MatchConfig,
+    /// `[tacsim.sensors]`.
+    sensors_cfg: SensorsConfig,
 }
 
 /// Fire the check-out with whatever is seated (doc 16 §3.8's
 /// `Boarding → Running`).
+///
+/// **16b cut D.3 (`B-32`, `T-50`): every refusal ends the lobby.** Before this
+/// cut the three refusals [`ready`] makes — `Unavailable`, `NobodyPlaying`,
+/// `EmptySide` — simply returned `Err` from here, and the two callers that reach
+/// `run` without a player behind them ([`settle_boarding`] and
+/// [`board_deadline`]) logged it at `warn` and went home. The centre was then
+/// stuck in `Boarding` with its deadline already cleared, its pods locked and a
+/// pilot sitting in one whose only way out was `SIM ABORT` — a state no tick
+/// could leave. Both arms now go through [`call_off`], which is the one funnel
+/// every pre-`Running` end uses, and `run` still hands the `Err` back to whoever
+/// typed something.
 fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
+    let Ready {
+        arena,
+        sides,
+        arena_cfg,
+        match_cfg,
+        sensors_cfg,
+    } = match ready(ctx) {
+        Ok(ready) => ready,
+        Err(error) => {
+            call_off(
+                ctx,
+                format!("Match {match_id} could not start: {error}. The pods are free again."),
+            );
+            return Err(error);
+        }
+    };
+    match crate::match_::start(
+        ctx,
+        match_id,
+        &arena,
+        &sides,
+        &arena_cfg,
+        &match_cfg,
+        &sensors_cfg,
+    ) {
+        Ok(_) => {
+            if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+                let centre = book.centre_mut();
+                centre.state = MatchState::Running;
+                centre.board_deadline_ms = None;
+            }
+            announce(ctx, format!("Match {match_id} is running. Good hunting."));
+            Ok(())
+        }
+        Err(error) => {
+            // Nothing is deployed (cut T.3's `start` rolls its own writes back),
+            // so the centre gives the pods and the slots back and says why.
+            call_off(
+                ctx,
+                format!("Match {match_id} could not start: {error}. The pods are free again."),
+            );
+            Err(SimError::Start(error.to_string()))
+        }
+    }
+}
+
+/// The sides [`run`] would check out, or the refusal that says it cannot.
+fn ready(ctx: &mut Ctx<'_>) -> Result<Ready, SimError> {
     let (arena_cfg, match_cfg, sensors_cfg) = configs(ctx.w).ok_or(SimError::Unavailable)?;
     let arena = centre(ctx.w)
         .map(|centre| centre.arena.clone())
@@ -1588,35 +1743,13 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
             sides.push(Side { team, units });
         }
     }
-    match crate::match_::start(
-        ctx,
-        match_id,
-        &arena,
-        &sides,
-        &arena_cfg,
-        &match_cfg,
-        &sensors_cfg,
-    ) {
-        Ok(_) => {
-            if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
-                let centre = book.centre_mut();
-                centre.state = MatchState::Running;
-                centre.board_deadline_ms = None;
-            }
-            announce(ctx, format!("Match {match_id} is running. Good hunting."));
-            Ok(())
-        }
-        Err(error) => {
-            // Nothing is deployed (cut T.3's `start` rolls its own writes back),
-            // so the centre gives the pods and the slots back and says why.
-            release(ctx, MatchState::Aborted, Some(MatchOutcome::Abort));
-            announce(
-                ctx,
-                format!("Match {match_id} could not start: {error}. The pods are free again."),
-            );
-            Err(SimError::Start(error.to_string()))
-        }
-    }
+    Ok(Ready {
+        arena,
+        sides,
+        arena_cfg,
+        match_cfg,
+        sensors_cfg,
+    })
 }
 
 /// **The boarding deadline** — `match.board_timeout_ms` elapsed with somebody
@@ -1698,8 +1831,8 @@ pub fn board_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
             .map(Some)
     };
     if let Some(team) = empty {
-        release(ctx, MatchState::Aborted, Some(MatchOutcome::Abort));
-        announce(
+        // 16b cut D.3 (`B-32`): through the one pre-`Running` funnel.
+        call_off(
             ctx,
             match team {
                 Some(team) => format!(
@@ -1821,6 +1954,15 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
 /// to return. `Running` sends `Stop { Abort }`, and cut T.3's check-in follows
 /// when the arena answers.
 ///
+/// **16b cut D.3 (`T-60`) took `Selection` away from the participants.** There is
+/// no match in `Selection` — no id, no pod lock, nothing checked out — and one
+/// claimant's `SIM ABORT` wiped every other claimant's slot with it. The lobby's
+/// own way out is `SIM LEAVE`, which gives up the one thing a claimant holds and
+/// (when they are the last) returns the centre to `Idle` anyway; so a non-staff
+/// `SIM ABORT` in `Selection` is [`SimError::NothingToAbort`]. `Boarding`,
+/// `Running` and `Stopping` are unchanged and stay any participant's
+/// (doc 16 §3.8), because in all three there is a match with a name.
+///
 /// # Errors
 ///
 /// [`SimError`], as the line the player sees.
@@ -1844,6 +1986,11 @@ pub fn abort(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     if !staff && !participant {
         return Err(SimError::NoSlot);
     }
+    // 16b cut D.3 (`T-60`): the state check, after the slot check, so a bystander
+    // in `Selection` still reads the refusal that is about them.
+    if !staff && state == MatchState::Selection {
+        return Err(SimError::NothingToAbort);
+    }
     let name = display_name(ctx.w, actor);
     match (state, match_id) {
         (MatchState::Running | MatchState::Stopping, Some(match_id)) => {
@@ -1856,12 +2003,200 @@ pub fn abort(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
                 ),
             );
         }
-        _ => {
-            release(ctx, MatchState::Aborted, Some(MatchOutcome::Abort));
-            announce(ctx, format!("{name} calls the match off."));
-        }
+        // 16b cut D.3 (`B-32`): through the one pre-`Running` funnel, so a lobby
+        // that chose a machine with `SIM UNIT` does not leave it standing.
+        _ => call_off(ctx, format!("{name} calls the match off.")),
     }
     Ok(())
+}
+
+/// **`SIM CONCEDE`** — a side gives the match up (16b cut D.3, `B-33`; doc 16
+/// §3.8).
+///
+/// The eighth selector of the one `SIM` verb, and the answer to a match that
+/// cannot end: doc 16 §3.8's elimination is *a wreck, or disabled with no
+/// weapons*, so a side that is beaten but not dead has nothing to do but drive
+/// about until `match.max_duration_ms`. `SIM ABORT` is the wrong word for it —
+/// an abort is a match that did not happen, and this one did — so a concede is a
+/// **result**: [`crate::arena::state::EndReason::Conceded`], the other side's
+/// own outcome word on the record, and the cells committed like any other end.
+///
+/// Guards in this order: the layer, the room, `Running`, a slot, and the side's
+/// **lead**. Staff have `@arena/abort` and get no special case here (see
+/// [`SimError::NotLeadToConcede`]).
+///
+/// The stop goes through [`crate::match_::abort`] — this crate's one stop funnel,
+/// whatever the reason — and the check-in, the result document and the terminal
+/// board then follow exactly as they do for an elimination. A match whose task is
+/// already gone is finished there and then as an `Abort`, and the concede sentence
+/// is **not** said over it (see the body).
+///
+/// # Errors
+///
+/// [`SimError`], as the line the player sees.
+pub fn concede(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+    let actor = ctx.actor;
+    require_layer(ctx.w)?;
+    in_centre(ctx.w, actor)?;
+    let (team, match_id) = {
+        let Some(centre) = centre(ctx.w) else {
+            return Err(SimError::Unavailable);
+        };
+        if centre.state != MatchState::Running {
+            return Err(SimError::WrongState {
+                state: centre.state.as_str(),
+            });
+        }
+        let slot = centre.slot_of_pilot(actor).ok_or(SimError::NoSlot)?;
+        if !centre.leads_side(slot.team, slot.account) {
+            return Err(SimError::NotLeadToConcede);
+        }
+        // A `Running` centre the lobby started always has one; the `?` is the
+        // broken-world arm and not a path.
+        (slot.team, centre.match_id.ok_or(SimError::Unavailable)?)
+    };
+    crate::match_::abort(ctx, match_id, StopReason::Concede { by: team });
+    // **The sentence belongs to a stop that is really in flight** (16b cut D.3).
+    // The funnel finishes a match whose task is already gone **on the spot**, as
+    // an `EndReason::Abort`, and [`on_match_finished`] then says `Match {id} is
+    // over (abort).` to the centre and leaves it terminal. Announcing the concede
+    // over the top of that would tell everybody a side had won a match whose
+    // board, record and result document all say `abort`, with no arena left to
+    // come back and correct it. So the centre is asked whether it is still
+    // running: a match with no arena has no result to concede, and nothing more
+    // to say. (The funnel's own `bool` cannot answer this — it is `true` on both
+    // arms, because a check-in that found its record is as much an effect as a
+    // stop that was taken.)
+    if centre(ctx.w).is_none_or(|centre| centre.state != MatchState::Running) {
+        return Ok(());
+    }
+    let name = display_name(ctx.w, actor);
+    announce(
+        ctx,
+        format!(
+            "{name} concedes for the {} side. Match {match_id} goes to {} when the arena answers.",
+            team.as_str(),
+            team.other().as_str()
+        ),
+    );
+    Ok(())
+}
+
+/// **The one pre-`Running` end** (16b cut D.3, `B-32`, `T-50`).
+///
+/// Cut F.1 gave [`release`] the seat sweep and made it the one funnel into
+/// `Aborted`; this is the rest of that sentence. Three things, in this order:
+///
+/// 1. [`release`] — the pods, the bodies, the billets and the rows, and the
+///    centre into `Aborted` carrying [`MatchOutcome::Abort`];
+/// 2. [`crate::match_::reset_stock_tanks`] — because a `SIM UNIT` refit is fitted
+///    at `SIM START` and a lobby that ends before `Running` would otherwise leave
+///    a biped standing in a pod nobody chose it for. Idempotent and silent when
+///    nothing moved, which is every call in a lobby where nobody chose anything.
+///    **The evidence argument that keeps this reset away from a finished match
+///    does not apply here**: nothing was fought, so there is nothing to read;
+/// 3. the sentence, said to the whole centre.
+///
+/// Every pre-`Running` end is one of these: [`abort`]'s `Selection`/`Boarding`
+/// arm, [`settle_boarding`]'s empty arm, [`board_deadline`]'s empty arm, and both
+/// of [`run`]'s refusal arms.
+fn call_off(ctx: &mut Ctx<'_>, why: String) {
+    release(ctx, MatchState::Aborted, Some(MatchOutcome::Abort));
+    crate::match_::reset_stock_tanks(ctx);
+    announce(ctx, why);
+}
+
+/// **The unattended deadline** — `[tacsim.match].unattended_ms` of world time has
+/// passed since every pilot of a `Running` match left it (16b cut D.3, `B-33`).
+///
+/// Driven by the lobby's own 1 s tick beside [`board_deadline`] and behind the
+/// same [`require_layer`] test, for the same reason: a simulator that is switched
+/// off does not stop matches.
+///
+/// **The stamp is cleared, and the sentence said, only when the offer lands.**
+/// [`crate::arena_bridge::send_stop`] maps *every* failed offer to
+/// [`crate::arena_bridge::ControlRefusal::Gone`], a momentarily full inbox
+/// included (16c `B-49`, cut M's), and nothing ever re-stamps, because `EXIT` is
+/// one-way — so clearing on a failed send would disarm this path for the rest of
+/// the match, in exactly the long lagging fight that most needs it. A `Gone` or
+/// an `Unavailable` therefore leaves the stamp for the next tick and warns
+/// **once** per match; a `NoMatch` clears it silently, because the match it names
+/// is already over.
+pub fn unattended_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
+    if require_layer(ctx.w).is_err() {
+        return;
+    }
+    let Some((match_id, since, warned)) = ({
+        let Some(centre) = centre(ctx.w) else {
+            return;
+        };
+        if centre.state != MatchState::Running {
+            return;
+        }
+        match (centre.match_id, centre.unattended_since_ms) {
+            (Some(match_id), Some(since)) => Some((match_id, since, centre.unattended_warned)),
+            _ => None,
+        }
+    }) else {
+        return;
+    };
+    let Some((_, match_cfg, _)) = configs(ctx.w) else {
+        return;
+    };
+    // `0` is off, and it is read here rather than at the stamp so an operator who
+    // turns the key off under a live match turns this off with it.
+    if match_cfg.unattended_ms == 0
+        || now_ms.saturating_sub(since) < i64::from(match_cfg.unattended_ms)
+    {
+        return;
+    }
+    match crate::arena_bridge::send_stop(ctx, match_id, StopReason::Unattended) {
+        Ok(()) => {
+            // The record parks in `Stopping` while the stop is in flight, exactly
+            // as `crate::match_::abort` parks it, so `@arena/status` says what is
+            // happening and a second stop is harmless.
+            if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+                book.centre_mut().clear_unattended();
+                if let Some(record) = book.get_mut(match_id) {
+                    record.state = MatchState::Stopping;
+                }
+            }
+            announce(ctx, unattended_line(match_id));
+        }
+        // The match is already gone: there is nothing to stop and nothing to say.
+        Err(crate::arena_bridge::ControlRefusal::NoMatch) => {
+            if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+                book.centre_mut().clear_unattended();
+            }
+        }
+        Err(error) => {
+            if !warned {
+                tracing::warn!(
+                    match_id = match_id.0,
+                    %error,
+                    "tacsim: a match every pilot has left would not take its stop; the lobby \
+                     retries every second"
+                );
+                if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+                    book.centre_mut().unattended_warned = true;
+                }
+            }
+        }
+    }
+}
+
+/// **The sentence an unattended end says to the whole centre** (16b cut D.3,
+/// `B-33`).
+///
+/// A function rather than a `format!` at the one call site so the observer rule's
+/// own lens (`crates/mushd/tests/observer_rule.rs`) can sweep the **production**
+/// sentence for a unit, a position or a contact instead of a copy of it kept in a
+/// test file, which is a copy that can silently stop matching what the centre
+/// really says. Doc 16 §1: it is built from the match id and nothing else, and
+/// every board already publishes that.
+#[must_use]
+pub fn unattended_line(match_id: MatchId) -> String {
+    format!("Match {match_id} ends: every pilot has left it.")
 }
 
 /// **What one reset did** (16b cut F.1).
@@ -1881,6 +2216,22 @@ impl ResetOutcome {
     #[must_use]
     pub fn changed(&self) -> bool {
         !self.was_idle || !self.ejected.is_empty() || self.tanks.changed()
+    }
+
+    /// **Whether the reset found nothing to say at all** (16b cut D.3, `B-31`) —
+    /// nothing changed **and** nothing was skipped or refused.
+    ///
+    /// It is [`ResetOutcome::changed`] with
+    /// [`crate::match_::ResetReport::deployed`] and
+    /// [`crate::match_::ResetReport::failed`] folded in, through
+    /// `ResetReport::is_empty`, which existed with no caller. The two questions
+    /// are not the same one: a pass over a roster tank that is still deployed
+    /// writes nothing and has a great deal to say, and `@arena/reset`'s headline
+    /// used to answer the first question while printing the answer to the second
+    /// underneath it.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.was_idle && self.ejected.is_empty() && self.tanks.is_empty()
     }
 }
 
@@ -1908,15 +2259,31 @@ pub fn reset(ctx: &mut Ctx<'_>) -> ResetOutcome {
     let ejected = crate::match_::cockpit::eject_all(ctx);
     let tanks = crate::match_::reset_stock_tanks(ctx);
     if !was_idle {
-        release_rows(ctx, MatchState::Idle, None);
-        if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
-            *book.centre_mut() = Centre::default();
-        }
+        to_idle(ctx);
     }
     ResetOutcome {
         was_idle,
         ejected,
         tanks,
+    }
+}
+
+/// **The one writer of `Idle`** (16b cut D.3, `T-48`).
+///
+/// [`release_rows`] moves the centre to the state it is given and clears what
+/// belongs to a match; the assignment behind it is what clears the rest, so the
+/// centre really equals [`Centre::default`] and not merely something close to it.
+/// Both halves are needed and neither is anybody's on its own, so they are one
+/// function.
+///
+/// Two callers: [`reset`], and the last [`leave`] — which used to zero the struct
+/// in place, a second writer of the same transition that could (and, as fields
+/// were added to [`Centre`], silently did) mean something different from this
+/// one.
+fn to_idle(ctx: &mut Ctx<'_>) {
+    release_rows(ctx, MatchState::Idle, None);
+    if let Some(book) = ctx.w.module_state_mut::<MatchBook>() {
+        *book.centre_mut() = Centre::default();
     }
 }
 
@@ -2010,6 +2377,10 @@ fn release_rows(ctx: &mut Ctx<'_>, state: MatchState, outcome: Option<MatchOutco
         centre.board_deadline_ms = None;
         centre.state = state;
         centre.outcome = outcome;
+        // 16b cut D.3 (`B-33`): the third and last thing that clears the stamp.
+        // Whatever ended the match, it is over, and the clock that would have
+        // ended it goes with the rows it was counting.
+        centre.clear_unattended();
         // 16b cut Q.7: the reason is written by `on_match_finished`, straight
         // after this; every other release has an outcome with no arena reason
         // behind it (an abort before the arena opened), so it is cleared here.
@@ -2095,16 +2466,31 @@ pub fn status_lines(w: &World, reader: BoardReader) -> Vec<String> {
         ),
         None => format!("Simulator centre: {}", centre.state.as_str()),
     };
-    match centre.outcome {
+    rows.push(match (centre.outcome, centre.outcome_reason) {
         // **16b cut Q.7**: `Spent` is a draw, and a draw for a reason nobody can
         // read off the word — so the board says it, in the em-dash style it has
         // always used for an outcome.
-        Some(_) if centre.outcome_reason == Some(EndReason::Spent) => {
-            rows.push(format!("{head} — draw: both sides are out of ammunition"));
+        (Some(_), Some(EndReason::Spent)) => {
+            format!("{head} — draw: both sides are out of ammunition")
         }
-        Some(outcome) => rows.push(format!("{head} — {}", outcome.as_str())),
-        None => rows.push(head),
-    }
+        // **16b cut D.3 (`B-33`)**: the same argument for the two new ends. The
+        // outcome word is the winner's, which says who won and not how.
+        (Some(_), Some(EndReason::Conceded { winner })) => format!(
+            "{head} — {} wins: {} conceded",
+            winner.as_str(),
+            winner.other().as_str()
+        ),
+        (Some(_), Some(EndReason::Unattended)) => {
+            format!("{head} — timeout: every pilot had left")
+        }
+        // **16b cut D.3 (`T-60`)**: no dash where the outcome only repeats the
+        // state. `aborted (match 3) — abort` and `void — void` told the reader
+        // the same thing twice; the states that carry information keep theirs.
+        (Some(MatchOutcome::Abort), _) if centre.state == MatchState::Aborted => head,
+        (Some(MatchOutcome::Void), _) if centre.state == MatchState::Void => head,
+        (Some(outcome), _) => format!("{head} — {}", outcome.as_str()),
+        (None, _) => head,
+    });
     // **16b cut D.1**: the side this reader is entitled to read in full while a
     // match runs. `None` for staff (who read every side in full), and `None` for
     // a player who holds no slot (who reads every side reduced).

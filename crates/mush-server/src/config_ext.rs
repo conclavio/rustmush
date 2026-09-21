@@ -332,6 +332,8 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
             max_slots_per_side: cfg.match_.max_slots_per_side,
             // 16b cut N.1: the lobby's AI fill.
             ai_fill: cfg.match_.ai_fill,
+            // 16b cut D.3 (`B-33`): how long a match every pilot has left runs on.
+            unattended_ms: cfg.match_.unattended_ms,
         },
         sensors: tacsim::config::SensorsConfig {
             pass_ms: cfg.sensors.pass_ms,
@@ -944,6 +946,7 @@ mod tests {
              max_duration_ms = 900000\n\
              max_slots_per_side = 4\n\
              ai_fill = true\n\
+             unattended_ms = 45000\n\
              [tacsim.sensors]\n\
              pass_ms = 750\n\
              max_signature_factor = 2.25\n\
@@ -1013,6 +1016,8 @@ mod tests {
                 max_duration_ms: 900_000,
                 max_slots_per_side: 4,
                 ai_fill: true,
+                // 16b cut D.3 (`B-33`): the unattended end's own key.
+                unattended_ms: 45_000,
             }
         );
         assert_eq!(
@@ -1261,6 +1266,19 @@ mod tests {
                 "[tacsim.harness].fighting",
                 "11",
             ),
+            // 16b cut D.3 (`B-33`): off, or a lull and not a hiccup.
+            (
+                "[tacsim.match]",
+                "unattended_ms = 1\n",
+                "[tacsim.match].unattended_ms",
+                "1",
+            ),
+            (
+                "[tacsim.match]",
+                "unattended_ms = 9999\n",
+                "[tacsim.match].unattended_ms",
+                "9999",
+            ),
         ] {
             let cfg = tacsim_cfg(&format!("{block}\n{body}"));
             let error = tacsim_config(&cfg)
@@ -1271,8 +1289,16 @@ mod tests {
                 "{block} {body:?}: the refusal should name {key} and {value}: {error}"
             );
         }
-        // And nothing valid is refused: the shipped defaults map and pass.
+        // And nothing valid is refused: the shipped defaults map and pass, and so
+        // do both ends of the unattended key's own band (16b cut D.3).
         assert!(tacsim_config(&TacsimCfg::default()).is_ok());
+        for body in ["unattended_ms = 0\n", "unattended_ms = 10000\n"] {
+            let cfg = tacsim_cfg(&format!("[tacsim.match]\n{body}"));
+            assert!(
+                tacsim_config(&cfg).is_ok(),
+                "{body:?} should boot: 0 is off and 10000 is the floor"
+            );
+        }
     }
 
     /// **16b cut Q.7: every shipped config's arena values pass the validators.**

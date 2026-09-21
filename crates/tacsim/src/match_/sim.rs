@@ -9,6 +9,7 @@
 //! SIM STATUS              the centre, as it stands
 //! SIM AI [n]              how many units a side fields when the machines fill in
 //! SIM UNIT [<type>]       which unit type your own slot fields
+//! SIM CONCEDE             give the match up for your side (its first pilot, while it runs)
 //! ```
 //!
 //! # Why one verb and not five
@@ -92,15 +93,19 @@ pub enum Selector {
     /// **`SIM UNIT [<type>]`** (16b cut Q.8): which unit type the caller's own
     /// slot fields.
     Unit,
+    /// **`SIM CONCEDE`** (16b cut D.3, `B-33`): a side's first pilot gives the
+    /// running match up, and the other side wins it.
+    Concede,
 }
 
 impl Selector {
-    /// The seven words, in help order.
-    pub const ALL: [(Selector, &'static str); 7] = [
+    /// The eight words, in help order.
+    pub const ALL: [(Selector, &'static str); 8] = [
         (Selector::Team, "team"),
         (Selector::Leave, "leave"),
         (Selector::Start, "start"),
         (Selector::Abort, "abort"),
+        (Selector::Concede, "concede"),
         (Selector::Status, "status"),
         (Selector::Ai, "ai"),
         (Selector::Unit, "unit"),
@@ -151,14 +156,15 @@ fn selector_of(ctx: &Ctx<'_>) -> Option<(Selector, String)> {
     Selector::parse(head).map(|selector| (selector, rest.to_owned()))
 }
 
-/// `SIM <team|leave|start|abort|status>` — the whole lobby (doc 16 §3.7).
+/// `SIM <team|leave|start|abort|concede|status|ai|unit>` — the whole lobby (doc
+/// 16 §3.7).
 ///
 /// # Errors
 ///
 /// Whatever the centre refused, as the one line the player sees.
 pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str = "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM STATUS | \
-                         SIM AI [n] | SIM UNIT [type]";
+    const USAGE: &str = "SIM TEAM red|blue | SIM LEAVE | SIM START | SIM ABORT | SIM CONCEDE | \
+                         SIM STATUS | SIM AI [n] | SIM UNIT [type]";
     // **Where before what** (16b cut F.4 residual). The deleted gate answered
     // every spelling of the verb outside the centre with the one
     // [`crate::match_::OUTSIDE_CENTRE`] line, and taking it away put the parser
@@ -189,6 +195,8 @@ pub fn sim_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Selector::Leave => lobby::leave(ctx).map_err(refusal),
         Selector::Start => lobby::start(ctx).map_err(refusal),
         Selector::Abort => lobby::abort(ctx).map_err(refusal),
+        // **16b cut D.3 (`B-33`)**: the eighth selector, and no eighth verb.
+        Selector::Concede => lobby::concede(ctx).map_err(refusal),
         // **16b cut Q.7**: bare reads, with a number sets. A word that is not a
         // number is the usage line and never a silent read — `SIM AI four` must
         // not quietly answer "AI fill: 2 a side."
@@ -295,6 +303,12 @@ fn board_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     }
     let now_ms = ctx.w.now().saturating_mul(1_000);
     lobby::board_deadline(ctx, now_ms);
+    // **16b cut D.3 (`B-33`)**: the other deadline the lobby owns. `Boarding` has
+    // no arena to hold a clock and neither does *a match nobody is in* — the
+    // arena is stepping, but it has no idea that every seat it is publishing
+    // frames to is empty, and only the centre knows that. One comparison against
+    // one `Option<i64>` on a world that is idle anyway, beside the one above it.
+    lobby::unattended_deadline(ctx, now_ms);
 }
 
 /// Register the lobby's surface on the **tacsim** module: the verb and the
@@ -325,7 +339,10 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    SIM START           lock the pods and open boarding. A side's first pilot, \
                    or staff, with at least one pilot a side.\n\
                    SIM ABORT           call the match off (any pilot in it, or staff). A \
-                   running match stops at the arena's next pulse.\n\
+                   running match stops at the arena's next pulse; before one is running there \
+                   is nothing to abort, and SIM LEAVE is how a claimant gets out.\n\
+                   SIM CONCEDE         give the running match up for your side. Its first \
+                   pilot only: the other side wins it, and the result record says so.\n\
                    SIM STATUS          the centre: its state, its sides, its slots and its \
                    pods. Also the bare SIM.\n\
                    SIM AI [n]          how many units a side fields when the server fills the \
@@ -360,8 +377,8 @@ mod tests {
     fn every_selector_has_a_word_and_a_switch() {
         let switches = register_switches();
         // 16b cut Q.7 made it six: `ai` joined the five. 16b cut Q.8 made it
-        // seven with `unit`.
-        assert_eq!(switches.len(), 7);
+        // seven with `unit`, and 16b cut D.3 eight with `concede`.
+        assert_eq!(switches.len(), 8);
         for (selector, name) in Selector::ALL {
             assert!(switches.iter().any(|switch| switch == name), "{name}");
             assert_eq!(Selector::parse(name), Some(selector));

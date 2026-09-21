@@ -317,6 +317,17 @@ impl Rig {
     /// on the board. Nothing is returned, because what this is for is the
     /// centre's half and not the cells.
     fn end_match(&mut self, reason: tacsim::arena::EndReason) {
+        self.end_match_returning(reason, &[]);
+    }
+
+    /// The same end, with the cells the arena hands back on it (16b cut D.3):
+    /// what tells a **committed** check-in from a void one, which returns every
+    /// unit to its check-out snapshot and leaves the same cleared marker behind.
+    fn end_match_returning(
+        &mut self,
+        reason: tacsim::arena::EndReason,
+        returned: &[tacsim::arena::damage::UnitReturn],
+    ) {
         let match_id = self
             .centre()
             .match_id
@@ -338,7 +349,7 @@ impl Rig {
             t_ms: 12_000,
         };
         assert!(
-            match_::finish(&mut ctx, match_id, end, "0".repeat(64), &[]),
+            match_::finish(&mut ctx, match_id, end, "0".repeat(64), returned),
             "the match had a live record to check in"
         );
     }
@@ -639,7 +650,26 @@ async fn abort_from_selection_releases_slots_and_nothing_else() {
     let mut rig = Rig::boot(2);
     rig.say(0, "sim team red");
     rig.say(1, "sim team blue");
+    // **16b cut D.3 (`T-60`)**: a claimant is refused, and the other claimant's
+    // slot is still there — which is the whole of the row. Staff still may.
     let said = rig.say(0, "sim abort");
+    assert!(
+        said.contains("Nothing is running yet. `SIM LEAVE` gives your slot up."),
+        "{said}"
+    );
+    assert_eq!(rig.state(), MatchState::Selection);
+    assert_eq!(
+        rig.centre().slots.len(),
+        2,
+        "one claimant dissolved a lobby"
+    );
+
+    let lobby = match_::centre_object(rig.tw.world(), match_::LOBBY_ENTRY).expect("the lobby");
+    rig.tw
+        .world_mut()
+        .move_to(GOD, lobby)
+        .expect("staff walk in");
+    let said = rig.staff("sim abort");
     assert!(said.contains("calls the match off"), "{said}");
     assert_eq!(rig.state(), MatchState::Aborted);
     assert!(rig.centre().slots.is_empty());
@@ -788,7 +818,15 @@ async fn a_reset_after_an_end_is_idempotent_and_says_so() {
     let mut rig = Rig::boot(2);
     rig.say(0, "sim team red");
     rig.say(1, "sim team blue");
-    rig.say(0, "sim abort");
+    // **16b cut D.3 (`T-60`)**: a claimant's `SIM ABORT` no longer ends a
+    // `Selection`, so the terminal centre this test needs is made by staff —
+    // whose `SIM ABORT` in `Selection` is exactly what the row kept.
+    let lobby = match_::centre_object(rig.tw.world(), match_::LOBBY_ENTRY).expect("the lobby");
+    rig.tw
+        .world_mut()
+        .move_to(GOD, lobby)
+        .expect("staff walk in");
+    rig.staff("sim abort");
     assert_eq!(rig.state(), MatchState::Aborted);
 
     let said = rig.staff("@arena/reset");
@@ -1613,9 +1651,22 @@ async fn q8_the_last_leave_puts_a_half_refitted_lobbys_tanks_back() {
         "the next pair does not inherit last lobby's biped"
     );
 
-    // And a reset over it has nothing left to do.
+    // And a reset over it writes nothing — but it is **not** silent: red 2's
+    // tank still carries the stale marker this test wedged it with, so `B-31`'s
+    // middle headline is the true one and the row underneath it says why.
     let said = rig.staff("@arena/reset");
-    assert!(said.contains("already idle; nothing changed"), "{said}");
+    assert!(
+        said.contains("The simulator centre is idle, but not clean:"),
+        "{said}"
+    );
+    assert!(
+        said.contains("is still deployed and was left alone"),
+        "{said}"
+    );
+    assert!(
+        !said.contains("already idle; nothing changed"),
+        "the headline contradicted the row under it: {said}"
+    );
 }
 
 /// A stale `deployed` marker on one pod's tank: the one refusal `refit_unit`
@@ -2231,5 +2282,1279 @@ async fn d1_the_board_prints_the_arena_clock_in_minutes_and_seconds() {
     assert!(
         !said.contains(" ms"),
         "the raw milliseconds are gone from the board: {said}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut D.3 — the lifecycle's ends
+// ---------------------------------------------------------------------------
+
+/// The fill-on rig with `[tacsim.match].unattended_ms` short enough for a test to
+/// walk past it (16b cut D.3, `B-33`).
+fn unattended_config(ms: u32) -> TacsimConfig {
+    let mut cfg = fill_config();
+    cfg.match_.unattended_ms = ms;
+    cfg
+}
+
+impl Rig {
+    /// **The schema one pod's tank is fitted with**, as the board spells it.
+    fn schema_of(&self, team: Team, index: u8) -> String {
+        let tank = match_::tank_for_slot(self.tw.world(), team, index).expect("the pod's tank");
+        mush_tactics::module::unit_of(self.tw.world(), tank)
+            .expect("a tactical unit")
+            .schema()
+            .key()
+            .id
+            .as_str()
+            .to_owned()
+    }
+
+    /// **Release one pilot's seat the way every route to a released seat does**
+    /// (16b cut D.3): `Control { Released }` through
+    /// [`tacsim::arena_bridge::send_control`], which is where `EXIT`, a `QUIT`
+    /// and the linkdead grace running out all end up — and where
+    /// `lobby::slot_left` is called, so this is the one seam the unattended
+    /// stamp hangs off.
+    fn release(&mut self, n: usize) {
+        let pilot = self.pilot(n);
+        let unit = self
+            .centre()
+            .slot_of_pilot(pilot)
+            .and_then(|slot| slot.unit)
+            .expect("a seated slot");
+        let mut out = Outbox::new();
+        let engine = self.tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: pilot,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let _ = tacsim::arena_bridge::send_control(
+            &mut ctx,
+            unit,
+            tacsim::arena::state::Channel::Helm,
+            tacsim::arena::intents::ControlState::Released,
+            Some(pilot),
+        );
+    }
+
+    /// Fire the module ticks due at `seconds` and answer what pilot `n` heard.
+    fn tick_heard(&mut self, seconds: i64, n: usize) -> String {
+        let actor = self.pilot(n);
+        self.tw.set_now(seconds);
+        let events = self.tw.fire_due(seconds.saturating_mul(1_000));
+        self.seen(actor, &events)
+    }
+
+    /// **Strand one unit the way a refused check-in strands it** (16b cut D.3,
+    /// `T-49`): a real `mush_tactics::custody::check_out`, which writes both
+    /// halves of the marker — the tactics record's, which every ordinary
+    /// mutation consults, and the simulation's, which the admission sites read.
+    /// Planting only the second would leave a unit `@arena/release` could see and
+    /// not check in.
+    fn strand(&mut self, unit: ObjId, match_id: u64) {
+        let mut out = Outbox::new();
+        let engine = self.tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        mush_tactics::custody::check_out(
+            &mut ctx,
+            unit,
+            mush_sim::DeployedMark::new(match_id, "tacsim.arena.proving_ground"),
+        )
+        .expect("a check-out of a unit nothing holds");
+    }
+
+    /// **Give one pilot a cockpit billet on a unit the centre does not own** (16b
+    /// cut D.3, `B-36`) — the two writes `BOARD` makes, without the pod and
+    /// without the lobby: the `cockpit` station on the unit, and the seat.
+    ///
+    /// It is the state a staffer stationed in a machine of their own is in, and
+    /// the one the narrowed [`waiting_to_start`] is about.
+    fn station_on(&mut self, n: usize, unit: ObjId) {
+        let actor = self.pilot(n);
+        let station = mush_sim::StationId::new(tacsim::match_::cockpit::STATION)
+            .expect("the cockpit station id");
+        let mut out = Outbox::new();
+        let engine = self.tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        mush_sim::declare_station(
+            &mut ctx,
+            unit,
+            &station,
+            tacsim::match_::cockpit::STATION_ROLE,
+            &tacsim::match_::cockpit::cockpit_channels(),
+            None,
+            tacsim::match_::cockpit::STATION_PRIORITY,
+        )
+        .expect("a station on a unit nobody holds");
+        mush_sim::request_seat_activation(
+            &mut ctx,
+            &mush_sim::SeatRequest::Activate {
+                unit,
+                station,
+                npc: actor,
+                granted: tacsim::match_::cockpit::cockpit_channels(),
+                fallback: None,
+            },
+        )
+        .expect("a vacant seat takes its holder");
+    }
+
+    /// Whether pilot `n` still holds the `cockpit` billet on `unit`.
+    fn holds_billet(&self, n: usize, unit: ObjId) -> bool {
+        let actor = self.pilot(n);
+        self.tw
+            .world()
+            .module_state::<mush_sim::SpatialState>()
+            .and_then(|state| state.assignments.get(&unit))
+            .and_then(|host| host.seats.values().find(|seat| seat.actor == actor))
+            .is_some()
+    }
+
+    /// The running match's task table.
+    fn tasks(&self) -> tacsim::arena_bridge::ArenaTasks {
+        self.tw
+            .world()
+            .module_state::<tacsim::arena_bridge::ArenaRegistry>()
+            .expect("the registry")
+            .tasks()
+            .clone()
+    }
+}
+
+/// Two pilots, one match, running.
+fn duel(rig: &mut Rig) {
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    assert!(!rig.seat(0));
+    assert!(rig.seat(1));
+    assert_eq!(rig.state(), MatchState::Running);
+}
+
+// ---------------------------------------------------------------------------
+// (1) `B-32`, `T-50`, `T-48`, `T-51` — one funnel for every end before `Running`
+// ---------------------------------------------------------------------------
+
+/// **A refused check-out calls the lobby off instead of stranding it** (16b cut
+/// D.3, `B-32`, `T-50`).
+///
+/// Reached from a real `Boarding` with a really boarded pilot: the blue tank is
+/// marked deployed to another match between the two seats, so the **second**
+/// seat fires the `Boarding → Running` trigger and cut T.3's check-out refuses
+/// it. The centre goes `Aborted`, both pods are free, both pilots are standing in
+/// the team room with their billets back, the red pod's `SIM UNIT` refit is
+/// undone, and a second crew can claim and board.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_a_refused_check_out_calls_the_lobby_off_and_frees_the_pods() {
+    let mut rig = Rig::boot(3);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim unit biped_mk1");
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    assert_eq!(
+        rig.schema_of(Team::Red, 1),
+        "tacsim.unit.biped_mk1",
+        "the start fitted the chosen chassis"
+    );
+    assert!(!rig.seat(0), "red is in and blue is not");
+
+    // The blue tank is out on loan to somebody else, so the check-out refuses.
+    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    mush_sim::deployed::mark(
+        rig.tw.world_mut(),
+        blue,
+        mush_sim::DeployedMark::new(99, "tacsim.arena.proving_ground"),
+    );
+    let pilot = rig.pilot(1);
+    let pod = rig.pod(1).expect("a locked pod");
+    let unit = match_::tank_of(rig.tw.world(), pod).expect("the pod's tank");
+    let heard = {
+        let match_id = rig
+            .centre()
+            .match_id
+            .expect("a boarding centre has a match id");
+        let mut out = Outbox::new();
+        {
+            let engine = rig.tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: pilot,
+                switches: SwitchSet::default(),
+                args: ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(smol_str::SmolStr::new(tacsim::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            assert!(
+                match_::slot_seated(&mut ctx, match_id, pilot, unit).is_err(),
+                "the check-out was supposed to refuse"
+            );
+        }
+        rig.seen(pilot, &out.take())
+    };
+    assert!(
+        heard.contains("could not start") && heard.contains("The pods are free again."),
+        "{heard}"
+    );
+    assert_eq!(rig.state(), MatchState::Aborted, "the lobby was left stuck");
+    assert!(rig.centre().slots.is_empty(), "the slots are given back");
+    let red_pod = match_::pod_object(rig.tw.world(), Team::Red, 1).expect("red pod 1");
+    assert_eq!(match_::pilot_of(rig.tw.world(), red_pod), None);
+    assert!(
+        !tacsim::match_::cockpit::in_a_pod(rig.tw.world(), rig.pilot(0)),
+        "the boarded pilot was left shut in the pod"
+    );
+    assert!(
+        match_::flying(rig.tw.world(), rig.pilot(0)).is_none(),
+        "the boarded pilot kept the tank's billet"
+    );
+    assert_eq!(
+        rig.schema_of(Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "the called-off lobby left its biped standing in the pod"
+    );
+
+    // And a second crew really can use the centre again, once the stale marker
+    // this test planted by hand is off the blue tank.
+    mush_sim::deployed::clear(rig.tw.world_mut(), blue);
+    rig.say(2, "sim team red");
+    rig.say(1, "sim team blue");
+    let said = rig.say(2, "sim start");
+    assert!(said.contains("boarding"), "{said}");
+    assert!(!rig.seat(2), "the pod took a pilot again");
+}
+
+/// **An early refusal of `run` calls the lobby off too** (16b cut D.3, `B-32`,
+/// `T-50`).
+///
+/// [`tacsim::match_::sim_start`]'s own refusals happen before `Boarding`; these
+/// are the three [`run`] itself makes, *after* the pods are locked and somebody is
+/// sitting in one — and before this cut all three simply returned `Err`, leaving
+/// the centre in `Boarding` with its deadline already cleared, its pods locked and
+/// a pilot whose only way out was `SIM ABORT`.
+///
+/// `EmptySide` is the one of the three a lobby can really reach: with the fill on,
+/// the check that a side has *somebody* is asked over the whole centre, so a side
+/// with no claimant is legal and a side whose roster tanks are not in the world is
+/// not. `NobodyPlaying` and `Unavailable` share this arm and cannot be reached
+/// from a real `Boarding` — `settle_boarding` only calls `run` with every slot
+/// seated, and `board_deadline` has called an empty centre off before it gets
+/// there — so what is walked here is the arm, with the refusal that reaches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_an_early_refusal_of_run_calls_the_lobby_off() {
+    let mut rig = fill_rig(2);
+    rig.say(0, "sim team red");
+    rig.say(0, "sim unit biped_mk1");
+    rig.say(0, "sim start");
+    assert_eq!(
+        rig.state(),
+        MatchState::Boarding,
+        "the fill starts one side"
+    );
+
+    // Blue's roster tanks leave the world between the lock and the seat, so the
+    // fill finds nothing to field for that side and `ready` refuses.
+    for index in 1..=match_::PODS_PER_SIDE {
+        if let Some(tank) = match_::tank_for_slot(rig.tw.world(), Team::Blue, index) {
+            rig.tw
+                .world_mut()
+                .destroy(tank)
+                .expect("a tank nothing protects");
+        }
+    }
+    rig.tw.world_mut().sweep();
+    assert_eq!(
+        match_::tank_for_slot(rig.tw.world(), Team::Blue, 1),
+        None,
+        "the blue side still has a tank to field"
+    );
+
+    // The seat fires the `Boarding → Running` trigger, and `run` refuses before
+    // the check-out rather than at it.
+    let pilot = rig.pilot(0);
+    let pod = rig.pod(0).expect("a locked pod");
+    let unit = match_::tank_of(rig.tw.world(), pod).expect("the pod's tank");
+    let (refusal, heard) = {
+        let match_id = rig
+            .centre()
+            .match_id
+            .expect("a boarding centre has a match id");
+        let mut out = Outbox::new();
+        let refusal = {
+            let engine = rig.tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: pilot,
+                switches: SwitchSet::default(),
+                args: ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(smol_str::SmolStr::new(tacsim::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            match_::slot_seated(&mut ctx, match_id, pilot, unit)
+                .expect_err("the fill had no blue tank to field")
+                .to_string()
+        };
+        (refusal, rig.seen(pilot, &out.take()))
+    };
+    assert!(
+        refusal.contains("The blue side has no pilots; a match takes at least one a side."),
+        "{refusal}"
+    );
+    assert!(
+        heard.contains("Match 1 could not start:") && heard.contains("The pods are free again."),
+        "{heard}"
+    );
+
+    // The same funnel, and the same freed centre: the state, the slots, the pod,
+    // the pilot's billet and the red pod's refit.
+    assert_eq!(rig.state(), MatchState::Aborted, "the lobby was left stuck");
+    assert!(rig.centre().slots.is_empty(), "the slots are given back");
+    let red_pod = match_::pod_object(rig.tw.world(), Team::Red, 1).expect("red pod 1");
+    assert_eq!(match_::pilot_of(rig.tw.world(), red_pod), None);
+    assert!(
+        !tacsim::match_::cockpit::in_a_pod(rig.tw.world(), pilot),
+        "the boarded pilot was left shut in the pod"
+    );
+    assert!(
+        match_::flying(rig.tw.world(), pilot).is_none(),
+        "the boarded pilot kept the tank's billet"
+    );
+    assert_eq!(
+        rig.schema_of(Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "the called-off lobby left its biped standing in the pod"
+    );
+
+    // And the centre is usable again: a second claim is accepted.
+    let said = rig.say(1, "sim team red");
+    assert!(said.contains("takes red slot 1"), "{said}");
+    assert_eq!(rig.state(), MatchState::Selection);
+}
+
+/// **An end before `Running` puts a `SIM UNIT` refit back** (16b cut D.3, `B-32`;
+/// 16b cut Q.8's `unfit_slot`).
+///
+/// The refit is *fitted* at `SIM START`, so a lobby that ends in `Boarding` would
+/// otherwise leave a biped standing in a pod nobody chose it for — the next crew's
+/// red 1 would climb into somebody else's machine. The control is the same abort
+/// out of `Selection`, where nothing was fitted at all and the reset has nothing
+/// to do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_a_pre_running_end_puts_a_refitted_pod_back() {
+    let mut rig = Rig::boot(2);
+
+    // (a) The control: chosen, never fitted, and called off from `Selection`.
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim unit biped_mk1");
+    assert_eq!(
+        rig.schema_of(Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "`SIM UNIT` fitted a chassis in `Selection`"
+    );
+    let lobby = match_::centre_object(rig.tw.world(), match_::LOBBY_ENTRY).expect("the lobby");
+    rig.tw
+        .world_mut()
+        .move_to(GOD, lobby)
+        .expect("staff walk in");
+    rig.staff("sim abort");
+    assert_eq!(rig.state(), MatchState::Aborted);
+    assert_eq!(rig.schema_of(Team::Red, 1), "tacsim.unit.line_tank");
+    rig.staff("@arena/reset");
+
+    // (b) The case: chosen, fitted by `SIM START`, and called off from
+    // `Boarding` by a participant.
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim unit biped_mk1");
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    assert_eq!(
+        rig.schema_of(Team::Red, 1),
+        "tacsim.unit.biped_mk1",
+        "the start never fitted the chosen chassis"
+    );
+    let said = rig.say(0, "sim abort");
+    assert!(said.contains("calls the match off"), "{said}");
+    assert_eq!(rig.state(), MatchState::Aborted);
+    assert_eq!(
+        rig.schema_of(Team::Red, 1),
+        "tacsim.unit.line_tank",
+        "the called-off lobby left its biped standing in the pod"
+    );
+}
+
+/// **`T-48`: the last `SIM LEAVE` returns the centre to a `Centre::default()`**,
+/// through the one writer of `Idle`.
+///
+/// The behaviour is unchanged and that is the point: `leave` used to zero the
+/// struct in place, a second writer of a transition [`reset`] already owned, so
+/// every field added to `Centre` had to be remembered in two places. What this
+/// pins is the observable half — the centre really is default, in every field,
+/// and the tanks are back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_the_last_leave_returns_the_centre_to_its_default() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim unit biped_mk1");
+    assert_ne!(rig.centre(), tacsim::match_::Centre::default());
+    rig.say(0, "sim leave");
+    assert_eq!(rig.state(), MatchState::Selection, "one claimant is left");
+    rig.say(1, "sim leave");
+    assert_eq!(
+        rig.centre(),
+        tacsim::match_::Centre::default(),
+        "the last leave left something on the centre"
+    );
+    assert_eq!(rig.schema_of(Team::Red, 1), "tacsim.unit.line_tank");
+    // And a reset over it has nothing at all to say, which is only true of a
+    // centre that really is default.
+    let said = rig.staff("@arena/reset");
+    assert!(said.contains("already idle; nothing changed"), "{said}");
+}
+
+/// **`T-51`: the fill's floor is held inside the pods that exist.**
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_the_ai_floor_is_clamped_to_the_pods_a_side_has() {
+    let mut centre = tacsim::match_::Centre::default();
+    assert_eq!(match_::largest_side(&centre), 1, "never zero");
+    let cfg = tacsim::config::MatchConfig::default();
+    for n in 0..12_u8 {
+        centre.slots.push(tacsim::match_::Slot {
+            team: Team::Red,
+            index: n.saturating_add(1),
+            account: mush_core::AccountId::mint("floor", i64::from(n)).expect("an account id"),
+            pilot: ObjId(u32::from(n) + 1),
+            pod: None,
+            unit: None,
+            left: false,
+            unit_type: None,
+        });
+    }
+    assert_eq!(
+        match_::largest_side(&centre),
+        match_::PODS_PER_SIDE,
+        "the floor ran past the pods that exist"
+    );
+    assert_eq!(
+        match_::ai_side_size(&centre, &cfg),
+        match_::PODS_PER_SIDE,
+        "and so did the size it is a floor under"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (2) `B-33` — `SIM CONCEDE`
+// ---------------------------------------------------------------------------
+
+/// **One unit the arena hands back damaged** (16b cut D.3, `B-33`), with the cell
+/// it moved and the value it moved to.
+///
+/// The check-in's plan is a **diff** between the unit the world still holds and
+/// the one the arena returns ([`tacsim::match_::returned_plan`]), so a returned
+/// unit that is a copy of the held one commits nothing and proves nothing. This
+/// lowers one scalar cell, which is the shape all of doc 16 §3.5's damage has.
+fn damaged_return(
+    rig: &Rig,
+    unit: ObjId,
+) -> (
+    tacsim::arena::damage::UnitReturn,
+    mush_tactics::CellAddr,
+    i64,
+) {
+    let held = mush_tactics::module::unit_of(rig.tw.world(), unit)
+        .expect("a unit")
+        .clone();
+    let (addr, hurt) = held
+        .cells()
+        .find(|(_, cell)| cell.current > cell.min)
+        .map(|(addr, cell)| (addr.clone(), cell.current.saturating_sub(1).max(cell.min)))
+        .expect("the stock tank has a cell that can be taken down");
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetCell {
+            addr: addr.clone(),
+            value: hurt,
+        }],
+        None,
+        Some(smol_str::SmolStr::new_static("test:damage")),
+    )
+    .expect("one op is a plan");
+    let (cells, _journal) = mush_tactics::apply(&held, &plan, 0).expect("the cell is in bounds");
+    let pose = mush_sim::pose_of(rig.tw.world(), unit)
+        .map(|(_, pose)| pose)
+        .expect("a placed tank");
+    (
+        tacsim::arena::damage::UnitReturn {
+            unit,
+            cells,
+            pose,
+            shots: 4,
+            hits: 2,
+            wreck: false,
+            disabled: false,
+        },
+        addr,
+        hurt,
+    )
+}
+
+/// **A side's first pilot concedes, and the other side wins** (16b cut D.3,
+/// `B-33`).
+///
+/// The announcement, the board's new line, the state and the outcome — and that
+/// it is **not** a void: the cells are committed, so a tank the match damaged is
+/// still damaged on its own unit document afterwards, exactly as after an
+/// elimination.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_a_lead_concedes_and_the_other_side_wins() {
+    let mut rig = Rig::boot(2);
+    duel(&mut rig);
+    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let (damaged, addr, hurt) = damaged_return(&rig, red);
+    let before = mush_tactics::module::unit_of(rig.tw.world(), red)
+        .expect("a unit")
+        .cell(&addr)
+        .expect("the cell is on the held unit")
+        .current;
+
+    let said = rig.say(0, "sim concede");
+    assert!(
+        said.contains(
+            "Pilot0 concedes for the red side. Match 1 goes to blue when the arena answers."
+        ),
+        "{said}"
+    );
+    // The stop is in flight; the end lands when the arena answers, which here is
+    // the egress driven by hand, carrying the cells the loser's tank came back
+    // with.
+    rig.end_match_returning(
+        tacsim::arena::EndReason::Conceded { winner: Team::Blue },
+        &[damaged],
+    );
+    assert_eq!(rig.state(), MatchState::Ended, "a concede is not an abort");
+    assert_eq!(
+        rig.centre().outcome,
+        Some(tacsim::match_::MatchOutcome::Blue)
+    );
+    assert_eq!(
+        rig.centre().outcome_reason,
+        Some(tacsim::arena::EndReason::Conceded { winner: Team::Blue })
+    );
+    // **The tanks stand as evidence**: a concede is a result and not a void, so
+    // the check-in **committed** the arena's cells rather than restoring the
+    // check-out snapshot over them. The marker alone cannot say which happened —
+    // a void clears it too — so the damage is what is read.
+    assert!(
+        !mush_sim::deployed::is_deployed(rig.tw.world(), red),
+        "the units are checked in"
+    );
+    assert_ne!(hurt, before, "the fixture did no damage at all");
+    assert_eq!(
+        mush_tactics::module::unit_of(rig.tw.world(), red)
+            .expect("a unit")
+            .cell(&addr)
+            .map(|cell| cell.current),
+        Some(hurt),
+        "a concede voided the match's own evidence"
+    );
+    let board = staff_board(&rig);
+    assert!(
+        board.contains("ended (match 1) — blue wins: red conceded"),
+        "{board}"
+    );
+}
+
+/// **The board names the winner of a concede either way** (16b cut D.3, `B-33`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_the_board_names_the_winner_of_a_concede_either_way() {
+    let mut rig = Rig::boot(2);
+    duel(&mut rig);
+    let said = rig.say(1, "sim concede");
+    assert!(
+        said.contains(
+            "Pilot1 concedes for the blue side. Match 1 goes to red when the arena answers."
+        ),
+        "{said}"
+    );
+    rig.end_match(tacsim::arena::EndReason::Conceded { winner: Team::Red });
+    assert_eq!(
+        rig.centre().outcome,
+        Some(tacsim::match_::MatchOutcome::Red)
+    );
+    let board = staff_board(&rig);
+    assert!(
+        board.contains("ended (match 1) — red wins: blue conceded"),
+        "{board}"
+    );
+}
+
+/// **`SIM CONCEDE`'s guards, in order** (16b cut D.3, `B-33`): `Running`, a slot,
+/// and the side's lead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_concede_is_the_leads_alone_and_only_while_a_match_runs() {
+    let mut rig = Rig::boot(4);
+    // Outside `Running`: the state refusal, in `Idle`, in `Selection` and in
+    // `Boarding`.
+    let said = rig.say(0, "sim concede");
+    assert!(said.contains("The simulator centre is idle;"), "{said}");
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team blue");
+    let said = rig.say(0, "sim concede");
+    assert!(
+        said.contains("The simulator centre is selection;"),
+        "{said}"
+    );
+    rig.say(0, "sim start");
+    let said = rig.say(0, "sim concede");
+    assert!(said.contains("The simulator centre is boarding;"), "{said}");
+
+    assert!(!rig.seat(0));
+    assert!(!rig.seat(1));
+    assert!(rig.seat(2));
+    assert_eq!(rig.state(), MatchState::Running);
+
+    // A player in the centre holding no slot.
+    let said = rig.say(3, "sim concede");
+    assert!(
+        said.contains("You hold no slot in the simulator."),
+        "{said}"
+    );
+    // A pilot who holds a slot but does not lead their side.
+    let said = rig.say(1, "sim concede");
+    assert!(
+        said.contains("Only a side's first pilot can concede for it."),
+        "{said}"
+    );
+    assert_eq!(rig.state(), MatchState::Running, "and nothing moved");
+    // Their lead may.
+    let said = rig.say(0, "sim concede");
+    assert!(said.contains("concedes for the red side"), "{said}");
+}
+
+/// **A concede the world could not take says nothing about a winner** (16b cut
+/// D.3, `B-33`).
+///
+/// [`tacsim::match_::sim_abort`]'s stop funnel finishes a match whose task is
+/// already gone **on the spot**, as an `EndReason::Abort` — doc 16 §3.8's *a match
+/// with no arena has no result to concede* — and says so to the centre. The
+/// concede sentence over the top of that would tell everybody a side had won a
+/// match whose board, record and result document all say `abort`, with no arena
+/// left to come back and correct it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_a_concede_the_arena_cannot_take_claims_no_winner() {
+    let mut rig = Rig::boot(2);
+    duel(&mut rig);
+    let match_id = rig.centre().match_id.expect("a running match");
+
+    // The arena task goes, the way a panic or a lost supervisor loses one.
+    let (_handle, join) = rig
+        .tasks()
+        .remove(match_id)
+        .expect("the running match's task");
+    join.abort();
+
+    let heard = rig.say_overheard(0, "sim concede", 1);
+    assert!(
+        heard.contains("Match 1 is over (abort). Its units are checked in."),
+        "{heard}"
+    );
+    assert!(
+        !heard.contains("concedes for the"),
+        "a match with no arena announced a winner: {heard}"
+    );
+    assert_eq!(rig.state(), MatchState::Aborted);
+    assert_eq!(
+        rig.centre().outcome,
+        Some(tacsim::match_::MatchOutcome::Abort),
+        "the record says abort and the announcement said blue won"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (3) `B-33` — the unattended match
+// ---------------------------------------------------------------------------
+
+/// **A match every pilot has left ends itself, once, after the interval** (16b
+/// cut D.3, `B-33`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_a_match_every_pilot_left_ends_itself_after_the_interval() {
+    let mut rig = Rig::boot_on(2, roster_with(unattended_config(10_000)));
+    duel(&mut rig);
+    assert_eq!(rig.centre().unattended_since_ms, None, "both are aboard");
+
+    // One leaves: still attended.
+    rig.release(0);
+    assert_eq!(rig.centre().unattended_since_ms, None, "one is still in it");
+    rig.tick_to(30);
+    assert_eq!(rig.state(), MatchState::Running, "one pilot held the match");
+
+    // The last one leaves: the clock starts, at the world second it happened.
+    rig.release(1);
+    assert_eq!(rig.centre().unattended_since_ms, Some(30_000));
+
+    // Not before the interval.
+    rig.tick_to(39);
+    assert_eq!(rig.state(), MatchState::Running);
+    assert_eq!(rig.centre().unattended_since_ms, Some(30_000));
+
+    // And at it: the stop is sent, the stamp is cleared, and the centre says so.
+    let heard = rig.tick_heard(40, 0);
+    assert!(
+        heard.contains("Match 1 ends: every pilot has left it."),
+        "{heard}"
+    );
+    assert_eq!(rig.centre().unattended_since_ms, None, "the stamp is spent");
+
+    // A further tick says nothing more: the stamp is what armed it.
+    let heard = rig.tick_heard(41, 0);
+    assert!(
+        !heard.contains("every pilot has left it"),
+        "it announced twice: {heard}"
+    );
+
+    // The arena answers, and the match is a `timeout` with the new reason on it.
+    rig.end_match(tacsim::arena::EndReason::Unattended);
+    assert_eq!(rig.state(), MatchState::Ended);
+    assert_eq!(
+        rig.centre().outcome,
+        Some(tacsim::match_::MatchOutcome::Timeout)
+    );
+    let board = staff_board(&rig);
+    assert!(
+        board.contains("ended (match 1) — timeout: every pilot had left"),
+        "{board}"
+    );
+    // And the next crew can open the next match.
+    rig.say(0, "sim team red");
+    assert_eq!(rig.state(), MatchState::Selection);
+}
+
+/// **`0` is off, a slotless staff match is never stamped, and a pilot who has
+/// not given their seat up holds the match open** (16b cut D.3, `B-33`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_the_unattended_clock_is_off_at_zero_and_never_stamps_a_slotless_match() {
+    // `0` is off. The stamp is still written — the key is read at the deadline,
+    // so an operator who turns it off under a live match turns this off with it.
+    let mut rig = Rig::boot_on(2, roster_with(unattended_config(0)));
+    duel(&mut rig);
+    rig.release(0);
+    rig.release(1);
+    assert_eq!(rig.centre().unattended_since_ms, Some(0));
+    rig.tick_to(600);
+    assert_eq!(
+        rig.state(),
+        MatchState::Running,
+        "a zero interval ended a match"
+    );
+
+    // A staff `@arena/start` match has no slots at all, so nothing can leave it.
+    let mut rig = Rig::boot_on(1, roster_with(unattended_config(10_000)));
+    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let said = rig.staff(&format!(
+        "@arena/start tacsim.arena.proving_ground=#{}/#{}",
+        red.0, blue.0
+    ));
+    assert!(said.contains("is running"), "{said}");
+    assert!(rig.centre().slots.is_empty(), "the shortcut fields no pods");
+    rig.tick_to(600);
+    assert_eq!(rig.centre().unattended_since_ms, None);
+    assert_eq!(rig.state(), MatchState::Running);
+
+    // And a pilot who is still in their pod holds it open for ever. Nothing here
+    // reads a tank's condition: `slot_left` is the only writer of the stamp and
+    // its one input is whether a seat was GIVEN UP, so a pilot sitting in a wreck
+    // is attending exactly as a pilot sitting in a whole tank is.
+    let mut rig = Rig::boot_on(2, roster_with(unattended_config(10_000)));
+    duel(&mut rig);
+    rig.release(0);
+    rig.tick_to(600);
+    assert_eq!(rig.centre().unattended_since_ms, None);
+    assert!(
+        rig.centre()
+            .slots
+            .iter()
+            .any(|slot| !slot.left && slot.is_seated()),
+        "the seated pilot was marked left"
+    );
+    assert_eq!(rig.state(), MatchState::Running);
+}
+
+/// **A stop the arena will not take keeps the stamp, warns once, and is retried
+/// until it lands** (16b cut D.3, `B-33`).
+///
+/// [`tacsim::arena_bridge::send_stop`] maps **every** failed offer to
+/// `ControlRefusal::Gone`, a momentarily full inbox included (16c `B-49`, cut
+/// M's), and nothing ever re-stamps — so clearing the stamp on a failed send
+/// would disarm the path for the rest of the match, in exactly the long lagging
+/// fight that most needs it.
+///
+/// The inbox is filled on a **current-thread** runtime, where the arena task only
+/// advances at an `await`: the offers below therefore stay in the queue, and the
+/// `yield_now` further down is what lets the task drain them.
+///
+/// `Centre::unattended_warned` is what makes the `warn` once-per-match, so it is
+/// the flag and not the log line that is asserted here.
+#[tokio::test(flavor = "current_thread")]
+async fn d3_an_unattended_stop_the_arena_will_not_take_is_kept_and_retried() {
+    let mut rig = Rig::boot_on(2, roster_with(unattended_config(10_000)));
+    duel(&mut rig);
+    let match_id = rig.centre().match_id.expect("a running match");
+    rig.release(0);
+    rig.release(1);
+    assert_eq!(rig.centre().unattended_since_ms, Some(0));
+
+    // Fill the task's bounded inbox. Its bound is
+    // `intents.max_pending_per_unit × units`, so this terminates.
+    let tasks = rig.tasks();
+    let mut offered = 0_usize;
+    while offered < 1_000
+        && tasks
+            .offer(
+                match_id,
+                // A **harmless** message: an order stamped with an epoch the
+                // arena will refuse at apply. Filling the inbox with stops would
+                // end the match the moment the task drained one.
+                tacsim::arena_task::ArenaMsg::Intent(tacsim::arena::intents::Intent {
+                    unit: ObjId(0),
+                    channel: tacsim::arena::state::Channel::Helm,
+                    epoch: 0,
+                    kind: tacsim::arena::intents::IntentKind::Startup,
+                    seq: 0,
+                }),
+            )
+            .is_ok()
+    {
+        offered += 1;
+    }
+    assert!(offered > 0, "the inbox took nothing at all");
+    assert!(offered < 1_000, "the inbox never filled");
+
+    // The deadline fires and the offer is refused: nothing is said, and the
+    // stamp survives so the next tick tries again.
+    let heard = rig.tick_heard(10, 0);
+    assert!(
+        !heard.contains("every pilot has left it"),
+        "a refused stop was announced: {heard}"
+    );
+    assert_eq!(
+        rig.centre().unattended_since_ms,
+        Some(0),
+        "a refused send disarmed the path"
+    );
+    assert!(
+        rig.centre().unattended_warned,
+        "nothing armed the once-per-match warning"
+    );
+
+    // A second tick with the inbox still full warns no further: the flag is what
+    // makes "once" once, and it is already set.
+    let heard = rig.tick_heard(11, 0);
+    assert!(!heard.contains("every pilot has left it"), "{heard}");
+    assert_eq!(rig.centre().unattended_since_ms, Some(0));
+    assert!(rig.centre().unattended_warned);
+    assert_eq!(rig.state(), MatchState::Running);
+
+    // The arena drains its inbox, and a later tick lands the stop.
+    for _ in 0..256 {
+        tokio::task::yield_now().await;
+    }
+    let heard = rig.tick_heard(12, 0);
+    assert!(
+        heard.contains("Match 1 ends: every pilot has left it."),
+        "the retry never landed: {heard}"
+    );
+    assert_eq!(rig.centre().unattended_since_ms, None);
+    assert!(!rig.centre().unattended_warned);
+
+    // **And the stop the retry landed is still the unattended one.** The retry is
+    // what a refactor would most easily route through `crate::match_::abort`,
+    // whose no-task arm ends a match as an `Abort` and voids its cells — which
+    // would leave the sentence above unchanged and the record saying something
+    // else entirely. So the end is walked to the board.
+    rig.end_match(tacsim::arena::EndReason::Unattended);
+    assert_eq!(rig.state(), MatchState::Ended);
+    assert_eq!(
+        rig.centre().outcome,
+        Some(tacsim::match_::MatchOutcome::Timeout)
+    );
+    assert_eq!(
+        rig.centre().outcome_reason,
+        Some(tacsim::arena::EndReason::Unattended)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (4) `B-35` — a refused check-in does not strand the seat
+// ---------------------------------------------------------------------------
+
+/// **A returned unit the tactics layer must refuse** (16b cut D.3, `B-35`): the
+/// pod's own spec with every cell's ceiling raised tenfold and filled to it, so
+/// `returned_plan`'s `SetCell` names a value the **held** unit's own bounds
+/// forbid and `mush_tactics::unit::apply` refuses it — M32's refuse-not-clamp,
+/// which is exactly the shape a check-in fails in.
+fn over_full(rig: &Rig, unit: ObjId) -> mush_tactics::TacticalUnit {
+    let mut spec = rig
+        .tw
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .expect("the tacsim store")
+        .definitions()
+        .bindings
+        .get(&mush_core::CanonicalId::new("tacsim.unit.line_tank").expect("a canonical id"))
+        .expect("the stock tank is in the catalog")
+        .spec
+        .clone();
+    for section in &mut spec.sections {
+        for facet in &mut section.facets {
+            for cell in &mut facet.cells {
+                cell.max = cell.max.saturating_mul(10).max(1);
+                cell.init = cell.max;
+            }
+        }
+    }
+    mush_tactics::TacticalUnit::from_spec(&spec, unit).expect("a doctored unit instantiates")
+}
+
+/// **A check-in the tactics layer refuses releases the seat and restores the
+/// snapshot** (16b cut D.3, `B-35`).
+///
+/// The old arm logged and `continue`d *before* `release_seat`, so the pilot kept
+/// the cockpit billet, the control lease and the focus on a tank that was no
+/// longer in a match, and that pod was unboardable for the rest of the boot. The
+/// new order is: release the seat, retry the return as a **void**, record
+/// `custody_lost`, and never let one unit's failure skip another's release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_a_refused_check_in_releases_the_seat_and_restores_the_snapshot() {
+    let mut rig = Rig::boot(2);
+    duel(&mut rig);
+    let match_id = rig.centre().match_id.expect("a running match");
+    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    let blue = match_::tank_for_slot(rig.tw.world(), Team::Blue, 1).expect("blue 1's tank");
+    let before = mush_tactics::module::unit_of(rig.tw.world(), red)
+        .expect("a unit")
+        .clone();
+    let refused = over_full(&rig, red);
+    let pose = mush_sim::pose_of(rig.tw.world(), red)
+        .map(|(_, pose)| pose)
+        .expect("a placed tank");
+
+    let mut out = Outbox::new();
+    {
+        let engine = rig.tw.engine_mut();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(tacsim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let end = tacsim::arena::MatchEnd {
+            reason: tacsim::arena::EndReason::Abort,
+            t_ms: 12_000,
+        };
+        assert!(match_::finish(
+            &mut ctx,
+            match_id,
+            end,
+            "0".repeat(64),
+            &[tacsim::arena::damage::UnitReturn {
+                unit: red,
+                cells: refused,
+                pose,
+                shots: 3,
+                hits: 1,
+                wreck: false,
+                disabled: false,
+            }],
+        ));
+    }
+
+    // Both units are back: neither is stranded, so one unit's failure never
+    // skipped the other's release.
+    for unit in [red, blue] {
+        assert!(
+            !mush_sim::deployed::is_deployed(rig.tw.world(), unit),
+            "#{} kept its marker",
+            unit.0
+        );
+    }
+    // The seat and the billet went with it — for the unit whose plan was refused,
+    // which is the half that used to be skipped.
+    assert!(
+        match_::flying(rig.tw.world(), rig.pilot(0)).is_none(),
+        "the refused unit's pilot still holds a station"
+    );
+    assert!(match_::flying(rig.tw.world(), rig.pilot(1)).is_none());
+    // The void retry restored the check-out snapshot, so no cell of the arena's
+    // reached the record.
+    let after = mush_tactics::module::unit_of(rig.tw.world(), red)
+        .expect("a unit")
+        .clone();
+    for (addr, cell) in before.cells() {
+        assert_eq!(
+            after.cell(addr).map(|held| held.current),
+            Some(cell.current),
+            "#{}'s {addr:?} was written by a refused return",
+            red.0
+        );
+    }
+    assert_eq!(rig.state(), MatchState::Aborted, "the match still ended");
+}
+
+// ---------------------------------------------------------------------------
+// (5) `T-49` — `@arena/release <unit>`
+// ---------------------------------------------------------------------------
+
+/// **`@arena/release`'s three answers, and a pod that can be boarded again**
+/// (16b cut D.3, `T-49`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_arena_release_clears_a_stranded_marker_and_frees_the_pod() {
+    let mut rig = Rig::boot(2);
+    duel(&mut rig);
+    let match_id = rig.centre().match_id.expect("a running match");
+    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+
+    // (a) While the match is live, the verb refuses and names the match.
+    let said = rig.staff(&format!("@arena/release #{}", red.0));
+    assert!(
+        said.contains(&format!(
+            "#{} is in match {match_id}, which is still live; `@arena/abort` it first.",
+            red.0
+        )),
+        "{said}"
+    );
+    assert!(mush_sim::deployed::is_deployed(rig.tw.world(), red));
+
+    // The match ends, and a marker is left behind the way a refused check-in
+    // leaves one: a real check-out, so BOTH halves of the marker are there — the
+    // tactics record's and the simulation's — which is the state a stranded unit
+    // is really in and the state the verb has to be able to undo.
+    rig.end_match(tacsim::arena::EndReason::Abort);
+    assert!(rig.state().is_terminal());
+    rig.strand(red, match_id.0);
+
+    // (b) Now it is stranded, and the verb releases it.
+    let said = rig.staff(&format!("@arena/release #{}", red.0));
+    assert!(
+        said.contains(&format!(
+            "#{} is released: its check-out snapshot is restored and its seat is free.",
+            red.0
+        )),
+        "{said}"
+    );
+    assert!(!mush_sim::deployed::is_deployed(rig.tw.world(), red));
+
+    // (c) And a second release finds nothing to do.
+    let said = rig.staff(&format!("@arena/release #{}", red.0));
+    assert!(
+        said.contains(&format!("#{} carries no deployed marker.", red.0)),
+        "{said}"
+    );
+
+    // After it a pilot can board that pod again.
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    assert!(!rig.seat(0), "the pod took a pilot again");
+}
+
+// ---------------------------------------------------------------------------
+// (6) `B-31` — `@arena/reset`'s three headlines
+// ---------------------------------------------------------------------------
+
+/// **The reset says which of three things it found** (16b cut D.3, `B-31`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_the_reset_has_a_headline_for_a_centre_that_is_idle_but_not_clean() {
+    let mut rig = Rig::boot(2);
+    // (a) Something changed.
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let lobby = match_::centre_object(rig.tw.world(), match_::LOBBY_ENTRY).expect("the lobby");
+    rig.tw
+        .world_mut()
+        .move_to(GOD, lobby)
+        .expect("staff walk in");
+    rig.staff("sim abort");
+    let said = rig.staff("@arena/reset");
+    assert!(
+        said.contains("The simulator centre is reset; its slots and pods are free."),
+        "{said}"
+    );
+
+    // (b) Nothing at all.
+    let said = rig.staff("@arena/reset");
+    assert!(
+        said.contains("The simulator centre is already idle; nothing changed."),
+        "{said}"
+    );
+
+    // (c) Idle, and not clean: a roster tank carrying a stale marker is skipped,
+    // so the pass writes nothing and has a great deal to say.
+    let red = match_::tank_for_slot(rig.tw.world(), Team::Red, 1).expect("red 1's tank");
+    mush_sim::deployed::mark(
+        rig.tw.world_mut(),
+        red,
+        mush_sim::DeployedMark::new(99, "tacsim.arena.proving_ground"),
+    );
+    let said = rig.staff("@arena/reset");
+    assert!(
+        said.contains("The simulator centre is idle, but not clean:"),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "#{} is still deployed and was left alone; `@arena/abort` its match first.",
+            red.0
+        )),
+        "{said}"
+    );
+    assert!(
+        !said.contains("already idle; nothing changed"),
+        "the headline contradicted the row under it: {said}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (7) `B-36` — which "you are not flying" line a pilot is owed
+// ---------------------------------------------------------------------------
+
+/// **`NOT_STARTED_YET` is `Boarding`'s alone, and a roster tank's alone** (16b
+/// cut D.3, `B-36`).
+///
+/// The sentence promises *the match has not started yet*, and the old test was
+/// "holds a cockpit billet on an undeployed unit" — true of a staffer sitting in
+/// a unit of their own in an `Idle` centre, and of a pilot whose match ended an
+/// hour ago. Both were told to wait for a match nobody was going to start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_the_not_started_yet_line_is_boardings_alone() {
+    let mut rig = Rig::boot(2);
+    // An `Idle` centre: nobody is waiting for anything.
+    let said = rig.say(0, "status");
+    assert!(
+        said.contains(tacsim::match_::OUTSIDE_COCKPIT),
+        "an idle centre answered the boarding line: {said}"
+    );
+
+    // In `Boarding`, with a real billet on a roster tank — a real `BOARD`, which
+    // is the only thing that makes one — the boarding line.
+    // The control-lease mirror is a coarse projection and
+    // `request_seat_activation` fails closed on an unread one, so one second of
+    // world time happens before anybody boards — exactly as on a live server
+    // before its first player types anything.
+    rig.tick_to(1);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    assert_eq!(rig.state(), MatchState::Boarding);
+    let red_room =
+        match_::centre_object(rig.tw.world(), match_::RED_ROOM_ENTRY).expect("the red team room");
+    let pilot = rig.pilot(0);
+    rig.tw
+        .world_mut()
+        .move_to(pilot, red_room)
+        .expect("a pilot walks into their team room");
+    let said = rig.say(0, "board");
+    assert!(said.contains("climb into"), "{said}");
+    let said = rig.say(0, "status");
+    assert!(
+        said.contains(tacsim::match_::NOT_STARTED_YET),
+        "a boarded pilot was told they were nowhere: {said}"
+    );
+    // And the pilot who has not boarded, who holds no billet at all, still gets
+    // the other one.
+    let said = rig.say(1, "status");
+    assert!(said.contains(tacsim::match_::OUTSIDE_COCKPIT), "{said}");
+
+    // **The case the row was written for, and the one that tells the two rules
+    // apart.** A machine of staff's own, outside the centre's roster, with a real
+    // cockpit billet on it and nothing deployed: the old rule asked only "holds a
+    // cockpit billet on an undeployed unit" and answered *the match has not
+    // started yet* — about a match this billet has nothing to do with. The centre
+    // is in `Boarding` here on purpose, so the state half of the new rule is
+    // satisfied and the **roster** half is the only thing refusing.
+    let lobby = match_::centre_object(rig.tw.world(), match_::LOBBY_ENTRY).expect("the lobby");
+    let own = rig
+        .tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Spare Tank", GOD, Some(lobby))
+        .expect("staff makes a thing");
+    let said = rig.staff(&format!("@unit/create #{}=tacsim.unit.line_tank", own.0));
+    assert!(said.contains("is now a tactical unit"), "{said}");
+    rig.station_on(1, own);
+    assert!(
+        !mush_sim::deployed::is_deployed(rig.tw.world(), own),
+        "the spare is deployed, which the old rule excluded anyway"
+    );
+    let said = rig.say(1, "status");
+    assert!(
+        said.contains(tacsim::match_::OUTSIDE_COCKPIT),
+        "a billet on a machine the centre does not field was told to wait for the \
+         centre's match: {said}"
+    );
+    assert!(!said.contains(tacsim::match_::NOT_STARTED_YET), "{said}");
+
+    // The match is called off: the billet is given back with the pod, and the
+    // sentence a pilot who types a cockpit verb now reads is the other one —
+    // where before this cut it was still "the match has not started yet", for as
+    // long as anything held a billet on an undeployed unit. Pilot 1's billet on
+    // the spare is still standing, so this is also the terminal half of the rule:
+    // a billet nothing ejected, in a centre that is not `Boarding`.
+    rig.tw
+        .world_mut()
+        .move_to(GOD, lobby)
+        .expect("staff walk in");
+    rig.staff("sim abort");
+    assert!(rig.state().is_terminal());
+    let said = rig.say(0, "status");
+    assert!(
+        said.contains(tacsim::match_::OUTSIDE_COCKPIT),
+        "a terminal centre answered the boarding line: {said}"
+    );
+    // The spare's billet was never the centre's to give back, so it is still
+    // held — and the terminal centre is what refuses now, not the missing seat.
+    assert!(
+        rig.holds_billet(1, own),
+        "the eject swept a billet on a unit the centre does not own"
+    );
+    let said = rig.say(1, "status");
+    assert!(
+        said.contains(tacsim::match_::OUTSIDE_COCKPIT),
+        "a terminal centre answered the boarding line to a billet-holder: {said}"
     );
 }

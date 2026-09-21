@@ -1081,10 +1081,16 @@ impl Arena {
     /// The world asked the arena to stop (doc 16 §3.1's `Stop`): the reason is
     /// recorded, the match ends, and the ledger's tail leaves with it.
     ///
-    /// The three reasons journal three different things, which is doc 16 §4's kind
-    /// list read literally: `Abort` is an `aborted` event, `Timeout` is
+    /// The reasons journal different things, which is doc 16 §4's kind list read
+    /// literally: `Abort` is an `aborted` event, `Timeout` is
     /// `match_ended{timeout}`, and `Void` is a `void` event — the one that says
     /// nothing the match derived may be committed.
+    ///
+    /// **16b cut D.3 (`B-33`) added two ends that are ends**: a concede and an
+    /// unattended match both journal `match_ended` with their own reason, exactly
+    /// as a timeout does, because both are matches that ran to a conclusion and
+    /// whose cells the world commits. A concede names the side that did **not**
+    /// give up, so the reader of the black box does not have to invert anything.
     fn stopped(&mut self, wall_now_ms: i64, stop: StopReason) -> StepOutput {
         let hash = state_hash(self);
         let (kind, reason) = match stop {
@@ -1096,6 +1102,17 @@ impl Arena {
                 EndReason::Timeout,
             ),
             StopReason::Void => (EventKind::Void, EndReason::Void),
+            // 16b cut D.3: the side that conceded is the side that lost.
+            StopReason::Concede { by } => {
+                let reason = EndReason::Conceded { winner: by.other() };
+                (EventKind::MatchEnded { reason }, reason)
+            }
+            StopReason::Unattended => (
+                EventKind::MatchEnded {
+                    reason: EndReason::Unattended,
+                },
+                EndReason::Unattended,
+            ),
         };
         let _ = self.journal(self.now_ms, kind, hash);
         let ended = MatchEnd {

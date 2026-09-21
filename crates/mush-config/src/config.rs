@@ -88,6 +88,7 @@
 //! | `[tacsim.match].max_duration_ms` | `3600000` | the longest a match runs before it ends as a timeout |
 //! | `[tacsim.match].max_slots_per_side` | `12` | pilot slots one side may claim (doc 16 §1's 12 v 12) |
 //! | `[tacsim.match].ai_fill` | `false` | **16b cut N.1** (doc 16 §6): whether `SIM START` also fields the tanks of the pods nobody claimed, under the reflex controller. Off by default because doc 16 §1's A1 is a two-tank story |
+//! | `[tacsim.match].unattended_ms` | `300000` | **16b cut D.3** (`B-33`): world milliseconds a running match every pilot has left runs on before the lobby ends it `unattended`; `0` is off, and anything else is at least `10000` |
 //! | `[tacsim.sensors].pass_ms` | `1000` | **16b cut G** (doc 16 §3.6): arena milliseconds between one unit's sensor passes |
 //! | `[tacsim.sensors].max_signature_factor` | `1.5` | the ceiling on a target's signature factor; the **only float** here, converted once to per-mille at the host so the engine stays integer (doc 16 §3.1 determinism) |
 //! | `[tacsim.sensors].lost_after_passes` | `3` | **16b cut S.1** (doc 16 §3.6): passes a contact may go unrefreshed before it is lost; the TTL is `pass_ms × lost_after_passes` |
@@ -1169,6 +1170,20 @@ pub struct TacsimMatchCfg {
     /// With it on, every pod of a side that has at least one pilot goes to the
     /// arena: slot *n*'s tank is claimed or it is the machine's.
     pub ai_fill: bool,
+    /// **How long a running match every pilot has left runs on before the lobby
+    /// ends it** (**16b cut D.3**, `B-33`), in world milliseconds; `0` turns it
+    /// off entirely.
+    ///
+    /// Doc 16 §11's N.1 amendment makes a released seat one-way: a pilot who
+    /// `EXIT`s hands their tank to the reflex controller and cannot take it back.
+    /// So a match every human has walked out of has nobody left who can end it,
+    /// and before this key it ran to `max_duration_ms` — an hour in which no
+    /// second crew could claim a slot. The lobby stamps the moment the last slot
+    /// goes `left` and its own 1 s tick sends the stop once this has passed.
+    ///
+    /// A staff `@arena/start` match has no slots and is therefore never
+    /// unattended; a destroyed pilot who stays in the pod is attending.
+    pub unattended_ms: u32,
 }
 
 impl Default for TacsimMatchCfg {
@@ -1180,6 +1195,8 @@ impl Default for TacsimMatchCfg {
             max_duration_ms: 3_600_000,
             max_slots_per_side: 12,
             ai_fill: false,
+            // 16b cut D.3: five minutes.
+            unattended_ms: 300_000,
         }
     }
 }

@@ -119,6 +119,11 @@ max_slots_per_side = 12
 # nobody to fight. Each side fields the larger side's claimed slots (never fewer
 # than one) and the machines take the unclaimed pods; SIM AI <n> changes it.
 ai_fill = true
+# (16b cut D.3) how long a RUNNING match every pilot has left runs on before the
+# lobby ends it `unattended`. A released seat is one-way (doc 16 section 11, N.1),
+# so nobody is left who can abort one; 0 turns it off, and anything else is at
+# least 10000 -- a few seconds would end a match over one pilot's reconnect.
+unattended_ms = 300000
 
 [tacsim.sensors]
 pass_ms = 1000

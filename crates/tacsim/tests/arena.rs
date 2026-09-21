@@ -277,6 +277,33 @@ struct Beat {
     t_ms: i64,
     controls: Vec<Control>,
     intents: Vec<Intent>,
+    /// **The world's `Stop`, delivered at this beat** (16b cut D.3): the message
+    /// doc 16 §3.1 has the world send, which the arena honours at the next
+    /// pulse's phase 1 and never mid-substep. `None` on every other beat, which
+    /// is what [`Beat::at`] gives.
+    stop: Option<StopReason>,
+}
+
+impl Beat {
+    /// A beat with no stop on it — the shape every script but cut D.3's uses.
+    fn at(t_ms: i64, controls: Vec<Control>, intents: Vec<Intent>) -> Beat {
+        Beat {
+            t_ms,
+            controls,
+            intents,
+            stop: None,
+        }
+    }
+
+    /// A beat that is nothing but the world asking the arena to stop.
+    fn stopping(t_ms: i64, stop: StopReason) -> Beat {
+        Beat {
+            t_ms,
+            controls: Vec::new(),
+            intents: Vec::new(),
+            stop: Some(stop),
+        }
+    }
 }
 
 /// One ledger line, normalised for comparison: its arena timestamp, its kind and
@@ -355,6 +382,10 @@ fn replay(
             }
             controls.extend(beat.controls.iter().copied());
             intents.extend(beat.intents.iter().cloned());
+            // 16b cut D.3: the world's `Stop`, armed before this pulse steps.
+            if let Some(stop) = beat.stop {
+                arena.stop(stop);
+            }
             next += 1;
         }
         let out = arena.step(wall, &controls, &intents);
@@ -434,38 +465,34 @@ fn lines(bytes: &[u8]) -> Vec<Line> {
 /// at the same arena time at every cadence.
 fn script() -> Vec<Beat> {
     vec![
-        Beat {
-            t_ms: 0,
-            controls: Vec::new(),
-            intents: vec![intent(MOVER, IntentKind::Startup, 1)],
-        },
-        Beat {
-            t_ms: 10_000,
-            controls: Vec::new(),
-            intents: vec![
+        Beat::at(0, Vec::new(), vec![intent(MOVER, IntentKind::Startup, 1)]),
+        Beat::at(
+            10_000,
+            Vec::new(),
+            vec![
                 intent(MOVER, IntentKind::Heading { mdeg: 0 }, 2),
                 intent(MOVER, IntentKind::Speed { cms: 1_000 }, 3),
             ],
-        },
-        Beat {
-            t_ms: 25_000,
-            controls: Vec::new(),
-            intents: vec![
+        ),
+        Beat::at(
+            25_000,
+            Vec::new(),
+            vec![
                 intent(MOVER, IntentKind::Heading { mdeg: 90_000 }, 4),
                 intent(MOVER, IntentKind::Speed { cms: 1_000 }, 5),
             ],
-        },
-        Beat {
-            t_ms: 40_000,
-            controls: vec![Control {
+        ),
+        Beat::at(
+            40_000,
+            vec![Control {
                 unit: MOVER,
                 channel: Channel::Helm,
                 epoch: 1,
                 state: ControlState::Linkdead,
                 pilot: None,
             }],
-            intents: Vec::new(),
-        },
+            Vec::new(),
+        ),
     ]
 }
 
@@ -715,6 +742,10 @@ fn a_tempo_change_mid_run_changes_no_outcome() {
             }
             controls.extend(beat.controls.iter().copied());
             intents.extend(beat.intents.iter().cloned());
+            // 16b cut D.3: the world's `Stop`, armed before this pulse steps.
+            if let Some(stop) = beat.stop {
+                arena.stop(stop);
+            }
             next += 1;
         }
         let out = arena.step(wall, &controls, &intents);
@@ -865,9 +896,7 @@ fn startup_then_released_in_one_burst_never_starts() {
     assert_eq!(arena.epochs.current(MOVER, Channel::Helm), 2);
     // **16b cut N.1** amends doc 16 §3.8's *the tank idles*: the released seat goes
     // to the reflex controller in `Withdraw`, which puts its first tick on the
-    // schedule beside the position summary. A tank handed over **cold** stays cold —
-    // `Withdraw` is a fallback for a tank that is running — which is what the rest of
-    // this test asserts, unchanged.
+    // schedule beside the position summary.
     // 16b cut F.3 adds one sensor pass per unit, which every platform now has
     // because the pass is where its contacts expire.
     assert_eq!(
@@ -876,30 +905,79 @@ fn startup_then_released_in_one_burst_never_starts() {
         "the position summary, the released tank's first reflex tick, two passes"
     );
 
-    // Ten seconds of arena time later — `match.startup_ms` — it is still cold.
+    // **16b cut D.3 (`B-34`) replaced this block's claim.** It used to assert
+    // that the tank was still cold twenty seconds later, and that no `startup`
+    // was ever journalled — the released tank standing dark on its entry cell for
+    // the whole of a match nobody could then end, which is the defect the row
+    // names. The controller now brings its own power up, and the order that was
+    // purged by the epoch is the only thing this test is still about: the
+    // startup below carries no seq of the pilot's, and `arena.pending` was empty
+    // the moment the burst resolved.
     let mut wall = 0_i64;
     for _ in 0..4 {
         wall += 5_000;
         arena.step(wall, &[], &[]);
     }
     assert_eq!(arena.now_ms, 20_000);
-    assert_eq!(arena.unit(MOVER).map(|unit| unit.power), Some(Power::Off));
+    assert_eq!(
+        arena.unit(MOVER).map(|unit| unit.power),
+        Some(Power::Online),
+        "the machine that took the released seat started itself up"
+    );
     let mut bytes = Vec::new();
     arena.ledger.flush();
     for chunk in arena.ledger.take_chunks() {
         bytes.extend_from_slice(&chunk.bytes);
     }
     let journalled = lines(&bytes);
+    // The `startup` that IS journalled is the controller's own, at its first
+    // reflex tick, and not the purged order's: the order was refused at the
+    // epoch inside the burst's own pulse, which is `arena.now_ms == 0`.
+    let startups: Vec<i64> = journalled
+        .iter()
+        .filter(|(_, kind, _, _)| kind.contains("startup"))
+        .map(|(t_ms, _, _, _)| *t_ms)
+        .collect();
     assert!(
-        !journalled
-            .iter()
-            .any(|(_, kind, _, _)| kind.contains("startup")),
-        "a startup was journalled: {journalled:?}"
+        startups.iter().all(|t_ms| *t_ms > 0),
+        "the purged order started the tank after all: {journalled:?}"
     );
+}
 
-    // And at the epoch the world published, the same order works.
+/// **The other half of the purge: the epoch the world published still works.**
+///
+/// This block used to close
+/// [`startup_then_released_in_one_burst_never_starts`], where the released tank
+/// stood cold for ever and an order at epoch 2 was the only thing that could
+/// start it. 16b cut D.3 (`B-34`) gave that tank its own power-up, so the old
+/// assertion could no longer be made *after* twenty seconds of stepping — the
+/// unit is online by then and a `Startup` means nothing. The claim is the same
+/// one, made in the window it is still about: one pulse after the burst, before
+/// the controller's first tick at `arena.reflex.decide_ms`.
+///
+/// A purge is a refusal of the **stale** order, never a channel that stops
+/// listening.
+#[test]
+fn an_order_at_the_epoch_the_purge_published_is_still_admitted() {
+    let mut arena = scripted_arena();
     arena.step(
-        wall + 5_000,
+        0,
+        &[Control {
+            unit: MOVER,
+            channel: Channel::Helm,
+            epoch: 2,
+            state: ControlState::Released,
+            pilot: None,
+        }],
+        &[intent(MOVER, IntentKind::Startup, 1)],
+    );
+    assert_eq!(arena.unit(MOVER).map(|unit| unit.power), Some(Power::Off));
+    assert_eq!(arena.epochs.current(MOVER, Channel::Helm), 2);
+
+    // Half a second later — inside the controller's first `decide_ms` window, so
+    // nothing of its own has run yet — the same order at the published epoch.
+    arena.step(
+        500,
         &[],
         &[Intent {
             unit: MOVER,
@@ -911,7 +989,8 @@ fn startup_then_released_in_one_burst_never_starts() {
     );
     assert_eq!(
         arena.unit(MOVER).map(|unit| unit.power),
-        Some(Power::Starting)
+        Some(Power::Starting),
+        "the purge closed the channel instead of refusing one stale order"
     );
 }
 
@@ -1360,24 +1439,20 @@ fn watcher(id: ObjId, team: Team, pose: Pose) -> CustodyUnit {
 /// 12 seconds, and the TTL (three passes) turns that into one loss.
 fn approach() -> Vec<Beat> {
     vec![
-        Beat {
-            t_ms: 0,
-            controls: Vec::new(),
-            intents: vec![intent(MOVER, IntentKind::Startup, 1)],
-        },
-        Beat {
-            t_ms: 10_000,
-            controls: Vec::new(),
-            intents: vec![
+        Beat::at(0, Vec::new(), vec![intent(MOVER, IntentKind::Startup, 1)]),
+        Beat::at(
+            10_000,
+            Vec::new(),
+            vec![
                 intent(MOVER, IntentKind::Heading { mdeg: 0 }, 2),
                 intent(MOVER, IntentKind::Speed { cms: 1_000 }, 3),
             ],
-        },
-        Beat {
-            t_ms: 35_000,
-            controls: Vec::new(),
-            intents: vec![intent(MOVER, IntentKind::Speed { cms: -400 }, 4)],
-        },
+        ),
+        Beat::at(
+            35_000,
+            Vec::new(),
+            vec![intent(MOVER, IntentKind::Speed { cms: -400 }, 4)],
+        ),
     ]
 }
 
@@ -1561,29 +1636,25 @@ fn canopy_arena_of(units: Vec<CustodyUnit>) -> Arena {
 /// all three cadences — the same rule [`script`] and [`approach`] follow.
 fn break_and_return() -> Vec<Beat> {
     vec![
-        Beat {
-            t_ms: 0,
-            controls: Vec::new(),
-            intents: vec![intent(MOVER, IntentKind::Startup, 1)],
-        },
-        Beat {
-            t_ms: 10_000,
-            controls: Vec::new(),
-            intents: vec![
+        Beat::at(0, Vec::new(), vec![intent(MOVER, IntentKind::Startup, 1)]),
+        Beat::at(
+            10_000,
+            Vec::new(),
+            vec![
                 intent(MOVER, IntentKind::Heading { mdeg: 0 }, 2),
                 intent(MOVER, IntentKind::Speed { cms: 1_000 }, 3),
             ],
-        },
-        Beat {
-            t_ms: 35_000,
-            controls: Vec::new(),
-            intents: vec![intent(MOVER, IntentKind::Speed { cms: -400 }, 4)],
-        },
-        Beat {
-            t_ms: 60_000,
-            controls: Vec::new(),
-            intents: vec![intent(MOVER, IntentKind::Speed { cms: 1_000 }, 5)],
-        },
+        ),
+        Beat::at(
+            35_000,
+            Vec::new(),
+            vec![intent(MOVER, IntentKind::Speed { cms: -400 }, 4)],
+        ),
+        Beat::at(
+            60_000,
+            Vec::new(),
+            vec![intent(MOVER, IntentKind::Speed { cms: 1_000 }, 5)],
+        ),
     ]
 }
 
@@ -1662,5 +1733,140 @@ fn one_scripted_break_of_sight_at_three_cadences_is_one_lose_and_re_acquire_sequ
             run.finals, first.finals,
             "the final state differs at {cadence} ms"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (h) 16b cut D.3 (`B-33`) — the two ends that are ends
+// ---------------------------------------------------------------------------
+
+/// **A concede and an unattended match both journal `match_ended`, and both end
+/// the match** (16b cut D.3, `B-33`; doc 16 §4's kind list).
+///
+/// An abort journals `aborted` and a void journals `void`, because neither is a
+/// match that reached a conclusion. These two are: a side gave the match up, or
+/// the last pilot walked out of it, and in both cases the cells the arena
+/// derived are committed and the tanks stand as evidence. So both take the shape
+/// a timeout takes — one `match_ended` line carrying its own reason — and a
+/// concede names the side that did **not** concede, so nothing downstream has to
+/// invert it.
+#[test]
+fn a_concede_and_an_unattended_match_end_with_their_own_reason() {
+    for (stop, reason) in [
+        (
+            StopReason::Concede { by: Team::Red },
+            EndReason::Conceded { winner: Team::Blue },
+        ),
+        (
+            StopReason::Concede { by: Team::Blue },
+            EndReason::Conceded { winner: Team::Red },
+        ),
+        (StopReason::Unattended, EndReason::Unattended),
+    ] {
+        let mut arena = scripted_arena();
+        let mut bytes: Vec<u8> = Vec::new();
+        absorb(&arena.step(0, &[], &[]), &mut bytes);
+        arena.stop(stop);
+        let out = arena.step(5_000, &[], &[]);
+        absorb(&out, &mut bytes);
+        assert_eq!(out.ended.map(|end| end.reason), Some(reason), "{stop:?}");
+        assert_eq!(out.substeps, 0, "{stop:?}");
+        assert_eq!(arena.now_ms, 0, "a stop never advances arena time");
+        arena.ledger.flush();
+        for chunk in arena.ledger.take_chunks() {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        let log = lines(&bytes);
+        let last = log.last().map(|(_, kind, _, _)| kind.clone());
+        let expected =
+            serde_json::to_string(&EventKind::MatchEnded { reason }).expect("an event encodes");
+        assert_eq!(
+            last,
+            Some(expected),
+            "{stop:?}: it is an end with its own reason and not an abort"
+        );
+        // And the arena is finished with, exactly as after any other end.
+        let after = arena.step(10_000, &[], &[]);
+        assert_eq!(after.ended.map(|end| end.reason), Some(reason));
+        assert!(after.ledger_chunks.is_empty());
+        assert_eq!(after.substeps, 0);
+    }
+}
+
+/// **Cross-tempo (16b §11, mandatory): one scripted log carrying a stop at a
+/// common pulse boundary gives one event list and one hash sequence at 5,000 /
+/// 1,000 / 500 ms** (16b cut D.3, `B-33`).
+///
+/// The stop is delivered at 25,000 ms — a multiple of 5,000, so a pulse boundary
+/// exists there at all three cadences — after the log's `STARTUP` and its first
+/// helm orders have driven the tank somewhere. What the comparison is about is
+/// that the *end* lands at one arena time with one ledger and one hash sequence
+/// behind it however the wall clock was cut into pulses: a stop is honoured at
+/// phase 1 and never mid-substep (doc 16 §3.1), so the tempo decides nothing
+/// about where the match stopped.
+#[test]
+fn one_scripted_stop_at_three_cadences_is_one_end_one_event_list_and_one_hash_sequence() {
+    let quiet = |_: i64| Tempo::Quiet;
+    for stop in [
+        StopReason::Concede { by: Team::Red },
+        StopReason::Unattended,
+    ] {
+        let mut runs: Vec<(i64, Replay)> = Vec::new();
+        for cadence in [5_000_i64, 1_000, 500] {
+            let mut arena = scripted_arena();
+            let script = vec![
+                Beat::at(0, Vec::new(), vec![intent(MOVER, IntentKind::Startup, 1)]),
+                Beat::at(
+                    10_000,
+                    Vec::new(),
+                    vec![
+                        intent(MOVER, IntentKind::Heading { mdeg: 0 }, 2),
+                        intent(MOVER, IntentKind::Speed { cms: 1_000 }, 3),
+                    ],
+                ),
+                Beat::stopping(25_000, stop),
+            ];
+            let run = replay(&mut arena, cadence, 60_000, &script, &quiet);
+            assert_eq!(
+                arena.ended.map(|end| end.reason),
+                Some(match stop {
+                    StopReason::Concede { by } => EndReason::Conceded { winner: by.other() },
+                    _ => EndReason::Unattended,
+                }),
+                "{stop:?} at {cadence} ms did not end the match"
+            );
+            assert_eq!(
+                arena.now_ms, 25_000,
+                "{stop:?} at {cadence} ms stopped at a different arena time"
+            );
+            runs.push((cadence, run));
+        }
+        let (_, first) = runs.first().expect("three cadences");
+        assert!(
+            first.count("match_ended") == 1,
+            "{stop:?}: {:?}",
+            first.kinds()
+        );
+        for (cadence, run) in runs.iter().skip(1) {
+            assert_eq!(
+                run.events,
+                first.events,
+                "{stop:?}: the event list differs at {cadence} ms: {:?} against {:?}",
+                run.kinds(),
+                first.kinds()
+            );
+            assert_eq!(
+                run.hashes, first.hashes,
+                "{stop:?}: the per-substep hash sequence differs at {cadence} ms"
+            );
+            assert_eq!(
+                run.finals, first.finals,
+                "{stop:?}: the final state differs at {cadence} ms"
+            );
+            assert_ne!(
+                run.pulses, first.pulses,
+                "{stop:?}: {cadence} ms ran the same pulses"
+            );
+        }
     }
 }

@@ -292,6 +292,11 @@ max_slots_per_side = 12            # pilot slots one side may claim (doc 16's 12
 # for a bigger one -- a number it sets is a FLOOR, so a claim after it still
 # raises both sides together. OFF, both sides still need a pilot of their own.
 ai_fill = false
+# (16b cut D.3) how long a RUNNING match every pilot has left runs on before the
+# lobby ends it `unattended`. A released seat is one-way (doc 16 section 11, N.1),
+# so nobody is left who can abort one; 0 turns it off, and anything else is at
+# least 10000 -- a few seconds would end a match over one pilot's reconnect.
+unattended_ms = 300000
 
 [tacsim.sensors]                   # (16b cut G) the sensor pass
 pass_ms = 1000                     # arena ms between one unit's passes, staggered by unit id

@@ -11,7 +11,8 @@ else — `help simulator` is how you get there.
   VIEW                the arena window around your platform, as a map.
   CONTACTS            what your platform holds.
   LOCK <contact>      hold one of your contacts by the designator CONTACTS
-                      prints.
+                      prints. Bare, it answers
+                      `LOCK <contact>; CONTACTS lists them.`
   RANGE [<contact>]   how far away a contact plotted; your lock if you name
                       none.
   BEARING [<contact>] which way a contact plotted; your lock if you name none.
@@ -24,7 +25,10 @@ else — `help simulator` is how you get there.
                       against your lock, and that lock's range band.
   STATUS              your callsign, power, speed, heading, position, what your
                       own scope holds, and your armour and internals section by
-                      section.
+                      section. If you chose a chassis with `SIM UNIT`, the
+                      second line brackets it — `Red Tank 1 [biped_mk1]: …` —
+                      because a pod's tank keeps the pod's own name whatever is
+                      fitted to it.
 
 `EXIT` climbs out. Once the match is running that is final: see
 `help simulator`.
@@ -32,7 +36,10 @@ else — `help simulator` is how you get there.
 ## Driving
 
 **Heading is 0 to 359 degrees, clockwise from north**, so 90 is east and 270 is
-west. **Speed is kph.** Terrain caps it: order 54 on grass and the tank will
+west. **Speed is kph, and reverse is slower than ahead** — the stock tank makes
+54 kph forward and 27 astern, and `SPEED` says both when you ask for more than
+it has: `That unit makes 54 kph ahead and 27 astern; SPEED -27 to 54.`
+Terrain caps it too: order 54 on grass and the tank will
 make about 41, and `STATUS` shows what it is really doing rather than what you
 asked for. A climb costs its slope on top of that, so the same order up a bank
 of one in three makes about 31 and the tank is slowest where the ground is
@@ -232,6 +239,9 @@ afterwards:
 
   Your tank is destroyed. The match runs on without you: wait it out, EXIT to
   the team room, or SIM ABORT to call it off.
+
+If your side is beaten but not dead, its first pilot can end it honestly with
+`SIM CONCEDE`: the other side wins and the record says so. See `help simulator`.
 
 After that `STATUS` carries `DESTROYED` beside the speed, and every order is
 refused at the cockpit: `Your tank is destroyed and takes no orders. EXIT leaves

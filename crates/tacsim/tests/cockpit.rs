@@ -1141,7 +1141,19 @@ async fn lock_refuses_every_id_identically_and_fire_refuses_for_want_of_one() {
         malformed, well_formed,
         "one byte-identical refusal for every id the platform does not hold"
     );
-    assert_eq!(empty, well_formed);
+    // **16b cut D.3 (`T-60`)**: an empty argument is not an id that failed to
+    // resolve, it is a pilot who has not said which contact — so it is usage and
+    // not the one refusal. Every NON-EMPTY word still takes the one path, which
+    // is what keeps `LOCK BA` against an unheld `BA` indistinguishable from
+    // `LOCK ZZ`.
+    assert!(
+        empty.contains("LOCK <contact>; CONTACTS lists them."),
+        "{empty}"
+    );
+    assert!(
+        !empty.contains(cockpit::NO_SUCH_CONTACT),
+        "a bare LOCK still answered about the scope: {empty}"
+    );
 
     let said = rig.say(0, "fire");
     assert!(said.contains(cockpit::NO_LOCK), "{said}");
@@ -3788,5 +3800,146 @@ async fn d2_fire_takes_the_short_name_and_weaponstatus_advertises_it() {
     assert!(
         said.contains("no weapon called `railgun`") && !said.contains("refused."),
         "a weapon that is not there has none to name: {said}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut D.3 (`T-60`) — four slips from the hand-played transcript
+// ---------------------------------------------------------------------------
+
+/// **`SPEED`'s usage names both ceilings, and enforces both** (16b cut D.3,
+/// `T-60`).
+///
+/// The transcript's own complaint: `That unit makes 54 kph; SPEED 0 to 54.` over
+/// a verb that accepted `SPEED -10` — a range the refusal named and did not
+/// enforce at either end. It compared the **magnitude**, so `SPEED -54` went
+/// through on a tank whose reverse ceiling is half its forward one and the arena
+/// silently clamped it at apply. The stock tank makes 1,500 cm/s ahead and
+/// `reverse_factor_pct` of 50, so the two numbers are 54 and 27.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_speed_names_and_enforces_the_reverse_ceiling() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    rig.say(0, "startup");
+    assert!(rig.powered(0).await, "the tank never came online");
+
+    const USAGE: &str = "That unit makes 54 kph ahead and 27 astern; SPEED -27 to 54.";
+    // Past the forward ceiling.
+    let said = rig.say(0, "speed 999");
+    assert!(said.contains(USAGE), "{said}");
+    // Past the REVERSE ceiling, which is the half the old sentence lied about.
+    let said = rig.say(0, "speed -54");
+    assert!(said.contains(USAGE), "{said}");
+    let said = rig.say(0, "speed -28");
+    assert!(said.contains(USAGE), "{said}");
+    // And both ends of the range it names are accepted.
+    let said = rig.say(0, "speed 54");
+    assert!(said.contains("Making 54 kph."), "{said}");
+    let said = rig.say(0, "speed -27");
+    assert!(said.contains("Making -27 kph."), "{said}");
+    let said = rig.say(0, "speed -10");
+    assert!(said.contains("Making -10 kph."), "{said}");
+    // A word that is not a number is still the other usage line.
+    let said = rig.say(0, "speed abc");
+    assert!(
+        said.contains("SPEED <kph>; a negative speed reverses."),
+        "{said}"
+    );
+}
+
+/// **`STATUS` brackets the fitted chassis when it is not the pod's own** (16b cut
+/// D.3, `T-60`).
+///
+/// A pilot who typed `SIM UNIT biped_mk1` read `Red Tank 1: power online, …` all
+/// match: the object's name is pack content and a pod's tank keeps the pod's own
+/// name whatever is fitted to it. The name stays — renaming a persistent object
+/// per match is a much worse answer — and the type goes in the bracket the board
+/// already uses for exactly this.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_status_brackets_a_refitted_chassis_and_nothing_else() {
+    let mut rig = Rig::boot(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    let said = rig.say(0, "sim unit biped_mk1");
+    assert!(said.contains("will field biped_mk1"), "{said}");
+    rig.say(0, "sim start");
+    rig.walk_to(0, match_::RED_ROOM_ENTRY);
+    rig.walk_to(1, match_::BLUE_ROOM_ENTRY);
+    rig.say(0, "board");
+    rig.say(1, "board");
+    assert_eq!(rig.state(), MatchState::Running);
+    assert!(rig.frame_for(0).await, "the refitted pilot got no frame");
+    assert!(rig.frame_for(1).await, "the stock pilot got no frame");
+
+    let said = rig.say(0, "status");
+    assert!(
+        said.contains("[biped_mk1]: power "),
+        "the refitted chassis is not on the panel: {said}"
+    );
+    // And the pilot who chose nothing reads byte for byte the line cut D.1
+    // wrote: no bracket at all.
+    let said = rig.say(1, "status");
+    assert!(
+        said.contains("Blue Tank 1: power "),
+        "a stock tank grew a bracket: {said}"
+    );
+
+    // **A designator that is not this pod's brackets nothing.** `resolve_callsigns`
+    // gives EVERY unit a `Designator::Slot` — a staff `@arena/start`'s two and the
+    // harness's three hundred included — so the designator alone says nothing
+    // about which pod a tank came out of. Here the refitted red tank is handed a
+    // frame carrying **blue 1's** slot: without the second question the line would
+    // bracket its chassis against the authored type of a pod it was never in.
+    let mut stray = rig.held_frame(0);
+    stray.callsign = tacsim::arena::state::Designator::Slot {
+        team: Team::Blue,
+        slot: 1,
+    };
+    rig.push_frame(0, stray);
+    let said = rig.say(0, "status");
+    assert!(
+        said.contains("Red Tank 1: power "),
+        "a unit was bracketed against a pod it was never in: {said}"
+    );
+    assert!(!said.contains("[biped_mk1]"), "{said}");
+}
+
+/// **`EXIT` says one line to the person leaving** (16b cut D.3, `T-60`).
+///
+/// `put_out` moves the body into the team room and the room line was then fanned
+/// out to it, so the pilot read their own `You climb out of …` and the room's
+/// `Pilot0 climbs out of …` one after the other. The room still hears it; the
+/// actor does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn d3_exit_says_one_line_to_the_pilot_and_one_to_the_room() {
+    let mut rig = Rig::boot(3);
+    rig.fly().await;
+    // A bystander standing in the red team room, so the room half has an
+    // audience that is not the actor.
+    rig.walk_to(2, match_::RED_ROOM_ENTRY);
+
+    let actor = rig.pilot(0);
+    let watcher = rig.pilot(2);
+    let events = rig.events_of(actor, "exit");
+    let mine = rig.tw.seen_by(&events, actor).join("\n");
+    let theirs = rig.tw.seen_by(&events, watcher).join("\n");
+
+    assert!(mine.contains("You climb out of"), "{mine}");
+    assert!(
+        !mine.contains("climbs out of"),
+        "the pilot read the room's line about themselves too: {mine}"
+    );
+    assert_eq!(
+        mine.matches("climb out of").count(),
+        1,
+        "more than one line about leaving: {mine}"
+    );
+    assert!(
+        theirs.contains("Pilot0 climbs out of"),
+        "the room was not told: {theirs}"
+    );
+    assert!(
+        !theirs.contains("You climb out of"),
+        "the room read the pilot's own line: {theirs}"
     );
 }

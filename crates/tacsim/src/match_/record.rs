@@ -100,11 +100,15 @@ impl MatchState {
 impl From<EndReason> for MatchState {
     fn from(reason: EndReason) -> MatchState {
         match reason {
-            // 16b cut Q.7: `Spent` is a match that ran to a conclusion, so it
-            // ends like an elimination and not like an abort.
-            EndReason::Elimination { .. } | EndReason::Spent | EndReason::Timeout => {
-                MatchState::Ended
-            }
+            // 16b cut Q.7 (`Spent`) and 16b cut D.3 (`Conceded`, `Unattended`):
+            // every one of these is a match that ran to a conclusion, so it ends
+            // like an elimination and not like an abort — and its cells are
+            // committed, which is what makes the loser's wreck evidence.
+            EndReason::Elimination { .. }
+            | EndReason::Spent
+            | EndReason::Conceded { .. }
+            | EndReason::Unattended
+            | EndReason::Timeout => MatchState::Ended,
             EndReason::Abort => MatchState::Aborted,
             // A ledger overflow is a void by doc 16 §3.1's own words: *on `Void`
             // (panic or ledger overflow) the world restores each unit from the
@@ -163,7 +167,14 @@ impl From<EndReason> for MatchOutcome {
             } => MatchOutcome::Blue,
             // 16b cut Q.7: nobody can shoot, so nobody won.
             EndReason::Elimination { winner: None } | EndReason::Spent => MatchOutcome::Draw,
-            EndReason::Timeout => MatchOutcome::Timeout,
+            // 16b cut D.3 (`B-33`): a concede names its winner, so the outcome is
+            // that side's word and not a seventh one.
+            EndReason::Conceded { winner: Team::Red } => MatchOutcome::Red,
+            EndReason::Conceded { winner: Team::Blue } => MatchOutcome::Blue,
+            // And a match every pilot had left is a `timeout`: doc 16 §4's
+            // vocabulary is six words, and this is the one that means *the clock
+            // ended it and nobody was eliminated*.
+            EndReason::Unattended | EndReason::Timeout => MatchOutcome::Timeout,
             EndReason::Abort => MatchOutcome::Abort,
             EndReason::Void | EndReason::LedgerOverflow => MatchOutcome::Void,
         }
@@ -482,6 +493,10 @@ const fn reason_word(reason: EndReason) -> &'static str {
         EndReason::Elimination { .. } => "elimination",
         // 16b cut Q.7.
         EndReason::Spent => "spent",
+        // 16b cut D.3 (`B-33`): the result document's own two new words. The
+        // outcome beside them already names the winner.
+        EndReason::Conceded { .. } => "conceded",
+        EndReason::Unattended => "unattended",
         EndReason::Timeout => "timeout",
         EndReason::Abort => "abort",
         EndReason::Void => "void",
@@ -528,6 +543,23 @@ mod tests {
             ),
             // 16b cut Q.7: a draw that names no winner.
             (EndReason::Spent, MatchState::Ended, MatchOutcome::Draw),
+            // 16b cut D.3 (`B-33`): an end with a winner, and an end with none —
+            // neither of them an abort and neither of them a void.
+            (
+                EndReason::Conceded { winner: Team::Red },
+                MatchState::Ended,
+                MatchOutcome::Red,
+            ),
+            (
+                EndReason::Conceded { winner: Team::Blue },
+                MatchState::Ended,
+                MatchOutcome::Blue,
+            ),
+            (
+                EndReason::Unattended,
+                MatchState::Ended,
+                MatchOutcome::Timeout,
+            ),
             (EndReason::Timeout, MatchState::Ended, MatchOutcome::Timeout),
             (EndReason::Abort, MatchState::Aborted, MatchOutcome::Abort),
             (EndReason::Void, MatchState::Void, MatchOutcome::Void),

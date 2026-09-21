@@ -24,7 +24,10 @@ the same thing this topic does, in fewer words.
   SIM LEAVE           give your slot up; the last one to leave closes the match.
   SIM START           lock the pods and open boarding. A side's first pilot, or
                       staff, with at least one pilot a side.
-  SIM ABORT           call the match off (any pilot in it, or staff).
+  SIM ABORT           call the match off (any pilot in it, or staff). Before a
+                      match is running there is nothing to abort: use SIM LEAVE.
+  SIM CONCEDE         give the running match up for your side. Its first pilot
+                      only; the other side wins and the result says so.
   SIM STATUS          the centre: its state, its sides, its slots and its pods.
                       While a match runs you read your own side in full and
                       every other side by slot, callsign and pilot alone.
@@ -147,9 +150,22 @@ While it runs, the cockpit is the whole of it: `help cockpit`.
 
 It ends when one side has nothing left that can fight, when **neither** side has
 a round left to fire (a draw: `ended — draw: both sides are out of ammunition`),
-when the match's time runs out, or when somebody aborts it. Running dry on your
-own does not lose you the match — the other side has to be dry too.
-Everyone in the centre reads
+when a side's first pilot types `SIM CONCEDE` (`ended — blue wins: red
+conceded`), when the match's time runs out, or when somebody aborts it. Running
+dry on your own does not lose you the match — the other side has to be dry too.
+
+A beaten tank is not always a dead one, and a match neither side can finish is
+the reason `SIM CONCEDE` exists: it is a **result** and not an abort, so the
+winner is recorded and the wrecks stand as evidence like any other end.
+
+And a match every pilot has walked out of ends itself. `EXIT` during a running
+match is final — the tank goes to the machines and you cannot take it back — so
+once the last pilot has left, nobody is in it who could abort it. The centre
+gives it a few minutes and then closes it: `Match N ends: every pilot has left
+it.`, and the board reads `ended — timeout: every pilot had left`. A pilot whose
+tank has been destroyed but who stays in the pod is still in the match.
+
+However it ends, everyone in the centre reads
 `Match N is over (red). Its units are checked in.`, the hatches open, and the
 tanks stand where they stopped, damaged as they ended — that is the match's own
 evidence, and `SIM STATUS` keeps showing the result until somebody starts the

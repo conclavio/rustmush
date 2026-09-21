@@ -132,6 +132,10 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     cfg.match_.board_timeout_ms = 120_000;
     // The whole point of the file.
     cfg.match_.ai_fill = true;
+    // **16b cut D.3 (`B-33`)**: the configured floor, so a match every pilot has
+    // left is closed in ten real seconds rather than in the shipped five
+    // minutes. It changes nothing for a pilot who stays aboard.
+    cfg.match_.unattended_ms = 10_000;
     cfg
 }
 
@@ -626,4 +630,97 @@ fn no_sixteen_digit_word(seen: &str) {
             "a line carried a sixteen-digit contact id ({word})"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut D.3 (`B-33`) — the match a lone pilot walks out of ends itself
+// ---------------------------------------------------------------------------
+
+/// **A match every pilot has left ends itself** (16b cut D.3, `B-33`), over the
+/// real front door and the real clock.
+///
+/// This is the lane the row was written for and the only file that can show it:
+/// doc 16 §11's N.1 amendment makes `EXIT` one-way during `Running`, so the tank
+/// goes to the reflex controller and its pilot cannot take it back — and with
+/// the AI fill on and one human in the centre, that leaves a match with **nobody
+/// in it who could abort it**. Before this cut it ran to
+/// `match.max_duration_ms`, an hour in which no second crew could claim a slot.
+///
+/// `[tacsim.match].unattended_ms` is this file's own 10 s (the configured floor),
+/// so the wait below is real seconds of the server's own 1 Hz lobby tick and not
+/// a clock a test moved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn d3_the_match_a_lone_pilot_walks_out_of_ends_itself() {
+    let server = boot("sim-solo-unattended").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "red", "Red Room").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    // She climbs out mid-match, and is told it is final.
+    say(&mut ada, "EXIT", "You climb out of").await;
+    ada.expect("you cannot take it back").await;
+
+    // Nobody is left in it, so the centre closes it by itself — the announcement
+    // reaches the team room she is standing in, like every other centre line.
+    let mark = ada.mark();
+    ada.expect("Match 1 ends: every pilot has left it.").await;
+    ada.expect("Its units are checked in.").await;
+
+    // **The observer rule over the bytes the end really sent** (doc 16 §1, §5).
+    // `crates/mushd/tests/observer_rule.rs` sweeps the sentence the production
+    // code builds; this is the other half — what a player standing in the centre
+    // actually received when the centre closed a match by itself. It names the
+    // match and nothing of the field: no tank, no object number, no bearing, no
+    // position, no contact id.
+    let ending = strip_ansi(&ada.seen[mark..]);
+    for leak in ["Blue Tank", "Red Tank", "bearing", " m east", " m north"] {
+        assert!(
+            !ending.contains(leak),
+            "the unattended end leaked {leak:?}:\n{ending}"
+        );
+    }
+    assert!(
+        !ending
+            .split('#')
+            .skip(1)
+            .any(|rest| rest.starts_with(|c: char| c.is_ascii_digit())),
+        "the unattended end named an object:\n{ending}"
+    );
+    no_sixteen_digit_word(&ending);
+
+    // The board says which end it was, in the words the reason earns.
+    let seen = ask(&mut ada, "SIM STATUS", "blue:").await;
+    let status: String = seen.split_whitespace().collect::<Vec<&str>>().join(" ");
+    assert!(
+        status.contains("ended (match 1) — timeout: every pilot had left"),
+        "{status}"
+    );
+
+    // And the result document carries the arena's own reason beside the outcome.
+    let key = tacsim::match_::result_key(tacsim::arena_task::MatchId(1));
+    let record = server
+        .store
+        .module_json_get("tacsim", key.as_str())
+        .await
+        .expect("the store read")
+        .unwrap_or_else(|| panic!("no result document at {key}"));
+    assert_eq!(
+        record.get("outcome").and_then(Value::as_str),
+        Some("timeout"),
+        "{record}"
+    );
+    assert_eq!(
+        record.get("reason").and_then(Value::as_str),
+        Some("unattended"),
+        "{record}"
+    );
+
+    // `SIM TEAM` opens the next one, which is the whole point of ending it.
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
 }

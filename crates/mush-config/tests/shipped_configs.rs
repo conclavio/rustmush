@@ -751,3 +751,44 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
     );
     assert_eq!(example.tacsim.arena.reflex.rally_ms, 20_000);
 }
+
+/// **16b cut D.3 (`B-33`): every shipped configuration writes the unattended
+/// key, and writes the shipped default.**
+///
+/// The key decides whether a match every pilot has left ever ends, so a box that
+/// ran the arena on a compiled-in number nobody read is exactly the shape of the
+/// `[tacsim]`-header defect the readiness review found: green everywhere, and
+/// missing on the box the owner plays on.
+#[test]
+fn d3_every_shipped_configuration_declares_the_unattended_interval() {
+    let root = repo_root();
+    let mut files: Vec<String> = vec!["mushd.toml.example".to_owned()];
+    files.extend(HAND_WRITTEN_BOXES.iter().map(|path| (*path).to_owned()));
+    for relative in &files {
+        let text = read(&root.join(relative));
+        assert!(
+            text.contains("unattended_ms"),
+            "{relative}: [tacsim.match].unattended_ms is missing"
+        );
+        let cfg = Config::load(&root.join(relative)).unwrap_or_else(|e| panic!("{relative}: {e}"));
+        assert_eq!(
+            cfg.tacsim.match_.unattended_ms, 300_000,
+            "{relative}: the shipped five minutes"
+        );
+    }
+    // The rendered instances take it from the template, so they are read the way
+    // every other rendered value is.
+    for instance in SHIPPED {
+        let (rendered, cfg) = rendered_instance(instance);
+        assert!(
+            rendered.contains("unattended_ms"),
+            "{}: the template never writes the key",
+            instance.env
+        );
+        assert_eq!(
+            cfg.tacsim.match_.unattended_ms, 300_000,
+            "{}: the shipped five minutes",
+            instance.env
+        );
+    }
+}

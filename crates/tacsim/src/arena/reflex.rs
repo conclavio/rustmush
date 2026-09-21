@@ -825,25 +825,46 @@ impl Arena {
         // ---- power ----
         match unit.power {
             Power::Off => {
-                // **A tank handed over cold in `Withdraw` stays cold.** Doc 16
-                // §3.8's released seat is a fallback for a tank that is *running* —
-                // a pilot who exits before `STARTUP` leaves a cold tank, and an AI
-                // that brought it up to drive it a hundred metres home would be
-                // inventing an action nobody asked for. `Withdraw` is where the
-                // release puts it and `Withdraw` is where it stays.
-                if row.state == ReflexState::Withdraw {
-                    memory.units.insert(id, row);
-                    return plan;
+                // **A cold tank starts up, wherever it is going** (16b cut D.3,
+                // `B-34`).
+                //
+                // A tank handed over in `Withdraw` used to stay cold, on the
+                // argument that `Withdraw` is a fallback for a tank that is
+                // *running*. The playtest showed what that costs: a pilot who
+                // `EXIT`s before `STARTUP` leaves a dark tank standing on its
+                // entry cell, and because doc 16 §3.8's elimination is *a wreck,
+                // or disabled with no weapons*, that tank keeps its side standing
+                // until somebody finds it and kills it — a match nobody can end.
+                // A machine that brings its own power up and drives home is not
+                // inventing an action: it is doing the one thing `Withdraw`
+                // means.
+                //
+                // It stays in `Withdraw` rather than going to `Startup`, because
+                // the `Online` arm below re-enters `Patrol` from `Startup` and
+                // `Disabled` alone — so a cold `Withdraw` that passed through
+                // `Startup` would come up and go looking for a fight it had
+                // already left.
+                if row.state != ReflexState::Withdraw {
+                    row.state = ReflexState::Startup;
                 }
-                row.state = ReflexState::Startup;
                 plan.startup = true;
                 memory.units.insert(id, row);
                 return plan;
             }
             // `STARTUP` has been accepted and `match.startup_ms` has not elapsed.
             // There is nothing to decide and nothing to order.
+            //
+            // **16b cut D.3 (`B-34`)**: a `Withdraw` keeps its state here for the
+            // same reason it keeps it in the arm above. This arm is the whole of
+            // the window between the machine's own `Startup` order and the
+            // scheduled completion, so writing `Startup` over a `Withdraw` here
+            // would hand the `Online` arm below exactly the state it turns into
+            // `Patrol` — and a tank that was released cold would come up and go
+            // looking for the fight its pilot had just walked out of.
             Power::Starting => {
-                row.state = ReflexState::Startup;
+                if row.state != ReflexState::Withdraw {
+                    row.state = ReflexState::Startup;
+                }
                 memory.units.insert(id, row);
                 return plan;
             }

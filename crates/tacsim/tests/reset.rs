@@ -866,10 +866,11 @@ fn a_claim_that_could_not_put_every_tank_back_says_so_rather_than_promising_must
     let red = rig.tank(tacsim::arena::state::Team::Red, 1);
     rig.wreck(red);
     one_aboard(&mut rig);
-    rig.say(1, "sim abort");
-    assert_eq!(rig.state(), MatchState::Aborted, "a terminal centre");
-    // The marker a refused check-in leaves behind. Only the boot reconciliation
-    // clears one, which is exactly why the reset must not write over it.
+    // The marker a refused check-in leaves behind, planted **before** the end.
+    // Only `@arena/release` and the boot reconciliation clear one, which is
+    // exactly why neither reset may write over it — and since 16b cut D.3 the
+    // pre-`Running` abort runs the tank pass itself (`call_off`), so a marker
+    // planted after it would simply have found an already-reset tank.
     rig.with_ctx(|ctx| {
         mush_sim::deployed::mark(
             ctx.w,
@@ -877,6 +878,8 @@ fn a_claim_that_could_not_put_every_tank_back_says_so_rather_than_promising_must
             mush_sim::deployed::DeployedMark::new(99, "tacsim.arena.centre"),
         );
     });
+    rig.say(1, "sim abort");
+    assert_eq!(rig.state(), MatchState::Aborted, "a terminal centre");
 
     rig.walk_to(0, match_::LOBBY_ENTRY);
     let said = rig.say(0, "sim team red");

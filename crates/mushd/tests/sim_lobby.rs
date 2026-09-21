@@ -639,3 +639,152 @@ async fn d1_the_boards_arena_clock_moves_while_nobody_drives() {
 
     say(&mut ada, "SIM ABORT", "aborts match").await;
 }
+
+// ---------------------------------------------------------------------------
+// (5) 16b cut D.3 — the lifecycle's ends, over the real front door
+// ---------------------------------------------------------------------------
+
+/// **`B-33`: a side's first pilot concedes, over SSH** (16b cut D.3).
+///
+/// Doc 16 §3.8's elimination is *a wreck, or disabled with no weapons*, so a
+/// side that is beaten but not dead has nothing to do but drive about until
+/// `match.max_duration_ms`. `SIM ABORT` is the wrong word for that — an abort is
+/// a match that did not happen — so a concede is a **result**: the other side
+/// wins it, the board says who and why, and the units check back in exactly as
+/// they do after an elimination.
+///
+/// Red has two pilots, so this also walks the refusal a **non-lead** reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn d3_a_lead_concedes_and_the_board_names_the_winner() {
+    let server = boot("sim-lobby-concede").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+
+    // Everybody is put in their team room BEFORE the match starts: the boarding
+    // window this file runs at is three seconds, and two pilots walking into the
+    // same room cannot wait on that room's name — each would match the other's
+    // `Ada goes Red Room <R>.`
+    let listing = ask(&mut god, "@find Red Room", "END OF LIST").await;
+    let red_room = dbref_of(&listing, "Red Room");
+    let listing = ask(&mut god, "@find Blue Room", "END OF LIST").await;
+    let blue_room = dbref_of(&listing, "Blue Room");
+    for (pilot, room) in [(ADA, red_room), (CY, red_room), (BO, blue_room)] {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{room}", pilot.0),
+            "Teleported",
+        )
+        .await;
+    }
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut ada, "BOARD", "climb into").await;
+    say(&mut cy, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    ada.expect("Good hunting").await;
+
+    // Red's second pilot may not give red's match away.
+    say(
+        &mut cy,
+        "SIM CONCEDE",
+        "Only a side's first pilot can concede for it.",
+    )
+    .await;
+    // Red's first may, and the whole centre is told.
+    say(&mut ada, "SIM CONCEDE", "concedes for the red side").await;
+    bo.expect("Match 1 goes to blue when the arena answers.")
+        .await;
+    bo.expect("Its units are checked in.").await;
+
+    let status = one_line(&ask(&mut bo, "SIM STATUS", "blue:").await);
+    assert!(
+        status.contains("ended (match 1) — blue wins: red conceded"),
+        "{status}"
+    );
+    // It is an end and not an abort, so the next match is opened the ordinary
+    // way.
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+}
+
+/// **`T-60`: `SIM ABORT` before a match is running, and the board's doubled
+/// word** (16b cut D.3).
+///
+/// In `Selection` there is no match — no id, no pod lock, nothing checked out —
+/// and one claimant's `SIM ABORT` nevertheless wiped every other claimant's
+/// slot. Staff may still call a `Selection` off, because a stuck lobby is what a
+/// staff lever is for.
+///
+/// And the board's head no longer says the same thing twice: `aborted (match 3)
+/// — abort` was the state and then the outcome word for the same fact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn d3_sim_abort_is_refused_in_selection_and_the_board_drops_the_doubled_word() {
+    let server = boot("sim-lobby-abort").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    let lobby = open_the_centre(&mut god).await;
+
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+
+    // A claimant is refused, and nobody's slot goes.
+    say(
+        &mut cy,
+        "SIM ABORT",
+        "Nothing is running yet. `SIM LEAVE` gives your slot up.",
+    )
+    .await;
+    let status = ask(&mut ada, "SIM STATUS", "blue:").await;
+    assert!(status.contains("selection"), "{status}");
+    assert!(
+        status.contains("Cy"),
+        "a refused abort dropped a slot: {status}"
+    );
+    assert!(status.contains("Bo"), "{status}");
+    // `SIM LEAVE` is what the sentence says to type, and it works.
+    say(&mut cy, "SIM LEAVE", "gives up red slot 2").await;
+
+    // Staff standing in the lobby still may, and the board's head carries the
+    // state alone — there is no match id in `Selection` and no second word for
+    // the same fact.
+    say(
+        &mut god,
+        &format!("@teleport #{}=#{lobby}", GOD.0),
+        "Simulator Lobby",
+    )
+    .await;
+    say(&mut god, "SIM ABORT", "calls the match off").await;
+    let status = one_line(&ask(&mut god, "SIM STATUS", "blue:").await);
+    assert!(status.contains("Simulator centre: aborted"), "{status}");
+    assert!(
+        !status.contains("— abort"),
+        "the board said the same thing twice: {status}"
+    );
+
+    // And from `Boarding`, where there IS a match id, the head names it and
+    // still says `abort` no second time.
+    say(&mut god, "@arena/reset", "centre is reset").await;
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut bo, "SIM ABORT", "calls the match off").await;
+    let status = one_line(&ask(&mut god, "SIM STATUS", "blue:").await);
+    assert!(
+        status.contains("Simulator centre: aborted (match 1)"),
+        "{status}"
+    );
+    assert!(
+        !status.contains("— abort"),
+        "the board said the same thing twice: {status}"
+    );
+}

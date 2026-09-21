@@ -2140,6 +2140,24 @@ pub enum StopReason {
     Timeout,
     /// The match is void: nothing it derived may be committed.
     Void,
+    /// **A side gave up** (16b cut D.3, `B-33`): `SIM CONCEDE`, by that side's
+    /// first pilot.
+    ///
+    /// It carries the side that **conceded**, not the side that won, because that
+    /// is the fact the world has: the arena turns it into
+    /// [`EndReason::Conceded`], whose `winner` is the other one.
+    Concede {
+        /// The side that gave up.
+        by: Team,
+    },
+    /// **Every pilot has left the match** (16b cut D.3, `B-33`).
+    ///
+    /// `[tacsim.match].unattended_ms` of world time after the last un-`left` slot
+    /// went `left` during `Running`, the lobby's 1 s tick sends this. Doc 16 §11's
+    /// N.1 amendment makes a released seat one-way, so a match every human has
+    /// walked out of otherwise runs to `match.max_duration_ms` — an hour of
+    /// machines driving at each other in a centre nobody can claim a slot in.
+    Unattended,
 }
 
 /// How a match ended (doc 16 §4 "The result record").
@@ -2163,6 +2181,23 @@ pub enum EndReason {
     /// `match.max_duration_ms`, which is an hour of two tanks driving at each
     /// other.
     Spent,
+    /// **A side conceded** (16b cut D.3, `B-33`): `SIM CONCEDE`, by that side's
+    /// first pilot, and the other side wins.
+    ///
+    /// It is an end and not an abort: the match was fought, so its cells are
+    /// committed and the tanks stand as evidence exactly as after an elimination
+    /// ([`crate::match_::MatchState::Ended`], and the winner's own outcome word).
+    Conceded {
+        /// The side that did **not** concede.
+        winner: Team,
+    },
+    /// **Every pilot had left it** (16b cut D.3, `B-33`): `[tacsim.match]`'s
+    /// `unattended_ms` elapsed with every slot `left`.
+    ///
+    /// A `timeout` in the result record's vocabulary (doc 16 §4 has six words and
+    /// this is not a seventh), and not a void: the match really ran and what its
+    /// machines did to each other is evidence like any other.
+    Unattended,
     /// `match.max_duration_ms`, or `ledger.max_bytes` reached (doc 16 §4).
     Timeout,
     /// `SIM ABORT`.

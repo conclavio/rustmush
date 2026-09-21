@@ -427,6 +427,15 @@ pub struct MatchConfig {
     /// that does not own it. The mechanism, the attribute and the check-out rule
     /// that reads it are all here and all live; this is the switch.
     pub ai_fill: bool,
+    /// **How long a `Running` match every pilot has left runs on before it ends
+    /// itself** (16b cut D.3, `B-33`), in **world** milliseconds; `0` turns it
+    /// off.
+    ///
+    /// The lobby stamps the moment the last un-`left` slot goes `left` and its
+    /// 1 s tick sends `StopReason::Unattended` once the interval has passed. A
+    /// match with no slots at all — a staff `@arena/start` — is never unattended,
+    /// because there was nobody to leave.
+    pub unattended_ms: u32,
 }
 
 impl Default for MatchConfig {
@@ -438,6 +447,10 @@ impl Default for MatchConfig {
             max_duration_ms: 3_600_000,
             max_slots_per_side: 12,
             ai_fill: false,
+            // Five minutes: long enough that a pilot who drops and reconnects
+            // has not ended their own match, short enough that a centre is not
+            // held for the hour `max_duration_ms` would take.
+            unattended_ms: 300_000,
         }
     }
 }
@@ -778,6 +791,16 @@ impl MatchConfig {
             12,
             u64::from(self.max_slots_per_side),
         )?;
+        // **16b cut D.3 (`B-33`)**: off, or long enough to be a lull and not a
+        // hiccup. A few seconds would end a match over one pilot's reconnect,
+        // which is the opposite of what the key is for, so the floor is ten
+        // seconds and the sentence says both halves.
+        if self.unattended_ms != 0 && self.unattended_ms < 10_000 {
+            return Err(format!(
+                "[tacsim.match].unattended_ms is 0 (off) or at least 10000; {} is not",
+                self.unattended_ms
+            ));
+        }
         Ok(())
     }
 }

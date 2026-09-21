@@ -1575,7 +1575,7 @@ pub fn board(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
     );
     ctx.out.sys_to_actor(actor, NOTICE_CATEGORY, pilot_line);
     if let Some(room) = room {
-        tell_room(ctx, room, room_line);
+        tell_room(ctx, room, Vec::new(), room_line);
     }
 
     // (4) The centre, and — when this was the last seat — cut K.1's trigger.
@@ -1665,7 +1665,7 @@ pub fn exit(ctx: &mut Ctx<'_>) -> Result<(), CockpitError> {
             display_name(ctx.w, actor),
             display_name(ctx.w, pod)
         );
-        tell_room(ctx, room, text);
+        tell_room(ctx, room, vec![actor], text);
     }
 
     // (4) The centre, while it is still boarding.
@@ -2035,20 +2035,31 @@ fn heading(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitErro
     Ok(())
 }
 
-/// `SPEED <kph>` — 0 to the unit's own maximum, negative in reverse (doc 16
-/// §3.7). The wire is centimetres a second (doc 16 §3.2's integers), so the
-/// conversion is here and the pilot never types one.
+/// `SPEED <kph>` — the unit's reverse ceiling to its own maximum (doc 16 §3.7).
+/// The wire is centimetres a second (doc 16 §3.2's integers), so the conversion
+/// is here and the pilot never types one.
+///
+/// **16b cut D.3 (`T-60`) made the refusal true.** It read `That unit makes 54
+/// kph; SPEED 0 to 54.` — a range the verb did not enforce at either end: it
+/// compared the **magnitude**, so `SPEED -54` was accepted on a tank whose
+/// reverse ceiling is 40 per cent of its forward one, and the arena silently
+/// clamped it to `-21` at apply. The two ceilings are different numbers and the
+/// sentence now names both, read the way
+/// [`crate::arena::intents`] reads them at apply:
+/// [`crate::arena::state::TrackedRules::reverse_ceiling_cms`].
 fn speed(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
     let kph: i32 =
         rest.trim().parse().ok().ok_or_else(|| {
             CockpitError::Usage("SPEED <kph>; a negative speed reverses.".to_owned())
         })?;
-    let max_cms = max_speed_cms(ctx.w, unit);
+    let (max_cms, reverse_cms) = speed_ceilings(ctx.w, unit);
     let max_kph = cms_to_kph(i32::try_from(max_cms).unwrap_or(i32::MAX));
-    if kph.abs() > max_kph {
+    let reverse_kph = cms_to_kph(i32::try_from(reverse_cms).unwrap_or(i32::MAX));
+    if kph > max_kph || kph < -reverse_kph {
         return Err(CockpitError::Usage(format!(
-            "That unit makes {max_kph} kph; SPEED 0 to {max_kph}."
+            "That unit makes {max_kph} kph ahead and {reverse_kph} astern; SPEED -{reverse_kph} \
+             to {max_kph}."
         )));
     }
     // 16b cut D.2 (`B-03`): as `HEADING`.
@@ -2097,6 +2108,18 @@ fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
     // refusal would be a pulse away. It is the FIRST thing this verb does, so a
     // pilot in a wreck is never answered about which contacts are out there.
     require_alive(ctx.w, actor)?;
+    // **16b cut D.3 (`T-60`): a bare `LOCK` is usage and not a refusal.** An
+    // empty argument is not a contact id that failed to resolve — it is a pilot
+    // who has not said which one — and `No such contact.` over it read as a
+    // statement about the scope. The one byte-identical refusal is still the
+    // answer to every *non-empty* word, which is what keeps `LOCK BA` against an
+    // unheld, a still-unknown and a re-acquired-unknown `BA` indistinguishable
+    // from `LOCK ZZ`.
+    if rest.trim().is_empty() {
+        return Err(CockpitError::Usage(
+            "LOCK <contact>; CONTACTS lists them.".to_owned(),
+        ));
+    }
     let held = last_frame(ctx.w, actor)
         .map(|held| frame_contacts(&held.frame))
         .unwrap_or_default();
@@ -2486,8 +2509,11 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
                 // the radio needs one place to look.
                 format!("Callsign {}.", frame.callsign),
                 format!(
-                    "{}: power {}, {} kph, heading {}°{}{}",
+                    "{}{}: power {}, {} kph, heading {}°{}{}",
                     display_name(ctx.w, unit),
+                    // **16b cut D.3 (`T-60`)**: the chassis, when it is not the
+                    // one the pod authors.
+                    fitted_bracket(ctx.w, unit, frame),
                     frame.power.as_str(),
                     cms_to_kph(frame.speed_cms),
                     frame.pose.heading_mdeg / 1_000,
@@ -2539,6 +2565,59 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
     };
     say_and_frame(ctx, held.as_ref(), lines);
     Ok(())
+}
+
+/// **The chassis bracket `STATUS`'s second line carries** (16b cut D.3, `T-60`),
+/// or an empty string.
+///
+/// The smoke transcript's own complaint: a pilot who typed `SIM UNIT biped_mk1`
+/// read `Red Tank 1: power online, …` all match, because the object's name is
+/// pack content (`Red Tank 1` is the pod's tank whatever is fitted to it) and
+/// nothing on the panel said otherwise. The name stays — renaming a persistent
+/// object per match is a much worse answer — and the fitted type goes beside it
+/// in the bracket the board already uses for exactly this, `[biped_mk1]`, spelled
+/// by the board's own [`lobby::type_word`].
+///
+/// **Only when it differs from the authored type**, so a stock tank's line is
+/// byte for byte the one cut D.1 wrote. The pod is read off the frame's own
+/// callsign — the team and slot the lobby fielded this tank from — and then the
+/// pod is asked for **its own tank by name**, because
+/// [`crate::arena::state::Arena`]'s `resolve_callsigns` gives *every* unit a
+/// `Designator::Slot`: the harness's three hundred and a staff `@arena/start`'s
+/// two included. The designator alone therefore says nothing about where a tank
+/// came from, and without the second question a staff-fielded biped would be
+/// bracketed against the authored type of a centre pod it was never in. A unit
+/// the centre does not field from that pod brackets nothing.
+///
+/// It is the pilot's own tank, so the observer rule is not in play: doc 16 §5
+/// puts a pilot's own platform outside it entirely.
+fn fitted_bracket(w: &World, unit: ObjId, frame: &Frame) -> String {
+    let Designator::Slot { team, slot } = frame.callsign else {
+        return String::new();
+    };
+    let Ok(index) = u8::try_from(slot) else {
+        return String::new();
+    };
+    // The centre's own pod, and no other unit's: see the head.
+    if centre::tank_for_slot(w, team, index) != Some(unit) {
+        return String::new();
+    }
+    let Some(authored) = lobby::authored_unit_type(w, team, index) else {
+        return String::new();
+    };
+    // The registry's `DefinitionId` and the pack-local entry id are the same
+    // string (see `crate::definitions`' module head), so the tactics document's
+    // own schema is directly comparable with the arena pack's authored type
+    // without re-resolving either through the catalog.
+    let Some(fitted) = mush_tactics::module::unit_of(w, unit)
+        .map(|held| held.schema().key().id.as_str().to_owned())
+    else {
+        return String::new();
+    };
+    if fitted == authored.as_str() {
+        return String::new();
+    }
+    format!(" [{}]", lobby::type_word(w, &fitted))
 }
 
 /// How wide a `STATUS` damage line may run before it is wrapped — inside the
@@ -3578,13 +3657,20 @@ fn choose_weapon(rows: &[WeaponRow], rest: &str) -> Result<WeaponRow, CockpitErr
         .ok_or_else(|| CockpitError::NoSuchWeapon(DEFAULT_WEAPON.to_owned()))
 }
 
-/// The unit's own top speed, centimetres a second, out of its `tracked` mode
-/// rules (doc 16 §3.3). A unit the world does not hold gets the stock tank's,
-/// which is the same fallback the check-out uses.
-fn max_speed_cms(w: &World, unit: ObjId) -> u32 {
+/// **Both of a unit's speed ceilings in cm/s** (16b cut D.3, `T-60`): forward,
+/// and the reverse magnitude.
+///
+/// One read of the same `tracked` rules the arena's own apply reads
+/// ([`crate::arena::state::TrackedRules::reverse_ceiling_cms`]), so `SPEED`'s
+/// refusal and the arena's clamp cannot disagree about where the floor is. A unit
+/// with no tactical record at all makes nothing in either direction.
+fn speed_ceilings(w: &World, unit: ObjId) -> (u32, u32) {
     match mush_tactics::module::unit_of(w, unit) {
-        Some(cells) => crate::match_::tracked_rules(cells).max_speed_cms,
-        None => 0,
+        Some(cells) => {
+            let rules = crate::match_::tracked_rules(cells);
+            (rules.max_speed_cms, rules.reverse_ceiling_cms())
+        }
+        None => (0, 0),
     }
 }
 
@@ -3731,11 +3817,29 @@ impl mush_core::CommandGate for CockpitGate {
 /// centre has not deployed yet, [`OUTSIDE_COCKPIT`] for everybody else. The
 /// billet rather than the focus, for the same reason `EXIT` reads the billet: a
 /// pilot who typed `+focus` at something else still holds the seat.
+///
+/// **16b cut D.3 (`B-36`) narrowed it to the case it was written for.** The
+/// sentence promises *the match has not started yet*, and the test was "holds a
+/// cockpit billet on an undeployed unit" — which is true of a staffer sitting in
+/// a tank of their own in an `Idle` centre, of somebody stationed on a unit that
+/// belongs to no simulator at all, and of a pilot in a centre whose match ended
+/// an hour ago. All three were told to wait for a match nobody is going to start.
+/// Two facts are asked for now: the centre is really **`Boarding`**, and the
+/// billet is on a **roster tank of that centre** — the eight objects the pods
+/// resolve to, which is the same ladder [`eject_all`] walks.
 fn waiting_to_start(w: &World, actor: ObjId) -> &'static str {
+    if !lobby::centre(w).is_some_and(|centre| centre.state == MatchState::Boarding) {
+        return OUTSIDE_COCKPIT;
+    }
+    let roster: Vec<ObjId> = centre::POD_ENTRIES
+        .iter()
+        .filter_map(|(team, index, _)| centre::pod_object(w, *team, *index))
+        .filter_map(|pod| centre::tank_of(w, pod))
+        .collect();
     let seated = station_id().is_some_and(|station| {
-        seats_of(w, actor)
-            .into_iter()
-            .any(|(unit, held)| held == station && !mush_sim::deployed::is_deployed(w, unit))
+        seats_of(w, actor).into_iter().any(|(unit, held)| {
+            held == station && !mush_sim::deployed::is_deployed(w, unit) && roster.contains(&unit)
+        })
     });
     if seated {
         NOT_STARTED_YET
@@ -3749,11 +3853,18 @@ fn display_name(w: &World, object: ObjId) -> String {
     mush_core::output::display_name(w, object)
 }
 
-/// Say one line in a room.
-fn tell_room(ctx: &mut Ctx<'_>, room: ObjId, text: String) {
+/// Say one line in a room, to everybody but `exclude`.
+///
+/// **16b cut D.3 (`T-60`)**: the exclusion is why this takes a list. `BOARD`
+/// needs none — the body is inside the pod by the time the line is said, so a
+/// room fan-out never reaches it — but `EXIT` puts the body back in the room
+/// first, and the pilot then read both their own `You climb out of …` and the
+/// room's `{name} climbs out of …`, which is the one line that was never meant
+/// for them.
+fn tell_room(ctx: &mut Ctx<'_>, room: ObjId, exclude: Vec<ObjId>, text: String) {
     ctx.out.to_room(
         room,
-        Vec::new(),
+        exclude,
         OutputEvent::Sys(RichText::tag(NOTICE_CATEGORY, text)),
     );
 }

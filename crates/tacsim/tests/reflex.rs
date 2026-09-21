@@ -2681,3 +2681,245 @@ fn a_ragged_partition_reaches_the_same_place_with_the_same_avoided_cells() {
         ragged.1
     );
 }
+
+// ---------------------------------------------------------------------------
+// (l) 16b cut D.3 (`B-34`) — a released COLD tank starts itself up
+// ---------------------------------------------------------------------------
+
+/// A pilot's tank that is **cold** — it was never started up — out in the middle
+/// of the window, with nobody else in the match.
+fn cold_pilot_tank() -> Arena {
+    arena_of(
+        vec![tank(
+            RED,
+            Team::Red,
+            centre(9, 8),
+            vec![cannon()],
+            Controller::Pilot,
+        )],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[RED],
+    )
+}
+
+/// The release, delivered in the pulse that begins at [`SCRIPT_AT_MS`].
+///
+/// [`replay_of`]'s own `script` hook takes `&mut Arena` and cannot step one, and
+/// a `Control` is a message the world sends *into* `step` — so this is
+/// `replay_of` with the control put on the wire instead. [`SCRIPT_AT_MS`] is a
+/// multiple of all three cadences, so the release is the same fact of arena time
+/// in every log.
+fn replay_released_cold(cadence_ms: i64, until_ms: i64) -> Replay {
+    let mut arena = cold_pilot_tank();
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut hashes: Vec<u64> = Vec::new();
+    let mut wall = 0_i64;
+    let mut sent = false;
+    loop {
+        let release = if !sent && arena.now_ms >= SCRIPT_AT_MS {
+            sent = true;
+            vec![Control {
+                unit: RED,
+                channel: Channel::Helm,
+                epoch: 2,
+                state: ControlState::Released,
+                pilot: None,
+            }]
+        } else {
+            Vec::new()
+        };
+        let out = arena.step(wall, &release, &[]);
+        absorb(&out, &mut bytes);
+        hashes.extend(arena.substep_hashes.iter().copied());
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    let events = events(&mut arena, &mut bytes)
+        .into_iter()
+        .map(|event| {
+            (
+                event.t_ms,
+                serde_json::to_string(&event.kind).unwrap_or_default(),
+                event.hash,
+            )
+        })
+        .collect();
+    let finals = arena
+        .units
+        .iter()
+        .map(|unit| {
+            let row = arena.reflex.unit(unit.id);
+            (
+                unit.id,
+                unit.pose.x_cm,
+                unit.pose.y_cm,
+                unit.pose.heading_mdeg,
+                unit.speed_cms,
+                row.map_or(ReflexState::Startup, |row| row.state),
+                row.and_then(|row| row.goal),
+            )
+        })
+        .collect();
+    Replay {
+        events,
+        hashes,
+        finals,
+    }
+}
+
+/// **A released cold tank brings its own power up and drives home** (16b cut
+/// D.3, `B-34`).
+///
+/// It replaces the claim `arena.rs`'s
+/// `startup_then_released_in_one_burst_never_starts` used to make. A pilot who
+/// `EXIT`s before `STARTUP` used to leave a dark tank standing on its entry cell
+/// for the rest of the match — and because doc 16 §3.8's elimination is *a wreck,
+/// or disabled with no weapons*, that tank kept its side standing until somebody
+/// found it and killed it, which is a match nobody could end.
+///
+/// Tick by tick: the release puts the machine in `Withdraw` with the power still
+/// `Off`; its **first** tick sets the plan's `startup`, so the arena accepts a
+/// `Startup` and the power goes `Starting`; `match.startup_ms` later the
+/// scheduled completion carries it to `Online`; and it stays in `Withdraw` all
+/// the way through — the `Online` arm re-enters `Patrol` from `Startup` and
+/// `Disabled` alone — so it drives to its own entry zone and does not go looking
+/// for a fight it has already left.
+#[test]
+fn a_released_cold_tank_starts_itself_up_and_stays_in_withdraw() {
+    let mut arena = cold_pilot_tank();
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 1_000, &mut bytes);
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.power),
+        Some(Power::Off),
+        "the pilot never started it"
+    );
+
+    // The seat goes, cold.
+    let now = arena.now_ms;
+    let out = arena.step(
+        now,
+        &[Control {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 2,
+            state: ControlState::Released,
+            pilot: None,
+        }],
+        &[],
+    );
+    absorb(&out, &mut bytes);
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.controller),
+        Some(Controller::Reflex)
+    );
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.power),
+        Some(Power::Off),
+        "the release itself starts nothing"
+    );
+
+    // Its first tick orders the startup, `match.startup_ms` carries it to
+    // `Online`, and it is in `Withdraw` the whole way — a machine that had gone
+    // through `Startup` would be in `Patrol` by the end of this block, because
+    // that is the only state the `Online` arm re-enters `Patrol` from.
+    let released_at = arena.now_ms;
+    let start = arena.unit(RED).map(|unit| unit.pose.x_cm).unwrap_or(0);
+    let until =
+        released_at + i64::from(reflex_cfg().decide_ms) + i64::from(match_cfg().startup_ms) + 1_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.power),
+        Some(Power::Online),
+        "the machine never ordered a startup"
+    );
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+
+    // And it drives home rather than standing where its pilot left it. The
+    // horizon stops short of `arena.reflex.rally_ms`, which is a later edge of
+    // its own (16b cut Q.7) and not this row's.
+    let until = arena.now_ms + 8_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert!(
+        arena.unit(RED).is_some_and(|unit| unit.pose.x_cm < start),
+        "it came up and stood still"
+    );
+    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert!(
+        row.goal.is_some_and(|(x, _)| x <= 1),
+        "the goal is the red entry zone: {:?}",
+        row.goal
+    );
+    // The black box, tick by tick: the startup is the machine's own — after the
+    // release, not the pilot's — and the power comes online exactly
+    // `match.startup_ms` after it.
+    let log = events(&mut arena, &mut bytes);
+    let at = |word: &str| -> Option<i64> {
+        log.iter()
+            .find(|event| event.kind.as_str() == word)
+            .map(|event| event.t_ms)
+    };
+    let startup = at("startup").unwrap_or_else(|| panic!("no startup was journalled"));
+    let online = at("power_online").unwrap_or_else(|| panic!("the power never came online"));
+    assert!(
+        startup >= released_at,
+        "the startup predates the release: {startup} against {released_at}"
+    );
+    assert_eq!(
+        online - startup,
+        i64::from(match_cfg().startup_ms),
+        "the completion did not land at `match.startup_ms`"
+    );
+}
+
+/// **Cross-tempo (16b §11, mandatory): the released cold tank's whole arc is one
+/// event list and one hash sequence at 5,000 / 1,000 / 500 ms** (16b cut D.3,
+/// `B-34`).
+#[test]
+fn a_released_cold_tank_is_one_event_list_and_one_hash_sequence_at_three_cadences() {
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| replay_released_cold(cadence, 35_000))
+        .collect();
+    let first = runs.first().expect("three replays");
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    for want in ["startup", "power_online"] {
+        assert!(
+            kinds.iter().any(|kind| kind.contains(want)),
+            "the replay never journalled a {want}, so nothing was compared: {kinds:?}"
+        );
+    }
+    assert!(
+        first
+            .finals
+            .iter()
+            .any(|(unit, _, _, _, _, state, _)| *unit == RED && *state == ReflexState::Withdraw),
+        "the machine left `Withdraw` inside the horizon (the rally is a later edge          of its own): {:?}",
+        first.finals
+    );
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+}

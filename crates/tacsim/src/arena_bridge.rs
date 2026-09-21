@@ -2028,7 +2028,11 @@ pub fn register(
                    back, and every stock tank is put back at its spec and at its authored \
                    muster cell. Idempotent, and says what it found; refused while a match is \
                    still checked out. A player's own `SIM TEAM` does the same thing on a \
-                   finished centre, so two pilots need no staff for a rematch."
+                   finished centre, so two pilots need no staff for a rematch.\n\
+                   @arena/release <unit>               (staff) clear one unit's stranded \
+                   deployed marker: it is restored from its own check-out snapshot and its \
+                   cockpit seat is freed. For a unit a refused check-in left unusable; refused \
+                   while its match is still live, where @arena/abort is the verb."
                 .into(),
             ..CommandSpec::default()
         },

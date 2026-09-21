@@ -13,6 +13,7 @@
 //! | `@arena/start <definition>=<red>/<blue>` | `Selection → Boarding → Running` in one step: check every named unit out and open the match |
 //! | `@arena/intent <unit>=<kind> [args]` | one order, as the unit's own seat |
 //! | `@arena/abort [<match>]` | `Stop { Abort }` |
+//! | `@arena/release <unit>` | **16b cut D.3**: clear one unit's stranded `deployed` marker and free its seat |
 //! | `@arena/fault <match>` | **test builds only** — arm a panic inside the next `step` |
 //!
 //! `@arena/start` is deliberately the whole of `Selection → Boarding → Running`
@@ -43,10 +44,10 @@ use crate::arena_task::{ArenaMsg, MatchId};
 use super::{MatchBook, Side, allocate_id};
 
 /// The switches cut T.3 adds to `@arena`, in help order (16b cut K.1 adds
-/// `reset`).
+/// `reset`; 16b cut D.3 adds `release`).
 #[must_use]
 pub fn register_switches() -> Vec<SmolStr> {
-    let mut switches: Vec<SmolStr> = ["status", "start", "intent", "abort", "reset"]
+    let mut switches: Vec<SmolStr> = ["status", "start", "intent", "abort", "reset", "release"]
         .iter()
         .copied()
         .map(SmolStr::new)
@@ -291,13 +292,20 @@ pub fn reset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let outcome = super::lobby::reset(ctx);
     let actor = ctx.actor;
+    // **16b cut D.3 (`B-31`)**: three headlines, not two. A reset that wrote
+    // nothing because every tank it wanted to write was still deployed, or
+    // refused, said "already idle; nothing changed" and then printed a row per
+    // stuck tank underneath it — the headline contradicting the report it was
+    // the headline of. The middle answer is the honest one.
     ctx.out.sys_to_actor(
         actor,
         crate::arena_bridge::NOTICE_CATEGORY,
         if outcome.changed() {
             "The simulator centre is reset; its slots and pods are free."
-        } else {
+        } else if outcome.is_empty() {
             "The simulator centre is already idle; nothing changed."
+        } else {
+            "The simulator centre is idle, but not clean:"
         },
     );
     // **16b cut F.1**: and what it actually found. The sweep now runs even on an
@@ -345,6 +353,67 @@ pub fn reset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.out
             .sys_to_actor(actor, crate::arena_bridge::NOTICE_CATEGORY, line);
     }
+    Ok(())
+}
+
+/// `@arena/release <unit>` — **16b cut D.3 (`T-49`)**: clear one unit's stranded
+/// `deployed` marker and give its cockpit seat back.
+///
+/// Until this cut nothing did. A check-in that the strict encoder refused, or a
+/// rolled-back check-out that could not be undone, left the marker on the
+/// record — and the marker refuses every ordinary mutation, so that tank could
+/// not be reset, refitted, fielded or boarded again. The only advice the logs
+/// could honestly give was *restart the server half*, because the boot
+/// reconciliation was the one thing in the tree that cleared one.
+///
+/// It is the void check-in: the unit is restored from the snapshot its own
+/// marker carries and the marker is cleared, in the same authoritative action as
+/// [`crate::match_::release_seat`], which is what stops the repair leaving a
+/// half-released pod behind.
+///
+/// **Refused while the unit's match is live**, because a checked-out unit's
+/// marker is not stranded — the arena is its single writer, and `@arena/abort` is
+/// the verb that ends that. Refused for a unit that carries no marker at all,
+/// because there is nothing to repair and answering "released" would be a lie.
+///
+/// Staff surfaces may name object ids (doc 16 §5's observer rule is about
+/// pilots), so every sentence here does.
+///
+/// # Errors
+///
+/// A message naming the unit: a live match, no marker, or whatever the check-in
+/// itself refused.
+pub fn release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "@arena/release <unit>";
+    let unit = parse_unit(ctx.args.lhs().trim()).ok_or(ArenaVerbError::Usage(USAGE))?;
+    if let Some(match_id) = ctx
+        .w
+        .module_state::<ArenaRegistry>()
+        .and_then(|registry| registry.match_of_unit(unit))
+    {
+        return Err(CmdError::msg(format!(
+            "#{} is in match {match_id}, which is still live; `@arena/abort` it first.",
+            unit.0
+        )));
+    }
+    if !mush_sim::deployed::is_deployed(ctx.w, unit) {
+        return Err(CmdError::msg(format!(
+            "#{} carries no deployed marker.",
+            unit.0
+        )));
+    }
+    mush_tactics::custody::check_in(ctx, unit, None)
+        .map_err(|error| CmdError::msg(error.to_string()))?;
+    super::release_seat(ctx, unit);
+    let actor = ctx.actor;
+    ctx.out.sys_to_actor(
+        actor,
+        crate::arena_bridge::NOTICE_CATEGORY,
+        format!(
+            "#{} is released: its check-out snapshot is restored and its seat is free.",
+            unit.0
+        ),
+    );
     Ok(())
 }
 
@@ -549,6 +618,9 @@ pub fn arena_command(
         abort(ctx)
     } else if ctx.switches.has("reset") {
         reset(ctx)
+    } else if ctx.switches.has("release") {
+        // 16b cut D.3 (`T-49`).
+        release(ctx)
     } else if cfg!(any(test, feature = "fault-injection")) && ctx.switches.has("fault") {
         #[cfg(any(test, feature = "fault-injection"))]
         {
