@@ -124,6 +124,18 @@ pub struct SquadSignal {
     /// against. It replaces cut N.2's `reach_cm`, which banded in thirds of the
     /// longest reach and so answered `close` for everything a sight can see.
     pub bands_cm: Vec<u32>,
+    /// **The commander's own nominal sight**, centimetres (16b cut E.1;
+    /// [`crate::arena::state::UnitState::sight_cm`]), `0` for a hull with no
+    /// sensor.
+    ///
+    /// It is here because the band word is thirds of the *lesser* of the sight
+    /// and [`SquadSignal::bands_cm`]'s last edge, and cut D.1 had left the
+    /// commander's brief reading the gun alone — so a lead's `close` and a
+    /// pilot's `close` were two distances (16c `T-81`). The brief prints the word
+    /// and not the number: what a deliberating mind is owed is the vocabulary a
+    /// pilot uses, and one more centimetre figure in the prompt is a number it
+    /// would have to do arithmetic on.
+    pub sight_cm: u32,
     /// The squad's mean health, per mille of the authored totals.
     pub health_permille: u32,
     /// How many of the squad's machines are in each state, in
@@ -290,6 +302,9 @@ impl Arena {
                 digest,
                 contacts,
                 bands_cm: commander.fire_bands_cm(),
+                // 16b cut E.1: the same product the commander's own frame carries,
+                // so the brief's band word is the word its pilots would read.
+                sight_cm: commander.sight_cm(self.definition.terrain.cell_cm()),
                 health_permille: u32::try_from(health_total / health_count.max(1)).unwrap_or(1_000),
                 states,
                 cell: self.definition.terrain.cell_of(&commander.pose),

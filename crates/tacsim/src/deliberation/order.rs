@@ -112,22 +112,24 @@ impl Objective {
 }
 
 /// **The band an order may not shoot past** — the cockpit's own range words
-/// ([`crate::match_::cockpit::range_band`]) minus `beyond`, which is not a band a
-/// weapon reaches at all.
+/// ([`crate::match_::cockpit::contact_band`]) minus `beyond`, which is not a band
+/// a weapon reaches at all.
 ///
 /// A new vocabulary would be a second way to say the same thing; these three are
 /// what `CONTACTS` already prints, so an order a staff member reads uses the words
-/// a pilot reads.
+/// a pilot reads — and since **16b cut E.1** they are the same *distances* too
+/// (16c `T-81`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RangeBand {
-    /// Inside a third of the weapon's reach.
+    /// The nearest third of what the platform's sight and its gun's last band
+    /// allow.
     Close,
-    /// Inside the weapon's reach.
+    /// The middle third of it.
     Effective,
-    /// Inside twice the weapon's reach — past what it can hit, so an order capped
-    /// here caps nothing and is legal for exactly that reason: a commander may say
-    /// "no restriction" without a fourth word.
+    /// Out to the weapon's own last band, which is past anything the sight can
+    /// hold — so an order capped here caps nothing and is legal for exactly that
+    /// reason: a commander may say "no restriction" without a fourth word.
     Far,
 }
 
@@ -153,29 +155,40 @@ impl RangeBand {
         }
     }
 
-    /// The outer edge of this band, in centimetres, against the authored band
-    /// edges of the weapon a bare `FIRE` would fire
-    /// (`UnitState::fire_bands_cm`) — the inverse of
-    /// [`crate::match_::cockpit::range_band`] and pinned to it by a test.
+    /// **The outer edge of this band**, centimetres, against the band edges of a
+    /// weapon and a platform's own nominal sight — the exact inverse of
+    /// [`crate::match_::cockpit::contact_band`], and pinned to it by a test.
     ///
-    /// **16b cut F.3** re-based it from thirds of the platform's longest reach,
-    /// with the word `range_band` itself: a commander's `close` and a pilot's
-    /// `close` have to be one distance, so they are read off one list.
+    /// `limit` is `min(last band, sight_cm)`, and the last band alone when
+    /// `sight_cm` is `0` (a hull with no scope at all), which is
+    /// `contact_band`'s own rule. Then `Close` is `limit / 3`, `Effective` is
+    /// `limit × 2 / 3` and `Far` is the last band, so
+    /// `contact_band(band.ceiling_cm(bands, sight), bands, sight)` is that band's
+    /// own word for all three.
+    ///
+    /// **16b cut E.1 gave it the sight** (16c `T-81`). Cut F.3 had re-based it
+    /// from thirds of the platform's longest reach onto the fired weapon's bands,
+    /// but the pilot's word had already moved on to the lesser of that and the
+    /// sight — so a lead's `close` was 500 m while a pilot's was 200 m, and a
+    /// squad ordered to hold `close` was ordered to a distance no pilot's
+    /// `CONTACTS` could name. One rule, two callers: this and `contact_band`.
     ///
     /// Nought for an empty list, which is a platform that carries nothing that
-    /// fires — the same reading [`crate::match_::cockpit::range_band`]'s `beyond`
-    /// is, and it caps nothing a squad could have done anyway. A weapon with a
-    /// reach and no authored bands is **not** that case; it answers one band at
-    /// its reach ([`crate::arena::state::WeaponSummary::bands_cm`]).
+    /// fires — the same reading `contact_band`'s `beyond` is, and it caps nothing
+    /// a squad could have done anyway. A weapon with a reach and no authored bands
+    /// is **not** that case; it answers one band at its reach
+    /// ([`crate::arena::state::WeaponSummary::bands_cm`]).
     #[must_use]
-    pub fn ceiling_cm(&self, bands_cm: &[u32]) -> u64 {
-        let (Some(first), Some(last)) = (bands_cm.first(), bands_cm.last()) else {
+    pub fn ceiling_cm(&self, bands_cm: &[u32], sight_cm: u32) -> u64 {
+        let Some(last) = bands_cm.last() else {
             return 0;
         };
-        let (first, last) = (u64::from(*first), u64::from(*last));
+        let last = u64::from(*last);
+        let sight = u64::from(sight_cm);
+        let limit = if sight == 0 { last } else { last.min(sight) };
         match self {
-            RangeBand::Close => first / 3,
-            RangeBand::Effective => first,
+            RangeBand::Close => limit / 3,
+            RangeBand::Effective => limit.saturating_mul(2) / 3,
             RangeBand::Far => last,
         }
     }
@@ -377,22 +390,44 @@ mod tests {
         assert_eq!(RangeBand::parse("beyond"), None);
     }
 
+    /// **16b cut E.1 (`T-81`)**: `RangeBand::ceiling_cm` is the inverse of
+    /// `cockpit::contact_band`, so a commander's word and a pilot's word name one
+    /// distance.
+    ///
+    /// The property, for every band `b`:
+    /// `contact_band(b.ceiling_cm(bands, sight), bands, sight) == b.as_str()`.
+    /// It is asserted twice, because the sight is what cut E.1 added: once at
+    /// `sight_cm = 0`, the hull with no scope, where the limit is the last band;
+    /// and once at a sight **shorter than the first band**, which is every shipped
+    /// platform (600 m of sight against a 1.5 km inner band) and the case a
+    /// ceiling read off the gun alone got wrong.
     #[test]
     fn the_bands_agree_with_the_cockpits_own_words() {
-        // `RangeBand::ceiling_cm` is the inverse of `cockpit::range_band`, and this
-        // is what keeps the two from drifting apart. 16b cut F.3: both are read
-        // against the same authored band edges.
         let bands = [9_000_u32, 18_000];
-        for band in [RangeBand::Close, RangeBand::Effective, RangeBand::Far] {
-            let at = band.ceiling_cm(&bands);
-            assert_eq!(
-                crate::match_::cockpit::range_band(at, &bands),
-                band.as_str(),
-                "the ceiling of {} must still read as {}",
-                band.as_str(),
-                band.as_str()
-            );
+        for sight in [0_u32, 6_000] {
+            for band in [RangeBand::Close, RangeBand::Effective, RangeBand::Far] {
+                let at = band.ceiling_cm(&bands, sight);
+                assert_eq!(
+                    crate::match_::cockpit::contact_band(at, &bands, sight),
+                    band.as_str(),
+                    "at a sight of {sight}, the ceiling of {} ({at} cm) must still read as {}",
+                    band.as_str(),
+                    band.as_str()
+                );
+            }
         }
+        // And the sight really does move the ceiling: thirds of 6,000 rather than
+        // thirds of 18,000.
+        assert_eq!(RangeBand::Close.ceiling_cm(&bands, 0), 6_000);
+        assert_eq!(RangeBand::Close.ceiling_cm(&bands, 6_000), 2_000);
+        assert_eq!(RangeBand::Effective.ceiling_cm(&bands, 6_000), 4_000);
+        assert_eq!(
+            RangeBand::Far.ceiling_cm(&bands, 6_000),
+            18_000,
+            "`far` is the weapon's own last band: a commander saying no restriction"
+        );
+        // A platform with nothing that fires caps nothing it could have done.
+        assert_eq!(RangeBand::Effective.ceiling_cm(&[], 6_000), 0);
     }
 
     #[test]

@@ -288,6 +288,21 @@ pub struct ReflexConfig {
     /// It is validated at or above `decide_ms`: a rally shorter than one decision
     /// would fire on the tick after the one that withdrew.
     pub rally_ms: u32,
+    /// **Armour plus internals, per mille, below which a machine still on its way
+    /// home will not turn and fight even something close** (16b cut E.1; doc 16
+    /// §6; 16c §5's Q8), arena doctrine like the rest of this block.
+    ///
+    /// The stand a `Withdraw` makes has two rules and this is the floor under the
+    /// first: **en route** it turns for a hostile inside its `close` band and
+    /// above this figure, and for nothing else; **once home** it shoots back at
+    /// whatever comes inside its firing ceiling, at any health, because a machine
+    /// that has arrived has nowhere further to run.
+    ///
+    /// Validated `0` to `1000`, **and not above [`ReflexConfig::withdraw_permille`]**:
+    /// a machine only runs home below the second, so a floor above it would be a
+    /// doctrine branch no unit could ever be in. Every shipped file carries 350
+    /// there, so the default of 175 — half of it — is well clear.
+    pub stand_min_permille: u32,
 }
 
 impl Default for ReflexConfig {
@@ -306,6 +321,8 @@ impl Default for ReflexConfig {
             engage_band_permille: 700,
             // 16b cut Q.7: twenty seconds of quiet.
             rally_ms: 20_000,
+            // 16b cut E.1: half of `withdraw_permille`.
+            stand_min_permille: 175,
         }
     }
 }
@@ -332,8 +349,9 @@ pub struct TempoConfig {
     /// `Engaged`.
     pub engaged_hold_ms: u32,
     /// The held-contact range that raises `Alert`, centimetres. **Zero means
-    /// derived**: twice the longest weapon range in the match, at match start
-    /// (16b §9).
+    /// derived**: the lesser of twice the longest weapon range in the match and
+    /// the window's own diagonal, at match start (16b §9; the cap is 16b cut
+    /// E.1's, 16c `T-32`).
     pub alert_range_cm: u32,
     /// The longest substep a pulse is cut into; the substep is
     /// `min(substep_max_ms, (cell_cm - 1) × 1000 / max_speed_cms)` floored at
@@ -754,6 +772,25 @@ impl ArenaConfig {
             u64::from(self.reflex.decide_ms),
             u64::from(self.reflex.rally_ms),
         )?;
+        between(
+            "[tacsim.arena.reflex].stand_min_permille",
+            0,
+            1_000,
+            u64::from(self.reflex.stand_min_permille),
+        )?;
+        // **16b cut E.1**: and the pair has to make sense together. A machine only
+        // runs home below `withdraw_permille`, so a stand floor above it is a
+        // doctrine branch nothing could ever be in — a free-standing key an
+        // operator can strand by lowering the other number is a silently dead
+        // rule, and a refusal that names both is the loud form.
+        if self.reflex.stand_min_permille > self.reflex.withdraw_permille {
+            return Err(format!(
+                "[tacsim.arena.reflex].stand_min_permille is {}, above \
+                 [tacsim.arena.reflex].withdraw_permille ({}): a machine only runs home below the \
+                 second, so it could never turn and fight on the way",
+                self.reflex.stand_min_permille, self.reflex.withdraw_permille
+            ));
+        }
         Ok(())
     }
 }

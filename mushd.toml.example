@@ -250,7 +250,7 @@ alert_ms = 1000                    # a contact inside alert_range_cm, a queued f
 engaged_ms = 500                   # a shot, a scheduled impact, or hostiles inside weapons range
 alert_hold_ms = 30000              # ms with none of the Alert triggers before falling back to Quiet
 engaged_hold_ms = 10000            # ms since the last shot, impact or in-range pair before leaving Engaged
-alert_range_cm = 0                 # the held-contact range that raises Alert; 0 = DERIVED at match start as twice the longest weapon range in the match
+alert_range_cm = 0                 # the held-contact range that raises Alert; 0 = DERIVED at match start as the lesser of twice the longest weapon range in the match and the window's own diagonal (16b cut E.1)
 substep_max_ms = 250               # the longest substep a pulse is cut into (floored at 50 ms, and at one cell per substep)
 stall_ms = 2000                    # ms one pulse may take before the watchdog VOIDS the match
 
@@ -279,6 +279,8 @@ weight_facet = 40                  # the utility weight on the facet a candidate
 weight_health = 30                 # the utility weight on its OWN health: the same addend for every candidate, so it orders nothing
 engage_band_permille = 700         # the fraction of a weapon's reach Engage holds rather than driving onto the target
 rally_ms = 20000                   # (16b cut Q.7) arena ms a withdrawn unit waits with nothing hostile on its board before it comes back into the fight -- once; at or above decide_ms
+# (16b cut E.1) armour plus internals, per mille, below which a machine on its way home will not turn and fight even something close; once home it always shoots back
+stand_min_permille = 175           # 0 to 1000, and never above withdraw_permille
 
 [tacsim.match]                     # (16b cut G) the match lifecycle's slots and timeouts
 startup_ms = 10000                 # ms STARTUP takes to carry a unit's power from starting to online; until then motion and fire refuse

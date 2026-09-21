@@ -64,7 +64,7 @@
 //! | `[tacsim.arena.tempo].engaged_ms` | `500` | the `Engaged` pulse period, milliseconds — the tempo the harness's p99 is measured in |
 //! | `[tacsim.arena.tempo].alert_hold_ms` | `30000` | milliseconds with no `Alert` trigger before the arena falls back to `Quiet` |
 //! | `[tacsim.arena.tempo].engaged_hold_ms` | `10000` | milliseconds since the last shot, impact or in-range pair before `Engaged` is left |
-//! | `[tacsim.arena.tempo].alert_range_cm` | `0` | the held-contact range that raises `Alert`, centimetres; **`0` is derived** at match start as twice the longest weapon range in the match |
+//! | `[tacsim.arena.tempo].alert_range_cm` | `0` | the held-contact range that raises `Alert`, centimetres; **`0` is derived** at match start as the lesser of twice the longest weapon range in the match and the window's own diagonal (**16b cut E.1**) |
 //! | `[tacsim.arena.tempo].substep_max_ms` | `250` | the longest substep a pulse is cut into (doc 16 §3.1 rate independence) |
 //! | `[tacsim.arena.tempo].stall_ms` | `2000` | milliseconds one pulse may take before the watchdog voids the match |
 //! | `[tacsim.arena].max_catch_up_steps` | `4` | periods of wall time one pulse may absorb before the arena records `lagged` and skips the idle time |
@@ -83,6 +83,7 @@
 //! | `[tacsim.arena.reflex].weight_health` | `30` | the utility weight on the chooser's own health — the same addend for every candidate |
 //! | `[tacsim.arena.reflex].engage_band_permille` | `700` | the fraction of a weapon's reach `Engage` holds |
 //! | `[tacsim.arena.reflex].rally_ms` | `20000` | **16b cut Q.7** (doc 16 §6): arena milliseconds a withdrawn unit waits, with nothing hostile on its board, before it comes back into the fight — once |
+//! | `[tacsim.arena.reflex].stand_min_permille` | `175` | **16b cut E.1** (doc 16 §6): armour plus internals, per mille, below which a machine on its way home will not turn and fight even something close; once home it always shoots back. Not above `withdraw_permille` |
 //! | `[tacsim.match].startup_ms` | `10000` | **16b cut G** (doc 16 §3.3): milliseconds `STARTUP` takes to bring a unit's power online |
 //! | `[tacsim.match].board_timeout_ms` | `120000` | milliseconds `Boarding` waits before unseated slots are dropped (doc 16 §3.8) |
 //! | `[tacsim.match].max_duration_ms` | `3600000` | the longest a match runs before it ends as a timeout |
@@ -1002,6 +1003,18 @@ pub struct TacsimReflexCfg {
     /// now, and this is the lull that buys it. At or above `decide_ms`, or the
     /// boot is refused.
     pub rally_ms: u32,
+    /// **Armour plus internals, per mille, below which a machine on its way home
+    /// will not turn and fight even something close** (16b cut E.1; doc 16 §6).
+    ///
+    /// A `Withdraw` has two stands. **En route** it turns only for a hostile
+    /// inside its `close` band and only while it is above this figure; **once
+    /// home** it shoots back at whatever comes inside its firing ceiling, at any
+    /// health, because a machine that has arrived has nowhere further to run.
+    ///
+    /// `0` to `1000`, **and not above `withdraw_permille`**, or the boot is
+    /// refused naming both keys: a machine only runs home below the second, so a
+    /// floor above it is a doctrine branch nothing could ever be in.
+    pub stand_min_permille: u32,
 }
 
 impl Default for TacsimReflexCfg {
@@ -1018,6 +1031,8 @@ impl Default for TacsimReflexCfg {
             engage_band_permille: 700,
             // 16b cut Q.7: twenty seconds of quiet.
             rally_ms: 20_000,
+            // 16b cut E.1: half of `withdraw_permille`.
+            stand_min_permille: 175,
         }
     }
 }
@@ -1049,8 +1064,10 @@ pub struct TacsimTempoCfg {
     /// leaves `Engaged`.
     pub engaged_hold_ms: u32,
     /// The range, centimetres, under which a held contact raises the tempo to
-    /// `Alert`. **Zero means derived**: the arena takes twice the longest weapon
-    /// range in the match, at match start (16b §9's `tempo.alert_range_cm` row).
+    /// `Alert`. **Zero means derived**: at match start the arena takes **the
+    /// lesser of** twice the longest weapon range in the match **and the window's
+    /// own diagonal** (16b §9's `tempo.alert_range_cm` row; the cap is 16b cut
+    /// E.1's).
     pub alert_range_cm: u32,
     /// The longest substep a pulse is cut into. Doc 16 §3.1: a pulse is a
     /// sequence of substeps of `min(substep_max_ms, (cell_cm - 1) × 1000 /
@@ -1072,8 +1089,9 @@ impl Default for TacsimTempoCfg {
             engaged_ms: 500,
             alert_hold_ms: 30_000,
             engaged_hold_ms: 10_000,
-            // 0 = derived at match start as twice the longest weapon range in
-            // the match (16b §9).
+            // 0 = derived at match start as the lesser of twice the longest
+            // weapon range in the match and the window's own diagonal (16b §9;
+            // the cap is 16b cut E.1's).
             alert_range_cm: 0,
             substep_max_ms: 250,
             stall_ms: 2_000,
@@ -2300,7 +2318,8 @@ scene_turn_dedline_secs = 30
         );
         assert_eq!(
             arena.tempo.alert_range_cm, 0,
-            "0 is the DERIVED sentinel: twice the longest weapon range in the match"
+            "0 is the DERIVED sentinel: twice the longest weapon range in the match, held to the \
+             window's own diagonal"
         );
         assert_eq!(
             (arena.tempo.substep_max_ms, arena.tempo.stall_ms),

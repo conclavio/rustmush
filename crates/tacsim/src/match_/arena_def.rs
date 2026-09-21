@@ -234,6 +234,56 @@ pub fn opening_pose(
     None
 }
 
+/// **One unit, as the check-out hands it to the arena** (16b cut E.1; 16b §0.4).
+///
+/// It is the literal that used to sit inside [`crate::match_::start`]'s loop,
+/// lifted out unchanged. Nothing about it is new and no behaviour moved: it
+/// exists so that a test rig that wants a shipped-scale arena builds **what
+/// production builds** rather than a second copy of the same eight decodes, one
+/// of which will eventually be a decode behind. `start` is its only caller in
+/// `src`.
+///
+/// The caller supplies what only the world knows — the unit's cells, its opening
+/// pose (through [`opening_pose`], which is the rest of what `start` does per
+/// unit), its side, its gunnery, whether anybody is sitting in it, and the pod it
+/// came out of — and everything else is read off the catalog here.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn custody_unit(
+    catalog: &Catalog,
+    cells: mush_tactics::TacticalUnit,
+    id: mush_core::ObjId,
+    team: Team,
+    pose: Pose,
+    gunnery: u8,
+    controller: crate::arena::state::Controller,
+    slot: u8,
+) -> crate::arena::state::CustodyUnit {
+    crate::arena::state::CustodyUnit {
+        id,
+        team,
+        pose,
+        mobility: tracked_rules(&cells),
+        sensor_height_cm: sensor_height_cm(catalog, &cells),
+        sensor: sensor_profile(catalog, &cells),
+        weapons: weapon_summaries(catalog, &cells),
+        // **16b cut W.2**: what the unit presents and what a hit may strike, and
+        // the gunnery the `PilotProfile` seam gives its shots.
+        profile: unit_profile(catalog, &cells),
+        gunnery,
+        // **16b cut N.1** (doc 16 §6): a tank with nobody in it is the reflex
+        // controller's. That is the whole of how a lobby fields AI — `SIM START`
+        // puts the unclaimed pods' tanks on the sides and they arrive here with
+        // no seated pilot — and it is also what the harness's field of 300 is.
+        controller,
+        // **16b cut Q.1**: the pod it came out of, carried straight across — the
+        // lobby is the only thing that knows it, and `Arena::new` is the only
+        // thing that resolves it into a name.
+        slot,
+        unit: cells,
+    }
+}
+
 /// **The mode rules a unit drives under** (doc 16 §3.3 "Mobility mode rules").
 ///
 /// M32 keeps a mode's kinematics in an opaque [`mush_tactics::ModeRules`] — a

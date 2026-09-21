@@ -252,7 +252,8 @@ alert_ms = 1000
 engaged_ms = 500
 alert_hold_ms = 30000
 engaged_hold_ms = 10000
-# 0 = derived at match start as twice the longest weapon range in the match.
+# 0 = derived at match start as the lesser of twice the longest weapon range in
+# the match and the window's own diagonal (16b cut E.1).
 alert_range_cm = 0
 substep_max_ms = 250
 stall_ms = 2000
@@ -278,6 +279,8 @@ weight_health = 30
 engage_band_permille = 700
 # 16b cut Q.7: the quiet a withdrawn unit waits out before it rallies, once.
 rally_ms = 20000
+# (16b cut E.1) armour plus internals, per mille, below which a machine on its way home will not turn and fight even something close; once home it always shoots back
+stand_min_permille = 175
 
 [tacsim.match]
 startup_ms = 10000

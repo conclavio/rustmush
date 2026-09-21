@@ -252,8 +252,14 @@ fn sight() -> SensorProfile {
     }
 }
 
-/// A cannon that reaches the whole window — so a classified hostile is always in
-/// band and the machine goes straight to `Engage`.
+/// A cannon whose one band reaches the whole window, so it is never the gun that
+/// decides where the machine fights.
+///
+/// **16b cut E.1**: what decides is the platform's own scope. With [`sight`]'s
+/// five cells the fighting reach is `min(250,000, 5,000)` — 5,000 cm — and
+/// `engage_cm` is seven tenths of it, 3,500 cm. A fixture that wants a readable
+/// band says so with [`with_sight`], and [`SIGHT_CELLS`] is the one cut E.1's own
+/// tests use.
 fn cannon() -> WeaponSummary {
     WeaponSummary {
         id: SmolStr::new("cannon"),
@@ -544,8 +550,8 @@ fn a_cold_ai_tank_starts_itself_up_and_then_walks_the_waypoint_graph() {
 
 #[test]
 fn a_classified_hostile_out_of_reach_is_closed_on_to_the_stand_off_cell() {
-    // The red tank carries a two-cell carbine and the blue one is four cells away,
-    // so the hostile is held, classified and **out of band**: doc 16 §6's
+    // The red tank carries a two-cell carbine and the blue one is seven cells
+    // away, so the hostile is held, classified and **out of band**: doc 16 §6's
     // `Approach`.
     let mut arena = arena_of(
         vec![
@@ -577,13 +583,23 @@ fn a_classified_hostile_out_of_reach_is_closed_on_to_the_stand_off_cell() {
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Approach));
     let row = arena.reflex.unit(RED).cloned().expect("a machine");
     assert_eq!(row.target.map(|(_, unit)| unit), Some(BLUE));
-    // The goal is the stand-off cell at 70 per mille of the carbine's 2,000 cm,
-    // measured from the target back along the line — not the target's own cell.
+    // The goal is the stand-off cell, measured from the **plot** back along the
+    // line — not the target's own cell.
+    //
+    // **16b cut E.1** re-priced it and this fixture is its degenerate row, which
+    // is why the cell is pinned exactly: the carbine's one band is 2,000 cm and
+    // the sight is fourteen cells, so `fight_inner_cm` is 2,000 and `engage_cm`
+    // is 1,400 — less than `STAND_OFF_MARGIN_CELLS`' three cells, so
+    // `stand_off_want` floors at one cell and the goal is the cell one thousand
+    // centimetres short of the plot. A gun shorter than the margin cannot have a
+    // stand-off band, and the floor is what keeps the goal in front of the
+    // machine rather than behind it (16c `B-05`; `stand_off_want`'s own table
+    // pins the arithmetic).
     assert_ne!(row.goal, Some((13, 8)), "it does not drive onto the target");
-    assert!(
-        row.goal.is_some_and(|(x, _)| (7..13).contains(&x)),
-        "the stand-off cell is between them: {:?}",
-        row.goal
+    assert_eq!(
+        row.goal,
+        Some((12, 8)),
+        "the stand-off cell is one cell short of the plot's own"
     );
     // And doc 16 §3.1's `Alert` trigger *a controller has entered `Approach`* is
     // live at last.
@@ -603,7 +619,7 @@ fn the_controller_approaches_the_plot_and_not_the_target() {
     // reflex tank pursued a target it could no longer see, through a wall, with
     // perfect knowledge, for the whole time to live.
     //
-    // The red tank carries a two-cell carbine, so a hostile four cells away is
+    // The red tank carries a two-cell carbine, so a hostile seven cells away is
     // out of band and the machine is in `Approach` — the state whose goal is a
     // position, which is what makes the difference visible.
     let mut arena = arena_of(
@@ -674,8 +690,11 @@ fn the_controller_approaches_the_plot_and_not_the_target() {
 
 #[test]
 fn in_band_with_a_line_it_locks_and_fires_and_both_lines_are_in_the_black_box() {
-    // The cannon reaches every cell of the window, so the moment the contact is
-    // classified the machine is in the band.
+    // **16b cut E.1**: three cells apart, inside a band of 3,500 cm — the
+    // fixture's default five-cell [`sight`] against the cannon's 2,500 m, times
+    // doctrine's seven tenths. It is the scope and not the gun that decides, and
+    // the premise is asserted below rather than left to the reader, because half
+    // a cell of margin is not something a comment should be trusted with.
     let mut arena = arena_of(
         vec![
             tank(
@@ -698,7 +717,20 @@ fn in_band_with_a_line_it_locks_and_fires_and_both_lines_are_in_the_black_box() 
         &[BLUE],
     );
     let mut bytes: Vec<u8> = Vec::new();
+    // The premise: the platform's fighting reach is its scope, and the two tanks
+    // are inside seven tenths of it.
+    let reach = arena.unit(RED).map(|unit| unit.fight_inner_cm(CELL_CM));
+    assert_eq!(
+        reach,
+        Some(5_000),
+        "five cells of scope, not the gun's 2.5 km"
+    );
     let counters = run(&mut arena, 6_000, &mut bytes);
+    assert!(
+        plot_range(&arena, RED, BLUE) <= 3_500,
+        "the tanks are inside `engage_cm`, which is what makes this the in-band case: {} cm",
+        plot_range(&arena, RED, BLUE)
+    );
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
     assert!(counters.shots > 0, "{counters:?}");
     let log = events(&mut arena, &mut bytes);
@@ -791,15 +823,24 @@ fn under_the_health_threshold_it_breaks_off_toward_its_own_entry_zone() {
     if let Some(state) = arena.unit_mut(BLUE) {
         state.pose = centre(15, 15);
     }
+    // Where it stood when the damage landed, so "it drove west" is measured from
+    // the engagement and not from wherever the run home had already reached.
+    let west_of = arena.unit(RED).map(|unit| unit.pose.x_cm).unwrap_or(0);
     run(&mut arena, 12_000, &mut bytes);
     assert_eq!(
         arena.contacts.of(RED).count(),
         0,
         "the contact expired, so what is left is the health edge"
     );
-    let west_of = arena.unit(RED).map(|unit| unit.pose.x_cm).unwrap_or(0);
     let before = count(&events(&mut arena, &mut bytes), "fired");
-    run(&mut arena, 32_000, &mut bytes);
+    // **16b cut E.1** shortened the horizon from 32,000 ms, and the reason is the
+    // behaviour under test working: at 166 per mille this tank is under
+    // `stand_min_permille`, so it no longer stops for three seconds to shoot at a
+    // contact it is about to lose — it turns and drives, arrives home sooner, and
+    // its `rally_ms` of quiet therefore runs out sooner. Twenty-four seconds is
+    // comfortably inside the rally and comfortably past the arrival, which is the
+    // window this test's claims are about.
+    run(&mut arena, 24_000, &mut bytes);
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
     // It is making for its **own** entry zone — the red one, columns 0 and 1 —
     // and not the blue one it was closing on.
@@ -1910,8 +1951,28 @@ fn the_follower_holds_rather_than_drive_at_a_bluff() {
 // ---------------------------------------------------------------------------
 
 /// Take a tank's armour and internals down to 166 per mille, under the stock
-/// `withdraw_permille` of 350. See this file's head for why a test may do this.
+/// `withdraw_permille` of 350 **and under 16b cut E.1's `stand_min_permille` of
+/// 175**: a tank hurt this far breaks off and will not turn and fight anything on
+/// the way home. See this file's head for why a test may do this.
 fn hurt(arena: &mut Arena, unit: ObjId) {
+    set_health(arena, unit, 1, 2);
+}
+
+/// **Hurt, and still willing to fight**: 277 per mille, under
+/// `withdraw_permille` (350) so it breaks off and over `stand_min_permille`
+/// (175) so the en-route stand is still open to it (16b cut E.1).
+///
+/// The fixture tank is eighteen points — ten of armour and eight of internals —
+/// so two and three is five of eighteen. Every test whose claim is *what a
+/// withdrawing tank does when something is close* uses this one; [`hurt`] is for
+/// the tests whose claim is the health edge itself, and the two are three
+/// hundred metres apart in what a machine does.
+fn hurt_but_fighting(arena: &mut Arena, unit: ObjId) {
+    set_health(arena, unit, 2, 3);
+}
+
+/// One plan, one armour cell and one internals cell.
+fn set_health(arena: &mut Arena, unit: ObjId, armor: i64, internals: i64) {
     let ops = vec![
         UnitMutationOp::SetCell {
             addr: CellAddr::Facet {
@@ -1919,14 +1980,14 @@ fn hurt(arena: &mut Arena, unit: ObjId) {
                 facet: FacetId::new("front").expect("a facet"),
                 cell: mush_tactics::CellId::new("armor").expect("a cell"),
             },
-            value: 1,
+            value: armor,
         },
         UnitMutationOp::SetCell {
             addr: CellAddr::Section {
                 section: SectionId::new("hull").expect("a section"),
                 cell: mush_tactics::CellId::new("internals").expect("a cell"),
             },
-            value: 2,
+            value: internals,
         },
     ];
     let plan =
@@ -1944,11 +2005,23 @@ fn hurt(arena: &mut Arena, unit: ObjId) {
 
 #[test]
 fn a_cornered_withdrawal_stands_and_fights_without_leaving_the_state() {
-    // The flicker: the hostile crosses in and out of the carbine's two-cell reach
-    // once a pulse for ten seconds. A machine that answered it with a **state**
-    // change would throw its route away and buy a path query every second; this
-    // one stands where it is, shoots when the line is there, and keeps the run
-    // home it had planned.
+    // The flicker: the hostile crosses in and out of the band the withdrawal will
+    // stand for, once a pulse for ten seconds. A machine that answered it with a
+    // **state** change would throw its route away and buy a path query every
+    // second; this one stands where it is, shoots when the line is there, and
+    // keeps the run home it had planned.
+    //
+    // **16b cut E.1** changed two things about this fixture, and both are the new
+    // rule rather than a dodge. (a) The gun is the cannon and not the carbine: an
+    // en-route stand is inside the `close` band, and a third of the carbine's
+    // 2,000 cm reach is 666 cm — less than one cell, so on a 1,000 cm grid no
+    // hostile could ever be inside it and the flicker would have nothing to
+    // flick. With the cannon and a fourteen-cell sight the band is 4,666 cm, so
+    // the near cell (1,000 cm) is a stand and the far one (6,000 cm) is not,
+    // which is the flicker this test wants. (b) The damage is
+    // [`hurt_but_fighting`], because at 166 per mille the tank is under
+    // `stand_min_permille` and would drive past a hostile in its lap — the case
+    // `a_dry_withdrawal_drives_on_where_an_armed_one_stands_and_fights` covers.
     let mut arena = arena_of(
         vec![
             with_sight(
@@ -1956,7 +2029,7 @@ fn a_cornered_withdrawal_stands_and_fights_without_leaving_the_state() {
                     RED,
                     Team::Red,
                     centre(8, 8),
-                    vec![carbine()],
+                    vec![cannon()],
                     Controller::Reflex,
                 ),
                 14,
@@ -1976,9 +2049,15 @@ fn a_cornered_withdrawal_stands_and_fights_without_leaving_the_state() {
     let mut bytes: Vec<u8> = Vec::new();
     run(&mut arena, 5_000, &mut bytes);
     // Hurt it under the threshold, so the next tick is a `Withdraw`.
-    hurt(&mut arena, RED);
+    hurt_but_fighting(&mut arena, RED);
     run(&mut arena, 8_000, &mut bytes);
     assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(
+        arena.reflex_health_permille(RED),
+        277,
+        "over `stand_min_permille`, so the stand is open to it"
+    );
+    let before = count(&events(&mut arena, &mut bytes), "fired");
 
     let mut wall_ms = arena.now_ms;
     let mut queries = 0_u32;
@@ -2004,7 +2083,10 @@ fn a_cornered_withdrawal_stands_and_fights_without_leaving_the_state() {
         "a state flip a second would have bought a search a second: {queries}"
     );
     let log = events(&mut arena, &mut bytes);
-    assert!(count(&log, "fired") > 0, "cornered, it shot back");
+    assert!(
+        count(&log, "fired") > before,
+        "cornered, it shot back — during the withdrawal and not before it"
+    );
 }
 
 #[test]
@@ -2111,7 +2193,16 @@ fn withdrawing_beside_a_hostile(rounds: u32) -> (i64, usize) {
     run(&mut arena, 4_000, &mut bytes);
     let now = arena.now_ms;
     plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
-    hurt(&mut arena, RED);
+    // **16b cut E.1**: the milder recipe, because this fixture's whole subject is
+    // what an ARMED withdrawal does when a hostile is on top of it — and at 166
+    // per mille the answer would be "keeps driving", for the health and not for
+    // the magazine, which is the control's own claim stolen from it.
+    hurt_but_fighting(&mut arena, RED);
+    assert_eq!(
+        arena.reflex_health_permille(RED),
+        277,
+        "under `withdraw_permille` and over `stand_min_permille`"
+    );
     let from = arena.unit(RED).map_or(0, |unit| unit.pose.x_cm);
     let before = count(&events(&mut arena, &mut bytes), "fired");
     let until = arena.now_ms + 20_000;
@@ -2536,7 +2627,18 @@ fn withdraw_and_rally() -> Arena {
         &arena_cfg(reflex_cfg()),
         &[BLUE],
     );
-    hurt(&mut arena, RED);
+    // **16b cut E.1**: the milder recipe, so the stand this script exists to
+    // replay is one the machine's health still allows.
+    hurt_but_fighting(&mut arena, RED);
+    // And the contact is planted classified at nought, which it was not before.
+    // The stand is now inside the `close` band — a third of the lesser of the
+    // five-cell sight and the cannon's reach, 1,666 cm — and the two tanks are
+    // 1,000 cm apart, so the stand is open on the very first tick and gone three
+    // seconds later once the machine has driven a cell and a half west. At HEAD
+    // the ceiling was the cannon's whole 3 km, so `classify_after_ms`'s three
+    // seconds did not matter; now they do, and a script whose subject is the
+    // stand has to start with the classification rather than wait for it.
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
     arena
 }
 
@@ -2907,6 +3009,640 @@ fn a_released_cold_tank_is_one_event_list_and_one_hash_sequence_at_three_cadence
         "the machine left `Withdraw` inside the horizon (the rally is a later edge          of its own): {:?}",
         first.finals
     );
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.1 — the machine fights at the range it can actually see
+// ---------------------------------------------------------------------------
+
+/// **The fixture's own numbers, at a ten-cell sight.**
+///
+/// The fixture cannon is one band at 2,500 m and the window is sixteen cells of
+/// 1,000 cm, so the sight is what bounds everything: with ten cells the
+/// platform's fighting reach is 10,000 cm, doctrine's `engage_band_permille` of
+/// 700 puts `Approach → Engage` at 7,000 cm, `Engage → Approach` at 10,000 cm,
+/// and an en-route `Withdraw` stands inside the `close` band of 3,333 cm. Every
+/// test below says which of those four it is about.
+const SIGHT_CELLS: u16 = 10;
+/// `UnitState::fight_inner_cm` and `fight_limit_cm` at [`SIGHT_CELLS`].
+const REACH_CM: i64 = 10_000;
+/// `Ranges::engage_cm` at [`SIGHT_CELLS`]: seven tenths of [`REACH_CM`].
+const ENGAGE_CM: i64 = 7_000;
+/// `Ranges::release_cm` at [`SIGHT_CELLS`], which is [`REACH_CM`] itself.
+const RELEASE_CM: i64 = REACH_CM;
+/// `Ranges::stand_cm` at [`SIGHT_CELLS`]: a third of [`REACH_CM`].
+const STAND_CM: i64 = 3_333;
+
+/// **A five-cell gun**: shorter than [`SIGHT_CELLS`], so a platform that falls
+/// back to it has to close another five cells, and its firing ceiling is inside
+/// what it can see. Everything else is the cannon's shape.
+fn coaxial() -> WeaponSummary {
+    WeaponSummary {
+        id: SmolStr::new("coaxial"),
+        max_range_cm: 5_000,
+        bands: vec![WeaponBand {
+            max_range_cm: 5_000,
+            dispersion_mrad: 3,
+        }],
+        ..cannon()
+    }
+}
+
+/// A machine with the cannon and a ten-cell sight, and a target tank with
+/// nothing, on `paint`ed ground.
+fn duel(red: (u16, u16), blue: (u16, u16), paint: &[(u16, u16, TerrainCell)]) -> Arena {
+    duel_with(vec![cannon()], red, blue, paint)
+}
+
+/// The same with a named armament.
+fn duel_with(
+    weapons: Vec<WeaponSummary>,
+    red: (u16, u16),
+    blue: (u16, u16),
+    paint: &[(u16, u16, TerrainCell)],
+) -> Arena {
+    arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(red.0, red.1),
+                    weapons,
+                    Controller::Reflex,
+                ),
+                SIGHT_CELLS,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(blue.0, blue.1),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        paint,
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    )
+}
+
+/// The range from `unit`'s pose to `target`'s plot, centimetres.
+fn plot_range(arena: &Arena, unit: ObjId, target: ObjId) -> i64 {
+    let Some(state) = arena.unit(unit) else {
+        return i64::MAX;
+    };
+    i64::try_from(plot_of(arena, target).range_from(&state.pose)).unwrap_or(i64::MAX)
+}
+
+/// **`Approach` with range and no line closes on the plot's own cell** (16b cut
+/// E.1; 16c's Q9), and takes the trace again on the next tick.
+///
+/// Before this cut a machine inside its (3 km) reach with no line held where it
+/// stood: the `Engage` arm needed a line, and the `else` arm projected a
+/// stand-off cell up to 2.1 km behind it. A crew that has lost the line drives at
+/// where it last saw the tank, and that is what the goal is now.
+#[test]
+fn e1_with_range_and_no_line_it_closes_on_the_plot() {
+    // One wall cell squarely between them, and four cells of separation — well
+    // inside `ENGAGE_CM`, so the only thing stopping the engagement is the line.
+    let mut arena = duel((6, 8), (10, 8), &[(8, 8, wall())]);
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let start = arena.unit(RED).map_or(0, |unit| unit.pose.x_cm);
+    run(&mut arena, 4_000, &mut bytes);
+
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Approach),
+        "the wall is between them, so there is no engagement to be had"
+    );
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        range <= ENGAGE_CM,
+        "and it is inside the band, which is what makes this the no-line case: {range} cm"
+    );
+    assert_eq!(
+        arena.reflex.unit(RED).and_then(|row| row.goal),
+        Some((10, 8)),
+        "the goal is the plot's own cell"
+    );
+    assert!(
+        arena.unit(RED).is_some_and(|unit| unit.pose.x_cm > start),
+        "and it is driving at it"
+    );
+
+    // Now give it a line at the same sort of range: the trace is taken again on
+    // the next tick and the machine engages.
+    let here = arena
+        .unit(RED)
+        .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose))
+        .expect("the machine is on the window");
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(here.0, here.1.saturating_sub(3));
+    }
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let until = arena.now_ms + 1_500;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Engage),
+        "with a line inside the band it locks and fires"
+    );
+}
+
+/// **The hysteresis** (16b cut E.1; 16c `T-47`): `Approach → Engage` at
+/// `engage_cm`, `Engage → Approach` past `release_cm`, and three tenths of the
+/// reach between them where neither edge fires.
+///
+/// At HEAD both edges read one number — the platform's whole weapon reach — so
+/// `Engage` could never be left and `engage_band_permille` governed nothing.
+#[test]
+fn e1_it_engages_at_the_band_releases_past_the_reach_and_holds_between_them() {
+    let mut arena = duel((6, 8), (9, 8), &[]);
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 5_000, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Engage),
+        "3,000 cm is inside the 7,000 cm band"
+    );
+
+    // (a) The midpoint of the two edges — 8,000 cm, above `ENGAGE_CM` and below
+    //     `RELEASE_CM`. An engaged machine stays engaged there, and fires there.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(14, 8);
+    }
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let before = count(&events(&mut arena, &mut bytes), "fired");
+    let until = arena.now_ms + 6_000;
+    run(&mut arena, until, &mut bytes);
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        (ENGAGE_CM..=RELEASE_CM).contains(&range),
+        "the fixture put the target at {range} cm, which is not between the edges"
+    );
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Engage),
+        "between the edges the machine holds the state it had"
+    );
+    assert!(
+        count(&events(&mut arena, &mut bytes), "fired") > before,
+        "and it may fire across the whole of its `Engage` region"
+    );
+
+    // (b) Past `RELEASE_CM`: it gives the band up and closes again, and its goal
+    //     is nearer the plot than it is.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(15, 15);
+    }
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let until = arena.now_ms + 1_000;
+    run(&mut arena, until, &mut bytes);
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(range > RELEASE_CM, "the target is at {range} cm");
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Approach));
+    let goal = arena
+        .reflex
+        .unit(RED)
+        .and_then(|row| row.goal)
+        .expect("a closing machine has a goal");
+    let plot = plot_of(&arena, BLUE);
+    let cell = i64::from(CELL_CM);
+    let to_plot = ((i64::from(goal.0) * cell + cell / 2 - plot.x_cm).pow(2)
+        + (i64::from(goal.1) * cell + cell / 2 - plot.y_cm).pow(2))
+    .isqrt();
+    assert!(
+        to_plot < range,
+        "the stand-off goal is {to_plot} cm from the plot and the machine is {range} cm from \
+         it: the goal is behind the machine (`B-05`)"
+    );
+}
+
+/// **The margin under `STAND_OFF_MARGIN_CELLS`** (16b cut E.1): a machine that
+/// arrives at its stand-off cell is *inside* `engage_cm`, so it engages and stays
+/// engaged instead of standing a few metres outside the band for ever.
+#[test]
+fn e1_an_approach_that_arrives_is_inside_the_band_and_stays_there() {
+    // Thirteen cells apart: the machine has a real approach to make.
+    let mut arena = duel((2, 8), (15, 8), &[]);
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 30_000, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Engage),
+        "it closed the thirteen cells and engaged"
+    );
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        range <= ENGAGE_CM,
+        "and it is inside the band it aimed for: {range} cm"
+    );
+
+    // Twenty more seconds against a stationary target: no flapping. Without the
+    // margin the goal would sit AT `engage_cm`, and an arrived machine — the
+    // arrive window is one cell Chebyshev and the goal is a cell centre — would
+    // stand a few metres outside it, in `Approach`, never firing.
+    let mut wall_ms = arena.now_ms;
+    for _ in 0..40 {
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        assert_eq!(
+            state_of(&arena, RED),
+            Some(ReflexState::Engage),
+            "it fell out of the band at {} ms, {} cm out",
+            arena.now_ms,
+            plot_range(&arena, RED, BLUE)
+        );
+        wall_ms += 500;
+    }
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.desired_speed_cms),
+        Some(0),
+        "and it is holding, not still closing"
+    );
+}
+
+/// **`T-46`: a tank whose long gun is dry closes to the band of the one it can
+/// actually fire** (16b cut E.1).
+///
+/// Every distance is priced off `UnitState::loaded_weapon`, so a machine with an
+/// empty cannon and a loaded carbine stops holding 7,000 cm and comes in to the
+/// carbine's own band. At HEAD the reach was the longest gun the platform
+/// carried, loaded or not, and `engage_orders`' `max_range_cm >= range` filter
+/// then refused every weapon it had — a machine that sat at cannon range and
+/// never fired.
+#[test]
+fn e1_t46_a_dry_cannon_closes_to_the_coaxial_and_fires_it() {
+    let mut arena = duel_with(vec![cannon(), coaxial()], (2, 8), (9, 8), &[]);
+    // The cannon is empty; the five-cell coaxial is not.
+    if let Some(state) = arena.unit_mut(RED) {
+        state.ammo.insert(SmolStr::new("cannon"), 0);
+        state.ammo.insert(SmolStr::new("coaxial"), 40);
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 30_000, &mut bytes);
+
+    // The coaxial's band is 5,000 cm, inside the sight, so the machine's whole
+    // fighting reach is 5,000 cm and its engagement band is 3,500 — where with a
+    // loaded cannon it would have stopped at 7,000.
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        range <= 3_500,
+        "it should have closed to the coaxial's own band, and it is {range} cm out"
+    );
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    let log = events(&mut arena, &mut bytes);
+    assert!(count(&log, "fired") > 0, "and it fired the gun it has");
+    // The cannon stayed empty, so every one of those rounds was the coaxial's.
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.weapon_ammo("cannon")),
+        Some(0)
+    );
+    assert!(
+        arena
+            .unit(RED)
+            .is_some_and(|unit| unit.weapon_ammo("coaxial") < 40)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.1 — the two `Withdraw` stands (`B-39`, 16c section 5's Q8)
+// ---------------------------------------------------------------------------
+
+/// A hurt withdrawing machine with a classified hostile `cells` east of it: how
+/// many rounds it fired, how much ground west it made, and **whether it ever
+/// stood** — `ReflexUnit::stand_until_ms`, which is the stand itself rather than
+/// its consequence. The two are read separately because `engage_orders` has a
+/// firing ceiling of its own: a case that asserted only "nothing was fired"
+/// would pass for a machine that stopped dead in front of a gun it could not
+/// answer, which is the parked target 16b cut Q.7 was paid to remove.
+///
+/// `fighting` chooses the recipe — [`hurt_but_fighting`] at 277 per mille or
+/// [`hurt`] at 166, either side of `stand_min_permille`'s 175 — and `home` opens
+/// the machine in its own entry zone, which is the *arrived* arm of the stand.
+///
+/// **Both tanks are put where the case wants them after the power-up run**, and
+/// the reason is the fixture rather than the cut: a machine spends its first
+/// three seconds patrolling toward a waypoint, and on this window the nearest
+/// node to column 9 is the eastern one — so a case written as "nine cells out,
+/// hostile five cells east" would in fact be measured at whatever range the
+/// patrol had drifted to. A stand is a range test now, so the range has to be
+/// the one the case names.
+fn a_withdrawal_beside(
+    gun: WeaponSummary,
+    cells: u16,
+    fighting: bool,
+    home: bool,
+    run_ms: i64,
+) -> (usize, i64, bool) {
+    let at = if home { 1 } else { 9 };
+    let mut arena = duel_with(vec![gun], (at, 8), (at + cells, 8), &[]);
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 4_000, &mut bytes);
+    if let Some(state) = arena.unit_mut(RED) {
+        state.pose = centre(at, 8);
+        state.speed_cms = 0;
+    }
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(at + cells, 8);
+    }
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    if fighting {
+        hurt_but_fighting(&mut arena, RED);
+    } else {
+        hurt(&mut arena, RED);
+    }
+    assert_eq!(
+        arena.reflex_health_permille(RED),
+        if fighting { 277 } else { 166 },
+        "the recipe this case asked for"
+    );
+    let from = arena.unit(RED).map_or(0, |unit| unit.pose.x_cm);
+    let before = count(&events(&mut arena, &mut bytes), "fired");
+    let until = arena.now_ms + run_ms;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Withdraw),
+        "every case here is about what a withdrawal does, so it has to be one"
+    );
+    (
+        count(&events(&mut arena, &mut bytes), "fired") - before,
+        from - arena.unit(RED).map_or(0, |unit| unit.pose.x_cm),
+        arena
+            .reflex
+            .unit(RED)
+            .is_some_and(|row| row.stand_until_ms.is_some()),
+    )
+}
+
+/// **The stands, and the ones that are not** (16b cut E.1; 16c `B-39`, 16c
+/// section 5's Q8).
+///
+/// En route it turns only for something inside the `close` band and only while
+/// it has plate left; once home it shoots back at anything inside its firing
+/// ceiling, at any health. At HEAD the ceiling was the platform's whole 3 km
+/// reach and there was no health floor, so every one of the five cases below
+/// stood and fought.
+#[test]
+fn e1_a_withdrawal_stands_for_what_is_close_on_the_way_out_and_for_anything_at_home() {
+    // The geometry the cases are built on, said once: two cells is inside the
+    // en-route band and five is outside it, and both are inside the reach the
+    // same machine would ENGAGE at.
+    assert!(2 * i64::from(CELL_CM) <= STAND_CM);
+    assert!(5 * i64::from(CELL_CM) > STAND_CM);
+    assert!(5 * i64::from(CELL_CM) <= ENGAGE_CM);
+
+    // (a) En route, above the floor, a hostile two cells out — 2,000 cm, inside
+    //     `STAND_CM`'s 3,333: it stands and shoots.
+    let (fired, west, stood) = a_withdrawal_beside(cannon(), 2, true, false, 8_000);
+    assert!(fired > 0, "inside the close band it turns and fights");
+    assert!(west < 2_000, "and it is standing: it made {west} cm");
+    assert!(stood, "and the stand is a stand, not a lucky shot");
+
+    // (b) En route, above the floor, a hostile five cells out — 5,000 cm, outside
+    //     `STAND_CM`: it drives on. Five cells is still well inside the reach it
+    //     would ENGAGE at (7,000 cm), which is the whole point of a narrower band
+    //     for a machine that is running away.
+    let (fired, west, stood) = a_withdrawal_beside(cannon(), 5, true, false, 6_000);
+    assert_eq!(fired, 0, "past the close band it does not stop for it");
+    assert!(west > 3_000, "it drove west instead: {west} cm");
+    assert!(!stood, "and it never stopped for it either");
+
+    // (c) En route, below the floor, point blank: it keeps driving. A machine
+    //     down to its last plate does not turn round for anything. The horizon is
+    //     short enough that it has not reached its entry zone, so this is the
+    //     en-route arm and not the arrived one.
+    let (fired, west, stood) = a_withdrawal_beside(cannon(), 1, false, false, 6_000);
+    assert_eq!(fired, 0, "under `stand_min_permille` it will not turn");
+    assert!(west > 3_000, "it drove west instead: {west} cm");
+    assert!(!stood, "and it never stopped for it either");
+
+    // (d) Home, below the floor, a hostile four cells out — outside the close
+    //     band and inside `RELEASE_CM`: it stands and shoots back. It has nowhere
+    //     further to run, and a machine shot at and never replying is a parked
+    //     target.
+    let (fired, _, stood) = a_withdrawal_beside(cannon(), 4, false, true, 8_000);
+    assert!(fired > 0, "arrived home, it shoots back at any health");
+    assert!(stood, "and it is the arrived stand that did it");
+
+    // (e) Home, below the floor, a hostile past `RELEASE_CM`: it does not. The
+    //     gun is the five-cell coaxial so that the case is a real one — the
+    //     hostile is eight cells out, which its sight holds comfortably and its
+    //     firing ceiling does not reach.
+    //
+    //     Both halves are asserted, and the second is the one with teeth: the
+    //     firing ceiling alone would keep `fired` at nought even if the arrived
+    //     arm range-gated at nothing at all, and a machine that stopped and
+    //     turned here would be standing in front of a gun it cannot answer.
+    let (fired, _, stood) = a_withdrawal_beside(coaxial(), 8, false, true, 8_000);
+    assert_eq!(
+        fired, 0,
+        "past its firing ceiling there is nothing to shoot"
+    );
+    assert!(
+        !stood,
+        "and it did not stop for it: a stand it could stage no shot from is a parked target"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.1 — `T-32`: the alert range and the `Engaged` trigger
+// ---------------------------------------------------------------------------
+
+/// **The derived `tempo.alert_range_cm` is capped at the window's diagonal, and
+/// the `Engaged` trigger reads the band a platform fights in** (16b cut E.1; 16c
+/// `T-32`).
+#[test]
+fn e1_t32_the_alert_range_is_the_window_and_the_engaged_trigger_is_the_band() {
+    // The sixteen-cell window of 1,000 cm cells: `isqrt(16² + 16²)` is 22, so
+    // 22,000 cm — against the cannon's own 2 × 250,000 = 500,000 cm.
+    let mut arena = duel((2, 8), (14, 8), &[]);
+    assert_eq!(arena.alert_range_cm, 22_000, "the window's own diagonal");
+
+    // A configured key is used exactly as written, derived or not.
+    let configured = ArenaConfig {
+        tempo: tacsim::config::TempoConfig {
+            alert_range_cm: 1_234_567,
+            ..tacsim::config::TempoConfig::default()
+        },
+        ..arena_cfg(reflex_cfg())
+    };
+    let named = arena_of(
+        vec![tank(
+            RED,
+            Team::Red,
+            centre(2, 8),
+            vec![cannon()],
+            Controller::Reflex,
+        )],
+        &[],
+        &configured,
+        &[],
+    );
+    assert_eq!(named.alert_range_cm, 1_234_567);
+
+    // The `Engaged` trigger: 12,000 cm is past `REACH_CM` and far inside the
+    // cannon's own 250,000 cm, so the machine can hold it and cannot fight it.
+    // Nothing is stepped first, so the two poses are the ones the fixture wrote.
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
+    assert_eq!(plot_range(&arena, RED, BLUE), 12_000);
+    assert!(
+        !arena.hostile_in_weapons_range(),
+        "a contact it cannot shoot at is not `hostile_in_weapons_range`"
+    );
+    // And inside the band it is.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(7, 8);
+    }
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
+    assert_eq!(plot_range(&arena, RED, BLUE), 5_000);
+    assert!(arena.hostile_in_weapons_range());
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.1 — cross-tempo (16b section 11, mandatory)
+// ---------------------------------------------------------------------------
+
+/// **Cut E.1's `Approach`/`Engage` arc, as one scripted arena**: a machine
+/// closes on a pilot's tank five cells away, engages at `COAXIAL_ENGAGE_CM`, and
+/// at [`SCRIPT_AT_MS`] the tank is put **past `COAXIAL_RELEASE_CM` and in the
+/// open**, so the machine gives the band up, closes again and re-engages.
+///
+/// The gun is the five-cell [`coaxial`] and not the fixture cannon, and that is
+/// the whole design of this fixture: with the cannon the firing ceiling *is* the
+/// sight, so a target past `release_cm` is a target the sensor pass cannot see —
+/// the plot stops being refreshed, the range the `Engage` arm reads is the stale
+/// one, and the release edge can never fire. A gun whose inner band is inside
+/// the scope is the shape in which "it opened the range on me" is a thing a
+/// machine can observe at all.
+///
+/// The one thing left out is the no-line arm (the goal becoming the plot's own
+/// cell), for the same reason: a plot only moves when a pass refreshes it, so
+/// *past the release edge* and *behind a wall* cannot be the same scripted
+/// moment. `e1_with_range_and_no_line_it_closes_on_the_plot` pins that arm, and
+/// it is a goal assignment inside one decide tick rather than anything scheduled
+/// — there is no cadence for it to be sensitive to.
+fn close_engage_and_release() -> Arena {
+    duel_with(vec![coaxial()], (2, 8), (7, 8), &[])
+}
+
+/// `Ranges::engage_cm` for a machine holding the [`coaxial`]: seven tenths of its
+/// 5,000 cm band, which is inside [`SIGHT_CELLS`].
+const COAXIAL_ENGAGE_CM: i64 = 3_500;
+/// `Ranges::release_cm` for the same machine — the band itself, and half of what
+/// its scope can hold.
+const COAXIAL_RELEASE_CM: i64 = 5_000;
+
+/// The blue tank opens the range well past the release edge, in the open, where
+/// the machine's own pass will see it go.
+fn blue_breaks_contact(arena: &mut Arena) {
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(13, 8);
+    }
+}
+
+/// **The arc the three replays exist to compare, walked once at one cadence.**
+///
+/// Without it the cadences could agree perfectly on a log in which the machine
+/// approached, engaged and then did nothing at all for twenty seconds: the
+/// event kinds a replay journals (`detected`, `classified`, `locked`, `fired`)
+/// are the ones a plain approach produces, and none of them is evidence that the
+/// release edge fired. Each pulse's reading of the machine: the time, its state
+/// and its range to the tank.
+fn engage_release_arc(cadence_ms: i64, until_ms: i64) -> Vec<(i64, ReflexState, i64)> {
+    let mut arena = close_engage_and_release();
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut seen: Vec<(i64, ReflexState, i64)> = Vec::new();
+    let mut wall = 0_i64;
+    loop {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        if arena.now_ms == SCRIPT_AT_MS {
+            blue_breaks_contact(&mut arena);
+        }
+        if let Some(state) = state_of(&arena, RED) {
+            seen.push((arena.now_ms, state, plot_range(&arena, RED, BLUE)));
+        }
+        if arena.now_ms >= until_ms || out.ended.is_some() {
+            break;
+        }
+        wall += cadence_ms;
+    }
+    seen
+}
+
+#[test]
+fn e1_the_band_taken_and_given_up_is_one_event_list_at_three_cadences() {
+    // First: the arc really happens, at one cadence, before anything is compared.
+    let arc = engage_release_arc(1_000, 40_000);
+    assert!(
+        arc.iter().any(|(at, state, range)| *at < SCRIPT_AT_MS
+            && *state == ReflexState::Engage
+            && *range <= COAXIAL_ENGAGE_CM),
+        "it never engaged inside the band before the release: {arc:?}"
+    );
+    assert!(
+        arc.iter().any(|(at, state, range)| *at > SCRIPT_AT_MS
+            && *state == ReflexState::Approach
+            && *range > COAXIAL_RELEASE_CM),
+        "it never gave the band up when the tank opened the range past its firing ceiling: {arc:?}"
+    );
+    assert!(
+        arc.iter().rev().any(|(at, state, range)| *at > SCRIPT_AT_MS
+            && *state == ReflexState::Engage
+            && *range <= COAXIAL_ENGAGE_CM),
+        "it released the band and never closed again: {arc:?}"
+    );
+
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| {
+            replay_of(
+                cadence,
+                40_000,
+                close_engage_and_release,
+                blue_breaks_contact,
+            )
+        })
+        .collect();
+    let first = runs.first().expect("three replays");
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    for want in ["startup", "detected", "classified", "locked", "fired"] {
+        assert!(
+            kinds.iter().any(|kind| kind.contains(want)),
+            "the replay never journalled a {want}, so nothing was compared: {kinds:?}"
+        );
+    }
+    assert!(first.hashes.len() >= 100, "{} substeps", first.hashes.len());
     for (at, run) in runs.iter().enumerate().skip(1) {
         let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
         assert_eq!(

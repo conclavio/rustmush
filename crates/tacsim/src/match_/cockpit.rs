@@ -632,8 +632,8 @@ pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
             class: SmolStr::new(class_word(held.class)),
             bearing_deg: held.bearing_mdeg / 1_000,
             relative_deg: relative_mdeg(frame.pose.heading_mdeg, held.bearing_mdeg) / 1_000,
-            // 16b cut D.1: the pilot's word, thirds of the lesser of the sight
-            // and the weapon's reach — not the commander's [`range_band`].
+            // 16b cut D.1: thirds of the lesser of the sight and the weapon's
+            // reach. 16b cut E.1: and the only band word there is.
             band: SmolStr::new(contact_band(held.range_cm, bands, frame.sight_cm)),
             range_m: range_m_rounded(held.range_cm, CONTACT_RANGE_STEP_M),
             age_ms: held.age_ms,
@@ -647,7 +647,7 @@ pub fn frame_contacts(frame: &Frame) -> Vec<ContactRow> {
 ///
 /// Doc 16 §3.6 gives `CONTACTS` a *range band* and no range, and cut S.2 read
 /// that strictly. In play it left a pilot with no distance information whatever:
-/// the band could only ever read `close` (see [`range_band`]), so from
+/// the band could only ever read `close` (see [`contact_band`]), so from
 /// acquisition to kill every row said the same word whether the other tank was
 /// 600 m away or 40 m away.
 ///
@@ -793,74 +793,20 @@ fn relative_mdeg(heading_mdeg: u32, bearing_mdeg: u32) -> u32 {
     u32::try_from(turn.rem_euclid(360_000)).unwrap_or(0)
 }
 
-/// **The COMMANDER's range band** (doc 16 §3.6: *range band*), read against the
-/// **authored bands of the weapon a bare `FIRE` would fire**
-/// ([`crate::arena::weapons::FrameWeapon::bands_cm`], outward, the same list
-/// `WeaponSummary::band_of` walks).
+/// **The range band** (16b cut D.1; doc 16 §3.6's *range band*, read against what
+/// this platform can actually see).
 ///
-/// | word | range |
-/// |---|---|
-/// | `close` | inside a third of the innermost band, where the cone is tightest |
-/// | `effective` | inside the innermost band |
-/// | `far` | inside one of the outer bands |
-/// | `beyond` | past the last band, **or the platform carries nothing that fires** |
-///
-/// The last clause is why an empty band list is not a special case: a platform
-/// with nothing to shoot with has nothing in range, and `beyond` says so. It is
-/// reserved for exactly that — a weapon that declares a reach and authors no
-/// bands answers one band at its reach ([`crate::arena::state::WeaponSummary::bands_cm`]),
-/// so `beyond` never means *this weapon's content is thin*.
-///
-/// **16b cut D.1: this is no longer the word a pilot reads.** The pilot's word is
-/// [`contact_band`], which bands against the *lesser* of this weapon's last band
-/// and the platform's own sight ([`crate::arena::step::Frame::sight_cm`]) — and
-/// on every shipped platform the sight is the lesser by a factor of five, so the
-/// two answers are different distances:
-///
-/// | | `close` out to | `effective` out to |
-/// |---|---|---|
-/// | this function, stock cannon (bands 1.5 km / 3 km) | 500 m | 1,500 m |
-/// | [`contact_band`], stock tank (600 m sight) | 200 m | 400 m |
-///
-/// This one stays where it is because it is **pinned as an inverse**:
-/// [`crate::deliberation::order::RangeBand::ceiling_cm`] is the order schema's
-/// round trip of these same four words, and the reflex controller reads that
-/// ceiling to decide how far to close — so moving this function would move arena
-/// behaviour, which belongs to the cut that re-prices the order ceiling. Its two
-/// callers are the deliberation brief (`deliberation/request.rs`) and that order
-/// schema; the residual — that a lead's `close` and a pilot's `close` are two
-/// distances — is 16c's `T-81`.
-///
-/// **16b cut F.3 replaced cut S.2's thirds of `Frame`'s `weapon_reach_cm`**, and
-/// deleted the field with it (its one reader was this function). That
-/// read the band against the *longest reach the platform carried*, which for a
-/// stock tank is the cannon's 3 km, so `close` covered everything inside 1 km —
-/// and the shipped sight cannot detect past 600 m, even with a mesh hop. Every
-/// contact that has ever existed in this game printed `close`, which inverted doc
-/// 16 §3.6's stated purpose for the band exactly.
-#[must_use]
-pub fn range_band(range_cm: u64, bands_cm: &[u32]) -> &'static str {
-    let (Some(first), Some(last)) = (bands_cm.first(), bands_cm.last()) else {
-        return "beyond";
-    };
-    let (first, last) = (u64::from(*first), u64::from(*last));
-    if range_cm.saturating_mul(3) <= first {
-        "close"
-    } else if range_cm <= first {
-        "effective"
-    } else if range_cm <= last {
-        "far"
-    } else {
-        "beyond"
-    }
-}
-
-/// **The PILOT's range band** (16b cut D.1; doc 16 §3.6's *range band*, read
-/// against what this platform can actually see).
+/// **There is one band word, and this is it** (16b cut E.1, 16c `T-81`). Cut D.1
+/// left a second — `range_band`, thirds of the *weapon's* innermost band, which
+/// the commander's brief and an order's ceiling read — so a lead's `close` was
+/// 500 m and a pilot's was 200 m. Cut E.1 deleted it; this function is what the
+/// contact row, the acquisition notice, the squad brief and
+/// [`crate::deliberation::order::RangeBand::ceiling_cm`] (its inverse, pinned by
+/// a test) all say.
 ///
 /// `CONTACTS` could only ever print two of its four words. The stock cannon's
-/// bands are 1.5 km and 3 km, so [`range_band`] puts `close` at 500 m, `effective`
-/// at 1,500 m and `far` at 3,000 m — while the shipped sight is 60 cells of
+/// bands are 1.5 km and 3 km, so a word banded on the gun alone put `close` at
+/// 500 m and `effective` at 1,500 m — while the shipped sight is 60 cells of
 /// 1,000 cm, 600 m, and one mesh hop adds 300 m. The furthest plot any shipped
 /// platform can hold is 900 m, so from acquisition to the kill a contact read
 /// `effective` and then `close`, and `far` and `beyond` could not print at all.
@@ -878,7 +824,8 @@ pub fn range_band(range_cm: u64, bands_cm: &[u32]) -> &'static str {
 /// The rule, in order:
 ///
 /// * no bands at all, or `range_cm` past the last band: `beyond` — still literally
-///   true, because nothing the platform fires reaches it;
+///   true, because nothing the platform fires reaches it, **and the honest word
+///   for a platform that carries nothing that fires**;
 /// * otherwise `limit` is `min(last band, sight_cm)`, and the last band alone when
 ///   `sight_cm` is `0` (a platform with no sensor, which holds no contacts anyway);
 /// * `range_cm × 3 ≤ limit`: `close`; else `range_cm × 3 ≤ limit × 2`:
@@ -927,8 +874,8 @@ pub struct ContactRow {
     /// The same bearing off the platform's own nose, degrees clockwise (16b cut
     /// S.2): `0` is dead ahead.
     pub relative_deg: u32,
-    /// The range band's label ([`contact_band`] — the pilot's word, and **not**
-    /// the commander's [`range_band`]).
+    /// The range band's label ([`contact_band`], which since 16b cut E.1 is the
+    /// one band word a pilot, a commander and an order all read).
     pub band: SmolStr,
     /// **The range to the plot, metres**, rounded to [`CONTACT_RANGE_STEP_M`]
     /// (16b cut F.3) — see [`range_m_rounded`] for why a passive sight reports one
@@ -2935,9 +2882,9 @@ pub const RETAIN_LATEST: &str = "latest";
 /// **16b cut D.1** added two top-level keys: `sight_m`, the platform's own
 /// nominal sensor reach in metres (`0` for a platform with no sensor), and
 /// `scope`, the pilot's own alert state — `clear`, `unidentified` or `hostile`
-/// ([`own_scope`]). Each contact's `band` is now [`contact_band`]'s word rather
-/// than [`range_band`]'s: thirds of the lesser of `sight_m` and the fired
-/// weapon's reach. `tempo` is unchanged and stays the arena's global word.
+/// ([`own_scope`]). Each contact's `band` is [`contact_band`]'s word: thirds of
+/// the lesser of `sight_m` and the fired weapon's reach. `tempo` is unchanged and
+/// stays the arena's global word.
 #[must_use]
 pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
     let rows = frame_contacts(frame);

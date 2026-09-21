@@ -1790,9 +1790,10 @@ fn tacsim_harness_arena_step() {
             // **16b cut W.1**: `TACSIM_WEAPONS` (150 by default) of the units carry
             // one, which is doc 16 §1 A2's *150 weapons on the field* read
             // literally; cut S.1 gave every unit a row for its one number, and the
-            // derived `tempo.alert_range_cm` is the longest reach in the *match*, so
-            // arming half the field leaves that unchanged. An unarmed unit is still
-            // a target and still a contact.
+            // derived `tempo.alert_range_cm` is priced off the longest reach in the
+            // *match* (held to the window's diagonal since 16b cut E.1, which is
+            // what the harness reports), so arming half the field leaves that
+            // unchanged. An unarmed unit is still a target and still a contact.
             weapons: if n < knobs.weapons {
                 vec![harness_weapon()]
             } else {

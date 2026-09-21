@@ -552,23 +552,27 @@ fn the_ten_commodity_families_decode() {
 /// cut F.3).
 ///
 /// `CONTACTS`' band is read against the authored bands of the weapon a bare
-/// `FIRE` fires (`cockpit::range_band`), and what a pilot *can* be shown is
-/// therefore a fact about two packs at once: the cannon's band edges and how far
-/// a sight can hold a contact. Cut S.2's band was read against the platform's
-/// longest reach and could only ever say `close`; this cut re-based it and the
-/// word now reaches `effective` — but not, on the content the game ships, `far`
-/// or `beyond`, because the cannon's inner band is 1.5 km and nothing can be held
-/// past 900 m (a 600 m sight plus one 300 m mesh hop).
+/// `FIRE` fires, held down to the platform's own sight
+/// (`cockpit::contact_band`), and what a pilot *can* be shown is therefore a
+/// fact about two packs at once: the cannon's band edges and how far a sight can
+/// hold a contact. Cut S.2's band was read against the platform's longest reach
+/// and could only ever say `close`.
 ///
-/// That gap is **recorded here rather than argued here**: the derivation is cut
-/// F.3's brief's own decision, and whether the sight should reach further or the
-/// bands should sit closer is content, which is the owner's. What this test is
-/// for is that the gap cannot change silently — widen the sight, shorten the
-/// cannon's inner band, or give the tank a different default weapon, and this
-/// fails and somebody reads the note.
+/// **16b cut E.1** deleted `range_band`, the commander's second distance (16c
+/// `T-81`), so this test now asks the one function there is — and on the shipped
+/// content all four words are reachable: the sight is 600 m, a mesh hop carries
+/// a plot to 900 m, and `beyond` is what a plot past the cannon's 3 km outer
+/// band would read (which nothing on this map can be, so the set below is three
+/// words and the fourth is pinned by its own assertion).
+///
+/// The shape of the gap is **recorded here rather than argued here**: whether
+/// the sight should reach further or the bands should sit closer is content,
+/// which is the owner's. What this test is for is that it cannot change silently
+/// — widen the sight, shorten the cannon's inner band, or give the tank a
+/// different default weapon, and this fails and somebody reads the note.
 #[test]
 fn the_band_word_the_shipped_content_can_print() {
-    use tacsim::match_::cockpit::{DEFAULT_WEAPON, range_band};
+    use tacsim::match_::cockpit::{DEFAULT_WEAPON, contact_band};
 
     let catalog = Catalog::build_game(&[], "tacsim").expect("the shipped content binds");
     let arena = catalog
@@ -577,8 +581,14 @@ fn the_band_word_the_shipped_content_can_print() {
         .next()
         .expect("the proving ground is shipped");
     let cell_cm = u64::from(arena.cell_cm);
-    // The furthest a contact can be held at: the widest shipped sight, plus one
-    // mesh hop off a teammate at the far edge of its own reach.
+    // The stock sight, and the furthest a contact can be held at: that sight plus
+    // one mesh hop off a teammate at the far edge of its own reach.
+    let sight_cm = catalog
+        .sensors
+        .values()
+        .map(|sensor| u64::from(sensor.max_range_cells).saturating_mul(cell_cm))
+        .max()
+        .expect("the shipped sights");
     let furthest_cm = catalog
         .sensors
         .values()
@@ -589,7 +599,9 @@ fn the_band_word_the_shipped_content_can_print() {
         })
         .max()
         .expect("the shipped sights");
+    assert_eq!(sight_cm, 60_000, "600 m of scope");
     assert_eq!(furthest_cm, 90_000, "a 600 m sight and a 300 m mesh hop");
+    let sight = u32::try_from(sight_cm).expect("600 m fits");
 
     // The weapon a bare `FIRE` fires, found the way `UnitState::default_weapon`
     // finds it: by component name.
@@ -602,20 +614,283 @@ fn the_band_word_the_shipped_content_can_print() {
     assert_eq!(bands, vec![150_000, 300_000], "the cannon's authored edges");
 
     // Every range a real detection can be at, at the metre, and the words they
-    // produce. Both of the reachable words really are reachable — which is the
-    // half cut S.2 did not have — and each is reachable at a range two tanks on
-    // this map will routinely be at.
+    // produce. Three of the four, and each at a range two tanks on this map will
+    // routinely be at.
     let words: std::collections::BTreeSet<&str> = (0..=furthest_cm)
         .step_by(100)
-        .map(|range_cm| range_band(range_cm, &bands))
+        .map(|range_cm| contact_band(range_cm, &bands, sight))
         .collect();
     assert_eq!(
         words.into_iter().collect::<Vec<_>>(),
-        vec!["close", "effective"],
+        vec!["close", "effective", "far"],
         "the band vocabulary a pilot can see on the shipped proving ground"
     );
-    assert_eq!(range_band(30_000, &bands), "close", "300 m");
-    assert_eq!(range_band(51_000, &bands), "effective", "510 m");
+    assert_eq!(contact_band(15_000, &bands, sight), "close", "150 m");
+    assert_eq!(contact_band(30_000, &bands, sight), "effective", "300 m");
+    assert_eq!(contact_band(51_000, &bands, sight), "far", "510 m");
+    // And `beyond` is what a plot past the cannon's own outer band would read —
+    // which nothing on this map can be, so it never prints.
+    assert_eq!(contact_band(300_001, &bands, sight), "beyond");
+}
+
+/// **The ranges the shipped machines fight at** (16b cut E.1; 16c `T-46`, Q9).
+///
+/// What the reflex controller prices every distance off is
+/// `UnitState::fight_inner_cm` and `UnitState::fight_limit_cm` — the lesser of
+/// the platform's own **nominal sight** and, respectively, the **first band** and
+/// the whole reach of the weapon it would actually fire. So this pins that table
+/// for every unit schema the game fields, loaded and with the default weapon's
+/// magazine emptied, and it pins it on units built the way production builds them
+/// (`match_::custody_unit`) rather than on the JSON read twice.
+///
+/// It is deliberately **not** a check of each weapon's outer reach, which no
+/// controller distance reads, and it is **not** an invariant that a first band
+/// reaches the sight: the shipped coaxial's first band is 600 m against a 600 m
+/// sight, exactly nought margin, and a future short gun would make its machine
+/// close further, which is this cut working rather than a violation.
+///
+/// Move a sight, a first band or a default weapon and this fails — and with it
+/// the figure `docs/help/simulator.md` quotes to a pilot in "Fighting the
+/// machines": *about seven tenths of what its own sight and its gun's inner band
+/// allow (420 m for the stock tank)*.
+#[test]
+fn e1_the_ranges_the_shipped_machines_fight_at() {
+    use mush_core::ObjId;
+    use smol_str::SmolStr;
+    use tacsim::arena::state::{Arena, Controller, CustodyOut, Team, WeaponSummary};
+    use tacsim::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
+    use tacsim::match_::{ARENA_CELL_CM, STAND_IN, custody_unit, stock_definition};
+
+    let catalog =
+        tacsim::definitions::Catalog::build_fielded(&[], "tacsim").expect("the fielded content");
+    assert_eq!(
+        catalog.specs.len(),
+        6,
+        "the shipped unit schemas: the line tank and doc 16 §9's five extensions"
+    );
+    let definition = stock_definition(&SmolStr::new_static(STAND_IN)).expect("the stand-in window");
+    let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
+        .expect("the engine's own passive posture");
+    let half = i64::from(ARENA_CELL_CM / 2);
+
+    // One of each, two cells apart so no two share a cell (doc 16 §3.4 step 5).
+    let mut names: Vec<String> = Vec::new();
+    let mut units = Vec::new();
+    for (at, (entry, spec)) in catalog.specs.iter().enumerate() {
+        let id = ObjId(u32::try_from(at).unwrap_or(0) + 10);
+        let binding = catalog
+            .bindings
+            .get(entry)
+            .unwrap_or_else(|| panic!("{entry} binds"));
+        let cells = tacsim::definitions::unit::to_tactical_unit(spec, binding, id)
+            .unwrap_or_else(|why| panic!("{entry} instantiates: {why}"));
+        let column = i64::try_from(at).unwrap_or(0) * 2 + 2;
+        let pose = mush_sim::data::Pose {
+            x_cm: column * i64::from(ARENA_CELL_CM) + half,
+            y_cm: 4 * i64::from(ARENA_CELL_CM) + half,
+            z_cm: 0,
+            heading_mdeg: 90_000,
+            posture: posture.clone(),
+        };
+        names.push(entry.as_str().to_owned());
+        units.push(custody_unit(
+            &catalog,
+            cells,
+            id,
+            Team::Red,
+            pose,
+            0,
+            Controller::Reflex,
+            0,
+        ));
+    }
+    let mut arena = Arena::new(
+        CustodyOut {
+            definition,
+            units,
+            pilots: Vec::new(),
+            resolution: tacsim::match_::resolution_for(&catalog),
+            seed: 2_350,
+        },
+        &ArenaConfig::default(),
+        &MatchConfig::default(),
+        &SensorsConfig::default(),
+    )
+    .expect("one of every shipped unit checks out");
+
+    // `(schema, sight_cm, fight_inner_cm, fight_limit_cm)`, loaded. Everything
+    // the game fields carries a 60-cell visual sight except the thermal tank,
+    // whose channel sees 45 — and on every one of them the sight is the lesser,
+    // which is the whole of cut E.1's Q9 ruling.
+    let table = |arena: &Arena| -> Vec<(String, u32, u64, u64)> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(at, name)| {
+                let id = ObjId(u32::try_from(at).unwrap_or(0) + 10);
+                let Some(state) = arena.unit(id) else {
+                    panic!("{name} is in the arena")
+                };
+                (
+                    name.clone(),
+                    state.sight_cm(ARENA_CELL_CM),
+                    state.fight_inner_cm(ARENA_CELL_CM),
+                    state.fight_limit_cm(ARENA_CELL_CM),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        table(&arena),
+        vec![
+            ("tacsim.unit.biped_mk1".to_owned(), 60_000, 60_000, 60_000),
+            ("tacsim.unit.line_tank".to_owned(), 60_000, 60_000, 60_000),
+            (
+                "tacsim.unit.line_tank_eccm".to_owned(),
+                60_000,
+                60_000,
+                60_000
+            ),
+            (
+                "tacsim.unit.line_tank_ecm".to_owned(),
+                60_000,
+                60_000,
+                60_000
+            ),
+            (
+                "tacsim.unit.line_tank_laser".to_owned(),
+                60_000,
+                60_000,
+                60_000
+            ),
+            (
+                "tacsim.unit.line_tank_thermal".to_owned(),
+                45_000,
+                45_000,
+                45_000
+            ),
+        ],
+        "the reaches the shipped machines fight at, loaded"
+    );
+
+    // The stock tank's doctrine band, which is the number the help quotes.
+    let engage_cm = u64::from(ReflexConfig::default().engage_band_permille) * 60_000 / 1_000;
+    assert_eq!(
+        engage_cm, 42_000,
+        "`docs/help/simulator.md` says 420 m for the stock tank"
+    );
+
+    // Two structural claims, before the dry half.
+    for (at, name) in names.iter().enumerate() {
+        let id = ObjId(u32::try_from(at).unwrap_or(0) + 10);
+        let Some(state) = arena.unit(id) else {
+            panic!("{name} is in the arena")
+        };
+        for weapon in &state.weapons {
+            let edges = weapon.bands_cm();
+            assert!(!edges.is_empty(), "{name}: {} has no band", weapon.id);
+            assert!(
+                edges.windows(2).all(|pair| pair[0] < pair[1]),
+                "{name}: {}'s bands do not run outward: {edges:?}",
+                weapon.id
+            );
+            assert_eq!(
+                weapon.inner_band_cm(),
+                edges.first().copied().unwrap_or(0),
+                "{name}: {}'s inner band is `bands_cm().first()`",
+                weapon.id
+            );
+        }
+        // Whatever `release_cm` admits, `engage_orders`' own `max_range_cm >=
+        // range` filter admits the loaded weapon — `T-46`'s proof at content
+        // scale.
+        let reach = state
+            .loaded_weapon()
+            .map_or(0, |weapon| u64::from(weapon.max_range_cm));
+        assert!(
+            state.fight_inner_cm(ARENA_CELL_CM) <= reach,
+            "{name}: the band it closes to is past the gun it would fire"
+        );
+        assert!(state.fight_limit_cm(ARENA_CELL_CM) <= reach);
+    }
+
+    // And again with the weapon a bare `FIRE` fires emptied. Every shipped unit
+    // carries a second gun, so every one of them keeps fighting — at its
+    // coaxial's own first band, which on this content is 600 m and therefore
+    // exactly the sight: nought margin, and the day a shorter gun is authored
+    // this table is where it shows.
+    let dry: Vec<SmolStr> = names
+        .iter()
+        .enumerate()
+        .map(|(at, name)| {
+            let id = ObjId(u32::try_from(at).unwrap_or(0) + 10);
+            let Some(state) = arena.unit(id) else {
+                panic!("{name} is in the arena")
+            };
+            state
+                .default_weapon()
+                .map(|weapon| weapon.id.clone())
+                .unwrap_or_else(|| panic!("{name} carries a default weapon"))
+        })
+        .collect();
+    for (at, weapon) in dry.iter().enumerate() {
+        let id = ObjId(u32::try_from(at).unwrap_or(0) + 10);
+        if let Some(state) = arena.unit_mut(id) {
+            state.ammo.insert(weapon.clone(), 0);
+        }
+    }
+    assert_eq!(
+        dry.iter().map(SmolStr::to_string).collect::<Vec<_>>(),
+        vec!["cannon", "cannon", "cannon", "cannon", "laser", "cannon"],
+        "the weapon a bare `FIRE` fires: the cannon, or the first in component \
+         order on a hull that carries none"
+    );
+    assert_eq!(
+        table(&arena),
+        vec![
+            ("tacsim.unit.biped_mk1".to_owned(), 60_000, 60_000, 60_000),
+            ("tacsim.unit.line_tank".to_owned(), 60_000, 60_000, 60_000),
+            (
+                "tacsim.unit.line_tank_eccm".to_owned(),
+                60_000,
+                60_000,
+                60_000
+            ),
+            (
+                "tacsim.unit.line_tank_ecm".to_owned(),
+                60_000,
+                60_000,
+                60_000
+            ),
+            (
+                "tacsim.unit.line_tank_laser".to_owned(),
+                60_000,
+                60_000,
+                60_000
+            ),
+            (
+                "tacsim.unit.line_tank_thermal".to_owned(),
+                45_000,
+                45_000,
+                45_000
+            ),
+        ],
+        "and with the default weapon dry: every one of them fights on its coaxial"
+    );
+    for (at, name) in names.iter().enumerate() {
+        let id = ObjId(u32::try_from(at).unwrap_or(0) + 10);
+        let Some(state) = arena.unit(id) else {
+            panic!("{name} is in the arena")
+        };
+        let loaded = state
+            .loaded_weapon()
+            .map(|weapon: &WeaponSummary| weapon.id.to_string());
+        assert_eq!(
+            loaded,
+            Some("machine_gun".to_owned()),
+            "{name}: a dry default weapon falls to the next loaded one"
+        );
+    }
 }
 
 /// **The muster is on the ford road, and a straight drive at the enemy reaches

@@ -81,10 +81,16 @@ use crate::arena::state::{Arena, ContactId, DueKind, Power, UnitState, WeaponSum
 /// its first weapon in component order.
 ///
 /// **16b cut F.3 moved it here** from `crate::match_::cockpit`, which re-exports
-/// it under its old name. Three things now read against this weapon's authored
-/// bands and had to be one rule: the cockpit's `FIRE` with no argument, the band
-/// word a contact row prints, and the ceiling an order's `max_range_band` caps
-/// the reflex controller at.
+/// it under its old name. Three things read against this weapon's authored bands
+/// and had to be one rule: the cockpit's `FIRE` with no argument, the band word a
+/// contact row prints, and the ceiling an order's `max_range_band` caps the
+/// reflex controller at.
+///
+/// **16b cut E.1** added a fourth reading that is deliberately *not* this one:
+/// [`UnitState::loaded_weapon`], the same list read against the magazines, which
+/// is what the machine's own fighting distances are priced off. A bare `FIRE`
+/// with an empty cannon is owed the cannon's `Empty` refusal; a machine with an
+/// empty cannon is owed the band of the gun it can still shoot.
 pub const DEFAULT_WEAPON: &str = "cannon";
 
 /// **One range band**, as the arena carries it (16b cut W.1; doc 16 §3.5 "Weapon
@@ -116,8 +122,9 @@ impl WeaponSummary {
     }
 
     /// **This weapon's band edges, outward**, centimetres (16b cut F.3) — what
-    /// `crate::match_::cockpit::range_band` and
-    /// `crate::deliberation::order::RangeBand::ceiling_cm` read a word against.
+    /// `crate::match_::cockpit::contact_band` and
+    /// `crate::deliberation::order::RangeBand::ceiling_cm` read a word against,
+    /// and what [`UnitState::fight_inner_cm`] takes its first entry of.
     ///
     /// A weapon that authored no bands answers **one** band at its own
     /// [`WeaponSummary::max_range_cm`], which that field's own doc says is a shape
@@ -132,6 +139,20 @@ impl WeaponSummary {
             return vec![self.max_range_cm];
         }
         self.bands.iter().map(|band| band.max_range_cm).collect()
+    }
+
+    /// **This weapon's innermost band edge**, centimetres (16b cut E.1) — exactly
+    /// `bands_cm().first()`, without the allocation, because
+    /// [`UnitState::fight_inner_cm`] is asked once per held contact per pulse by
+    /// [`crate::arena::state::Arena::hostile_in_weapons_range`].
+    ///
+    /// A bandless weapon answers its own reach, which is the one band
+    /// [`WeaponSummary::bands_cm`] gives it.
+    #[must_use]
+    pub fn inner_band_cm(&self) -> u32 {
+        self.bands
+            .first()
+            .map_or(self.max_range_cm, |band| band.max_range_cm)
     }
 
     /// **The band a range falls in**, as a one-based index and the band itself
@@ -232,6 +253,14 @@ impl UnitState {
     /// **The longest reach anything the unit carries has**, centimetres — the
     /// number `tempo.alert_range_cm` is derived from (16b §9). Zero for a unit
     /// that carries no weapon, and then nothing is in range of it.
+    ///
+    /// **16b cut E.1 left it exactly one reader**, the `alert_range_cm`
+    /// derivation in [`crate::arena::state::Arena::new`], which calls it. Nothing
+    /// the reflex controller does is priced off it any more: the longest reach a
+    /// platform carries is 3 km on the stock tank, which is five times what its
+    /// own sight can hold, so every range test made against it was always true
+    /// (16c `T-47`, `B-05`, `B-39`, `T-32`). What the machine fights at is
+    /// [`UnitState::fight_limit_cm`] and [`UnitState::fight_inner_cm`].
     #[must_use]
     pub fn weapon_reach_cm(&self) -> u32 {
         self.weapons
@@ -239,6 +268,74 @@ impl UnitState {
             .map(|weapon| weapon.max_range_cm)
             .max()
             .unwrap_or(0)
+    }
+
+    /// **How far this platform's own sight reaches**, centimetres (16b cut E.1;
+    /// doc 16 §3.6), or `0` for a hull that carries no sensor at all.
+    ///
+    /// The **nominal** reach — `SensorProfile::max_range_cells × cell_cm` — and
+    /// deliberately so, for the reason [`crate::arena::step::Frame::sight_cm`]
+    /// gives at length: it is the size of the scope and not what the scope can
+    /// resolve this second. It is the one product, and
+    /// [`crate::arena::step::Frame::sight_cm`],
+    /// [`crate::arena::command::SquadSignal::sight_cm`] and the three readings
+    /// below are its readers.
+    #[must_use]
+    pub fn sight_cm(&self, cell_cm: u16) -> u32 {
+        self.sensor.as_ref().map_or(0, |sensor| {
+            u32::from(sensor.max_range_cells).saturating_mul(u32::from(cell_cm))
+        })
+    }
+
+    /// **The weapon this platform would actually fire** (16b cut E.1, 16c
+    /// `T-46`): [`DEFAULT_WEAPON`] while it has rounds, else the first in
+    /// component order that has any, else `None`.
+    ///
+    /// It is [`UnitState::default_weapon`] **read against the magazines**, and
+    /// the two are deliberately different questions. `default_weapon` is the
+    /// cockpit's bare-`FIRE` rule and ignores ammunition on purpose — a pilot who
+    /// types `FIRE` with an empty cannon is owed the cannon's refusal and not a
+    /// burst from the coaxial. This one is what the machine closes to: a tank
+    /// whose cannon is dry fights at its coaxial's band rather than holding 1.5 km
+    /// with nothing to send there.
+    #[must_use]
+    pub fn loaded_weapon(&self) -> Option<&WeaponSummary> {
+        self.default_weapon()
+            .filter(|weapon| self.weapon_ammo(&weapon.id) > 0)
+            .or_else(|| {
+                self.weapons
+                    .iter()
+                    .find(|weapon| self.weapon_ammo(&weapon.id) > 0)
+            })
+    }
+
+    /// **The furthest this platform fights at**, centimetres (16b cut E.1): the
+    /// lesser of its own nominal sight and the reach of the weapon it would fire.
+    ///
+    /// The lesser, because the sight is what bounds a fight on this map — 16b cut
+    /// D.1 ruled the same way for the pilot's band word, and this is that ruling
+    /// for the machine. A platform with no sensor answers the weapon alone (a
+    /// sight of `0` is *no scope*, not *no reach*); one with nothing loaded
+    /// answers `0`, and then nothing is in range of it.
+    #[must_use]
+    pub fn fight_limit_cm(&self, cell_cm: u16) -> u64 {
+        self.loaded_weapon().map_or(0, |loaded| {
+            against_sight(u64::from(loaded.max_range_cm), self.sight_cm(cell_cm))
+        })
+    }
+
+    /// **The band this platform closes to**, centimetres (16b cut E.1): the same
+    /// rule as [`UnitState::fight_limit_cm`] over the loaded weapon's **first**
+    /// band edge ([`WeaponSummary::inner_band_cm`]).
+    ///
+    /// Doctrine's `engage_band_permille` is a fraction of *this*, so the stock
+    /// tank stops and shoots at 420 m of its 600 m inner reach rather than at
+    /// 2.1 km of a 3 km gun it cannot see that far with.
+    #[must_use]
+    pub fn fight_inner_cm(&self, cell_cm: u16) -> u64 {
+        self.loaded_weapon().map_or(0, |loaded| {
+            against_sight(u64::from(loaded.inner_band_cm()), self.sight_cm(cell_cm))
+        })
     }
 
     /// **The weapon a bare `FIRE` would fire** (16b cut F.3): [`DEFAULT_WEAPON`],
@@ -253,8 +350,9 @@ impl UnitState {
     }
 
     /// **That weapon's authored band edges, outward**, centimetres (16b cut F.3)
-    /// — what `crate::match_::cockpit::range_band` and
-    /// `crate::deliberation::order::RangeBand::ceiling_cm` are both read against.
+    /// — what `crate::match_::cockpit::contact_band` and
+    /// `crate::deliberation::order::RangeBand::ceiling_cm` are both read against,
+    /// and the list a commander's brief bands its contacts with.
     ///
     /// Empty **only** for a platform that carries nothing that fires — see
     /// [`WeaponSummary::bands_cm`] for the bandless weapon.
@@ -262,6 +360,20 @@ impl UnitState {
     pub fn fire_bands_cm(&self) -> Vec<u32> {
         self.default_weapon()
             .map_or_else(Vec::new, WeaponSummary::bands_cm)
+    }
+}
+
+/// **A weapon distance held down to what the platform can see** (16b cut E.1).
+///
+/// The one place the lesser-of rule is written: a sight of `0` is a hull with no
+/// scope at all, which is not a shorter fight but no scope — it answers the
+/// weapon's own figure, exactly as `crate::match_::cockpit::contact_band` does
+/// for the same case.
+fn against_sight(weapon_cm: u64, sight_cm: u32) -> u64 {
+    if sight_cm == 0 {
+        weapon_cm
+    } else {
+        weapon_cm.min(u64::from(sight_cm))
     }
 }
 
@@ -397,9 +509,9 @@ pub struct FrameWeapon {
     /// read against something a pilot can act on, and cut S.2 read it against the
     /// longest reach the platform carried: thirds of the cannon's 3 km against a
     /// sight that sees 600 m, so every contact that has ever existed printed
-    /// `close`. `crate::match_::cockpit::range_band` now reads the bands of the
-    /// weapon a bare `FIRE` would fire, which is the weapon the word is advice
-    /// about.
+    /// `close`. `crate::match_::cockpit::contact_band` reads the bands of the
+    /// weapon a bare `FIRE` would fire — held down to the platform's own sight
+    /// (16b cut D.1) — which is the weapon the word is advice about.
     ///
     /// Two `u32`s per weapon per pulse for a stock tank, and — for a weapon that
     /// declares no band at all — one, at its own reach
@@ -828,11 +940,16 @@ mod tests {
     /// **16b cut F.3**: the band word and a squad order's engage ceiling are both
     /// read against the fired weapon's band edges, so a weapon that declares a
     /// reach and authors no bands must not answer an empty list. An empty one
-    /// makes `range_band` say `beyond` at point blank and
+    /// makes `contact_band` say `beyond` at point blank and
     /// `RangeBand::ceiling_cm` nought — and a nought ceiling stops an ordered
     /// reflex unit ever reaching `Engage` and puts its stand-off goal on the
     /// target's own cell. The empty list belongs to a platform with nothing that
     /// fires, and to nothing else.
+    ///
+    /// **16b cut E.1** re-based both readers on the platform's own sight, so the
+    /// ceilings below are thirds of the scout's 600 m scope and not of the
+    /// bandless gun's 2.5 km, and [`UnitState::fight_inner_cm`] reads the one
+    /// band the weapon does declare.
     #[test]
     fn a_weapon_with_a_reach_and_no_bands_is_one_band_at_that_reach() {
         use crate::deliberation::order::RangeBand;
@@ -842,7 +959,9 @@ mod tests {
             ..cannon()
         };
         assert_eq!(bandless.bands_cm(), vec![250_000]);
+        assert_eq!(bandless.inner_band_cm(), 250_000);
         assert_eq!(cannon().bands_cm(), vec![150_000, 250_000]);
+        assert_eq!(cannon().inner_band_cm(), 150_000);
 
         let mut arena = two_scouts();
         if let Some(state) = arena.unit_mut(RED) {
@@ -851,17 +970,117 @@ mod tests {
         let state = arena.unit(RED).unwrap_or_else(|| panic!("the red scout"));
         let edges = state.fire_bands_cm();
         assert_eq!(edges, vec![250_000]);
+        // The scout's own sight: 60 cells of 1,000 cm.
+        let sight = state.sight_cm(1_000);
+        assert_eq!(sight, 60_000);
         // Both consumers, at a range a tank really fights at.
-        assert_eq!(crate::match_::cockpit::range_band(4_000, &edges), "close");
-        assert_eq!(RangeBand::Effective.ceiling_cm(&edges), 250_000);
-        assert_ne!(RangeBand::Close.ceiling_cm(&edges), 0);
+        assert_eq!(
+            crate::match_::cockpit::contact_band(4_000, &edges, sight),
+            "close"
+        );
+        assert_eq!(RangeBand::Effective.ceiling_cm(&edges, sight), 40_000);
+        assert_ne!(RangeBand::Close.ceiling_cm(&edges, sight), 0);
+        // And a bandless weapon's inner band is its reach, held to the sight.
+        assert_eq!(state.fight_inner_cm(1_000), 60_000);
+        assert_eq!(state.fight_limit_cm(1_000), 60_000);
 
         // And the empty list is still a platform that carries nothing that fires.
         let bare = arena_of(vec![tank(RED, Team::Red, pose(1_500, 1_500))]);
         let state = bare.unit(RED).unwrap_or_else(|| panic!("the bare tank"));
         assert!(state.fire_bands_cm().is_empty());
-        assert_eq!(crate::match_::cockpit::range_band(0, &[]), "beyond");
-        assert_eq!(RangeBand::Effective.ceiling_cm(&[]), 0);
+        assert_eq!(
+            crate::match_::cockpit::contact_band(0, &[], sight),
+            "beyond"
+        );
+        assert_eq!(RangeBand::Effective.ceiling_cm(&[], sight), 0);
+        assert_eq!(state.loaded_weapon().map(|weapon| weapon.id.clone()), None);
+        assert_eq!(state.fight_inner_cm(1_000), 0);
+        assert_eq!(state.fight_limit_cm(1_000), 0);
+    }
+
+    /// **The four readings 16b cut E.1 prices the machine off** (16c `T-46`,
+    /// `T-47`), on a platform that carries two guns.
+    ///
+    /// The claim that matters is the dry one: `default_weapon` is the cockpit's
+    /// bare-`FIRE` rule and ignores ammunition on purpose, and
+    /// [`UnitState::loaded_weapon`] is the same list read against the magazines —
+    /// so a tank whose cannon is empty fights at its second gun's band instead of
+    /// holding a distance it has nothing to send to.
+    #[test]
+    fn e1_the_fighting_reach_is_the_lesser_of_the_sight_and_the_loaded_weapon() {
+        let short = WeaponSummary {
+            id: SmolStr::new("carbine"),
+            max_range_cm: 20_000,
+            bands: vec![WeaponBand {
+                max_range_cm: 8_000,
+                dispersion_mrad: 4,
+            }],
+            ..cannon()
+        };
+        let mut arena = two_scouts();
+        if let Some(state) = arena.unit_mut(RED) {
+            state.weapons = vec![cannon(), short];
+            state.ammo.insert(SmolStr::new("carbine"), 30);
+        }
+        let Some(state) = arena.unit(RED) else {
+            panic!("the red scout")
+        };
+        // Loaded: the cannon, whose inner band is 1.5 km — held down to the
+        // scout's 600 m scope, which is the whole of cut E.1's ruling.
+        assert_eq!(
+            state.loaded_weapon().map(|weapon| weapon.id.to_string()),
+            Some("cannon".to_owned())
+        );
+        assert_eq!(state.sight_cm(1_000), 60_000);
+        assert_eq!(state.fight_inner_cm(1_000), 60_000);
+        assert_eq!(state.fight_limit_cm(1_000), 60_000);
+        assert_eq!(
+            state.weapon_reach_cm(),
+            250_000,
+            "the longest gun is still the longest gun: the alert derivation reads it"
+        );
+
+        // Dry cannon: the carbine's own 80 m band, which is inside the sight.
+        if let Some(state) = arena.unit_mut(RED) {
+            state.ammo.insert(SmolStr::new("cannon"), 0);
+        }
+        let Some(state) = arena.unit(RED) else {
+            panic!("the red scout")
+        };
+        assert_eq!(
+            state.default_weapon().map(|weapon| weapon.id.to_string()),
+            Some("cannon".to_owned()),
+            "a bare FIRE still means the cannon, and still refuses `Empty`"
+        );
+        assert_eq!(
+            state.loaded_weapon().map(|weapon| weapon.id.to_string()),
+            Some("carbine".to_owned())
+        );
+        assert_eq!(state.fight_inner_cm(1_000), 8_000);
+        assert_eq!(state.fight_limit_cm(1_000), 20_000);
+
+        // Both dry: nothing loaded, no reach, and `best_hostile` has no target.
+        if let Some(state) = arena.unit_mut(RED) {
+            state.ammo.insert(SmolStr::new("carbine"), 0);
+        }
+        let Some(state) = arena.unit(RED) else {
+            panic!("the red scout")
+        };
+        assert!(state.loaded_weapon().is_none());
+        assert_eq!(state.fight_limit_cm(1_000), 0);
+
+        // And a hull with no scope at all fights at the weapon's own figure: a
+        // sight of nought is no scope, not no reach.
+        if let Some(state) = arena.unit_mut(RED) {
+            state.ammo.insert(SmolStr::new("cannon"), 40);
+            state.sensor = None;
+        }
+        let Some(state) = arena.unit(RED) else {
+            panic!("the red scout")
+        };
+        assert_eq!(state.sight_cm(1_000), 0);
+        assert_eq!(state.fight_inner_cm(1_000), 150_000);
+        assert_eq!(state.fight_limit_cm(1_000), 250_000);
     }
 
     #[test]

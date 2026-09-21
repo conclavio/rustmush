@@ -109,8 +109,10 @@ pub struct TempoSignals {
     /// nobody had bounded. **16b cut N.1 sets it** off
     /// `crate::arena::state::Arena::hostile_in_weapons_range`, which is not a
     /// sweep: it reads the classified contacts each platform already holds against
-    /// that platform's own `weapon_reach_cm`, so the cost is bounded by the contact
-    /// store the sensor pass bounds and never by the size of the field.
+    /// that platform's own `fight_inner_cm` (16b cut E.1: the band it would
+    /// actually fight in, and not the longest gun it carries), so the cost is
+    /// bounded by the contact store the sensor pass bounds and never by the size
+    /// of the field.
     pub hostile_in_weapons_range: bool,
 }
 

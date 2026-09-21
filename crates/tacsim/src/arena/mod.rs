@@ -462,8 +462,13 @@ pub(crate) mod test_support {
         }
     }
 
-    /// A cannon: 2,500 m of reach, which makes the derived `tempo.alert_range_cm`
-    /// 5,000 m, two range bands, a four-second cycle and a forty-round load.
+    /// A cannon: 2,500 m of reach, two range bands, a four-second cycle and a
+    /// forty-round load.
+    ///
+    /// **16b cut E.1**: twice that reach is 5,000 m, and the derived
+    /// `tempo.alert_range_cm` is the lesser of it and the window's own diagonal —
+    /// which on every window this crate builds is the diagonal (11,000 cm on the
+    /// eight-cell fixture, 22,000 on the sixteen-cell one), never 5,000 m.
     ///
     /// Close to `content/weapons/cannon_105.json` and deliberately not equal to it:
     /// the authored numbers are cut C's and a unit test that asserted them would be

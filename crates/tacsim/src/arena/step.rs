@@ -148,9 +148,12 @@ pub struct Frame {
     ///
     /// It is a fact about the pilot's own machine — the same kind of thing
     /// [`Frame::sections`] and [`Frame::heat`] are — so it is outside the observer
-    /// rule entirely. [`crate::match_::cockpit::contact_band`] is the one reader:
-    /// the pilot's band word is thirds of the lesser of this and the fired
-    /// weapon's last band.
+    /// rule entirely. [`crate::match_::cockpit::contact_band`] is its reader on
+    /// this surface: the band word is thirds of the lesser of this and the fired
+    /// weapon's last band. **16b cut E.1** made the product itself
+    /// [`crate::arena::state::UnitState::sight_cm`], which the reflex
+    /// controller's own fighting reach is priced off as well — one number, so a
+    /// machine closes to a band its pilot's `CONTACTS` could name.
     pub sight_cm: u32,
     /// **What the platform holds** (16b cut S.1; doc 16 §3.6 "What a pilot sees"),
     /// in contact-id order — the same order [`crate::arena::state::ShadowContacts`]
@@ -1228,11 +1231,10 @@ impl Arena {
                     // sight, `max_range_cells × cell_cm`, and `0` for a hull
                     // that carries no sensor. The same product
                     // `Arena::detections` starts from, unscaled — see
-                    // [`Frame::sight_cm`].
-                    sight_cm: unit.sensor.as_ref().map_or(0, |sensor| {
-                        u32::from(sensor.max_range_cells)
-                            .saturating_mul(u32::from(self.definition.terrain.cell_cm()))
-                    }),
+                    // [`Frame::sight_cm`]. **16b cut E.1** made it one product
+                    // in one place ([`UnitState::sight_cm`]), because the
+                    // machine's own fighting reach is priced off it too.
+                    sight_cm: unit.sight_cm(self.definition.terrain.cell_cm()),
                     contacts,
                     scan_tables,
                     // Per platform, so two pilots in one tank are both told.
@@ -2455,9 +2457,12 @@ mod tests {
     fn a_sensor_pass_runs_in_the_pulse_and_its_contact_reaches_the_frame_and_the_tempo() {
         use crate::arena::test_support::scout;
         const B: ObjId = ObjId(9);
-        // Two tanks that see and shoot, four cells apart on the 8 by 8 window. The
-        // shipped cannon reaches 2,500 m, so the derived `tempo.alert_range_cm` is
-        // 5,000 m and a contact 40 m away is well inside it.
+        // Two tanks that see and shoot, four cells apart on the 8 by 8 window.
+        // **16b cut E.1** (16c `T-32`): the derived `tempo.alert_range_cm` is the
+        // lesser of twice the cannon's 2.5 km and the window's own diagonal, and
+        // on an 8 by 8 window of 1,000 cm cells the diagonal is the lesser by a
+        // long way — `isqrt(8² + 8²) = 11` cells. A contact 40 m away is still
+        // well inside it.
         let mut arena = crate::arena::test_support::arena_at_epoch(
             vec![
                 scout(A, Team::Red, pose(500, 500)),
@@ -2465,7 +2470,7 @@ mod tests {
             ],
             1,
         );
-        assert_eq!(arena.alert_range_cm, 500_000, "twice the cannon's reach");
+        assert_eq!(arena.alert_range_cm, 11_000, "the window's own diagonal");
         // The opening pulse establishes the wall reference and integrates nothing,
         // so no pass has run yet.
         let out = arena.step(0, &[], &[]);

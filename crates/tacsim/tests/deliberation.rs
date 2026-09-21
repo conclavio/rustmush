@@ -199,9 +199,27 @@ fn definition() -> ArenaDefinition {
     }
 }
 
-/// A **three-cell** scope by default. The three tanks stand eleven cells apart, so
-/// nothing is held unless a test plants it — which is what lets a steering test
-/// say "this is the order and not the geometry".
+/// The scope a fixture tank carries, in cells — and **which one a test wants is
+/// now the test's own choice** (16b cut E.1; see [`field`] and
+/// [`field_seeing`]).
+///
+/// Every distance the controller fights at is capped by the platform's own
+/// **nominal** sight since that cut, so the two scopes this file uses answer two
+/// different questions:
+///
+/// * [`WIDE_SIGHT_CELLS`], thirty-five, for the tests about an **order's band**:
+///   it puts the ordered ceilings they assert about (`close` at 11,666 cm,
+///   `effective` at 23,333 cm) around the eleven cells the fixture stands its
+///   tanks at, so the band is the thing under test. Its cost is that the three
+///   tanks then hold each other on sight.
+/// * [`NARROW_SIGHT_CELLS`], three, for the tests whose claim is about an order
+///   **expiring** and needs *nothing is held unless a test planted it*: doctrine
+///   with a hostile in view is a live machine with several states to be in, and
+///   a claim about what an expiry restores is only sharp on a field where the
+///   only thing doctrine can do is patrol.
+///
+/// `plant_contact` stays where it is used in both: it makes a contact
+/// **classified** at a known arena millisecond rather than three seconds later.
 fn sight(cells: u16) -> SensorProfile {
     use mush_atlas::TerrainClass as C;
     SensorProfile {
@@ -238,7 +256,23 @@ fn cannon() -> WeaponSummary {
     }
 }
 
+/// The wide scope: an order's ceiling is inside it, so a band is a band.
+const WIDE_SIGHT_CELLS: u16 = 35;
+/// The narrow scope: eleven cells is outside it, so nothing is held unless a
+/// test plants it.
+const NARROW_SIGHT_CELLS: u16 = 3;
+
 fn tank(id: ObjId, team: Team, pose: Pose, controller: Controller) -> CustodyUnit {
+    tank_seeing(id, team, pose, controller, WIDE_SIGHT_CELLS)
+}
+
+fn tank_seeing(
+    id: ObjId,
+    team: Team,
+    pose: Pose,
+    controller: Controller,
+    sight_cells: u16,
+) -> CustodyUnit {
     CustodyUnit {
         id,
         team,
@@ -251,7 +285,7 @@ fn tank(id: ObjId, team: Team, pose: Pose, controller: Controller) -> CustodyUni
             reverse_factor_pct: 40,
         },
         sensor_height_cm: 150,
-        sensor: Some(sight(3)),
+        sensor: Some(sight(sight_cells)),
         weapons: vec![cannon()],
         profile: tacsim::arena::resolution::UnitProfile::default(),
         gunnery: 0,
@@ -284,15 +318,39 @@ fn arena_cfg(deliberate_min_ms: u32) -> ArenaConfig {
 }
 
 /// The three-tank field every direct test runs on: red's pair (`red-1`) and one
-/// blue tank (`blue-1`), all on the reflex controller.
+/// blue tank (`blue-1`), all on the reflex controller, each carrying
+/// [`WIDE_SIGHT_CELLS`] of scope.
 fn field(cfg: &ArenaConfig) -> Arena {
+    field_seeing(cfg, WIDE_SIGHT_CELLS)
+}
+
+/// The same field with a named scope — [`sight`] says which test wants which.
+fn field_seeing(cfg: &ArenaConfig, sight_cells: u16) -> Arena {
     let mut arena = Arena::new(
         CustodyOut {
             definition: definition(),
             units: vec![
-                tank(RED_A, Team::Red, centre(2, 8), Controller::Reflex),
-                tank(RED_B, Team::Red, centre(2, 9), Controller::Reflex),
-                tank(BLUE, Team::Blue, centre(13, 8), Controller::Reflex),
+                tank_seeing(
+                    RED_A,
+                    Team::Red,
+                    centre(2, 8),
+                    Controller::Reflex,
+                    sight_cells,
+                ),
+                tank_seeing(
+                    RED_B,
+                    Team::Red,
+                    centre(2, 9),
+                    Controller::Reflex,
+                    sight_cells,
+                ),
+                tank_seeing(
+                    BLUE,
+                    Team::Blue,
+                    centre(13, 8),
+                    Controller::Reflex,
+                    sight_cells,
+                ),
             ],
             pilots: Vec::new(),
             resolution: tacsim::match_::stock_resolution(),
@@ -679,9 +737,11 @@ fn a_close_range_band_keeps_the_squad_from_shooting_across_the_window() {
     run(&mut arena, 2_000, &mut bytes);
     let at = arena.now_ms;
     plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
-    // The cannon reaches 2,500 m; `close` is a third of that, and the two tanks are
-    // eleven cells (110 m) apart — well inside `close`, so the band must NOT stop
-    // this one. `RangeBand::Close` on a 2,500 m gun is 833 m.
+    // **16b cut E.1** re-based the ceiling: `close` is a third of the lesser of
+    // the platform's own sight and the gun's last band, so on this fixture's
+    // 35-cell scope it is 11,666 cm and not a third of the cannon's 2,500 m. The
+    // two tanks are eleven cells (11,000 cm) apart — inside it either way, so the
+    // band must NOT stop this one, which is still what the test says.
     let mut told = order(Objective::Engage { target_hint: None }, 60_000);
     told.constraints.max_range_band = Some(RangeBand::Close);
     issue(&mut arena, &told);
@@ -740,8 +800,11 @@ fn an_order_is_refused_for_a_unit_a_pilot_is_flying() {
 
 #[test]
 fn an_expired_order_drops_the_squad_to_doctrine_with_its_ledger_event() {
+    // The narrow scope on purpose: the claim below is *what the expiry hands
+    // back*, and it is only a sharp claim on a field where doctrine's own answer
+    // is one thing — the waypoint graph — rather than one of several.
     let cfg = arena_cfg(30_000);
-    let mut arena = field(&cfg);
+    let mut arena = field_seeing(&cfg, NARROW_SIGHT_CELLS);
     let mut bytes = Vec::new();
     run(&mut arena, 2_000, &mut bytes);
 
@@ -761,16 +824,14 @@ fn an_expired_order_drops_the_squad_to_doctrine_with_its_ledger_event() {
         0,
         "the order has run out"
     );
+    // Doctrine is the fallback, not idle: the machine is back on its own waypoint
+    // graph and no longer making for the cell it was sent to.
     let after = goal_of(&arena, RED_A);
     assert!(
         after == Some((1, 8)) || after == Some((14, 8)),
-        "doctrine is the fallback, not idle: the machine is back on its own graph, not {after:?}"
+        "back on its own graph, not still making for the ordered cell: {after:?}"
     );
-    assert_eq!(
-        state_of(&arena, RED_A),
-        Some(ReflexState::Patrol),
-        "and it is patrolling, not holding where the order left it"
-    );
+    assert_eq!(state_of(&arena, RED_A), Some(ReflexState::Patrol));
     let log = events(&mut arena, &mut bytes);
     let expired: Vec<&LedgerEvent> = log
         .iter()
@@ -806,8 +867,11 @@ fn an_expired_order_drops_the_squad_to_doctrine_with_its_ledger_event() {
 
 #[test]
 fn an_expired_withdraw_order_comes_back_to_patrol_when_the_hull_is_whole() {
+    // The narrow scope, for the same reason as the test above: `Withdraw` is
+    // terminal for a hurt tank and not for one a commander sent home, and the
+    // sharp form of that is the state it comes back to.
     let cfg = arena_cfg(30_000);
-    let mut arena = field(&cfg);
+    let mut arena = field_seeing(&cfg, NARROW_SIGHT_CELLS);
     let mut bytes = Vec::new();
     run(&mut arena, 2_000, &mut bytes);
     issue(&mut arena, &order(Objective::Withdraw, 2_000));
@@ -818,6 +882,10 @@ fn an_expired_withdraw_order_comes_back_to_patrol_when_the_hull_is_whole() {
         state_of(&arena, RED_A),
         Some(ReflexState::Patrol),
         "`Withdraw` is terminal for a hurt tank, not for one a commander sent home"
+    );
+    assert!(
+        arena.reflex_health_permille(RED_A) >= ReflexConfig::default().withdraw_permille,
+        "and the hull is whole, which is what makes the assertion above about the order"
     );
 }
 
@@ -1582,4 +1650,137 @@ fn render(event: &OutputEvent) -> String {
         OutputEvent::Notice { text, .. } => text.to_plain_text(),
         other => format!("{other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.1 — an ordered band is the pilot's own distance (`T-81`, `T-47`)
+// ---------------------------------------------------------------------------
+
+/// The fixture's own ceilings, so the numbers below are read once.
+///
+/// The tanks carry a 35-cell sight of 1,000 cm cells and a cannon whose one band
+/// is 250,000 cm, so every band is thirds of the **sight**: `close` 11,666 cm,
+/// `effective` 23,333 cm, `far` the cannon's own 250,000 cm. Doctrine's
+/// `engage_band_permille` of 700 is applied to whichever of those the order
+/// allows, **after** the cap, so the machine's own two edges under `close` are
+/// 8,166 cm and 11,666 cm.
+const CLOSE_CEILING_CM: i64 = 11_666;
+/// Seven tenths of it, which is where `Approach` becomes `Engage`.
+const CLOSE_ENGAGE_CM: i64 = 8_166;
+
+/// **An ordered `close` caps the squad at the pilot's own `close`, and keeps its
+/// hysteresis** (16b cut E.1; 16c `T-81`, `T-47`).
+///
+/// Two claims, and both were untestable before this cut because both edges read
+/// the platform's whole 3 km reach:
+///
+/// 1. the ordered ceiling is `RangeBand::Close` of **the lesser of the sight and
+///    the gun's last band** — 11,666 cm here — so a squad told to hold `close` is
+///    held to the distance its pilots' `CONTACTS` rows call `close`, and fires
+///    nowhere beyond it;
+/// 2. the doctrine band is applied *after* that cap, so `Approach → Engage` is at
+///    seven tenths of the ceiling and not at the ceiling itself. Capping the two
+///    separately would give 11,666 and 11,666, and a target drifting about that
+///    one distance would flip the machine every tick.
+///
+/// The midpoint claim is made for `close` alone because this window is 16,000 cm
+/// across: `effective`'s two edges are 16,333 and 23,333 cm and `far`'s are
+/// 24,500 and 35,000, so neither midpoint is a place two tanks on it can stand.
+/// `release_cm > engage_cm` for all three bands is pinned arithmetically by
+/// `arena/reflex.rs`'s own `e1_the_stock_tanks_three_rows_of_the_range_table`.
+#[test]
+fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
+    let cfg = arena_cfg(30_000);
+    let mut arena = field(&cfg);
+    let mut bytes = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    // Out past the ordered ceiling: 13,891 cm on the diagonal, which the 35-cell
+    // sight holds comfortably.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(14, 15);
+    }
+    let at = arena.now_ms;
+    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
+    let mut told = order(Objective::Engage { target_hint: None }, 60_000);
+    told.constraints.max_range_band = Some(RangeBand::Close);
+    issue(&mut arena, &told);
+
+    // Twenty seconds, sampled every pulse: whenever the machine is in `Engage`
+    // its plot range is inside the ordered ceiling, and the first tick it spends
+    // there is inside seven tenths of it.
+    let mut wall = arena.now_ms;
+    let mut first_engage_cm: Option<i64> = None;
+    let mut widest_engage_cm = 0_i64;
+    for _ in 0..40 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        if state_of(&arena, RED_A) == Some(ReflexState::Engage) {
+            let range = arena
+                .unit(RED_A)
+                .map(|unit| plot_of(&arena, BLUE).range_from(&unit.pose))
+                .and_then(|range| i64::try_from(range).ok())
+                .unwrap_or(i64::MAX);
+            first_engage_cm.get_or_insert(range);
+            widest_engage_cm = widest_engage_cm.max(range);
+        }
+        wall += 500;
+    }
+    let first = first_engage_cm.expect("the squad closed and engaged");
+    assert!(
+        first <= CLOSE_ENGAGE_CM,
+        "it engaged at {first} cm, past seven tenths of the ordered ceiling"
+    );
+    assert!(
+        widest_engage_cm <= CLOSE_CEILING_CM,
+        "it held the band out to {widest_engage_cm} cm, past the ordered ceiling"
+    );
+    let fired = fired_by(&events(&mut arena, &mut bytes), RED_A);
+    assert!(fired > 0, "and inside the ordered band it shoots");
+
+    // And the same field with the same order and a target parked **past** the
+    // ceiling, with nowhere to close from, never fires at all: the squad holds
+    // its fire rather than shooting at the distance doctrine alone would allow.
+    let mut held = field(&cfg);
+    let mut held_bytes = Vec::new();
+    run(&mut held, 2_000, &mut held_bytes);
+    if let Some(state) = held.unit_mut(RED_A) {
+        // Pinned in place: a machine that may not close cannot walk into range.
+        state.mobility.max_speed_cms = 0;
+    }
+    if let Some(state) = held.unit_mut(BLUE) {
+        state.pose = centre(14, 15);
+    }
+    let at = held.now_ms;
+    plant_contact(&mut held, RED_A, BLUE, Team::Blue, at);
+    issue(&mut held, &told);
+    let until = held.now_ms + 20_000;
+    run(&mut held, until, &mut held_bytes);
+    assert_eq!(
+        fired_by(&events(&mut held, &mut held_bytes), RED_A),
+        0,
+        "past the ordered ceiling there is nothing to shoot at"
+    );
+    // The control: the same parked machine with no band on its order does fire,
+    // because doctrine's own ceiling is the 35,000 cm sight.
+    let mut free = field(&cfg);
+    let mut free_bytes = Vec::new();
+    run(&mut free, 2_000, &mut free_bytes);
+    if let Some(state) = free.unit_mut(RED_A) {
+        state.mobility.max_speed_cms = 0;
+    }
+    if let Some(state) = free.unit_mut(BLUE) {
+        state.pose = centre(14, 15);
+    }
+    let at = free.now_ms;
+    plant_contact(&mut free, RED_A, BLUE, Team::Blue, at);
+    issue(
+        &mut free,
+        &order(Objective::Engage { target_hint: None }, 60_000),
+    );
+    let until = free.now_ms + 20_000;
+    run(&mut free, until, &mut free_bytes);
+    assert!(
+        fired_by(&events(&mut free, &mut free_bytes), RED_A) > 0,
+        "with no band the same geometry is inside doctrine's own reach"
+    );
 }

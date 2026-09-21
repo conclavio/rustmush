@@ -323,6 +323,8 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
                 engage_band_permille: cfg.arena.reflex.engage_band_permille,
                 // 16b cut Q.7: the lull before a withdrawn unit rallies.
                 rally_ms: cfg.arena.reflex.rally_ms,
+                // 16b cut E.1: the floor under an en-route stand.
+                stand_min_permille: cfg.arena.reflex.stand_min_permille,
             },
         },
         match_: tacsim::config::MatchConfig {
@@ -940,6 +942,7 @@ mod tests {
              weight_health = 25\n\
              engage_band_permille = 600\n\
              rally_ms = 9000\n\
+             stand_min_permille = 120\n\
              [tacsim.match]\n\
              startup_ms = 5000\n\
              board_timeout_ms = 60000\n\
@@ -1005,6 +1008,8 @@ mod tests {
                     engage_band_permille: 600,
                     // 16b cut Q.7: the rally lull, mapped like the rest.
                     rally_ms: 9_000,
+                    // 16b cut E.1: the en-route stand's health floor.
+                    stand_min_permille: 120,
                 },
             }
         );
@@ -1193,6 +1198,23 @@ mod tests {
                 "rally_ms = 500\n",
                 "[tacsim.arena.reflex].rally_ms",
                 "500",
+            ),
+            // 16b cut E.1: the stand floor is per mille like the rest of them…
+            (
+                "[tacsim.arena.reflex]",
+                "stand_min_permille = 1001\n",
+                "[tacsim.arena.reflex].stand_min_permille",
+                "1001",
+            ),
+            // …and it has to sit under the threshold that produces a withdrawal
+            // at all, or it is a doctrine branch nothing could ever be in. The
+            // refusal names both keys and both values; the assertion below only
+            // checks the first pair, so the second is checked by name here.
+            (
+                "[tacsim.arena.reflex]",
+                "stand_min_permille = 400\nwithdraw_permille = 350\n",
+                "[tacsim.arena.reflex].withdraw_permille (350)",
+                "400",
             ),
             (
                 "[tacsim.match]",

@@ -62,9 +62,9 @@ pub mod sim;
 mod verbs;
 
 pub use arena_def::{
-    ARENA_CELL_CM, ARENA_CELLS, PROVING_GROUND, STAND_IN, definition_for, resolution_for,
-    sensor_height_cm, sensor_profile, stock_definition, stock_resolution, tracked_rules,
-    unit_profile, weapon_summaries,
+    ARENA_CELL_CM, ARENA_CELLS, PROVING_GROUND, STAND_IN, custody_unit, definition_for,
+    opening_pose, resolution_for, sensor_height_cm, sensor_profile, stock_definition,
+    stock_resolution, tracked_rules, unit_profile, weapon_summaries,
 };
 pub(crate) use centre::record_roster;
 pub use centre::{
@@ -517,34 +517,24 @@ pub fn start(
             let world_pose = mush_sim::pose_of(ctx.w, unit).map(|(_, pose)| pose);
             let pose = arena_def::opening_pose(&definition, side.team, world_pose, &mut taken)
                 .ok_or(StartError::NoEntryCell(side.team.as_str()))?;
-            custody_units.push(CustodyUnit {
-                id: unit,
-                team: side.team,
+            // **16b cut E.1** lifted the assembly into `arena_def::custody_unit`
+            // (16b §0.4), so a shipped-scale test rig builds the same unit this
+            // loop does instead of a second copy of it.
+            let controller = if seated_pilots(ctx, unit).is_empty() {
+                crate::arena::state::Controller::Reflex
+            } else {
+                crate::arena::state::Controller::Pilot
+            };
+            custody_units.push(arena_def::custody_unit(
+                &catalog,
+                cells,
+                unit,
+                side.team,
                 pose,
-                mobility: tracked_rules(&cells),
-                sensor_height_cm: arena_def::sensor_height_cm(&catalog, &cells),
-                sensor: arena_def::sensor_profile(&catalog, &cells),
-                weapons: arena_def::weapon_summaries(&catalog, &cells),
-                // **16b cut W.2**: what the unit presents and what a hit may
-                // strike, and the gunnery the `PilotProfile` seam gives its shots.
-                profile: arena_def::unit_profile(&catalog, &cells),
-                gunnery: gunnery_of(ctx, unit),
-                // **16b cut N.1** (doc 16 §6): a tank with nobody in it is the
-                // reflex controller's. That is the whole of how a lobby fields AI —
-                // `SIM START` puts the unclaimed pods' tanks on the sides and they
-                // arrive here with no seated pilot — and it is also what the
-                // harness's field of 300 is.
-                controller: if seated_pilots(ctx, unit).is_empty() {
-                    crate::arena::state::Controller::Reflex
-                } else {
-                    crate::arena::state::Controller::Pilot
-                },
-                // **16b cut Q.1**: the pod it came out of, carried straight
-                // across — the lobby is the only thing that knows it, and
-                // `Arena::new` is the only thing that resolves it into a name.
-                slot: fielded.slot,
-                unit: cells,
-            });
+                gunnery_of(ctx, unit),
+                controller,
+                fielded.slot,
+            ));
             for (pilot, station) in seated_pilots(ctx, unit) {
                 roster.pilots.push((pilot, unit));
                 pilots.push(Pilot {

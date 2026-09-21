@@ -194,7 +194,8 @@ fn visual() -> SensorProfile {
 }
 
 /// The shipped cannon's row, for its one number: the derived
-/// `tempo.alert_range_cm` is twice the longest reach in the match (16b §9).
+/// `tempo.alert_range_cm` is priced off the longest reach in the match, held to
+/// the window's own diagonal since 16b cut E.1 (16b §9).
 fn cannon() -> WeaponSummary {
     WeaponSummary {
         id: SmolStr::new("cannon"),
@@ -834,7 +835,10 @@ fn the_pass_runs_once_per_cadence_per_unit_staggered_by_unit_id() {
     // Both hold the other, classified, and the tempo rose for it.
     assert_eq!(arena.contacts.len(), 2);
     assert!(arena.contact_within_alert_range());
-    assert_eq!(arena.alert_range_cm, 500_000, "twice the cannon's reach");
+    // **16b cut E.1** (16c `T-32`) capped the derivation at the window's own
+    // diagonal: twice the cannon's 2.5 km is 5 km, and the 80 by 80 window of
+    // 1,000 cm cells is `isqrt(80² + 80²) = 113` cells across its longest line.
+    assert_eq!(arena.alert_range_cm, 113_000, "the window's own diagonal");
 }
 
 // ---------------------------------------------------------------------------
@@ -1157,22 +1161,30 @@ fn a_range_band_is_read_against_the_fired_weapons_own_bands() {
     // which for the shipped tank is the cannon's 3 km — so `close` covered
     // everything inside 1 km and the shipped 600 m sight could never produce any
     // other word. The bands are the fired weapon's own, at their boundaries.
+    //
+    // **16b cut E.1** deleted `cockpit::range_band`, the commander's second
+    // distance (16c `T-81`), and left `contact_band` as the one word. This test
+    // asks it at `sight_cm = 0` — a hull with no scope, where the limit is the
+    // weapon's own last band — which is the reading closest to what the deleted
+    // function answered, so what stays pinned here is the boundary arithmetic
+    // and the `beyond` rules. `contact_band`'s own thirds are pinned by
+    // `cockpit.rs`'s `d1_contact_band_is_thirds_of_the_lesser_of_the_sight_and_the_reach`
+    // and its inverse by `order.rs`'s `the_bands_agree_with_the_cockpits_own_words`.
     let bands = [300_u32, 600];
-    assert_eq!(cockpit::range_band(0, &bands), "close");
-    assert_eq!(cockpit::range_band(100, &bands), "close");
-    assert_eq!(cockpit::range_band(101, &bands), "effective");
-    assert_eq!(cockpit::range_band(300, &bands), "effective");
-    assert_eq!(cockpit::range_band(301, &bands), "far");
-    assert_eq!(cockpit::range_band(600, &bands), "far");
-    assert_eq!(cockpit::range_band(601, &bands), "beyond");
+    assert_eq!(cockpit::contact_band(0, &bands, 0), "close");
+    assert_eq!(cockpit::contact_band(200, &bands, 0), "close");
+    assert_eq!(cockpit::contact_band(201, &bands, 0), "effective");
+    assert_eq!(cockpit::contact_band(400, &bands, 0), "effective");
+    assert_eq!(cockpit::contact_band(401, &bands, 0), "far");
+    assert_eq!(cockpit::contact_band(600, &bands, 0), "far");
+    assert_eq!(cockpit::contact_band(601, &bands, 0), "beyond");
     // A platform with nothing to shoot with has nothing in range.
-    assert_eq!(cockpit::range_band(0, &[]), "beyond");
-    assert_eq!(cockpit::range_band(u64::MAX, &[u32::MAX]), "beyond");
-    // One band is a legal weapon: everything past its edge is `beyond`, and
-    // nothing ever reads `far`.
-    assert_eq!(cockpit::range_band(100, &[300]), "close");
-    assert_eq!(cockpit::range_band(300, &[300]), "effective");
-    assert_eq!(cockpit::range_band(301, &[300]), "beyond");
+    assert_eq!(cockpit::contact_band(0, &[], 0), "beyond");
+    assert_eq!(cockpit::contact_band(u64::MAX, &[u32::MAX], 0), "beyond");
+    // One band is a legal weapon: everything past its edge is `beyond`.
+    assert_eq!(cockpit::contact_band(100, &[300], 0), "close");
+    assert_eq!(cockpit::contact_band(200, &[300], 0), "effective");
+    assert_eq!(cockpit::contact_band(301, &[300], 0), "beyond");
 }
 
 #[test]

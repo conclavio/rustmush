@@ -718,6 +718,13 @@ fn the_hand_written_dev_box_parses_and_runs_the_simulator() {
             cfg.tacsim.arena.reflex.rally_ms >= cfg.tacsim.arena.reflex.decide_ms,
             "{relative}: [tacsim.arena.reflex].rally_ms is under decide_ms"
         );
+        // **16b cut E.1**: the en-route stand's health floor has to sit under the
+        // threshold that produces a withdrawal at all, or a machine could never
+        // be in the state the floor governs.
+        assert!(
+            cfg.tacsim.arena.reflex.stand_min_permille <= cfg.tacsim.arena.reflex.withdraw_permille,
+            "{relative}: [tacsim.arena.reflex].stand_min_permille is above withdraw_permille"
+        );
     }
 }
 
@@ -742,6 +749,13 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
             cfg.tacsim.arena.reflex.rally_ms, 20_000,
             "{env_file}: 16b §9's rally lull"
         );
+        // **16b cut E.1**: and half of `withdraw_permille`, written down rather
+        // than defaulted, because a doctrine number an operator may want to move
+        // is a number the file has to show them.
+        assert_eq!(
+            cfg.tacsim.arena.reflex.stand_min_permille, 175,
+            "{env_file}: 16b cut E.1's en-route stand floor"
+        );
     }
     let example = Config::load(&root.join("mushd.toml.example"))
         .unwrap_or_else(|e| panic!("mushd.toml.example does not parse: {e}"));
@@ -750,6 +764,7 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
         "the reference example stays off: doc 16 §1's A1 is a two-tank story"
     );
     assert_eq!(example.tacsim.arena.reflex.rally_ms, 20_000);
+    assert_eq!(example.tacsim.arena.reflex.stand_min_permille, 175);
 }
 
 /// **16b cut D.3 (`B-33`): every shipped configuration writes the unattended

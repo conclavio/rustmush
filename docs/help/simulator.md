@@ -111,10 +111,14 @@ board says which it is:
 
   AI fill: each side fields 2; machines take the unclaimed pods.
 
-A machine patrols, closes on what it can see, holds the range its gun likes and
-shoots. Hurt badly enough it breaks off for its own entry zone — but it is not
-out of the match: cornered on the way home by something it can see and shoot it
-stops and fights back — with an empty magazine it keeps driving — and after
+A machine patrols, and when it sees you it closes: to about seven tenths of what
+its own sight and its gun's inner band allow (420 m for the stock tank), where it
+stops, turns onto you and shoots. Open the range past its sight and it comes
+after you again; let the ground hide you and it drives at where it last saw you.
+Hurt badly enough it breaks off for its own entry zone — but it is not out of the
+match: on the way home it turns and fights only what is close (inside about
+200 m) and only while it has armour left to do it with, with an empty magazine it
+keeps driving, once home it shoots back at whatever comes for it, and after
 twenty quiet seconds with nothing hostile in sight it turns round and comes back
 in, once. A tank whose pilot left does the same, so a disconnection leaves your
 side a teammate rather than a parked target.

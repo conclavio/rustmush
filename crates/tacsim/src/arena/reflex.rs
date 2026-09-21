@@ -92,7 +92,7 @@ use crate::arena::state::{
     Arena, ArenaTerrain, Classification, ContactId, Controller, DueKind, Power, SeenPose, UnitState,
 };
 use crate::config::ReflexConfig;
-use crate::deliberation::order::{Objective, Order, StandingOrder};
+use crate::deliberation::order::{Objective, Order, RangeBand, StandingOrder};
 
 /// How near a goal cell counts as arrived, in cells.
 ///
@@ -127,6 +127,19 @@ pub const REFLEX_AVOID_MAX: usize = 8;
 /// that has been salvaged, or a tank that has driven off, stops being a hole in
 /// the map.
 pub const REFLEX_AVOID_TTL_MS: i64 = 30_000;
+
+/// **How far short of `engage_cm` an `Approach` aims its stand-off cell**, in
+/// cells (16b cut E.1).
+///
+/// Three, and the number is the arrive window plus the cell quantisation.
+/// [`ARRIVE_CELLS`] is one cell Chebyshev — 14 m on a diagonal at the shipped
+/// 10 m cell — and the goal a search is given is a cell, whose centre is up to
+/// half a cell off the point [`Arena::stand_off_cell`] projected. So a goal
+/// placed *at* `engage_cm` leaves a unit that has arrived a few metres outside
+/// the band: stopped, in `Approach`, never firing. Three cells is enough slack
+/// that an arrived unit is inside `engage_cm` and little enough that the machine
+/// is still holding a band rather than closing onto the target.
+pub const STAND_OFF_MARGIN_CELLS: u16 = 3;
 
 /// **How many decide cycles a cornered `Withdraw` stands and fights** (16b cut
 /// Q.7) before it asks again whether it still has a line.
@@ -513,6 +526,114 @@ struct ReflexPlan {
 }
 
 // ---------------------------------------------------------------------------
+// The three distances a tick fights at
+// ---------------------------------------------------------------------------
+
+/// **What one machine's ranges are this tick** (16b cut E.1; 16c `B-05`,
+/// `B-39`, `T-32`, `T-46`, `T-47`), all integer centimetres, computed once from
+/// the unit, the doctrine and the order.
+///
+/// Before this cut every range test the controller made was against
+/// [`UnitState::weapon_reach_cm`] — the *longest* reach the platform carries,
+/// 3 km on a stock tank — on a map where the sight is 600 m and a mesh hop adds
+/// 300 m. All of them were therefore always true: `Approach` became `Engage` at
+/// the first line anywhere, `Engage` could never fall back, and a hurt machine
+/// stood and fought at any range. The one place the doctrine band was *used*
+/// was worse: 700 per mille of 3 km is 2.1 km, and `stand_off_cell` projects
+/// that back from the plot, so the "stand-off" goal was up to 1.2 km **behind**
+/// the machine.
+///
+/// So every distance here is priced off [`UnitState::fight_inner_cm`] and
+/// [`UnitState::fight_limit_cm`] — the lesser of the platform's own sight and
+/// the band of the weapon it would fire.
+///
+/// # The doctrine band is applied after the order's cap, and not before it
+///
+/// `engage_cm` is `engage_band_permille` of the reach the **order** allows, and
+/// `release_cm` is that reach itself. Capping the two separately collapses them
+/// to one distance under two of the commander's three words (`close` gives
+/// 200 / 200 on a stock tank, `effective` 400 / 400), and a target drifting
+/// about that one distance flips the machine between stopping to shoot and
+/// driving to a stand-off cell every tick. Applied after the cap the hysteresis
+/// is the same three tenths under every order, and the machine may fire across
+/// the whole of its `Engage` region — so it never stands in `Engage` at a range
+/// it may not shoot from.
+///
+/// The stock tank, engage / release / stand-off goal:
+///
+/// | order band | `engage_cm` | `release_cm` | stand-off `want` |
+/// |---|---|---|---|
+/// | none, or `far` | 420 m | 600 m | 390 m |
+/// | `effective` | 280 m | 400 m | 250 m |
+/// | `close` | 140 m | 200 m | 110 m |
+///
+/// `stand_cm` is 200 m under all three.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Ranges {
+    /// Where `Approach` stops and turns: the doctrine band of the allowed reach.
+    engage_cm: u64,
+    /// Where `Engage` gives up and closes again — **and the ceiling
+    /// [`Arena::engage_orders`] will fire out to**, so the two cannot disagree.
+    release_cm: u64,
+    /// What a `Withdraw` still on its way home will turn and fight inside: the
+    /// `close` band, capped by the order **and by `release_cm`**.
+    ///
+    /// The last cap is not redundant. The `close` band is a third of the *last*
+    /// band edge held to the sight, and `release_cm` is the *first* one held to
+    /// the same sight, so a gun whose inner band is under a third of its outer
+    /// reach — nothing the game ships, and an ordinary shape for content to
+    /// author — would otherwise let a hurt machine stop in front of a hostile
+    /// that [`Arena::engage_orders`]' own ceiling then refuses to fire at. That
+    /// is the parked target 16b cut Q.7 was paid to remove, arrived at by
+    /// doctrine instead of by a pilot, and [`Arena::withdraw_stand`]'s doc says
+    /// a unit that cannot shoot is never cornered.
+    stand_cm: u64,
+    /// The furthest this platform fights at at all; `0` is a platform with
+    /// nothing loaded, which has no target.
+    limit_cm: u64,
+}
+
+/// [`Ranges`] for one unit under one order.
+fn ranges(unit: &UnitState, cell_cm: u16, cfg: &ReflexConfig, order: Option<&Order>) -> Ranges {
+    // The loaded weapon's own edges, built once: `ceiling_cm` reads the last of
+    // them and the sight, exactly as the pilot's band word does. A platform with
+    // nothing loaded has an empty list, and every distance below falls to nought.
+    let bands = unit
+        .loaded_weapon()
+        .map_or_else(Vec::new, crate::arena::state::WeaponSummary::bands_cm);
+    let sight = unit.sight_cm(cell_cm);
+    let order_cap = order
+        .and_then(|order| order.constraints.max_range_band)
+        .map_or(u64::MAX, |band| band.ceiling_cm(&bands, sight));
+    let cap_inner = unit.fight_inner_cm(cell_cm).min(order_cap);
+    Ranges {
+        engage_cm: cap_inner.saturating_mul(u64::from(cfg.engage_band_permille)) / 1_000,
+        release_cm: cap_inner,
+        stand_cm: RangeBand::Close
+            .ceiling_cm(&bands, sight)
+            .min(order_cap)
+            .min(cap_inner),
+        limit_cm: unit.fight_limit_cm(cell_cm),
+    }
+}
+
+/// **How much range an `Approach` aims to keep on the plot**, centimetres (16b
+/// cut E.1; 16c `B-05`) — the argument [`Arena::stand_off_cell`] projects back
+/// from the plot toward the machine.
+///
+/// Floor first, `min` with the range **last**, and the order is the whole of the
+/// function: the literal `engage_cm − margin` underflows a `u64` for a short band
+/// or a small sight, and a floor applied *after* the `min` can exceed `range`,
+/// which projects the goal behind the machine — `B-05` written a second time. As
+/// written the answer is never above `range`, and never nought unless `range` is.
+fn stand_off_want(engage_cm: u64, cell_cm: u64, range_cm: u64) -> u64 {
+    engage_cm
+        .saturating_sub(u64::from(STAND_OFF_MARGIN_CELLS).saturating_mul(cell_cm))
+        .max(cell_cm)
+        .min(range_cm)
+}
+
+// ---------------------------------------------------------------------------
 // The tick
 // ---------------------------------------------------------------------------
 
@@ -728,10 +849,20 @@ impl Arena {
     /// [`Arena::contact_within_alert_range`]'s is. How often a pilot is sent a
     /// frame is something a pilot can count, so a tempo read off a position
     /// nobody holds would be a leak of hidden truth.
+    ///
+    /// **16b cut E.1 (16c `T-32`)**: the reach is
+    /// [`UnitState::fight_inner_cm`] — the band the platform would actually
+    /// fight in — and not the longest gun it carries. Against the 3 km cannon
+    /// this answered `true` for *any* classified hostile a sight or a mesh hop
+    /// could hold, so `Engaged` meant "somebody holds a classified hostile" and
+    /// the arena ran at 500 ms from the first classification to the end of the
+    /// match. It now means what doc 16 §3.1's table says: hostiles are within
+    /// weapons range of each other.
     #[must_use]
     pub fn hostile_in_weapons_range(&self) -> bool {
+        let cell_cm = self.definition.terrain.cell_cm();
         self.units.iter().any(|viewer| {
-            let reach = u64::from(viewer.weapon_reach_cm());
+            let reach = viewer.fight_inner_cm(cell_cm);
             reach != 0
                 && self.contacts.of(viewer.id).any(|(_, held)| {
                     held.class.team().is_some_and(|team| team != viewer.team)
@@ -1017,6 +1148,11 @@ impl Arena {
 
         // ---- the state's own goal and orders ----
         let here = self.definition.terrain.cell_of(&unit.pose);
+        // **16b cut E.1**: the three distances this tick fights at, computed once
+        // from the unit, the doctrine and the order — see [`Ranges`] for what
+        // each one is and why the doctrine band is applied after the order's cap.
+        let cell_cm = self.definition.terrain.cell_cm();
+        let ranges = ranges(unit, cell_cm, &memory.cfg, order.as_ref());
         match row.state {
             ReflexState::Startup | ReflexState::Disabled => {}
             ReflexState::Patrol => {
@@ -1050,38 +1186,61 @@ impl Arena {
             // same trace the round will take, so asking it about the live target
             // is asking "would this shot arrive", which is physics and not
             // knowledge.
+            //
+            // **16b cut E.1** gave this arm three cases instead of two, and
+            // priced all of them off [`Ranges`]:
+            //
+            // * **inside `engage_cm` with a line** — `Engage`, and
+            //   `engage_orders` on this same tick. The first shot is therefore
+            //   fired *still rolling*: `speed 0` is an order and a stock tank
+            //   takes 7.5 s to obey it. That is deliberate — a crew with a line
+            //   shoots — and it is why the duel test asserts the **ordered**
+            //   speed at the first shot and not the actual one;
+            // * **inside `engage_cm` with no line** — the goal is the plot's own
+            //   cell (16c's Q9: *it closes on the plot*), and the tick after it
+            //   has moved the trace is taken again;
+            // * **outside `engage_cm`** — the stand-off cell, and **no trace**.
+            //   Before this cut a trace was paid at every range, including the
+            //   ones at which nothing could be shot at anyway.
             ReflexState::Approach => {
                 if let Some((contact, target)) = row.target {
-                    let reach = u64::from(unit.weapon_reach_cm());
                     let plot = self.plot_of(id, contact);
                     let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
-                    let hold = band_hold_cm(unit, memory.cfg.engage_band_permille, order.as_ref());
-                    if reach != 0
-                        && range <= order_reach_cm(unit, order.as_ref()).max(1)
-                        && self.reflex_has_line(id, target, counters)
-                    {
-                        row.state = ReflexState::Engage;
-                        row.goal = None;
-                        row.route.clear();
-                        self.engage_orders(id, contact, order.as_ref(), &mut plan);
+                    if ranges.limit_cm != 0 && range <= ranges.engage_cm.max(1) {
+                        if self.reflex_has_line(id, target, counters) {
+                            row.state = ReflexState::Engage;
+                            row.goal = None;
+                            row.route.clear();
+                            self.engage_orders(id, contact, order.as_ref(), &ranges, &mut plan);
+                        } else {
+                            row.goal = plot
+                                .and_then(|plot| plot.cell(&self.definition.terrain))
+                                .or(here);
+                        }
                     } else {
+                        let want =
+                            stand_off_want(ranges.engage_cm, u64::from(cell_cm.max(1)), range);
                         row.goal = plot
-                            .and_then(|plot| self.stand_off_cell(id, &plot, hold))
+                            .and_then(|plot| self.stand_off_cell(id, &plot, want))
                             .or(here);
                     }
                 }
             }
             ReflexState::Engage => {
                 if let Some((contact, _)) = row.target {
-                    let reach = u64::from(unit.weapon_reach_cm());
                     let plot = self.plot_of(id, contact);
                     let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
-                    if reach == 0 || range > order_reach_cm(unit, order.as_ref()) {
+                    // **16b cut E.1**: the edge out is `release_cm`, the whole of
+                    // the allowed reach, and `engage_cm` is seven tenths of it —
+                    // so there is three tenths of hysteresis between closing and
+                    // holding, under every order. Before this cut both edges read
+                    // one number and neither could ever fire (16c `T-47`).
+                    if ranges.limit_cm == 0 || range > ranges.release_cm {
                         row.state = ReflexState::Approach;
-                        let hold =
-                            band_hold_cm(unit, memory.cfg.engage_band_permille, order.as_ref());
+                        let want =
+                            stand_off_want(ranges.engage_cm, u64::from(cell_cm.max(1)), range);
                         row.goal = plot
-                            .and_then(|plot| self.stand_off_cell(id, &plot, hold))
+                            .and_then(|plot| self.stand_off_cell(id, &plot, want))
                             .or(here);
                     } else {
                         // Holding the band: stop, turn onto the plot, shoot.
@@ -1089,7 +1248,7 @@ impl Arena {
                         row.route.clear();
                         plan.speed_cms = Some(0);
                         plan.heading_mdeg = plot.map(|plot| plot.bearing_from(&unit.pose));
-                        self.engage_orders(id, contact, order.as_ref(), &mut plan);
+                        self.engage_orders(id, contact, order.as_ref(), &ranges, &mut plan);
                     }
                 }
             }
@@ -1100,14 +1259,33 @@ impl Arena {
                 if row.goal.is_none() {
                     row.goal = self.entry_cell(id).or(here);
                 }
+                // **16b cut E.1**: whether it is home, computed once here and
+                // read twice — the stand's ceiling is `release_cm` once it has
+                // arrived and `stand_cm` while it is still running, and the
+                // rally below asks the same question.
+                let arrived = match (here, row.goal) {
+                    (Some(here), Some(goal)) => {
+                        here.0.abs_diff(goal.0).max(here.1.abs_diff(goal.1)) <= ARRIVE_CELLS
+                    }
+                    (_, None) => true,
+                    _ => false,
+                };
                 // (a) **cornered**. A hostile it holds, classified, inside the
-                // reach an order allows it, with a line: it stops where it is,
-                // turns onto the plot and shoots — **without leaving `Withdraw`
-                // and without touching the goal or the route**, so the run home
-                // resumes from where it stopped rather than from a fresh search.
-                // A tank with nothing to fire, or one told to hold its fire, is
-                // never cornered: see [`Arena::withdraw_stand`].
-                let cornered = self.withdraw_stand(id, memory, health, order.as_ref(), counters);
+                // reach its state and its order allow it, with a line: it stops
+                // where it is, turns onto the plot and shoots — **without leaving
+                // `Withdraw` and without touching the goal or the route**, so the
+                // run home resumes from where it stopped rather than from a fresh
+                // search. A tank with nothing to fire, or one told to hold its
+                // fire, is never cornered: see [`Arena::withdraw_stand`].
+                let cornered = self.withdraw_stand(
+                    id,
+                    memory,
+                    health,
+                    arrived,
+                    &ranges,
+                    order.as_ref(),
+                    counters,
+                );
                 if let Some((contact, plot)) = cornered {
                     row.stand_until_ms = Some(t_ms.saturating_add(
                         REFLEX_STAND_TICKS.saturating_mul(i64::from(memory.cfg.decide_ms)),
@@ -1115,7 +1293,7 @@ impl Arena {
                     row.quiet_since_ms = None;
                     plan.speed_cms = Some(0);
                     plan.heading_mdeg = Some(plot.bearing_from(&unit.pose));
-                    self.engage_orders(id, contact, order.as_ref(), &mut plan);
+                    self.engage_orders(id, contact, order.as_ref(), &ranges, &mut plan);
                 } else if row.stand_until_ms.is_some_and(|until| t_ms < until) {
                     // The dwell: the line has gone for the moment, and a tank
                     // that turned its back on the last three seconds of it would
@@ -1128,13 +1306,6 @@ impl Arena {
                     // hostile on the board for `rally_ms` of arena time: back to
                     // `Patrol`, once. A unit with nothing to fire never rallies —
                     // it has no fight to come back to.
-                    let arrived = match (here, row.goal) {
-                        (Some(here), Some(goal)) => {
-                            here.0.abs_diff(goal.0).max(here.1.abs_diff(goal.1)) <= ARRIVE_CELLS
-                        }
-                        (_, None) => true,
-                        _ => false,
-                    };
                     if self.holds_a_hostile(id) || !arrived || dry {
                         row.quiet_since_ms = None;
                     } else {
@@ -1231,6 +1402,7 @@ impl Arena {
         id: ObjId,
         contact: ContactId,
         order: Option<&Order>,
+        ranges: &Ranges,
         plan: &mut ReflexPlan,
     ) {
         let Some(unit) = self.unit(id) else {
@@ -1252,8 +1424,11 @@ impl Arena {
         let range = self
             .plot_of(id, contact)
             .map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
-        let ceiling = order_reach_cm(unit, order);
-        if range > ceiling {
+        // **16b cut E.1**: the firing ceiling is `Ranges::release_cm`, the same
+        // number `Engage` holds out to — so a machine can fire across the whole
+        // of its `Engage` region and never stands in it at a range it may not
+        // shoot from.
+        if range > ranges.release_cm {
             return;
         }
         // **16b cut Q.7**: and the heat. The controller reads the platform's
@@ -1282,12 +1457,12 @@ impl Arena {
     ///
     /// The candidate is the utility score's own best hostile — the same chooser
     /// `Approach` uses, so a `Withdraw` that turns to fight turns onto the same
-    /// tank it would have closed on — and the two tests after it are `Approach`'s
-    /// own, in `Approach`'s own order: the **plot's** range against what the order
-    /// allows (16b cut F.3: the range the gunner has), and then one trace. The
-    /// trace is paid only when the range test has already passed, so a withdrawing
-    /// tank with nothing near it costs a `Withdraw` tick exactly what it cost
-    /// before this cut.
+    /// tank it would have closed on — and the tests after it are `Approach`'s
+    /// own, in `Approach`'s own order: the **plot's** range against a ceiling
+    /// (16b cut F.3: the range the gunner has), and then one trace. The trace is
+    /// paid only when the range test has already passed, so a withdrawing tank
+    /// with nothing near it costs a `Withdraw` tick exactly what it cost before
+    /// this cut.
     ///
     /// **A unit that cannot shoot is never cornered.** The stand stops a tank in
     /// the open and turns it onto the plot; a tank that would then stage no shot
@@ -1298,11 +1473,38 @@ impl Arena {
     /// on its cycle is *not* one of them: that one comes back within the second,
     /// and a tank that gave up the stand for it would be turning round twice a
     /// second.
+    ///
+    /// # The ceiling is two rules, and `arrived` is which (16b cut E.1, 16c
+    /// `B-39`, 16c §5's Q8)
+    ///
+    /// Before this cut the ceiling was the platform's whole 3 km reach, which on
+    /// this map is always true: a hurt machine stood and fought whatever it could
+    /// see, at any health, and never got home.
+    ///
+    /// * **en route** — the plot must be inside [`Ranges::stand_cm`], the `close`
+    ///   band, **and** the unit must have at least
+    ///   [`crate::config::ReflexConfig::stand_min_permille`] of its armour and
+    ///   internals left. It is running home; it turns for something on top of it
+    ///   and for nothing else, and not once it is down to the last of its plate.
+    /// * **arrived** — the plot must be inside [`Ranges::release_cm`], **at any
+    ///   health**. A machine that is home has nowhere further to run, and one
+    ///   that is shot at 420 m and never replies is the parked target 16b cut Q.7
+    ///   was paid to remove.
+    ///
+    /// **A unit with no goal at all counts as arrived, on purpose.** The rally's
+    /// own test answers `true` for `(_, None)` and `Withdraw`'s goal is
+    /// `entry_cell(id).or(here)`, so `None` means *this arena gave my side no
+    /// entry zone and I am not on the window*: there is no home to run to, which
+    /// is the arrived argument exactly, and the machine shoots back at whatever
+    /// comes inside `release_cm`.
+    #[allow(clippy::too_many_arguments)]
     fn withdraw_stand(
         &self,
         id: ObjId,
         memory: &ReflexMemory,
         health_permille: u32,
+        arrived: bool,
+        ranges: &Ranges,
         order: Option<&Order>,
         counters: &mut ReflexCounters,
     ) -> Option<(ContactId, SeenPose)> {
@@ -1312,7 +1514,15 @@ impl Arena {
         }
         let (contact, target) = self.best_hostile(id, memory, health_permille, None)?;
         let plot = self.plot_of(id, contact)?;
-        if plot.range_from(&unit.pose) > order_reach_cm(unit, order).max(1) {
+        let ceiling = if arrived {
+            ranges.release_cm
+        } else {
+            ranges.stand_cm
+        };
+        if plot.range_from(&unit.pose) > ceiling.max(1) {
+            return None;
+        }
+        if !arrived && health_permille < memory.cfg.stand_min_permille {
             return None;
         }
         if !self.reflex_has_line(id, target, counters) {
@@ -1401,7 +1611,13 @@ impl Arena {
         // would be closing on a hostile in order to sit in front of it. It patrols
         // instead, which is doc 16 §6's machine with the states that mean nothing
         // to it left out.
-        let reach = u64::from(unit.weapon_reach_cm());
+        //
+        // **16b cut E.1**: the reach is [`UnitState::fight_limit_cm`], so the
+        // rule now also covers "every magazine is empty" — which [`is_dry`] sends
+        // to `Withdraw` first anyway — and the range term below is a fraction of
+        // the distance this platform really fights at rather than of a 3 km gun
+        // nothing on the map is ever held at.
+        let reach = unit.fight_limit_cm(self.definition.terrain.cell_cm());
         if reach == 0 {
             return None;
         }
@@ -1466,7 +1682,7 @@ impl Arena {
         self.contacts.resolve(id, contact).map(|held| held.seen_at)
     }
 
-    /// The cell to stand in to hold `hold_cm` of range on `at` — the goal
+    /// The cell to stand in to hold `want_cm` of range on `at` — the goal
     /// `Approach` drives to.
     ///
     /// The point on the line from the plot toward *here*, at the holding range.
@@ -1476,10 +1692,18 @@ impl Arena {
     /// **16b cut F.3** made `at` the contact's plot rather than the target's
     /// object: an approach is toward the last known position, and a unit that
     /// arrives there and finds nothing is a unit that has lost its contact.
-    fn stand_off_cell(&self, id: ObjId, at: &SeenPose, hold_cm: u64) -> Option<(u16, u16)> {
+    ///
+    /// **16b cut E.1**: `want_cm` comes from [`stand_off_want`], which is what
+    /// guarantees `want_cm ≤ range` — and that is what guarantees the **point**
+    /// this projects is never further from the plot than the unit already
+    /// stands, so the goal is never behind the machine (16c `B-05`). The *cell*
+    /// it is quantised to may be up to seven tenths of a cell further out in the
+    /// degenerate case where the floor of one cell is the answer, and is two
+    /// cells nearer or better at every shipped distance.
+    fn stand_off_cell(&self, id: ObjId, at: &SeenPose, want_cm: u64) -> Option<(u16, u16)> {
         let from = self.unit(id)?;
         let range = at.range_from(&from.pose);
-        let want = i64::try_from(hold_cm.max(1)).unwrap_or(i64::MAX);
+        let want = i64::try_from(want_cm.max(1)).unwrap_or(i64::MAX);
         if range == 0 {
             return self.definition.terrain.cell_of(&from.pose);
         }
@@ -1864,25 +2088,6 @@ impl Arena {
     }
 }
 
-/// **The furthest range an order lets a unit shoot at**, centimetres (16b cut
-/// N.2).
-///
-/// `None`, or an order with no band, is the platform's own reach and nothing
-/// changes. A band caps it at that band's ceiling, so `close` is a squad told to
-/// let the enemy come to it and `far` caps nothing, which is a commander saying
-/// "no restriction" without a fourth word.
-fn order_reach_cm(unit: &UnitState, order: Option<&Order>) -> u64 {
-    let reach = u64::from(unit.weapon_reach_cm());
-    match order.and_then(|order| order.constraints.max_range_band) {
-        // 16b cut F.3: the band's ceiling is read against the authored bands of
-        // the weapon a bare `FIRE` fires, which is the same list the pilot's own
-        // band word is read against. The list is only built on this arm, so an
-        // unconstrained squad allocates nothing.
-        Some(band) => reach.min(band.ceiling_cm(&unit.fire_bands_cm())),
-        None => reach,
-    }
-}
-
 /// **The 8-neighbour step nearest a bearing** (16b cut Q.7).
 ///
 /// Bearing zero is north and [`bearing_of`] measures clockwise, so the eight
@@ -2000,14 +2205,6 @@ fn would_overheat(unit: &UnitState, weapon: &str) -> bool {
         return true;
     }
     now.saturating_add(per_shot) > heat.max
-}
-
-/// **The range `Approach` holds**, centimetres (16b cut N.2): doctrine's own
-/// `engage_band_permille` of the reach, capped by the order's band.
-fn band_hold_cm(unit: &UnitState, engage_band_permille: u32, order: Option<&Order>) -> u64 {
-    let doctrine =
-        u64::from(unit.weapon_reach_cm()).saturating_mul(u64::from(engage_band_permille)) / 1_000;
-    doctrine.min(order_reach_cm(unit, order))
 }
 
 /// The per-unit rows, for [`crate::arena::hash::state_hash`] — the one reader
@@ -2136,6 +2333,207 @@ mod tests {
         if let Some(state) = arena.unit_mut(unit) {
             state.unit = hot;
         }
+    }
+
+    /// **The stock tank's three rows of [`Ranges`]'s table** (16b cut E.1), and
+    /// the property they exist for: `release_cm > engage_cm` under **every**
+    /// order band, so a target drifting about the engagement distance cannot flip
+    /// the machine between stopping to shoot and driving to a stand-off cell.
+    ///
+    /// The shipped numbers, written here rather than read off the pack: a 60-cell
+    /// sight of 1,000 cm cells, a cannon whose bands are 1.5 km and 3 km, and
+    /// doctrine's `engage_band_permille` of 700.
+    /// `crates/tacsim/tests/content.rs` is what keeps them the pack's.
+    #[test]
+    fn e1_the_stock_tanks_three_rows_of_the_range_table() {
+        use crate::arena::perception::{SensorProfile, SignatureFactor};
+        use crate::arena::state::WeaponSummary;
+        use crate::arena::weapons::{DEFAULT_WEAPON, WeaponBand};
+        use crate::deliberation::order::{Objective, Order};
+        use crate::deliberation::squad::SquadId;
+
+        let mut fixture = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
+        fixture.sensor = Some(SensorProfile {
+            max_range_cells: 60,
+            max_attenuation: 40,
+            classify_after_ms: 3_000,
+            sees_wrecks: false,
+            share_range_cells: 30,
+            signature: vec![SignatureFactor {
+                class: mush_atlas::TerrainClass::Ground,
+                moving_permille: 1_000,
+                stopped_permille: 1_000,
+            }],
+        });
+        fixture.weapons = vec![WeaponSummary {
+            id: SmolStr::new(DEFAULT_WEAPON),
+            max_range_cm: 300_000,
+            cycle_ms: 4_000,
+            ammunition: SmolStr::new("tacsim.ammunition.he_105"),
+            burst_rounds: 1,
+            muzzle_speed_cms: 145_000,
+            bands: vec![
+                WeaponBand {
+                    max_range_cm: 150_000,
+                    dispersion_mrad: 3,
+                },
+                WeaponBand {
+                    max_range_cm: 300_000,
+                    dispersion_mrad: 6,
+                },
+            ],
+            count_per_load: 40,
+            damage: 120,
+            mount_section: SmolStr::new("turret"),
+        }];
+        let arena = arena_of(vec![fixture]);
+        let Some(state) = arena.unit(ObjId(4)) else {
+            panic!("the fixture tank")
+        };
+        assert_eq!(state.sight_cm(1_000), 60_000, "600 m of scope");
+        assert_eq!(state.fight_inner_cm(1_000), 60_000);
+        assert_eq!(state.fight_limit_cm(1_000), 60_000);
+
+        let cfg = ReflexConfig::default();
+        let ordered = |band: Option<crate::deliberation::order::RangeBand>| Order {
+            squad: SquadId {
+                team: Team::Red,
+                index: 1,
+            },
+            objective: Objective::Engage { target_hint: None },
+            target: None,
+            horizon_ms: 30_000,
+            constraints: crate::deliberation::order::Constraints {
+                hold_fire: false,
+                max_range_band: band,
+            },
+            ttl_ms: 30_000,
+            issued_ms: 0,
+        };
+        for (band, engage_cm, release_cm, stand_cm) in [
+            (None, 42_000_u64, 60_000_u64, 20_000_u64),
+            (Some(RangeBand::Far), 42_000, 60_000, 20_000),
+            (Some(RangeBand::Effective), 28_000, 40_000, 20_000),
+            (Some(RangeBand::Close), 14_000, 20_000, 20_000),
+        ] {
+            let order = ordered(band);
+            let have = ranges(state, 1_000, &cfg, Some(&order));
+            assert_eq!(
+                have,
+                Ranges {
+                    engage_cm,
+                    release_cm,
+                    stand_cm,
+                    limit_cm: 60_000,
+                },
+                "the stock tank under {band:?}"
+            );
+            assert!(
+                have.release_cm > have.engage_cm,
+                "the hysteresis collapsed under {band:?}: {have:?}"
+            );
+        }
+        // No order at all is the `far` row, and the `far` row caps nothing.
+        assert_eq!(
+            ranges(state, 1_000, &cfg, None),
+            ranges(state, 1_000, &cfg, Some(&ordered(Some(RangeBand::Far))))
+        );
+
+        // An operator who writes one thousand has asked for one distance and
+        // gets it — which is the key's own doc, pinned.
+        let flat = ReflexConfig {
+            engage_band_permille: 1_000,
+            ..cfg.clone()
+        };
+        let have = ranges(state, 1_000, &flat, None);
+        assert_eq!((have.engage_cm, have.release_cm), (60_000, 60_000));
+
+        // **A short first band**: the `close` band is a third of the *last* edge
+        // and `release_cm` is the *first* one, so a gun whose inner band is under
+        // a third of its outer reach would leave an en-route stand wider than the
+        // firing ceiling — a hurt machine stopping in front of something it may
+        // not shoot at. Nothing the game ships is shaped that way; the cap is
+        // here so that nothing authored later can be.
+        let mut stubby = arena;
+        if let Some(state) = stubby.unit_mut(ObjId(4))
+            && let Some(weapon) = state.weapons.first_mut()
+            && let Some(band) = weapon.bands.first_mut()
+        {
+            band.max_range_cm = 10_000;
+        }
+        let Some(state) = stubby.unit(ObjId(4)) else {
+            panic!("the fixture tank")
+        };
+        let have = ranges(state, 1_000, &cfg, None);
+        assert_eq!(
+            have,
+            Ranges {
+                engage_cm: 7_000,
+                release_cm: 10_000,
+                stand_cm: 10_000,
+                limit_cm: 60_000,
+            },
+            "a 100 m first band on a 3 km gun: the `close` band would have been 200 m"
+        );
+        assert!(
+            have.stand_cm <= have.release_cm,
+            "an en-route stand can never be wider than the firing ceiling: {have:?}"
+        );
+
+        // And a platform with nothing loaded has no distances at all.
+        let mut dry = stubby;
+        if let Some(state) = dry.unit_mut(ObjId(4)) {
+            state.ammo.insert(SmolStr::new(DEFAULT_WEAPON), 0);
+        }
+        let Some(state) = dry.unit(ObjId(4)) else {
+            panic!("the fixture tank")
+        };
+        assert_eq!(ranges(state, 1_000, &cfg, None), Ranges::default());
+    }
+
+    /// **[`stand_off_want`] as a table** (16b cut E.1; 16c `B-05`).
+    ///
+    /// Three claims over every row, and each of them is a way the first draft of
+    /// this arithmetic went wrong: the answer is never above `range_cm` (a want
+    /// past the range projects the goal *behind* the machine), it is never nought
+    /// unless the range is (a nought want puts the goal on the plot's own cell),
+    /// and nothing underflows a `u64` for a band shorter than the margin.
+    #[test]
+    fn e1_the_stand_off_want_is_never_past_the_range_and_never_underflows() {
+        let cell = 1_000_u64;
+        for (engage_cm, range_cm, want) in [
+            // Nothing loaded: the floor of one cell, held to the range.
+            (0_u64, 0_u64, 0_u64),
+            (0, 500, 500),
+            (0, 42_000, 1_000),
+            // A band of exactly one cell, and of exactly the margin: the
+            // subtraction would underflow, and the floor answers instead.
+            (1_000, 42_000, 1_000),
+            (3_000, 42_000, 1_000),
+            (3_001, 42_000, 1_000),
+            // The stock tank's own row: 420 m less three cells is 390 m.
+            (42_000, 42_000, 39_000),
+            (42_000, 60_000, 39_000),
+            // And a range inside the want: the want comes down to it.
+            (42_000, 20_000, 20_000),
+            (42_000, 900, 900),
+            // An engagement band bigger than anything on the window.
+            (u64::MAX, 42_000, 42_000),
+        ] {
+            let have = stand_off_want(engage_cm, cell, range_cm);
+            assert_eq!(have, want, "engage {engage_cm}, range {range_cm}");
+            assert!(
+                have <= range_cm,
+                "engage {engage_cm}, range {range_cm}: {have} is past the range, so the goal \
+                 would be behind the machine"
+            );
+            assert!(
+                have > 0 || range_cm == 0,
+                "engage {engage_cm}, range {range_cm}: a nought want is the plot's own cell"
+            );
+        }
+        // And a window with a nonsense cell size does not panic either.
+        assert_eq!(stand_off_want(42_000, u64::MAX, 42_000), 42_000);
     }
 
     #[test]

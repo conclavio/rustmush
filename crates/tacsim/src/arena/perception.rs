@@ -1630,7 +1630,7 @@ pub struct FrameContact {
     /// range function).
     ///
     /// **Rendered coarsely** (16b cut F.3): the cockpit turns it into one of
-    /// `crate::match_::cockpit::range_band`'s four words *and* into metres
+    /// `crate::match_::cockpit::contact_band`'s four words *and* into metres
     /// rounded to `crate::match_::cockpit::CONTACT_RANGE_STEP_M`. Cut S.2 kept the
     /// figure inside the arena entirely, on doc 16 §3.6's *range band* read
     /// strictly, and that left a pilot with no distance information at all; the

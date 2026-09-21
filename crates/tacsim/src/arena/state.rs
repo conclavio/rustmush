@@ -2567,15 +2567,21 @@ pub struct Arena {
     /// The frozen `[tacsim.sensors]` block (16b cut S.1).
     pub sensors_cfg: SensorsConfig,
     /// **The held-contact range that raises `Alert`**, centimetres, *resolved*
-    /// (doc 16 §3.1's tempo table; 16b §9: `tempo.alert_range_cm` is *2 × max
-    /// weapon range*).
+    /// (doc 16 §3.1's tempo table; 16b §9's `tempo.alert_range_cm` row, whose
+    /// *2 × max weapon range* 16b cut E.1 capped — see below).
     ///
     /// A configured zero means derived, and [`Arena::new`] derives it once at
-    /// check-out from the units it was handed — twice the longest weapon
-    /// `max_range_cm` of any unit in the match. It is resolved here rather than
-    /// read from the configuration on every pulse so that a match's `Alert`
-    /// threshold cannot change under it, exactly as the two configuration blocks
-    /// are cloned in for the same reason.
+    /// check-out from the units it was handed: **the lesser of twice the longest
+    /// weapon `max_range_cm` in the match ([`UnitState::weapon_reach_cm`]) and
+    /// the window's own diagonal**
+    /// (`isqrt(width² + height²) × cell_cm`). 16b cut E.1 added the cap, because
+    /// twice a 3 km gun is 6 km on a window whose furthest two points are 3.6 km
+    /// apart — a threshold no pair could be outside, which made the `Alert`
+    /// trigger read "a contact is held at all" (16c `T-32`).
+    ///
+    /// It is resolved here rather than read from the configuration on every pulse
+    /// so that a match's `Alert` threshold cannot change under it, exactly as the
+    /// two configuration blocks are cloned in for the same reason.
     pub alert_range_cm: u32,
     /// **The widest jamming bubble in this match**, centimetres, *resolved* (16b cut
     /// X.4; doc 16 §9 item 4) — and **zero for every match in which nothing carries
@@ -2907,18 +2913,39 @@ impl Arena {
         // heuristic is admissible without a scan per query
         // (`crate::arena::path::min_move_cost`).
         let min_move_cost = crate::arena::path::min_move_cost(&definition.terrain);
-        // 16b §9: `tempo.alert_range_cm` is *2 × max weapon range*, and the
+        // 16b §9's `tempo.alert_range_cm`: **the lesser of twice the longest
+        // weapon range in the match and the window's own diagonal**, and the
         // configured `0` is what asks for that. Derived once, here, from the units
         // this match was handed; a match whose units carry no weapon derives `0`
         // and never raises `Alert` on a held contact, which is the honest answer.
+        // The reach half is `UnitState::weapon_reach_cm`, which exists to be read
+        // here and is read nowhere else in the crate.
+        //
+        // **16b cut E.1 (16c `T-32`) added the diagonal cap.**
+        // Twice the stock cannon's 3 km is 6 km on a window 2.56 km on a side,
+        // whose furthest two points are 3.6 km apart — so the threshold was a
+        // number no pair of units could ever be outside, and `Alert`'s "a contact
+        // is held inside `alert_range_cm`" meant "a contact is held". Capped, it
+        // is honest on any window, and on the shipped one it is still wider than
+        // anything a sight plus a mesh hop can hold (900 m), so nothing about a
+        // shipped match's tempo moves.
         let alert_range_cm = if arena_cfg.tempo.alert_range_cm == 0 {
-            states
-                .iter()
-                .flat_map(|state| state.weapons.iter())
-                .map(|weapon| weapon.max_range_cm)
-                .max()
-                .unwrap_or(0)
-                .saturating_mul(2)
+            let twice = u64::from(
+                states
+                    .iter()
+                    .map(UnitState::weapon_reach_cm)
+                    .max()
+                    .unwrap_or(0),
+            )
+            .saturating_mul(2);
+            let width = u64::from(definition.terrain.width());
+            let height = u64::from(definition.terrain.height());
+            let diagonal = width
+                .saturating_mul(width)
+                .saturating_add(height.saturating_mul(height))
+                .isqrt()
+                .saturating_mul(u64::from(definition.terrain.cell_cm()));
+            u32::try_from(twice.min(diagonal)).unwrap_or(u32::MAX)
         } else {
             arena_cfg.tempo.alert_range_cm
         };

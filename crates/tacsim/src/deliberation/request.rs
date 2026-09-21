@@ -135,8 +135,16 @@ impl SquadBrief {
                     }
                     Classification::Classified { .. } => "hostile".to_string(),
                 },
-                band: crate::match_::cockpit::range_band(contact.range_cm, &signal.bands_cm)
-                    .to_string(),
+                // **16b cut E.1** (16c `T-81`): the pilot's own word. It used to be
+                // `range_band`'s — thirds of the gun's inner band alone — so a
+                // commander told to hold `close` was told a distance no `CONTACTS`
+                // row could name. One function, one distance.
+                band: crate::match_::cockpit::contact_band(
+                    contact.range_cm,
+                    &signal.bands_cm,
+                    signal.sight_cm,
+                )
+                .to_string(),
                 bearing_deg: contact.bearing_mdeg / 1_000,
             })
             .collect();
@@ -493,6 +501,10 @@ mod tests {
                 },
             ],
             bands_cm: vec![6_000, 12_000],
+            // 16b cut E.1: the commander's own scope, which is what the band word
+            // is thirds of the lesser of. Here it reaches the gun's last band, so
+            // the limit is 12,000 either way.
+            sight_cm: 12_000,
             health_permille: 900,
             states: [0, 2, 0, 0, 0, 0],
             cell: Some((3, 4)),
@@ -512,8 +524,8 @@ mod tests {
         assert_eq!(brief.contacts[0].band, "close");
         assert_eq!(brief.contacts[0].bearing_deg, 90);
         assert_eq!(brief.contacts[1].stance, "unknown");
-        // 9,000 cm against a 6,000 cm reach: past what the gun can hit, inside
-        // twice it, which is `far` and not `beyond`.
+        // 16b cut E.1: 9,000 cm of a 12,000 cm limit — the outer third of what the
+        // commander's own scope and its gun's last band allow, which is `far`.
         assert_eq!(brief.contacts[1].band, "far");
         assert_eq!(brief.states, vec![("patrol".to_string(), 2)]);
         let prompt = user_prompt(&brief);
@@ -523,6 +535,41 @@ mod tests {
             !prompt.contains("#4") && !prompt.contains(" 4\n"),
             "the commander's object id never reaches the prompt: {prompt}"
         );
+    }
+
+    /// **16b cut E.1 (16c `T-81`): the brief prints the pilot's word.**
+    ///
+    /// The shipped numbers, which are the ones the residual was about: the
+    /// cannon's authored edges are 1.5 km and 3 km and the stock sight is 600 m,
+    /// so a contact 450 m out is in the outer third of everything the platform
+    /// can see. `range_band`, which the brief read until this cut, banded on the
+    /// gun alone and called it `close` — and a commander who answered "hold
+    /// `close`" was ordering a squad to 500 m while every `CONTACTS` row on the
+    /// field read `close` out to 200 m.
+    #[test]
+    fn e1_the_brief_bands_a_contact_the_way_a_pilots_contacts_row_does() {
+        let mut stock = signal();
+        stock.bands_cm = vec![150_000, 300_000];
+        stock.sight_cm = 60_000;
+        stock.contacts = vec![SignalContact {
+            id: ContactId(0x2a),
+            class: Classification::Classified { team: Team::Blue },
+            bearing_mdeg: 90_000,
+            range_cm: 45_000,
+        }];
+        let brief = SquadBrief::from_signal(7, &stock, 2);
+        assert_eq!(
+            brief.contacts[0].band, "far",
+            "450 m of a 600 m scope is the outer third; on the gun alone it was `close`"
+        );
+        // The same word the pilot's own row would carry.
+        assert_eq!(
+            crate::match_::cockpit::contact_band(45_000, &stock.bands_cm, stock.sight_cm),
+            brief.contacts[0].band
+        );
+        // And the brief gained no key: the model reads the word, not the sight.
+        let prompt = user_prompt(&brief);
+        assert!(!prompt.contains("60000"), "{prompt}");
     }
 
     #[test]
