@@ -25,6 +25,12 @@ fn signed(mut doc: Value) -> String {
 
 /// A neighborhood with a house site holding a parlour and a bedroom, and a yard
 /// outside the site. The yard's gate is the parlour's only entrance.
+///
+/// The way back from the bedroom is `Parlour <P>;parlour` and not `;p;parlour`:
+/// `p` is the kernel's alias for `page`, and `apply::check_exit_names` (16c
+/// `B-11`) refuses a pack, before its first write, whose exit takes a word that
+/// works in every room. The alias bought this fixture nothing; with it the pack
+/// never applies and no room exists to link a property to.
 fn packs() -> Vec<String> {
     let region = signed(json!({
         "manifest": { "id": "region.town", "version": 1, "kind": "region", "digest": "", "requires": [] },
@@ -60,7 +66,7 @@ fn packs() -> Vec<String> {
                 "names": ["Front Door <IN>;in;door", "Yard <OUT>;out;yard"],
                 "portal": { "distance_m": 12 } } },
             "exit.parlour_bedroom": { "kind": "exit", "def": { "from": "room.parlour", "to": "room.bedroom",
-                "names": ["Bedroom <B>;b;bedroom", "Parlour <P>;p;parlour"] } }
+                "names": ["Bedroom <B>;b;bedroom", "Parlour <P>;parlour"] } }
         }
     }));
     vec![region, block]
