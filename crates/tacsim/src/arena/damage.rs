@@ -634,6 +634,14 @@ impl Arena {
             if let Some(state) = self.unit_mut(shot.shooter) {
                 state.hits = state.hits.saturating_add(1);
             }
+        } else {
+            // **16b cut D.2** (`B-15`): this is the one branch a round that found
+            // nothing left to break reaches, so it is where the fact is recorded
+            // for the staging scan a few lines later in the same substep. The
+            // `hit` line below does not change by a byte; what changes is what
+            // the victim and the gunner who has told the target apart are told
+            // about it (`Arena::spent_hits`).
+            self.spent_hits.insert(shot.seq);
         }
         journal.push((
             t_ms,

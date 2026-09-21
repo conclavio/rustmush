@@ -16,8 +16,10 @@ else — `help simulator` is how you get there.
                       none.
   BEARING [<contact>] which way a contact plotted; your lock if you name none.
   SCAN [<contact>]    what is left of a contact, section by section; your lock
-                      if you name none.
+                      if you name none. Needs a contact you have identified and
+                      had a close look at.
   FIRE [<weapon>]     shoot your lock; the cannon unless you name another.
+                      A weapon of two words takes its initials: FIRE mg.
   WEAPONSTATUS        every weapon: ready or cycling, its rounds, its own chance
                       against your lock, and that lock's range band.
   STATUS              your callsign, power, speed, heading, position, what your
@@ -67,7 +69,8 @@ enough to tell it apart, and then it takes its real name:
   Contact X2 identified: BA, blue.
 
 After that the row reads `BA`, and **both** spellings keep working: `LOCK X2`
-and `LOCK BA` are the same contact. If you lose the contact and find it again it
+and `LOCK BA` are the same contact. Case does not matter anywhere a designator
+is typed: `lock ba` is `LOCK BA`. If you lose the contact and find it again it
 is an unknown return once more, so it reads `X2` again and says `identified`
 again when it resolves.
 
@@ -139,6 +142,18 @@ same way their plot does, and it is as old as *their* look; and a section you
 watched one of your own rounds take apart reads `destroyed` from that moment,
 without waiting for another look.
 
+**A tank on the move is seen from further away than a tank standing still.**
+Your signature is what the other side's sensors are working against, so rolling
+across open ground hands them a contact at a range that would have held nothing
+if you had stopped. Cover helps the tank that has stopped in it most: heavy
+woods halve what a tank standing still gives away and take only a fifth off a
+tank still rolling. Stop before you are found.
+
+**The facet you show decides what a hit costs you.** Armour is per facet, and
+the round lands on whichever face you are presenting — so a tank fought
+nose-on spends its thickest plate and a tank caught broadside or from behind
+spends its thinnest. Turn into the shot.
+
 `VIEW` draws the same picture as a map: terrain glyphs, `@` for you, `?` for a
 contact nothing has classified, `+` for your side and `x` for the other.
 
@@ -151,11 +166,25 @@ effective.`, `Contact X2 identified: BA, blue.`, `Contact BA lost.`
 worth: `Locked on BA, 62% to hit.` `WEAPONSTATUS` gives the same number per
 weapon, because a weapon's chance is its own.
 
-`FIRE` shoots the lock with the cannon; `FIRE mg` names another weapon. You are
-told what your round did and nothing more: `Hit on BA: turret.`, `Miss on BA:
-the target moved.`, `BA's turret is destroyed.`, `BA destroyed.` The **section**
-is all of it: what the round did to that section, and what the target has left
-inside it, is the target's business and not yours.
+Locking one of **your own** side puts `(FRIENDLY)` after the name, on the lock,
+on `WEAPONSTATUS` and on every hit: `Locked on RB (FRIENDLY), 62% to hit.`
+Nothing is refused. The word is the whole of the warning, and what you do next
+is yours.
+
+`FIRE` shoots the lock with the cannon; `FIRE mg` names another. A weapon whose
+id is two words can be typed as its **initials** — `machine_gun` is `mg` — and
+`WEAPONSTATUS` prints the short name in brackets beside the id where there is
+one. A prefix works too: `FIRE can`. The full id always works, and a word that
+could mean two of your weapons is refused saying which: ``FIRE m`` answers
+``` `m` could be machine_gun or missile; say more. ```
+
+You are told what your round did and nothing more: `Hit on BA: turret.`, `Miss
+on BA: the target moved.`, `BA's turret is destroyed.`, `BA destroyed.` The
+**section** is all of it: what the round did to that section, and what the
+target has left inside it, is the target's business and not yours. A round that
+lands on a section you have already destroyed says so — `Hit on BA: turret,
+already destroyed.` — and says it at most once every five seconds, because it
+is the same sentence every time.
 
 The section word is only there for a contact you have **identified**, for the
 reason `SCAN` needs one: a section name says what kind of machine you are
@@ -167,9 +196,12 @@ What you are told about your **own** tank is the other way round and complete:
   Hit on the hull's front facet: 280 of 400 armour left.
   Hit on the hull's front facet: armour gone, 140 of 200 inside.
   The left_track is destroyed: the tank is slowed.
+  Hit on the left_track, which is already destroyed.
 
 — and nothing whatever about who shot you. Where a round came from is something
-only a sensor may tell you.
+only a sensor may tell you. That last line, like the gunner's, is said at most
+once every five seconds a section: a dead track takes rounds all day and there
+is nothing new to say about it.
 
 ## Refusals
 
@@ -178,12 +210,33 @@ you type the order, in the tank's own words: `Power not online: STARTUP first.`,
 `Power is still coming up; hold on.`, `No lock: LOCK a contact first.`, `Still
 cycling: 4 s to go.`, `Empty: that weapon has nothing left to fire.`
 
-`STARTUP`, `LOCK` and `FIRE` can also be refused by the arena itself a moment
-after the cockpit passed them on, and those lines open by naming the order, so
-you know which one they answer: `FIRE refused. Still cycling: 4 s to go.`,
-`FIRE refused. Your tank is a wreck.`, `LOCK refused. Power not online: STARTUP
-first.` No other order is answered that way — `HEADING` and `SPEED` are refused
-at the cockpit and nowhere else.
+Every `FIRE` refusal names the weapon, whichever half answered: `FIRE cannon
+refused. Still cycling: 4 s to go.` So a pilot with two guns is never left
+guessing which breech is busy.
+
+**Any** order can also be refused by the arena itself a moment after the cockpit
+passed it on — you and the arena are a pulse apart, and the tank may have been
+shot in between. Those lines open by naming the order, so you know which one
+they answer: `HEADING refused. Your tank cannot move.`, `LOCK refused. Power not
+online: STARTUP first.`, `STARTUP refused. Your tank is a wreck.`, `FIRE cannon
+refused. Too many orders at once; try that again.`
+
+## When your tank is out of it
+
+A tank can lose its engine and its guns and still be sat in, and it can be
+finished outright. Either way you are told once, and the panel says so
+afterwards:
+
+  Your tank can neither move nor shoot. The match runs on: wait it out, EXIT to
+  the team room, or SIM ABORT to call it off.
+
+  Your tank is destroyed. The match runs on without you: wait it out, EXIT to
+  the team room, or SIM ABORT to call it off.
+
+After that `STATUS` carries `DESTROYED` beside the speed, and every order is
+refused at the cockpit: `Your tank is destroyed and takes no orders. EXIT leaves
+the pod.` A tank that has only lost its motion still sees, still locks and still
+shoots — it is `HEADING` and `SPEED` that answer `Your tank cannot move.`
 
 ## The cockpit screen
 
@@ -198,8 +251,8 @@ out from under you. Out of a cockpit it reads `Not in a cockpit.`
 
 It shows what the panel tells you and nothing else: the arena's ground drawn
 around your own tank, with your contacts on it — `x` hostile, `+` friendly, `?`
-not told apart yet — then your callsign, power, speed, heading, heat, the
-arena's tempo and your lock; what is left of your tank section by section; your
+not told apart yet — then your callsign, power, speed, heading, heat, what your
+own scope holds and your lock; what is left of your tank section by section; your
 weapons with their cycle, rounds and chance; and your contacts with their
 bearing, band, range, plot age and the sections of any you have had a close look
 at. In the browser the map has a zoom and draws a ring around your lock, and

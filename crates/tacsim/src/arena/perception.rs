@@ -1614,6 +1614,16 @@ pub enum NoticeKind {
     /// and facet struck and what is left there, and nothing whatever about the
     /// shooter.
     Struck,
+    /// **A round arrived on a section of this platform that was already
+    /// destroyed** (16b cut D.2, `B-15`), said to the victim in place of
+    /// [`NoticeKind::Struck`] and **at most once every
+    /// [`crate::arena::state::SPENT_NOTICE_MS`] per section**.
+    ///
+    /// The round is journalled exactly as it always was — it is a `hit` with two
+    /// noughts — but six identical `armour gone, 0 of 0 inside.` lines in ten
+    /// seconds told the pilot nothing the first one had not. The pilot's own
+    /// tank is outside the observer rule, so the section is named.
+    StruckSpent,
     /// **One of this platform's sections is gone** (16b cut F.2), with what that
     /// costs the tank.
     SectionLost,
@@ -1641,6 +1651,17 @@ pub enum NoticeKind {
     /// sequence had begun and then nothing said it had finished, so the way to
     /// find out was to keep typing `HEADING` until one of them was not refused.
     PowerOnline,
+    /// **This platform is a wreck** (16b cut D.2, `B-03`), said to its own pilots
+    /// off the ledger's `unit_destroyed`.
+    ///
+    /// Until this cut a pilot whose tank died read the gunner's `… destroyed.`
+    /// only if they were the gunner: their own scope simply stopped answering and
+    /// every order they typed vanished. It names the pilot's own tank and nothing
+    /// else, so it is outside the observer rule entirely.
+    OwnDestroyed,
+    /// **This platform can neither move nor shoot** (16b cut D.2, `B-03`), said to
+    /// its own pilots off the ledger's `unit_disabled`.
+    OwnDisabled,
 }
 
 impl NoticeKind {
@@ -1658,11 +1679,14 @@ impl NoticeKind {
             NoticeKind::Miss => "miss",
             NoticeKind::Kill => "kill",
             NoticeKind::Struck => "struck",
+            NoticeKind::StruckSpent => "struck_spent",
             NoticeKind::SectionLost => "section_lost",
             NoticeKind::TargetSectionLost => "target_section_lost",
             NoticeKind::Refused => "refused",
             NoticeKind::Blocked => "blocked",
             NoticeKind::PowerOnline => "power_online",
+            NoticeKind::OwnDestroyed => "destroyed",
+            NoticeKind::OwnDisabled => "disabled",
         }
     }
 }
@@ -1777,6 +1801,16 @@ pub enum FrameNotice {
         /// says `engine`, because that is the section the round found — and never
         /// the facet and never a number.
         section: Option<SmolStr>,
+        /// **The round arrived on a section that was already destroyed** (16b cut
+        /// D.2, `B-15`), so the gunner's line says so.
+        ///
+        /// `true` only on a notice that carries a `section`, which is to say only
+        /// for the gunner who **holds the target and has told it apart**: a gunner
+        /// watching an unidentified blip cannot tell a spent section from a live
+        /// one and is told exactly what he was told before this cut, every round.
+        /// See [`crate::arena::state::Arena::spent_said`] for why that is a
+        /// decision and not an oversight.
+        spent: bool,
     },
     /// **A round of this platform's went nowhere** (16b cut F.2), with the
     /// ledger's own reason word ([`crate::arena::damage::MISS_REASONS`]).
@@ -1811,6 +1845,18 @@ pub enum FrameNotice {
         internals_left: u32,
         /// What that section holds when it is whole.
         internals_max: u32,
+    },
+    /// **A round arrived on a section of this platform that was already
+    /// destroyed** (16b cut D.2, `B-15`), staged to the victim in place of
+    /// [`FrameNotice::Struck`] and rate-limited per section.
+    ///
+    /// It carries the section and nothing else: there are no numbers left to
+    /// report — the armour and the internals are both nought, which is what made
+    /// the `Struck` line six identical sentences — and nothing about the shooter,
+    /// for the reason `Struck` carries nothing about one.
+    StruckSpent {
+        /// The section the round found, which is the pilot's own.
+        section: SmolStr,
     },
     /// **One of this platform's sections reached zero internals** (16b cut F.2),
     /// with the consequences that fired, by their authored words.
@@ -1854,6 +1900,14 @@ pub enum FrameNotice {
     /// the platform's own pilots. It carries nothing: the transition is the whole
     /// of it.
     PowerOnline,
+    /// **This platform is a wreck** (16b cut D.2, `B-03`), said to its own pilots.
+    /// It carries nothing: the transition is the whole of it, and naming anything
+    /// else would name the shooter.
+    OwnDestroyed,
+    /// **This platform can neither move nor shoot** (16b cut D.2, `B-03`), said to
+    /// its own pilots. It carries nothing, for the reason
+    /// [`FrameNotice::OwnDestroyed`] does.
+    OwnDisabled,
 }
 
 impl FrameNotice {
@@ -1867,11 +1921,83 @@ impl FrameNotice {
             FrameNotice::Miss { .. } => NoticeKind::Miss,
             FrameNotice::Kill { .. } => NoticeKind::Kill,
             FrameNotice::Struck { .. } => NoticeKind::Struck,
+            FrameNotice::StruckSpent { .. } => NoticeKind::StruckSpent,
             FrameNotice::SectionLost { .. } => NoticeKind::SectionLost,
             FrameNotice::TargetSectionLost { .. } => NoticeKind::TargetSectionLost,
             FrameNotice::Refused { .. } => NoticeKind::Refused,
             FrameNotice::Blocked { .. } => NoticeKind::Blocked,
             FrameNotice::PowerOnline => NoticeKind::PowerOnline,
+            FrameNotice::OwnDestroyed => NoticeKind::OwnDestroyed,
+            FrameNotice::OwnDisabled => NoticeKind::OwnDisabled,
+        }
+    }
+
+    /// **Why motion stopped the platform** (16b cut D.2, `B-07`), where that is
+    /// what this notice is about.
+    ///
+    /// The cut F.2 notice object carried five keys and the whole of the sentence
+    /// lived in `text`, which a panel correctly never reads — so the web cockpit
+    /// printed a bare `held` with no cause. This and the four below are the
+    /// sentence's own parts, so every renderer composes the same line from the
+    /// same fields and nobody has to parse prose back out.
+    #[must_use]
+    pub const fn cause(&self) -> Option<crate::arena::motion::BlockedCause> {
+        match self {
+            FrameNotice::Blocked { cause } => Some(*cause),
+            _ => None,
+        }
+    }
+
+    /// **Why the order was refused** (16b cut D.2, `B-07`), on a
+    /// [`FrameNotice::Refused`] and nowhere else.
+    #[must_use]
+    pub const fn refusal(&self) -> Option<crate::arena::intents::Refusal> {
+        match self {
+            FrameNotice::Refused { refusal, .. } => Some(*refusal),
+            _ => None,
+        }
+    }
+
+    /// **The word the refused order is named by** (16b cut D.2, `B-07`) —
+    /// [`crate::arena::intents::IntentKind::as_str`]'s, as the staging put it
+    /// there.
+    #[must_use]
+    pub fn order(&self) -> Option<&SmolStr> {
+        match self {
+            FrameNotice::Refused { order, .. } => Some(order),
+            _ => None,
+        }
+    }
+
+    /// **The weapon the refused order named**, where it named one (16b cut D.2,
+    /// `B-07`).
+    #[must_use]
+    pub fn weapon(&self) -> Option<&SmolStr> {
+        match self {
+            FrameNotice::Refused { weapon, .. } => weapon.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// **The numbers the refusal's sentence carries** (16b cut D.2, `B-07`), or
+    /// [`RefusalDetail::None`] on every other notice.
+    #[must_use]
+    pub const fn detail(&self) -> RefusalDetail {
+        match self {
+            FrameNotice::Refused { detail, .. } => *detail,
+            _ => RefusalDetail::None,
+        }
+    }
+
+    /// **Whether this notice is about a round that found a section already
+    /// destroyed** (16b cut D.2, `B-15`) — the gunner's `Hit` with `spent` set,
+    /// and the victim's [`FrameNotice::StruckSpent`].
+    #[must_use]
+    pub const fn spent(&self) -> bool {
+        match self {
+            FrameNotice::Hit { spent, .. } => *spent,
+            FrameNotice::StruckSpent { .. } => true,
+            _ => false,
         }
     }
 
@@ -1920,10 +2046,16 @@ impl FrameNotice {
             | FrameNotice::Miss { .. }
             | FrameNotice::Kill { .. }
             | FrameNotice::Struck { .. }
+            // 16b cut D.2: the victim's own spent-section line is the victim's,
+            // exactly as `Struck` is — a panel highlighting the section a GUNNER
+            // took off a target must not be handed it.
+            | FrameNotice::StruckSpent { .. }
             | FrameNotice::SectionLost { .. }
             | FrameNotice::Refused { .. }
             | FrameNotice::Blocked { .. }
-            | FrameNotice::PowerOnline => None,
+            | FrameNotice::PowerOnline
+            | FrameNotice::OwnDestroyed
+            | FrameNotice::OwnDisabled => None,
         }
     }
 
@@ -1938,10 +2070,13 @@ impl FrameNotice {
             | FrameNotice::Miss { contact, .. }
             | FrameNotice::Kill { contact } => *contact,
             FrameNotice::Struck { .. }
+            | FrameNotice::StruckSpent { .. }
             | FrameNotice::SectionLost { .. }
             | FrameNotice::Refused { .. }
             | FrameNotice::Blocked { .. }
-            | FrameNotice::PowerOnline => None,
+            | FrameNotice::PowerOnline
+            | FrameNotice::OwnDestroyed
+            | FrameNotice::OwnDisabled => None,
         }
     }
 }

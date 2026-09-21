@@ -676,9 +676,22 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     // `Term::expect` scans the whole transcript from the start and the cannon's
     // own round has already put `Hit on ` in both of them — the burst would prove
     // nothing at all.
+    // **16b cut D.2** (`B-17`): and it is fired by the short name `help cockpit`
+    // has told pilots to type since cut F.2 — `FIRE mg`, over the wire, on the
+    // shipped tank. `WEAPONSTATUS` advertises it beside the id, and the echo is
+    // the full id either way, which is what proves the word resolved.
+    let seen = ask(&mut ada, "WEAPONSTATUS", "machine_gun").await;
+    assert!(
+        seen.contains("machine_gun (mg)"),
+        "the row does not advertise the short name: {seen}"
+    );
+    assert!(
+        !seen.contains("cannon ("),
+        "a one-word id has no short name: {seen}"
+    );
     let burst = ada.mark();
     let taking = bo.mark();
-    say(&mut ada, "FIRE machine_gun", "Firing machine_gun").await;
+    say(&mut ada, "FIRE mg", "Firing machine_gun").await;
     ada.expect_after(burst, "Hit on ").await;
 
     // **16b cut Q.2**, deterministically: the burst lands, so every outcome line

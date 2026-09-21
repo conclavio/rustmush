@@ -1,11 +1,18 @@
-//! **The cockpit: boarding, the pilot's twelve verbs, and the frame they read**
-//! (16b cut K.2; 16b §8 cut K, K2–K4; doc 16 §3.3 "Startup", "Stations are on
-//! the tank", §3.6 "What a pilot sees", §3.7, §3.8 "Disconnects", §5).
+//! **The cockpit: boarding, the pilot's fourteen verbs, and the frame they
+//! read** (16b cut K.2; 16b §8 cut K, K2–K4; doc 16 §3.3 "Startup", "Stations
+//! are on the tank", §3.6 "What a pilot sees", §3.7, §3.8 "Disconnects", §5).
 //!
 //! Cut K.1 built the lobby: a centre, slots, pods locked to pilots, and the
 //! named `Boarding → Running` trigger waiting for somebody to report a seat.
 //! This is the half that reports one, and everything the pilot can do once
 //! seated.
+//!
+//! **Fourteen**: the twelve cockpit selectors of [`COCKPIT_VERBS`], plus
+//! [`BOARD_VERB`] and [`EXIT_VERB`], which are not selectors — they are how a
+//! pilot gets into the cockpit and out of it. The table below is that list in
+//! that order, and **16b cut D.2** made the three agree: the head said twelve in
+//! one place and fourteen in another, and the table was missing `RANGE` and
+//! `BEARING` altogether (16c `T-77`).
 //!
 //! ```text
 //! BOARD                      climb into your pod and take the tank's cockpit
@@ -15,10 +22,12 @@
 //! VIEW                       the arena window, as a text map
 //! CONTACTS                   what the platform holds
 //! LOCK <contact>             hold one of them
+//! RANGE [<contact>]          how far away one of them plotted
+//! BEARING [<contact>]        which way one of them plotted
 //! SCAN [<contact>]           what is left of one of them, by section
 //! FIRE [<weapon>]            shoot it
 //! WEAPONSTATUS               ammunition and readiness
-//! STATUS                     power, speed, heading, tempo
+//! STATUS                     callsign, power, speed, heading, scope, damage
 //! EXIT                       climb out
 //! ```
 //!
@@ -55,7 +64,7 @@
 //! # The verbs are contextual, and the gate is what makes them so
 //!
 //! There is no such thing as a verb that exists only in a cockpit: the command
-//! table is global. So the fourteen verbs are registered globally and
+//! table is global. So all fourteen are registered globally and
 //! [`CockpitGate`] refuses each of them, with one line, wherever it does not
 //! mean anything — `BOARD` outside a team room, `EXIT` outside a pod, and the
 //! twelve cockpit selectors to anyone who is not focused on a station of a
@@ -275,6 +284,35 @@ pub const EMPTY: &str = "Empty";
 /// [`POWER_NOT_ONLINE`] does, and the pin test below holds the two together.
 pub const OVERHEATED: &str = "Overheated";
 
+/// **The line every order refuses with once the tank is a wreck** (16b cut D.2,
+/// `B-03`; doc 16 §3.3 "A wreck": *no longer the subject of any order*).
+///
+/// Read off [`Frame::wreck`], before the power check: a dead tank's power is
+/// beside the point, and `Power not online: STARTUP first.` is the one answer a
+/// pilot in a wreck must never be given. It names what to do instead, because
+/// the whole of `B-03` is a pilot typing into a dead tank and being told nothing.
+pub const DESTROYED: &str = "Your tank is destroyed and takes no orders. EXIT leaves the pod.";
+
+/// **The line `HEADING` and `SPEED` refuse with once motion is gone** (16b cut
+/// D.2, `B-03`).
+///
+/// Byte for byte the sentence [`refusal_line`] says for
+/// [`crate::arena::intents::Refusal::MotionDisabled`], and the pin test below
+/// holds the two together, for the reason [`POWER_NOT_ONLINE`] is pinned to the
+/// arena's word.
+pub const IMMOBILE: &str = "Your tank cannot move.";
+
+/// **What follows a friendly contact's designator on the three lines that name
+/// one** (16b cut D.2, `B-18`; doc 16 §3.6).
+///
+/// Friendly fire is **said and never gated**: the arena refuses nothing, because
+/// a crew that means to shoot at a friend is a thing the game is entitled to let
+/// happen and a refusal would be the engine deciding. What the pilot gets is the
+/// word, on the `LOCK` echo, on [`lock_line`] (so `WEAPONSTATUS` says it too) and
+/// on the hit. It is read at render time off the frame's own row for that
+/// contact, so an unidentified return is never friendly.
+pub const FRIENDLY_MARK: &str = " (FRIENDLY)";
+
 /// **The one byte-identical refusal for any contact id the platform does not
 /// hold** (doc 16 §3.6: *unresolvable, unowned or expired* are one answer).
 ///
@@ -373,6 +411,34 @@ pub enum CockpitError {
     /// The unit carries no weapon by that name.
     #[error("That unit carries no weapon called `{0}`.")]
     NoSuchWeapon(String),
+    /// **The word names more than one of the platform's weapons** (16b cut D.2,
+    /// `B-17`): a short name or a prefix that two rows answer to.
+    #[error("`{word}` could be {ids}; say more.")]
+    AmbiguousWeapon {
+        /// What the pilot typed, trimmed.
+        word: String,
+        /// The candidate ids, in row order, joined with ` or `.
+        ids: String,
+    },
+    /// **The tank is a wreck** (16b cut D.2, `B-03`), read off [`Frame::wreck`].
+    #[error("{DESTROYED}")]
+    Destroyed,
+    /// **The tank cannot move** (16b cut D.2, `B-03`), read off
+    /// [`Frame::immobile`]. `HEADING` and `SPEED` only: a tank with a dead engine
+    /// still sees and still shoots.
+    #[error("{IMMOBILE}")]
+    Immobile,
+    /// **A `FIRE` the cockpit refused locally, in the arena's own sentence** (16b
+    /// cut D.2, `B-16`).
+    ///
+    /// Every `FIRE` refusal reads `FIRE <weapon> refused. <reason>`, whichever
+    /// half answered: the cockpit's pre-check against the last frame, or the
+    /// arena's own a pulse later. Both compose it through [`order_refused`], so
+    /// the early answer and the late one are one string — which is exactly the
+    /// contract cut F.2 wrote [`refusal_line`] for, read once more now that the
+    /// weapon is in the sentence.
+    #[error("{0}")]
+    Refused(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +536,46 @@ pub fn power_of(w: &World, pilot: ObjId) -> Power {
         Power::Starting
     } else {
         Power::Off
+    }
+}
+
+/// **Refuse every order once the tank is a wreck** (16b cut D.2, `B-03`; doc 16
+/// §3.3 "A wreck").
+///
+/// It goes **before** [`require_power`] wherever both run, and that order is the
+/// whole point: a wreck's power is beside the point, and cut D.1's `Starting`
+/// hint would otherwise answer `Power is still coming up; hold on.` for six
+/// seconds to a pilot whose tank had just been shot to pieces — which is the
+/// worst sentence in the tree for that moment.
+///
+/// A pilot the arena has not spoken to yet has no frame and is **not** refused:
+/// a cold tank is not a dead one, and `Frame::wreck` is a fact the arena
+/// publishes rather than one the world can infer.
+///
+/// # Errors
+///
+/// [`CockpitError::Destroyed`].
+fn require_alive(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
+    match last_frame(w, pilot) {
+        Some(held) if held.frame.wreck => Err(CockpitError::Destroyed),
+        _ => Ok(()),
+    }
+}
+
+/// **Refuse `HEADING` and `SPEED` once motion is gone** (16b cut D.2, `B-03`).
+///
+/// [`CockpitError::Immobile`]'s sentence is byte for byte what [`refusal_line`]
+/// says for [`crate::arena::intents::Refusal::MotionDisabled`] a pulse later. A
+/// tank with a dead engine still sees, still locks and still shoots, so this runs
+/// on the two motion verbs and on nothing else.
+///
+/// # Errors
+///
+/// [`CockpitError::Immobile`].
+fn require_mobile(w: &World, pilot: ObjId) -> Result<(), CockpitError> {
+    match last_frame(w, pilot) {
+        Some(held) if held.frame.immobile => Err(CockpitError::Immobile),
+        _ => Ok(()),
     }
 }
 
@@ -916,13 +1022,31 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
         // the platform holds the target and has told it apart. `Hit on BA: turret.`
         // against `Hit on X2.` against `Hit.`, which are the three things a gunner
         // can honestly be told about where a round went.
-        FrameNotice::Hit { contact, section } => match (contact, section) {
-            (Some(contact), Some(section)) => {
-                format!("Hit on {}: {section}.", contact.designator)
+        // **16b cut D.2**: `(FRIENDLY)` after the designator (`B-18`), and the
+        // one clause a gunner who has told the target apart earns when the round
+        // found a section that was already gone (`B-15`). A gunner holding the
+        // target *unidentified* carries no section and no `spent`, so his line is
+        // byte for byte what it was.
+        FrameNotice::Hit {
+            contact,
+            section,
+            spent,
+        } => {
+            let already = if *spent { ", already destroyed" } else { "" };
+            match (contact, section) {
+                (Some(contact), Some(section)) => format!(
+                    "Hit on {}{}: {section}{already}.",
+                    contact.designator,
+                    friendly_mark(frame, contact.id)
+                ),
+                (Some(contact), None) => format!(
+                    "Hit on {}{}.",
+                    contact.designator,
+                    friendly_mark(frame, contact.id)
+                ),
+                (None, _) => "Hit.".to_owned(),
             }
-            (Some(contact), None) => format!("Hit on {}.", contact.designator),
-            (None, _) => "Hit.".to_owned(),
-        },
+        }
         FrameNotice::Miss { contact, reason } => match contact {
             Some(contact) => format!("Miss on {}: {}.", contact.designator, miss_words(reason)),
             None => format!("Miss: {}.", miss_words(reason)),
@@ -956,6 +1080,13 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
             } else {
                 format!("Hit on {place}: armour gone, {internals_left} of {internals_max} inside.")
             }
+        }
+        // **16b cut D.2** (`B-15`): the round found a section that was already
+        // destroyed, so there are no numbers left to report and one sentence says
+        // the whole of it — at most once every `SPENT_NOTICE_MS` per section, so
+        // six of these in ten seconds is one.
+        FrameNotice::StruckSpent { section } => {
+            format!("Hit on the {section}, which is already destroyed.")
         }
         FrameNotice::SectionLost {
             section,
@@ -993,8 +1124,40 @@ pub fn notice_line(frame: &Frame, notice: &FrameNotice, rows: &[ContactRow]) -> 
         // **16b cut Q.1**: the far end of `STARTUP`. Three words, because the
         // only thing a pilot waiting on the sequence wants is to know it is over.
         FrameNotice::PowerOnline => "Power online.".to_owned(),
+        // **16b cut D.2** (`B-03`): the pilot's own tank, and nothing about who
+        // did it. Both sentences say what the pilot may do next, because the
+        // thing the smoke matches found is somebody sitting in a dead tank with
+        // no idea whether the match was still going on.
+        FrameNotice::OwnDestroyed => OWN_DESTROYED.to_owned(),
+        FrameNotice::OwnDisabled => OWN_DISABLED.to_owned(),
     }
 }
+
+/// **`(FRIENDLY)` where this frame's own row for `contact` says so** (16b cut
+/// D.2, `B-18`), and the empty string everywhere else.
+///
+/// Read off the frame's rows at render time and never carried on the notice: a
+/// contact's side is a thing the platform resolves and may re-resolve, and an
+/// unidentified return has no side at all — so an `unknown` row is never marked,
+/// by construction.
+fn friendly_mark(frame: &Frame, contact: ContactId) -> &'static str {
+    let friendly = frame
+        .contacts
+        .iter()
+        .find(|held| held.id == contact)
+        .is_some_and(|held| held.class.team() == Some(frame.team));
+    if friendly { FRIENDLY_MARK } else { "" }
+}
+
+/// **The line a pilot reads when their own tank becomes a wreck** (16b cut D.2,
+/// `B-03`).
+pub const OWN_DESTROYED: &str = "Your tank is destroyed. The match runs on without you: wait it \
+                                 out, EXIT to the team room, or SIM ABORT to call it off.";
+
+/// **The line a pilot reads when their own tank can neither move nor shoot**
+/// (16b cut D.2, `B-03`).
+pub const OWN_DISABLED: &str = "Your tank can neither move nor shoot. The match runs on: wait it \
+                                out, EXIT to the team room, or SIM ABORT to call it off.";
 
 /// **A miss reason in plain words** (16b cut F.2), one per
 /// [`crate::arena::damage::MISS_REASONS`] — the ledger's own vocabulary read as a
@@ -1094,7 +1257,47 @@ pub(crate) fn refusal_line(
         (Refusal::Linkdead, _) => "Your seat has gone linkdead.".to_owned(),
         (Refusal::NotReflex, _) => "That tank has a pilot in it.".to_owned(),
     };
-    format!("{} refused. {said}", order.to_uppercase())
+    order_refused(order, weapon, &said)
+}
+
+/// **The one shape every refused order's sentence has** (16b cut D.2, `B-16`):
+/// `HEADING refused. …`, and `FIRE machine_gun refused. …` where the order named
+/// a weapon.
+///
+/// Cut F.2's prefix was the order word alone, so a pilot who carried two guns
+/// read `FIRE refused. Still cycling: 3 s to go.` and had to guess which breech
+/// was busy — and the cockpit's own pre-check said a *different* sentence for the
+/// same condition, with no prefix at all. Both halves compose through here now,
+/// so the early answer and the late one are one string and a pilot who fires two
+/// weapons reads which one was refused.
+///
+/// The weapon goes **after the order word and before `refused`**, because that is
+/// where the pilot typed it.
+#[must_use]
+pub fn order_refused(order: &str, weapon: Option<&str>, said: &str) -> String {
+    match weapon {
+        Some(weapon) if !weapon.trim().is_empty() => {
+            format!("{} {weapon} refused. {said}", order.to_uppercase())
+        }
+        _ => format!("{} refused. {said}", order.to_uppercase()),
+    }
+}
+
+/// **A `FIRE` the cockpit refused against its own mirror** (16b cut D.2,
+/// `B-16`), in the sentence the arena would have said a pulse later.
+///
+/// The `said` half is the [`CockpitError`]'s own `Display`, which is where each
+/// of those sentences already lives — so this adds the prefix and invents
+/// nothing.
+fn fire_refused(weapon: &str, said: &CockpitError) -> CockpitError {
+    CockpitError::Refused(order_refused(
+        IntentKind::Fire {
+            weapon: SmolStr::new(weapon),
+        }
+        .as_str(),
+        Some(weapon),
+        &said.to_string(),
+    ))
 }
 
 /// Every line the notices on one frame print, in order — what the bridge says and
@@ -1164,10 +1367,13 @@ pub fn lock_line(frame: &Frame) -> Option<String> {
     // lock is always one of the rows, because the arena clears a lock the moment
     // its contact stops being held.
     let named = lock_designator(frame)?;
+    // 16b cut D.2 (`B-18`): a lock on a friend says so, here and therefore on
+    // `WEAPONSTATUS` too. Nothing is refused.
+    let mark = frame_lock(frame).map_or("", |contact| friendly_mark(frame, contact));
     Some(
         match fired_by_default(&frame.weapons).and_then(|weapon| weapon.p_permille) {
-            Some(permille) => format!("Locked on {named}, {}% to hit.", permille / 10),
-            None => format!("Locked on {named}."),
+            Some(permille) => format!("Locked on {named}{mark}, {}% to hit.", permille / 10),
+            None => format!("Locked on {named}{mark}."),
         },
     )
 }
@@ -1226,6 +1432,8 @@ pub fn frame_weapons(frame: &Frame) -> Vec<WeaponRow> {
             rounds_max: i64::from(weapon.rounds_max),
             range_band: weapon.range_band,
             p_permille: weapon.p_permille,
+            // 16b cut D.2 (`B-16`): straight off the frame's own row.
+            heat_per_shot: weapon.heat_per_shot,
         })
         .collect()
 }
@@ -1758,6 +1966,9 @@ pub(crate) fn eject_pilot(ctx: &mut Ctx<'_>, actor: ObjId) -> EjectReport {
 /// ends.
 fn startup(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    // 16b cut D.2 (`B-03`): before the power, so a pilot in a wreck is never told
+    // to wait for a startup that is not coming.
+    require_alive(ctx.w, actor)?;
     match power_of(ctx.w, actor) {
         Power::Online => {
             ctx.out
@@ -1806,6 +2017,10 @@ fn heading(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitErro
         .ok()
         .filter(|deg| *deg < 360)
         .ok_or_else(|| CockpitError::Usage("HEADING <0-359>, clockwise from north.".to_owned()))?;
+    // 16b cut D.2 (`B-03`), in the arena's own order: the wreck, then the motion
+    // limit, then the power.
+    require_alive(ctx.w, actor)?;
+    require_mobile(ctx.w, actor)?;
     require_power(ctx.w, actor)?;
     forward_intent(
         ctx,
@@ -1836,6 +2051,9 @@ fn speed(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError>
             "That unit makes {max_kph} kph; SPEED 0 to {max_kph}."
         )));
     }
+    // 16b cut D.2 (`B-03`): as `HEADING`.
+    require_alive(ctx.w, actor)?;
+    require_mobile(ctx.w, actor)?;
     require_power(ctx.w, actor)?;
     forward_intent(
         ctx,
@@ -1875,6 +2093,10 @@ fn speed(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError>
 /// lane (16b §0.2), so this says `Locking {id}.` and nothing else.
 fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    // 16b cut D.2 (`B-03`): a wreck takes no order at all, and the arena's own
+    // refusal would be a pulse away. It is the FIRST thing this verb does, so a
+    // pilot in a wreck is never answered about which contacts are out there.
+    require_alive(ctx.w, actor)?;
     let held = last_frame(ctx.w, actor)
         .map(|held| frame_contacts(&held.frame))
         .unwrap_or_default();
@@ -1883,10 +2105,19 @@ fn lock(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> 
     // nothing, an id that names somebody else's contact and an id that has
     // expired all take one path, byte for byte.
     let contact = resolve_designator(&held, rest).ok_or(CockpitError::NoSuchContact)?;
+    // 16b cut D.2 (`B-18`): the echo says `(FRIENDLY)` where the row is one, off
+    // the row's own `friendly` — which is `false` for every unidentified return,
+    // so a blip is never marked. Nothing is refused.
     let named = held
         .iter()
         .find(|row| row.id == contact)
-        .map(|row| row.designator.to_string())
+        .map(|row| {
+            format!(
+                "{}{}",
+                row.designator,
+                if row.friendly { FRIENDLY_MARK } else { "" }
+            )
+        })
         .unwrap_or_default();
     forward_intent(ctx, actor, unit, IntentKind::Lock { contact })?;
     let line = format!("Locking {named}.");
@@ -2143,36 +2374,50 @@ pub fn stale_clause(age_ms: i64, pass_ms: i64) -> String {
 /// a frame one pulse behind changes which half answers and never what it says.
 fn fire(ctx: &mut Ctx<'_>, unit: ObjId, rest: &str) -> Result<(), CockpitError> {
     let actor = ctx.actor;
+    // 16b cut D.2 (`B-03`): a wreck fires nothing, and it is asked first — a
+    // destroyed tank's weapons are gone, so every later check would answer about
+    // the rack instead of about the tank.
+    require_alive(ctx.w, actor)?;
     let held = last_frame(ctx.w, actor);
     let weapon = choose_weapon(&carried(ctx.w, unit, held.as_ref()), rest)?;
+    // **16b cut D.2** (`B-16`): every one of these is `FIRE <weapon> refused. …`,
+    // which is the sentence the arena's own refusal says a pulse later. The
+    // `NoSuchWeapon` above is the one that is not: `choose_weapon` failed to find
+    // a weapon, so there is none to name.
+    let refused = |said: &CockpitError| fire_refused(&weapon.id, said);
     if held
         .as_ref()
         .and_then(|held| frame_lock(&held.frame))
         .is_none()
     {
-        return Err(CockpitError::NoLock);
+        return Err(refused(&CockpitError::NoLock));
     }
     if !weapon.ready {
-        return Err(CockpitError::Cycling {
+        return Err(refused(&CockpitError::Cycling {
             secs: weapon.ready_in_ms.saturating_add(999) / 1_000,
-        });
+        }));
     }
     if weapon.rounds <= 0 {
-        return Err(CockpitError::Empty);
+        return Err(refused(&CockpitError::Empty));
     }
     // **16b cut X.1** (doc 16 §9 item 1), in the arena's own order: the platform's
     // heat after the weapon's own two refusals and before the power. A platform
     // whose content declares no heat carries no `heat` on its frame and is never
     // refused here.
+    //
+    // **16b cut D.2** (`B-16`): and neither is a weapon that makes no heat, on
+    // the platform's own row, which is the same clause `Arena::resolve_fire` and
+    // `reflex::would_overheat` apply.
     if let Some(heat) = held.as_ref().and_then(|held| held.frame.heat)
         && heat.overheated()
+        && weapon.heat_per_shot > 0
     {
-        return Err(CockpitError::Overheated {
+        return Err(refused(&CockpitError::Overheated {
             heat: heat.heat,
             max: heat.max,
-        });
+        }));
     }
-    require_power(ctx.w, actor)?;
+    require_power(ctx.w, actor).map_err(|said| refused(&said))?;
     forward_intent(
         ctx,
         actor,
@@ -2222,7 +2467,7 @@ fn weapon_status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
         lines.push(line);
     }
     for weapon in &weapons {
-        lines.push(weapon.render());
+        lines.push(weapon.render(&weapons));
     }
     say_and_frame(ctx, held.as_ref(), lines);
     Ok(())
@@ -2241,12 +2486,15 @@ fn status(ctx: &mut Ctx<'_>, unit: ObjId) -> Result<(), CockpitError> {
                 // the radio needs one place to look.
                 format!("Callsign {}.", frame.callsign),
                 format!(
-                    "{}: power {}, {} kph, heading {}°{}",
+                    "{}: power {}, {} kph, heading {}°{}{}",
                     display_name(ctx.w, unit),
                     frame.power.as_str(),
                     cms_to_kph(frame.speed_cms),
                     frame.pose.heading_mdeg / 1_000,
-                    if frame.blocked { ", HELD" } else { "" }
+                    if frame.blocked { ", HELD" } else { "" },
+                    // 16b cut D.2 (`B-03`): beside `HELD`, and the one mark a
+                    // pilot who has stopped being told anything needs.
+                    if frame.wreck { ", DESTROYED" } else { "" }
                 ),
                 // **16b cut D.1**: the pilot's own alert state, off their own
                 // scope, where the arena's one global tempo word used to be
@@ -2564,6 +2812,34 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
                 // the victim's own two included — what a round did inside this
                 // tank is `sections` above, with its facet and its cost.
                 "section": notice.section().map(SmolStr::as_str),
+                // **16b cut D.2** (`B-07`): the sentence's own parts. Until this
+                // cut the whole of a refusal and the whole of a block lived in
+                // `text`, which a panel correctly never reads (one sentence, one
+                // owner) — so the web cockpit printed a bare `refused` with no
+                // order, no weapon and no reason. Every key here is `null` on a
+                // notice it does not apply to.
+                "cause": notice.cause().map(|cause| cause.as_str()),
+                "refusal": notice.refusal().map(|refusal| refusal.as_str()),
+                "order": notice.order().map(SmolStr::as_str),
+                "weapon": notice.weapon().map(SmolStr::as_str),
+                "detail": match notice.detail() {
+                    RefusalDetail::None => serde_json::Value::Null,
+                    RefusalDetail::Cycling { secs } => serde_json::json!({ "secs": secs }),
+                    RefusalDetail::Overheated { heat, max } => {
+                        serde_json::json!({ "heat": heat, "max": max })
+                    }
+                },
+                // 16b cut D.2 (`B-18`): whether the contact this notice names is
+                // on the platform's own side, off the frame's own row — so a
+                // panel marks a friendly lock without a table of its own. Always
+                // `false` for a notice that names no contact, and for every
+                // unidentified one.
+                "friendly": notice
+                    .contact()
+                    .is_some_and(|id| !friendly_mark(frame, id).is_empty()),
+                // 16b cut D.2 (`B-15`): the round found a section that was
+                // already destroyed.
+                "spent": notice.spent(),
                 "text": text,
             }))
         })
@@ -2585,6 +2861,10 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
                 })),
                 "p_permille": weapon.p_permille,
                 "percent": weapon.p_permille.map(|permille| permille / 10),
+                // 16b cut D.2 (`B-16`): what one shot of it costs the platform,
+                // and `0` for a cold gun — which is what tells a panel why an
+                // overheated tank may still fire this one.
+                "heat_per_shot": weapon.heat_per_shot,
             })
         })
         .collect();
@@ -2638,6 +2918,11 @@ pub fn status_frame(match_id: MatchId, frame: &Frame) -> serde_json::Value {
         "speed_kph": cms_to_kph(frame.speed_cms),
         "power": frame.power.as_str(),
         "blocked": frame.blocked,
+        // **16b cut D.2** (`B-03`): the pilot's own two limits. A pilot's tank is
+        // outside the observer rule entirely, and these are what a panel greys
+        // the order controls on.
+        "wreck": frame.wreck,
+        "immobile": frame.immobile,
         "tempo": frame.tempo.as_str(),
         // **16b cut D.1**: the platform's own nominal sight, metres — what each
         // contact's `band` is read against ([`contact_band`]), so a panel can say
@@ -3056,6 +3341,15 @@ pub struct WeaponRow {
     /// 16 §3.5 step 5 and §5's *per weapon*), or `None` with no lock and from
     /// [`weapons_of`], which has none to resolve against.
     pub p_permille: Option<u32>,
+    /// **What one shot of it adds to the platform's heat** (16b cut D.2, `B-16`),
+    /// and `0` for a weapon that makes none — which is every weapon of a stock
+    /// tank, and also what [`weapons_of`] answers, because a unit no arena holds
+    /// has no heat state to read.
+    ///
+    /// The `FIRE` pre-check skips the heat refusal for a row of nought, which is
+    /// the clause [`crate::arena::state::Arena::resolve_fire`] applies a pulse
+    /// later.
+    pub heat_per_shot: u32,
 }
 
 impl WeaponRow {
@@ -3067,8 +3361,18 @@ impl WeaponRow {
     /// when the platform has a lock, because that is the only time either means
     /// anything — and the percentage is **this weapon's**, which is the whole of
     /// 16b cut F.2's item 4.
+    ///
+    /// **16b cut D.2** (`B-17`) opens the short name the pilot may type —
+    /// `machine_gun (mg)` — where this row has one that no other row shares.
+    /// That is why the whole list is the argument: a short name is a fact about
+    /// the *platform's* weapons and not about one of them, and a row that
+    /// advertised an ambiguous `m` would be advertising a refusal.
     #[must_use]
-    pub fn render(&self) -> String {
+    pub fn render(&self, rows: &[WeaponRow]) -> String {
+        let named = match weapon_short_of(rows, &self.id) {
+            Some(short) => format!("{} ({short})", self.id),
+            None => self.id.to_string(),
+        };
         let ready = if self.ready {
             "ready".to_owned()
         } else {
@@ -3086,8 +3390,8 @@ impl WeaponRow {
             None => String::new(),
         };
         format!(
-            "{}  {}  {} of {} round(s){band}{chance}",
-            self.id, ready, self.rounds, self.rounds_max
+            "{named}  {ready}  {} of {} round(s){band}{chance}",
+            self.rounds, self.rounds_max
         )
     }
 }
@@ -3138,6 +3442,9 @@ pub fn weapons_of(w: &World, unit: ObjId) -> Vec<WeaponRow> {
             rounds_max: rounds.max,
             range_band: None,
             p_permille: None,
+            // 16b cut D.2: a unit no arena holds has no heat state to read, and
+            // no frame either — so nothing is ever refused for heat off this row.
+            heat_per_shot: 0,
         });
     }
     rows
@@ -3167,17 +3474,102 @@ fn carried(w: &World, unit: ObjId, held: Option<&CockpitFrame>) -> Vec<WeaponRow
     }
 }
 
+/// **The short name of a weapon id** (16b cut D.2, `B-17`): the initials of an
+/// id of two or more `_`-separated words, and `None` for a one-word id.
+///
+/// `machine_gun` gives `mg`; `cannon` and `laser` give nothing, because a
+/// one-letter `c` is not a name, it is a keystroke that would collide with the
+/// first prefix anybody added.
+///
+/// **It is derived and not content-declared**, and that is a deliberate
+/// departure from §5 Q14's default. Declaring short names means a new version of
+/// all six unit packs, a re-blessed digest for each, and a story for every roster
+/// tank's `DefinitionRef` on the live box — all for one two-letter word that the
+/// id already spells. The derivation has the property the declaration was wanted
+/// for (the pilot types two letters) and costs no content at all.
+///
+/// **It is not [`crate::match_::lobby`]'s private `short_name`, and the two are
+/// unrelated.** That one answers the LAST SEGMENT of a canonical *unit* id —
+/// `tacsim.unit.line_tank` gives `line_tank` — which is the opposite rule about a
+/// different kind of id. This one is initials, over a component id.
+#[must_use]
+pub fn weapon_initials(id: &str) -> Option<String> {
+    let words: Vec<&str> = id.split('_').filter(|word| !word.is_empty()).collect();
+    if words.len() < 2 {
+        return None;
+    }
+    let mut short = String::with_capacity(words.len());
+    for word in words {
+        for letter in word.chars().take(1) {
+            short.push(letter.to_ascii_lowercase());
+        }
+    }
+    Some(short)
+}
+
+/// **The short name `id` may be typed as on this platform** (16b cut D.2,
+/// `B-17`), or `None` when it has none or when another row shares it.
+///
+/// A shared short name is not a name: two rows answering to `mg` means `FIRE mg`
+/// is [`CockpitError::AmbiguousWeapon`], and a `WEAPONSTATUS` row that advertised
+/// it would be advertising a refusal.
+#[must_use]
+pub fn weapon_short_of(rows: &[WeaponRow], id: &str) -> Option<String> {
+    let short = weapon_initials(id)?;
+    let shared = rows.iter().any(|row| {
+        !row.id.eq_ignore_ascii_case(id)
+            && weapon_initials(&row.id).is_some_and(|other| other == short)
+    });
+    (!shared).then_some(short)
+}
+
 /// The weapon `FIRE` means: the one the pilot named, else [`DEFAULT_WEAPON`],
 /// else the first the unit carries — answering the whole row, so the caller's
 /// pre-checks read the same numbers the choice was made from.
+///
+/// **16b cut D.2** (`B-17`) gave the named case three steps, case-folded and
+/// trimmed, each tried in full before the next:
+///
+/// 1. the **exact id** — `FIRE machine_gun`, which is what every existing script
+///    and every help line types and which therefore can never be ambiguous;
+/// 2. the **short name** ([`weapon_initials`]) — `FIRE mg`;
+/// 3. the **prefix** — `FIRE can`, `FIRE mach`.
+///
+/// Two or more candidates at a step is [`CockpitError::AmbiguousWeapon`] naming
+/// them, and no candidate at any step is the existing
+/// [`CockpitError::NoSuchWeapon`]. A step is not fallen through on ambiguity:
+/// `m` matching two short names must not quietly become a prefix search that
+/// matches the same two.
+///
+/// `B-17`: `help cockpit` told a pilot to type `FIRE mg` for four cuts and no
+/// such weapon existed, because the ids are component ids.
 fn choose_weapon(rows: &[WeaponRow], rest: &str) -> Result<WeaponRow, CockpitError> {
     let named = rest.trim();
     if !named.is_empty() {
-        return rows
-            .iter()
-            .find(|weapon| weapon.id.eq_ignore_ascii_case(named))
-            .cloned()
-            .ok_or_else(|| CockpitError::NoSuchWeapon(named.to_owned()));
+        let folded = named.to_ascii_lowercase();
+        let steps: [fn(&WeaponRow, &str) -> bool; 3] = [
+            |row, word| row.id.eq_ignore_ascii_case(word),
+            |row, word| weapon_initials(&row.id).is_some_and(|short| short == word),
+            |row, word| row.id.to_ascii_lowercase().starts_with(word),
+        ];
+        for matches in steps {
+            let found: Vec<&WeaponRow> = rows.iter().filter(|row| matches(row, &folded)).collect();
+            match found.as_slice() {
+                [] => {}
+                [one] => return Ok((*one).clone()),
+                many => {
+                    return Err(CockpitError::AmbiguousWeapon {
+                        word: named.to_owned(),
+                        ids: many
+                            .iter()
+                            .map(|row| row.id.as_str())
+                            .collect::<Vec<&str>>()
+                            .join(" or "),
+                    });
+                }
+            }
+        }
+        return Err(CockpitError::NoSuchWeapon(named.to_owned()));
     }
     rows.iter()
         .find(|weapon| weapon.id.as_str() == DEFAULT_WEAPON)
@@ -3443,8 +3835,12 @@ fn cockpit_help(verb: &str) -> String {
         "weaponstatus" => "WEAPONSTATUS        every weapon you carry: ready or cycling, its \
                            rounds, its own chance against your lock, and that lock's range band."
             .to_owned(),
-        _ => "STATUS              power, speed, heading, position, the arena's tempo, and your \
-              armour and internals section by section."
+        // 16b cut D.2 (`T-77`): the callsign is `STATUS`'s first line and the
+        // help did not mention it, so a pilot asked "who is RA?" had nowhere to
+        // be sent; and cut D.1 replaced the arena's global tempo on the third
+        // line with this platform's own scope.
+        _ => "STATUS              your callsign, power, speed, heading, position, what your own \
+              scope holds, and your armour and internals section by section."
             .to_owned(),
     }
 }
@@ -3558,9 +3954,14 @@ mod tests {
             Refusal::NoWeapon,
             Refusal::NotReflex,
         ] {
+            // 16b cut D.2 (`B-16`): the weapon is in the prefix now, so a pilot
+            // with two guns reads which breech was refused.
             let line = refusal_line("fire", refusal, Some("cannon"), RefusalDetail::None);
-            assert!(line.starts_with("FIRE refused. "), "{refusal:?}: {line}");
-            let said = line.trim_start_matches("FIRE refused. ");
+            assert!(
+                line.starts_with("FIRE cannon refused. "),
+                "{refusal:?}: {line}"
+            );
+            let said = line.trim_start_matches("FIRE cannon refused. ");
             assert!(!said.is_empty(), "{refusal:?} says nothing");
             assert!(
                 !said.starts_with("Refused:"),
@@ -3587,7 +3988,7 @@ mod tests {
                 RefusalDetail::Overheated { heat: 60, max: 60 },
             ),
             format!(
-                "FIRE refused. {}",
+                "FIRE laser refused. {}",
                 CockpitError::Overheated { heat: 60, max: 60 }
             )
         );
@@ -3643,9 +4044,11 @@ mod tests {
             }),
             // 16b cut F.2: this weapon's own chance, not the platform's best.
             p_permille: Some(464),
+            heat_per_shot: 0,
         };
+        // 16b cut D.2: `cannon` is one word, so it has no short name to open.
         assert_eq!(
-            ready.render(),
+            ready.render(std::slice::from_ref(&ready)),
             "cannon  ready  40 of 40 round(s)  band 1 of 2  46% to hit"
         );
         // Cycling, with the seconds rounded **up**: a pilot told "0 s" would try
@@ -3656,9 +4059,33 @@ mod tests {
             rounds: 39,
             range_band: None,
             p_permille: None,
-            ..ready
+            ..ready.clone()
         };
-        assert_eq!(cycling.render(), "cannon  cycling (4 s)  39 of 40 round(s)");
+        assert_eq!(
+            cycling.render(std::slice::from_ref(&cycling)),
+            "cannon  cycling (4 s)  39 of 40 round(s)"
+        );
+        // **16b cut D.2** (`B-17`): a two-word id opens its initials, and only
+        // where no other row answers to them.
+        let mg = WeaponRow {
+            id: SmolStr::new("machine_gun"),
+            ..ready.clone()
+        };
+        let rows = vec![ready.clone(), mg.clone()];
+        assert_eq!(
+            mg.render(&rows),
+            "machine_gun (mg)  ready  40 of 40 round(s)  band 1 of 2  46% to hit"
+        );
+        let missile = WeaponRow {
+            id: SmolStr::new("missile_gun"),
+            ..ready.clone()
+        };
+        let shared = vec![mg.clone(), missile.clone()];
+        assert_eq!(
+            mg.render(&shared),
+            "machine_gun  ready  40 of 40 round(s)  band 1 of 2  46% to hit",
+            "a short name two rows answer to is not a name"
+        );
     }
 
     #[test]
@@ -3832,6 +4259,245 @@ mod tests {
             COCKPIT_VERBS.len(),
             12,
             "doc 16 section 3.7's nine, cut Q.1's two read verbs and cut Q.2's SCAN"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut D.2
+    // -----------------------------------------------------------------------
+
+    /// One weapon row with an id and nothing else that matters here.
+    fn weapon_row(id: &str) -> WeaponRow {
+        WeaponRow {
+            id: SmolStr::new(id),
+            ready: true,
+            ready_in_ms: 0,
+            rounds: 10,
+            rounds_max: 10,
+            range_band: None,
+            p_permille: None,
+            heat_per_shot: 0,
+        }
+    }
+
+    /// **`B-17`**: the short name is the id's initials, and a one-word id has
+    /// none — a single letter is a keystroke, not a name.
+    #[test]
+    fn d2_a_weapon_of_two_words_is_typable_as_its_initials() {
+        assert_eq!(weapon_initials("machine_gun").as_deref(), Some("mg"));
+        assert_eq!(weapon_initials("missile_rack_two").as_deref(), Some("mrt"));
+        assert_eq!(weapon_initials("MACHINE_GUN").as_deref(), Some("mg"));
+        assert_eq!(weapon_initials("cannon"), None);
+        assert_eq!(weapon_initials("laser"), None);
+        assert_eq!(weapon_initials(""), None);
+        assert_eq!(weapon_initials("_"), None);
+        // It is NOT `lobby::short_name`, which answers the last segment of a
+        // canonical unit id. The two rules are opposite and are about different
+        // kinds of id.
+        assert_ne!(
+            weapon_initials("tacsim_unit_line_tank").as_deref(),
+            Some("line_tank")
+        );
+    }
+
+    /// **`B-17`**: `FIRE mg` works, `FIRE can` works, and a word two weapons
+    /// answer to is refused saying which.
+    #[test]
+    fn d2_choose_weapon_takes_the_id_the_short_name_and_the_prefix() {
+        let rows = vec![weapon_row("cannon"), weapon_row("machine_gun")];
+        let chosen = |word: &str| {
+            choose_weapon(&rows, word)
+                .map(|row| row.id.to_string())
+                .map_err(|err| err.to_string())
+        };
+        // (1) the exact id, case-folded and trimmed.
+        assert_eq!(chosen("machine_gun"), Ok("machine_gun".to_owned()));
+        assert_eq!(chosen("  MACHINE_GUN "), Ok("machine_gun".to_owned()));
+        // (2) the short name.
+        assert_eq!(chosen("mg"), Ok("machine_gun".to_owned()));
+        assert_eq!(chosen("MG"), Ok("machine_gun".to_owned()));
+        // (3) the prefix.
+        assert_eq!(chosen("can"), Ok("cannon".to_owned()));
+        assert_eq!(chosen("mach"), Ok("machine_gun".to_owned()));
+        // None: the existing sentence, unchanged.
+        assert_eq!(
+            chosen("railgun"),
+            Err("That unit carries no weapon called `railgun`.".to_owned())
+        );
+        // An empty word is the default weapon and never a search.
+        assert_eq!(chosen(""), Ok(DEFAULT_WEAPON.to_owned()));
+        assert_eq!(chosen("   "), Ok(DEFAULT_WEAPON.to_owned()));
+        // Ambiguous at the SHORT-NAME step, and at the PREFIX step, each naming
+        // the candidates in row order.
+        let two = vec![weapon_row("machine_gun"), weapon_row("missile_gun")];
+        assert_eq!(
+            choose_weapon(&two, "mg").map_err(|err| err.to_string()),
+            Err("`mg` could be machine_gun or missile_gun; say more.".to_owned())
+        );
+        assert_eq!(
+            choose_weapon(&two, "m").map_err(|err| err.to_string()),
+            Err("`m` could be machine_gun or missile_gun; say more.".to_owned())
+        );
+        // A step is not fallen through on ambiguity: `m` matching two short names
+        // must not quietly become a prefix search that matches the same two.
+        assert!(matches!(
+            choose_weapon(&two, "mis"),
+            Ok(row) if row.id == "missile_gun"
+        ));
+        // And the exact id always works, however crowded the rack is.
+        assert!(matches!(
+            choose_weapon(&two, "machine_gun"),
+            Ok(row) if row.id == "machine_gun"
+        ));
+    }
+
+    /// **`B-17`**: the row advertises a short name only where it is one.
+    #[test]
+    fn d2_a_weapon_row_opens_its_short_name_only_when_it_is_unshared() {
+        let rows = vec![weapon_row("cannon"), weapon_row("machine_gun")];
+        assert_eq!(weapon_short_of(&rows, "machine_gun").as_deref(), Some("mg"));
+        assert_eq!(weapon_short_of(&rows, "cannon"), None);
+        let shared = vec![weapon_row("machine_gun"), weapon_row("missile_gun")];
+        assert_eq!(weapon_short_of(&shared, "machine_gun"), None);
+        assert_eq!(weapon_short_of(&shared, "missile_gun"), None);
+    }
+
+    /// **`B-16`**: one sentence for every `FIRE` refusal, and the weapon is in
+    /// it. The `LOCK` and `STARTUP` shapes are untouched.
+    #[test]
+    fn d2_every_fire_refusal_names_the_weapon_and_the_others_do_not() {
+        use crate::arena::intents::Refusal;
+        use crate::arena::perception::RefusalDetail;
+        assert_eq!(
+            refusal_line(
+                "fire",
+                Refusal::Overheated,
+                Some("machine_gun"),
+                RefusalDetail::Overheated { heat: 60, max: 60 },
+            ),
+            "FIRE machine_gun refused. Overheated: 60 of 60. Let it cool."
+        );
+        assert_eq!(
+            refusal_line("lock", Refusal::PowerNotOnline, None, RefusalDetail::None),
+            format!("LOCK refused. {POWER_NOT_ONLINE}")
+        );
+        assert_eq!(
+            refusal_line("startup", Refusal::Wreck, None, RefusalDetail::None),
+            "STARTUP refused. Your tank is a wreck."
+        );
+        // The shape itself, and its empty-weapon case.
+        assert_eq!(
+            order_refused("heading", None, "Your tank cannot move."),
+            "HEADING refused. Your tank cannot move."
+        );
+        assert_eq!(
+            order_refused("fire", Some("  "), "No lock: LOCK a contact first."),
+            "FIRE refused. No lock: LOCK a contact first."
+        );
+        // The cockpit's own pre-check builds the SAME string through the SAME
+        // function, so the early answer and the late one cannot drift.
+        assert_eq!(
+            fire_refused("cannon", &CockpitError::NoLock).to_string(),
+            refusal_line("fire", Refusal::NoLock, Some("cannon"), RefusalDetail::None)
+        );
+        assert_eq!(
+            fire_refused("cannon", &CockpitError::Empty).to_string(),
+            refusal_line("fire", Refusal::Empty, Some("cannon"), RefusalDetail::None)
+        );
+        assert_eq!(
+            fire_refused("cannon", &CockpitError::Cycling { secs: 3 }).to_string(),
+            refusal_line(
+                "fire",
+                Refusal::Cycling,
+                Some("cannon"),
+                RefusalDetail::Cycling { secs: 3 }
+            )
+        );
+        assert_eq!(
+            fire_refused("laser", &CockpitError::Overheated { heat: 60, max: 60 }).to_string(),
+            refusal_line(
+                "fire",
+                Refusal::Overheated,
+                Some("laser"),
+                RefusalDetail::Overheated { heat: 60, max: 60 }
+            )
+        );
+        assert_eq!(
+            fire_refused("cannon", &CockpitError::PowerNotOnline).to_string(),
+            refusal_line(
+                "fire",
+                Refusal::PowerNotOnline,
+                Some("cannon"),
+                RefusalDetail::None
+            )
+        );
+        // `PowerStarting` has no `Refusal` of its own — the arena never answers
+        // it — but it takes the same prefix, so a pilot reads one shape.
+        assert_eq!(
+            fire_refused("cannon", &CockpitError::PowerStarting).to_string(),
+            format!("FIRE cannon refused. {POWER_STARTING}")
+        );
+    }
+
+    /// **`B-03`**: the two local sentences, and the motion one pinned to the
+    /// arena's own word for the same condition.
+    #[test]
+    fn d2_the_wreck_and_the_motion_limit_have_their_own_sentences() {
+        use crate::arena::intents::Refusal;
+        use crate::arena::perception::RefusalDetail;
+        assert_eq!(
+            CockpitError::Destroyed.to_string(),
+            "Your tank is destroyed and takes no orders. EXIT leaves the pod."
+        );
+        assert_eq!(CockpitError::Immobile.to_string(), IMMOBILE);
+        assert_eq!(
+            refusal_line(
+                "heading",
+                Refusal::MotionDisabled,
+                None,
+                RefusalDetail::None
+            ),
+            format!("HEADING refused. {IMMOBILE}"),
+            "the local sentence and the arena's are one string"
+        );
+        assert_eq!(
+            OWN_DESTROYED,
+            "Your tank is destroyed. The match runs on without you: wait it out, EXIT to the \
+             team room, or SIM ABORT to call it off."
+        );
+        assert_eq!(
+            OWN_DISABLED,
+            "Your tank can neither move nor shoot. The match runs on: wait it out, EXIT to the \
+             team room, or SIM ABORT to call it off."
+        );
+        // Neither names anything but the pilot's own tank.
+        for line in [OWN_DESTROYED, OWN_DISABLED, DESTROYED, IMMOBILE] {
+            assert!(!line.contains("bearing"), "{line}");
+            assert!(!line.contains('#'), "{line}");
+        }
+    }
+
+    /// **`T-77`**: the module head, the verb table and [`COCKPIT_VERBS`] agree,
+    /// and the `STATUS` help names the callsign line.
+    #[test]
+    fn d2_the_verb_table_and_the_help_agree_with_the_selector_list() {
+        assert_eq!(COCKPIT_VERBS.len(), 12);
+        let head = include_str!("cockpit.rs");
+        for verb in COCKPIT_VERBS {
+            let upper = verb.to_uppercase();
+            assert!(
+                head.contains(&format!("//! {upper}")),
+                "the module head's table omits {upper}"
+            );
+        }
+        assert!(head.contains("//! BOARD"));
+        assert!(head.contains("//! EXIT"));
+        let status = cockpit_help("status");
+        assert!(status.contains("callsign"), "{status}");
+        assert!(status.contains("scope"), "{status}");
+        assert!(
+            !status.contains("tempo"),
+            "the help still promises the arena's global tempo: {status}"
         );
     }
 }

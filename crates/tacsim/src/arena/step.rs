@@ -64,7 +64,8 @@ use crate::arena::perception::{
 };
 use crate::arena::reflex::ReflexCounters;
 use crate::arena::state::{
-    Arena, Classification, ContactId, DueKind, EndReason, MatchEnd, Power, StopReason, Team,
+    Arena, Classification, ContactId, DueKind, EndReason, MatchEnd, Power, SPENT_NOTICE_MS,
+    StopReason, Team,
 };
 use crate::arena::weapons::FrameWeapon;
 
@@ -114,6 +115,24 @@ pub struct Frame {
     /// just integrated: a tank ordered forward against a river bank covers no
     /// whole centimetre on some substeps and read `0 kph` with no `HELD` on those.
     pub blocked: bool,
+    /// **The tank is a wreck** (16b cut D.2, `B-03`; doc 16 §3.3 "A wreck": *no
+    /// longer the subject of any order*).
+    ///
+    /// The pilot's own tank, which is physical knowledge and outside the observer
+    /// rule entirely — the same kind of fact [`Frame::sections`] and
+    /// [`Frame::heat`] are. It is what lets the cockpit refuse an order at once
+    /// (`crate::match_::cockpit::CockpitError::Destroyed`) instead of a pulse
+    /// later, which is the rule every other refusal on this surface follows.
+    pub wreck: bool,
+    /// **The tank cannot move** (16b cut D.2, `B-03`):
+    /// [`crate::arena::state::UnitLimits::motion_disabled`], a destroyed engine or
+    /// a biped's second leg.
+    ///
+    /// The pilot's own tank, for the reason [`Frame::wreck`] is.
+    /// `crate::match_::cockpit::CockpitError::Immobile` reads it, and prints the
+    /// sentence `crate::match_::cockpit::refusal_line` already says for
+    /// [`crate::arena::intents::Refusal::MotionDisabled`].
+    pub immobile: bool,
     /// The arena's tempo, so a cockpit can say how often it is being told things.
     pub tempo: Tempo,
     /// **How far the platform's own sight reaches**, centimetres (16b cut D.1;
@@ -290,6 +309,12 @@ impl Frame {
             && self.speed_cms == other.speed_cms
             && self.power == other.power
             && self.blocked == other.blocked
+            // **16b cut D.2**: both decide what the cockpit refuses locally, and
+            // both are one-way flips that happen at most once in a match — so
+            // comparing them costs no frame anybody would not already have been
+            // sent, and a pilot whose tank has just died is sent one at once.
+            && self.wreck == other.wreck
+            && self.immobile == other.immobile
             && self.tempo == other.tempo
             // **16b cut D.1**: the pilot's band word is read against it, so a
             // frame that carried a different sight would print different words.
@@ -503,11 +528,29 @@ impl Arena {
         }
 
         // ---- phase 2: orders ----
+        //
+        // **16b cut D.2** (`B-03`): this loop used to throw every refusal away, so
+        // an order to a dead tank, to a tank whose engine was gone, or one past
+        // the queue's bound simply vanished — three of six smoke matches left a
+        // pilot typing into a wreck and being told nothing. Four of the refusals
+        // are now staged, and the other five are silent on purpose: see
+        // [`Arena::phase_two_tells`].
         let mut fire_intent_queued = false;
         for intent in intents {
             let outcome = apply_intent(self, intent);
             if outcome == IntentOutcome::Queued && matches!(intent.kind, IntentKind::Fire { .. }) {
                 fire_intent_queued = true;
+            }
+            if let IntentOutcome::Refused(refusal) = outcome
+                && Arena::phase_two_tells(&intent.kind, refusal)
+            {
+                let weapon = match &intent.kind {
+                    IntentKind::Fire { weapon } => Some(weapon.clone()),
+                    _ => None,
+                };
+                // The word is `IntentKind::as_str`'s and phase 4 uses the same
+                // accessor, so the two phases cannot spell one order two ways.
+                self.stage_refusal(intent.unit, intent.kind.as_str(), refusal, weapon);
             }
         }
 
@@ -555,11 +598,17 @@ impl Arena {
         };
         for id in ids {
             for order in drain_pending(self, id) {
+                // **16b cut D.2**: the order's own word, through the one accessor
+                // phase 2 reads. This phase passed the literals `"startup"`,
+                // `"lock"` and `"fire"`, which was a second spelling of a
+                // vocabulary `IntentKind::as_str` already owns — and the bridge's
+                // `Starting` hint matches on that accessor's answer.
+                let word = order.kind.as_str();
                 match order.kind {
                     // Doc 16 §3.3 "Startup".
                     IntentKind::Startup => {
                         if let Err(refusal) = resolve_startup(self, id) {
-                            self.stage_refusal(id, "startup", refusal, None);
+                            self.stage_refusal(id, word, refusal, None);
                         }
                     }
                     // **16b cut W.1** (doc 16 §3.7, §3.5): the lock, and the shot.
@@ -576,11 +625,11 @@ impl Arena {
                             let named = self.name_of(id, contact);
                             self.stage_notice(id, FrameNotice::Locked { contact: named });
                         }
-                        Err(refusal) => self.stage_refusal(id, "lock", refusal, None),
+                        Err(refusal) => self.stage_refusal(id, word, refusal, None),
                     },
                     IntentKind::Fire { ref weapon } => {
                         if let Err(refusal) = self.resolve_fire(id, weapon) {
-                            self.stage_refusal(id, "fire", refusal, Some(weapon.clone()));
+                            self.stage_refusal(id, word, refusal, Some(weapon.clone()));
                         }
                     }
                     // Continuous orders never queue (phase 2 applies them), and
@@ -1127,6 +1176,10 @@ impl Arena {
                     power: unit.power,
                     // 16b cut F.2: the condition, not the substep's flag.
                     blocked: unit.held,
+                    // 16b cut D.2: the pilot's own two limits, so the cockpit can
+                    // refuse an order to a dead tank at once and say why.
+                    wreck: unit.limits.wreck,
+                    immobile: unit.limits.motion_disabled,
                     tempo,
                     // **16b cut D.1**: the nominal reach of the platform's own
                     // sight, `max_range_cells × cell_cm`, and `0` for a hull
@@ -1269,12 +1322,27 @@ impl Arena {
             EventKind::Hit {
                 unit,
                 target,
+                shot_seq,
                 ref section,
                 ref facet,
                 armor_left,
                 internals_left,
                 ..
             } => {
+                // **16b cut D.2** (`B-15`): whether this round found a section
+                // that was already destroyed. The scratch is filled by
+                // `apply_hit` in this very substep and is drained here, so it
+                // never survives the substep it was filled in
+                // (`Arena::spent_hits`).
+                let spent = self.spent_hits.remove(&shot_seq);
+                if spent {
+                    // Pruned **on touch** and against the event's own timestamp,
+                    // never by a per-pulse sweep: a sweep would make the table a
+                    // function of the cadence, which the cross-tempo property
+                    // refuses.
+                    self.spent_said
+                        .retain(|_, at| t_ms.saturating_sub(*at) < SPENT_NOTICE_MS);
+                }
                 // The shooter sees the round land, and nothing about what it did:
                 // a gunner reads the strike, not the target's internals.
                 //
@@ -1283,32 +1351,71 @@ impl Arena {
                 // `classified` and not merely `held`, because a section id is a
                 // chassis vocabulary — see `FrameNotice::Hit`'s `section`.
                 let held = self.named_target(unit, target);
-                let named_section = (held.is_some() && self.target_classified(unit, target))
-                    .then(|| section.clone());
-                self.stage_notice(
-                    unit,
-                    FrameNotice::Hit {
-                        contact: held,
-                        section: named_section,
-                    },
-                );
+                let classified = held.is_some() && self.target_classified(unit, target);
+                let named_section = classified.then(|| section.clone());
+                // **16b cut D.2**: the gunner who has told the target apart can
+                // tell a spent section from a live one, so his line says so — and
+                // is therefore rate-limited. The gunner who cannot is told
+                // exactly what he was told before this cut, every round, with no
+                // window and no entry: see `Arena::spent_said`.
+                if !(spent && classified) {
+                    self.stage_notice(
+                        unit,
+                        FrameNotice::Hit {
+                            contact: held,
+                            section: named_section,
+                            spent: false,
+                        },
+                    );
+                } else if self.say_spent(unit, target, section, t_ms) {
+                    self.stage_notice(
+                        unit,
+                        FrameNotice::Hit {
+                            contact: held,
+                            section: named_section,
+                            spent: true,
+                        },
+                    );
+                }
                 // The victim reads their own tank. **Nothing about the shooter** —
                 // no id, no bearing, no team, no weapon: where a round came from
                 // is a thing only a sensor may tell.
-                let (armor_section, armor_max, internals_max) =
-                    self.struck_maxima(target, section, facet);
-                self.stage_notice(
-                    target,
-                    FrameNotice::Struck {
-                        section: section.clone(),
-                        armor_section,
-                        facet: facet.clone(),
-                        armor_left,
-                        armor_max,
-                        internals_left,
-                        internals_max,
-                    },
-                );
+                //
+                // **16b cut D.2**: a round on a section that is already gone has
+                // no numbers left to report — both cells are nought — so it is
+                // one short sentence under the same window, keyed on the victim's
+                // own tank.
+                if spent {
+                    if self.say_spent(target, target, section, t_ms) {
+                        self.stage_notice(
+                            target,
+                            FrameNotice::StruckSpent {
+                                section: section.clone(),
+                            },
+                        );
+                    }
+                } else {
+                    let (armor_section, armor_max, internals_max) =
+                        self.struck_maxima(target, section, facet);
+                    self.stage_notice(
+                        target,
+                        FrameNotice::Struck {
+                            section: section.clone(),
+                            armor_section,
+                            facet: facet.clone(),
+                            armor_left,
+                            armor_max,
+                            internals_left,
+                            internals_max,
+                        },
+                    );
+                }
+            }
+            // **16b cut D.2** (`B-03`): the victim's own two lines, off the same
+            // journalled events the gunner's kill line comes off, and staged
+            // after it so the gunner's is untouched.
+            EventKind::UnitDisabled { unit } => {
+                self.stage_notice(unit, FrameNotice::OwnDisabled);
             }
             EventKind::Miss { ref reason, .. } => {
                 if let Some((shooter, target)) = *in_flight {
@@ -1370,6 +1477,9 @@ impl Arena {
                     let held = self.named_target(shooter, target);
                     self.stage_notice(shooter, FrameNotice::Kill { contact: held });
                 }
+                // **16b cut D.2** (`B-03`), after the gunner's line: the pilot in
+                // the wreck, who until this cut read nothing at all.
+                self.stage_notice(unit, FrameNotice::OwnDestroyed);
             }
             EventKind::Lost {
                 viewer,
@@ -1487,6 +1597,68 @@ impl Arena {
         (armor_section, armor, internals)
     }
 
+    /// **Whether this reader may be told about a spent section now** (16b cut
+    /// D.2, `B-15`), and the write that goes with a `true`.
+    ///
+    /// The key is `(the platform told, the target, the section)`: the victim's
+    /// own key is `(victim, victim, section)`, because his tank is both. A `true`
+    /// writes the entry, so the next round inside
+    /// [`SPENT_NOTICE_MS`](crate::arena::state::SPENT_NOTICE_MS) of arena time is
+    /// silent.
+    ///
+    /// It runs **whether or not anybody is seated on the platform and whether or
+    /// not a frame is ever sent**: the staging scan runs per substep at the
+    /// event's own timestamp, so the table is a function of arena time alone and
+    /// the fold below it is rate-independent. The pruning is the caller's, on
+    /// touch, for the same reason.
+    fn say_spent(&mut self, told: ObjId, target: ObjId, section: &SmolStr, t_ms: i64) -> bool {
+        let key = (told, target, section.clone());
+        if let Some(at) = self.spent_said.get(&key)
+            && t_ms.saturating_sub(*at) < SPENT_NOTICE_MS
+        {
+            return false;
+        }
+        self.spent_said.insert(key, t_ms);
+        true
+    }
+
+    /// **Whether pulse phase 2 says a refusal out loud** (16b cut D.2, `B-03`).
+    ///
+    /// Four of the fifteen, and no others:
+    ///
+    /// * [`Refusal::Wreck`] — the pilot is typing into a dead tank and nothing
+    ///   else was telling them so;
+    /// * [`Refusal::MotionDisabled`] — the engine is gone and `HEADING` does
+    ///   nothing;
+    /// * [`Refusal::PowerNotOnline`] — doc 16 §3.3's cold tank, refused at apply
+    ///   when the cockpit's own mirror was a pulse stale;
+    /// * [`Refusal::QueueFull`] — the ninth order of a burst was **dropped**, and
+    ///   silently. The bound it is the far side of is per *pulse*, which makes how
+    ///   many orders a pilot may burst a function of the tempo; that is cut A.2's
+    ///   and is recorded as a debt of its own. This cut does not create it — it
+    ///   stops the drop being silent, which is the defect `B-03` names.
+    ///
+    /// The other five have nobody to tell. [`Refusal::Epoch`] is doc 16 §3.1's
+    /// `FIRE` then `EXIT` burst working exactly as written: the pilot who left is
+    /// told nothing about the shot they did not take. [`Refusal::Channel`],
+    /// [`Refusal::Unknown`], [`Refusal::Linkdead`] and [`Refusal::NotReflex`] are
+    /// answers to something no seated pilot's cockpit can produce — a wrong
+    /// channel is a routing fault, an absent unit has no pilot, a linkdead seat
+    /// has nobody at it, and an `ORDER` is a squad's.
+    ///
+    /// An [`IntentKind::Order`] is never staged whatever it was refused for: it
+    /// is a commander's doctrine and not a pilot's order, and a tank's pilots are
+    /// not the audience for it.
+    const fn phase_two_tells(kind: &IntentKind, refusal: Refusal) -> bool {
+        if matches!(kind, IntentKind::Order(_)) {
+            return false;
+        }
+        matches!(
+            refusal,
+            Refusal::Wreck | Refusal::MotionDisabled | Refusal::QueueFull | Refusal::PowerNotOnline
+        )
+    }
+
     /// **Stage the line one refused order owes its pilot** (16b cut F.2; doc 16
     /// §5: *`Notice` events for transitions and refusals*).
     ///
@@ -1508,6 +1680,11 @@ impl Arena {
     /// left is told nothing about the shot they did not take. And the reflex
     /// controller resolves its own shots inside a substep and never through this
     /// phase, so an AI refusal reaches nobody.
+    ///
+    /// Pulse **phase 2** stages through here too since 16b cut D.2 (`B-03`), for
+    /// the four refusals [`Arena::phase_two_tells`] admits; the order word is
+    /// [`IntentKind::as_str`] in both phases, so one order cannot be spelled two
+    /// ways.
     fn stage_refusal(
         &mut self,
         unit: ObjId,
@@ -2242,5 +2419,501 @@ mod tests {
             log.iter()
                 .any(|event| event.kind == EventKind::Lagged { dt_ms: 20_000 })
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut D.2 — phase 2 speaks (`B-03`)
+    // -----------------------------------------------------------------------
+
+    /// The one-tank fixture, under a name a per-case binding does not shadow.
+    fn fresh() -> Arena {
+        arena()
+    }
+
+    /// Every notice this pulse staged for the fixture's one pilot.
+    fn told(out: &StepOutput) -> Vec<FrameNotice> {
+        out.frames
+            .iter()
+            .filter(|(pilot, _)| *pilot == ObjId(1000))
+            .flat_map(|(_, frame)| frame.notices.iter().cloned())
+            .collect()
+    }
+
+    /// The refusals among them, as `(order word, refusal, weapon)`.
+    fn refusals(out: &StepOutput) -> Vec<(String, Refusal, Option<String>)> {
+        told(out)
+            .into_iter()
+            .filter_map(|notice| match notice {
+                FrameNotice::Refused {
+                    order,
+                    refusal,
+                    weapon,
+                    ..
+                } => Some((
+                    order.to_string(),
+                    refusal,
+                    weapon.map(|weapon| weapon.to_string()),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn order(unit: ObjId, kind: IntentKind, seq: u64) -> Intent {
+        Intent {
+            unit,
+            channel: kind.channel_required(),
+            epoch: 1,
+            kind,
+            seq,
+        }
+    }
+
+    /// **16b cut D.2** (`B-03`): a wreck answers every order, in the order's own
+    /// word, and the word is [`IntentKind::as_str`]'s in both phases.
+    #[test]
+    fn d2_phase_two_names_the_order_it_refused() {
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.limits.wreck = true;
+        }
+        let out = arena.step(
+            5_000,
+            &[],
+            &[
+                order(A, IntentKind::Startup, 1),
+                order(A, IntentKind::Heading { mdeg: 90_000 }, 2),
+                order(A, IntentKind::Speed { cms: 100 }, 3),
+                order(
+                    A,
+                    IntentKind::Lock {
+                        contact: ContactId(7),
+                    },
+                    4,
+                ),
+                order(
+                    A,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                    },
+                    5,
+                ),
+            ],
+        );
+        assert_eq!(
+            refusals(&out),
+            vec![
+                ("startup".to_owned(), Refusal::Wreck, None),
+                ("heading".to_owned(), Refusal::Wreck, None),
+                ("speed".to_owned(), Refusal::Wreck, None),
+                ("lock".to_owned(), Refusal::Wreck, None),
+                ("fire".to_owned(), Refusal::Wreck, Some("cannon".to_owned())),
+            ],
+            "the five order words are `IntentKind::as_str`'s, and only `fire` names a weapon"
+        );
+    }
+
+    /// The other three of the four phase 2 says out loud, each on its own order.
+    #[test]
+    fn d2_phase_two_says_the_motion_limit_the_cold_tank_and_the_full_queue() {
+        // (a) motion disabled, on a live tank with its power up.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.power = Power::Online;
+            unit.limits.motion_disabled = true;
+        }
+        let out = arena.step(
+            5_000,
+            &[],
+            &[
+                order(A, IntentKind::Heading { mdeg: 90_000 }, 1),
+                order(A, IntentKind::Speed { cms: 100 }, 2),
+            ],
+        );
+        assert_eq!(
+            refusals(&out),
+            vec![
+                ("heading".to_owned(), Refusal::MotionDisabled, None),
+                ("speed".to_owned(), Refusal::MotionDisabled, None),
+            ]
+        );
+
+        // (b) the cold tank, which is the refusal doc 16 §3.3 names.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        let out = arena.step(5_000, &[], &[order(A, IntentKind::Heading { mdeg: 0 }, 1)]);
+        assert_eq!(
+            refusals(&out),
+            vec![("heading".to_owned(), Refusal::PowerNotOnline, None)]
+        );
+
+        // (c) the ninth discrete order of one burst. `max_pending_per_unit` is
+        // eight and the queue is empty at the start of every phase 2, so the
+        // ninth is refused once however fast the arena is pulsing — which is the
+        // whole of why this is staged rather than dropped in silence.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        let burst: Vec<Intent> = (0..9)
+            .map(|n: u64| order(A, IntentKind::Startup, n + 1))
+            .collect();
+        let out = arena.step(5_000, &[], &burst);
+        assert_eq!(
+            refusals(&out),
+            vec![("startup".to_owned(), Refusal::QueueFull, None)],
+            "one refusal for one dropped order"
+        );
+    }
+
+    /// **The five phase 2 does not say**, each for its own reason — see
+    /// [`Arena::phase_two_tells`].
+    #[test]
+    fn d2_phase_two_is_silent_where_there_is_nobody_to_tell() {
+        // `Epoch`: doc 16 §3.1's `FIRE` then `EXIT` burst, working as written.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        arena.epochs.raise(A, Channel::Helm, 2);
+        let out = arena.step(5_000, &[], &[order(A, IntentKind::Startup, 1)]);
+        assert!(refusals(&out).is_empty(), "{:?}", refusals(&out));
+
+        // `Channel`: a routing fault, not a pilot's order.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        let out = arena.step(
+            5_000,
+            &[],
+            &[Intent {
+                unit: A,
+                channel: Channel::Fire,
+                epoch: 1,
+                kind: IntentKind::Startup,
+                seq: 1,
+            }],
+        );
+        assert!(refusals(&out).is_empty(), "{:?}", refusals(&out));
+
+        // `Unknown`: there is no unit, so there is no pilot.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        let out = arena.step(5_000, &[], &[order(ObjId(4_242), IntentKind::Startup, 1)]);
+        assert!(refusals(&out).is_empty(), "{:?}", refusals(&out));
+
+        // `Linkdead`: the seat has nobody at it.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.linkdead = true;
+        }
+        let out = arena.step(5_000, &[], &[order(A, IntentKind::Startup, 1)]);
+        assert!(refusals(&out).is_empty(), "{:?}", refusals(&out));
+
+        // `NotReflex`, and every `Order` whatever it is refused for: doctrine is
+        // a commander's and a tank's pilots are not its audience.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        let doctrine = crate::deliberation::order::Order {
+            squad: crate::deliberation::squad::SquadId::parse("red-1").expect("a squad id"),
+            objective: crate::deliberation::order::Objective::Hold,
+            target: None,
+            horizon_ms: 60_000,
+            constraints: crate::deliberation::order::Constraints::default(),
+            ttl_ms: 30_000,
+            issued_ms: 1,
+        };
+        let out = arena.step(
+            5_000,
+            &[],
+            &[order(A, IntentKind::Order(Box::new(doctrine)), 1)],
+        );
+        assert!(refusals(&out).is_empty(), "{:?}", refusals(&out));
+    }
+
+    /// **16b cut D.2**: the pilot's own two limits ride the frame, so the cockpit
+    /// can refuse an order to a dead tank at once instead of a pulse later.
+    #[test]
+    fn d2_the_frame_carries_the_wreck_and_the_motion_limit() {
+        let mut arena = fresh();
+        let out = arena.step(0, &[], &[]);
+        let frame = out
+            .frames
+            .first()
+            .map(|(_, frame)| frame.clone())
+            .unwrap_or_else(|| panic!("the opening frame"));
+        assert!(!frame.wreck);
+        assert!(!frame.immobile);
+        // Both are compared, so the flip sends a frame at once.
+        let mut dead = frame.clone();
+        dead.wreck = true;
+        assert!(!frame.same_as(&dead));
+        let mut stuck = frame.clone();
+        stuck.immobile = true;
+        assert!(!frame.same_as(&stuck));
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.limits.wreck = true;
+            unit.limits.motion_disabled = true;
+        }
+        let out = arena.step(5_000, &[], &[]);
+        let frame = out
+            .frames
+            .first()
+            .map(|(_, frame)| frame.clone())
+            .unwrap_or_else(|| panic!("the flip sends a frame"));
+        assert!(frame.wreck && frame.immobile);
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut D.2 — one sentence for a round on a spent section (`B-15`)
+    // -----------------------------------------------------------------------
+
+    /// The gunner and the victim of the spent-section cases: two tanks, **nobody
+    /// seated on either**, because the whole point of the window is that it is
+    /// written whether or not anybody is there to read it.
+    fn spent_rig() -> Arena {
+        crate::arena::test_support::arena_of(vec![
+            tank(A, Team::Red, pose(1_500, 1_500)),
+            tank(ObjId(9), Team::Blue, pose(1_500, 5_500)),
+        ])
+    }
+
+    /// One `hit` line, as the impact journals it.
+    fn hit(shot_seq: u64, section: &str) -> EventKind {
+        EventKind::Hit {
+            shot_seq,
+            unit: A,
+            target: ObjId(9),
+            section: SmolStr::new(section),
+            facet: SmolStr::new("front"),
+            rounds: 1,
+            damage: 0,
+            armor_left: 0,
+            internals_left: 0,
+            consequences: Vec::new(),
+            cause: SmolStr::new(format!("shot:{shot_seq}")),
+        }
+    }
+
+    /// Stage the notices one `hit` owes, with `shot_seq` marked spent or not —
+    /// the same call `Arena::substep`'s staging scan makes, and the scratch
+    /// filled the way `Arena::apply_hit` fills it in the same substep.
+    fn stage_hit(arena: &mut Arena, shot_seq: u64, section: &str, spent: bool, t_ms: i64) {
+        if spent {
+            arena.spent_hits.insert(shot_seq);
+        }
+        let mut in_flight: Option<(ObjId, ObjId)> = None;
+        arena.stage_pilot_notice(t_ms, &hit(shot_seq, section), &mut in_flight);
+    }
+
+    /// What the victim has been told since the last drain.
+    fn victims_notices(arena: &mut Arena) -> Vec<FrameNotice> {
+        arena.pending_notices.remove(&ObjId(9)).unwrap_or_default()
+    }
+
+    /// **The scratch never survives the substep it was filled in** (16b cut D.2),
+    /// which is the whole of why it is not folded into the state hash.
+    #[test]
+    fn d2_the_spent_shot_scratch_is_drained_by_the_staging_scan() {
+        let mut arena = spent_rig();
+        stage_hit(&mut arena, 1, "hull", true, 0);
+        assert!(
+            arena.spent_hits.is_empty(),
+            "the `hit` arm did not drain the scratch: {:?}",
+            arena.spent_hits
+        );
+        // And a round on a live section leaves nothing in it either.
+        stage_hit(&mut arena, 2, "hull", false, 1_000);
+        assert!(arena.spent_hits.is_empty());
+    }
+
+    /// **The window is arena time, and it is exactly `SPENT_NOTICE_MS`** (16b cut
+    /// D.2): a second round at 4,999 ms is silent, one at 5,000 ms is said.
+    #[test]
+    fn d2_a_spent_section_is_said_once_every_five_seconds() {
+        for (second, said) in [(4_999_i64, false), (5_000, true)] {
+            let mut arena = spent_rig();
+            stage_hit(&mut arena, 1, "hull", true, 0);
+            assert_eq!(
+                victims_notices(&mut arena),
+                vec![FrameNotice::StruckSpent {
+                    section: SmolStr::new("hull")
+                }],
+                "the first round on a spent section is always said"
+            );
+            stage_hit(&mut arena, 2, "hull", true, second);
+            let told = victims_notices(&mut arena);
+            assert_eq!(
+                told.is_empty(),
+                !said,
+                "a second round at {second} ms: {told:?}"
+            );
+        }
+        // A DIFFERENT section is a different key, so it is said at once.
+        let mut arena = spent_rig();
+        stage_hit(&mut arena, 1, "hull", true, 0);
+        let _ = victims_notices(&mut arena);
+        stage_hit(&mut arena, 2, "turret", true, 1_000);
+        assert_eq!(
+            victims_notices(&mut arena),
+            vec![FrameNotice::StruckSpent {
+                section: SmolStr::new("turret")
+            }]
+        );
+    }
+
+    /// **The decision and the write happen with nobody seated** (16b cut D.2),
+    /// which is what makes the fold rate-independent: a pilot who sits down four
+    /// seconds into the window reads nothing until it runs out.
+    #[test]
+    fn d2_the_spent_window_is_kept_whether_or_not_anybody_is_seated() {
+        let mut arena = spent_rig();
+        assert!(arena.pilots.is_empty(), "nobody is seated on either tank");
+        stage_hit(&mut arena, 1, "hull", true, 0);
+        assert_eq!(
+            arena
+                .spent_said
+                .get(&(ObjId(9), ObjId(9), SmolStr::new("hull")))
+                .copied(),
+            Some(0),
+            "the entry was written with no frame to carry it: {:?}",
+            arena.spent_said
+        );
+        // Nothing is keyed on the gunner: he holds no contact, so he read what he
+        // always reads and earned no window (`Arena::spent_said`).
+        assert!(
+            arena
+                .spent_said
+                .keys()
+                .all(|(told, _, _)| *told == ObjId(9)),
+            "{:?}",
+            arena.spent_said
+        );
+        arena.pending_notices.clear();
+        // Somebody takes the seat four seconds in.
+        arena.pilots.push(crate::arena::state::Pilot {
+            unit: ObjId(9),
+            pilot: ObjId(1_001),
+            station: SmolStr::new("cockpit"),
+            epoch: 1,
+        });
+        stage_hit(&mut arena, 2, "hull", true, 4_000);
+        assert!(
+            victims_notices(&mut arena).is_empty(),
+            "the window the empty pod kept was not honoured"
+        );
+        stage_hit(&mut arena, 3, "hull", true, 5_000);
+        assert_eq!(
+            victims_notices(&mut arena),
+            vec![FrameNotice::StruckSpent {
+                section: SmolStr::new("hull")
+            }]
+        );
+    }
+
+    /// **Entries are pruned on touch and never by a pulse** (16b cut D.2): a
+    /// per-pulse sweep would make the table — which the state hash folds — a
+    /// function of the cadence, which is exactly what rate independence refuses.
+    #[test]
+    fn d2_the_spent_window_is_pruned_on_touch_and_never_by_a_pulse() {
+        let mut arena = spent_rig();
+        let stale = (ObjId(4_242), ObjId(4_243), SmolStr::new("turret"));
+        arena.spent_said.insert(stale.clone(), 0);
+        // Ten seconds of pulses, which is twice the window: the entry stands,
+        // because nothing touched the table.
+        let mut wall = 0_i64;
+        for _ in 0..7 {
+            wall += 2_000;
+            arena.step(wall, &[], &[]);
+        }
+        assert!(arena.now_ms >= 10_000);
+        assert!(
+            arena.spent_said.contains_key(&stale),
+            "a pulse swept the table: {:?}",
+            arena.spent_said
+        );
+        // One spent round touches it, and the stale entry goes with that touch.
+        let now = arena.now_ms;
+        stage_hit(&mut arena, 1, "hull", true, now);
+        assert!(
+            !arena.spent_said.contains_key(&stale),
+            "the touch did not prune: {:?}",
+            arena.spent_said
+        );
+    }
+
+    /// **A fresh section is unchanged** (16b cut D.2): the round that finds
+    /// armour still says what it always said, and so does the one that finishes
+    /// the section.
+    #[test]
+    fn d2_a_round_on_a_live_section_says_what_it_always_said() {
+        let mut arena = spent_rig();
+        stage_hit(&mut arena, 1, "hull", false, 0);
+        let told = victims_notices(&mut arena);
+        assert_eq!(told.len(), 1);
+        assert!(
+            matches!(told.first(), Some(FrameNotice::Struck { section, .. }) if section == "hull"),
+            "{told:?}"
+        );
+        assert!(
+            arena.spent_said.is_empty(),
+            "a live section wrote a window entry: {:?}",
+            arena.spent_said
+        );
+        // And the section's own loss line is untouched by any of this.
+        let mut in_flight: Option<(ObjId, ObjId)> = None;
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::SectionDestroyed {
+                unit: ObjId(9),
+                section: SmolStr::new("hull"),
+                consequences: Vec::new(),
+            },
+            &mut in_flight,
+        );
+        let told = victims_notices(&mut arena);
+        assert!(
+            matches!(
+                told.first(),
+                Some(FrameNotice::SectionLost { section, .. }) if section == "hull"
+            ),
+            "{told:?}"
+        );
+    }
+
+    /// **The victim's own two lines** (16b cut D.2, `B-03`): staged off the
+    /// ledger's own events, to the victim and to nobody else.
+    #[test]
+    fn d2_the_victim_is_told_when_his_own_tank_goes() {
+        let mut arena = spent_rig();
+        let mut in_flight: Option<(ObjId, ObjId)> = None;
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::UnitDisabled { unit: ObjId(9) },
+            &mut in_flight,
+        );
+        assert_eq!(victims_notices(&mut arena), vec![FrameNotice::OwnDisabled]);
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::UnitDestroyed { unit: ObjId(9) },
+            &mut in_flight,
+        );
+        assert_eq!(victims_notices(&mut arena), vec![FrameNotice::OwnDestroyed]);
+        assert!(
+            arena.pending_notices.is_empty(),
+            "somebody else was told: {:?}",
+            arena.pending_notices
+        );
+        // With a round in flight the gunner's kill line comes first, and the
+        // victim's own line after it.
+        let mut in_flight = Some((A, ObjId(9)));
+        arena.stage_pilot_notice(
+            0,
+            &EventKind::UnitDestroyed { unit: ObjId(9) },
+            &mut in_flight,
+        );
+        assert_eq!(
+            arena.pending_notices.remove(&A).unwrap_or_default(),
+            vec![FrameNotice::Kill { contact: None }]
+        );
+        assert_eq!(victims_notices(&mut arena), vec![FrameNotice::OwnDestroyed]);
     }
 }

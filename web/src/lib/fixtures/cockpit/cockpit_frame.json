@@ -90,6 +90,7 @@
     "max": 100,
     "overheated": false
   },
+  "immobile": false,
   "lock": "1111111111111111",
   "lock_designator": "BA",
   "lock_p_permille": 624,
@@ -98,18 +99,32 @@
   "match": 7,
   "notices": [
     {
+      "cause": null,
       "contact": "4444444444444444",
       "designator": "X4",
+      "detail": null,
+      "friendly": false,
       "kind": "acquired",
+      "order": null,
+      "refusal": null,
       "section": null,
-      "text": "New contact X4: bearing 030°, far."
+      "spent": false,
+      "text": "New contact X4: bearing 030°, far.",
+      "weapon": null
     },
     {
+      "cause": null,
       "contact": "1111111111111111",
       "designator": "BA",
+      "detail": null,
+      "friendly": false,
       "kind": "target_section_lost",
+      "order": null,
+      "refusal": null,
       "section": "turret",
-      "text": "BA's turret is destroyed."
+      "spent": false,
+      "text": "BA's turret is destroyed.",
+      "weapon": null
     }
   ],
   "power": "online",
@@ -201,6 +216,7 @@
   "unit": 101,
   "weapons": [
     {
+      "heat_per_shot": 0,
       "id": "cannon",
       "p_permille": 624,
       "percent": 62,
@@ -216,6 +232,7 @@
       "rounds_max": 20
     },
     {
+      "heat_per_shot": 0,
       "id": "machine_gun",
       "p_permille": 210,
       "percent": 21,
@@ -226,6 +243,7 @@
       "rounds_max": 500
     }
   ],
+  "wreck": false,
   "x_cm": 6500,
   "y_cm": 4500,
   "z_cm": 0

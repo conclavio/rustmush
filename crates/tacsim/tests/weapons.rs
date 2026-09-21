@@ -904,7 +904,7 @@ fn weaponstatus_reads_the_frames_readiness_rounds_and_band() {
         Some((1, 2)),
         "four cells is the inner band"
     );
-    let line = row.render();
+    let line = row.render(&rows);
     assert!(line.contains("cannon"), "{line}");
     assert!(line.contains("ready"), "{line}");
     assert!(line.contains("40 of 40 round(s)"), "{line}");
@@ -930,14 +930,12 @@ fn weaponstatus_reads_the_frames_readiness_rounds_and_band() {
         .find(|(pilot, _)| *pilot == RED_PILOT)
         .map(|(_, frame)| frame.clone())
         .expect("the red pilot's frame");
-    let row = cockpit::frame_weapons(&frame)
-        .first()
-        .cloned()
-        .expect("the cannon");
+    let rows = cockpit::frame_weapons(&frame);
+    let row = rows.first().cloned().expect("the cannon");
     assert!(!row.ready);
     assert_eq!(row.rounds, 39);
     assert_eq!(row.ready_in_ms, i64::from(cannon().cycle_ms));
-    let line = row.render();
+    let line = row.render(&rows);
     assert!(line.contains("cycling (4 s)"), "{line}");
     assert!(line.contains("39 of 40 round(s)"), "{line}");
 }

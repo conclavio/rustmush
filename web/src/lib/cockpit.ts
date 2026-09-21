@@ -77,11 +77,35 @@ export interface CockpitContact {
   condition: CockpitCondition | null;
 }
 
+/** The numbers a refusal's sentence carries (`RefusalDetail`), or `null`. */
+export interface CockpitNoticeDetail {
+  /** Seconds until the weapon is ready, on a `cycling` refusal. */
+  secs: number | null;
+  /** What the platform is carrying, on an `overheated` one. */
+  heat: number | null;
+  /** Its ceiling. */
+  max: number | null;
+}
+
 export interface CockpitNotice {
   /** The wire word (`NoticeKind::as_str`). */
   kind: string;
   designator: string | null;
   section: string | null;
+  /** Why motion stopped (`BlockedCause::as_str`), or `null`. 16b cut D.2. */
+  cause: string | null;
+  /** Why the order was refused (`Refusal::as_str`), or `null`. */
+  refusal: string | null;
+  /** The refused order's own word (`heading`, `fire`, …), or `null`. */
+  order: string | null;
+  /** The weapon it named, or `null`. */
+  weapon: string | null;
+  /** The numbers that refusal's sentence carries, or `null`. */
+  detail: CockpitNoticeDetail | null;
+  /** The contact this notice names is on the platform's own side. */
+  friendly: boolean;
+  /** The round found a section that was already destroyed. */
+  spent: boolean;
 }
 
 export interface CockpitWeapon {
@@ -92,6 +116,9 @@ export interface CockpitWeapon {
   rounds_max: number;
   /** This weapon's own chance against the lock, or `null` without one. */
   percent: number | null;
+  /** What one shot adds to the platform's heat; `0` for a cold gun (16b cut
+   * D.2), which is what an overheated tank may still fire. */
+  heat_per_shot: number;
 }
 
 export interface CockpitFacet {
@@ -132,10 +159,20 @@ export interface CockpitFrame {
   power: string;
   /** Motion is held (the `HELD` mark). */
   blocked: boolean;
+  /** The tank is a wreck and takes no order (16b cut D.2). */
+  wreck: boolean;
+  /** The tank cannot move (16b cut D.2). */
+  immobile: boolean;
   speed_kph: number;
   heading_deg: number;
   heat: CockpitHeat | null;
+  /** The arena's one global cadence word. The status block does NOT print it
+   * (16b cut D.2), and no shipped client reads it today; it stays decoded
+   * because `T-59` is closed for the printed word alone. */
   tempo: string;
+  /** THIS platform's own alert state — `clear`, `unidentified` or `hostile`
+   * (16b cut D.1) — which is what the status block prints. */
+  scope: string;
   lock_designator: string | null;
   lock_range_m: number | null;
   lock_percent: number | null;
@@ -262,16 +299,33 @@ function decodeContact(raw: unknown): CockpitContact | null {
   };
 }
 
+function decodeDetail(raw: unknown): CockpitNoticeDetail | null {
+  if (!isObj(raw)) {
+    return null;
+  }
+  return { secs: optInt(raw.secs), heat: optInt(raw.heat), max: optInt(raw.max) };
+}
+
 function decodeNotice(raw: unknown): CockpitNotice | null {
   if (!isObj(raw) || typeof raw.kind !== "string") {
     return null;
   }
   // `text` is deliberately NOT read: the arena already sent that sentence as a
-  // `Sys` line and one sentence has one owner (16b cut F.2).
+  // `Sys` line and one sentence has one owner (16b cut F.2). 16b cut D.2 is what
+  // made that possible to honour — until it the sentence's parts were not on the
+  // wire at all, so the ring printed a bare `refused` with no order and no
+  // reason, which is `B-07`.
   return {
     kind: clean(raw.kind, "?"),
     designator: optStr(raw.designator, 8),
     section: optStr(raw.section, 24),
+    cause: optStr(raw.cause, 24),
+    refusal: optStr(raw.refusal, 24),
+    order: optStr(raw.order, 16),
+    weapon: optStr(raw.weapon, 24),
+    detail: decodeDetail(raw.detail),
+    friendly: raw.friendly === true,
+    spent: raw.spent === true,
   };
 }
 
@@ -286,6 +340,7 @@ function decodeWeapon(raw: unknown): CockpitWeapon | null {
     rounds: int(raw.rounds, 0),
     rounds_max: int(raw.rounds_max, 0),
     percent: optInt(raw.percent),
+    heat_per_shot: Math.max(0, int(raw.heat_per_shot, 0)),
   };
 }
 
@@ -340,10 +395,13 @@ export function decodeCockpitFrame(data: unknown): CockpitFrame | null {
     cell: cellPair(data.cell),
     power: clean(data.power, "?"),
     blocked: data.blocked === true,
+    wreck: data.wreck === true,
+    immobile: data.immobile === true,
     speed_kph: int(data.speed_kph, 0),
     heading_deg: int(data.heading_deg, 0),
     heat: decodeHeat(data.heat),
     tempo: clean(data.tempo, "?"),
+    scope: clean(data.scope, "?"),
     lock_designator: optStr(data.lock_designator, 8),
     lock_range_m: optInt(data.lock_range_m),
     lock_percent: optInt(data.lock_percent),
@@ -543,23 +601,96 @@ const NOTICE_WORDS: Readonly<Record<string, string>> = {
   miss: "miss",
   kill: "destroyed",
   struck: "hit taken",
+  struck_spent: "hit on a dead section",
   section_lost: "section gone",
   target_section_lost: "section destroyed",
   refused: "refused",
   blocked: "held",
   power_online: "power online",
+  destroyed: "your tank is destroyed",
+  disabled: "your tank is out of the fight",
 };
 
+/** Why an order was refused, in the pilot's words (`Refusal::as_str`). A word
+ * this build predates prints with its underscores opened out, which can name
+ * nothing the payload did not already carry. */
+const REFUSAL_WORDS: Readonly<Record<string, string>> = {
+  power_not_online: "power is not online",
+  queue_full: "too many orders at once",
+  wreck: "the tank is destroyed",
+  motion_disabled: "the tank cannot move",
+  no_contact: "no such contact",
+  no_lock: "no lock",
+  cycling: "still cycling",
+  empty: "empty",
+  overheated: "overheated",
+  no_weapon: "no such weapon",
+  epoch: "the seat changed hands",
+};
+
+/** Why motion stopped, in the pilot's words (`BlockedCause::as_str`). */
+const CAUSE_WORDS: Readonly<Record<string, string>> = {
+  impassable: "the ground will not take the tank",
+  occupied: "something is in the way",
+  edge: "the arena's edge",
+  too_steep: "too steep: drive round",
+};
+
+/** A wire word with its underscores opened out — the fallback for a kind, a
+ * refusal or a cause this build predates. */
+function opened(word: string): string {
+  return word.replace(/_/g, " ");
+}
+
+/** The clause a refusal's own numbers add: `, 3 s` or `, 60 of 60`. */
+function detailWords(detail: CockpitNoticeDetail | null): string {
+  if (detail === null) {
+    return "";
+  }
+  if (detail.secs !== null) {
+    return `, ${detail.secs} s`;
+  }
+  if (detail.heat !== null && detail.max !== null) {
+    return `, ${detail.heat} of ${detail.max}`;
+  }
+  return "";
+}
+
 /**
- * One line of the notices ring, composed from `kind` + `designator` + `section`
- * and NEVER from the notice's own `text` (16b cut F.2: one sentence, one owner
- * — the arena already sent that sentence to the scrollback as a `Sys` line, and
- * a panel that printed it too would say everything twice).
+ * One line of the notices ring, composed from the notice's own FIELDS and NEVER
+ * from its `text` (16b cut F.2: one sentence, one owner — the arena already sent
+ * that sentence to the scrollback as a `Sys` line, and a panel that printed it
+ * too would say everything twice).
+ *
+ * **16b cut D.2** (`B-07`) is what made that rule survivable. A refused order
+ * and a blocked tank carried their whole sentence in `text` and nothing else, so
+ * this ring printed `refused` and `held` — no order, no weapon, no reason — and
+ * a pilot watching the panel could not tell a cold tank from a cycling gun. The
+ * parts are on the wire now, so the line is composed here.
  */
 export function noticeLine(notice: CockpitNotice): string {
-  const words = NOTICE_WORDS[notice.kind] ?? notice.kind.replace(/_/g, " ");
-  const head = notice.designator === null ? words : `${notice.designator} ${words}`;
-  return notice.section === null ? head : `${head}: ${notice.section}`;
+  if (notice.kind === "refused") {
+    const order = (notice.order ?? "order").toUpperCase();
+    const weapon = notice.weapon === null ? "" : ` ${notice.weapon}`;
+    const why =
+      notice.refusal === null
+        ? "refused"
+        : (REFUSAL_WORDS[notice.refusal] ?? opened(notice.refusal));
+    return `${order}${weapon} refused: ${why}${detailWords(notice.detail)}`;
+  }
+  if (notice.kind === "blocked") {
+    const why =
+      notice.cause === null ? "something is in the way" : (CAUSE_WORDS[notice.cause] ?? opened(notice.cause));
+    return `held: ${why}`;
+  }
+  const words = NOTICE_WORDS[notice.kind] ?? opened(notice.kind);
+  // 16b cut D.2 (`B-18`): friendly fire is said and never gated, on the panel
+  // exactly as in the scrollback.
+  const named = notice.designator === null ? null : `${notice.designator}${notice.friendly ? " (FRIENDLY)" : ""}`;
+  const head = named === null ? words : `${named} ${words}`;
+  const line = notice.section === null ? head : `${head}: ${notice.section}`;
+  // 16b cut D.2 (`B-15`): the round found a section that was already gone.
+  return notice.kind === "hit" && notice.spent ? `${line} (already destroyed)` : line;
 }
 
 /** Every notice of one frame, as ring lines. */
@@ -599,7 +730,7 @@ export interface CockpitView {
    * contact marker landed. Excludes the pilot and INCLUDES a marker a later one
    * overwrote, exactly as the TUI's legend does. */
   legend: string;
-  /** The status block: callsign, power, speed/heading, heat, tempo, lock. */
+  /** The status block: callsign, power, speed/heading, heat, scope, lock. */
   status: string[];
   damage: CockpitDamageRow[];
   /** One line a weapon, or the single `(no weapon)` line. */
@@ -654,7 +785,11 @@ export function statusLines(frame: CockpitFrame): string[] {
       `heat ${frame.heat.heat}/${frame.heat.max}${frame.heat.overheated ? "  OVERHEATED" : ""}`,
     );
   }
-  lines.push(`tempo ${frame.tempo}`);
+  // 16b cut D.2 (16c `T-59`, the panel half): this platform's own scope, not the
+  // arena's one global tempo word — a pilot with an empty scope read `engaged`
+  // off somebody else's fight. `frame.tempo` is still decoded, but nothing in
+  // this client reads it: `T-59` is closed for the printed word alone.
+  lines.push(`scope ${frame.scope}`);
   lines.push(lockLine(frame));
   return lines;
 }

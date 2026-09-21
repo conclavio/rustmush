@@ -76,7 +76,7 @@ use mush_sim::data::Pose;
 use mush_tactics::{
     CapabilityId, CapabilityInit, CapabilityKey, CellAddr, CellId, CellSpec, ComponentId,
     ComponentSpec, ConditionId, DefinitionRef, FacetId, FacetSpec, InstallPoint, RulesValue,
-    SectionId, SectionSpec, TacticalUnit, UnitSpec,
+    SectionId, SectionSpec, TacticalUnit, UnitMutationOp, UnitMutationPlan, UnitSpec,
 };
 use smol_str::SmolStr;
 use tacsim::arena::clock::Tempo;
@@ -1208,9 +1208,9 @@ fn the_cockpit_shows_the_chance_against_the_lock_before_any_shot() {
         .unwrap_or_else(|| panic!("the cannon's row"));
     assert_eq!(cannon.p_permille, Some(950));
     assert!(
-        cannon.render().contains("95% to hit"),
+        cannon.render(&rows).contains("95% to hit"),
         "{}",
-        cannon.render()
+        cannon.render(&rows)
     );
 }
 
@@ -2249,7 +2249,7 @@ fn one_drive_into_a_bank_and_two_refused_orders_are_one_list_at_three_cadences()
         "{told:?}"
     );
     assert!(
-        told.contains(&"FIRE refused. No lock: LOCK a contact first.".to_owned()),
+        told.contains(&"FIRE cannon refused. No lock: LOCK a contact first.".to_owned()),
         "{told:?}"
     );
     assert!(
@@ -2674,14 +2674,33 @@ fn a_section_is_destroyed_once_however_many_rounds_find_it_afterwards() {
         "{heard:?}"
     );
     // The rounds that arrived afterwards are still hits, and still say so — a
-    // round that finds nothing left to break is not a miss.
-    assert!(
+    // round that finds nothing left to break is not a miss. **16b cut D.2**
+    // (`B-15`) changed the words they say it in: only the rounds that found
+    // armour say `armour gone`, and the rounds after the turret went say so in
+    // their own sentence, once per [`SPENT_NOTICE_MS`]. Both halves are pinned
+    // exactly, because the loose bound this assertion used to carry survived the
+    // change and stopped covering the rounds it was written for.
+    assert_eq!(
         heard
             .iter()
             .filter(|line| line.contains("armour gone"))
-            .count()
-            >= 2,
-        "{heard:?}"
+            .count(),
+        2,
+        "only the rounds that found armour say `armour gone`: {heard:?}"
+    );
+    assert!(
+        !heard
+            .iter()
+            .any(|line| line.contains("armour gone, 0 of 0 inside")),
+        "a round on a spent section is not reported as one that got through: {heard:?}"
+    );
+    assert_eq!(
+        heard
+            .iter()
+            .filter(|line| *line == "Hit on the turret, which is already destroyed.")
+            .count(),
+        3,
+        "the rounds after the turret went are one line per window: {heard:?}"
     );
     // **16b cut Q.2**: the shooter was told the turret went, once — the owner's
     // ask of 2026-09-19, which was that an attacker read nothing between
@@ -2991,7 +3010,7 @@ fn each_weapon_carries_its_own_chance_and_the_lock_quotes_the_one_fire_would_tak
         let rendered = rows
             .iter()
             .find(|row| row.id == id)
-            .map(tacsim::match_::cockpit::WeaponRow::render)
+            .map(|row| row.render(&rows))
             .unwrap_or_else(|| panic!("{id}'s row"));
         assert!(
             rendered.contains(&format!("{}% to hit", permille / 10)),
@@ -3105,16 +3124,26 @@ fn the_shooter_is_told_when_the_round_finishes_the_target() {
         victim.contains(&"The hull is destroyed: the tank is finished.".to_owned()),
         "{victim:?}"
     );
-    // And after that, nothing: a wreck's contact store is emptied and its pilot
-    // is told no more (doc 16 §3.3).
-    let after = victim
+    // **16b cut D.2** (`B-03`): and then the pilot's own one line, off the
+    // ledger's `unit_destroyed`, which until this cut nobody was ever sent — a
+    // pilot whose tank died simply stopped being told anything, which is three
+    // of the six smoke matches. After that, nothing: a wreck's contact store is
+    // emptied and its pilot is told no more (doc 16 §3.3).
+    let after: Vec<&String> = victim
         .iter()
         .skip_while(|line| !line.starts_with("The hull is destroyed"))
         .skip(1)
-        .count();
+        .collect();
     assert_eq!(
-        after, 0,
-        "the wreck's pilot went on being told things: {victim:?}"
+        after,
+        vec![&tacsim::match_::cockpit::OWN_DESTROYED.to_owned()],
+        "the wreck's pilot was told the wrong thing: {victim:?}"
+    );
+    // And it names nothing at all about the shooter.
+    let callsign = callsign(&arena, RED);
+    assert!(
+        !tacsim::match_::cockpit::OWN_DESTROYED.contains(callsign.to_string().as_str()),
+        "the victim's line names the shooter"
     );
 }
 
@@ -3140,7 +3169,8 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
         &mut bytes,
     );
     assert!(
-        told(&out, RED_PILOT).contains(&"FIRE refused. No lock: LOCK a contact first.".to_owned()),
+        told(&out, RED_PILOT)
+            .contains(&"FIRE cannon refused. No lock: LOCK a contact first.".to_owned()),
         "{:?}",
         told(&out, RED_PILOT)
     );
@@ -3184,7 +3214,8 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
     assert!(
         told(&out, RED_PILOT)
             .iter()
-            .any(|line| line.contains("no weapon called `railgun`")),
+            .any(|line| line
+                == "FIRE railgun refused. That unit carries no weapon called `railgun`."),
         "{:?}",
         told(&out, RED_PILOT)
     );
@@ -3216,13 +3247,13 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
     );
     let lines = told(&out, RED_PILOT);
     assert!(
-        lines.contains(&"FIRE refused. Still cycling: 4 s to go.".to_owned()),
+        lines.contains(&"FIRE cannon refused. Still cycling: 4 s to go.".to_owned()),
         "{lines:?}"
     );
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.starts_with("FIRE refused"))
+            .filter(|line| line.starts_with("FIRE cannon refused"))
             .count(),
         1,
         "one refusal for one refused order: {lines:?}"
@@ -3250,8 +3281,9 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
         &mut bytes,
     );
     assert!(
-        told(&out, RED_PILOT)
-            .contains(&"FIRE refused. Empty: that weapon has nothing left to fire.".to_owned()),
+        told(&out, RED_PILOT).contains(
+            &"FIRE cannon refused. Empty: that weapon has nothing left to fire.".to_owned()
+        ),
         "{:?}",
         told(&out, RED_PILOT)
     );
@@ -3279,7 +3311,7 @@ fn every_refusal_the_arena_makes_at_apply_reaches_the_pilot() {
     );
     assert!(
         told(&out, RED_PILOT)
-            .contains(&"FIRE refused. Power not online: STARTUP first.".to_owned()),
+            .contains(&"FIRE cannon refused. Power not online: STARTUP first.".to_owned()),
         "{:?}",
         told(&out, RED_PILOT)
     );
@@ -4586,6 +4618,7 @@ fn the_three_things_a_gunner_can_be_told_about_where_a_round_went() {
         line(tacsim::arena::perception::FrameNotice::Hit {
             contact: Some(named),
             section: None,
+            spent: false,
         }),
         "Hit on X2."
     );
@@ -4593,6 +4626,7 @@ fn the_three_things_a_gunner_can_be_told_about_where_a_round_went() {
         line(tacsim::arena::perception::FrameNotice::Hit {
             contact: None,
             section: None,
+            spent: false,
         }),
         "Hit."
     );
@@ -4601,7 +4635,501 @@ fn the_three_things_a_gunner_can_be_told_about_where_a_round_went() {
         line(tacsim::arena::perception::FrameNotice::Hit {
             contact: Some(named),
             section: Some(SmolStr::new("turret")),
+            spent: false,
         }),
         "Hit on X2: turret."
+    );
+    // **16b cut D.2** (`B-15`): and the fourth, which only the gunner who has
+    // told the target apart ever reads.
+    assert_eq!(
+        line(tacsim::arena::perception::FrameNotice::Hit {
+            contact: Some(named),
+            section: Some(SmolStr::new("turret")),
+            spent: true,
+        }),
+        "Hit on X2: turret, already destroyed."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (s) 16b cut D.2: the refusals, the wreck and the spent section reach the pilot
+// ---------------------------------------------------------------------------
+
+/// A third tank, on the blue side, whose pilot goes on typing after it dies.
+const GREY: ObjId = ObjId(11);
+
+/// The pilot `arena_of` seats on it — the third seat, so the third number.
+const GREY_PILOT: ObjId = ObjId(1_002);
+
+/// Its cell: seven north of red, which is past red's own five-cell sight, so the
+/// contact this fixture hands red is the only reason red can shoot at it.
+const GREY_CELL: (u16, u16) = (8, 12);
+
+/// **16b cut D.2's scripted fixture**: the spent-turret duel with a third tank
+/// the script kills in one round, red carrying the coaxial beside the cannon so
+/// that one beat can put two rounds into the same spent section inside the
+/// notice window.
+///
+/// Every round into blue goes to its **turret**, which the script's third shot
+/// finishes — the turret's consequence takes weapons blue does not have, so blue
+/// lives and every later round lands on a section with nothing left to break.
+/// Every round into grey goes to its **hull**, whose internals are one point from
+/// gone, so the first round that lands finishes the tank: the hull's consequence
+/// is `destroy_unit`.
+fn d2_arena() -> Arena {
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(RED_CELL.0, RED_CELL.1),
+                vec![cannon(), machine_gun()],
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(BLUE_CELL.0, BLUE_CELL.1),
+                Vec::new(),
+            ),
+            tank(
+                GREY,
+                Team::Blue,
+                centre(GREY_CELL.0, GREY_CELL.1),
+                Vec::new(),
+            ),
+        ],
+        &[],
+        &MatchConfig::default(),
+    );
+    for (unit, section) in [(BLUE, "turret"), (GREY, "hull")] {
+        if let Some(state) = arena.unit_mut(unit) {
+            state.profile.bands = state
+                .profile
+                .bands
+                .iter()
+                .map(|band| BandProfile {
+                    sections: vec![(SmolStr::new(section), 1)],
+                    ..band.clone()
+                })
+                .collect();
+        }
+    }
+    spend_section(&mut arena, GREY, "hull", 1);
+    for target in [BLUE, GREY] {
+        let contact = contact_of(RED, target);
+        let plot = plot_of(&arena, target);
+        arena.contacts.insert(
+            RED,
+            contact,
+            ShadowContact {
+                // Far enough ahead that no pass expires it: this fixture is about
+                // what a pilot is told, not about the sensor.
+                last_seen_ms: i64::MAX / 4,
+                own_seen: Some(OwnSighting {
+                    at_ms: i64::MAX / 4,
+                    plot,
+                    condition: None,
+                }),
+                ..ShadowContact::sighted(
+                    target,
+                    Classification::Classified { team: Team::Blue },
+                    0,
+                    plot,
+                )
+            },
+        );
+    }
+    arena
+}
+
+/// Zero every facet's armour on `section` and leave `leave` internals in it,
+/// through one [`mush_tactics::UnitMutationPlan`] — which is the only way a
+/// unit's cells move (D-16-6).
+///
+/// `leave` of **one** means the next round that lands finishes the section (and
+/// fires its consequence); `leave` of **nought** means the section is already
+/// spent and every round that lands on it finds nothing to break.
+fn spend_section(arena: &mut Arena, unit: ObjId, section: &str, leave: i64) {
+    let facets = arena
+        .unit(unit)
+        .and_then(|state| state.profile.section(section))
+        .map(|profile| profile.facets.clone())
+        .unwrap_or_else(|| panic!("#{} has no {section}", unit.0));
+    let mut ops: Vec<UnitMutationOp> = Vec::new();
+    for facet in facets {
+        let addr = armor(section, facet.as_str());
+        if arena
+            .unit(unit)
+            .is_some_and(|state| state.unit.cell(&addr).is_some())
+        {
+            ops.push(UnitMutationOp::SetCell { addr, value: 0 });
+        }
+    }
+    ops.push(UnitMutationOp::SetCell {
+        addr: internals(section),
+        value: leave,
+    });
+    let plan = UnitMutationPlan::new(ops, None, Some(SmolStr::new("test:hurt")))
+        .expect("the plan is well formed");
+    let hurt = {
+        let state = arena
+            .unit(unit)
+            .unwrap_or_else(|| panic!("#{} is not in the match", unit.0));
+        mush_tactics::apply(&state.unit, &plan, 0)
+            .expect("the plan applies")
+            .0
+    };
+    let condition = tacsim::arena::condition::Condition::of(&hurt, 700, 350);
+    if let Some(state) = arena.unit_mut(unit) {
+        state.unit = hurt;
+        state.condition = condition;
+    }
+}
+
+/// The script: one round finishes grey, grey's pilot goes on ordering, eight
+/// rounds go into blue's turret (the third finishes it), one beat puts a second
+/// round into the spent turret inside the notice window, and one beat bursts nine
+/// discrete orders at one live unit.
+fn d2_script() -> Vec<Beat> {
+    let blue = contact_of(RED, BLUE);
+    let grey = contact_of(RED, GREY);
+    let mut beats = vec![
+        Beat {
+            t_ms: 0,
+            intents: vec![intent(RED, IntentKind::Startup, 1)],
+        },
+        Beat {
+            t_ms: 15_000,
+            intents: vec![
+                intent(RED, IntentKind::Lock { contact: grey }, 2),
+                intent(
+                    RED,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                    },
+                    3,
+                ),
+            ],
+        },
+        // **16b cut D.2** (`B-03`): the pilot in the wreck goes on typing, and
+        // phase 2 answers all three. Before this cut every one of them vanished.
+        Beat {
+            t_ms: 20_000,
+            intents: vec![
+                intent(GREY, IntentKind::Startup, 4),
+                intent(GREY, IntentKind::Heading { mdeg: 90_000 }, 5),
+                intent(
+                    GREY,
+                    IntentKind::Fire {
+                        weapon: SmolStr::new("cannon"),
+                    },
+                    6,
+                ),
+            ],
+        },
+    ];
+    for (n, at) in [
+        25_000_i64, 30_000, 35_000, 40_000, 45_000, 50_000, 55_000, 60_000,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let seq = 10 + u64::try_from(n).unwrap_or(0) * 4;
+        let mut intents = vec![
+            intent(RED, IntentKind::Lock { contact: blue }, seq),
+            intent(
+                RED,
+                IntentKind::Fire {
+                    weapon: SmolStr::new("cannon"),
+                },
+                seq + 1,
+            ),
+        ];
+        // The one beat that fires twice: two rounds into the same spent section
+        // inside one `SPENT_NOTICE_MS`, which is the window engaging.
+        if at == 45_000 {
+            intents.push(intent(
+                RED,
+                IntentKind::Fire {
+                    weapon: SmolStr::new("machine_gun"),
+                },
+                seq + 2,
+            ));
+        }
+        beats.push(Beat { t_ms: at, intents });
+    }
+    // Nine discrete orders for one live unit in one beat:
+    // `intents.max_pending_per_unit` is eight, so the ninth is refused.
+    beats.push(Beat {
+        t_ms: 65_000,
+        intents: (0..9)
+            .map(|n| intent(RED, IntentKind::Lock { contact: blue }, 100 + n))
+            .collect(),
+    });
+    beats
+}
+
+/// **The mandatory cross-tempo property for 16b cut D.2** (16b §11; doc 16
+/// §3.1's rate independence).
+///
+/// One scripted log at 5,000 / 1,000 / 500 ms gives one event list, one hash
+/// sequence — which now folds `spent_said` — and **one ordered notice list per
+/// pilot**. The notices are compared as one list over the whole run and never
+/// grouped by frame: how notices are grouped into frames is per pulse by design,
+/// their order and their content are not.
+#[test]
+fn d2_the_refusals_the_wreck_and_the_spent_section_are_one_list_at_three_cadences() {
+    let mut runs: Vec<(i64, Replay)> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = d2_arena();
+        runs.push((cadence, replay(&mut arena, cadence, 70_000, &d2_script())));
+    }
+    let Some((_, first)) = runs.first() else {
+        panic!("three replays");
+    };
+    let shooter = first.notices.get(&RED_PILOT).cloned().unwrap_or_default();
+    let victim = first.notices.get(&BLUE_PILOT).cloned().unwrap_or_default();
+    let dead = first.notices.get(&GREY_PILOT).cloned().unwrap_or_default();
+    let count =
+        |lines: &[String], needle: &str| lines.iter().filter(|line| line.contains(needle)).count();
+
+    // (1) `B-03`: the pilot in the wreck is told, once, and then every order is
+    // refused aloud with its own word.
+    assert_eq!(
+        count(&dead, tacsim::match_::cockpit::OWN_DESTROYED),
+        1,
+        "{dead:?}"
+    );
+    for order in ["STARTUP", "HEADING", "FIRE cannon"] {
+        assert_eq!(
+            count(&dead, &format!("{order} refused. Your tank is a wreck.")),
+            1,
+            "{order} was not refused aloud exactly once: {dead:?}"
+        );
+    }
+    // And nothing about the tank that shot it.
+    let red_callsign = callsign(&d2_arena(), RED);
+    for line in &dead {
+        assert!(
+            !line.contains(&red_callsign),
+            "the wreck's pilot was told who shot him: {line}"
+        );
+    }
+
+    // (2) `B-03`: exactly one `queue_full` for the nine-order burst, at every
+    // cadence. The queue is drained totally every pulse and is empty at the start
+    // of every phase 2, so nine discrete orders in one beat overflow it once
+    // however fast the arena is pulsing.
+    assert_eq!(count(&shooter, "Too many orders at once"), 1, "{shooter:?}");
+
+    // (3) `B-15`: the victim and the classified gunner each read one sentence per
+    // spent section per five seconds, and the pair fired in one beat is one line.
+    //
+    // The rounds that found nothing left to break are the ones after **blue's
+    // turret** went, which is the run's SECOND `section_destroyed`: the first is
+    // grey's hull at 15,000 ms, and skipping to that one would retain the three
+    // rounds that landed on a live turret and make the count unfailable.
+    let turret_gone = first
+        .events
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, encoded, _, _))| encoded.contains("section_destroyed"))
+        .map(|(at, _)| at)
+        .nth(1)
+        .unwrap_or_else(|| panic!("the run takes grey's hull and then blue's turret"));
+    let spent_rounds = first
+        .events
+        .get(turret_gone + 1..)
+        .unwrap_or_default()
+        .iter()
+        .filter(|(_, encoded, _, _)| encoded.contains("\"kind\":\"hit\""))
+        .count();
+    assert_eq!(spent_rounds, 6, "rounds on a spent turret");
+    let said = count(&victim, "Hit on the turret, which is already destroyed.");
+    // Pinned exactly, not bounded: one line per round except the pair fired in
+    // one beat, which is the window engaging. A bound would hold with the window
+    // torn out.
+    assert_eq!(
+        said, 5,
+        "one line per spent round bar the pair inside one window: \
+         {said} lines for {spent_rounds} rounds"
+    );
+    assert_eq!(
+        said,
+        count(&shooter, ": turret, already destroyed."),
+        "the two readers are under one window"
+    );
+    // The victim's own line names nothing but his own tank.
+    assert!(
+        !victim
+            .iter()
+            .any(|line| line.contains("already destroyed") && line.contains("BA")),
+        "{victim:?}"
+    );
+    // And the first round on a FRESH section still says what it always did.
+    assert!(
+        victim
+            .iter()
+            .any(|line| line.contains("armour gone") || line.contains("armour left")),
+        "{victim:?}"
+    );
+    assert!(
+        victim
+            .iter()
+            .any(|line| line.starts_with("The turret is destroyed")),
+        "{victim:?}"
+    );
+
+    // (4) And the whole of it is the same at every cadence.
+    for (cadence, run) in runs.iter().skip(1) {
+        assert_eq!(
+            run.notices, first.notices,
+            "the notices differ at {cadence} ms"
+        );
+        assert_eq!(
+            run.events, first.events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+        assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+}
+
+/// The spent-turret duel again, with the gunner holding the target
+/// **unidentified** — and the turret spent before the first round where
+/// `spend` says so.
+///
+/// It is the pair the observer-rule claim is made over: the same eight rounds
+/// into a target whose turret is already gone, and into one whose turret is
+/// whole.
+fn unidentified_gunner_arena(spend: bool) -> Arena {
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(RED_CELL.0, RED_CELL.1),
+                vec![cannon()],
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(BLUE_CELL.0, BLUE_CELL.1),
+                Vec::new(),
+            ),
+        ],
+        &[],
+        &MatchConfig::default(),
+    );
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.profile.bands = state
+            .profile
+            .bands
+            .iter()
+            .map(|band| BandProfile {
+                sections: vec![(SmolStr::new("turret"), 1)],
+                ..band.clone()
+            })
+            .collect();
+    }
+    if spend {
+        spend_section(&mut arena, BLUE, "turret", 0);
+    }
+    // The gunner's own sight is taken away, so the contact planted below stays
+    // **unidentified** for the whole run: the shipped sight tells a target apart
+    // three seconds after it finds one, and what this fixture is about is the
+    // gunner who never has.
+    if let Some(state) = arena.unit_mut(RED) {
+        state.sensor = None;
+    }
+    let contact = contact_of(RED, BLUE);
+    let plot = plot_of(&arena, BLUE);
+    arena.contacts.insert(
+        RED,
+        contact,
+        ShadowContact {
+            last_seen_ms: i64::MAX / 4,
+            own_seen: Some(OwnSighting {
+                at_ms: i64::MAX / 4,
+                plot,
+                condition: None,
+            }),
+            // **Unidentified**, which is the whole of this fixture: a gunner who
+            // has not told the target apart is told no section word at all.
+            ..ShadowContact::sighted(BLUE, Classification::Unknown, 0, plot)
+        },
+    );
+    arena
+}
+
+/// **The unidentified gunner cannot tell a spent section from a live one** (16b
+/// cut D.2, `B-15`; doc 16 §1, §3.6).
+///
+/// The same eight rounds into a target whose turret is already gone and into one
+/// whose turret is whole: his notice list is **equal in count and in text**.
+/// Nothing is suppressed for him and no window entry is keyed on him, and both
+/// are decisions rather than oversights — a line withheld after a round he
+/// watched land would say "that one hit something already dead", and a
+/// per-section key would let him count the target's destroyed sections by
+/// counting lines per five seconds. Both are condition facts the close look is
+/// the price of.
+#[test]
+fn d2_an_unidentified_gunner_reads_the_same_rounds_on_a_spent_and_a_live_target() {
+    let mut runs: Vec<(bool, Replay, Arena)> = Vec::new();
+    for spend in [true, false] {
+        let mut arena = unidentified_gunner_arena(spend);
+        let run = replay(&mut arena, 1_000, 60_000, &spent_section_script());
+        runs.push((spend, run, arena));
+    }
+    let Some((_, spent, spent_arena)) = runs.first() else {
+        panic!("two runs");
+    };
+    let Some((_, fresh, fresh_arena)) = runs.get(1) else {
+        panic!("two runs");
+    };
+    let told = |run: &Replay| run.notices.get(&RED_PILOT).cloned().unwrap_or_default();
+    let on_spent = told(spent);
+    let on_fresh = told(fresh);
+    assert!(
+        on_spent
+            .iter()
+            .filter(|line| line.starts_with("Hit on"))
+            .count()
+            >= 4,
+        "the run has to land rounds to be worth comparing: {on_spent:?}"
+    );
+    assert_eq!(
+        on_spent, on_fresh,
+        "the gunner could tell a spent section from a live one"
+    );
+    for line in &on_spent {
+        assert!(
+            !line.contains("already destroyed"),
+            "an unidentified gunner was told a section was spent: {line}"
+        );
+        assert!(
+            !line.contains("turret"),
+            "an unidentified gunner was given a section word: {line}"
+        );
+    }
+    // And no window entry is keyed on him, in either run — so nothing about him
+    // could ever be suppressed.
+    for arena in [spent_arena, fresh_arena] {
+        assert!(
+            arena.spent_said.keys().all(|(told, _, _)| *told != RED),
+            "a window entry was keyed on the unidentified gunner: {:?}",
+            arena.spent_said
+        );
+    }
+    // The victim, by contrast, IS under the window: the two runs differ on his
+    // surface, which is what makes the gunner's equality a claim about the
+    // observer rule rather than about nothing having happened.
+    assert_ne!(
+        spent.notices.get(&BLUE_PILOT),
+        fresh.notices.get(&BLUE_PILOT),
+        "the victim read the same thing either way"
     );
 }

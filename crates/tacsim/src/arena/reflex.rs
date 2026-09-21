@@ -1951,8 +1951,12 @@ fn is_dry(unit: &UnitState) -> bool {
 /// platform's whole ceiling would be a gun a pilot could fire from cold and a
 /// machine could never fire at all, which is the two halves of one platform
 /// disagreeing about whether the gun works. A unit already at the ceiling is
-/// asked the engine's own question and answers `true` for every weapon,
-/// `heat_per_shot` of zero included.
+/// asked the engine's own question and answers `true` for every weapon **that
+/// makes heat** — **16b cut D.2** (`B-16`) took the zero out of that set, in both
+/// halves at once: the ceiling is what a hot shot would add to, and a weapon
+/// whose `heat_per_shot` is nought adds nothing, so a platform that has cooked
+/// itself may still fire its cold guns. `crate::arena::weapons`'s acceptance
+/// carries the same clause.
 ///
 /// A platform whose content declares heat but carries no `heat` **cell** reads
 /// `None` here and is held back by nothing, because that is the platform
@@ -1965,10 +1969,16 @@ fn would_overheat(unit: &UnitState, weapon: &str) -> bool {
     let Some(now) = unit.heat_now() else {
         return false;
     };
+    // 16b cut D.2 (`B-16`): a cold gun is never held back, at the ceiling or
+    // anywhere else.
+    let per_shot = heat.per_shot(weapon);
+    if per_shot == 0 {
+        return false;
+    }
     if now >= heat.max {
         return true;
     }
-    now.saturating_add(heat.per_shot(weapon)) > heat.max
+    now.saturating_add(per_shot) > heat.max
 }
 
 /// **The range `Approach` holds**, centimetres (16b cut N.2): doctrine's own
@@ -1994,6 +2004,118 @@ mod tests {
     use super::*;
     use crate::arena::state::Team;
     use crate::arena::test_support::{arena_of, pose, tank};
+
+    /// **16b cut D.2** (`B-16`): the controller's copy of the engine's heat
+    /// question answers `false` for a weapon that makes no heat, at the ceiling
+    /// and below it — otherwise a cooked platform's cold gun is one a pilot may
+    /// fire and a machine may not, which is the two halves of one platform
+    /// disagreeing about whether the gun works.
+    #[test]
+    fn d2_a_weapon_that_makes_no_heat_never_holds_the_controller_back() {
+        let mut unit = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
+        unit.unit = hot_tactical_unit(ObjId(4));
+        let mut arena = arena_of(vec![unit]);
+        if let Some(state) = arena.unit_mut(ObjId(4)) {
+            state.heat = Some(crate::arena::state::HeatState {
+                section: SmolStr::new("hull"),
+                max: 60,
+                per_s: 3,
+                per_shot: [(SmolStr::new("laser"), 20)].into_iter().collect(),
+                carry_milli: 0,
+            });
+        }
+        let asked = |arena: &Arena| -> (bool, bool) {
+            let Some(state) = arena.unit(ObjId(4)) else {
+                panic!("the fixture tank");
+            };
+            (
+                would_overheat(state, "laser"),
+                would_overheat(state, "machine_gun"),
+            )
+        };
+        // Cold: neither is held back.
+        assert_eq!(asked(&arena), (false, false));
+        // One pulse short of the ceiling: the hot one's own shot would carry it
+        // past, the cold one adds nothing.
+        set_heat(&mut arena, ObjId(4), 50);
+        assert_eq!(asked(&arena), (true, false));
+        // **At** the ceiling, which is the branch this cut changed: the engine
+        // refuses the hot gun and takes the cold one, and so does the machine.
+        set_heat(&mut arena, ObjId(4), 60);
+        assert_eq!(asked(&arena), (true, false));
+        assert_eq!(
+            arena.unit(ObjId(4)).map(UnitState::overheated),
+            Some(true),
+            "the engine's own predicate agrees the platform is cooked"
+        );
+        // And a platform with no heat state at all answers `false` for both.
+        if let Some(state) = arena.unit_mut(ObjId(4)) {
+            state.heat = None;
+        }
+        assert_eq!(asked(&arena), (false, false));
+    }
+
+    /// The fixture's one-section unit **with a heat cell on its hull** — the
+    /// shipped laser tank's shape, small enough to build here, because
+    /// `test_support`'s own unit declares none and a controller that cannot read
+    /// a heat cell is the documented case this test is not about.
+    fn hot_tactical_unit(id: ObjId) -> mush_tactics::TacticalUnit {
+        use crate::arena::test_support::{dref, rules};
+        let cell = |name: &str, max: i64, init: i64| mush_tactics::CellSpec {
+            id: mush_tactics::CellId::new(name).expect("a cell"),
+            min: 0,
+            max,
+            init,
+        };
+        let spec = mush_tactics::UnitSpec {
+            definition: dref("unit", "tacsim.unit.line_tank"),
+            sections: vec![mush_tactics::SectionSpec {
+                id: mush_tactics::SectionId::new("hull").expect("a section"),
+                condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+                facets: vec![mush_tactics::FacetSpec {
+                    id: mush_tactics::FacetId::new("front").expect("a facet"),
+                    cells: vec![cell("armor", 10, 10)],
+                }],
+                slots: Vec::new(),
+                cells: vec![
+                    cell("internals", 8, 8),
+                    cell(crate::definitions::unit::HEAT_CELL, 60, 0),
+                ],
+            }],
+            unit_cells: Vec::new(),
+            components: Vec::new(),
+            capabilities: Vec::new(),
+            mobility: None,
+            rules: rules(),
+        };
+        mush_tactics::TacticalUnit::from_spec(&spec, id).expect("a one-section unit with heat")
+    }
+
+    /// Put the heat cell at `value` through one plan, which is the only way a
+    /// unit's cells move (D-16-6).
+    fn set_heat(arena: &mut Arena, unit: ObjId, value: i64) {
+        let addr = mush_tactics::CellAddr::Section {
+            section: mush_tactics::SectionId::new("hull").expect("a section"),
+            cell: mush_tactics::CellId::new(crate::definitions::unit::HEAT_CELL).expect("a cell"),
+        };
+        let hot = {
+            let Some(state) = arena.unit(unit) else {
+                panic!("the fixture tank");
+            };
+            let plan = mush_tactics::UnitMutationPlan::new(
+                vec![mush_tactics::UnitMutationOp::SetCell { addr, value }],
+                None,
+                Some(SmolStr::new("test:heat")),
+            )
+            .expect("a one-op plan");
+            mush_tactics::apply(&state.unit, &plan, 0)
+                .expect("the plan applies")
+                .0
+        };
+        if let Some(state) = arena.unit_mut(unit) {
+            state.unit = hot;
+        }
+    }
 
     #[test]
     fn the_states_round_trip_their_words_and_codes() {

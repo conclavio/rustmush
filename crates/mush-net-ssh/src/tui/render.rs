@@ -2398,10 +2398,17 @@ pub fn render_cockpit_status_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows
             heat.get("max").and_then(Value::as_i64).unwrap_or(0),
         )))));
     }
+    // **16b cut D.2** (16c `T-59`, the panel half): this platform's own scope and
+    // not the arena's one global tempo word. Cut D.1 put `scope` on the frame and
+    // made `STATUS`'s third line read it; both panels went on printing `tempo`,
+    // so a pilot sitting in an empty scope read `engaged` off somebody else's
+    // fight. `tempo` stays on the frame and stays decoded, because `T-59` is
+    // closed for the printed word alone and a client may yet want the cadence;
+    // no shipped client reads it today, here or in `web/`.
     rows.push(PaneRow::plain(Line::from(Span::styled(
         format!(
-            "tempo {}",
-            clean(data.get("tempo").and_then(Value::as_str).unwrap_or("?"))
+            "scope {}",
+            clean(data.get("scope").and_then(Value::as_str).unwrap_or("?"))
         ),
         system,
     ))));
@@ -4254,6 +4261,7 @@ mod tests {
             "schema": { "id": "arena.cockpit", "version": 1, "retain": "latest" },
             "match": 3, "callsign": "RA", "cell": cell, "heading_deg": 90,
             "power": "online", "blocked": false, "speed_kph": 20, "tempo": "alert",
+            "scope": "hostile",
             "heat": null, "lock_designator": null, "contacts": contacts,
             "scan_tables": [["engine", "hull", "turret"]],
             "sections": [], "weapons": []
@@ -4496,7 +4504,7 @@ mod tests {
                 "power online  HELD".to_string(),
                 "20 kph  heading 090\u{b0}".to_string(),
                 "heat 90/100  OVERHEATED".to_string(),
-                "tempo alert".to_string(),
+                "scope hostile".to_string(),
                 "Lock BA  430 m  62%".to_string(),
             ]
         );

@@ -65,7 +65,10 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    13. **the four motion carries** (16b cut Q.6), in field order: `carry.turn`
 ///        as `u32`, `carry.speed` as `u32`, `carry.east` as `i64` and
 ///        `carry.north` as `i64`.
-/// 2. **The reflex machines** (16b cut N.1), in unit-id order — the map's own, so
+/// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
+///    count of entries as `u64`, then per entry the platform told's `u32`, the
+///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
+/// 3. **The reflex machines** (16b cut N.1), in unit-id order — the map's own, so
 ///    there is no iteration order to diverge on: per machine the unit's `u32`, the
 ///    state byte, the goal cell's two `u16` (`u16::MAX` twice for none), the
 ///    waypoint index as `u16` (`u16::MAX` for none), the route's length as `u64`
@@ -74,7 +77,7 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    `u64`, then per entry the cell's two `u16` and the stop's `i64` stamp — and
 ///    `stand_until_ms`, `quiet_since_ms` (each a presence byte then an `i64`) and
 ///    the `rallied` byte.
-/// 3. **The shadow contact store** (16b cut S.1), in its own iteration order —
+/// 4. **The shadow contact store** (16b cut S.1), in its own iteration order —
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
 ///    `u64`, the target's `u32`, the class byte (`0` unknown, `1` classified red,
@@ -83,15 +86,15 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    plot and **its reading**) and **the reading the platform holds** — a reading
 ///    being a presence byte, the look's `i64` stamp, the packed bands as `u32` and
 ///    the packed section count as `u8` (16b cut Q.2).
-/// 4. **The designator book** (16b cut Q.1), in its own two `BTreeMap`s' order:
+/// 5. **The designator book** (16b cut Q.1), in its own two `BTreeMap`s' order:
 ///    the count of `next` rows as `u64`, then per row the viewer's `u32` and the
 ///    number as `u16`; then the count of issued numbers as `u64`, then per issued
 ///    number the viewer's `u32`, the target's `u32` and the number as `u16`.
-/// 5. The tempo byte (`0` quiet, `1` alert, `2` engaged).
-/// 6. `now_ms`, `i64`.
-/// 7. The due-event count, `u64`.
-/// 8. **The in-flight shot count** (16b cut W.1), `u64`.
-/// 9. The ledger's event sequence, `u64`.
+/// 6. The tempo byte (`0` quiet, `1` alert, `2` engaged).
+/// 7. `now_ms`, `i64`.
+/// 8. The due-event count, `u64`.
+/// 9. **The in-flight shot count** (16b cut W.1), `u64`.
+/// 10. The ledger's event sequence, `u64`.
 ///
 /// **Why the contacts are in it** (16b cut S.1). Doc 16 §3.1 makes the arena the
 /// single writer for *unit poses, unit condition cells, contacts, orders,
@@ -188,6 +191,29 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// the callsign — and because it never survives the substep it was filled in, so
 /// nothing it holds can reach a later one. Folding it would add no information
 /// and would make the hash a function of *where* the drain sits.
+///
+/// **Cut D.2's `spent_hits` is absent on exactly that argument**, and it is the
+/// one other table the argument really does fit. The shots in it are a function
+/// of state this hash already folds — the struck section's two cells, and the
+/// `hit` line the ledger sequence counts — and it never survives the substep
+/// `crate::arena::damage::Arena::apply_hit` filled it in, because the staging
+/// scan drains it. It carries the same caveat word for word: the record below is
+/// taken *before* that scan, so in a substep where a round found a spent section
+/// the table is holding that shot at this very line, and that costs nothing.
+///
+/// **Cut D.2's `spent_said` is the opposite case, and it IS folded.** It persists
+/// for [`crate::arena::state::SPENT_NOTICE_MS`] across substeps and pulses and it
+/// decides what a *later* substep says, so `lost_designators`' argument is simply
+/// false of it: a replay whose first spent round landed one substep earlier would
+/// suppress a different later one, and the two runs would then show the two
+/// pilots different lines. Folding it catches that at the substep it happened,
+/// which is the argument cut Q.1 made for the designator book. Two rules keep the
+/// fold rate-independent, and both are `Arena::spent_said`'s: the decision and
+/// the write happen whether or not anybody is seated and whether or not a frame
+/// is ever sent, and entries are pruned only on touch, against the event's own
+/// timestamp, never by a per-pulse sweep. Because the staging scan runs **after**
+/// the substep's hash is recorded, a write at substep *k* is first folded at
+/// *k + 1*.
 #[must_use]
 pub fn state_hash(arena: &Arena) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
@@ -237,6 +263,14 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fnv1a64_update(hash, &unit.carry.speed.to_le_bytes());
         hash = fnv1a64_update(hash, &unit.carry.east.to_le_bytes());
         hash = fnv1a64_update(hash, &unit.carry.north.to_le_bytes());
+    }
+    // **16b cut D.2**: the spent-section window, in the map's own key order.
+    hash = fnv1a64_update(hash, &(arena.spent_said.len() as u64).to_le_bytes());
+    for ((told, target, section), at_ms) in &arena.spent_said {
+        hash = fnv1a64_update(hash, &told.0.to_le_bytes());
+        hash = fnv1a64_update(hash, &target.0.to_le_bytes());
+        hash = fnv1a64_update(hash, section.as_bytes());
+        hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
     }
     // 16b cut N.1: the controller's own machines, in unit-id order.
     for (unit, row) in arena.reflex.rows() {
@@ -617,6 +651,50 @@ mod tests {
             unit.carry.east = 0;
         }
         assert_eq!(state_hash(&east), base);
+    }
+
+    /// **16b cut D.2's extension**: the spent-section window is persistent state
+    /// that decides what a later substep says, so it has to move the hash — and
+    /// the scratch beside it is not, so it must not.
+    #[test]
+    fn the_hash_folds_the_spent_section_window_and_not_the_spent_shot_scratch() {
+        let base = state_hash(&two_tanks());
+        let mut said = two_tanks();
+        said.spent_said.insert(
+            (ObjId(4), ObjId(9), smol_str::SmolStr::new("turret")),
+            5_000,
+        );
+        assert_ne!(
+            state_hash(&said),
+            base,
+            "one window entry alone went unhashed"
+        );
+        // The stamp is part of it: two runs that said the same line at different
+        // arena times are about to suppress different later ones.
+        let mut later = two_tanks();
+        later.spent_said.insert(
+            (ObjId(4), ObjId(9), smol_str::SmolStr::new("turret")),
+            5_001,
+        );
+        assert_ne!(state_hash(&later), state_hash(&said));
+        // And so is each of the three key parts.
+        for key in [
+            (ObjId(9), ObjId(9), smol_str::SmolStr::new("turret")),
+            (ObjId(4), ObjId(4), smol_str::SmolStr::new("turret")),
+            (ObjId(4), ObjId(9), smol_str::SmolStr::new("hull")),
+        ] {
+            let mut probe = two_tanks();
+            probe.spent_said.insert(key, 5_000);
+            assert_ne!(state_hash(&probe), state_hash(&said), "a key part is lost");
+        }
+        // Taking it out again is the same state.
+        said.spent_said.clear();
+        assert_eq!(state_hash(&said), base);
+        // The scratch is deliberately absent: it is a function of state this hash
+        // already folds and it never survives its own substep.
+        let mut scratch = two_tanks();
+        scratch.spent_hits.insert(7);
+        assert_eq!(state_hash(&scratch), base, "the scratch was folded");
     }
 
     #[test]

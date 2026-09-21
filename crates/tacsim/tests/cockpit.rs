@@ -2280,6 +2280,9 @@ mod fixture {
             speed_cms: 1_200,
             power: Power::Online,
             blocked: false,
+            // 16b cut D.2: the pilot's own two limits.
+            wreck: false,
+            immobile: false,
             tempo: Tempo::Engaged,
             // **16b cut D.1**: the SHIPPED sight — 60 cells at the fixture's own
             // 1,000 cm cell, 600 m — because the README's rule is that the scene
@@ -2394,6 +2397,8 @@ mod fixture {
                     }),
                     p_permille: Some(624),
                     bands_cm: vec![100_000, 300_000],
+                    // 16b cut D.2: the stock tank's guns make no heat.
+                    heat_per_shot: 0,
                 },
                 FrameWeapon {
                     id: SmolStr::new_static("machine_gun"),
@@ -2404,6 +2409,7 @@ mod fixture {
                     range_band: None,
                     p_permille: Some(210),
                     bands_cm: vec![40_000],
+                    heat_per_shot: 0,
                 },
             ],
             sections: vec![
@@ -3294,5 +3300,493 @@ async fn d1_the_other_sides_row_does_not_move_when_that_side_loses_a_pilot() {
     assert_eq!(
         before, after,
         "the red pilot's reading of the blue row moved when blue lost its pilot"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut D.2 — refusals reach the pilot
+// ---------------------------------------------------------------------------
+
+/// **`B-18`**: `(FRIENDLY)` follows the designator on the three lines that name
+/// one, it is read off the frame's own row, and an unidentified return never
+/// carries it. Nothing is refused.
+#[test]
+fn d2_a_friendly_contact_is_marked_on_the_lock_the_lock_line_and_the_hit() {
+    use tacsim::arena::perception::{FrameNotice, Named};
+    let frame = fixture::frame();
+    let rows = cockpit::frame_contacts(&frame);
+    let row = |friendly: bool| {
+        rows.iter()
+            .find(|row| row.friendly == friendly && row.class != "unknown")
+            .cloned()
+            .unwrap_or_else(|| panic!("a {friendly} classified row"))
+    };
+    let unknown = rows
+        .iter()
+        .find(|row| row.class == "unknown")
+        .cloned()
+        .unwrap_or_else(|| panic!("an unidentified row"));
+    let friend = row(true);
+    let hostile = row(false);
+    let named = |row: &cockpit::ContactRow| Named {
+        id: row.id,
+        designator: row.designator,
+    };
+
+    // (1) The hit line.
+    let hit = |row: &cockpit::ContactRow| {
+        cockpit::notice_line(
+            &frame,
+            &FrameNotice::Hit {
+                contact: Some(named(row)),
+                section: Some(smol_str::SmolStr::new("turret")),
+                spent: false,
+            },
+            &rows,
+        )
+    };
+    assert_eq!(
+        hit(&friend),
+        format!("Hit on {} (FRIENDLY): turret.", friend.designator)
+    );
+    assert_eq!(
+        hit(&hostile),
+        format!("Hit on {}: turret.", hostile.designator)
+    );
+    assert_eq!(
+        hit(&unknown),
+        format!("Hit on {}: turret.", unknown.designator),
+        "an unidentified return has no side, so it is never a friend"
+    );
+
+    // (2) The row's own `friendly`, which is the word the `LOCK` echo is built
+    //     from. The echo itself is a separate path — `lock` reads `row.friendly`
+    //     where these two read `friendly_mark` — so it is driven as a verb in
+    //     `d2_the_lock_echo_marks_a_friendly_and_never_a_blip` rather than
+    //     claimed here.
+    assert!(friend.friendly && !hostile.friendly && !unknown.friendly);
+
+    // (3) `lock_line`, so `WEAPONSTATUS` says it too.
+    let mut locked = frame.clone();
+    locked.lock = Some(friend.id);
+    let line = cockpit::lock_line(&locked).unwrap_or_else(|| panic!("a lock line"));
+    assert!(
+        line.starts_with(&format!("Locked on {} (FRIENDLY)", friend.designator)),
+        "{line}"
+    );
+    assert!(line.contains("% to hit"), "{line}");
+    let mut locked = frame.clone();
+    locked.lock = Some(hostile.id);
+    let line = cockpit::lock_line(&locked).unwrap_or_else(|| panic!("a lock line"));
+    assert!(!line.contains("FRIENDLY"), "{line}");
+
+    // (4) And the notice object carries the same fact, so a panel needs no table
+    // of its own.
+    let mut marked = frame.clone();
+    marked.notices = vec![FrameNotice::Locked {
+        contact: named(&friend),
+    }];
+    let payload = cockpit::status_frame(fixture::MATCH, &marked);
+    let notice = payload
+        .get("notices")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|list| list.first().cloned())
+        .unwrap_or_else(|| panic!("one notice"));
+    assert_eq!(
+        notice.get("friendly").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+}
+
+/// **`B-18`, the `LOCK` echo itself**: the third of the three friendly lines, and
+/// the only one with an implementation of its own — `lock` builds its word from
+/// the resolved row's `friendly`, where `notice_line` and `lock_line` both go
+/// through `friendly_mark`. So it is driven as a verb, against a real world and
+/// a frame pushed through the real bridge.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn d2_the_lock_echo_marks_a_friendly_and_never_a_blip() {
+    use tacsim::arena::perception::FrameContact;
+    use tacsim::arena::state::{Classification, ContactId, Designator, Team};
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+
+    // A classified return on the pilot's **own** side, one on the other side and
+    // an unidentified blip, so one frame carries all three answers.
+    let mut seen = rig.held_frame(0);
+    seen.notices.clear();
+    let other = if seen.team == Team::Red {
+        Team::Blue
+    } else {
+        Team::Red
+    };
+    let row = |id: u64, designator: Designator, class: Classification| FrameContact {
+        id: ContactId(id),
+        designator,
+        alias: None,
+        class,
+        bearing_mdeg: 45_000,
+        range_cm: 12_000,
+        age_ms: 0,
+        cell: None,
+        condition: None,
+    };
+    let friend = row(
+        0xa1a1_a1a1_a1a1_a1a1,
+        Designator::Slot {
+            team: seen.team,
+            slot: 2,
+        },
+        Classification::Classified { team: seen.team },
+    );
+    let hostile = row(
+        0xb2b2_b2b2_b2b2_b2b2,
+        Designator::Slot {
+            team: other,
+            slot: 1,
+        },
+        Classification::Classified { team: other },
+    );
+    let blip = row(
+        0xc3c3_c3c3_c3c3_c3c3,
+        Designator::Provisional(9),
+        Classification::Unknown,
+    );
+    seen.contacts = vec![friend, hostile, blip];
+    rig.push_frame(0, seen);
+
+    let said = rig.say(0, &format!("lock {}", friend.designator));
+    assert!(
+        said.contains(&format!("Locking {} (FRIENDLY).", friend.designator)),
+        "the echo did not mark a contact on the pilot's own side: {said}"
+    );
+    for row in [&hostile, &blip] {
+        let said = rig.say(0, &format!("lock {}", row.designator));
+        assert!(
+            said.contains(&format!("Locking {}.", row.designator)),
+            "{said}"
+        );
+        assert!(
+            !said.contains("FRIENDLY"),
+            "{} was marked a friend: {said}",
+            row.designator
+        );
+    }
+}
+
+/// **`B-07`**: the notice object carries what the sentence says — seven keys
+/// beside the five cut F.2 gave it, so a panel composes the line from fields and
+/// never from `text`.
+#[test]
+fn d2_the_notice_object_carries_the_sentence_s_own_parts() {
+    use tacsim::arena::intents::Refusal;
+    use tacsim::arena::motion::BlockedCause;
+    use tacsim::arena::perception::{FrameNotice, RefusalDetail};
+    let frame = fixture::frame();
+    let object = |notice: FrameNotice| -> serde_json::Value {
+        let mut one = frame.clone();
+        one.notices = vec![notice];
+        cockpit::status_frame(fixture::MATCH, &one)
+            .get("notices")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|list| list.first().cloned())
+            .unwrap_or_else(|| panic!("one notice"))
+    };
+    let key = |value: &serde_json::Value, name: &str| value.get(name).cloned().unwrap_or_default();
+
+    // A refusal: the order, the weapon, the word and the numbers.
+    let refused = object(FrameNotice::Refused {
+        order: smol_str::SmolStr::new("fire"),
+        refusal: Refusal::Overheated,
+        weapon: Some(smol_str::SmolStr::new("laser")),
+        detail: RefusalDetail::Overheated { heat: 60, max: 60 },
+    });
+    assert_eq!(key(&refused, "kind"), serde_json::json!("refused"));
+    assert_eq!(key(&refused, "order"), serde_json::json!("fire"));
+    assert_eq!(key(&refused, "weapon"), serde_json::json!("laser"));
+    assert_eq!(key(&refused, "refusal"), serde_json::json!("overheated"));
+    assert_eq!(
+        key(&refused, "detail"),
+        serde_json::json!({ "heat": 60, "max": 60 })
+    );
+    assert_eq!(key(&refused, "cause"), serde_json::Value::Null);
+    assert_eq!(key(&refused, "friendly"), serde_json::json!(false));
+    assert_eq!(key(&refused, "spent"), serde_json::json!(false));
+    assert_eq!(
+        key(&refused, "text"),
+        serde_json::json!("FIRE laser refused. Overheated: 60 of 60. Let it cool.")
+    );
+
+    // A cycling refusal's own number.
+    let cycling = object(FrameNotice::Refused {
+        order: smol_str::SmolStr::new("fire"),
+        refusal: Refusal::Cycling,
+        weapon: Some(smol_str::SmolStr::new("cannon")),
+        detail: RefusalDetail::Cycling { secs: 3 },
+    });
+    assert_eq!(key(&cycling, "detail"), serde_json::json!({ "secs": 3 }));
+
+    // A block: the cause, and no refusal.
+    let held = object(FrameNotice::Blocked {
+        cause: BlockedCause::TooSteep,
+    });
+    assert_eq!(key(&held, "cause"), serde_json::json!("too_steep"));
+    assert_eq!(key(&held, "refusal"), serde_json::Value::Null);
+    assert_eq!(key(&held, "order"), serde_json::Value::Null);
+    assert_eq!(key(&held, "detail"), serde_json::Value::Null);
+
+    // The victim's own two, which name nothing at all.
+    for (notice, word, text) in [
+        (
+            FrameNotice::OwnDestroyed,
+            "destroyed",
+            cockpit::OWN_DESTROYED,
+        ),
+        (FrameNotice::OwnDisabled, "disabled", cockpit::OWN_DISABLED),
+    ] {
+        let own = object(notice);
+        assert_eq!(key(&own, "kind"), serde_json::json!(word));
+        assert_eq!(key(&own, "text"), serde_json::json!(text));
+        for empty in [
+            "contact",
+            "designator",
+            "section",
+            "cause",
+            "refusal",
+            "order",
+            "weapon",
+        ] {
+            assert_eq!(key(&own, empty), serde_json::Value::Null, "{word}.{empty}");
+        }
+    }
+
+    // The spent pair.
+    let struck = object(FrameNotice::StruckSpent {
+        section: smol_str::SmolStr::new("left_track"),
+    });
+    assert_eq!(key(&struck, "kind"), serde_json::json!("struck_spent"));
+    assert_eq!(key(&struck, "spent"), serde_json::json!(true));
+    assert_eq!(
+        key(&struck, "section"),
+        serde_json::Value::Null,
+        "the victim's own section is not the gunner's key"
+    );
+    assert_eq!(
+        key(&struck, "text"),
+        serde_json::json!("Hit on the left_track, which is already destroyed.")
+    );
+
+    // None of the seven new keys can carry a sixteen-digit contact id or an
+    // object number, on any notice of the one scene.
+    let payload = cockpit::status_frame(fixture::MATCH, &fixture::frame());
+    let notices = payload
+        .get("notices")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(!notices.is_empty());
+    for notice in notices.iter().chain([&refused, &cycling, &held, &struck]) {
+        for name in [
+            "cause", "refusal", "order", "weapon", "detail", "friendly", "spent",
+        ] {
+            let word = serde_json::to_string(&key(notice, name)).unwrap_or_default();
+            for part in word.split(|c: char| !c.is_ascii_hexdigit()) {
+                assert!(
+                    part.len() != 16 || u64::from_str_radix(part, 16).is_err(),
+                    "{name} carried a sixteen-digit contact id: {word}"
+                );
+            }
+            assert!(
+                !word.contains("101"),
+                "{name} carried the platform's object number: {word}"
+            );
+        }
+    }
+
+    // And the frame's own two new top-level keys, and the weapon row's.
+    let payload = cockpit::status_frame(fixture::MATCH, &frame);
+    assert_eq!(payload.get("wreck"), Some(&serde_json::json!(false)));
+    assert_eq!(payload.get("immobile"), Some(&serde_json::json!(false)));
+    let weapons = payload
+        .get("weapons")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(!weapons.is_empty());
+    for weapon in &weapons {
+        assert_eq!(
+            weapon.get("heat_per_shot"),
+            Some(&serde_json::json!(0)),
+            "a stock tank's guns make no heat"
+        );
+    }
+}
+
+/// **`B-03`**: the cockpit answers a dead tank and an immobile one itself,
+/// before the power check, and `STATUS` carries the mark afterwards.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn d2_the_cockpit_refuses_a_dead_tank_and_an_immobile_one() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+
+    // A tank whose motion is gone still sees, locks and shoots: only the two
+    // motion verbs answer.
+    let mut stuck = rig.held_frame(0);
+    stuck.notices.clear();
+    stuck.immobile = true;
+    stuck.power = tacsim::arena::state::Power::Online;
+    rig.push_frame(0, stuck);
+    for verb in ["heading 90", "speed 10"] {
+        let said = rig.say(0, verb);
+        assert!(said.contains(cockpit::IMMOBILE), "{verb}: {said}");
+    }
+    let said = rig.say(0, "startup");
+    assert!(!said.contains(cockpit::IMMOBILE), "{said}");
+
+    // A wreck answers every order, before the power check — so a pilot whose
+    // tank has just died is never told to wait for a startup.
+    let mut dead = rig.held_frame(0);
+    dead.notices.clear();
+    dead.wreck = true;
+    dead.immobile = true;
+    dead.power = tacsim::arena::state::Power::Off;
+    rig.push_frame(0, dead);
+    for verb in ["startup", "heading 90", "speed 10", "lock BA", "fire"] {
+        let said = rig.say(0, verb);
+        assert!(said.contains(cockpit::DESTROYED), "{verb}: {said}");
+        assert!(
+            !said.contains(cockpit::POWER_NOT_ONLINE) && !said.contains(cockpit::POWER_STARTING),
+            "{verb} was answered about the power: {said}"
+        );
+    }
+    // And `STATUS` says so beside the speed.
+    let said = rig.say(0, "status");
+    assert!(said.contains(", DESTROYED"), "{said}");
+}
+
+/// **`B-16`, the cockpit's own third of the zero-heat rule**: a cooked platform
+/// refuses the gun that makes heat and lets the gun that makes none through.
+///
+/// The engine's clause is pinned in `tests/extensions.rs` and the controller's in
+/// `arena::reflex`'s own tests; this is the one of the three that lives in the
+/// cockpit's pre-check, and it is asserted here against a real world, the real
+/// verb and a frame pushed through the real bridge. The cold gun is proved
+/// through the check rather than past it: with a lock but no arena behind it the
+/// next thing it meets is `Cycling`/`Empty`/the power, never the heat sentence.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn d2_a_cooked_platform_refuses_the_hot_gun_and_not_the_cold_one() {
+    use tacsim::arena::state::ContactId;
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+
+    // A lock, so `FIRE` reaches the heat check at all, and a rack of one gun that
+    // makes heat and one that makes none, on a platform at its ceiling.
+    let mut cooked = rig.held_frame(0);
+    cooked.notices.clear();
+    cooked.power = tacsim::arena::state::Power::Online;
+    cooked.lock = Some(ContactId(0x1234_5678_9abc_def0));
+    cooked.heat = Some(tacsim::arena::step::FrameHeat { heat: 60, max: 60 });
+    for weapon in &mut cooked.weapons {
+        weapon.ready = true;
+        weapon.ready_in_ms = 0;
+        weapon.rounds = weapon.rounds.max(1);
+        weapon.heat_per_shot = if weapon.id == "cannon" { 20 } else { 0 };
+    }
+    assert_eq!(cooked.weapons.len(), 2, "the stock tank's two guns");
+    rig.push_frame(0, cooked);
+
+    let said = rig.say(0, "fire cannon");
+    assert!(
+        said.contains("FIRE cannon refused. Overheated: 60 of 60. Let it cool."),
+        "the gun that makes heat is refused at the ceiling: {said}"
+    );
+    let said = rig.say(0, "fire mg");
+    assert!(
+        !said.contains("Overheated"),
+        "a gun that makes no heat was held back by the platform's heat: {said}"
+    );
+}
+
+/// **16b cut D.1's hint, end to end** (`B-03`): an accepted `STARTUP` stamps the
+/// hint, the arena's own refusal of that order clears it, and the next `HEADING`
+/// is told the truth rather than told to hold on.
+///
+/// The refusing frame is composed with the arena's **own** order word
+/// ([`IntentKind::as_str`], which `Arena::stage_refusal` is given in both pulse
+/// phases) and the arena's **own** sentence ([`cockpit::notice_line`]); that the
+/// arena stages exactly this notice for a wrecked tank is pinned in
+/// `arena::step`'s `d2_phase_two_names_the_order_it_refused`.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn d2_an_arena_refused_startup_clears_the_hint_and_the_next_order_tells_the_truth() {
+    use tacsim::arena::intents::{IntentKind, Refusal};
+    use tacsim::arena::perception::{FrameNotice, RefusalDetail};
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+
+    let said = rig.say(0, "startup");
+    assert!(said.contains("Startup sequence begun"), "{said}");
+    assert!(rig.hinted(0), "the accepted order stamped no hint");
+    // While the hint stands the pilot is told to wait, which is true.
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains(cockpit::POWER_STARTING), "{said}");
+
+    // The arena refuses that very order: the tank died between the pilot's last
+    // frame and the apply, so the local pre-check had nothing to read.
+    let refusal = FrameNotice::Refused {
+        order: smol_str::SmolStr::new(IntentKind::Startup.as_str()),
+        refusal: Refusal::Wreck,
+        weapon: None,
+        detail: RefusalDetail::None,
+    };
+    let mut refused = rig.held_frame(0);
+    refused.power = tacsim::arena::state::Power::Off;
+    refused.notices = vec![refusal.clone()];
+    assert_eq!(
+        cockpit::notice_line(&refused, &refusal, &[]),
+        "STARTUP refused. Your tank is a wreck.",
+        "the sentence the pilot reads with it"
+    );
+    rig.push_frame(0, refused);
+    assert!(!rig.hinted(0), "the refusing frame did not clear the hint");
+
+    let said = rig.say(0, "heading 90");
+    assert!(said.contains(cockpit::POWER_NOT_ONLINE), "{said}");
+    assert!(
+        !said.contains(cockpit::POWER_STARTING),
+        "a refused STARTUP still told the pilot to hold on: {said}"
+    );
+}
+
+/// **`B-17`**: `FIRE mg` names the coaxial, `WEAPONSTATUS` advertises the short
+/// name, and a word two weapons answer to is refused saying which.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn d2_fire_takes_the_short_name_and_weaponstatus_advertises_it() {
+    let mut rig = Rig::boot(2);
+    rig.fly().await;
+    assert!(rig.frame_for(0).await, "the arena sends a frame");
+    let said = rig.say(0, "weaponstatus");
+    assert!(said.contains("machine_gun (mg)"), "{said}");
+    assert!(
+        !said.contains("cannon ("),
+        "a one-word id has no short name: {said}"
+    );
+    // With no lock, `FIRE mg` gets as far as the lock check — which is the proof
+    // that the word resolved to a weapon at all, since an unknown one is refused
+    // before it.
+    let said = rig.say(0, "fire mg");
+    assert!(
+        said.contains("FIRE machine_gun refused."),
+        "the short name did not resolve: {said}"
+    );
+    assert!(said.contains(cockpit::NO_LOCK), "{said}");
+    let said = rig.say(0, "fire can");
+    assert!(said.contains("FIRE cannon refused."), "{said}");
+    let said = rig.say(0, "fire railgun");
+    assert!(
+        said.contains("no weapon called `railgun`") && !said.contains("refused."),
+        "a weapon that is not there has none to name: {said}"
     );
 }

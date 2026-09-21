@@ -33,6 +33,7 @@ import {
   weaponLines,
   type ArenaMap,
   type CockpitFrame,
+  type CockpitNotice,
 } from "./cockpit";
 
 const DIR = "src/lib/fixtures/cockpit";
@@ -74,6 +75,10 @@ describe("the decoders", () => {
     expect(frame.heading_deg).toBe(45);
     expect(frame.heat).toEqual({ heat: 40, max: 100, overheated: false });
     expect(frame.tempo).toBe("engaged");
+    // 16b cut D.2: the pilot's own two limits and this platform's own scope.
+    expect(frame.scope).toBe("hostile");
+    expect(frame.wreck).toBe(false);
+    expect(frame.immobile).toBe(false);
     expect(frame.lock_designator).toBe("BA");
     expect(frame.lock_range_m).toBe(430);
     expect(frame.lock_percent).toBe(62);
@@ -92,6 +97,7 @@ describe("the decoders", () => {
     ]);
     expect(frame.weapons.map((w) => w.id)).toEqual(["cannon", "machine_gun"]);
     expect(frame.weapons[1]?.percent).toBe(21);
+    expect(frame.weapons.map((w) => w.heat_per_shot)).toEqual([0, 0]);
     expect(frame.notices.map((n) => n.kind)).toEqual(["acquired", "target_section_lost"]);
     expect(frame.notices[1]?.section).toBe("turret");
   });
@@ -206,19 +212,73 @@ describe("the decoders", () => {
       callsign: "R\u0007A",
       power: "onl\u001bine",
       tempo: "   ",
+      // 16b cut D.2 (`T-59`, the panel half): `scope` is the word the status
+      // block prints now, so it is gated like every other printed string.
+      scope: "\u0007\u0007",
       contacts: [{ designator: "BA\u0000DDESIGNATOR", class: "", band: "effe\u009fctive" }],
       sections: [{ id: "left_track_and_then_some_more", condition: "\u007f" }],
-      notices: [{ kind: "hit", designator: "X\u00019", section: "tur\u0000ret" }],
+      // 16b cut D.2 (`B-16`): a negative per-shot heat would make a hot gun of a
+      // cold one at the `FIRE` pre-check on the other side.
+      weapons: [{ id: "gun", heat_per_shot: -4 }],
+      // 16b cut D.2 (`B-07`): the seven new notice keys are server strings too.
+      notices: [
+        { kind: "hit", designator: "X\u00019", section: "tur\u0000ret" },
+        {
+          kind: "ref\u0000used",
+          cause: "\u0007",
+          refusal: "over\u001bheated_and_then_some_more_words",
+          order: "fire_and_then_some_more",
+          weapon: "mach\u0000ine_gun_and_then_some_more",
+          detail: "boom",
+          friendly: "yes",
+          spent: 1,
+        },
+        {
+          kind: "refused",
+          order: "fire",
+          refusal: "cycling",
+          detail: { secs: "x", heat: 60.9, max: 60 },
+        },
+      ],
     });
     expect(frame?.callsign).toBe("RA");
     expect(frame?.power).toBe("online");
     expect(frame?.tempo).toBe("?");
+    expect(frame?.scope).toBe("?");
+    expect(frame?.weapons[0]?.heat_per_shot).toBe(0);
     expect(frame?.contacts[0]?.class).toBe("?");
     expect(frame?.contacts[0]?.band).toBe("effective");
     expect(frame?.contacts[0]?.designator).toBe("BADDESIG");
     expect(frame?.sections[0]?.condition).toBe("?");
     expect(frame?.sections[0]?.id).toBe("left_track_and_then_some");
-    expect(frame?.notices[0]).toEqual({ kind: "hit", designator: "X9", section: "turret" });
+    expect(frame?.notices[0]).toEqual({
+      kind: "hit",
+      designator: "X9",
+      section: "turret",
+      cause: null,
+      refusal: null,
+      order: null,
+      weapon: null,
+      detail: null,
+      friendly: false,
+      spent: false,
+    });
+    // Every one of the seven is bounded, and a `detail` that is not an object at
+    // all is no detail. A `friendly` or a `spent` that is not `true` is false:
+    // the panel's mark is never turned on by a truthy string or a 1.
+    expect(frame?.notices[1]).toEqual({
+      kind: "refused",
+      designator: null,
+      section: null,
+      cause: null,
+      refusal: "overheated_and_then_some",
+      order: "fire_and_then_so",
+      weapon: "machine_gun_and_then_som",
+      detail: null,
+      friendly: false,
+      spent: false,
+    });
+    expect(frame?.notices[2]?.detail).toEqual({ secs: null, heat: 60, max: 60 });
     // …and nothing the screen goes on to PRINT carries one either.
     for (const line of cockpitViewLines(
       cockpitView(frame!, null, noticeLines(frame!.notices)),
@@ -317,6 +377,23 @@ describe("composeWindow", () => {
   });
 });
 
+/** One notice, with every key this build reads defaulted — so a case says only
+ * what it is about. */
+function notice(partial: Partial<CockpitNotice> & { kind: string }): string {
+  return noticeLine({
+    designator: null,
+    section: null,
+    cause: null,
+    refusal: null,
+    order: null,
+    weapon: null,
+    detail: null,
+    friendly: false,
+    spent: false,
+    ...partial,
+  });
+}
+
 describe("the view model", () => {
   it("prints the status block, the lock line, damage, weapons and contacts", () => {
     const frame = theFrame();
@@ -325,7 +402,9 @@ describe("the view model", () => {
       "power online",
       "43 kph  heading 045°",
       "heat 40/100",
-      "tempo engaged",
+      // 16b cut D.2 (16c `T-59`): this platform's own scope, not the arena's
+      // one global cadence word.
+      "scope hostile",
       "Lock BA  430 m  62%",
     ]);
     expect(weaponLines(frame)).toEqual([
@@ -367,7 +446,7 @@ describe("the view model", () => {
       "power online  HELD",
       "43 kph  heading 045°",
       "heat 101/100  OVERHEATED",
-      "tempo engaged",
+      "scope hostile",
       "No lock",
     ]);
     expect(statusLines({ ...frame, heat: null })).not.toContain("heat 40/100");
@@ -382,16 +461,104 @@ describe("the view model", () => {
       "X4 new contact",
       "BA section destroyed: turret",
     ]);
-    expect(noticeLine({ kind: "power_online", designator: null, section: null })).toBe(
-      "power online",
-    );
-    expect(noticeLine({ kind: "hit", designator: "BA", section: "hull" })).toBe("BA hit: hull");
-    expect(noticeLine({ kind: "struck", designator: null, section: null })).toBe("hit taken");
+    expect(notice({ kind: "power_online" })).toBe("power online");
+    expect(notice({ kind: "hit", designator: "BA", section: "hull" })).toBe("BA hit: hull");
+    expect(notice({ kind: "struck" })).toBe("hit taken");
     // A kind this build predates reads as its own wire word, which can name
     // nothing the payload did not already carry.
-    expect(noticeLine({ kind: "some_new_thing", designator: "RB", section: null })).toBe(
-      "RB some new thing",
+    expect(notice({ kind: "some_new_thing", designator: "RB" })).toBe("RB some new thing");
+  });
+
+  // **16b cut D.2** (`B-07`): until this cut a refusal and a block carried their
+  // whole sentence in `text`, which this ring correctly never reads — so the
+  // panel printed a bare `refused` and a bare `held`. Every word below is
+  // composed from the notice's own fields.
+  it("says WHICH order was refused, WHY, and with what numbers", () => {
+    expect(notice({ kind: "refused", order: "heading", refusal: "power_not_online" })).toBe(
+      "HEADING refused: power is not online",
     );
+    expect(notice({ kind: "refused", order: "heading", refusal: "queue_full" })).toBe(
+      "HEADING refused: too many orders at once",
+    );
+    expect(notice({ kind: "refused", order: "heading", refusal: "wreck" })).toBe(
+      "HEADING refused: the tank is destroyed",
+    );
+    expect(notice({ kind: "refused", order: "speed", refusal: "motion_disabled" })).toBe(
+      "SPEED refused: the tank cannot move",
+    );
+    expect(notice({ kind: "refused", order: "lock", refusal: "no_contact" })).toBe(
+      "LOCK refused: no such contact",
+    );
+    expect(notice({ kind: "refused", order: "fire", weapon: "cannon", refusal: "no_lock" })).toBe(
+      "FIRE cannon refused: no lock",
+    );
+    expect(
+      notice({
+        kind: "refused",
+        order: "fire",
+        weapon: "cannon",
+        refusal: "cycling",
+        detail: { secs: 3, heat: null, max: null },
+      }),
+    ).toBe("FIRE cannon refused: still cycling, 3 s");
+    expect(notice({ kind: "refused", order: "fire", weapon: "cannon", refusal: "empty" })).toBe(
+      "FIRE cannon refused: empty",
+    );
+    expect(
+      notice({
+        kind: "refused",
+        order: "fire",
+        weapon: "laser",
+        refusal: "overheated",
+        detail: { secs: null, heat: 60, max: 60 },
+      }),
+    ).toBe("FIRE laser refused: overheated, 60 of 60");
+    expect(notice({ kind: "refused", order: "fire", weapon: "ghost", refusal: "no_weapon" })).toBe(
+      "FIRE ghost refused: no such weapon",
+    );
+    expect(notice({ kind: "refused", order: "startup", refusal: "epoch" })).toBe(
+      "STARTUP refused: the seat changed hands",
+    );
+    // A refusal word this build predates opens its own underscores; a refusal
+    // with no word at all still names the order.
+    expect(notice({ kind: "refused", order: "fire", refusal: "brand_new" })).toBe(
+      "FIRE refused: brand new",
+    );
+    expect(notice({ kind: "refused", order: "fire" })).toBe("FIRE refused: refused");
+  });
+
+  it("says WHY the tank is held", () => {
+    expect(notice({ kind: "blocked", cause: "impassable" })).toBe(
+      "held: the ground will not take the tank",
+    );
+    expect(notice({ kind: "blocked", cause: "occupied" })).toBe("held: something is in the way");
+    expect(notice({ kind: "blocked", cause: "edge" })).toBe("held: the arena's edge");
+    expect(notice({ kind: "blocked", cause: "too_steep" })).toBe("held: too steep: drive round");
+    expect(notice({ kind: "blocked", cause: "sand_trap" })).toBe("held: sand trap");
+  });
+
+  it("marks a friendly, a spent section, and the pilot's own two lines", () => {
+    // 16b cut D.2 (`B-18`): said on the panel exactly as in the scrollback.
+    expect(notice({ kind: "locked", designator: "RB", friendly: true })).toBe(
+      "RB (FRIENDLY) locked",
+    );
+    expect(notice({ kind: "hit", designator: "RB", section: "turret", friendly: true })).toBe(
+      "RB (FRIENDLY) hit: turret",
+    );
+    expect(notice({ kind: "hit", designator: "BA", section: "turret", friendly: false })).toBe(
+      "BA hit: turret",
+    );
+    // 16b cut D.2 (`B-15`).
+    expect(notice({ kind: "hit", designator: "BA", section: "turret", spent: true })).toBe(
+      "BA hit: turret (already destroyed)",
+    );
+    // The shape the server actually sends: `FrameNotice::section()` answers
+    // `None` for `StruckSpent` exactly as it does for `Struck` — the victim's own
+    // section is not the gunner's key — so the panel never names it.
+    expect(notice({ kind: "struck_spent" })).toBe("hit on a dead section");
+    // 16b cut D.2 (`B-03`): the pilot's own tank, naming nothing else.
+    expect(notice({ kind: "destroyed" })).toBe("your tank is destroyed");
+    expect(notice({ kind: "disabled" })).toBe("your tank is out of the fight");
   });
 
   // The golden: the whole of the screen's text for the committed frame. It is

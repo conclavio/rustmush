@@ -405,6 +405,21 @@ pub struct FrameWeapon {
     /// declares no band at all — one, at its own reach
     /// ([`WeaponSummary::bands_cm`]).
     pub bands_cm: Vec<u32>,
+    /// **What one shot of this weapon adds to the platform's heat** (16b cut D.2,
+    /// `B-16`), and `0` for a weapon that makes none — which is every weapon of
+    /// every stock tank.
+    ///
+    /// It is on the row so that the cockpit's own `FIRE` pre-check can skip the
+    /// heat refusal for a cold gun, which is the same clause
+    /// [`Arena::resolve_fire`] applies a pulse later and
+    /// `crate::arena::reflex::would_overheat` applies to the machine: three
+    /// readers, one rule, no drift.
+    ///
+    /// It is compared in [`FrameWeapon::same_as`] because it decides what the
+    /// cockpit refuses, and it costs no frame anybody would not already have been
+    /// sent: it is read off the content at check-out and never moves inside a
+    /// match.
+    pub heat_per_shot: u32,
 }
 
 impl FrameWeapon {
@@ -428,6 +443,9 @@ impl FrameWeapon {
             // a tempo behind the range it is a function of would be a lie about the
             // one number a pilot decides to shoot on.
             && self.p_permille == other.p_permille
+            // **16b cut D.2**: it decides whether the cockpit refuses this weapon
+            // for heat, and it never moves inside a match — see the field.
+            && self.heat_per_shot == other.heat_per_shot
     }
 }
 
@@ -564,7 +582,21 @@ impl Arena {
         // a pilot is told the thing they can act on first, and the weapon's cycle
         // and its magazine are what they are looking at. A unit whose content
         // declares no heat is never refused here, which is every stock tank.
-        if state.overheated() {
+        //
+        // **16b cut D.2** (`B-16`) narrowed it to the weapons that make heat. A
+        // platform at its ceiling was refused every weapon it carried, including
+        // the ones whose `heat_per_shot` is nought — so a laser tank that had
+        // cooked itself could not fire the coaxial machine gun either, which is a
+        // rule doc 16 §9 item 1 does not have: the ceiling is what a *hot* shot
+        // would add to, and a cold gun adds nothing. `reflex::would_overheat`
+        // answers the same question the same way, so the machine and the pilot
+        // agree about whether the gun works.
+        if state.overheated()
+            && state
+                .heat
+                .as_ref()
+                .is_some_and(|heat| heat.per_shot(weapon) > 0)
+        {
             return Err(Refusal::Overheated);
         }
         // (5) The power, last (see the module head).
@@ -719,6 +751,12 @@ impl Arena {
                         .map(|aim| self.resolve_seen(platform, aim, &weapon.id).p_permille),
                     // 16b cut F.3: the edges, for the contact band.
                     bands_cm: weapon.bands_cm(),
+                    // 16b cut D.2: what a shot of it costs the platform, so the
+                    // cockpit's own heat refusal knows which guns are cold.
+                    heat_per_shot: state
+                        .heat
+                        .as_ref()
+                        .map_or(0, |heat| heat.per_shot(&weapon.id)),
                 }
             })
             .collect()

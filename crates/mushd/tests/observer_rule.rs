@@ -2505,3 +2505,79 @@ async fn the_board_withholds_the_other_sides_standing_from_a_seated_pilot() {
         "staff were refused the whole board: {staff}"
     );
 }
+
+/// **16b cut D.2's three new victim lines name nothing** (doc 16 §1, §3.6).
+///
+/// `B-03` and `B-15` gave a pilot three sentences about their **own** tank —
+/// it is a wreck, it can neither move nor shoot, a round found a section that
+/// was already gone — and a pilot's own tank is outside the observer rule
+/// entirely. What the rule still forbids is the other half of each of those
+/// moments: where the round came from. So the check is on the **shape** as much
+/// as on the words: none of the three types has a field a contact, an object
+/// number, a bearing, a side or a weapon could be carried in, so there is
+/// nothing for a later renderer to leak.
+///
+/// The frame-JSON half of this — that each of the seven new notice keys is
+/// `null` on these three, and that none of them carries a sixteen-digit word —
+/// is `tacsim`'s own `d2_the_notice_object_carries_the_sentence_s_own_parts`,
+/// which has the one scene every renderer is held to.
+#[test]
+fn the_victims_own_lines_name_nothing_but_the_victims_own_tank() {
+    use tacsim::arena::perception::{FrameNotice, NoticeKind};
+    use tacsim::match_::cockpit;
+
+    // (1) The two sentences, whole. Neither names a shooter, a side, a bearing,
+    // a weapon or a contact, and neither carries a number at all.
+    for line in [cockpit::OWN_DESTROYED, cockpit::OWN_DISABLED] {
+        no_sixteen_digit_word(line, "a victim's own line");
+        for leak in [
+            "bearing",
+            "contact",
+            "red",
+            "blue",
+            "cannon",
+            "machine_gun",
+            "laser",
+            "X1",
+            "RA",
+            "BA",
+            "#",
+        ] {
+            assert!(
+                !line.contains(leak),
+                "the victim's own line leaked {leak:?}:\n{line}"
+            );
+        }
+        assert!(
+            !line.chars().any(|c| c.is_ascii_digit()),
+            "the victim's own line carried a number:\n{line}"
+        );
+    }
+
+    // (2) And the shapes: none of the three can carry a contact, so nothing a
+    // renderer does with them can name one.
+    let spent = FrameNotice::StruckSpent {
+        section: smol_str::SmolStr::new("left_track"),
+    };
+    for notice in [
+        FrameNotice::OwnDestroyed,
+        FrameNotice::OwnDisabled,
+        spent.clone(),
+    ] {
+        assert_eq!(notice.contact(), None, "{notice:?}");
+        assert_eq!(notice.designator(), None, "{notice:?}");
+        assert_eq!(notice.named(), None, "{notice:?}");
+        assert_eq!(notice.weapon(), None, "{notice:?}");
+        assert_eq!(notice.refusal(), None, "{notice:?}");
+        assert_eq!(notice.cause(), None, "{notice:?}");
+        assert_eq!(notice.order(), None, "{notice:?}");
+    }
+    // The victim's own section is deliberately NOT on the gunner's `section`
+    // key: that key's readers are panels highlighting a section a gunner just
+    // took off a TARGET, and they must not be handed the victim's own.
+    assert_eq!(spent.section(), None);
+    assert_eq!(spent.kind(), NoticeKind::StruckSpent);
+    assert_eq!(NoticeKind::StruckSpent.as_str(), "struck_spent");
+    assert_eq!(NoticeKind::OwnDestroyed.as_str(), "destroyed");
+    assert_eq!(NoticeKind::OwnDisabled.as_str(), "disabled");
+}

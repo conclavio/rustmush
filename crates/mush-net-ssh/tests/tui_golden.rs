@@ -787,7 +787,9 @@ fn the_cockpit_screen_reads_the_frame_and_nothing_else() {
         "power online",
         "43 kph",
         "heat 40/100",
-        "tempo engaged",
+        // 16b cut D.2 (16c `T-59`): this platform's own scope, where the arena's
+        // one global cadence word used to be.
+        "scope hostile",
         "Lock BA  430 m  62%",
         "cannon  ready  14/20  62%",
     ] {

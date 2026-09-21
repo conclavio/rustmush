@@ -1620,6 +1620,15 @@ impl ShadowContact {
 /// reads exists exactly once in the tree.
 pub const NO_SUCH_CONTACT: &str = "No such contact.";
 
+/// **How often one spent section may be said**, arena milliseconds (16b cut D.2,
+/// `B-15`).
+///
+/// The window [`Arena::spent_said`] is read against, for the victim and for the
+/// gunner who holds the target classified. It is arena time and not wall time and
+/// not a per-pulse count, which is what makes the decision the same at every
+/// cadence.
+pub const SPENT_NOTICE_MS: i64 = 5_000;
+
 /// **The per-viewer shadow contact store** (doc 16 §3.6): viewer platform to its
 /// contacts, contact id to what it holds.
 ///
@@ -2313,6 +2322,51 @@ pub struct Arena {
     /// the callsign), so folding it would add no information and would make the
     /// hash a function of where the drain sits.
     pub lost_designators: BTreeMap<(ObjId, ContactId), Designator>,
+    /// **The shots of this substep that found a section already destroyed** (16b
+    /// cut D.2, `B-15`), by shot sequence.
+    ///
+    /// Filled by [`crate::arena::damage::Arena::apply_hit`] at the one branch
+    /// where the plan has no ops — a round that arrived on a section already at
+    /// zero armour and zero internals — and drained by the `hit` arm of the
+    /// staging scan in the **same substep**, which is what tells the three
+    /// readers' sentences apart.
+    ///
+    /// **It is deliberately not folded into
+    /// [`crate::arena::hash::state_hash`]**, on `lost_designators`' own argument,
+    /// which really does apply here: its contents are a function of state the
+    /// hash already folds (the section's cells, and the `hit` line the ledger
+    /// sequence counts), and it never survives the substep it was filled in. It
+    /// is **not** empty at every hash point — the substep takes its record before
+    /// the staging scan runs — and that costs nothing for the same reason.
+    pub spent_hits: BTreeSet<u64>,
+    /// **When each (platform told, target, section) last read a spent-section
+    /// line** (16b cut D.2, `B-15`), in arena milliseconds.
+    ///
+    /// `B-15`: one duel put six `armour gone, 0 of 0 inside.` lines in front of
+    /// one pilot in ten seconds. The round stays absorbed and journalled exactly
+    /// as it was; what this bounds is the **telling**, to one line per section per
+    /// [`SPENT_NOTICE_MS`] of arena time, for the two readers who can tell a spent
+    /// section from a live one: the victim, whose own tank is outside the observer
+    /// rule, and the gunner who **holds the target classified**.
+    ///
+    /// **The unidentified gunner has no entry here and is never suppressed**, and
+    /// that is an observer-rule decision rather than an oversight: a line
+    /// withheld after a round he watched land would tell him the round hit
+    /// something already dead, and a per-section key would let him count the
+    /// target's destroyed sections by counting lines per five seconds. Both are
+    /// condition facts the close look is the price of — the argument
+    /// [`crate::arena::step::Frame::scan_tables`] already makes for the same class
+    /// of fact.
+    ///
+    /// **It IS folded into [`crate::arena::hash::state_hash`]**, and that is where
+    /// it parts from `spent_hits` beside it: it persists across substeps and
+    /// pulses and it decides what a later substep says, so `lost_designators`'
+    /// argument is false of it. Two rules keep the fold rate-independent — the
+    /// decision and the write happen whether or not anybody is seated and whether
+    /// or not a frame is ever sent, because the scan runs per substep at the
+    /// event's own timestamp; and entries are pruned **only on touch**, relative
+    /// to the event being staged, never by a per-pulse sweep.
+    pub spent_said: BTreeMap<(ObjId, ObjId, SmolStr), i64>,
     /// The scheduled events.
     pub due: DueHeap,
     /// The streaming match ledger.
@@ -2801,6 +2855,9 @@ impl Arena {
             contacts: ShadowContacts::new(),
             designators: DesignatorBook::default(),
             lost_designators: BTreeMap::new(),
+            // 16b cut D.2: the spent-round scratch and the spent-round window.
+            spent_hits: BTreeSet::new(),
+            spent_said: BTreeMap::new(),
             due,
             ledger: Ledger::new(&arena_cfg.ledger),
             index,

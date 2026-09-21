@@ -6644,3 +6644,275 @@ fn q6_one_scripted_jammed_share_at_three_cadences_is_one_event_list() {
     };
     assert!(lost_ms < found_ms, "lost {lost_ms}, found again {found_ms}");
 }
+
+// ---------------------------------------------------------------------------
+// D.2 — a cold gun is not hot (`B-16`)
+// ---------------------------------------------------------------------------
+
+/// Put the platform's heat cell on its ceiling, through one
+/// [`mush_tactics::UnitMutationPlan`] — which is the only way a unit's cells move
+/// (D-16-6) — so the fixture starts overheated with nothing in flight and no
+/// ledger line ahead of the replay.
+fn at_the_ceiling(arena: &mut Arena, unit: mush_core::ObjId) {
+    let max = arena
+        .unit(unit)
+        .and_then(UnitState::heat_max)
+        .unwrap_or_else(|| panic!("#{} carries no heat", unit.0));
+    let plan = mush_tactics::UnitMutationPlan::new(
+        vec![mush_tactics::UnitMutationOp::SetCell {
+            addr: heat_addr(HEAT_CELL),
+            value: i64::from(max),
+        }],
+        None,
+        Some(SmolStr::new("test:hot")),
+    )
+    .expect("a one-op plan");
+    let hot = {
+        let state = arena.unit(unit).unwrap_or_else(|| panic!("the unit"));
+        mush_tactics::apply(&state.unit, &plan, 0)
+            .expect("the plan applies")
+            .0
+    };
+    if let Some(state) = arena.unit_mut(unit) {
+        state.unit = hot;
+    }
+    assert!(
+        arena.unit(unit).is_some_and(UnitState::overheated),
+        "the fixture is at its ceiling"
+    );
+}
+
+/// What one cadence of the zero-heat replay produced: the cadence, the pilot's
+/// own notice lines, the per-substep hashes and the ledger.
+type D2Run = (i64, Vec<String>, Vec<u64>, Vec<String>);
+
+/// **A cold gun on a cooked platform fires at every cadence, and the hot one is
+/// refused at every cadence** (16b cut D.2, `B-16`; doc 16 §9 item 1).
+///
+/// One scripted log at 5,000 / 1,000 / 500 ms: the coaxial, whose
+/// `heat_per_shot` is nought, is accepted and journals a `fired` line; the laser,
+/// which makes twenty a pulse, is refused `overheated` and journals nothing. Both
+/// answers are the same at all three, which is what makes the rule a fact of
+/// arena state rather than of the pulse it was asked in.
+#[test]
+fn d2_a_zero_heat_weapon_fires_from_a_cooked_platform_at_three_cadences() {
+    let mut runs: Vec<D2Run> = Vec::new();
+    for cadence in [5_000_i64, 1_000, 500] {
+        let mut arena = duel(&[]);
+        at_the_ceiling(&mut arena, RED);
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut hashes: Vec<u64> = Vec::new();
+        let mut told: Vec<String> = Vec::new();
+        let mut wall = 0_i64;
+        let mut ordered = false;
+        loop {
+            arena
+                .clock
+                .pin_tempo_for_tests(tacsim::arena::clock::Tempo::Quiet);
+            // One beat, at arena time 0, carrying both orders — delivered in a
+            // pulse of no wall time, so phase 4 resolves both at exactly that
+            // millisecond (`tests/resolution.rs`'s `replay` has the argument).
+            // They go together because the fall is a rate over arena time: five
+            // seconds later the platform has shed fifteen and is not at its
+            // ceiling any more, which would make this a test of dissipation.
+            let mut intents: Vec<tacsim::arena::intents::Intent> = Vec::new();
+            if !ordered {
+                ordered = true;
+                intents.push(relief_intent(
+                    RED,
+                    tacsim::arena::intents::IntentKind::Fire {
+                        weapon: SmolStr::new("machine_gun"),
+                    },
+                    2,
+                ));
+                intents.push(relief_intent(
+                    RED,
+                    tacsim::arena::intents::IntentKind::Fire {
+                        weapon: SmolStr::new("laser"),
+                    },
+                    3,
+                ));
+            }
+            let out = if intents.is_empty() {
+                wall += cadence;
+                arena.step(wall, &[], &[])
+            } else {
+                arena.step(wall, &[], &intents)
+            };
+            for chunk in &out.ledger_chunks {
+                bytes.extend_from_slice(&chunk.bytes);
+            }
+            hashes.extend(arena.substep_hashes.iter().copied());
+            for (pilot, frame) in &out.frames {
+                if *pilot == mush_core::ObjId(1_000) {
+                    told.extend(tacsim::match_::cockpit::notice_lines(frame));
+                }
+            }
+            if arena.now_ms >= 15_000 || out.ended.is_some() {
+                break;
+            }
+        }
+        arena.ledger.flush();
+        for chunk in arena.ledger.take_chunks() {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        let events: Vec<String> = String::from_utf8(bytes)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                serde_json::from_str::<tacsim::arena::ledger::LedgerEvent>(line).ok()
+            })
+            .map(|event| {
+                format!(
+                    "{} {}",
+                    event.t_ms,
+                    serde_json::to_string(&event.kind).unwrap_or_default()
+                )
+            })
+            .collect();
+        runs.push((cadence, told, hashes, events));
+    }
+    let Some((_, first_told, first_hashes, first_events)) = runs.first() else {
+        panic!("three replays");
+    };
+    // The coaxial fired: one `fired` line, and it names the coaxial.
+    let fired: Vec<&String> = first_events
+        .iter()
+        .filter(|line| line.contains("machine_gun"))
+        .collect();
+    assert_eq!(fired.len(), 1, "{first_events:?}");
+    assert!(
+        !first_events.iter().any(|line| line.contains("laser")),
+        "the laser was accepted from a cooked platform: {first_events:?}"
+    );
+    // And the laser's refusal reached the pilot, naming the weapon and the pair
+    // of numbers (`B-16`'s one sentence for every `FIRE` refusal).
+    assert_eq!(
+        first_told
+            .iter()
+            .filter(|line| line.starts_with("FIRE laser refused. Overheated: 60 of 60."))
+            .count(),
+        1,
+        "{first_told:?}"
+    );
+    assert!(
+        !first_told
+            .iter()
+            .any(|line| line.starts_with("FIRE machine_gun refused")),
+        "the cold gun was refused: {first_told:?}"
+    );
+    for (cadence, told, hashes, events) in runs.iter().skip(1) {
+        assert_eq!(told, first_told, "the notices differ at {cadence} ms");
+        assert_eq!(
+            events, first_events,
+            "the event list differs at {cadence} ms"
+        );
+        assert_eq!(
+            hashes, first_hashes,
+            "the per-substep hash sequence differs at {cadence} ms"
+        );
+    }
+}
+
+/// [`duel`]'s laser tank **under the reflex controller** (16b cut D.2, `B-16`),
+/// with no lock pre-taken: the machine stages its own, which is the whole of what
+/// is being watched here.
+fn reflex_duel() -> Arena {
+    let catalog = catalog();
+    let mut arena = arena_of(
+        &catalog,
+        vec![
+            under_reflex(unit_of(
+                &catalog,
+                content::LINE_TANK_LASER,
+                RED,
+                Team::Red,
+                RED_CELL,
+            )),
+            unit_of(&catalog, content::LINE_TANK, BLUE, Team::Blue, BLUE_CELL),
+        ],
+        &[],
+    );
+    for id in [RED, BLUE] {
+        if let Some(state) = arena.unit_mut(id) {
+            state.power = Power::Online;
+        }
+    }
+    let contact = tacsim::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+    arena.contacts.insert(
+        RED,
+        contact,
+        ShadowContact::sighted(
+            BLUE,
+            Classification::Classified { team: Team::Blue },
+            0,
+            plot_of(&arena, BLUE),
+        ),
+    );
+    arena
+}
+
+/// **The zero-heat exemption in the machine's half** (16b cut D.2, `B-16`):
+/// `would_overheat` is the controller's copy of the engine's question, so a
+/// cooked platform's cold gun must be as available to the machine as it is to a
+/// pilot — otherwise the two halves of one platform disagree about whether the
+/// gun works.
+///
+/// The controller is **driven**, not asked: `would_overheat` is private to
+/// `arena::reflex` and its only production caller is `engage_orders`, so the
+/// claim is made over the ledger a cooked reflex-held laser tank writes. Every
+/// `fired` line names the coaxial and none names the laser, and the run is kept
+/// inside the band where the laser is genuinely held — the platform is still hot
+/// enough at the end that one laser shot would carry it past the ceiling, which
+/// the last assertion pins so a longer window cannot quietly turn this into a
+/// test of dissipation.
+#[test]
+fn d2_the_reflex_controller_takes_the_cold_gun_from_a_cooked_platform() {
+    // The engine's own answer, which is what the controller has to agree with.
+    let mut engine = duel(&[]);
+    at_the_ceiling(&mut engine, RED);
+    assert_eq!(
+        engine.resolve_fire(RED, "laser"),
+        Err(tacsim::arena::intents::Refusal::Overheated),
+        "the hot gun is still refused at the ceiling"
+    );
+    engine
+        .resolve_fire(RED, "machine_gun")
+        .expect("the cold gun fires from a cooked platform");
+
+    // And the machine's, over five seconds of arena time.
+    let mut arena = reflex_duel();
+    at_the_ceiling(&mut arena, RED);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let _ = run_logged(&mut arena, &mut wall, 500, 10, &mut bytes);
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    let log = String::from_utf8(bytes).unwrap_or_default();
+    let fired: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("\"fired\""))
+        .collect();
+    assert!(
+        !fired.is_empty(),
+        "the machine never pulled a trigger at all: {log}"
+    );
+    assert!(
+        fired.iter().all(|line| line.contains("machine_gun")),
+        "the machine reached for a gun that is not the coaxial: {fired:?}"
+    );
+    assert!(
+        !fired.iter().any(|line| line.contains("laser")),
+        "the machine fired the laser from a cooked platform: {fired:?}"
+    );
+    let left = arena
+        .unit(RED)
+        .and_then(tacsim::arena::state::UnitState::heat_now)
+        .unwrap_or(0);
+    assert!(
+        left.saturating_add(20) > 60,
+        "the platform cooled far enough for the laser to become available: {left}"
+    );
+}
