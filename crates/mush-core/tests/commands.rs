@@ -383,6 +383,12 @@ fn desc_and_look_detail() {
     // Unknown target still fails.
     let out = g.run(ann, "look unicorn");
     assert_error_contains(&out, ann, "I don't see that here.");
+    // 16b cut D.5: with no module composed, no detail prefix is registered and
+    // `look` behaves exactly as it always did — a namespaced detail attribute
+    // is nobody's keyword.
+    g.run(GOD, "@set here/atlas:detail:fog=A grey haze.");
+    let out = g.run(ann, "look fog");
+    assert_error_contains(&out, ann, "I don't see that here.");
 }
 
 /// The dbref walk. `look #N` for every id in the database must answer the

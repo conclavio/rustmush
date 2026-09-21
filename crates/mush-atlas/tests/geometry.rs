@@ -57,7 +57,7 @@ fn base_entries() -> serde_json::Map<String, Value> {
         // S3: the validator wants every public room reached, so the base map has a
         // way in from Limbo and a way between its yards.
         "exit.limbo_yard": { "kind": "exit", "def": { "from": "limbo", "to": "room.yard",
-            "names": ["Yard <Y>;y;yard", "Limbo <L>;l;limbo"] } },
+            "names": ["Yard <Y>;y;yard", "Limbo <L>;limbo"] } },
         "exit.yards": { "kind": "exit", "def": { "from": "room.yard", "to": "room.yard2",
             "names": ["Second <2>;2", "First <1>;1"] } }
     });

@@ -1813,6 +1813,12 @@ pub struct ModuleTables {
     /// marker flag name → owning module (few entries; matched
     /// case-insensitively, canonical case preserved).
     markers: Vec<(SmolStr, SmolStr)>,
+    /// The attribute prefixes `look <keyword>` tries after the bare
+    /// `detail:` (16b cut D.5; 16c `B-12`), in registration order and
+    /// de-duplicated. A module may only add one inside an attribute
+    /// namespace it owns, so this is a list of namespaces' own detail
+    /// shelves and not a way to teach `look` about anybody else's attrs.
+    detail_prefixes: Vec<SmolStr>,
     hooks: HashMap<HookPoint, Vec<HookReg>>,
     observers: Vec<ObserverReg>,
     ticks: Vec<TickReg>,
@@ -2182,6 +2188,15 @@ impl Registry {
             return true;
         };
         module == Some(owner.as_str()) || crate::perm::has_role(w, who, crate::flags::Role::Wizard)
+    }
+
+    /// The attribute prefixes `look <keyword>` tries after the bare
+    /// `detail:`, in registration order (16b cut D.5; 16c `B-12`).
+    ///
+    /// Empty on a composition that registered none, and `look` then behaves
+    /// exactly as it did before the seam existed.
+    pub fn detail_prefixes(&self) -> impl Iterator<Item = &str> {
+        self.mods.detail_prefixes.iter().map(SmolStr::as_str)
     }
 
     /// The canonical name and owning module of a registered marker flag,
@@ -3374,6 +3389,46 @@ impl<'a> Registrar<'a> {
             .tables_mut()
             .attr_ns
             .insert(key, self.module.clone());
+        Ok(())
+    }
+
+    /// Teach `look <keyword>` about this module's own detail shelf (16b cut
+    /// D.5; 16c `B-12`): after the bare `detail:<keyword>` finds nothing,
+    /// `look` tries `<prefix><folded keyword>` on the room and then on the
+    /// looker, for each registered prefix in registration order.
+    ///
+    /// The prefix must begin with an attribute namespace **this module has
+    /// already claimed** through [`Registrar::attr_namespace`], followed by
+    /// `:` — so a module can only ever point `look` at attributes it owns,
+    /// and the namespace gate stays the one place ownership is decided. A
+    /// prefix registered twice is kept once.
+    ///
+    /// # Errors
+    ///
+    /// [`ModError`] when the prefix names no namespace, or names one this
+    /// module does not own.
+    pub fn detail_prefix(&mut self, prefix: &str) -> Result<(), ModError> {
+        let ns = match prefix.split_once(':') {
+            Some((ns, _)) if !ns.is_empty() => ns.to_lowercase(),
+            _ => {
+                return Err(ModError::msg(format!(
+                    "module {}: detail prefix {prefix:?} must begin with an attribute \
+                     namespace this module registered, and a ':'",
+                    self.module
+                )));
+            }
+        };
+        if self.reg.attr_ns_owner(&ns) != Some(&self.module) {
+            return Err(ModError::msg(format!(
+                "module {}: detail prefix {prefix:?} is inside the attribute namespace \
+                 {ns:?}, which this module has not registered",
+                self.module
+            )));
+        }
+        let prefix = SmolStr::new(prefix);
+        if !self.reg.tables_mut().detail_prefixes.contains(&prefix) {
+            self.reg.tables_mut().detail_prefixes.push(prefix);
+        }
         Ok(())
     }
 

@@ -161,8 +161,9 @@ reads the scene back, and is not taken as the line you were composing.
   5 rolls    Your vitals as widgets on the left — tracks as boxes in threes
              with the level named, pools as gauges, readouts with a condition
              mark — and the dice you have rolled on the right. Ctrl-R opens
-             the box with `+roll ` ready; Tab then completes a trait from your
-             sheet (`+roll str` → `+roll strength`, `+br` → `+brawl`).
+             the box with `+roll ` ready; Tab then completes a rating from
+             your sheet (`+roll gun` → `+roll gunnery`, `+roll pil` →
+             `+roll piloting`).
   6 intel    Your own informant intel, newest first.
   7 actions  The actions currently offered to you; Enter prefills `+act`.
   8 damage   The after-action report for the unit you hold a station on:

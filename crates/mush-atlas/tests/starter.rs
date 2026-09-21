@@ -2,8 +2,12 @@
 //! their ids and requires are what the boot order assumes. (Applying them is
 //! `tests/lot.rs`.)
 
+use mush_atlas::AtlasModule;
+use mush_atlas::def::ExitDef;
 use mush_atlas::starter::{OOC_AREA_PACK, REGION_PACK, SOURCES, STAFF_LOBBY_PACK, packs};
-use mush_content::{PackKind, parse_pack};
+use mush_content::{Appliers, ContentModule, ContentState, PackKind, parse_pack};
+use mush_core::{CanonicalId, GameModule};
+use mush_testkit::TestWorld;
 
 /// The pinned digests, in `SOURCES` order. An edit to a pack changes its digest; the
 /// failure message prints the new values so a *reviewed* edit is a two-line change
@@ -15,11 +19,11 @@ const PINNED: [(&str, &str); 3] = [
     ),
     (
         OOC_AREA_PACK,
-        "0218b87b4429dc60a4657d608f1446f87fe60e88df2871bd31f2bed39c67eb42",
+        "64f6cf88104b80c4bf9af2b013ec2cba089cf2e664f827a72f29184a9cc54691",
     ),
     (
         STAFF_LOBBY_PACK,
-        "fd86e03b014ac80299ce502c0eb063b0dd75b993730f2504d71d9c3d0f1c33ef",
+        "8d791c31a7c81c794cb78529b2735e0c1ab360aea92aa8d03c3d571388056796",
     ),
 ];
 
@@ -110,4 +114,67 @@ fn kinds_and_requires_match_the_boot_order() {
             p.manifest().id()
         );
     }
+}
+
+/// **16b cut D.5 (16c `B-11`): no shipped exit takes a word the kernel owns**,
+/// and the apply check therefore passes over all three packs in a world that
+/// composed them.
+///
+/// The check runs at every apply, including the first boot of a fresh world, so
+/// a shipped pack that tripped it would leave the minimal world and no lot. The
+/// composition here is the lot's own — the atlas, the NPC host and the content
+/// module with the three packs as boot packs — and its registry is what the
+/// check reads.
+#[test]
+fn no_shipped_exit_segment_is_a_word_the_kernel_owns() {
+    let mut appliers = Appliers::new();
+    mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+    mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
+    let modules: Vec<Box<dyn GameModule>> = vec![
+        Box::new(mush_npc::NpcModule::new()),
+        Box::new(AtlasModule::new()),
+        Box::new(
+            ContentModule::new()
+                .with_appliers(appliers)
+                .with_boot_packs(packs().expect("the shipped packs load")),
+        ),
+    ];
+    let tw = TestWorld::with_modules(modules);
+
+    // Every pack landed whole: the check refused nothing.
+    let content = tw
+        .world()
+        .module_state::<ContentState>()
+        .expect("the content module");
+    for (id, _) in SOURCES {
+        let latch = content
+            .latches
+            .applied(&CanonicalId::new(id).expect("id"))
+            .unwrap_or_else(|| panic!("{id} is latched"));
+        assert_eq!(latch.anomaly(), None, "{id}");
+    }
+
+    // And the same question asked of the bytes, so the reason a pack is fine is
+    // readable here and not only in a boot that did not fail.
+    let mut collisions = Vec::new();
+    for pack in packs().expect("load") {
+        for (id, entry) in pack.entries() {
+            if entry.kind().as_str() != "exit" {
+                continue;
+            }
+            let def: ExitDef = entry.decode().expect("a shipped exit decodes");
+            for name in &def.names {
+                for segment in name.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                    if let Some(command) = tw.registry().kernel_command_named(segment) {
+                        collisions.push(format!("{id}: {segment:?} is the command {command:?}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        collisions.is_empty(),
+        "a shipped exit takes a kernel word, which refuses the pack at apply:\n{}",
+        collisions.join("\n")
+    );
 }

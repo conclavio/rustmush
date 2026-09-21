@@ -24,8 +24,8 @@ sensibly coexist on the same object are refused. A raw `@set` never attaches a
 behavior; the lifecycle-aware commands above are the only way, so the module
 always gets to validate.
 
-Behavior ids are namespaced, lowercase, dotted: `sim.domain`, `tactics.unit`,
-`shadowrun.vehicle`. Exactly one module owns each id.
+Behavior ids are namespaced, lowercase, dotted: `sim.domain`, `sim.interior`,
+`tactics.unit`. Exactly one module owns each id.
 
 ## Contextual commands
 

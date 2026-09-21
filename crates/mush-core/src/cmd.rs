@@ -993,6 +993,27 @@ impl Registry {
             .map(|&i| &self.entries[i].spec)
     }
 
+    /// The primary name of the **kernel- or host-registered** command indexed
+    /// under exactly this word (name or alias, case-folded), or `None`.
+    ///
+    /// "Kernel or host" is `module: None` — the core command set and the
+    /// server's own staff verbs: the words that work in every room on every
+    /// composition. A module's verb is contextual (its owner gates where it
+    /// means anything) and is deliberately **not** reported here; 16b cut D.5
+    /// uses this to let content take a module's word and never the kernel's.
+    ///
+    /// Exact, never the command table's prefix matching — `n` is a prefix of
+    /// every bare name beginning with `n`, and the question this answers is
+    /// "would this exact word be swallowed", not "what could it grow into".
+    #[must_use]
+    pub fn kernel_command_named(&self, word: &str) -> Option<&str> {
+        self.index
+            .get(&word.to_lowercase())
+            .map(|&i| &self.entries[i])
+            .filter(|e| e.module.is_none())
+            .map(|e| e.spec.name.as_str())
+    }
+
     /// Resolve a typed verb: exact name/alias first; then, for bare verbs
     /// only, an unambiguous prefix of a primary name. `@`/`+` commands
     /// never prefix-match.

@@ -77,7 +77,7 @@ fn block() -> Pack {
             "room.green": { "kind": "room", "def": { "name": "The Green", "surface": "ground",
                 "footprint": { "rect": [[10, 10], [60, 60]] }, "desc": "A wide green." } },
             "exit.limbo_green": { "kind": "exit", "def": { "from": "limbo", "to": "room.green",
-                "names": ["Out <O>;o;out", "Limbo <L>;l;limbo"] } }
+                "names": ["Out <O>;o;out", "Limbo <L>;limbo"] } }
         }
     }))
 }
@@ -324,7 +324,7 @@ fn site_entries(name: &str, kind: &str, rect: [[f64; 2]; 2]) -> Value {
             "site": "site.plot", "footprint": { "rect": [[x0, y0], [x1, y1]] },
             "desc": "A quiet place with a bench under a tree." } },
         "exit.green_plot": { "kind": "exit", "def": { "from": "neighborhood.block.room.green",
-            "to": "room.plot", "names": [format!("{name} <P>;p"), "Green <G>;g"],
+            "to": "room.plot", "names": [format!("{name} <P>;plot"), "Green <G>;g"],
             "portal": { "distance_m": 40 } } }
     })
 }
@@ -791,7 +791,7 @@ async fn reconceptualizing_a_pack_keeps_the_access_point_and_diffs_against_the_l
     entries["room.pond"] = json!({ "kind": "room", "def": { "name": "The Pond", "surface": "ground",
         "footprint": { "rect": [[60, 10], [100, 60]] } } });
     entries["exit.green_pond"] = json!({ "kind": "exit", "def": { "from": "room.green", "to": "room.pond",
-        "names": ["Pond <P>;p", "Green <G>;g"] } });
+        "names": ["Pond <P>;pond", "Green <G>;g"] } });
     mock.push_response(propose_and_validate(entries, 0.60));
     let done = finish(&mut tw, &llm, GOD, &effects).await;
     assert!(

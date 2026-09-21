@@ -77,8 +77,8 @@ fn shipped_version() -> u32 {
 
 /// The same number as a constant, for the fixtures that build a neighbouring
 /// version. Asserted against [`shipped_version`] by
-/// [`the_fixtures_track_the_shipped_version`].
-const SHIPPED_VERSION: u32 = 5;
+/// [`the_fixtures_track_the_shipped_version`]. (16b cut D.5 moved it 5 -> 6.)
+const SHIPPED_VERSION: u32 = 6;
 
 fn cid(s: &str) -> CanonicalId {
     CanonicalId::new(s).expect("a canonical id")
@@ -305,7 +305,7 @@ fn a_pod_is_an_interior_a_character_can_be_placed_into_and_a_plain_item_is_not()
         let pod = named(&tw, ObjKind::Thing, name);
         assert!(state(&tw).spaces.contains_key(&pod), "{name} is a space");
     }
-    // Idempotence: the pack revises the pods (version 5 repaints them), the
+    // Idempotence: the pack revises the pods (`ooc_repainted` repaints them), the
     // applier meets objects that are already interior spaces, and nothing about
     // the space, its record or its occupant moves.
     let before = census(&tw);
@@ -482,18 +482,31 @@ fn the_shipped_version_upgrades_a_world_at_version_three_and_moves_nothing() {
     }
 }
 
-// ---- F.4: the pack from version 4 to version 5 -------------------------------
+// ---- F.4: the pack from version 4 onwards ------------------------------------
 
-/// The six strings version 5 rewrote and the three exit alias lists it
-/// corrected, as version 4 carried them: `(shipped, version 4)`. Ten pairs for
-/// nine strings, because the pod description moved in two places and each pair
-/// has to be a substring `replace` can find on its own.
+/// The strings the shipped pack rewrote after version 4, as version 4 carried
+/// them: `(shipped, version 4)`. Ten pairs, because the pod description moved in
+/// two places and each pair has to be a substring `replace` can find on its own.
 ///
 /// Built from the shipped bytes by putting the old text back, for the same
 /// reason [`ooc_v3`] is: version 4's file is not in the tree any more, and a
-/// fixture that is a copy drifts. Every string version 5 touched belongs here:
-/// one it omits is one the upgrade test silently stops proving, because the
-/// "version 4" world it starts from already carries the corrected text.
+/// fixture that is a copy drifts. Every string a later version touched belongs
+/// here: one it omits is one the upgrade test silently stops proving, because
+/// the "version 4" world it starts from already carries the corrected text.
+///
+/// **One set is deliberately missing, and cannot be added** (16b cut D.5, 16c
+/// `B-11`): version 6 took the segment `l` off the three `Lounge <L>` exit
+/// names, and the same cut taught pack apply to refuse an exit whose name
+/// carries a word the kernel owns. A fixture pack spelling
+/// `Lounge <L>;l;lounge;west;w` is refused before its first write, so the world
+/// it would build never boots and the pre-D.5 shape of those three entries is
+/// not constructible through apply at all. What that leaves untested is the
+/// five exits' own remake; the applier path it runs down is the one the three
+/// `sim` exits below take on this very upgrade, and
+/// [`the_shipped_version_corrects_the_centres_texts_on_a_world_at_version_four`]
+/// also puts an alias on a standing exit object by hand and proves the remake
+/// drops it. The five exits' own fresh-boot shape is pinned in
+/// `tests/lot.rs`.
 const V4_TEXTS: [(&str, &str); 10] = [
     (
         "above the door. Once a match is boarding, the pilot holding this slot climbs in with BOARD and the panel wakes; EXIT gets you out again.",
@@ -512,11 +525,11 @@ const V4_TEXTS: [(&str, &str); 10] = [
         "Dark, and the size of a place mat. It wakes for a pilot, and for nobody else.",
     ),
     (
-        "A console bolted to the lobby counter: two lit buttons, RED and BLUE, and a small screen. 'SIM TEAM red' or 'SIM TEAM blue' claims a slot on that side, 'SIM STATUS' says who holds one, and 'SIM START' opens the pods once both sides have a pilot. 'help simulator' is the rest of it.",
+        "A console bolted to the lobby counter: two lit buttons, RED and BLUE, and a small screen. 'SIM TEAM red' or 'SIM TEAM blue' claims a slot on that side, 'SIM STATUS' says who holds one, and 'SIM START' opens the pods. 'help simulator' is the rest of it.",
         "A console bolted to the lobby counter: two lit buttons, RED and BLUE, and a small screen reading STANDING BY. When the simulator opens, 'SIM TEAM red' or 'SIM TEAM blue' will claim a slot on that side and 'SIM STATUS' will say who holds one. The verbs are not built yet, so for now the screen is the whole of it.",
     ),
     (
-        "SIM TEAM red|blue claims a slot. SIM LEAVE gives one back. SIM START opens the pods; SIM ABORT calls the match off. SIM STATUS is this screen, in words.",
+        "SIM TEAM red|blue claims a slot. SIM LEAVE gives one back. SIM START opens the pods; SIM ABORT calls the match off; SIM CONCEDE hands it to the other side. SIM STATUS is this screen, in words.",
         "STANDING BY -- no match scheduled. SIM TEAM red|blue claims a slot when the verbs land; SIM LEAVE gives one back.",
     ),
     (
@@ -538,7 +551,12 @@ const V4_TEXTS: [(&str, &str); 10] = [
 ];
 
 /// **Version 4 of the OOC pack**: the shipped bytes with the eleven strings cut
-/// F.4 rewrote put back, the version stepped down and the digest re-derived.
+/// F.4 rewrote put back, the version set to 4 and the digest re-derived.
+///
+/// The version is the literal 4 and not `SHIPPED_VERSION - 1`: what this fixture
+/// carries is version 4's *text*, and the shipped version has moved past 5 (16b
+/// cut D.5). The upgrade under test is therefore 4 to the shipped version, which
+/// is what a world left standing since cut C.1 would really take.
 fn ooc_v4() -> String {
     let mut text = starter::OOC_AREA_JSON.to_string();
     for (shipped, old) in V4_TEXTS {
@@ -549,7 +567,7 @@ fn ooc_v4() -> String {
         text = text.replace(shipped, old);
     }
     let mut doc: Value = serde_json::from_str(&text).expect("the pack is json");
-    doc["manifest"]["version"] = Value::from(SHIPPED_VERSION - 1);
+    doc["manifest"]["version"] = Value::from(4);
     doc["manifest"]["digest"] = Value::String("0".repeat(64));
     let unsigned = serde_json::to_string(&doc).expect("json");
     let digest = parse_pack(&unsigned)
@@ -613,10 +631,10 @@ fn the_fixtures_track_the_shipped_version() {
     );
 }
 
-/// **The version-5 upgrade rewrites what is standing and creates nothing** (16b
-/// cut F.4).
+/// **The upgrade off version 4 rewrites what is standing and creates nothing**
+/// (16b cut F.4; still true at cut D.5's version 6, which only edits strings).
 #[test]
-fn version_five_corrects_the_centres_texts_on_a_world_at_version_four() {
+fn the_shipped_version_corrects_the_centres_texts_on_a_world_at_version_four() {
     let region = starter::SOURCES
         .first()
         .map(|(_, j)| (*j).to_string())
@@ -650,6 +668,23 @@ fn version_five_corrects_the_centres_texts_on_a_world_at_version_four() {
         );
     }
 
+    // 16b cut D.5 (16c `B-11`): a standing exit can carry an alias that is in no
+    // version of the pack — version 6 takes `l` off this pack's three
+    // `Lounge <L>` exits, and a fixture cannot author that shape any more, since
+    // apply now refuses a pack that spells it (see [`V4_TEXTS`]). So the
+    // alias goes on the object instead, on an exit this upgrade does remake. An
+    // exit entry is remade rather than edited, and this is the assertion that
+    // says the remake carries nothing off the object that stood there — not
+    // merely nothing the new text omits.
+    let hall_to_lobby = exit_from(&tw, hall, lobby);
+    tw.world_mut()
+        .add_alias(hall_to_lobby, "l")
+        .expect("a standing exit takes the alias");
+    assert!(
+        has_alias(&tw, hall_to_lobby, "l"),
+        "the standing exit must carry the stale alias, or this proves nothing"
+    );
+
     // Somebody is standing in the lobby, and the census is taken with them in it.
     let alice = tw.spawn_player("Alice");
     tw.world_mut()
@@ -660,7 +695,7 @@ fn version_five_corrects_the_centres_texts_on_a_world_at_version_four() {
     let (planned, applied) = replan(&mut tw, starter::OOC_AREA_PACK);
     assert!(
         planned.contains("0 create,"),
-        "version 5 adds no entry; it rewrites what is here:\n{planned}"
+        "the upgrade off version 4 adds no entry; it rewrites what is here:\n{planned}"
     );
     assert!(planned.contains("0 retire"), "{planned}");
     assert!(
@@ -700,6 +735,17 @@ fn version_five_corrects_the_centres_texts_on_a_world_at_version_four() {
     for exit in [to_lobby, to_red, back_to_lobby] {
         assert!(!has_alias(&tw, exit, "sim"), "an exit still eats `sim`");
     }
+    // And the hand-placed alias is gone with the object that carried it: a
+    // remade exit starts from the entry's names and nothing else.
+    assert_ne!(
+        to_lobby, hall_to_lobby,
+        "the exit was edited in place, not remade"
+    );
+    assert!(
+        !has_alias(&tw, to_lobby, "l"),
+        "a remade exit kept an alias off the object that stood there, so a world \
+         standing at version 5 would keep `l` and go on eating `look`"
+    );
     assert!(has_alias(&tw, to_lobby, "simulator"));
     assert!(has_alias(&tw, back_to_lobby, "lobby"));
     assert!(has_alias(&tw, back_to_lobby, "out"));
@@ -727,7 +773,7 @@ fn version_five_corrects_the_centres_texts_on_a_world_at_version_four() {
     assert_eq!(
         after.values().filter(|row| !is_exit(row)).count(),
         before.values().filter(|row| !is_exit(row)).count(),
-        "version 5 created or retired a room, an item or a character"
+        "the upgrade created or retired a room, an item or a character"
     );
     assert_eq!(tw.world().get(alice).and_then(|o| o.location), Some(lobby));
 
@@ -740,7 +786,7 @@ fn version_five_corrects_the_centres_texts_on_a_world_at_version_four() {
     assert_eq!(latch.anomaly(), None);
 }
 
-/// A fresh world lands version 5's texts whole, with no staff command at all.
+/// A fresh world lands the shipped texts whole, with no staff command at all.
 #[test]
 fn a_fresh_world_gets_the_corrected_texts_at_first_boot() {
     let tw = lot();

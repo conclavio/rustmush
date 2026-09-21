@@ -241,6 +241,10 @@ async fn register(
 /// exit: it is the verb's word.
 async fn walk_to_the_lobby(term: &mut Term) {
     say(term, "ooc", "Welcome Hall").await;
+    // 16b cut D.5 (16c `B-11`): `l` looks. It used to be the Welcome Hall's
+    // exit to the Lounge, so the room every pilot crosses to the simulator
+    // walked them out of it. The hall's own name coming back is the proof.
+    say(term, "l", "Welcome Hall").await;
     say(term, "simulator", "Simulator Lobby").await;
 }
 

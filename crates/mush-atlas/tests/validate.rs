@@ -70,11 +70,11 @@ fn block_doc() -> Value {
                 "site": "site.house", "footprint": { "rect": [[110, 10], [120, 60]] },
                 "access": "restricted" } },
             "exit.limbo_green": { "kind": "exit", "def": { "from": "limbo", "to": "room.green",
-                "names": ["Out <O>;o;out", "Limbo <L>;l;limbo"] } },
+                "names": ["Out <O>;o;out", "Limbo <L>;limbo"] } },
             "exit.green_parlour": { "kind": "exit", "def": { "from": "room.green", "to": "room.parlour",
                 "names": ["House <H>;h;house", "Green <G>;g;green"] } },
             "exit.parlour_vault": { "kind": "exit", "def": { "from": "room.parlour", "to": "room.vault",
-                "names": ["Vault <V>;v;vault", "Parlour <P>;p;parlour"], "lock": "staff" } }
+                "names": ["Vault <V>;v;vault", "Parlour <P>;parlour"], "lock": "staff" } }
         }
     })
 }

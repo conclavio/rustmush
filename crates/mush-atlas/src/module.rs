@@ -55,6 +55,13 @@ pub const NS: &str = "atlas";
 /// The attribute namespace this module owns (`atlas:detail:<name>` on rooms and items).
 pub const ATTR_NS: &str = "atlas";
 
+/// Where a pack-authored room or item detail is written, and the prefix this
+/// module registers with `look` at composition (16b cut D.5; 16c `B-12`).
+///
+/// `look <keyword>` tries the bare `detail:<keyword>` first and this second, so
+/// a builder's hand-set `detail:sign` still wins over a pack's own.
+pub const DETAIL_PREFIX: &str = "atlas:detail:";
+
 /// The most packs `[atlas].pack_paths` may name.
 pub const MAX_CONFIGURED_PACKS: usize = 64;
 
@@ -306,6 +313,11 @@ impl GameModule for AtlasModule {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.attr_namespace(ATTR_NS)?;
+        // 16b cut D.5 (16c `B-12`): every detail a pack authors lands under
+        // this module's own namespace, so `look <keyword>` has to be told where
+        // to look for it. The seam only admits a prefix inside a namespace this
+        // module just claimed, so this line is the whole of the grant.
+        reg.detail_prefix(DETAIL_PREFIX)?;
         let mut state = AtlasState {
             limits: AtlasLimits {
                 tile_max_cells: self

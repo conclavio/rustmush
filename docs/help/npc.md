@@ -21,7 +21,7 @@ switches are Wizard+ (`@llm`).
 
   @agent/create <name>              Create an NPC agent here (Minor tier, enabled).
   @agent/set <npc>/<field>=<value>  Edit its profile (see fields below).
-  @agent/sheet <npc>[=<template>]   Give it a ruleset sheet (default: mortal).
+  @agent/sheet <npc>                Give it a pilot sheet so it can be checked.
   @agent/show <npc>                 Show its profile + live runtime status.
   @agent <npc>                      Same as /show.
 
@@ -39,8 +39,8 @@ Profile fields (`@agent/set <npc>/<field>=<value>`):
   daily_tokens    Per-NPC daily token ceiling; replaces the per_npc_default
                   budget for this NPC and is enforced pre-call by the LLM budget.
   enabled         yes/no — park or wake the agent.
-  principal       A character name — who this NPC reports intel to (its domitor
-                  / employer). Empty clears it; with none set the NPC files
+  principal       A character name — who this NPC reports intel to (its patron
+                  or employer). Empty clears it; with none set the NPC files
                   nothing. See the informant loop below.
   loyal           yes/no — the willingness gate for the informant loop (default
                   yes; no = files nothing, however much it sees).
@@ -51,19 +51,20 @@ An empty value clears a field (e.g. `@agent/set bones/goals=` drops all goals).
 
 ### Giving an NPC a rollable sheet
 
-`@agent/sheet <npc>=<template>` bootstraps a World of Darkness sheet on the NPC
-through the normal sheet path (templates: mortal, vampire, mage, werewolf), so
-its `wod_roll` ability has real traits to read. Fill it in afterward with the
-usual staff command:
+`@agent/sheet <npc>` bootstraps a pilot sheet on the NPC through the normal
+sheet path, so its `check` ability has real ratings to read. There is one sheet
+and one set of ratings (`help chargen`), so there is no template to choose; an
+NPC that already has a sheet keeps it. Fill it in afterward with the usual staff
+command:
 
-  @agent/sheet Bones=mortal
-  @sheet/set Bones/strength=4
-  @sheet/set Bones/brawl=3
+  @agent/sheet Bones
+  @sheet/set Bones/gunnery=4
+  @sheet/set Bones/piloting=3
 
-Now the NPC can roll `Strength+Brawl` (a 7-die pool) — and *only* pools it
-actually has. It cannot manufacture dice it lacks; the engine rolls on the same
-seeded RNG and roll log players use, and shows the result to the room, so an
-NPC roll can never be faked.
+Now the NPC can be checked against a rating — and *only* the ratings it actually
+has. It cannot manufacture a rating it lacks; the engine resolves on the same
+seeded RNG and roll log players use, and shows the result to the room, so an NPC
+roll can never be faked.
 
 ## World knowledge
 
@@ -71,7 +72,7 @@ An NPC knows things two ways. **Episodic** memory is what it remembers
 *experiencing* — who it has met, what was said (the `remember` tool, the rolling
 summary, durable per-subject memories). **World** (or semantic) knowledge is what
 it knows by virtue of *who and where it is* — a bartender knows the local streets;
-an occult bookseller knows about vampires — whether or not it has ever met you.
+the simulator's docent knows the centre — whether or not it has ever met you.
 World knowledge is authored by staff; episodic memory accrues in play.
 
 World knowledge comes from two sources: **per-NPC lore** authored directly on one
@@ -161,12 +162,12 @@ rather than erroring; staff get a one-time notice when an NPC degrades.
 ## Informants (the intel loop)
 
 An NPC can be made an **informant** that quietly reports what it witnesses to a
-**principal** (a player — its domitor or employer). Set its `principal`, keep it
+**principal** (a player — its patron or employer). Set its `principal`, keep it
 `loyal`, and optionally give it a `watch` list; it then files provenance-tagged
 **intel records** the principal pulls with `+intel`. Crucially, an informant can
 report only what its NPC actually *perceived* (see `help perception`): a subject
 it cannot sense produces no record. A pierced concealment and a witnessed
-**power use** (a Discipline, spell, or Gift the NPC noticed being worked) are
+**noticed act** (see `help perception`) are
 always reported; a watched subject's arrivals, departures, and speech are
 reported; ordinary unwatched traffic is not. The loop is opt-in and additive —
 an NPC with no principal set behaves exactly as before. Full details in
@@ -186,7 +187,7 @@ audited (`@llm/log`).
 ## See also
 
   @agent, @lore, @llm, @sheet, +roll, +intel, help intel, help perception,
-  help action, help worldgen
+  help worldgen
 
 ## Interface NPCs
 

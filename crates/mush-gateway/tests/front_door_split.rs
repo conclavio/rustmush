@@ -270,6 +270,9 @@ impl Term {
     /// left it to the verb).
     async fn walk_to_the_lobby(&mut self) {
         self.say("ooc", "Welcome Hall").await;
+        // 16b cut D.5 (16c `B-11`): `l` looks, in the room every pilot crosses
+        // on the way in. The hall's own name coming back is the proof.
+        self.say("l", "Welcome Hall").await;
         self.say("simulator", "Simulator Lobby").await;
     }
 }

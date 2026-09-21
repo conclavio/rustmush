@@ -188,6 +188,9 @@ impl GameModule for ToyModule {
         // Markers, attr namespace, script api, job queue, migrations.
         reg.marker_flag("toy:shiny")?;
         reg.attr_namespace("toy")?;
+        // 16b cut D.5: `look <keyword>` also reads this module's own detail
+        // shelf, which it may only point at because it just claimed `toy`.
+        reg.detail_prefix("toy:detail:")?;
         reg.script_api("toy")?;
         reg.job_queue(JobQueueSpec {
             name: "toyq".into(),
@@ -2444,6 +2447,151 @@ fn attr_namespace_enforced_in_at_set() {
     assert!(!reg.may_write_attr(&engine.world, nick, None, "toy:mood"));
     assert!(reg.may_write_attr(&engine.world, nick, None, "plain"));
     assert!(reg.may_write_attr(&engine.world, nick, None, "detail:window"));
+}
+
+/// **16b cut D.5 (16c `B-12`): `look <keyword>` reads a module's own detail
+/// shelf**, after the bare `detail:` and never before it.
+#[test]
+fn look_reads_a_registered_detail_prefix_after_the_bare_detail() {
+    let (mut engine, nick) = setup();
+    assert_eq!(
+        engine
+            .registry
+            .detail_prefixes()
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["toy:detail:"],
+        "the toy module registered exactly one prefix"
+    );
+    engine
+        .world
+        .set_attr(
+            LIMBO,
+            "toy:detail:sign",
+            mush_core::Attr::text("A hand-lettered sign.", GOD),
+        )
+        .unwrap();
+    engine
+        .world
+        .set_attr(
+            LIMBO,
+            "toy:detail:coffee_machine",
+            mush_core::Attr::text("It takes a while.", GOD),
+        )
+        .unwrap();
+    let out = run(&mut engine, nick, "look sign");
+    assert!(
+        sys_texts(&out).iter().any(|t| t == "A hand-lettered sign."),
+        "{:?}",
+        sys_texts(&out)
+    );
+    // The keyword is folded the way the writer folded it: a space becomes `_`,
+    // and the case does not matter.
+    for typed in ["look coffee machine", "look COFFEE MACHINE"] {
+        let out = run(&mut engine, nick, typed);
+        assert!(
+            sys_texts(&out).iter().any(|t| t == "It takes a while."),
+            "{typed}: {:?}",
+            sys_texts(&out)
+        );
+    }
+    // A bare `detail:` of the same keyword still wins.
+    engine
+        .world
+        .set_attr(LIMBO, "detail:sign", mush_core::Attr::text("Plain.", GOD))
+        .unwrap();
+    let out = run(&mut engine, nick, "look sign");
+    assert!(sys_texts(&out).iter().any(|t| t == "Plain."));
+    // And a keyword nothing answers to is the ordinary refusal.
+    let out = run(&mut engine, nick, "look nosuchthing");
+    assert!(
+        sys_texts(&out)
+            .iter()
+            .any(|t| t.contains("I don't see that here.")),
+        "{:?}",
+        sys_texts(&out)
+    );
+}
+
+/// The seam only admits a prefix inside a namespace the module itself claimed,
+/// so `look` can never be pointed at somebody else's attributes.
+#[test]
+fn detail_prefix_is_refused_outside_the_modules_own_namespaces() {
+    struct Greedy(&'static str, bool);
+
+    impl GameModule for Greedy {
+        fn name(&self) -> &'static str {
+            "greedy"
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+            if self.1 {
+                reg.attr_namespace("greedy")?;
+            }
+            reg.detail_prefix(self.0)
+        }
+    }
+
+    for (prefix, claims_own, expected) in [
+        // Another module's namespace.
+        ("toy:detail:", true, "which this module has not registered"),
+        // A namespace nobody owns.
+        ("wild:detail:", true, "which this module has not registered"),
+        // The bare `detail:` is the kernel's own shelf, and `detail` is a
+        // namespace nobody claimed.
+        ("detail:", true, "which this module has not registered"),
+        // No namespace at all.
+        (
+            "nocolon",
+            true,
+            "must begin with an attribute namespace this module registered, and a ':'",
+        ),
+        // Its own namespace, but not claimed first.
+        (
+            "greedy:detail:",
+            false,
+            "which this module has not registered",
+        ),
+    ] {
+        let error = match Engine::compose_modules(
+            Registry::new(),
+            vec![Box::new(ToyModule), Box::new(Greedy(prefix, claims_own))],
+        ) {
+            Ok(_) => panic!("{prefix} must be refused"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains(expected), "{prefix}: {error}");
+    }
+
+    // The same module, claiming first, is accepted — and twice is once.
+    struct Polite;
+
+    impl GameModule for Polite {
+        fn name(&self) -> &'static str {
+            "polite"
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::ReadOnly);
+            reg.attr_namespace("polite")?;
+            reg.detail_prefix("polite:detail:")?;
+            reg.detail_prefix("polite:detail:")
+        }
+    }
+
+    let composition =
+        Engine::compose_modules(Registry::new(), vec![Box::new(ToyModule), Box::new(Polite)])
+            .expect("a module may point look at its own namespace");
+    assert_eq!(
+        composition
+            .registry()
+            .detail_prefixes()
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["toy:detail:", "polite:detail:"],
+        "registration order, de-duplicated"
+    );
 }
 
 // ----------------------------------------------------------------------

@@ -42,7 +42,7 @@ use crate::def::{
     StructureDef, SurfaceDef,
 };
 use crate::geom::{Point3, PointCm, RectCm, Shape, cm, metres};
-use crate::module::{ATTR_NS, AtlasState, del_doc, put_doc};
+use crate::module::{ATTR_NS, AtlasState, DETAIL_PREFIX, del_doc, put_doc};
 use crate::raster::{self, Grid, SurfaceInput, overlap, shared_threshold, threshold_point};
 use crate::record::{
     AccessPoint, Budget, CheckpointRec, ConnectionRec, Endpoint, FeatureRec, Frame, Geometry,
@@ -250,6 +250,24 @@ impl EntryApplier for KindApplier {
                 create_entry(&kind, ctx, state, pack, id, entry, placed, None)
             }
         })
+    }
+
+    fn check(
+        &self,
+        ctx: &Ctx<'_>,
+        _pack: &Pack,
+        id: &CanonicalId,
+        entry: &RawEntry,
+    ) -> Result<(), String> {
+        if self.kind.as_str() != "exit" {
+            return Ok(());
+        }
+        // A malformed exit is `create_exit`'s to report, with the rest of its
+        // refusals; this check only ever answers the one question.
+        let Ok(def) = entry.decode::<ExitDef>() else {
+            return Ok(());
+        };
+        check_exit_names(ctx, id, &def.names)
     }
 
     fn retire_check(
@@ -1032,10 +1050,11 @@ fn dress(
         ctx.w.remove_attr(obj, &attr).map_err(|e| e.to_string())?;
     }
     for (detail, text) in details {
-        let attr = format!(
-            "{ATTR_NS}:detail:{}",
-            detail.trim().to_ascii_lowercase().replace(' ', "_")
-        );
+        // 16b cut D.5: the fold is `mush-core`'s, and `look` reads it back with
+        // the same call, so the keyword a pack authors is the keyword a player
+        // types (16c `B-12`). The prefix is `DETAIL_PREFIX`, which the module
+        // registers with `look` at composition.
+        let attr = format!("{DETAIL_PREFIX}{}", mush_core::fold_detail_keyword(detail));
         ctx.w
             .set_attr(obj, &attr, Attr::text(text.as_str(), GOD))
             .map_err(|e| e.to_string())?;
@@ -1306,6 +1325,55 @@ fn open_exit(ctx: &mut Ctx<'_>, src: ObjId, spec: &str, dest: ObjId) -> Result<O
 
 fn point3(p: PointCm, z: f64) -> Point3 {
     Point3(metres(p.x), metres(p.y), z)
+}
+
+/// Refuse an exit whose name would swallow a word that works in every room
+/// (16b cut D.5; 16c `B-11`).
+///
+/// Dispatch matches exits at step 5 and the command table at step 6 (see the
+/// head of `mush-core/src/cmd.rs`), so an exit named `l` is `look` gone for
+/// everyone standing in that room. The rule is therefore: no `;`-separated
+/// segment of an exit's name may equal — exactly, case-folded, never by the
+/// command table's prefix matching — the name or an alias of a command the
+/// **kernel or the host** registered. The whole display segment is compared
+/// too, which no command is (`Lounge <L>` is nobody's verb).
+///
+/// **A module's verb is let through, on purpose.** Cut F.4 ruled on exactly
+/// this case: both shipped bus exits are named `Board the Bus <BUS>;bus;board`,
+/// `board` is `tacsim`'s `BOARD_VERB`, and `CockpitGate` was taught to stand
+/// aside outside the simulator centre precisely so that a newcomer at the Bus
+/// Stop who types `board` gets on the bus. A module's verb is contextual, its
+/// owner gates where it means anything, and in a room where it means nothing
+/// the exit is entitled to the word. The kernel's words are not contextual:
+/// every player types them in every room, and no room may take one. The
+/// overlap that is let through is not ignored either — it is counted, row by
+/// row, by a contract test over the production registry.
+///
+/// Reading kernel entries only also takes the MODULE asymmetry out of the
+/// answer: this crate's own tests compose no `tacsim`, and a check that read
+/// module verbs would pass here and refuse the shipped packs in production. It
+/// does not make the answer identical on every composition, and the comment
+/// must not claim it does — `module: None` is the core command set **and** the
+/// host's own verbs (`mush_server::staff::register_server_commands`), which
+/// this crate's fixtures never compose. That residue is what
+/// `mush-contract-tests`' `no_shipped_exit_segment_is_a_word_the_kernel_or_the_host_owns`
+/// covers, over the production registry.
+fn check_exit_names(ctx: &Ctx<'_>, id: &CanonicalId, names: &[String]) -> Result<(), String> {
+    for name in names {
+        for segment in name.split(';') {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                continue;
+            }
+            if let Some(command) = ctx.reg.kernel_command_named(segment) {
+                return Err(format!(
+                    "exit '{id}' uses '{segment}' as a name; that is the command \
+                     '{command}', which works in every room, and an exit would swallow it"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]

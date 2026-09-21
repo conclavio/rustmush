@@ -64,7 +64,7 @@ fn block(enabled: bool, max_player_sites: u32) -> Pack {
             "room.green": { "kind": "room", "def": { "name": "The Green", "surface": "ground",
                 "footprint": { "rect": [[10, 10], [60, 60]] }, "desc": "A wide green." } },
             "exit.limbo_green": { "kind": "exit", "def": { "from": "limbo", "to": "room.green",
-                "names": ["Out <O>;o;out", "Limbo <L>;l;limbo"] } }
+                "names": ["Out <O>;o;out", "Limbo <L>;limbo"] } }
         }
     }))
 }
@@ -247,7 +247,7 @@ fn site_pack(rec: &RequestRec, name: &str, version: u32) -> Pack {
                 "site": "site.plot", "footprint": { "rect": [[x0, y0], [x1, y1]] },
                 "desc": "A bench under a tree." } },
             "exit.green_plot": { "kind": "exit", "def": { "from": "neighborhood.block.room.green",
-                "to": "room.plot", "names": [format!("{name} <P>;p"), "Green <G>;g"],
+                "to": "room.plot", "names": [format!("{name} <P>;plot"), "Green <G>;g"],
                 "portal": { "distance_m": 40 } } }
         }
     }))

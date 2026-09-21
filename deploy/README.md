@@ -364,6 +364,18 @@ id changes.)
 Do **not** reach for `@atlas/pack retire` to "start again": a retired latch is
 marked retired and the boot pass then skips that pack for ever.
 
+**`ooc_area` 5 → 6 and `staff_lobby` 3 → 4 (16b cut D.5).** This pair changes
+text and exit names only: the alias `l` comes off five exits (the three
+`Lounge <L>` exits and the two `Lobby <L>` ones), so `l` is `look` again in the
+Tutorial: Building, the Welcome Hall, the Bus Stop, the staff Forecourt and the
+Breakroom, and the Simulator Selector's console text stops claiming `SIM START`
+needs a pilot on both sides. No entry is created or retired. The five exits are
+**remade**, as every exit entry is, so their object ids change — nothing else
+moves, and nobody is displaced. A world that skips the upgrade keeps the old `l`
+exits and loses nothing else. The Welcome Hall's sign and every other
+pack-authored room detail become readable with `look <keyword>` on an
+un-upgraded world too, because that half is code and not content.
+
 ### The arena pack is not on the shelf
 
 `tacsim.pack.proving_ground` and `tacsim.proving_ground` are boot packs and are

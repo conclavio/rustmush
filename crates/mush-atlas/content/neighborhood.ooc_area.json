@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.ooc_area",
-    "version": 5,
+    "version": 6,
     "kind": "neighborhood",
-    "digest": "0218b87b4429dc60a4657d608f1446f87fe60e88df2871bd31f2bed39c67eb42",
+    "digest": "64f6cf88104b80c4bf9af2b013ec2cba089cf2e664f827a72f29184a9cc54691",
     "requires": [
       {
         "id": "region.limbo",
@@ -453,7 +453,7 @@
         "from": "room.tutorial_building",
         "to": "room.lounge",
         "names": [
-          "Lounge <L>;l;lounge;west;w",
+          "Lounge <L>;lounge;west;w",
           "Tutorial: Building <B>;b;building;east"
         ],
         "portal": {
@@ -467,7 +467,7 @@
         "from": "room.welcome_hall",
         "to": "room.lounge",
         "names": [
-          "Lounge <L>;l;lounge;south;s",
+          "Lounge <L>;lounge;south;s",
           "Welcome Hall <W>;w;hall;north"
         ],
         "portal": {
@@ -482,7 +482,7 @@
         "to": "room.bus_stop",
         "names": [
           "Bus Stop <BS>;bs;out;stop",
-          "Lounge <L>;l;lounge;in"
+          "Lounge <L>;lounge;in"
         ],
         "portal": {
           "mode": "door",
@@ -609,9 +609,9 @@
       "def": {
         "name": "Simulator Selector",
         "room": "room.simulator_lobby",
-        "desc": "A console bolted to the lobby counter: two lit buttons, RED and BLUE, and a small screen. 'SIM TEAM red' or 'SIM TEAM blue' claims a slot on that side, 'SIM STATUS' says who holds one, and 'SIM START' opens the pods once both sides have a pilot. 'help simulator' is the rest of it.",
+        "desc": "A console bolted to the lobby counter: two lit buttons, RED and BLUE, and a small screen. 'SIM TEAM red' or 'SIM TEAM blue' claims a slot on that side, 'SIM STATUS' says who holds one, and 'SIM START' opens the pods. 'help simulator' is the rest of it.",
         "details": {
-          "screen": "SIM TEAM red|blue claims a slot. SIM LEAVE gives one back. SIM START opens the pods; SIM ABORT calls the match off. SIM STATUS is this screen, in words.",
+          "screen": "SIM TEAM red|blue claims a slot. SIM LEAVE gives one back. SIM START opens the pods; SIM ABORT calls the match off; SIM CONCEDE hands it to the other side. SIM STATUS is this screen, in words.",
           "buttons": "Both lit. Pressing one does nothing but click: the sides are taken with SIM TEAM, not with a thumb."
         },
         "flags": [

@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "neighborhood.staff_lobby",
-    "version": 3,
+    "version": 4,
     "kind": "neighborhood",
-    "digest": "fd86e03b014ac80299ce502c0eb063b0dd75b993730f2504d71d9c3d0f1c33ef",
+    "digest": "8d791c31a7c81c794cb78529b2735e0c1ab360aea92aa8d03c3d571388056796",
     "requires": [
       {
         "id": "region.limbo",
@@ -11,7 +11,7 @@
       },
       {
         "id": "neighborhood.ooc_area",
-        "version": 5
+        "version": 6
       }
     ]
   },
@@ -550,7 +550,7 @@
         "from": "room.forecourt",
         "to": "room.lobby",
         "names": [
-          "Lobby <L>;l;lobby;in;south",
+          "Lobby <L>;lobby;in;south",
           "Forecourt <F>;f;forecourt;out;north"
         ],
         "portal": {
@@ -570,7 +570,7 @@
         "to": "room.breakroom",
         "names": [
           "Breakroom <BR>;br;breakroom;east;e",
-          "Lobby <L>;l;lobby;west;w"
+          "Lobby <L>;lobby;west;w"
         ],
         "portal": {
           "mode": "door"

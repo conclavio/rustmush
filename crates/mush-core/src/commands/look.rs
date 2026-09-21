@@ -73,7 +73,33 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let attr = format!("detail:{}", q.trim());
             let detail = loc
                 .and_then(|l| attr_text(ctx.w, l, &attr))
-                .or_else(|| attr_text(ctx.w, ctx.actor, &attr));
+                .or_else(|| attr_text(ctx.w, ctx.actor, &attr))
+                // 16b cut D.5 (16c `B-12`): then each detail prefix a module
+                // registered for a namespace it owns, room first and looker
+                // second again, in registration order. A pack writes its
+                // details under its own namespace (`atlas:detail:sign`), so
+                // without this arm the Welcome Hall's sign — the thing that
+                // tells a new player how to reach the simulator — could not
+                // be read at all. The keyword is folded the way the writer
+                // folded it, through the one shared fold, so a keyword
+                // authored with a space is found as typed.
+                //
+                // The room and the looker, and deliberately nothing else: a
+                // detail a pack writes onto an ITEM standing in the room (13
+                // of the 36 keywords the shipped packs author, the Simulator
+                // Selector's `screen` among them) is still unreadable.
+                // Whether a room's contents are as public as the room's own
+                // prose — and what that would mean for a DARK or a carried
+                // thing — is a decision and not an oversight, so 16c's `B-12`
+                // stays open for that half.
+                .or_else(|| {
+                    let folded = crate::attr::fold_detail_keyword(&q);
+                    ctx.reg.detail_prefixes().find_map(|prefix| {
+                        let attr = format!("{prefix}{folded}");
+                        loc.and_then(|l| attr_text(ctx.w, l, &attr))
+                            .or_else(|| attr_text(ctx.w, ctx.actor, &attr))
+                    })
+                });
             match detail {
                 Some(text) => {
                     ctx.out

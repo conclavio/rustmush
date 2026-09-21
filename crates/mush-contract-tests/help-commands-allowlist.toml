@@ -1,0 +1,79 @@
+# 16c `T-45` (16b cut D.5): the command-shaped tokens in `docs/help/*.md` that
+# are deliberately not verbs the world registry answers.
+#
+# `tests/help_commands.rs` takes the first word of every inline-code span and of
+# every line inside a fenced block, keeps it when it starts with `@` or `+` or is
+# written in capitals with at least three letters, and demands that each one
+# resolve against the production registry. A row here says "this one is not a
+# world verb", with the reason. A row no help page writes any more fails the
+# test, so this file cannot rot into a list of things that used to be wrong.
+#
+# Two kinds of row live here, and nothing else should:
+#
+# 1. **Prose in capitals** — a power, a flag, a queue, a panel word. The help
+#    writes them in code spans because they are typed somewhere, just not at the
+#    command line.
+# 2. **Client-side verbs** — lines the SSH front end or the gateway intercepts
+#    before the world ever sees them. They are real things a player types, and
+#    they are registered in no `Registry`, so the test cannot check them. Each
+#    row names where it is handled, so the next reader can find it.
+
+# ---- prose in capitals -------------------------------------------------------
+
+[[token]]
+word = "BUILD"
+reason = "the name of the job queue site reviews land on, not a verb (`help jobs`)"
+
+[[token]]
+word = "SIM_ADMIN"
+reason = "a power granted with `@set <who>=SIM_ADMIN`, not a verb"
+
+[[token]]
+word = "BUILDER_LLM"
+reason = "a power granted with `@set <who>=BUILDER_LLM`, not a verb"
+
+[[token]]
+word = "FRIENDLY"
+reason = "the word the cockpit puts after a contact on your own side, not a verb"
+
+[[token]]
+word = "HELD"
+reason = "the word STATUS carries while the ground is stopping the tank, not a verb"
+
+[[token]]
+word = "DESTROYED"
+reason = "the word STATUS carries beside the speed on a wrecked tank, not a verb"
+
+# ---- client-side verbs -------------------------------------------------------
+
+[[token]]
+word = "QUIT"
+reason = "the connection closes it; handled by the front end, never a world command"
+
+[[token]]
+word = "@tui"
+reason = "the SSH front end's own line (mush-net-ssh/src/server.rs); it never reaches the world"
+
+[[token]]
+word = "@notui"
+reason = "the SSH front end's own line, the twin of `@tui`"
+
+[[token]]
+word = "@history"
+reason = "the SSH front end's own scrollback reader (mush-net-ssh/src/server.rs)"
+
+[[token]]
+word = "+history"
+reason = "the same front-end scrollback reader under its older spelling"
+
+[[token]]
+word = "+act"
+reason = "the gateway intercepts it to take an offered action (mush-gateway/src/bridge_common.rs)"
+
+[[token]]
+word = "+4"
+reason = "a count in a dropped-lines notice (`+4 more`), not a verb"
+
+[[token]]
+word = "OOC"
+reason = "prose: out of character — `weather.md` names the OOC Area's weather"

@@ -143,7 +143,7 @@ pub use action_window::{
     WindowMutationResult, WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy,
     WindowTransition, action_window_state_family_descriptor,
 };
-pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
+pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName, fold_detail_keyword};
 pub use authoritative::{
     AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError, AuthoritativeKey,
     AuthoritativeKeyError, AuthoritativeLedgerWrite, AuthoritativeLedgerWriteError,

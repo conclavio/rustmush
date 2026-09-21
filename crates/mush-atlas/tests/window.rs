@@ -706,7 +706,14 @@ fn a_destroyed_counter_survives_a_pack_update_and_shows_in_the_next_composite() 
     // A description regeneration: the pack moves to its next version with a new
     // lobby desc; the applier's update keeps the wreckage.
     let mut doc: serde_json::Value = serde_json::from_str(starter::STAFF_LOBBY_JSON).expect("json");
-    doc["manifest"]["version"] = serde_json::json!(3);
+    // "The next version" is read off the shipped bytes rather than written as a
+    // literal: 16b cut D.5 moved the staff lobby pack 3 -> 4, and a literal 3 was
+    // a downgrade the plan refused.
+    let next = doc["manifest"]["version"]
+        .as_u64()
+        .expect("the shipped pack declares a version")
+        + 1;
+    doc["manifest"]["version"] = serde_json::json!(next);
     doc["entries"]["room.lobby"]["def"]["desc"] = serde_json::json!("Reception, repainted.");
     let v3 = signed(doc);
     let mut tw2 = TestWorld::with_modules(modules());
@@ -729,7 +736,11 @@ fn a_destroyed_counter_survives_a_pack_update_and_shows_in_the_next_composite() 
         .get(&mush_core::CanonicalId::new("neighborhood.staff_lobby").expect("id"))
         .map(|p| p.manifest().version())
         .expect("on the shelf");
-    assert_eq!(shelved, 3, "the shelf carries the new version");
+    assert_eq!(
+        u64::from(shelved),
+        next,
+        "the shelf carries the new version"
+    );
     let events = tw2.run(staff, "@atlas/pack plan neighborhood.staff_lobby");
     let t = text(&tw2, &events, staff);
     let fingerprint = t

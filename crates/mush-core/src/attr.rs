@@ -319,6 +319,42 @@ impl AttrMap {
     }
 }
 
+/// Fold a room-detail keyword into the tail of the attribute that holds it
+/// (16b cut D.5, 16c `B-12`).
+///
+/// A pack authors a detail under a human keyword — `sign`, `coffee machine`,
+/// `back page` — and its applier writes it under a namespaced attribute whose
+/// tail must be a single plain word, because a keyword is also what a player
+/// types at `look`. The fold is the one rule both sides use: **trim, ASCII
+/// lowercase, and every run of spaces becomes one `_`**. It lives here, and not
+/// once in the writer and once in `look`, because two copies of a fold are two
+/// answers the day one of them changes.
+///
+/// ```
+/// use mush_core::attr::fold_detail_keyword;
+/// assert_eq!(fold_detail_keyword("  Coffee   Machine "), "coffee_machine");
+/// assert_eq!(fold_detail_keyword("SIGN"), "sign");
+/// ```
+#[must_use]
+pub fn fold_detail_keyword(keyword: &str) -> String {
+    let mut folded = String::with_capacity(keyword.len());
+    let mut space = false;
+    for ch in keyword.trim().chars() {
+        if ch == ' ' {
+            space = true;
+            continue;
+        }
+        if space {
+            folded.push('_');
+            space = false;
+        }
+        // ASCII case folds; anything else stays as authored (the attribute name
+        // is case-insensitive in its own right).
+        folded.push(ch.to_ascii_lowercase());
+    }
+    folded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,5 +448,28 @@ mod tests {
             back.get("WOD:SHEET").unwrap().flags,
             AttrFlags::NO_INHERIT | AttrFlags::HIDDEN
         );
+    }
+
+    /// 16b cut D.5: the one fold both the detail writer and `look` use.
+    #[test]
+    fn detail_keyword_folds_the_same_way_for_the_writer_and_the_reader() {
+        for (authored, folded) in [
+            ("sign", "sign"),
+            ("SIGN", "sign"),
+            ("  sign  ", "sign"),
+            ("coffee machine", "coffee_machine"),
+            ("Coffee Machine", "coffee_machine"),
+            ("back   page", "back_page"),
+            ("back_page", "back_page"),
+            ("", ""),
+            ("   ", ""),
+            ("Two Words Here", "two_words_here"),
+        ] {
+            assert_eq!(
+                fold_detail_keyword(authored),
+                folded,
+                "{authored:?} folds to {folded:?}"
+            );
+        }
     }
 }

@@ -57,7 +57,7 @@ Following:
   chatter and formatting are left out.
 
   Anything you type in the DM runs as your character — `say hi`, `:waves`,
-  `+roll 3d6`, `respond 2`, `+scene/pause` — under exactly the same rules as
+  `+roll 3d6`, `respond 2`, `+scene` — under exactly the same rules as
   a terminal (turn order, flood limits, @ignore, staff boots). `QUIT` or
   `/detach` stops following; your character disconnects as with QUIT unless
   another connection remains. Join from your terminal at any time: it is the

@@ -21,7 +21,10 @@
 //!
 //! Retire is the exception that is checked first: every retire's reference check runs
 //! before any mutation, so a pack that would orphan a reference is refused whole,
-//! naming the reference.
+//! naming the reference. Since 16b cut D.5 an owner may refuse a **create or update**
+//! the same way, through [`EntryApplier::check`], for what the authored entry decides
+//! on its own — the atlas refuses an exit whose name would swallow a kernel command —
+//! and such a pack is likewise refused whole, with nothing written.
 
 use std::collections::BTreeMap;
 
@@ -245,6 +248,33 @@ pub trait EntryApplier: Send + Sync {
         self.create(ctx, pack, id, entry, placed)
     }
 
+    /// Refuse a create or an update **before** anything in this apply mutates —
+    /// the create/update twin of [`EntryApplier::retire_check`], for a refusal
+    /// that must take the whole pack rather than latch honestly half way.
+    ///
+    /// An owner puts a check here when what it refuses is a property of the
+    /// authored entry and not of the world it would land in: nothing has to be
+    /// made to know the answer, and the answer would be the same after five
+    /// rooms had already been created. Everything else stays in
+    /// [`EntryApplier::create`], where a refusal latches what exists and names
+    /// what stopped it (16b cut D.5: the atlas refuses an exit whose name would
+    /// swallow a kernel command).
+    ///
+    /// Default: nothing.
+    ///
+    /// # Errors
+    ///
+    /// The refusal, as the sentence the caller reads. Nothing was touched.
+    fn check(
+        &self,
+        _ctx: &Ctx<'_>,
+        _pack: &Pack,
+        _id: &CanonicalId,
+        _entry: &RawEntry,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Refuse a retire that would orphan a reference, **before** anything mutates.
     /// `placed` is everything the pack has made (its latch), so an owner can tell a
     /// reference from inside the pack — which retires with it — from one outside.
@@ -395,6 +425,16 @@ pub enum ApplyError {
     /// The pack refused (kinds, requires, digests).
     #[error(transparent)]
     Pack(#[from] PackError),
+    /// An entry's owner refused it before anything mutated
+    /// ([`EntryApplier::check`]). The reason is the whole sentence: these
+    /// refusals name their own entry, and a wrapper would say it twice.
+    #[error("{reason}")]
+    EntryRefused {
+        /// The entry.
+        entry: String,
+        /// Why, in the owner's own words.
+        reason: String,
+    },
     /// A retire would orphan a reference.
     #[error("retiring {entry} is refused: {reason}")]
     RetireRefused {
@@ -463,6 +503,28 @@ pub fn apply(
         applier
             .retire_check(ctx, &pack_id, &planned.id, planned.existing, &placed)
             .map_err(|reason| ApplyError::RetireRefused {
+                entry: planned.id.to_string(),
+                reason,
+            })?;
+    }
+
+    // ---- every create's and update's own check, before anything mutates ----
+    // The same discipline as the retire checks above, for what an owner can
+    // decide from the authored entry alone (16b cut D.5). A refusal here takes
+    // the whole pack and writes nothing, so an operator's pack that trips one
+    // never leaves a half-applied lot behind.
+    for planned in &plan.entries {
+        if !matches!(planned.step, Step::Create | Step::Update) {
+            continue;
+        }
+        let (Some(applier), Some(entry)) =
+            (appliers.for_kind(&planned.kind), pack.entry(&planned.id))
+        else {
+            continue;
+        };
+        applier
+            .check(ctx, pack, &planned.id, entry)
+            .map_err(|reason| ApplyError::EntryRefused {
                 entry: planned.id.to_string(),
                 reason,
             })?;

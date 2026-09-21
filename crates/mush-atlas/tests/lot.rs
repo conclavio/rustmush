@@ -328,7 +328,8 @@ fn the_staff_lock_holds_and_the_map_hides_the_office_from_a_player() {
     let mut tw = lot();
     let alice = tw.spawn_player("Alice");
     tw.run(alice, "s");
-    tw.run(alice, "l");
+    // 16b cut D.5 (16c `B-11`): the word is `lobby`. `l` is `look` again.
+    tw.run(alice, "lobby");
     assert_eq!(
         tw.world().get(alice).and_then(|o| o.location),
         Some(room_named(&tw, "Lobby"))
@@ -359,7 +360,7 @@ fn the_staff_lock_holds_and_the_map_hides_the_office_from_a_player() {
     }
     // Staff see it, marked.
     tw.run(GOD, "s");
-    tw.run(GOD, "l");
+    tw.run(GOD, "lobby");
     let events = tw.run(GOD, "+atlas");
     let said = texts(&tw, &events, GOD);
     assert!(said.contains("Production Office [restricted]"), "{said}");
@@ -439,6 +440,234 @@ fn pack_list_and_show_are_staff_only_and_show_keeps_the_secret_off_the_map() {
             npc.name
         );
     }
+}
+
+// ---- D.5: the way in ---------------------------------------------------------
+
+/// The five rooms where an exit used to carry `l` (16c `B-11`): three off the
+/// OOC pack's `Lounge <L>` exits and two off the staff lobby's `Lobby <L>`.
+const ROOMS_THAT_ATE_LOOK: [&str; 5] = [
+    "Tutorial: Building",
+    "Welcome Hall",
+    "Bus Stop (OOC)",
+    "Forecourt & Bus Stop",
+    "Breakroom",
+];
+
+/// The shipped OOC pack at one version on, with `exit.hall_lounge`'s first name
+/// replaced — the shape an operator's own edited pack has when it reaches
+/// `@atlas/pack apply`.
+fn ooc_with_hall_exit_named(name: &str) -> String {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(starter::OOC_AREA_JSON).expect("the pack is json");
+    let version = doc["manifest"]["version"]
+        .as_u64()
+        .expect("a version")
+        .saturating_add(1);
+    doc["manifest"]["version"] = serde_json::json!(version);
+    doc["entries"]["exit.hall_lounge"]["def"]["names"][0] = serde_json::json!(name);
+    doc["manifest"]["digest"] = serde_json::json!("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = mush_content::parse_pack(&unsigned)
+        .expect("the edited pack parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    doc["manifest"]["digest"] = serde_json::json!(digest);
+    serde_json::to_string(&doc).expect("json")
+}
+
+/// Shelve `json` over the shipped pack of the same id, plan it as staff, and
+/// apply the plan. Returns everything staff saw across both commands.
+fn shelve_plan_apply(tw: &mut TestWorld, json: &str) -> String {
+    let parsed = mush_content::load_pack(json).expect("the pack loads");
+    tw.world_mut()
+        .module_state_mut::<AtlasState>()
+        .expect("atlas")
+        .shelf
+        .insert(parsed.manifest().id().clone(), parsed);
+    let events = tw.run(GOD, "@atlas/pack plan neighborhood.ooc_area");
+    let planned = texts(tw, &events, GOD);
+    let fingerprint = planned
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("fingerprint "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no fingerprint in:\n{planned}"))
+        .to_string();
+    let events = tw.run(GOD, &format!("@atlas/pack apply {fingerprint}"));
+    format!("{planned}\n{}", texts(tw, &events, GOD))
+}
+
+/// `B-11`: `l` looks in all five rooms, and the words that walked still walk.
+#[test]
+fn l_looks_in_every_room_that_used_to_walk_and_the_word_still_walks() {
+    let mut tw = lot();
+    let alice = tw.spawn_player("Alice");
+    for name in ROOMS_THAT_ATE_LOOK {
+        let room = room_named(&tw, name);
+        tw.world_mut().move_to(alice, room).expect("Alice walks in");
+        let events = tw.run(alice, "l");
+        assert_eq!(
+            tw.world().get(alice).and_then(|o| o.location),
+            Some(room),
+            "`l` walked Alice out of {name}"
+        );
+        let said = texts(&tw, &events, alice);
+        assert!(said.contains(name), "`l` in {name} showed:\n{said}");
+    }
+    // The word is still the way through the door, from both sides of the lot.
+    let hall = room_named(&tw, "Welcome Hall");
+    tw.world_mut().move_to(alice, hall).expect("to the hall");
+    tw.run(alice, "lounge");
+    assert_eq!(
+        tw.world().get(alice).and_then(|o| o.location),
+        Some(room_named(&tw, "Lounge"))
+    );
+    let forecourt = room_named(&tw, "Forecourt & Bus Stop");
+    tw.world_mut()
+        .move_to(alice, forecourt)
+        .expect("to the forecourt");
+    tw.run(alice, "lobby");
+    assert_eq!(
+        tw.world().get(alice).and_then(|o| o.location),
+        Some(room_named(&tw, "Lobby"))
+    );
+}
+
+/// `B-11`'s check: a pack whose exit takes a kernel word is refused at apply,
+/// naming the entry and the command, and nothing is written.
+#[test]
+fn a_pack_whose_exit_takes_a_kernel_word_is_refused_and_writes_nothing() {
+    for (segment, command) in [("l", "look"), ("inv", "inventory"), ("home", "home")] {
+        let mut tw = lot();
+        let before = objects(&tw);
+        let said = shelve_plan_apply(
+            &mut tw,
+            &ooc_with_hall_exit_named(&format!("Lounge <L>;{segment};lounge;south;s")),
+        );
+        assert!(
+            said.contains(&format!(
+                "exit 'exit.hall_lounge' uses '{segment}' as a name; that is the command \
+                 '{command}', which works in every room, and an exit would swallow it"
+            )),
+            "{segment}: {said}"
+        );
+        assert!(!said.contains("Applied neighborhood.ooc_area"), "{said}");
+        assert_eq!(objects(&tw), before, "{segment}: a refused apply wrote");
+        let content = tw.world().module_state::<ContentState>().expect("content");
+        assert_eq!(
+            content
+                .latches
+                .applied(&CanonicalId::new(starter::OOC_AREA_PACK).expect("id"))
+                .map(mush_content::Applied::version),
+            Some(
+                mush_content::parse_pack(starter::OOC_AREA_JSON)
+                    .expect("the shipped pack parses")
+                    .manifest()
+                    .version()
+            ),
+            "{segment}: the latch moved"
+        );
+    }
+}
+
+/// The two halves of the rule that let content through. A word that is only a
+/// PREFIX of a kernel command is not that command — the check is exact, never
+/// the command table's prefix matching. And a MODULE's verb is let through on
+/// cut F.4's ruling: `waylay` is this crate's own `+intercept` alias, and a
+/// module's verb is contextual, which is why both shipped bus exits are allowed
+/// to be called `board`.
+#[test]
+fn a_prefix_of_a_kernel_word_and_a_modules_own_verb_are_both_let_through() {
+    // `true` where the segment must be a live MODULE verb, `false` where it must
+    // be nobody's verb at all. `kernel_command_named` answers `None` for both, so
+    // without the second column the two cases would assert the same thing and
+    // dropping `waylay` from `+intercept` would leave F.4's leniency unproven.
+    for (segment, is_a_module_verb) in [("loo", false), ("waylay", true)] {
+        let mut tw = lot();
+        assert!(
+            tw.registry().kernel_command_named(segment).is_none(),
+            "{segment} is a kernel word after all; this case proves nothing"
+        );
+        assert_eq!(
+            tw.registry()
+                .command_registrations()
+                .any(|(spec, module, _)| module.is_some()
+                    && (spec.name.eq_ignore_ascii_case(segment)
+                        || spec.aliases.iter().any(|a| a.eq_ignore_ascii_case(segment)))),
+            is_a_module_verb,
+            "{segment}: this case is about whether a MODULE registered the word"
+        );
+        let said = shelve_plan_apply(
+            &mut tw,
+            &ooc_with_hall_exit_named(&format!("Lounge <L>;{segment};lounge;south;s")),
+        );
+        assert!(
+            said.contains("Applied neighborhood.ooc_area"),
+            "{segment}: {said}"
+        );
+        assert!(!said.contains("would swallow it"), "{segment}: {said}");
+    }
+}
+
+/// `B-12` (Q6): the Welcome Hall's sign — the one thing that tells a new player
+/// how to reach the simulator — can be read, and so can a keyword authored with
+/// a space.
+#[test]
+fn a_packs_room_details_read_back_through_look() {
+    let pack: serde_json::Value =
+        serde_json::from_str(starter::OOC_AREA_JSON).expect("the pack is json");
+    let authored = |entry: &str, keyword: &str| -> String {
+        pack["entries"][entry]["def"]["details"][keyword]
+            .as_str()
+            .unwrap_or_else(|| panic!("{entry} authors {keyword}"))
+            .to_string()
+    };
+
+    let mut tw = lot();
+    let alice = tw.spawn_player("Alice");
+    let hall = room_named(&tw, "Welcome Hall");
+    tw.world_mut().move_to(alice, hall).expect("to the hall");
+    let events = tw.run(alice, "look sign");
+    let said = texts(&tw, &events, alice);
+    assert_eq!(said, authored("room.welcome_hall", "sign"));
+
+    // A multi-word keyword is read as typed, and in any case.
+    let lounge = room_named(&tw, "Lounge");
+    tw.world_mut()
+        .move_to(alice, lounge)
+        .expect("to the lounge");
+    let coffee = authored("room.lounge", "coffee machine");
+    for typed in ["look coffee machine", "look COFFEE MACHINE"] {
+        let events = tw.run(alice, typed);
+        assert_eq!(texts(&tw, &events, alice), coffee, "{typed}");
+    }
+
+    // An unknown keyword is the same refusal a room with no details gives: no
+    // existence oracle, byte for byte.
+    let events = tw.run(alice, "look nosuchdetail");
+    let unknown = texts(&tw, &events, alice);
+    let moving = room_named(&tw, "Tutorial: Moving");
+    tw.world_mut()
+        .move_to(alice, moving)
+        .expect("to a room with another detail");
+    let events = tw.run(alice, "look nosuchdetail");
+    assert_eq!(texts(&tw, &events, alice), unknown);
+    assert!(unknown.contains("I don't see that here."), "{unknown}");
+
+    // A hand-set bare `detail:` still wins over the pack's own.
+    tw.world_mut()
+        .move_to(alice, hall)
+        .expect("back to the hall");
+    tw.world_mut()
+        .set_attr(
+            hall,
+            "detail:sign",
+            mush_core::Attr::text("Hand-lettered.", GOD),
+        )
+        .expect("staff set a detail");
+    let events = tw.run(alice, "look sign");
+    assert_eq!(texts(&tw, &events, alice), "Hand-lettered.");
 }
 
 #[test]
