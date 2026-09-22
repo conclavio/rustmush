@@ -1,7 +1,7 @@
 //! # mush-gateway — the forked GATEWAY half (milestone M16b)
 //!
 //! The connection-owning half of the fork: the SSH (and, later, web) listeners,
-//! the [`SessionManager`](mush_session::SessionManager), account auth + the IP
+//! the [`SessionManager`], account auth + the IP
 //! guard, and the SUPERVISOR that spawns the [`mush-server`] child. It speaks
 //! the [`mush_ipc`] boundary protocol over a socket and holds none of the world
 //! / object-store / module code.
@@ -13,7 +13,7 @@
 //!   and correlated [`ServiceReq`]s allocate an id, park a oneshot, and await
 //!   the matching [`ToGateway::Reply`] the reader routes back. The world loop is
 //!   never on the awaiting side (D4) — the gateway task awaits.
-//! - the **reader task** ([`gateway_reader`]) decodes [`ToGateway`] frames and
+//! - the **reader task** (`gateway_reader`) decodes [`ToGateway`] frames and
 //!   runs the same `SendTarget` → session routing `mushd`'s `InProcessTransport`
 //!   does, plus the fire-and-forget session-control arms (`SetFloodExempt`,
 //!   `CloseSession`, `Detach`) — resolving each locally against *its*
@@ -654,7 +654,7 @@ impl BoundaryConn {
     ///
     /// Keeping registration and send on the connection lets the restart
     /// supervisor prove a fresh server is resynchronized before publishing it
-    /// through [`BoundaryHandle`]. The ordinary [`SocketGatewayLink`] path uses
+    /// through `BoundaryHandle`. The ordinary [`SocketGatewayLink`] path uses
     /// the same helper after allocating a process-unique request id.
     fn request_with_id(
         self: &Arc<Self>,
@@ -773,7 +773,9 @@ impl BoundaryHandle {
 /// already share the store, so the gateway simply re-reads it: every
 /// [`SitebanMirror::interval`] it replaces the whole mirror from `ban:*`, which
 /// propagates a set, a clear and an expiry alike, and then drops any live
-/// connection whose peer address the refreshed mirror now blocks.
+/// connection whose peer address the refreshed mirror now blocks. It also reads
+/// the five-minute `tempban-lift:*` commands; the guard consumes each ID once,
+/// applying only to password failures predating that command.
 #[derive(Clone)]
 struct SitebanMirror {
     store: Arc<dyn ObjectStore>,
@@ -791,6 +793,21 @@ impl SitebanMirror {
     /// failure leaves the previous mirror in place — a transient Redis blip
     /// must never un-ban the site.
     async fn refresh(&self) -> usize {
+        // Lifts are store commands, not removals from `ban:*`. Read them even
+        // when siteban refresh fails; each guard consumes every ID only once.
+        match self.store.get_tempban_lifts().await {
+            Ok(lifts) => {
+                for lift in lifts {
+                    self.guard.apply_tempban_lift(
+                        lift.ip,
+                        &lift.id,
+                        lift.issued_unix_ms,
+                        lift.expires_unix,
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(%error, "tempban lift refresh failed"),
+        }
         let bans = match self.store.get_bans().await {
             Ok(bans) => bans,
             Err(e) => {
@@ -846,7 +863,7 @@ impl SitebanMirror {
     }
 }
 
-/// The refresh task: one small store read per [`SitebanMirror::interval`], for
+/// The refresh task: bounded lift discovery plus the siteban read per interval, for
 /// the gateway's whole lifetime.
 async fn siteban_refresh_loop(mirror: SitebanMirror) {
     let mut ticker = tokio::time::interval(mirror.interval);
@@ -875,7 +892,7 @@ struct HelloManifest {
 type ManifestCache = Arc<Mutex<HelloManifest>>;
 
 /// The gateway-side [`GatewayLink`]: serializes every gateway → server message
-/// onto the CURRENT boundary socket (via the swappable [`BoundaryHandle`]) and
+/// onto the CURRENT boundary socket (via the swappable `BoundaryHandle`) and
 /// correlates [`ServiceReq`]/[`ServiceResp`] pairs by a monotonic id. A restart
 /// swaps the boundary underneath it; the bridges hold the same
 /// `Arc<dyn GatewayLink>` for the gateway's whole lifetime.
@@ -1586,7 +1603,7 @@ impl ServerLauncher for SpawnLauncher {
 
 /// One live, wired-up server boundary the supervisor is serving over.
 struct WiredBoundary {
-    /// The swappable unit installed into the [`BoundaryHandle`].
+    /// The swappable unit installed into the `BoundaryHandle`.
     conn: Arc<BoundaryConn>,
     /// The reader task; resolves when the boundary drops (server EOF / error /
     /// Bye) — the auto-restart trigger (D1a).
@@ -2004,7 +2021,7 @@ enum SupervisionOutcome {
 
 /// Enter the fail-stop posture: the supervisor is giving up.
 ///
-/// The caller has already put [`BoundaryHandle`] into its gap, so input remains
+/// The caller has already put `BoundaryHandle` into its gap, so input remains
 /// refused. Returning from the supervisor is deliberate — without an owned
 /// kill-and-reap handle, retrying could create two live worlds — but before
 /// this step "returning" was ALL that happened: one chat line to the players
@@ -2037,7 +2054,7 @@ fn abandon(
 /// Both frames use the same FIFO boundary: `ReAnnounce` is therefore accepted
 /// by the world before `Barrier`, and a barrier held by CommitPending resolves
 /// only after the exact persistence receipt and the coalesced roster have been
-/// applied. Until this returns, the public [`BoundaryHandle`] remains in its
+/// applied. Until this returns, the public `BoundaryHandle` remains in its
 /// restart gap, so no gameplay input can race tentative startup state.
 async fn resync_boundary(
     conn: &Arc<BoundaryConn>,
@@ -2997,6 +3014,58 @@ mod tests {
         mirror.refresh().await;
         assert_eq!(guard.siteban_count(), 0);
         assert!(!guard.is_blocked(addr(9)));
+    }
+
+    #[tokio::test]
+    async fn tempban_lift_reaches_each_guard_once_and_cannot_clear_a_siteban() {
+        let store: Arc<dyn ObjectStore> = Arc::new(mush_store::InMemoryStore::new());
+        let guard = Arc::new(IpGuard::new());
+        let second = Arc::new(IpGuard::new());
+        let mirror = SitebanMirror {
+            store: Arc::clone(&store),
+            guard: Arc::clone(&guard),
+            sessions: Arc::new(SessionManager::new()),
+            boundary: BoundaryHandle::default(),
+            interval: SITEBAN_REFRESH,
+        };
+        let other = SitebanMirror {
+            guard: Arc::clone(&second),
+            ..mirror.clone()
+        };
+        let earlier = std::time::Instant::now() - Duration::from_secs(2);
+        for g in [&guard, &second] {
+            for _ in 0..5 {
+                g.record_failure_at(addr(9), earlier);
+            }
+            assert!(g.is_blocked(addr(9)));
+        }
+        store.set_ban("127.0.0.8", None, "permanent").await.unwrap();
+        let issued = mush_config::unix_now_s() * 1_000;
+        store
+            .put_tempban_lift(mush_store::TempbanLift {
+                ip: addr(9),
+                id: "operator-pardon".into(),
+                issued_unix_ms: issued,
+                expires_unix: issued / 1_000 + 300,
+            })
+            .await
+            .unwrap();
+        mirror.refresh().await;
+        other.refresh().await;
+        for g in [&guard, &second] {
+            assert!(!g.is_blocked(addr(9)));
+            assert!(g.is_blocked(addr(8)));
+            for _ in 0..5 {
+                g.record_failure(addr(9));
+            }
+        }
+        mirror.refresh().await;
+        other.refresh().await;
+        assert!(
+            guard.is_blocked(addr(9)),
+            "old command never pardons new failures"
+        );
+        assert!(second.is_blocked(addr(9)));
     }
 
     /// The eject limb: a refresh that finds a live connection from a banned

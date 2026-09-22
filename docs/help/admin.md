@@ -16,7 +16,9 @@ People:
                     Ban an IP from connecting; persisted across
                     restarts. Durations like 30m, 12h, 7d, or seconds;
                     no duration means permanent. @siteban/clear <ip>
-                    lifts one; bare @siteban lists. Wizard.
+                    lifts a persisted siteban; @siteban/lift <ip> pardons
+                    prior password failures (IPv6 /64 by default), leaving
+                    sitebans intact. Bare @siteban lists sitebans. Wizard.
 
 Introspection:
 

@@ -91,6 +91,8 @@
 
 mod support;
 
+use support::{STEP_TIMEOUT, wait_until};
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -121,11 +123,6 @@ const COMMIT_PENDING: &str = "please retry in a moment";
 const CONTROL_UNKNOWN: &str = "control state unknown";
 /// How many times a line is re-sent on a transient before the test gives up.
 const RETRY_BUDGET: usize = 40;
-/// How many times a poll waits for the **physics**: the shipped tank takes
-/// fifteen seconds to reach its 15 m/s and another eleven to cover the road this
-/// lens sends it down, so a budget measured in transient retries is the wrong one
-/// for a wait measured in acceleration.
-const DRIVE_BUDGET: usize = 120;
 
 /// The two pilots and the bystander, created before the world task spawns so
 /// their ids are stable (see the module head).
@@ -220,7 +217,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config()));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -397,19 +394,18 @@ async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
 /// so a fact the arena has just accepted reaches the pilot on the next pulse and
 /// not in the same breath as the order. This is that wait.
 async fn poll_whole(term: &mut Term, line: &str, needle: &str) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let seen = ask_whole(term, line).await;
-        if seen.contains(needle) {
-            return seen;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!(
-        "`{line}` never said `{needle}`:\n{}",
-        tail(&strip_ansi(&term.seen))
-    );
+    let mut seen = String::new();
+    wait_until(
+        STEP_TIMEOUT,
+        &format!("`{line}` to say `{needle}`"),
+        async || {
+            seen = ask_whole(term, line).await;
+            seen.contains(needle)
+        },
+    )
+    .await;
+    seen
 }
-
 /// The last four thousand characters of a transcript, for a failure message.
 fn tail(seen: &str) -> String {
     let start = seen.len().saturating_sub(4_000);
@@ -719,33 +715,31 @@ async fn arrive(term: &mut Term, name: &str, callsign: &str, gunnery: u32) {
 /// Bring a tank's power up and wait for the arena to say it is online.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
-    poll_whole(term, "STATUS", "power online").await;
+    wait_until(STEP_TIMEOUT, "the tank to come online", async || {
+        ask(term, "STATUS", "power").await.contains("power online")
+    })
+    .await;
 }
-
 /// Point a tank down the road and open it up.
 async fn drive(term: &mut Term, heading: u32) {
-    for _ in 0..RETRY_BUDGET {
+    wait_until(STEP_TIMEOUT, "the tank to accept its heading", async || {
         let mark = term.mark();
         term.send_line(&format!("HEADING {heading}")).await;
-        if term
-            .expect_one_of_after(
-                mark,
-                &[
-                    &format!("Steering to {heading}"),
-                    "Power not online",
-                    // 16b cut F.1: the same refusal while the startup is running.
-                    "Power is still coming up",
-                    COMMIT_PENDING,
-                    CONTROL_UNKNOWN,
-                ],
-            )
-            .await
+        term.expect_one_of_after(
+            mark,
+            &[
+                &format!("Steering to {heading}"),
+                "Power not online",
+                // 16b cut F.1: the same refusal while the startup is running.
+                "Power is still coming up",
+                COMMIT_PENDING,
+                CONTROL_UNKNOWN,
+            ],
+        )
+        .await
             == 0
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    })
+    .await;
     say(term, "SPEED 54", "Making 54 kph").await;
 }
 
@@ -905,27 +899,32 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     drive(&mut bo, 270).await;
 
     let mut held = String::new();
-    for _ in 0..DRIVE_BUDGET {
-        let mark = ada.mark();
-        ada.send_line("CONTACTS").await;
-        if ada
-            .expect_one_of_after(
-                mark,
-                // **16b cut Q.1**: `(rel ` and not `bearing`, because the
-                // acquisition notice now says `New contact X1: bearing 090°,
-                // effective.` and would satisfy a `bearing` needle before the
-                // `CONTACTS` row this loop is waiting for arrives. Only a row
-                // carries the relative bearing.
-                &["(rel ", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
-            )
-            .await
-            == 0
-        {
-            held = strip_ansi(&ada.seen[mark..]);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    wait_until(
+        STEP_TIMEOUT,
+        "the driving tanks to detect one another",
+        async || {
+            let mark = ada.mark();
+            ada.send_line("CONTACTS").await;
+            if ada
+                .expect_one_of_after(
+                    mark,
+                    // **16b cut Q.1**: `(rel ` and not `bearing`, because the
+                    // acquisition notice now says `New contact X1: bearing 090°,
+                    // effective.` and would satisfy a `bearing` needle before the
+                    // `CONTACTS` row this loop is waiting for arrives. Only a row
+                    // carries the relative bearing.
+                    &["(rel ", NO_CONTACTS, COMMIT_PENDING, CONTROL_UNKNOWN],
+                )
+                .await
+                == 0
+            {
+                held = strip_ansi(&ada.seen[mark..]);
+                return true;
+            }
+            false
+        },
+    )
+    .await;
     assert!(
         !held.is_empty(),
         "the two tanks never detected each other:\n{}",
@@ -962,19 +961,12 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // -----------------------------------------------------------------
     // (6) Close and halt, nose to nose.
     // -----------------------------------------------------------------
-    let mut closed = false;
-    for _ in 0..DRIVE_BUDGET {
-        if easting_m(&mut ada).await >= STOP_AT_M {
-            closed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(400)).await;
-    }
-    assert!(
-        closed,
-        "the red tank never reached {STOP_AT_M} m east; the fight below would be \
-         fought at a range this lens did not choose"
-    );
+    wait_until(
+        STEP_TIMEOUT,
+        "the tanks to close to the chosen fight range",
+        async || easting_m(&mut ada).await >= STOP_AT_M,
+    )
+    .await;
     say(&mut ada, "SPEED 0", "Making 0 kph").await;
     say(&mut bo, "SPEED 0", "Making 0 kph").await;
     // Nose to nose, and neither tank turns: see the module head for why the fight

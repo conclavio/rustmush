@@ -19,10 +19,11 @@
 //! - A shipped pack whose latch holds an **older version** is left alone and logged:
 //!   `@atlas/pack plan` shows the diff, and a staffer applies it. A restart never
 //!   rewrites a lot underneath its players.
-//! - A pack that will not apply — a missing requirement, an unowned kind — is logged
-//!   at error and **skipped**; the boot continues with the minimal world (doc 14
-//!   §3.1: "leaves the minimal world; it never leaves a half-lot"). An entry refused
-//!   inside an apply latches honestly, as everywhere.
+//! - A first-boot pack that will not apply, or stops with an entry anomaly,
+//!   **fails boot** with the pack and cause (16c cut L, T-85). The host does not
+//!   persist boot output or open listeners after that failure. This supersedes
+//!   doc 14 §3.1's minimal-world fallback for automatic first-boot packs; manual
+//!   applies still latch their partial progress honestly.
 //! - **No call leaves the world task.** Applying a pack is a pure function of the pack
 //!   and the world; nothing here can reach a provider (P9).
 
@@ -116,16 +117,24 @@ impl GameModule for ContentModule {
             match already {
                 None => match apply_pack(ctx, pack) {
                     Ok((applied, report)) => {
+                        if let Some(reason) = report.anomaly {
+                            return Err(ModError::msg(format!(
+                                "content: first-boot pack {id}@{} stopped: {reason}",
+                                pack.manifest().version()
+                            )));
+                        }
                         tracing::info!(
                             pack = %id,
                             version = applied.version(),
                             created = report.created,
-                            anomaly = ?report.anomaly,
                             "content: first-boot pack applied"
                         );
                     }
                     Err(error) => {
-                        tracing::error!(pack = %id, %error, "content: first-boot pack refused; the world stays as it was");
+                        return Err(ModError::msg(format!(
+                            "content: first-boot pack {id}@{} refused: {error}",
+                            pack.manifest().version()
+                        )));
                     }
                 },
                 Some(latch) if latch.is_retired() => {

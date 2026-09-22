@@ -82,7 +82,7 @@ pub struct Slot {
     /// `SIM STATUS` said `seated` about somebody standing in the team room, which
     /// is the one fact a spectator most wants right.
     ///
-    /// Written by [`slot_left`], from the one place every route to a
+    /// Written by `slot_left`, from the one place every route to a
     /// `Control { Released }` passes through — `EXIT`, a `QUIT` and the linkdead
     /// grace running out all reach it, and the last two reach it more often in a
     /// playtest than the first.
@@ -148,16 +148,16 @@ pub struct Centre {
     /// **When every pilot of this match had left it**, in world milliseconds, or
     /// `None` while somebody is still aboard (16b cut D.3, `B-33`).
     ///
-    /// Stamped by [`slot_left`] the moment the last un-`left` slot goes `left`
+    /// Stamped by `slot_left` the moment the last un-`left` slot goes `left`
     /// during `Running`, read by [`unattended_deadline`] on the lobby's own 1 s
     /// tick, and cleared by exactly three things: a `Stop { Unattended }` the
     /// arena accepted, a [`crate::arena_bridge::ControlRefusal::NoMatch`] (the
-    /// match is already gone), and [`release_rows`] (the end arrived by some
+    /// match is already gone), and `release_rows` (the end arrived by some
     /// other route). RAM, on this same `MatchBook` slot: no new state slot, and
     /// nothing about it survives a restart, which is right — a restart leaves an
     /// `Idle` centre and no match to be unattended.
     ///
-    /// A centre with **no slots** — a staff `@arena/start`, which [`adopt`] binds
+    /// A centre with **no slots** — a staff `@arena/start`, which `adopt` binds
     /// — is never stamped: there was nobody to leave.
     ///
     /// **Nothing un-stamps it today**, because `EXIT` is one-way (doc 16 §11's
@@ -315,7 +315,7 @@ pub enum SimError {
     /// number is a fact about a machine their platform has not detected (doc 16
     /// §1, §5). The slot's own public designator is already on the board, so it
     /// stays; the raw reason goes to the server log, which is where the staff
-    /// who can act on it read. [`Refit::why`] carries it there and is
+    /// who can act on it read. [`SimError::Refit::why`] carries it there and is
     /// deliberately not in the message.
     #[error(
         "Slot {team} {index} cannot field {unit_type}: the simulator refused the refit. Staff \
@@ -557,7 +557,7 @@ fn is_staff(w: &World, actor: ObjId) -> bool {
         || mush_core::perm::has_role(w, actor, mush_core::Role::Royalty)
 }
 
-/// **The `SIM STATUS` half of [`in_centre`]** (16b cut F.4): refuse an actor who
+/// **The `SIM STATUS` half of `in_centre`** (16b cut F.4): refuse an actor who
 /// is not standing in the centre, without naming which room they are in.
 ///
 /// It exists because the read used to lean on the `SIM` command gate for this,
@@ -1203,6 +1203,11 @@ pub fn start(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         centre.match_id = Some(match_id);
         centre.board_deadline_ms = Some(deadline);
     }
+    tracing::info!(
+        match_id = match_id.0,
+        actor = actor.0,
+        "tacsim: SIM START opened boarding"
+    );
     announce(
         ctx,
         format!(
@@ -1636,6 +1641,7 @@ fn run(ctx: &mut Ctx<'_>, match_id: MatchId) -> Result<(), SimError> {
                 centre.state = MatchState::Running;
                 centre.board_deadline_ms = None;
             }
+            tracing::info!(match_id = match_id.0, "tacsim: match entered Running");
             announce(ctx, format!("Match {match_id} is running. Good hunting."));
             Ok(())
         }
@@ -2110,7 +2116,7 @@ fn call_off(ctx: &mut Ctx<'_>, why: String) {
 /// passed since every pilot of a `Running` match left it (16b cut D.3, `B-33`).
 ///
 /// Driven by the lobby's own 1 s tick beside [`board_deadline`] and behind the
-/// same [`require_layer`] test, for the same reason: a simulator that is switched
+/// same `require_layer` test, for the same reason: a simulator that is switched
 /// off does not stop matches.
 ///
 /// **The stamp is cleared, and the sentence said, only when the offer lands.**

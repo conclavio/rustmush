@@ -1,19 +1,12 @@
 //! WS25-S3: the shipped instance template renders a WHOLE config, and the
 //! shipped example cannot drift away from it.
 //!
-//! The failure mode these prove is the quiet one. A deployed box that predates
-//! the template (`deploy/dev2`) writes no `[log]`, `[store.archive]`,
-//! `[offers]`, `[resolution]`, `[discord]`, `[economy]`, `[weather]`,
-//! `[worldgen]`, `[onboarding]` or `[npc]` — ten
-//! sections — so each of those runs on a compiled-in default the operator never
-//! saw: no log files, no ledger archive tier, key directories nobody
-//! provisioned, and every character starting in Limbo `#0`. Nothing failed;
-//! nothing said so. `deploy/instance/mushd.toml.tmpl` is the answer, and it is
-//! only an answer while it stays complete — hence:
+//! A missing section silently takes compiled-in defaults the operator never
+//! saw. Every instance now renders `deploy/instance/mushd.toml.tmpl`, so this
+//! gate holds that common deployment lane to its documented configuration:
 //!
-//! - every section in `REQUIRED_SECTIONS` — those ten, and every block added to
-//!   the list since — is declared in the rendered file, with a value that is
-//!   demonstrably *not* the default it would have taken by omission;
+//! - every section in `REQUIRED_SECTIONS` is declared in the rendered file;
+//!   deployment choices and live simulator keys are explicitly present;
 //! - a `__PLACEHOLDER__` with no line in `instance.env` fails here rather than
 //!   installing a config with `__START_ROOM__` in it;
 //! - `[ipc].listen` cannot be the port `[store].redis_url` already holds — the
@@ -26,16 +19,8 @@
 //! - and `mushd.toml.example` declares exactly the template's section set, so a
 //!   section added to one and forgotten in the other is a red test.
 //!
-//! **16b cut F.4** added the two dev boxes themselves. Nothing here read them
-//! before — the template's completeness was checked and the files an operator
-//! actually boots were not — so `[tacsim]` could go missing from both and every
-//! gate stayed green.
-//!
-//! **16b cut F.5** moved dev1 off its hand-written config entirely: it renders
-//! the template from `deploy/dev1/instance.env` like any other instance, and so
-//! it joins [`SHIPPED`] rather than the hand-written list. dev2 is the one box
-//! still on a file of its own, and it is still parsed here and still held to the
-//! arena's blocks and to the switch that instantiates the simulator.
+//! Cut L removed the unused hand-written dev2 lane. A second instance supplies
+//! another `instance.env` and joins [`SHIPPED`] when committed.
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
@@ -62,11 +47,13 @@ const REQUIRED_SECTIONS: &[&str] = &[
     "onboarding",
     "npc",
     "tacsim",
+    "tacsim.time",
+    "tacsim.time.ephemeris",
     "tacsim.recovery",
     "tacsim.economy",
     // 16b cut G — the combat arena's five blocks, three of them with their own
     // sub-tables. Doc 16 §7's Configuration paragraph requires all of them in
-    // the example, the instance template and both dev deployment files.
+    // the example and the instance template.
     "tacsim.arena",
     "tacsim.arena.tempo",
     "tacsim.arena.intents",
@@ -377,6 +364,38 @@ fn the_template_declares_every_section_the_deployed_boxes_lack() {
     }
 }
 
+/// Live boot-read numbers must be written even when they equal the defaults.
+/// Parsing alone cannot distinguish an omitted knob from an intentional value.
+#[test]
+fn live_ground_sky_and_path_keys_are_explicit_in_every_shipped_config() {
+    let mut configs = vec![(
+        "mushd.toml.example",
+        read(&repo_root().join("mushd.toml.example")),
+    )];
+    for instance in SHIPPED {
+        configs.push((instance.env, rendered_instance(instance).0));
+    }
+    for (name, text) in configs {
+        let raw: toml::Value = toml::from_str(&text).expect("shipped config parses");
+        for (path, expected) in [
+            ("tacsim.ground_cell_cm", 1000),
+            ("tacsim.time.ephemeris.epoch", 0),
+            ("tacsim.time.ephemeris.rate", 0),
+            ("atlas.path_max_cells", 4096),
+        ] {
+            let mut found = Some(&raw);
+            for key in path.split('.') {
+                found = found.and_then(|value| value.get(key));
+            }
+            assert_eq!(
+                found.and_then(toml::Value::as_integer),
+                Some(expected),
+                "{name}: {path} must be explicit"
+            );
+        }
+    }
+}
+
 /// The listeners a rendered instance advertises are ADDRESSES. This is the
 /// other half of the deploy-time-marker rule: `rendered_instance` proves the
 /// marker is gone, and this proves what replaced it is something a socket can
@@ -658,89 +677,6 @@ fn every_template_placeholder_is_a_shipped_instance_env_key() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The hand-written dev box (16b cut F.4; narrowed to dev2 by 16b cut F.5)
-// ---------------------------------------------------------------------------
-
-/// The deployed configuration nothing in this file used to read. dev1 left this
-/// list when it became a render (16b cut F.5) and is covered by [`SHIPPED`]
-/// above; dev2 is the one box still booting a file somebody typed.
-const HAND_WRITTEN_BOXES: &[&str] = &["deploy/dev2/mushd.toml"];
-
-/// **The box an operator actually boots parses, carries the combat arena's own
-/// blocks, and has the simulator switched on** (16b cut F.4).
-///
-/// The readiness review of 2026-09-18 booted `deploy/dev1` and found the
-/// simulator missing: the file wrote all five dotted `[tacsim.*]` blocks and no
-/// `[tacsim]` header at all, so the layer defaulted off, the arena and its eight
-/// tanks were never applied, and the first symptom was `SIM START` refusing.
-/// Every gate was green, because no gate read these files.
-#[test]
-fn the_hand_written_dev_box_parses_and_runs_the_simulator() {
-    let root = repo_root();
-    for relative in HAND_WRITTEN_BOXES {
-        let path = root.join(relative);
-        let text = read(&path);
-        let declared: BTreeSet<String> = declared_sections(&text).into_iter().collect();
-        // The arena's blocks, doc 16 §7's Configuration paragraph: "the example,
-        // the instance template and both dev deployment files". The other
-        // required sections are deliberately absent from this box (see the
-        // module head); only the `[tacsim]` family is asserted here.
-        for section in REQUIRED_SECTIONS
-            .iter()
-            .filter(|section| section.starts_with("tacsim"))
-            // `[tacsim.recovery]` and `[tacsim.economy]` postdate the box and
-            // are the template's business; the arena's are the game's numbers.
-            .filter(|section| !matches!(**section, "tacsim.recovery" | "tacsim.economy"))
-        {
-            assert!(
-                declared.contains(*section),
-                "{relative}: [{section}] is missing; a box must not run the arena on \
-                 compiled-in numbers nobody read"
-            );
-        }
-        let cfg = Config::load(&path).unwrap_or_else(|e| panic!("{relative} does not parse: {e}"));
-        assert!(
-            cfg.tacsim.enabled,
-            "{relative}: [tacsim].enabled is false, so this box has no arena and no stock \
-             tanks and its simulator centre cannot start a match"
-        );
-        // **16b cut Q.7**: and the fill is on, because one person alone on a dev
-        // box has nobody to fight. The example ships it off (doc 16 §1's A1 is a
-        // two-tank story and the example is the reference); these boxes are where
-        // the owner plays.
-        assert!(
-            cfg.tacsim.match_.ai_fill,
-            "{relative}: [tacsim.match].ai_fill is false, so a lone pilot on this box \
-             cannot start a match at all"
-        );
-        assert!(
-            cfg.tacsim.arena.reflex.rally_ms >= cfg.tacsim.arena.reflex.decide_ms,
-            "{relative}: [tacsim.arena.reflex].rally_ms is under decide_ms"
-        );
-        // **16b cut E.1**: the en-route stand's health floor has to sit under the
-        // threshold that produces a withdrawal at all, or a machine could never
-        // be in the state the floor governs.
-        assert!(
-            cfg.tacsim.arena.reflex.stand_min_permille <= cfg.tacsim.arena.reflex.withdraw_permille,
-            "{relative}: [tacsim.arena.reflex].stand_min_permille is above withdraw_permille"
-        );
-        // **16b cut E.4**: both endgame clocks are off, or at least one decision
-        // — a clock shorter than the tick that reads it never fires the way its
-        // operator thinks it does.
-        assert!(
-            cfg.tacsim.arena.reflex.search_ms == 0
-                || cfg.tacsim.arena.reflex.search_ms >= cfg.tacsim.arena.reflex.decide_ms,
-            "{relative}: [tacsim.arena.reflex].search_ms is under decide_ms"
-        );
-        assert!(
-            cfg.tacsim.arena.reflex.hunt_after_ms == 0
-                || cfg.tacsim.arena.reflex.hunt_after_ms >= cfg.tacsim.arena.reflex.decide_ms,
-            "{relative}: [tacsim.arena.reflex].hunt_after_ms is under decide_ms"
-        );
-    }
-}
-
 /// **16b cut Q.7: the rendered instances turn the AI fill on, and the example
 /// does not.**
 ///
@@ -811,9 +747,8 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
 #[test]
 fn d3_every_shipped_configuration_declares_the_unattended_interval() {
     let root = repo_root();
-    let mut files: Vec<String> = vec!["mushd.toml.example".to_owned()];
-    files.extend(HAND_WRITTEN_BOXES.iter().map(|path| (*path).to_owned()));
-    for relative in &files {
+    {
+        let relative = "mushd.toml.example";
         let text = read(&root.join(relative));
         assert!(
             text.contains("unattended_ms"),

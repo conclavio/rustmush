@@ -31,6 +31,8 @@
 
 mod support;
 
+use support::{STEP_TIMEOUT, wait_until};
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -118,7 +120,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config()));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -290,17 +292,17 @@ async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
 /// wait, and it is the honest one: a test that asserted the mirror immediately would
 /// be asserting that the cockpit keeps a second model of the arena's state.
 async fn poll(term: &mut Term, line: &str, echo: &str, needle: &str) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let seen = ask(term, line, echo).await;
-        if seen.contains(needle) {
-            return seen;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!(
-        "`{line}` never said `{needle}`:\n{}",
-        strip_ansi(&term.seen[term.seen.len().saturating_sub(4_000)..])
-    );
+    let mut seen = String::new();
+    wait_until(
+        STEP_TIMEOUT,
+        &format!("`{line}` to say `{needle}`"),
+        async || {
+            seen = ask(term, line, echo).await;
+            seen.contains(needle)
+        },
+    )
+    .await;
+    seen
 }
 
 /// One object's dbref, out of an `@find` listing.
@@ -419,39 +421,41 @@ async fn take_off(ada: &mut Term, bo: &mut Term) {
 /// Bring power up, waiting for the arena to say it is online.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
-    for _ in 0..RETRY_BUDGET {
-        let seen = ask(term, "STATUS", "power").await;
-        if seen.contains("power online") {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("the tank never came online");
+    wait_until(STEP_TIMEOUT, "the tank to come online", async || {
+        ask(term, "STATUS", "power").await.contains("power online")
+    })
+    .await;
 }
-
 /// Wait until `CONTACTS` has something in it, and answer its opaque id.
 async fn wait_for_contact(term: &mut Term) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line("CONTACTS").await;
-        if term
-            .expect_one_of_after(mark, &["bearing", "No contacts."])
-            .await
-            == 0
-        {
-            let seen = strip_ansi(&term.seen[mark..]);
-            if let Some(id) = designator_of(&seen) {
-                return id;
+    let mut contact = None;
+    wait_until(
+        STEP_TIMEOUT,
+        "the sensor to acquire a contact",
+        async || {
+            let mark = term.mark();
+            term.send_line("CONTACTS").await;
+            if term
+                .expect_one_of_after(
+                    mark,
+                    &["(rel ", "No contacts.", COMMIT_PENDING, CONTROL_UNKNOWN],
+                )
+                .await
+                == 0
+            {
+                let seen = strip_ansi(&term.seen[mark..]);
+                // Keep the classified callsign: a provisional X-number may be
+                // renamed during subsequent status/weapon assertions.
+                if seen.contains("blue") || seen.contains("red") {
+                    contact = designator_of(&seen).filter(|id| !id.starts_with('X'));
+                }
             }
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    panic!(
-        "nothing was ever detected:\n{}",
-        strip_ansi(&term.seen[term.seen.len().saturating_sub(4_000)..])
-    );
+            contact.is_some()
+        },
+    )
+    .await;
+    contact.expect("waited for a contact")
 }
-
 /// Every ledger chunk one match wrote, as one string.
 async fn ledger_text(store: &Arc<dyn ObjectStore>, match_id: u64) -> String {
     let log = format!("match.{match_id}");
@@ -528,7 +532,10 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     let repeat = ada.mark();
     say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
     ada.expect_after(repeat, "Locked on ").await;
-    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    // Advance the arena and then read a command fence, so any duplicate lock
+    // notice is actually collected instead of sitting unread on the socket.
+    support::wait_arena_seconds(&mut god, 3).await;
+    ask(&mut ada, "STATUS", "power").await;
     let after = strip_ansi(&ada.seen[repeat..]);
     assert_eq!(
         after.matches("Locked on ").count(),
@@ -734,10 +741,13 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
 
     // And the black box: the lock, the shot and its arrival, in the match's own
     // ledger on the world's writer lane.
-    tokio::time::sleep(Duration::from_millis(800)).await;
     say(&mut ada, "SIM ABORT", "aborts match").await;
-    tokio::time::sleep(Duration::from_millis(1_200)).await;
-    let ledger = ledger_text(&server.store, 1).await;
+    let mut ledger = String::new();
+    wait_until(STEP_TIMEOUT, "the weapon match's ledger tail", async || {
+        ledger = ledger_text(&server.store, 1).await;
+        ledger.contains("match_ended")
+    })
+    .await;
     for kind in ["locked", "fired", "impact"] {
         assert!(
             ledger.contains(&format!("kind\\\":\\\"{kind}"))

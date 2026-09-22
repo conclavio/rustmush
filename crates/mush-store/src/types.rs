@@ -1328,6 +1328,36 @@ pub struct BanRec {
     pub reason: String,
 }
 
+/// One staff password-tempban pardon (`tempban-lift:{ip}`), retained for at
+/// most five minutes so every connection-owning guard can consume it once.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TempbanLift {
+    /// Canonical address; the guard applies its configured network prefix.
+    pub ip: std::net::IpAddr,
+    /// Unique request ID, distinct even for repeated lifts of one address.
+    pub id: String,
+    /// Unix milliseconds when staff issued the pardon (the failure cutoff).
+    pub issued_unix_ms: i64,
+    /// Unix seconds when this command expires.
+    pub expires_unix: i64,
+}
+
+impl TempbanLift {
+    /// Reject malformed IDs or a retention interval longer than five minutes.
+    pub(crate) fn validate(&self) -> Result<(), StoreError> {
+        if self.id.is_empty()
+            || self.id.len() > 64
+            || self.issued_unix_ms < 0
+            || self.expires_unix <= self.issued_unix_ms / 1_000
+            || self.expires_unix > (self.issued_unix_ms / 1_000).saturating_add(300)
+        {
+            return Err(StoreError::Invalid("invalid tempban lift".into()));
+        }
+        Ok(())
+    }
+}
+
 /// Which authoritative phase caught a post-image readback mismatch.
 ///
 /// Both phases re-read every materialized replay target, but they mean

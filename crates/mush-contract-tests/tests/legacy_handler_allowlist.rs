@@ -27,7 +27,7 @@
 //! **16b cut R-b: there is exactly ONE composition.** This file used to build one
 //! per `[rulesets].enabled` id and take the union, because rustmush ran one
 //! character ruleset per server and `wod`/`shadowrun` collided on
-//! `+roll`/`+sheet`/`+chargen`. Both rulesets are gone, `ruleset_modules` is
+//! `+roll`/`+sheet`/`+chargen`. Both rulesets are gone, `sheet_modules` is
 //! infallible and composes the one game sheet unconditionally, and no config knob
 //! changes which verbs exist — so the "union over every single-ruleset
 //! composition" is the one composition, and [`RULESETS`] is gone with the loop it
@@ -79,7 +79,8 @@ const CATEGORIES: [&str; 5] = [
 /// composition only, plus `+cast`, `+heal`, `+resonance` and `+spec`, which both
 /// registered and nothing else did). The one game sheet registers `+sheet`,
 /// `@sheet`, `+chargen`, `+stat` and `+roll` under the same names.
-const PINNED_BASELINE: usize = 98;
+// 98 -> 97 with cut L: @siteban/lift adds an operational admission workflow.
+const PINNED_BASELINE: usize = 97;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,7 +110,7 @@ struct Handler {
 ///
 /// 16b cut R-b: no ruleset argument. `[rulesets].enabled` selected one of two
 /// character rulesets and is read by nothing; the one game sheet
-/// (`ruleset_modules`) composes unconditionally and infallibly.
+/// (`sheet_modules`) composes unconditionally and infallibly.
 fn production_modules() -> Vec<Box<dyn GameModule>> {
     let config = mush_config::config::Config::default();
     // The worldgen module wants an LLM service; no provider is configured and the
@@ -119,7 +120,7 @@ fn production_modules() -> Vec<Box<dyn GameModule>> {
             .global_enabled(false)
             .build(),
     );
-    let onboarding = config_ext::onboarding_ruleset(&config.onboarding);
+    let onboarding = config_ext::onboarding_config(&config.onboarding);
     let game = config_ext::tacsim_economy_config(&config.tacsim)
         .expect("the default [tacsim.economy] converts");
     let mut mods = modules::server_modules_with(
@@ -139,7 +140,7 @@ fn production_modules() -> Vec<Box<dyn GameModule>> {
         config_ext::worldgen_config(&config.worldgen),
     ));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(&onboarding, &game));
+    mods.extend(modules::sheet_modules(&onboarding, &game));
     // E7 cut 1: the TacSim layer is part of every production composition — it is a
     // layer switched by `[tacsim].enabled` (doc 10 §20) and it composes after the
     // character sheet. Default configuration means `enabled = false`, and the verbs

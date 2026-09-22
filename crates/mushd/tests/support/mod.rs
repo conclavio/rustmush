@@ -20,6 +20,68 @@ use russh::ChannelMsg;
 /// Generous per-step timeout: CI boxes can stall on argon2 + process spawn.
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Wait for an observable condition, with one deadline covering the checks as
+/// well as the polling interval. A slow SSH reply cannot multiply the bound.
+pub async fn wait_until(bound: Duration, label: &str, mut check: impl AsyncFnMut() -> bool) {
+    tokio::time::timeout(bound, async {
+        loop {
+            if check().await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{label} did not happen within {bound:?}"));
+}
+
+/// The running arena's own `clock m:ss`, as printed by `@arena/status`.
+/// Use this for tests whose premise needs elapsed simulation time.
+pub fn arena_clock_seconds(status: &str) -> Option<u64> {
+    let clock = status.split_once(", clock ")?.1.split(',').next()?;
+    let (minutes, seconds) = clock.split_once(':')?;
+    Some(minutes.parse::<u64>().ok()? * 60 + seconds.parse::<u64>().ok()?)
+}
+
+/// A durable cockpit billet is the observable for seat release after a dropped
+/// connection. It is independent of how long the session reaper takes to run.
+pub async fn holds_a_cockpit(store: &Arc<dyn mush_store::ObjectStore>, unit: u32) -> bool {
+    store
+        .module_json_get("sim", &format!("assignment:{unit}"))
+        .await
+        .expect("the assignment read")
+        .is_some_and(|value| value.pointer("/seats/cockpit").is_some())
+}
+
+/// Wait for simulation time rather than assuming that a wall-clock sleep
+/// schedules enough arena pulses on a loaded test worker.
+pub async fn wait_arena_seconds(term: &mut Term, seconds: u64) {
+    let mut initial = None;
+    wait_until(STEP_TIMEOUT, "arena time to advance", async || {
+        let mark = term.mark();
+        term.send_line("@arena/status").await;
+        if term
+            .expect_one_of_after(
+                mark,
+                &[
+                    "ledger writes awaiting",
+                    "please retry in a moment",
+                    "control state unknown",
+                ],
+            )
+            .await
+            != 0
+        {
+            return false;
+        }
+        let now = arena_clock_seconds(&strip_ansi(&term.seen[mark..]))
+            .expect("@arena/status reports the arena clock");
+        let start = *initial.get_or_insert(now);
+        now >= start + seconds
+    })
+    .await;
+}
+
 /// A unique scratch directory per call (removed best-effort by the caller).
 pub fn scratch_dir(tag: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);

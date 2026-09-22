@@ -190,6 +190,20 @@ impl ObjectStore for FaultStore {
     fn clear_ban<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
         unimplemented!("fault store: unused")
     }
+
+    fn put_tempban_lift(
+        &self,
+        _: mush_store::TempbanLift,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async {
+            Err(StoreError::Invalid(
+                "tempban lift unsupported by fault store".into(),
+            ))
+        })
+    }
+    fn get_tempban_lifts(&self) -> BoxFuture<'_, Result<Vec<mush_store::TempbanLift>, StoreError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
     fn token_put(&self, _: String, _: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>> {
         unimplemented!("fault store: unused")
     }

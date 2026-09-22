@@ -79,7 +79,7 @@ fn roster(sheet: bool) -> Vec<Box<dyn mush_core::GameModule>> {
         &mush_config::config::NpcCfg::default(),
     ));
     if sheet {
-        mods.extend(comp::ruleset_modules(&onboarding, &game));
+        mods.extend(comp::sheet_modules(&onboarding, &game));
     }
     mods.push(comp::tacsim_module(cfg));
     // `[game].starter_area` off: the lot is not what this cut ships, and the

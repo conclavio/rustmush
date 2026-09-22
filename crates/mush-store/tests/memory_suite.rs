@@ -25,6 +25,16 @@ async fn account_reserve_race() {
 }
 
 #[tokio::test]
+async fn first_account_reserve_race() {
+    suite::first_account_reserve_race(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn ordinary_account_blocks_bootstrap() {
+    suite::ordinary_account_blocks_bootstrap(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn account_lifecycle() {
     suite::account_lifecycle(&InMemoryStore::new()).await;
 }
@@ -57,6 +67,11 @@ async fn account_id_backfill_is_idempotent() {
 #[tokio::test]
 async fn ban_expiry() {
     suite::ban_expiry(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn tempban_lifts() {
+    suite::tempban_lifts(&InMemoryStore::new()).await;
 }
 
 #[tokio::test]

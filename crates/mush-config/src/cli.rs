@@ -56,6 +56,8 @@ pub struct CliSpec {
     pub repl: bool,
     /// Accept `--check-config` (WS04-S3: validate and exit without booting).
     pub check_config: bool,
+    /// Accept the offline `--bootstrap-staff <account>` operation.
+    pub bootstrap_staff: bool,
 }
 
 /// A parsed command line.
@@ -75,6 +77,8 @@ pub struct Cli {
     /// needs neither a socket nor the store, and exit on the verdict
     /// ([`crate::preflight`]).
     pub check_config: bool,
+    /// Create the first durable account, linked to God, then exit.
+    pub bootstrap_staff: Option<String>,
     /// `--help`/`-h` was given; the caller prints [`CliSpec::usage`] and exits
     /// successfully without touching the config.
     pub help: bool,
@@ -89,6 +93,7 @@ impl Cli {
             ipc: None,
             repl: false,
             check_config: false,
+            bootstrap_staff: None,
             help: false,
         }
     }
@@ -143,6 +148,8 @@ pub enum CliError {
     /// A flag given more than once, where the second would have silently won
     /// or silently lost.
     Repeated { flag: &'static str },
+    /// Two operations that cannot safely run together.
+    ConflictingOperations,
     /// An explicit `--config` naming a file that is not there.
     MissingConfig { path: PathBuf },
     /// The config itself would not load.
@@ -155,6 +162,10 @@ impl std::fmt::Display for CliError {
             CliError::UnknownArg { arg } => write!(f, "unrecognised argument `{arg}`"),
             CliError::MissingValue { flag } => write!(f, "`{flag}` needs a value"),
             CliError::Repeated { flag } => write!(f, "`{flag}` given more than once"),
+            CliError::ConflictingOperations => write!(
+                f,
+                "`--bootstrap-staff` cannot be combined with `--check-config`, `--repl` or `--ipc`"
+            ),
             CliError::MissingConfig { path } => {
                 write!(f, "config file not found: {}", path.display())
             }
@@ -219,11 +230,15 @@ where
     let mut ipc: Option<String> = None;
     let mut repl = false;
     let mut check_config = false;
+    let mut bootstrap_staff = None;
     let mut rest = args.into_iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--config" => take_once(&mut config, "--config", rest.next())?,
             "--ipc" if spec.ipc => take_once(&mut ipc, "--ipc", rest.next())?,
+            "--bootstrap-staff" if spec.bootstrap_staff => {
+                take_once(&mut bootstrap_staff, "--bootstrap-staff", rest.next())?;
+            }
             "--repl" if spec.repl => {
                 if repl {
                     return Err(CliError::Repeated { flag: "--repl" });
@@ -242,12 +257,17 @@ where
         }
     }
 
+    if bootstrap_staff.is_some() && (check_config || repl || ipc.is_some()) {
+        return Err(CliError::ConflictingOperations);
+    }
+
     Ok(Cli {
         config_explicit: config.is_some(),
         config: config.map_or_else(|| PathBuf::from(DEFAULT_CONFIG_FILE), PathBuf::from),
         ipc,
         repl,
         check_config,
+        bootstrap_staff,
         help: false,
     })
 }
@@ -271,6 +291,7 @@ mod tests {
         ipc: false,
         repl: true,
         check_config: true,
+        bootstrap_staff: true,
     };
     const SERVER: CliSpec = CliSpec {
         program: "mush-server",
@@ -278,6 +299,7 @@ mod tests {
         ipc: true,
         repl: false,
         check_config: true,
+        bootstrap_staff: true,
     };
     /// A spec that declares NOTHING beyond the universal flags, so the
     /// opt-in-ness of `--check-config` is provable rather than assumed.
@@ -287,6 +309,7 @@ mod tests {
         ipc: false,
         repl: false,
         check_config: false,
+        bootstrap_staff: false,
     };
 
     fn scratch(tag: &str) -> PathBuf {
@@ -316,6 +339,40 @@ mod tests {
             matches!(&err, CliError::UnknownArg { arg } if arg == "prod.toml"),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn bootstrap_is_explicit_single_and_exclusive() {
+        for spec in [&MUSHD, &SERVER] {
+            assert_eq!(
+                parse(["--bootstrap-staff", "operator"], spec)
+                    .unwrap()
+                    .bootstrap_staff
+                    .as_deref(),
+                Some("operator")
+            );
+            assert!(parse(["--bootstrap-staff"], spec).is_err());
+            assert!(
+                parse(
+                    ["--bootstrap-staff", "one", "--bootstrap-staff", "two"],
+                    spec
+                )
+                .is_err()
+            );
+            assert!(matches!(
+                parse(["--bootstrap-staff", "operator", "--check-config"], spec),
+                Err(CliError::ConflictingOperations)
+            ));
+        }
+        assert!(matches!(
+            parse(["--bootstrap-staff", "operator", "--repl"], &MUSHD),
+            Err(CliError::ConflictingOperations)
+        ));
+        assert!(matches!(
+            parse(["--bootstrap-staff", "operator", "--ipc", "foo"], &SERVER),
+            Err(CliError::ConflictingOperations)
+        ));
+        assert!(parse(["--bootstrap-staff", "operator"], &BARE).is_err());
     }
 
     #[test]

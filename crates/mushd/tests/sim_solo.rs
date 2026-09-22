@@ -50,6 +50,8 @@
 
 mod support;
 
+use support::{STEP_TIMEOUT, wait_until};
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -147,7 +149,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config()));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -468,8 +470,8 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     // answer is a name.
     let mark = ada.mark();
     ada.send_line("CONTACTS").await;
-    ada.expect_after(mark, "CONTACTS").await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    ada.expect_one_of_after(mark, &["No contacts.", "bearing"])
+        .await;
     let seen = strip_ansi(&ada.seen[mark..]);
     assert!(
         !seen.contains("Blue Tank"),
@@ -483,16 +485,11 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
 
     // ---- power, and the fight ----
     say(&mut ada, "STARTUP", "Startup sequence").await;
-    let mut online = false;
-    for _ in 0..RETRY_BUDGET {
+    wait_until(STEP_TIMEOUT, "the solo tank to come online", async || {
         let seen = ask(&mut ada, "STATUS", "power").await;
-        if seen.contains("power online") {
-            online = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    assert!(online, "the tank never came online");
+        seen.contains("power online")
+    })
+    .await;
 
     // Ada drives at the machine and shoots whenever the breech is free. The
     // machine is doing the same thing, off its own controller, and neither of
@@ -542,17 +539,25 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     // for a record it already has.
     let _ = ended;
     ada.send_line("SIM ABORT").await;
-    tokio::time::sleep(Duration::from_millis(3_000)).await;
     // The record is read from the **store** and not from a terminal: doc 16 §4's
     // result document is what "a recorded result" means, and a second read over
     // SSH would only be a second chance for a sixty-second timeout.
     let key = tacsim::match_::result_key(tacsim::arena_task::MatchId(1));
-    let record = server
-        .store
-        .module_json_get("tacsim", key.as_str())
-        .await
-        .expect("the store read")
-        .unwrap_or_else(|| panic!("no result document at {key}"));
+    let mut record = None;
+    wait_until(
+        STEP_TIMEOUT,
+        "the solo match result to persist",
+        async || {
+            record = server
+                .store
+                .module_json_get("tacsim", key.as_str())
+                .await
+                .expect("the store read");
+            record.is_some()
+        },
+    )
+    .await;
+    let record = record.expect("waited for the result");
     let outcome = record
         .get("outcome")
         .and_then(Value::as_str)
@@ -571,13 +576,15 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     // record is written, which is why the end is asserted on the result document
     // above and the fight on the chunks that did land.
     let mut events = Vec::new();
-    for _ in 0..10 {
-        events = ledger_events(&server.store, 1).await;
-        if count(&events, "fired") > 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    wait_until(
+        STEP_TIMEOUT,
+        "the solo match's fired event to persist",
+        async || {
+            events = ledger_events(&server.store, 1).await;
+            count(&events, "fired") > 0
+        },
+    )
+    .await;
     assert_eq!(
         units_in_summary(&events),
         2,

@@ -73,7 +73,7 @@
 //!   server-half reload must not log a web player out.
 //!
 //! The rule in one line: **transient is 1006/503/1012/1013 and keeps the
-//! token; 4401 means the credential itself is gone.**
+//! token (4429 names a token cool-off); 4401 means the credential itself is gone.**
 //!
 //! ## Abuse protection (HIGH finding: `/ws` previously had none)
 //!
@@ -120,6 +120,9 @@ const SUBPROTO_PREFIX: &str = "rustmush.v1.";
 /// and what to do, and never why the token was refused.
 pub const SESSION_ENDED: &str = "Your session has ended; please sign in again.";
 
+/// Browser-visible explanation of a temporary refused-token cool-off.
+pub const TOKEN_COOLOFF: &str = "Too many reconnects from this network; retrying in one minute.";
+
 /// Close reason for a refusal the game will outgrow on its own: bounded
 /// admission is full right now. Retryable — the client keeps its token.
 const SERVER_BUSY: &str = "server busy; try again";
@@ -143,6 +146,8 @@ mod close_code {
     pub const SERVICE_RESTART: u16 = 1012;
     /// Application: token/session no longer valid at attach time.
     pub const BAD_SESSION: u16 = 4401;
+    /// Application: refused-token cool-off; retain the credential and retry later.
+    pub const TOKEN_COOLOFF: u16 = 4429;
     /// RFC 6455 going away — keepalive timed out or the game side closed
     /// the connection.
     pub const GOING_AWAY: u16 = 1001;
@@ -266,13 +271,6 @@ pub(crate) async fn ws_route(
     if state.hooks.is_ip_blocked(ip) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    if state.hooks.is_token_throttled(ip) {
-        // Inside a refused-token cool-off: refused before the store is asked
-        // about anything, and before a connection slot is claimed. A plain
-        // 429 is right here — this IS the transient condition a client should
-        // back off from, unlike the 4401 below.
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
-    }
     if !state.hooks.connection_opened(ip) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
@@ -293,6 +291,16 @@ pub(crate) async fn ws_route(
     let cap = state.config.max_frame_bytes;
     let mut ws = ws.max_message_size(cap).max_frame_size(cap);
     ws = ws.protocols([format!("{SUBPROTO_PREFIX}{token}")]);
+
+    if state.hooks.is_token_throttled(ip) {
+        // Upgrade so the browser can distinguish cool-off from an opaque
+        // network failure. The ordinary slot cap bounds this handshake too;
+        // never query the store or increment either failure counter.
+        return ws.on_upgrade(move |mut socket| async move {
+            let _slot = slot;
+            close(&mut socket, close_code::TOKEN_COOLOFF, TOKEN_COOLOFF).await;
+        });
+    }
 
     match state.hooks.validate_token(&token).await {
         TokenVerdict::Valid(_) => {}

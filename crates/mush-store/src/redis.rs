@@ -1312,6 +1312,7 @@ impl RedisStore {
             "obj:*",
             "account:*",
             "ban:*",
+            "tempban-lift:*",
             "token:*",
             "discord:*",
             "meta:*",
@@ -2891,6 +2892,30 @@ impl ObjectStore for RedisStore {
         })
     }
 
+    fn create_first_account(&self, rec: AccountRec) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            if rec.name.is_empty() {
+                return Err(StoreError::Invalid("empty account name".into()));
+            }
+            // SCAN and JSON.SET execute without interleaving in this script,
+            // including ordinary create_account calls from another process.
+            // Inspect keys, not decoded records: corrupt accounts also block
+            // taking ownership of God. This is a one-time offline operation.
+            let created: i64 = self
+                .client
+                .eval(
+                    include_str!("lua/create_first_account.lua"),
+                    vec![account_key(&rec.name)],
+                    vec![serde_json::to_string(&rec)?],
+                )
+                .await?;
+            if created == 0 {
+                return Err(StoreError::AccountExists);
+            }
+            Ok(())
+        })
+    }
+
     fn get_account<'a>(
         &'a self,
         name: &'a str,
@@ -3160,6 +3185,56 @@ impl ObjectStore for RedisStore {
         Box::pin(async move {
             let removed: i64 = self.client.del(ban_key(ip)).await?;
             Ok(removed > 0)
+        })
+    }
+
+    fn put_tempban_lift(&self, lift: crate::TempbanLift) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            lift.validate()?;
+            if lift.expires_unix <= now_unix() {
+                return Err(StoreError::Invalid("tempban lift already expired".into()));
+            }
+            let key = format!("tempban-lift:{}", lift.ip);
+            let doc = serde_json::to_string(&lift)?;
+            let _: () = self
+                .client
+                .set(
+                    key,
+                    doc,
+                    Some(Expiration::EXAT(lift.expires_unix)),
+                    None,
+                    false,
+                )
+                .await?;
+            Ok(())
+        })
+    }
+
+    fn get_tempban_lifts(&self) -> BoxFuture<'_, Result<Vec<crate::TempbanLift>, StoreError>> {
+        Box::pin(async move {
+            let mut keys = self
+                .client
+                .scan_buffered("tempban-lift:*", Some(SCAN_PAGE), None);
+            let mut seen = std::collections::BTreeSet::new();
+            while let Some(key) = keys.try_next().await? {
+                if let Some(key) = key.as_str() {
+                    seen.insert(key.to_owned());
+                }
+                if seen.len() > 4_096 {
+                    return Err(StoreError::Invalid("too many pending tempban lifts".into()));
+                }
+            }
+            let mut out = Vec::with_capacity(seen.len());
+            for key in seen {
+                let doc: Option<String> = self.client.get(key.as_str()).await?;
+                let Some(doc) = doc else { continue };
+                let lift: crate::TempbanLift = serde_json::from_str(&doc)?;
+                lift.validate()?;
+                if lift.expires_unix > now_unix() {
+                    out.push(lift);
+                }
+            }
+            Ok(out)
         })
     }
 

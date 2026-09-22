@@ -387,7 +387,7 @@ fn production_roster(atlas: AtlasConfig) -> Vec<Box<dyn GameModule>> {
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.extend(comp::ruleset_modules(&onboarding, &game));
+    mods.extend(comp::sheet_modules(&onboarding, &game));
     mods.push(comp::tacsim_module(tacsim_cfg));
     // `[game].starter_area` off: the harness's own region is the content under
     // test, and the shipped lot would only add rooms the window must not anchor

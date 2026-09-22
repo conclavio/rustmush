@@ -383,10 +383,7 @@ fn crate_of(rel_path: &str) -> Option<String> {
 /// would demand a row for every slot whose type is defined in a crate other
 /// than the one whose module owns it.
 fn crate_family(crate_name: &str) -> &str {
-    crate_name
-        .strip_prefix("mush_")
-        .or_else(|| crate_name.strip_prefix("ruleset_"))
-        .unwrap_or(crate_name)
+    crate_name.strip_prefix("mush_").unwrap_or(crate_name)
 }
 
 /// Every module that owns a slot with this short name (empty when no

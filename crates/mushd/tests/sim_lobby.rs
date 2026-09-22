@@ -28,6 +28,8 @@
 
 mod support;
 
+use support::{STEP_TIMEOUT, wait_until};
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -113,7 +115,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config(ai_fill)));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -409,9 +411,17 @@ async fn sim_is_refused_outside_the_centre_and_a_boarding_nobody_answers_aborts(
 
     // Nobody boards. The deadline drops both unseated slots, which empties both
     // sides, and an empty side aborts (doc 16 §3.8). The deadline is a due world
-    // tick, so this is wall time and nothing has to be poked.
-    tokio::time::sleep(Duration::from_millis(u64::from(BOARD_MS) + 2_500)).await;
-    let status = ask(&mut ada, "SIM STATUS", "blue:").await;
+    // tick; wait for the board's actual transition under load.
+    let mut status = String::new();
+    wait_until(
+        STEP_TIMEOUT,
+        "the unanswered boarding to abort",
+        async || {
+            status = ask(&mut ada, "SIM STATUS", "blue:").await;
+            status.contains("aborted")
+        },
+    )
+    .await;
     assert!(status.contains("aborted"), "{status}");
     assert!(status.contains("red: nobody"), "{status}");
 
@@ -616,21 +626,13 @@ async fn d1_the_boards_arena_clock_moves_while_nobody_drives() {
     let first = clock_s(&board).unwrap_or_else(|| panic!("an `m:ss` clock on the board: {board}"));
 
     // Nobody types anything at the tanks. The clock moves anyway.
-    let mut moved = false;
-    for _ in 0..40 {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_until(STEP_TIMEOUT, "the idle arena clock to move", async || {
         let board = ask(&mut ada, "SIM STATUS", "arena time ").await;
         let now = clock_s(&board).unwrap_or_else(|| panic!("an `m:ss` clock: {board}"));
         assert!(now >= first, "the board's clock went backwards: {board}");
-        if now > first {
-            moved = true;
-            break;
-        }
-    }
-    assert!(
-        moved,
-        "the board's arena clock never moved on a match nobody was driving"
-    );
+        now > first
+    })
+    .await;
 
     // And `@arena/status` keeps the ledger's own figure AND prints the clock
     // beside it, so an operator can tell the two apart.

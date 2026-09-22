@@ -31,10 +31,11 @@ use mush_config::exit::{ExitClass, ExitFailure};
 /// the socket — and is applied by `Cli::load_config`.
 const CLI: CliSpec = CliSpec {
     program: "mush-server",
-    usage: "Usage: mush-server [--check-config] [--config <path>] [--ipc <addr>]",
+    usage: "Usage: mush-server [--check-config] [--bootstrap-staff <account>] [--config <path>] [--ipc <addr>]",
     ipc: true,
     repl: false,
     check_config: true,
+    bootstrap_staff: true,
 };
 
 /// This binary's ending, in the one exit vocabulary both halves speak
@@ -82,6 +83,19 @@ fn main() -> ExitCode {
         let mut refusals = mush_server::boot::check_config(&config);
         refusals.extend(mush_config::preflight::check_ipc(&config));
         return mush_config::preflight::verdict(CLI.program, &cli.config, &refusals).exit_code();
+    }
+
+    if let Some(account) = &cli.bootstrap_staff {
+        return match mush_server::bootstrap::run(&config, account) {
+            Ok(()) => {
+                println!("Staff account {account} created and linked to God #1.");
+                ExitClass::Ok.exit_code()
+            }
+            Err(e) => {
+                eprintln!("mush-server: {e}");
+                ExitClass::Failure.exit_code()
+            }
+        };
     }
 
     // Logging may create/append files, so integrity storage is structurally

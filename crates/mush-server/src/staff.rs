@@ -55,6 +55,13 @@ pub enum StaffOpKind {
         /// The address to unban.
         ip: IpAddr,
     },
+    /// `@siteban/lift <ip>` — pardon prior password failures, not a siteban.
+    LiftTempban {
+        /// One address in the guard's configured failure-accounting network.
+        ip: IpAddr,
+        /// Command-time cutoff: executor delay cannot pardon later failures.
+        issued_unix_ms: i64,
+    },
     /// Bare `@siteban` — list the active persisted bans.
     ListBans,
     /// `@dump` — BGSAVE, ordered behind every pending write batch.
@@ -323,7 +330,7 @@ pub fn parse_duration_s(tok: &str) -> Option<i64> {
 }
 
 const SITEBAN_USAGE: &str = "Usage: @siteban <ip>[=<duration> <reason>] (duration: 30m, 12h, 7d, or seconds; \
-     no '=' part means permanent), @siteban/clear <ip>, or bare @siteban to list.";
+     no '=' part means permanent), @siteban/clear <ip>, @siteban/lift <ip> (password tempban), or bare @siteban to list.";
 
 fn parse_ip(text: &str) -> Result<IpAddr, CmdError> {
     text.trim()
@@ -332,6 +339,22 @@ fn parse_ip(text: &str) -> Result<IpAddr, CmdError> {
 }
 
 fn siteban_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.has("clear") && ctx.switches.has("lift") {
+        return Err(CmdError::msg(
+            "Choose either /clear (siteban) or /lift (password tempban).",
+        ));
+    }
+    if ctx.switches.has("lift") {
+        let ip = parse_ip(ctx.args.raw())?;
+        let issued_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+        queue.push(StaffOp {
+            actor: ctx.actor,
+            kind: StaffOpKind::LiftTempban { ip, issued_unix_ms },
+        });
+        return Ok(());
+    }
     if ctx.switches.has("clear") {
         let raw = ctx.args.raw();
         if raw.is_empty() {
@@ -977,7 +1000,7 @@ fn dump_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 const DEFAULT_MAX_CHARACTERS: usize = 3;
 
 /// Register the server-owned staff commands into the world's registry with the
-/// default per-account character cap ([`DEFAULT_MAX_CHARACTERS`]). Convenience
+/// default per-account character cap (`DEFAULT_MAX_CHARACTERS`). Convenience
 /// wrapper over [`register_server_commands_with_cap`] for tests and compat
 /// wiring; the real binaries pass the configured `[game].max_characters`.
 pub fn register_server_commands(
@@ -1001,13 +1024,15 @@ pub fn register_server_commands_with_cap(
     reg.register(
         CommandSpec {
             name: "@siteban".into(),
-            switches: vec!["clear".into()],
+            switches: vec!["clear".into(), "lift".into()],
             shape: ArgShape::EqPair,
             min_role: Role::Wizard,
             help: "@siteban <ip>[=<duration> <reason>]  --  Ban an IP address from \
                    connecting (persisted; survives restarts). Duration is like 30m, \
                    12h, 7d, or plain seconds; without '=' the ban is permanent. \
-                   @siteban/clear <ip> lifts a ban; bare @siteban lists active bans. \
+                   @siteban/clear <ip> lifts a persisted ban; @siteban/lift <ip> \
+                   pardons prior password failures for that network (IPv6 /64 by default), \
+                   leaving sitebans intact; bare @siteban lists active sitebans. \
                    Wizards only."
                 .into(),
             ..CommandSpec::default()
@@ -1294,6 +1319,26 @@ mod tests {
         });
         assert!(denied, "{:?}", out.events());
         assert!(queue.drain().is_empty());
+    }
+
+    #[test]
+    fn tempban_lift_is_distinct_and_validates_its_address_and_switches() {
+        let (mut engine, queue) = engine_with_staff();
+        run(&mut engine, GOD, "@siteban/lift 2001:db8::7");
+        let ops = queue.drain();
+        assert_eq!(ops.len(), 1);
+        assert!(
+            matches!(ops[0].kind, StaffOpKind::LiftTempban { ip, issued_unix_ms } if ip == "2001:db8::7".parse::<IpAddr>().unwrap() && issued_unix_ms > 0)
+        );
+        for command in [
+            "@siteban/lift",
+            "@siteban/lift invalid",
+            "@siteban/lift/clear 10.0.0.1",
+            "@siteban/lift 10.0.0.1=1h",
+        ] {
+            run(&mut engine, GOD, command);
+            assert!(queue.drain().is_empty(), "must reject {command}");
+        }
     }
 
     #[test]

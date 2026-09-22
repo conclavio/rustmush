@@ -60,6 +60,7 @@ pub mod accounts_identity;
 pub mod action_coordinator;
 pub mod archive;
 pub mod boot;
+pub mod bootstrap;
 pub mod config_ext;
 /// E7c10 B3: the server-side, audit-only seat attribution log.
 // E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
@@ -254,7 +255,7 @@ pub async fn serve_with_quarantine_spool(
 /// # Errors
 ///
 /// The same failures as [`serve_with_quarantine_spool`], each carrying the
-/// [`ExitClass`](mush_config::exit::ExitClass) it should exit with.
+/// [`ExitClass`] it should exit with.
 pub async fn serve_classified(
     config: Config,
     bound: Option<oneshot::Sender<IpcEndpoint>>,

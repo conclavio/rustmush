@@ -185,8 +185,7 @@ fn write_server_config(root: &Path, redis_url: &str, endpoint: SocketAddr) -> Pa
         format!(
             "[server]\nname = \"K8 process worker\"\ndata_dir = \"{data}\"\n\
              [store]\nstore = \"redis\"\nredis_url = \"{redis_url}\"\nreceipt_policy = \"applied\"\n\
-             [ipc]\nlisten = \"{endpoint}\"\n\
-             [rulesets]\nenabled = []\n"
+             [ipc]\nlisten = \"{endpoint}\"\n"
         ),
     )
     .unwrap();

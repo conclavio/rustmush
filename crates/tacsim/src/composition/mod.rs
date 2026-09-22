@@ -2,13 +2,13 @@
 //! which [`GameModule`]s the server boots with, their
 //! persisted-data load path, and the per-namespace module migrations.
 //!
-//! Boot order (driven from `main.rs` / test rigs via [`boot_modules`]):
+//! Boot order (driven from `main.rs` / test rigs via `mush_server::modules::boot_modules`):
 //!
-//! 1. [`Engine::compose_modules`] has already run every module's `register`
+//! 1. [`mush_core::Engine::compose_modules`] has already run every module's `register`
 //!    (commands, hooks, ticks, state slots) against the one registry and
-//!    frozen mechanics before world hydration; [`Engine::from_composition`]
+//!    frozen mechanics before world hydration; [`mush_core::Engine::from_composition`]
 //!    then installed the result on the loaded world.
-//! 2. [`run_module_migrations`] brings each registered namespace's
+//! 2. `mush_server::modules::run_module_migrations` brings each registered namespace's
 //!    persisted documents up to its module's current schema (BGSAVE first —
 //!    the mandatory pre-migrate snapshot), **before** any module parses
 //!    them.
@@ -18,8 +18,8 @@
 //! 4. The loader supplies every remaining kv doc (minus the
 //!    reserved [`SCHEMA_KEY`]) plus the streams the module names via
 //!    [`GameModule::boot_stream_requests`].
-//! 5. [`Engine::modules_loaded`] hands each module its
-//!    [`ModuleBootData`]; whatever the modules persist during boot
+//! 5. [`mush_core::Engine::modules_loaded`] hands each module its
+//!    [`mush_core::ModuleBootData`]; whatever the modules persist during boot
 //!    (first-boot seeding, orphan-doc cleanup) is drained and written
 //!    through **durably, acked** before the server starts serving.
 //!
@@ -70,14 +70,14 @@ use mush_worldgen::WorldgenModule;
 use smol_str::SmolStr;
 
 /// Reserved kv key per module namespace carrying `{"version": N}` — the
-/// namespace's schema version for [`run_module_migrations`]. Filtered out
-/// of [`ModuleBootData::kv`] so modules never see it.
+/// namespace's schema version for `mush_server::modules::run_module_migrations`. Filtered out
+/// of [`mush_core::ModuleBootData::kv`] so modules never see it.
 pub const SCHEMA_KEY: &str = "schema";
 
 /// The built-in game modules a production `mushd` boots with, in
 /// registration order, with **default** module config. Config-selected
-/// [`ruleset_modules`] are appended **after** these (see `main.rs`); hand the
-/// concatenation to [`Engine::with_modules`].
+/// [`sheet_modules`] are appended **after** these (see `main.rs`); hand the
+/// concatenation to [`mush_core::Engine::with_modules`].
 #[must_use]
 pub fn server_modules() -> Vec<Box<dyn GameModule>> {
     server_modules_with(
@@ -619,9 +619,9 @@ fn rules_interface_for<R: mush_ruleset::Ruleset>(
 /// the pilot sheet, composed unconditionally **after** [`server_modules`] so its
 /// commands, panel feed and approval queue wire cleanly and its payload handler
 /// (registered in `on_world_loaded`) runs after the jobs module's state slot
-/// exists. `[rulesets].enabled` is gone with the two rulesets it selected.
+/// exists.
 #[must_use]
-pub fn ruleset_modules(
+pub fn sheet_modules(
     onboarding: &mush_core::OnboardingConfig,
     game: &crate::economy::GameEconomyConfig,
 ) -> Vec<Box<dyn GameModule>> {
@@ -638,11 +638,8 @@ pub fn ruleset_modules(
 /// The **TacSim layer** (E7 cut 1, 10b §3.1), composed **after** the character
 /// ruleset.
 ///
-/// It is deliberately **not** a `[rulesets].enabled` id. Doc 10 §20: *TacSim supplies
-/// physical and civil context, not ruleset metaphysics … a ruleset decides what those
-/// facts mean to its characters.* So [`ruleset_modules`] is untouched — it still knows
-/// `"wod"` and `"shadowrun"` and still refuses more than one — and this layer composes
-/// beside whichever single ruleset is enabled, switched by `[tacsim].enabled` alone.
+/// The pilot sheet from [`sheet_modules`] is unconditional. This layer supplies
+/// its physical and civil context and is switched by `[tacsim].enabled`.
 ///
 /// **Order position matters and is pinned** (`tacsim_composes_after_the_character_ruleset`).
 /// `on_world_loaded` runs in list order, so registering last is what lets TacSim read
@@ -650,7 +647,7 @@ pub fn ruleset_modules(
 /// environmental facts through the generic seam.
 ///
 /// The module is composed **unconditionally**, and `enabled` gates behaviour rather
-/// than existence — E5c deviation 1 and `[shadowrun.economy]`'s precedent: a disabled
+/// than existence: a disabled
 /// layer answers "not enabled on this server" instead of hiding a verb, which is also
 /// what keeps `@tacsim` visible to the rule-1 allowlist tripwire in a default
 /// composition.
@@ -799,13 +796,13 @@ pub fn recovery_policy(cfg: &crate::TacsimRecoveryConfig) -> mush_campaign::Reco
 ///
 /// `main.rs` inserts it into the boot list **after** [`server_modules`] (so it
 /// registers after the built-ins) and before the config-selected
-/// [`ruleset_modules`]. It registers regardless of whether the LLM is enabled:
+/// [`sheet_modules`]. It registers regardless of whether the LLM is enabled:
 /// with `[llm].enabled = false` the service's kill switch is engaged, so
 /// `@gen` still parses and defers, and the off-loop generator re-enters a
 /// "disabled" outcome (a keyless clone boots and its worldgen commands answer
 /// cleanly rather than 404). Its persistence namespace (`worldgen`) is disjoint
 /// from every other module's, and it loads its drafts through the same
-/// boot-data path as the rest ([`boot_modules`]).
+/// boot-data path as the rest (`mush_server::modules::boot_modules`).
 #[must_use]
 pub fn worldgen_module(llm: Arc<LlmService>) -> Box<dyn GameModule> {
     Box::new(WorldgenModule::new(llm))
@@ -942,7 +939,7 @@ pub enum Fetch {
     /// chunks it names.
     Narrowed,
     /// The whole namespace, manifest ignored — the retry after a module
-    /// answered [`ModError::RetryFullFetch`], and every first boot's shape
+    /// answered [`mush_core::ModError::RetryFullFetch`], and every first boot's shape
     /// before J4.
     Whole,
 }

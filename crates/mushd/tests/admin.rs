@@ -16,7 +16,7 @@ use mush_core::{
 };
 use mush_proto::{ClientCaps, ClientKind, ColorDepth, OutputEvent};
 use mush_session::{ConnId, ConnectionHandle, SessionManager};
-use mush_store::InMemoryStore;
+use mush_store::{InMemoryStore, ObjectStore};
 use mush_testkit::text_of;
 use tokio::sync::mpsc;
 
@@ -184,6 +184,75 @@ async fn boot_disconnects_every_connection_with_the_message() {
     // World-side state: fully disconnected.
     assert!(world.barrier().await);
     assert!(sessions.session_of_char(char_key(nick)).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tempban_lift_confirms_after_store_ack_and_does_not_clear_a_siteban() {
+    let sessions = Arc::new(SessionManager::new());
+    let (engine, staff) = staff_engine();
+    let store = Arc::new(InMemoryStore::new());
+    let guard = Arc::new(IpGuard::new());
+    let ip = IpAddr::from([127, 0, 0, 77]);
+    let earlier = std::time::Instant::now() - Duration::from_secs(2);
+    for _ in 0..5 {
+        guard.record_failure_at(ip, earlier);
+    }
+    store
+        .set_ban(&ip.to_string(), None, "operator siteban")
+        .await
+        .unwrap();
+    guard.set_siteban(ip, None);
+    let handles = world_task::spawn_persist(
+        engine,
+        Arc::clone(&sessions),
+        ServerDeps {
+            metrics: Arc::new(mush_net_web::Metrics::new()),
+            store: store.clone(),
+            guard: Arc::clone(&guard),
+            staff,
+            llm: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
+            outbox_adapters: Vec::new(),
+        },
+    );
+    let world = handles.handle;
+    let mut output = attach_direct(&sessions, &world, 1, GOD, "god").await;
+    assert!(
+        world
+            .inbound(Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: format!("@siteban/lift {ip}")
+            })
+            .await
+    );
+    collect_until(&mut output, "password-tempban pardon published").await;
+    assert!(guard.tempban_remaining(ip).is_none());
+    assert!(guard.is_blocked(ip), "the permanent siteban stays in force");
+    assert_eq!(store.get_bans().await.unwrap().len(), 1);
+    assert_eq!(
+        store.get_tempban_lifts().await.unwrap().len(),
+        1,
+        "confirmation implies the store acknowledged"
+    );
+
+    // A failed store write must neither promise success nor pardon locally.
+    for _ in 0..5 {
+        guard.record_failure_at(ip, earlier);
+    }
+    store.close().await.unwrap();
+    assert!(
+        world
+            .inbound(Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: format!("@siteban/lift {ip}")
+            })
+            .await
+    );
+    let seen = collect_until(&mut output, "@siteban/lift failed:").await;
+    assert!(!seen.iter().any(|text| text.contains("pardon published")));
+    assert!(guard.tempban_remaining(ip).is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]
