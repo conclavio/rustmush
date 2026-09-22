@@ -591,6 +591,140 @@ async fn a_boarding_that_times_out_with_both_sides_seated_runs_with_who_is_in() 
             .iter()
             .all(|slot| slot.pilot != rig.pilot(2))
     );
+    // 16b cut AA.2 (`B-78`): a dropped NON-lead moves neither lead.
+    assert!(
+        rig.centre().leads_side(Team::Red, account(0)),
+        "red's lead is still its first claimant"
+    );
+    assert!(
+        rig.centre().leads_side(Team::Blue, account(1)),
+        "blue's lead is still its first claimant"
+    );
+}
+
+/// The account the rig minted for pilot `n` ([`Rig::boot_on`]'s map) — the one
+/// way to name a pilot whose slot the deadline has already dropped.
+fn account(n: usize) -> AccountId {
+    AccountId::mint(&format!("account-{n}"), n as i64).expect("an account id")
+}
+
+/// **The deadline drops a side's lead, and the side still has a lead** (16b cut
+/// AA.2, 16c `B-78`).
+///
+/// Before AA.2 `board_deadline` dropped the unseated slots and kept `leads` as
+/// it stood, so red's entry named an account with no slot: red's survivor read
+/// `Only a side's first pilot can concede for it.` and the dropped lead read `You
+/// hold no slot in the simulator.`, and nobody could concede for red for the
+/// rest of the match. The OTHER side's lead starts it, because the trigger does
+/// not depend on who typed `SIM START`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aa2_the_deadline_drops_a_lead_and_the_heir_can_concede() {
+    let mut rig = Rig::boot(3);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team blue");
+    let said = rig.say(2, "sim start");
+    assert!(said.contains("boarding"), "blue's lead starts it: {said}");
+    // Red's lead never boards.
+    assert!(!rig.seat(1));
+    assert!(!rig.seat(2));
+    rig.tick_to(10);
+    assert_eq!(rig.state(), MatchState::Running, "it ran with who was in");
+    let centre = rig.centre();
+    assert_eq!(centre.slots.len(), 2, "red's lead's slot is dropped");
+    assert!(
+        centre.leads_side(Team::Red, account(1)),
+        "red's next claimant leads it"
+    );
+    assert!(
+        !centre.leads_side(Team::Red, account(0)),
+        "the dropped lead leads nothing"
+    );
+    assert!(
+        centre.leads_side(Team::Blue, account(2)),
+        "blue is untouched"
+    );
+
+    // The dropped lead first: holding no slot is holding no side.
+    let said = rig.say(0, "sim concede");
+    assert!(
+        said.contains("You hold no slot in the simulator."),
+        "{said}"
+    );
+    assert_eq!(rig.state(), MatchState::Running, "and nothing moved");
+
+    // The heir may.
+    let said = rig.say(1, "sim concede");
+    assert!(said.contains("concedes for the red side"), "{said}");
+    // The arena answers on its own thread; the centre lands in `ended` once the
+    // check-in has run.
+    for _ in 0..400 {
+        if rig.state() == MatchState::Ended {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        rig.pump();
+    }
+    assert_eq!(rig.state(), MatchState::Ended, "a concede is not an abort");
+    assert_eq!(
+        rig.centre().outcome,
+        Some(tacsim::match_::MatchOutcome::Blue)
+    );
+    assert_eq!(
+        rig.centre().outcome_reason,
+        Some(tacsim::arena::EndReason::Conceded { winner: Team::Blue })
+    );
+    let board = staff_board(&rig);
+    assert!(
+        board.contains("ended (match 1) — blue wins: red conceded"),
+        "{board}"
+    );
+}
+
+/// **Both leads dropped at once, and each side is led by its first seated
+/// pilot** (16b cut AA.2, `B-78`): the rule runs once over the slots that are
+/// left, not once per dropped slot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aa2_a_double_drop_leaves_each_side_its_first_seated_pilot() {
+    let mut rig = Rig::boot(4);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team red");
+    rig.say(2, "sim team blue");
+    rig.say(3, "sim team blue");
+    rig.say(0, "sim start");
+    assert!(!rig.seat(1));
+    assert!(!rig.seat(3));
+    rig.tick_to(10);
+    assert_eq!(rig.state(), MatchState::Running);
+    let centre = rig.centre();
+    assert_eq!(centre.slots.len(), 2, "both leads' slots are dropped");
+    assert_eq!(centre.leads.len(), 2, "and both sides still have a lead");
+    assert!(centre.leads_side(Team::Red, account(1)), "red's heir");
+    assert!(centre.leads_side(Team::Blue, account(3)), "blue's heir");
+}
+
+/// **With the fill on, a side the deadline empties carries no lead** (16b cut
+/// AA.2, `B-78`): the machines fly it, and nobody is left who could concede for
+/// it — the entry goes with the last slot, as it does on a `SIM LEAVE`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aa2_with_the_fill_on_an_emptied_side_carries_no_lead() {
+    let mut rig = fill_rig(2);
+    rig.say(0, "sim team red");
+    rig.say(1, "sim team blue");
+    rig.say(0, "sim start");
+    assert!(
+        !rig.seat(0),
+        "one of two seated is not the trigger; the deadline is"
+    );
+    rig.tick_to(10);
+    assert_eq!(rig.state(), MatchState::Running, "the machines fly blue");
+    let centre = rig.centre();
+    assert_eq!(centre.slots.len(), 1);
+    assert!(
+        !centre.leads.iter().any(|(side, _)| *side == Team::Blue),
+        "an emptied side has no lead"
+    );
+    assert!(centre.leads_side(Team::Red, account(0)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

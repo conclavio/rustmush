@@ -20,7 +20,9 @@ the same thing this topic does, in fewer words.
 ## Claiming a slot
 
   SIM TEAM red|blue   claim one pilot slot on a side. One slot per account,
-                      four a side. Whoever claims a side first leads it.
+                      four a side. Whoever claims a side first leads it, and
+                      if they give the slot up or are dropped at boarding,
+                      the next who claimed.
   SIM LEAVE           give your slot up; the last one to leave closes the match.
   SIM START           lock the pods and open boarding. A side's first pilot, or
                       staff, with at least one pilot a side.
