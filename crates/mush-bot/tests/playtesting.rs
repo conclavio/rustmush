@@ -24,13 +24,18 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 fn temp() -> PathBuf {
+    // Tests in one binary run in parallel under one pid, and the Windows
+    // clock ticks in 100 ns steps, so the time alone can repeat: the counter
+    // keeps two fixtures from racing to create_dir the same path.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let p = std::env::temp_dir().join(format!(
-        "mush-playtest-{}-{}",
+        "mush-playtest-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir(&p).unwrap();
     p
