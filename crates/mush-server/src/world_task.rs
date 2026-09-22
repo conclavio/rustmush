@@ -8185,12 +8185,7 @@ async fn staff_ops_loop(
                 password,
             } => run_newpassword(&*store, &gateway, &world, target, &name, &by, &password.0).await,
             StaffOpKind::LiftTempban { ip, issued_unix_ms } => {
-                let lift = mush_store::TempbanLift {
-                    ip,
-                    id: format!("{:032x}", rand::random::<u128>()),
-                    issued_unix_ms,
-                    expires_unix: issued_unix_ms / 1_000 + 300,
-                };
+                let lift = mush_store::TempbanLift::new(ip, issued_unix_ms);
                 match store.put_tempban_lift(lift.clone()).await {
                     Ok(()) => {
                         guard.apply_tempban_lift(

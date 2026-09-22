@@ -2643,12 +2643,12 @@ const ARENA_S_P99_MS: f64 = 12.0;
 //   TACSIM_LLM_COST_CAP_USD    a hard cap; the run stops BEFORE the call that
 //                              would pass it
 //
-// CI sets none of them. The job in `ci.yml` runs `-p tacsim --test harness --
-// --ignored`, and this test is deliberately **not** `#[ignore]`d: it is the
-// ordinary workspace run that proves it returns early, which is a stronger claim
-// than "the job does not name it". Without the flag it contacts nothing, writes
-// nothing and returns, and `the_cost_run_is_off_unless_its_flag_says_1` asserts
-// that the environment it is running in is such an environment.
+// Ordinary CI test runs set none of them. This test is deliberately **not**
+// `#[ignore]`d: the workspace run proves it returns early. Without the flag it
+// contacts nothing, writes nothing and returns, and
+// `the_cost_run_is_off_unless_its_flag_says_1` asserts that environment. A separate
+// exact-filter CI step sets the flag with `TACSIM_LLM_COST_MOCK=1` to exercise the
+// report without a live provider; it does not run the environment assertion.
 //
 // **The mock lane.** `TACSIM_LLM_COST_MOCK=1` runs the whole thing against
 // `mush_llm::MockProvider` with no key and no cap, which is how the plumbing was
@@ -2739,9 +2739,9 @@ fn the_cost_run_is_off_unless_its_flag_says_1() {
     assert!(!cost_run_requested(Some("yes")));
     assert!(cost_run_requested(Some("1")));
     assert!(cost_run_requested(Some(" 1 ")));
-    // And the environment this very run is in. CI does not set it, so the cost run
-    // below returns early here and contacts nothing — which is 16a Q9b's *never run
-    // by CI*, asserted rather than assumed.
+    // Ordinary CI runs leave the flag unset, so the cost run below returns early
+    // and contacts nothing. The separate exact-filter mock step sets the flag
+    // but excludes this environment assertion.
     assert!(
         !cost_run_requested(std::env::var("TACSIM_LLM_COST_RUN").ok().as_deref()),
         "TACSIM_LLM_COST_RUN is set in this environment: the cost run contacts a real \
