@@ -447,6 +447,21 @@ fn fired_by(events: &[LedgerEvent], unit: ObjId) -> usize {
         .count()
 }
 
+/// How many locks `unit` took — counted per platform for the reason
+/// [`fired_by`] gives.
+fn locked_by(events: &[LedgerEvent], unit: ObjId) -> usize {
+    events
+        .iter()
+        .filter(|event| event.kind.as_str() == "locked")
+        .filter(|event| {
+            serde_json::to_value(&event.kind)
+                .ok()
+                .and_then(|value| value.get("unit").and_then(serde_json::Value::as_u64))
+                == Some(u64::from(unit.0))
+        })
+        .count()
+}
+
 fn state_of(arena: &Arena, unit: ObjId) -> Option<ReflexState> {
     arena.reflex.unit(unit).map(|row| row.state)
 }
@@ -1772,6 +1787,14 @@ fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
     run(&mut held, 2_000, &mut held_bytes);
     if let Some(state) = held.unit_mut(RED_A) {
         // Pinned in place: a machine that may not close cannot walk into range.
+        // **16b cut AA.1** (16c `B-76`): and a machine that cannot close enters
+        // `Engage` at `release_cm` rather than at `engage_cm`, so this one fires
+        // out to the ordered ceiling (11,666 cm) — and no further, which the
+        // target past it proves: the case is now also a witness that an
+        // immobile machine obeys the band cap. The witness is the `locked`
+        // count, not the `fired` one: `engage_orders` holds its fire to the
+        // ordered ceiling whatever edge the machine entered `Engage` at, but it
+        // stages its lock first, so an edge past the ceiling shows as locks.
         state.mobility.max_speed_cms = 0;
     }
     if let Some(state) = held.unit_mut(BLUE) {
@@ -1782,10 +1805,16 @@ fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
     issue(&mut held, &told);
     let until = held.now_ms + 20_000;
     run(&mut held, until, &mut held_bytes);
+    let held_log = events(&mut held, &mut held_bytes);
     assert_eq!(
-        fired_by(&events(&mut held, &mut held_bytes), RED_A),
+        fired_by(&held_log, RED_A),
         0,
         "past the ordered ceiling there is nothing to shoot at"
+    );
+    assert_eq!(
+        locked_by(&held_log, RED_A),
+        0,
+        "and the pinned machine never entered `Engage` past it to lock"
     );
     // The control: the same parked machine with no band on its order does fire,
     // because doctrine's own ceiling is the 35,000 cm sight.
@@ -2389,4 +2418,103 @@ fn e2_t56_the_signal_carries_the_floor_as_the_default_time_to_live() {
         let brief = tacsim::deliberation::SquadBrief::from_signal(1, signal, 2);
         assert_eq!(brief.default_ttl_ms, want);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut AA.1 — the `Advance` a machine that cannot close cannot carry out
+// (16c `B-76`, the order layer)
+// ---------------------------------------------------------------------------
+
+/// **An `Advance` ends for the machine that cannot carry it out, and for no
+/// other** (16b cut AA.1; 16c `B-76`).
+///
+/// An `Advance` suppresses the hostile edges (16b cut N.2), and `B-41` ends one
+/// for a unit only when the search to the ordered cell FAILS. For a machine
+/// whose engine is dead the search succeeds, the route stands and it never
+/// arrives, so before this cut the order lived to its TTL — a pacifist for up to
+/// `MAX_TTL_MS`, and the squad signal carries no mobility fact, so the commander
+/// could send it again. Now it ends on the unit's next decide tick through
+/// `B-41`'s own `plan.expired`: one `order_expired` line for that unit, the
+/// squad's next signal says `OrderExpired`, and from that tick the unit is on
+/// doctrine and fights what it holds.
+///
+/// RED_A is immobilised the way `damage.rs`'s `disable_motion` does it
+/// (`limits.motion_disabled`, speed and ordered speed to nought); RED_B, its
+/// mobile squadmate under the same order, keeps it. Blue's tank is parked so the
+/// field stays where it was built; at eleven cells it is well inside RED_A's
+/// 35-cell reach with a clear line on open ground. The floor is nought so the
+/// signal the expiry asks for is reported on the pulse after it.
+#[test]
+fn aa1_an_advance_ends_for_the_machine_that_cannot_carry_it_out() {
+    use tacsim::arena::ledger::EventKind;
+
+    let cfg = arena_cfg(0);
+    let mut arena = field(&cfg);
+    park(&mut arena, BLUE);
+    let mut bytes = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    if let Some(state) = arena.unit_mut(RED_A) {
+        state.limits.motion_disabled = true;
+        state.speed_cms = 0;
+        state.desired_speed_cms = 0;
+    }
+    let stands = arena.unit(RED_A).map(|unit| unit.pose.clone());
+
+    // A plainly reachable cell four columns from red's muster, on open ground.
+    let to = (6, 8);
+    issue(&mut arena, &order(Objective::Advance { to }, 60_000));
+    let at = arena.now_ms;
+    let mut signals = run(&mut arena, at + 500, &mut bytes);
+
+    let log = events(&mut arena, &mut bytes);
+    let expired: Vec<(ObjId, String)> = log
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::OrderExpired {
+                unit, objective, ..
+            } => Some((*unit, objective.to_string())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        expired,
+        vec![(RED_A, "advance".to_string())],
+        "one line, for the machine that cannot close, on its first decide tick"
+    );
+    assert!(
+        arena.reflex.order(RED_A).is_none(),
+        "the order is over for RED_A"
+    );
+    // The mobile squadmate keeps it and is making for the cell.
+    assert!(
+        arena.reflex.order(RED_B).is_some(),
+        "RED_B can carry the order out and still holds it"
+    );
+    assert_eq!(goal_of(&arena, RED_B), Some(to));
+
+    // On doctrine, it fights what it holds — from where it stands.
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, now);
+    signals.extend(run(&mut arena, now + 10_000, &mut bytes));
+    assert!(
+        fired_by(&events(&mut arena, &mut bytes), RED_A) > 0,
+        "off the order, the immobile machine shoots at the hostile it holds"
+    );
+    assert_eq!(state_of(&arena, RED_A), Some(ReflexState::Engage));
+    assert_eq!(
+        arena.unit(RED_A).map(|unit| unit.pose.clone()),
+        stands,
+        "and it never moved"
+    );
+
+    // And the commander hears, through the one channel `B-41` already uses.
+    assert!(
+        signals.iter().any(|signal| signal.squad == red_one()
+            && signal.reason == tacsim::arena::command::SignalReason::OrderExpired),
+        "the squad never asked for a new order: {:?}",
+        signals
+            .iter()
+            .map(|signal| (signal.squad, signal.reason))
+            .collect::<Vec<_>>()
+    );
 }

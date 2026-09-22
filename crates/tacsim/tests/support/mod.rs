@@ -88,9 +88,10 @@ pub struct Muster {
 
 /// **The condition a [`Muster`] opens in** (16b cut E.4).
 ///
-/// Both are written as one [`UnitMutationPlan`] through [`mush_tactics::apply`],
-/// so the cells that change are changed the way the damage pipeline changes them
-/// and nothing else moves.
+/// Each is written as one [`UnitMutationPlan`] through [`mush_tactics::apply`],
+/// so the cells that change — and, for [`Wear::EngineOut`], the section
+/// condition — are changed the way the damage pipeline changes them and nothing
+/// else moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wear {
     /// [`hurt_to_withdraw`]: under `withdraw_permille`, above
@@ -98,6 +99,9 @@ pub enum Wear {
     Hurt,
     /// [`shot_dry`]: every magazine empty, nothing else touched.
     Dry,
+    /// [`engine_struck`] (16b cut AA.1): the engine killed through `hull.rear`,
+    /// so the tank checks out with its motion disabled and its gun intact.
+    EngineOut,
 }
 
 impl Muster {
@@ -146,6 +150,16 @@ impl Muster {
     pub fn dry(self) -> Muster {
         Muster {
             wear: Some(Wear::Dry),
+            ..self
+        }
+    }
+
+    /// Open with the engine already destroyed (16b cut AA.1) — see
+    /// [`engine_struck`].
+    #[must_use]
+    pub fn engine_out(self) -> Muster {
+        Muster {
+            wear: Some(Wear::EngineOut),
             ..self
         }
     }
@@ -208,6 +222,57 @@ pub fn shot_dry(unit: &TacticalUnit) -> TacticalUnit {
         })
         .collect();
     apply_plan(unit, ops, "test:e4-dry")
+}
+
+/// **A tank whose engine was killed through its rear plate** (16b cut AA.1; 16c
+/// `B-76`), written as exactly what `Arena::plan_hit` writes on the transition
+/// and nothing else, in one plan: the `hull` facet `rear` `armor` cell to its
+/// `min`, the `engine` section's `internals` cell to its `min`, and
+/// `SetSectionCondition { engine, destroyed }`.
+///
+/// **The condition op is not optional.** `damage::entry_consequences` collects
+/// destroyed sections by their CONDITION and never by a cell, so the two cells
+/// alone would check out a mobile tank. With it, the arena's own check-out reads
+/// the engine's `disable_motion` and opens the tank with
+/// `limits.motion_disabled` set — the fact the case is about, arrived at the way
+/// production arrives at it for a tank that checked in that way.
+///
+/// Conditions are not counted by `Arena::reflex_health_permille`, so on the
+/// shipped `line_tank` the health is (2,990 − 150 − 120) of 2,990: 909 per mille,
+/// far above `withdraw_permille`. The turret and its gun are untouched, so the
+/// tank is armed, not `disabled`, and not out of action.
+#[must_use]
+pub fn engine_struck(unit: &TacticalUnit) -> TacticalUnit {
+    let floor = |addr: CellAddr| -> UnitMutationOp {
+        let min = unit
+            .cell(&addr)
+            .unwrap_or_else(|| panic!("the stock tank has {addr:?}"))
+            .min;
+        UnitMutationOp::SetCell { addr, value: min }
+    };
+    let section = |name: &str| {
+        mush_tactics::SectionId::new(name).unwrap_or_else(|why| panic!("{name}: {why:?}"))
+    };
+    let cell = |name: &str| {
+        mush_tactics::CellId::new(name).unwrap_or_else(|why| panic!("{name}: {why:?}"))
+    };
+    let ops = vec![
+        floor(CellAddr::Facet {
+            section: section("hull"),
+            facet: mush_tactics::FacetId::new("rear").unwrap_or_else(|why| panic!("rear: {why:?}")),
+            cell: cell(tacsim::definitions::unit::ARMOR_CELL),
+        }),
+        floor(CellAddr::Section {
+            section: section("engine"),
+            cell: cell(tacsim::definitions::unit::INTERNALS_CELL),
+        }),
+        UnitMutationOp::SetSectionCondition {
+            section: section("engine"),
+            condition: mush_tactics::ConditionId::new(tacsim::arena::damage::DESTROYED)
+                .unwrap_or_else(|why| panic!("destroyed: {why:?}")),
+        },
+    ];
+    apply_plan(unit, ops, "test:aa1-engine")
 }
 
 /// The cell name one address carries, whatever kind of address it is.
@@ -319,6 +384,7 @@ pub fn shipped_arena(world: &TestWorld, sides: &[&[Muster]]) -> Arena {
             let cells = match muster.wear {
                 Some(Wear::Hurt) => hurt_to_withdraw(&cells),
                 Some(Wear::Dry) => shot_dry(&cells),
+                Some(Wear::EngineOut) => engine_struck(&cells),
                 None => cells,
             };
             let placed = mush_sim::pose_of(w, id).map(|(_, pose)| pose);

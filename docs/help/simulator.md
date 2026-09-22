@@ -113,15 +113,17 @@ board says which it is:
 
 A machine patrols, and when it sees you it closes: to about seven tenths of what
 its own sight and its gun's inner band allow (420 m for the stock tank), where it
-stops, turns onto you and shoots. Open the range past its sight and it comes
-after you again; let the ground hide you and it drives at where it last saw you.
-Hurt badly enough it breaks off for its own entry zone — but it is not out of the
-match: on the way home it turns and fights only what is close (inside about
-200 m) and only while it has armour left to do it with, with an empty magazine it
-keeps driving, once home it shoots back at whatever comes for it, and after
-twenty quiet seconds with nothing hostile in sight it turns round and comes back
-in, once. A tank whose pilot left does the same, so a disconnection leaves your
-side a teammate rather than a parked target.
+stops, turns onto you and shoots. A machine whose engine is gone cannot close, so
+it shoots from where it stands at anything inside its sight and its gun's inner
+band (600 m for the stock tank), however hurt it is. Open the range past its
+sight and it comes after you again; let the ground hide you and it drives at
+where it last saw you. Hurt badly enough it breaks off for its own entry zone —
+but it is not out of the match: on the way home it turns and fights only what is
+close (inside about 200 m) and only while it has armour left to do it with, with
+an empty magazine it keeps driving, once home it shoots back at whatever comes
+for it, and after twenty quiet seconds with nothing hostile in sight it turns
+round and comes back in, once. A tank whose pilot left does the same, so a
+disconnection leaves your side a teammate rather than a parked target.
 
 A machine that loses you goes to where it last saw you before it goes back to its
 patrol, and one that has seen nobody for a minute and a half crosses to the other

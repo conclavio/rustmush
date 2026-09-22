@@ -653,10 +653,13 @@ struct ReflexPlan {
 /// | `effective` | 280 m | 400 m | 250 m |
 /// | `close` | 140 m | 200 m | 110 m |
 ///
-/// `stand_cm` is 200 m under all three.
+/// `stand_cm` is 200 m under all three. **16b cut AA.1**: a machine that cannot
+/// close ([`UnitState::cannot_close`]) enters `Engage` at `release_cm` and not at
+/// `engage_cm`, so its region is the whole row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Ranges {
-    /// Where `Approach` stops and turns: the doctrine band of the allowed reach.
+    /// Where `Approach` stops and turns: the doctrine band of the allowed reach —
+    /// for a machine that can close (16b cut AA.1).
     engage_cm: u64,
     /// Where `Engage` gives up and closes again — **and the ceiling
     /// [`Arena::engage_orders`] will fire out to**, so the two cannot disagree.
@@ -1133,6 +1136,27 @@ impl Arena {
             self.squad_of(id)
                 .is_none_or(|roster| roster.id == order.squad)
         });
+        // **16b cut AA.1 (16c `B-76`, the order layer)**: an `Advance` held by a
+        // machine that cannot close is an order it can never carry out, and one it
+        // would carry for its whole TTL — the ordered cell is reachable, so
+        // `B-41`'s unreachable arm never fires; the hostile edges are suppressed
+        // under it (16b cut N.2); and the squad signal carries no mobility fact, so
+        // the commander cannot learn why nothing moves. It ends for THIS unit here,
+        // through the same `plan.expired` `B-41` uses: `Arena::reflex_tick`
+        // journals the one `order_expired` line, the squad's next signal says
+        // `OrderExpired`, and from this tick the unit is on doctrine and fights what
+        // it holds. `Hold` is left alone: a machine under `Hold` does not fight
+        // whether or not it can move, and that is the commander's choice.
+        let order = match order {
+            Some(order)
+                if matches!(order.objective, Objective::Advance { .. }) && unit.cannot_close() =>
+            {
+                row.order = None;
+                plan.expired = Some((order.squad, order.objective.as_str()));
+                None
+            }
+            other => other,
+        };
 
         // ---- power ----
         match unit.power {
@@ -1233,7 +1257,8 @@ impl Arena {
         //   so the target is dropped and `Approach`/`Engage` fall back to `Patrol`
         //   with the order's goal. A commander who wants the squad to fight orders
         //   `engage`, which is the whole reason there are four objectives and not
-        //   two;
+        //   two (an `advance` held by a machine that cannot close never reaches
+        //   here: it ended above the power arms, 16b cut AA.1);
         // - `engage` changes nothing about the states and everything about the
         //   choice inside them: the utility score prefers the hinted contact.
         if let Some(order) = order.as_ref() {
@@ -1439,11 +1464,36 @@ impl Arena {
             // * **outside `engage_cm`** — the stand-off cell, and **no trace**.
             //   Before this cut a trace was paid at every range, including the
             //   ones at which nothing could be shot at anyway.
+            //
+            // **16b cut AA.1 (16c `B-76`)** moved the edge the three cases are
+            // split at for one kind of machine:
+            //
+            // * **a machine that cannot close** ([`UnitState::cannot_close`]) —
+            //   the edge is `release_cm` and not `engage_cm`, so it enters
+            //   `Engage` wherever it stands inside the reach it may fire across.
+            //   Before this cut a tank whose engine was killed between the two
+            //   edges re-planned a stand-off cell it could not drive to on every
+            //   tick and never fired again, and being armed it held its side up
+            //   for the rest of the match.
             ReflexState::Approach => {
                 if let Some((contact, target)) = row.target {
                     let plot = self.plot_of(id, contact);
                     let range = plot.map_or(u64::MAX, |plot| plot.range_from(&unit.pose));
-                    if ranges.limit_cm != 0 && range <= ranges.engage_cm.max(1) {
+                    // **16b cut AA.1 (16c `B-76`)**: a machine that cannot close
+                    // has nowhere to close to. Its edge into `Engage` is the whole
+                    // of the reach it may fire across, `release_cm` — the same
+                    // ceiling `engage_orders` holds and the same edge `Engage`
+                    // gives the band up at, so it can neither stand outside a
+                    // range it could shoot from nor oscillate. A machine that CAN
+                    // close still stops at `engage_cm` and holds its fire through
+                    // the outer three tenths: firing on the move while closing is
+                    // not built (16b row E).
+                    let close_edge = if unit.cannot_close() {
+                        ranges.release_cm
+                    } else {
+                        ranges.engage_cm
+                    };
+                    if ranges.limit_cm != 0 && range <= close_edge.max(1) {
                         if self.reflex_has_line(id, target, counters) {
                             row.state = ReflexState::Engage;
                             row.goal = None;
@@ -1500,13 +1550,25 @@ impl Arena {
                 // read twice — the stand's ceiling is `release_cm` once it has
                 // arrived and `stand_cm` while it is still running, and the
                 // rally below asks the same question.
-                let arrived = match (here, row.goal) {
-                    (Some(here), Some(goal)) => {
-                        here.0.abs_diff(goal.0).max(here.1.abs_diff(goal.1)) <= ARRIVE_CELLS
-                    }
-                    (_, None) => true,
-                    _ => false,
-                };
+                //
+                // **16b cut AA.1 (16c `B-76`)**: a machine that cannot move is
+                // home wherever it is — the argument `withdraw_stand`'s doc
+                // makes for a unit with no goal at all ("there is no home to run
+                // to, which is the arrived argument exactly") holds word for
+                // word for one that cannot reach it. Both readers take it, on
+                // purpose: the stand's ceiling is `release_cm` at any health, so
+                // a hurt immobile tank shoots back at anything with a line inside
+                // it instead of being parked in the `close` band; and the rally
+                // clock runs for it once nothing hostile is held, so it rallies
+                // once like a machine that is home and then fights to the end.
+                let arrived = unit.cannot_close()
+                    || match (here, row.goal) {
+                        (Some(here), Some(goal)) => {
+                            here.0.abs_diff(goal.0).max(here.1.abs_diff(goal.1)) <= ARRIVE_CELLS
+                        }
+                        (_, None) => true,
+                        _ => false,
+                    };
                 // (a) **cornered**. A hostile it holds, classified, inside the
                 // reach its state and its order allow it, with a line: it stops
                 // where it is, turns onto the plot and shoots — **without leaving
@@ -1943,6 +2005,13 @@ impl Arena {
     /// entry zone and I am not on the window*: there is no home to run to, which
     /// is the arrived argument exactly, and the machine shoots back at whatever
     /// comes inside `release_cm`.
+    ///
+    /// **A unit that cannot close counts as arrived, on the same argument** (16b
+    /// cut AA.1; 16c `B-76`). A destroyed engine, or a hull authored with no
+    /// speed ([`UnitState::cannot_close`]), has a home it cannot reach, which is
+    /// no home to run to at all: `decide` passes `arrived` as `true` for it
+    /// wherever it stands, and it shoots back inside `release_cm` at any health
+    /// rather than being parked in front of a gun it will not answer.
     #[allow(clippy::too_many_arguments)]
     fn withdraw_stand(
         &self,
@@ -2516,6 +2585,11 @@ impl Arena {
                         // on doctrine: the fallback waypoint stands because
                         // nothing re-asserts the cell, the hostile edges run
                         // again, and it fights what it meets.
+                        //
+                        // This is one of the two places an `Advance` ends for
+                        // one unit; the other is at the top of `decide`, for a
+                        // machine that cannot close (16b cut AA.1), whose search
+                        // to the ordered cell succeeds and never gets here.
                         //
                         // **Only the ordered cell.** A stand-off cell under an
                         // `Engage` order, the entry cell under a `Withdraw` and

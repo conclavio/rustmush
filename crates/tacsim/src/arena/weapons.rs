@@ -338,6 +338,24 @@ impl UnitState {
         })
     }
 
+    /// **Whether this hull can close a range at all** (16b cut AA.1; 16c `B-76`):
+    /// its motion is disabled — a destroyed engine's `disable_motion`, or both
+    /// tracks under `disable_motion_when_all_of` — or it was authored with no
+    /// speed, the shape of a fixed target. A wreck reads `true` too, and the
+    /// controller's `Disabled` edge takes a wreck before anything asks.
+    ///
+    /// A zero-speed hull that is not `motion_disabled` still turns in place
+    /// (`intents.rs` refuses a heading only under `motion_disabled`); it cannot
+    /// close, which is the whole of what this says.
+    ///
+    /// Not folded into `state_hash` on its own: `limits.motion_disabled` already
+    /// is, and `mobility.max_speed_cms` is a constant of the custody for the
+    /// whole match, like the callsign.
+    #[must_use]
+    pub const fn cannot_close(&self) -> bool {
+        self.limits.motion_disabled || self.mobility.max_speed_cms == 0
+    }
+
     /// **The weapon a bare `FIRE` would fire** (16b cut F.3): [`DEFAULT_WEAPON`],
     /// else the first in component order — the one rule, so the cockpit's choice,
     /// the contact band's edges and an order's range cap cannot be three weapons.
@@ -1081,6 +1099,41 @@ mod tests {
         assert_eq!(state.sight_cm(1_000), 0);
         assert_eq!(state.fight_inner_cm(1_000), 150_000);
         assert_eq!(state.fight_limit_cm(1_000), 250_000);
+    }
+
+    /// **16b cut AA.1 (16c `B-76`)**: a hull that cannot close is one whose
+    /// motion damage has disabled it, or one authored with no speed at all — and
+    /// nothing else. The scout drives, so it reads `false`; each of the two
+    /// facts alone turns it `true`.
+    #[test]
+    fn aa1_a_hull_cannot_close_when_its_motion_is_disabled_or_it_has_no_speed() {
+        let mut arena = two_scouts();
+        let Some(state) = arena.unit(RED) else {
+            panic!("the red scout")
+        };
+        assert_ne!(state.mobility.max_speed_cms, 0);
+        assert!(!state.limits.motion_disabled);
+        assert!(!state.cannot_close(), "a scout that drives can close");
+
+        // A destroyed engine, the way `damage.rs`'s `disable_motion` writes it.
+        if let Some(state) = arena.unit_mut(RED) {
+            state.limits.motion_disabled = true;
+        }
+        let Some(state) = arena.unit(RED) else {
+            panic!("the red scout")
+        };
+        assert!(state.cannot_close(), "a dead engine cannot close");
+
+        // An authored zero-speed hull, whose motion is not disabled.
+        let mut arena = two_scouts();
+        if let Some(state) = arena.unit_mut(RED) {
+            state.mobility.max_speed_cms = 0;
+        }
+        let Some(state) = arena.unit(RED) else {
+            panic!("the red scout")
+        };
+        assert!(!state.limits.motion_disabled);
+        assert!(state.cannot_close(), "a hull with no speed cannot close");
     }
 
     #[test]

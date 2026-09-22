@@ -7386,3 +7386,577 @@ fn e4_t42_the_spent_draw_is_one_log_at_three_cadences() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut AA.1 — the immobile machine (16c `B-76`)
+//
+// A machine whose engine was killed while it held a hostile between its two
+// edges — past `engage_cm`, inside `release_cm` — never fired again: `Approach`
+// re-planned a stand-off cell it could not drive to on every tick, its drive was
+// refused `MotionDisabled`, and `engage_orders` was never reached although its
+// own ceiling was `release_cm`. Carrying a gun it was never `disabled`, so it held
+// its side up for the rest of the match. `UnitState::cannot_close` is the reading
+// the two edges it needed are now chosen off.
+// ---------------------------------------------------------------------------
+
+/// **Kill a unit's engine the way `damage.rs`'s `disable_motion` does**: motion
+/// disabled, the speed and the ordered speed to nought — and nothing else. No
+/// wreck, no power change, so the machine still sees, locks and shoots.
+fn disable_motion(arena: &mut Arena, unit: ObjId) {
+    if let Some(state) = arena.unit_mut(unit) {
+        state.limits.motion_disabled = true;
+        state.speed_cms = 0;
+        state.desired_speed_cms = 0;
+    }
+}
+
+/// **The pose every case below starts from** (16b cut AA.1): RED at `(4, 8)`,
+/// outside its entry zone, and BLUE at `blue`, both put there **after** the
+/// power-up run for the reason [`a_withdrawal_beside`]'s doc gives — a machine
+/// drives toward its nearest waypoint through its first seconds, so a case
+/// written as "RED at (4, 8)" would otherwise be measured wherever the patrol
+/// had drifted to. The contact is planted classified, and one decide tick is
+/// stepped so the hostile edge has put the machine in `Approach`.
+fn aa1_posed(weapons: Vec<WeaponSummary>, blue: (u16, u16)) -> (Arena, Vec<u8>) {
+    let mut arena = duel_with(weapons, (4, 8), blue, &[]);
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 4_000, &mut bytes);
+    if let Some(state) = arena.unit_mut(RED) {
+        state.pose = centre(4, 8);
+        state.speed_cms = 0;
+    }
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(blue.0, blue.1);
+    }
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let until = arena.now_ms + 500;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Approach),
+        "the recipe: a classified hostile past `engage_cm` puts the machine in `Approach`"
+    );
+    (arena, bytes)
+}
+
+/// Step `run_ms` more of arena time, a pulse at a time, and answer RED's plot
+/// range at the first pulse that carried a new `fired` line — the range the
+/// first shot was taken at, read at the pulse that carried it.
+fn aa1_first_shot_range(arena: &mut Arena, bytes: &mut Vec<u8>, run_ms: i64) -> Option<i64> {
+    let before = count(&events(arena, bytes), "fired");
+    let until = arena.now_ms + run_ms;
+    let mut wall = arena.now_ms;
+    let mut first: Option<i64> = None;
+    while arena.now_ms < until {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, bytes);
+        if first.is_none() && count(&events(arena, bytes), "fired") > before {
+            first = Some(plot_range(arena, RED, BLUE));
+        }
+        wall += 500;
+    }
+    first
+}
+
+/// Write `objective` for RED's squad under `constraints`, live for a minute.
+fn aa1_order(
+    arena: &mut Arena,
+    objective: tacsim::deliberation::Objective,
+    constraints: tacsim::deliberation::Constraints,
+) {
+    let squad = arena
+        .squad_of(RED)
+        .map(|roster| roster.id)
+        .expect("one reflex machine is a squad of one");
+    let told = tacsim::deliberation::Order {
+        squad,
+        objective,
+        target: None,
+        horizon_ms: 60_000,
+        constraints,
+        ttl_ms: 60_000,
+        issued_ms: arena.now_ms,
+    };
+    arena.reflex.set_order(
+        RED,
+        tacsim::deliberation::StandingOrder::accepted(told, arena.now_ms),
+    );
+}
+
+/// **A machine that cannot close engages from where it stands** (16b cut AA.1;
+/// 16c `B-76`), and its mobile twin still closes to `engage_cm` first.
+///
+/// The recipe leaves RED in `Approach` 8,000 cm from BLUE — past `ENGAGE_CM`,
+/// inside `RELEASE_CM`. With its engine killed there, the machine's edge into
+/// `Engage` is `release_cm`: it locks, fires and never moves. At HEAD it
+/// re-planned a stand-off cell every tick, was refused the drive, and never shot
+/// again.
+///
+/// The twin is the contrast that makes it a proof: the same recipe with the
+/// engine running drives in and takes its first shot inside `ENGAGE_CM` —
+/// firing on the move while closing is not built (16b row E), and AA.1 does not
+/// change it.
+#[test]
+fn aa1_a_machine_that_cannot_close_engages_from_where_it_stands() {
+    let (mut arena, mut bytes) = aa1_posed(vec![cannon()], (12, 8));
+    disable_motion(&mut arena, RED);
+    let pose = arena.unit(RED).map(|unit| unit.pose.clone());
+    let first = aa1_first_shot_range(&mut arena, &mut bytes, 6_000);
+
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    let log = events(&mut arena, &mut bytes);
+    assert!(count(&log, "locked") > 0, "it locked the plot it holds");
+    assert!(
+        count(&log, "fired") > 0,
+        "and it fired from where it stands"
+    );
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.pose.clone()),
+        pose,
+        "a dead engine does not move, or turn"
+    );
+    let first = first.expect("a first shot");
+    assert!(
+        first > ENGAGE_CM && first <= RELEASE_CM,
+        "the first shot was taken at {first} cm, which is not between the two edges"
+    );
+
+    // The mobile twin: the same recipe, the engine running.
+    let (mut twin, mut twin_bytes) = aa1_posed(vec![cannon()], (12, 8));
+    let first = aa1_first_shot_range(&mut twin, &mut twin_bytes, 30_000)
+        .expect("the mobile twin closed and fired");
+    assert!(
+        first <= ENGAGE_CM,
+        "a machine that can close still holds its fire to `engage_cm`: its first shot was at \
+         {first} cm"
+    );
+}
+
+/// **A hull authored with no speed engages the same way** (16b cut AA.1) —
+/// N13's fixed-target shape, `mobility.max_speed_cms` at nought and its motion
+/// not disabled.
+///
+/// **Position only.** A zero-speed hull that is not `motion_disabled` still
+/// turns in place (`intents.rs` refuses a heading only under `motion_disabled`),
+/// so it turns onto the plot; what it cannot do is close, which is the whole of
+/// `UnitState::cannot_close`. No re-pose is needed: it never moves, and BLUE at
+/// eight cells is inside the ten-cell sight, so the sensor pass classifies it
+/// without a plant.
+#[test]
+fn aa1_a_hull_authored_with_no_speed_engages_the_same_way() {
+    let mut arena = duel((4, 8), (12, 8), &[]);
+    if let Some(state) = arena.unit_mut(RED) {
+        state.mobility.max_speed_cms = 0;
+    }
+    let opened = arena.unit(RED).map(|unit| (unit.pose.x_cm, unit.pose.y_cm));
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = arena.now_ms;
+    while arena.now_ms < 15_000
+        && !(state_of(&arena, RED) == Some(ReflexState::Engage)
+            && count(&events(&mut arena, &mut bytes), "fired") > 0)
+    {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        wall += 500;
+    }
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Engage),
+        "a zero-speed hull 8,000 cm out engages"
+    );
+    assert!(count(&events(&mut arena, &mut bytes), "fired") > 0);
+    assert_eq!(
+        arena.unit(RED).map(|unit| (unit.pose.x_cm, unit.pose.y_cm)),
+        opened,
+        "and it never left its opening position"
+    );
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        range > ENGAGE_CM && range <= RELEASE_CM,
+        "from between the two edges: {range} cm"
+    );
+}
+
+/// **The ceiling holds for an immobile machine** (16b cut AA.1): its edge is
+/// `release_cm` and no further, on a gun whose reach is shorter than the sight.
+///
+/// The gun is the five-cell [`coaxial`], for the reason
+/// [`close_engage_and_release`]'s doc gives: with the cannon the release edge IS
+/// the sight, so a planted contact past it dies after `contact_ttl_ms` and the
+/// `lost` edge drops the machine to `Patrol` for a reason that has nothing to do
+/// with the ceiling. At 7,000 cm BLUE is past `COAXIAL_RELEASE_CM` and inside the
+/// sight, so RED's own sensor keeps the contact live and nothing expires.
+#[test]
+fn aa1_the_ceiling_past_release_holds_for_an_immobile_machine() {
+    let (mut arena, mut bytes) = aa1_posed(vec![coaxial()], (11, 8));
+    disable_motion(&mut arena, RED);
+    let before = count(&events(&mut arena, &mut bytes), "fired");
+    let until = arena.now_ms + 6_000;
+    run(&mut arena, until, &mut bytes);
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        range > COAXIAL_RELEASE_CM,
+        "the fixture put the target at {range} cm, which is not past the release edge"
+    );
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Approach),
+        "past its firing ceiling an immobile machine stays in `Approach`"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "locked"), 0, "and locks nothing");
+    assert_eq!(count(&log, "fired"), before, "and fires nothing");
+
+    // Inside the release edge and outside `COAXIAL_ENGAGE_CM`: it engages there.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(8, 8);
+    }
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        range > COAXIAL_ENGAGE_CM && range <= COAXIAL_RELEASE_CM,
+        "the fixture put the target at {range} cm, which is not between the coaxial's edges"
+    );
+    let until = arena.now_ms + 6_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    assert!(
+        count(&events(&mut arena, &mut bytes), "fired") > before,
+        "inside the release edge it shoots from where it stands"
+    );
+}
+
+/// **An ordered `close` caps the immobile edge too** (16b cut AA.1; 16b cut
+/// N.2): the order's band caps `release_cm` inside `ranges()`, so the edge a
+/// machine that cannot close enters `Engage` at is the ORDERED ceiling.
+#[test]
+fn aa1_a_close_band_order_caps_the_immobile_edge_too() {
+    use tacsim::deliberation::{Constraints, Objective, RangeBand};
+
+    // `ranges()`'s rule for this fixture: the order's band against the cannon's
+    // edges and the ten-cell sight, and seven tenths of it for `engage_cm`.
+    let sight = u32::from(SIGHT_CELLS) * u32::from(CELL_CM);
+    let close_release =
+        i64::try_from(RangeBand::Close.ceiling_cm(&cannon().bands_cm(), sight)).unwrap_or(0);
+    let close_engage = close_release * 700 / 1_000;
+    assert_eq!(close_release, 3_333);
+
+    let (mut arena, mut bytes) = aa1_posed(vec![cannon()], (12, 8));
+    disable_motion(&mut arena, RED);
+    aa1_order(
+        &mut arena,
+        Objective::Engage { target_hint: None },
+        Constraints {
+            hold_fire: false,
+            max_range_band: Some(RangeBand::Close),
+        },
+    );
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        range > close_release && range <= RELEASE_CM,
+        "the target is at {range} cm: inside doctrine's ceiling and past the order's"
+    );
+    let log = events(&mut arena, &mut bytes);
+    let before = count(&log, "fired");
+    let locked_before = count(&log, "locked");
+    // Sampled every pulse, and the `locked` lines counted: `engage_orders` stages
+    // its lock before its own `release_cm` return, so an edge wider than the
+    // ordered ceiling would show as a machine flicking into `Engage` for a tick,
+    // locking, and being thrown back — with nothing fired and the end state
+    // `Approach`, which the last two assertions alone cannot tell from a held
+    // edge.
+    let until = arena.now_ms + 6_000;
+    while arena.now_ms < until {
+        let next = arena.now_ms + 500;
+        run(&mut arena, next, &mut bytes);
+        assert_ne!(
+            state_of(&arena, RED),
+            Some(ReflexState::Engage),
+            "past the ordered ceiling it never reads `Engage` (at {} ms)",
+            arena.now_ms
+        );
+    }
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Approach),
+        "past the ordered ceiling it does not engage"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "locked"), locked_before, "and locks nothing");
+    assert_eq!(count(&log, "fired"), before, "and fires nothing");
+
+    // Inside the ordered ceiling, past its seven tenths: the immobile edge.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(7, 8);
+    }
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let range = plot_range(&arena, RED, BLUE);
+    assert!(
+        range > close_engage && range <= close_release,
+        "the target is at {range} cm, which is not between the ordered edges"
+    );
+    let until = arena.now_ms + 6_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    assert!(
+        count(&events(&mut arena, &mut bytes), "fired") > before,
+        "inside the ordered ceiling it shoots"
+    );
+}
+
+/// **`hold_fire` still holds an immobile machine** (16b cut AA.1; 16b cut N.2):
+/// the edge brings it into `Engage` and `engage_orders` keeps the trigger.
+#[test]
+fn aa1_hold_fire_still_holds_an_immobile_machine() {
+    use tacsim::deliberation::{Constraints, Objective};
+
+    let (mut arena, mut bytes) = aa1_posed(vec![cannon()], (12, 8));
+    disable_motion(&mut arena, RED);
+    aa1_order(
+        &mut arena,
+        Objective::Engage { target_hint: None },
+        Constraints {
+            hold_fire: true,
+            max_range_band: None,
+        },
+    );
+    let before = count(&events(&mut arena, &mut bytes), "fired");
+    let until = arena.now_ms + 6_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Engage),
+        "the edge still brings it into `Engage`"
+    );
+    assert_eq!(
+        count(&events(&mut arena, &mut bytes), "fired"),
+        before,
+        "`hold_fire` stages no FIRE, whether or not the machine can move"
+    );
+}
+
+/// **A hurt immobile machine stands and shoots back at any health** (16b cut
+/// AA.1; the E row's Q8 departure, extended).
+///
+/// `hurt` is 166 per mille — under `withdraw_permille` AND under
+/// `stand_min_permille`, so the en-route stand is closed to it. With its engine
+/// killed it is home wherever it is (`arrived`), so its ceiling is `release_cm`:
+/// it stands and fires at BLUE 8,000 cm out.
+///
+/// The mobile hurt twin is E.1's rule re-asserted, and the proof that `(4, 8)` is
+/// en route and not home: it withdraws, never stands and fires nothing while it
+/// drives. That is what makes the immobile half a new rule rather than the
+/// `arrived` arm E.1 already had. The twin is read over two seconds, before it
+/// can have covered the two cells that would put it inside `ARRIVE_CELLS` of its
+/// entry zone.
+#[test]
+fn aa1_a_hurt_immobile_machine_stands_and_shoots_back_at_any_health() {
+    let (mut arena, mut bytes) = aa1_posed(vec![cannon()], (12, 8));
+    hurt(&mut arena, RED);
+    disable_motion(&mut arena, RED);
+    assert_eq!(arena.reflex_health_permille(RED), 166);
+    let before = count(&events(&mut arena, &mut bytes), "fired");
+    let until = arena.now_ms + 6_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert!(
+        arena
+            .reflex
+            .unit(RED)
+            .is_some_and(|row| row.stand_until_ms.is_some()),
+        "it stood"
+    );
+    assert!(
+        count(&events(&mut arena, &mut bytes), "fired") > before,
+        "and shot back from where it stands, at 166 per mille"
+    );
+
+    // The mobile hurt twin.
+    let (mut twin, mut twin_bytes) = aa1_posed(vec![cannon()], (12, 8));
+    hurt(&mut twin, RED);
+    let from = twin.unit(RED).map_or(0, |unit| unit.pose.x_cm);
+    let before = count(&events(&mut twin, &mut twin_bytes), "fired");
+    let until = twin.now_ms + 2_000;
+    run(&mut twin, until, &mut twin_bytes);
+    assert_eq!(state_of(&twin, RED), Some(ReflexState::Withdraw));
+    let here = twin
+        .unit(RED)
+        .and_then(|unit| twin.definition.terrain.cell_of(&unit.pose))
+        .expect("the twin is on the window");
+    let goal = twin
+        .reflex
+        .unit(RED)
+        .and_then(|row| row.goal)
+        .expect("a withdrawing machine has somewhere to be");
+    assert!(
+        here.0.abs_diff(goal.0).max(here.1.abs_diff(goal.1)) > tacsim::arena::reflex::ARRIVE_CELLS,
+        "the twin is still en route: at {here:?}, home {goal:?}"
+    );
+    assert!(
+        twin.unit(RED).is_some_and(|unit| unit.pose.x_cm < from),
+        "and driving home"
+    );
+    assert_eq!(
+        twin.reflex.unit(RED).and_then(|row| row.stand_until_ms),
+        None,
+        "en route and under `stand_min_permille` it never stands"
+    );
+    assert_eq!(
+        count(&events(&mut twin, &mut twin_bytes), "fired"),
+        before,
+        "and fires nothing while it drives"
+    );
+}
+
+/// **An immobile withdrawn machine rallies once, like one that is home** (16b
+/// cut AA.1), and then fights through the immobile edge: the whole path a hurt
+/// machine with a dead engine takes.
+///
+/// BLUE opens eleven cells out, past the ten-cell sight, so nothing is held while
+/// the rally clock runs.
+#[test]
+fn aa1_an_immobile_withdrawn_machine_rallies_once_like_one_that_is_home() {
+    let mut arena = duel((4, 8), (15, 8), &[]);
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 4_000, &mut bytes);
+    if let Some(state) = arena.unit_mut(RED) {
+        state.pose = centre(4, 8);
+        state.speed_cms = 0;
+    }
+    hurt(&mut arena, RED);
+    disable_motion(&mut arena, RED);
+    let until = arena.now_ms + 2_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Withdraw),
+        "hurt, it breaks off"
+    );
+    let rally = i64::from(reflex_cfg().rally_ms);
+    let until = arena.now_ms + rally + 3_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Patrol),
+        "twenty quiet seconds later it has rallied where it stands"
+    );
+    assert!(arena.reflex.unit(RED).is_some_and(|row| row.rallied));
+
+    // Now something comes: it approaches and engages from where it stands.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(12, 8);
+    }
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let before = count(&events(&mut arena, &mut bytes), "fired");
+    let until = arena.now_ms + 500;
+    run(&mut arena, until, &mut bytes);
+    assert!(
+        matches!(
+            state_of(&arena, RED),
+            Some(ReflexState::Approach | ReflexState::Engage)
+        ),
+        "a rallied machine takes the hostile: {:?}",
+        state_of(&arena, RED)
+    );
+    let until = arena.now_ms + 6_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    assert!(
+        count(&events(&mut arena, &mut bytes), "fired") > before,
+        "and fights to the end"
+    );
+}
+
+/// **An immobile machine in the coaxial's annulus, as one scripted arena** (16b
+/// cut AA.1; 16b §11's mandatory cross-tempo test): RED holds the [`coaxial`]
+/// with its engine killed before the first step — so all three cadences share
+/// the fact from arena time nought; the power-up is not motion and still runs —
+/// 4,000 cm from BLUE, inside `COAXIAL_RELEASE_CM` and outside
+/// `COAXIAL_ENGAGE_CM`. It engages from where it stands; at [`SCRIPT_AT_MS`]
+/// BLUE is put past the release edge and the sight ([`blue_breaks_contact`]),
+/// the contact expires, and the `lost` edge drops RED to `Patrol`.
+fn immobile_in_the_annulus() -> Arena {
+    let mut arena = duel_with(vec![coaxial()], (2, 8), (6, 8), &[]);
+    disable_motion(&mut arena, RED);
+    arena
+}
+
+#[test]
+fn aa1_an_immobile_machine_in_the_annulus_is_one_log_at_three_cadences() {
+    // First: the arc really happens, at one cadence, before anything is compared.
+    let mut arena = immobile_in_the_annulus();
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut arc: Vec<(i64, ReflexState, i64)> = Vec::new();
+    let mut wall = 0_i64;
+    loop {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        if arena.now_ms == SCRIPT_AT_MS {
+            blue_breaks_contact(&mut arena);
+        }
+        if let Some(state) = state_of(&arena, RED) {
+            arc.push((arena.now_ms, state, plot_range(&arena, RED, BLUE)));
+        }
+        if arena.now_ms >= 40_000 || out.ended.is_some() {
+            break;
+        }
+        wall += 1_000;
+    }
+    assert!(
+        arc.iter().any(|(at, state, range)| *at < SCRIPT_AT_MS
+            && *state == ReflexState::Engage
+            && *range > COAXIAL_ENGAGE_CM
+            && *range <= COAXIAL_RELEASE_CM),
+        "it never engaged from inside the annulus before the script: {arc:?}"
+    );
+    assert!(
+        arc.iter()
+            .any(|(at, state, _)| *at > SCRIPT_AT_MS && *state == ReflexState::Patrol),
+        "it never dropped to `Patrol` once the contact was gone: {arc:?}"
+    );
+
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| {
+            replay_of(
+                cadence,
+                40_000,
+                immobile_in_the_annulus,
+                blue_breaks_contact,
+            )
+        })
+        .collect();
+    let first = runs.first().expect("three replays");
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    for want in ["startup", "detected", "classified", "locked", "fired"] {
+        assert!(
+            kinds.iter().any(|kind| kind.contains(want)),
+            "the replay never journalled a {want}, so nothing was compared: {kinds:?}"
+        );
+    }
+    assert!(first.hashes.len() >= 100, "{} substeps", first.hashes.len());
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+}
