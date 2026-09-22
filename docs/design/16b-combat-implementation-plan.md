@@ -571,6 +571,22 @@ blocked lines, 1,006 path queries and 87,008 path cells with zero failures,
 was 17.022 ms. No timing assertion was enabled; the quieter arena measurement is
 within the 12 ms target, not a claim that the first run passed it.
 
+**Upstream integration check.** After those results, `origin/main` advanced to
+`ecaed401` (AA.1, the immobile machine). It merged cleanly at `79f8ef80`, preserving
+L's rustdoc repairs and the test composition's `sheet_modules` rename. At that
+merge revision, the full TacSim suite passed 877 tests with zero failures and two
+ignored scale tests across 25 targets. Strict workspace private-item rustdoc
+passed for all 44 crates, workspace all-target Clippy passed with warnings denied,
+and formatting/diff checks passed. The two ignored release harness tests then
+passed in report-only mode with the same 300-unit, 60-pulse, seed-2350 knobs:
+arena p50/p95/p99/max 1.246/6.563/7.124/7.314 ms, static ground p99/max
+4.101/4.713 ms. All eleven non-timing arena report rows matched the earlier
+release run exactly. Timing assertions remained disabled. The three Windows TLS
+release binaries above were built at `02ead118`, before this engine merge; the
+merged source's full Linux workspace, Redis and deployable-release gates remain
+pending. The prepared Linux runner keeps the bot sweep separate and confines
+Redis to its dedicated checks.
+
 **Still pending:** Linux/Redis/provisioning validation and integration.
 Overlapping workspace/release attempts
 were stopped during compilation under memory pressure before tests started;
