@@ -3,7 +3,7 @@
 //! The cut where M31 `MobilityProfile` and M32 `TacticalUnit` (pure libraries)
 //! become LIVE: attached to real objects, persisted, surviving reboot, and
 //! finally READ (a show command, and a panel that consumes the M32 damage
-//! [`Journal`](crate::unit::Journal)). This module owns NS `tactics`; the
+//! [`Journal`]). This module owns NS `tactics`; the
 //! seam-test stub moved to `tacseam` so both can load in one Engine.
 //!
 //! ## Contracts (from the M33 design review)
@@ -20,7 +20,7 @@
 //!   recovery incidents and repair previews. Boot never rewrites a legacy
 //!   record, deletes a corrupt record, or silently attaches/detaches a marker.
 //! - **Panel: always [`Audience::Actor`], never the room.** No `SpatialState`
-//!   read; every payload routes through [`project`] = the unit view
+//!   read; every payload routes through `project` = the unit view
 //!   (`view.rs`, interface plan I8), so the keyframe, `@unit/show` and the
 //!   `tactics.vitals` frame derive from one projection. The create keyframe
 //!   goes to the acting staffer only; the `@unit/damage` delta and the
@@ -2762,7 +2762,7 @@ pub fn create_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<Tac
 ///
 /// Both reach it under the tacsim module's identity through the declared
 /// `tacsim → tactics` persist delegation, which is why the write is
-/// [`persist_unit_document`] and not [`persist_encoded_unit`] — the same choice
+/// `persist_unit_document` and not `persist_encoded_unit` — the same choice
 /// [`apply_plan`] makes and for the same reason.
 ///
 /// **A plan cannot do this.** F.1's reset is a [`UnitMutationPlan`] against the
@@ -2773,7 +2773,7 @@ pub fn create_unit(ctx: &mut Ctx<'_>, obj: ObjId, spec: &UnitSpec) -> Result<Tac
 ///
 /// **What it does not touch**: the object, its placement, the stations and
 /// billets keyed on it in `mush-sim`, its roster entry, and its lifecycle
-/// record's custody marker ([`UnitStore::replace_active`] keeps the row). A
+/// record's custody marker (`UnitStore::replace_active` keeps the row). A
 /// **deployed** unit is refused outright, for [`apply_plan`]'s reason: while a
 /// match runs the arena is the single writer for that unit's cells.
 ///

@@ -39,7 +39,7 @@ pub(crate) struct AppState {
 }
 
 /// Builds the complete axum app. Public for tests and embedders; `mushd`
-/// normally calls [`serve`](crate::serve) instead.
+/// normally calls [`serve`] instead.
 ///
 /// The router must be served with connect info
 /// (`app.into_make_service_with_connect_info::<SocketAddr>()`) — the
@@ -49,7 +49,7 @@ pub fn router(hooks: Arc<dyn WebHooks>, config: WebConfig) -> Router {
 }
 
 /// Periodic maintenance handle for the rate limiter (drops stale per-IP
-/// buckets); run by [`serve`](crate::serve).
+/// buckets); run by [`serve`].
 type LimiterGc = Box<dyn Fn() + Send + Sync>;
 
 pub(crate) fn build(hooks: Arc<dyn WebHooks>, config: WebConfig) -> (Router, Option<LimiterGc>) {
@@ -247,7 +247,7 @@ async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// Serves until the process ends. See
-/// [`serve_with_shutdown`](crate::serve_with_shutdown) for graceful stops.
+/// [`serve_with_shutdown`] for graceful stops.
 pub async fn serve(hooks: Arc<dyn WebHooks>, config: WebConfig) -> std::io::Result<()> {
     serve_with_shutdown(hooks, config, std::future::pending()).await
 }

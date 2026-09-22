@@ -627,7 +627,7 @@ impl InventoryFamilies {
     /// exists because a sale needs both halves and cannot have them separately:
     /// `consume` writes the source pool pair and `crystallize` writes it again
     /// (through `debit`), and an [`ActionTxn`] mutates one key **once**
-    /// (`ActionStateError::DuplicateMutation`). E7 residue pass 1's [`renew`] is
+    /// (`ActionStateError::DuplicateMutation`). E7 residue pass 1's [`Self::renew`] is
     /// the precedent for the shape — one method, because one `write_pair`.
     ///
     /// **It mints nothing.** The pool is debited by the hold's own amount and the

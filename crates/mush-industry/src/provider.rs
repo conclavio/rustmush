@@ -282,7 +282,7 @@ pub struct IndustryProvider {
     /// nothing about what a recipe is: `@wo/draft` already refuses there, and the
     /// offer follows it.
     recipes: Option<std::sync::Arc<dyn crate::workorder::RecipeAuthority>>,
-    /// The hashed catalog, keyed on [`RecipeAuthority::catalog_revision`]. The
+    /// The hashed catalog, keyed on [`crate::workorder::RecipeAuthority::catalog_revision`]. The
     /// walk and the hashing happen once per pack publish, not once per
     /// projection — and `project_legal_actions` runs every provider on every
     /// projection pass, including every authoritative submission.

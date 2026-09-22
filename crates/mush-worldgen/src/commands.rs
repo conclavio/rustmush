@@ -5,7 +5,7 @@
 //! The `@gen` handler is the world-loop half of the two-phase pattern: it
 //! snapshots the prompt context synchronously and defers the LLM call as an
 //! [`Effect::ModuleAsync`]. The call runs off-loop (mush-llm), and the
-//! completion re-enters as [`WorldCommand::ModuleAsyncDone`], routed here to
+//! completion re-enters as `WorldCommand::ModuleAsyncDone`, routed here to
 //! [`WorldgenCompletion::on_complete`], which stores the draft and notifies
 //! the builder. Nothing the LLM produces is ever auto-committed.
 
@@ -1814,7 +1814,7 @@ fn defer_next_room(ctx: &mut Ctx<'_>, entrance: ObjId) {
 
 /// Resume a batch whose room pass stalled with no off-loop call in flight —
 /// e.g. a reboot during generation, which
-/// [`on_world_loaded`](crate::WorldgenModule::on_world_loaded) downgraded from
+/// [`on_world_loaded`](mush_core::GameModule::on_world_loaded) downgraded from
 /// `Generating` back to `Pending` but could not re-arm (the driver drops
 /// boot-time deferred effects). A no-op unless the batch is actively
 /// `Generating`, has a pending room, and nothing is currently `Generating`

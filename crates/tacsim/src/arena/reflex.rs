@@ -146,7 +146,7 @@ pub const REFLEX_AVOID_TTL_MS: i64 = 30_000;
 /// Three, and the number is the arrive window plus the cell quantisation.
 /// [`ARRIVE_CELLS`] is one cell Chebyshev — 14 m on a diagonal at the shipped
 /// 10 m cell — and the goal a search is given is a cell, whose centre is up to
-/// half a cell off the point [`Arena::stand_off_cell`] projected. So a goal
+/// half a cell off the point `Arena::stand_off_cell` projected. So a goal
 /// placed *at* `engage_cm` leaves a unit that has arrived a few metres outside
 /// the band: stopped, in `Approach`, never firing. Three cells is enough slack
 /// that an arrived unit is inside `engage_cm` and little enough that the machine
@@ -195,7 +195,7 @@ pub enum ReflexState {
     /// 3. **the hunt** — [`ReflexUnit::hunt`], the other side's entry zone,
     ///    once [`crate::config::ReflexConfig::hunt_after_ms`] has passed with
     ///    nothing hostile held at all;
-    /// 4. **the waypoint walk** — [`Arena::patrol_goal`], the arena pack's
+    /// 4. **the waypoint walk** — `Arena::patrol_goal`, the arena pack's
     ///    graph, which is what `Patrol` was and still is when the three above
     ///    have nothing to say.
     Patrol,
@@ -358,7 +358,7 @@ pub struct ReflexUnit {
     /// **The cell of the other side's entry zone this machine is crossing to**
     /// (16b cut E.4; 16c `B-04`), or `None`.
     ///
-    /// Set once the clock above has run out, from [`Arena::far_entry_cell`],
+    /// Set once the clock above has run out, from `Arena::far_entry_cell`,
     /// which reads the arena definition's zones and no unit's pose. Cleared, and
     /// the clock restarted, by arrival within [`ARRIVE_CELLS`] (which also
     /// forgets the waypoint the walk was on, so it resumes from the node nearest
@@ -822,7 +822,7 @@ impl Arena {
     /// **A routeless machine is asked every substep whether the cell in front of
     /// it is still open** (16b cut E.3; 16c `B-44`), before motion runs.
     ///
-    /// 16b cut Q.7 put that question into [`Arena::follow`]: a machine steering at
+    /// 16b cut Q.7 put that question into `Arena::follow`: a machine steering at
     /// a goal with no route is steering at a *direction* nobody has checked the
     /// ground along, so the one cell it would cross first is tested with the
     /// crossing's own rule and a machine that would be refused it is ordered to
@@ -837,10 +837,10 @@ impl Arena {
     /// is a sequence of edges the search has already checked — the cell on the
     /// unit's **actual** `pose.heading_mdeg` (not the heading it was ordered onto;
     /// motion will cross the one the tank is pointing at) is put to
-    /// [`Arena::first_step_is_open`] with the machine's own remembered stops.
+    /// `Arena::first_step_is_open` with the machine's own remembered stops.
     /// Where it answers `false` the unit is ordered `Speed { cms: 0 }` through
     /// [`apply_intent`], at its own current epoch, exactly the way
-    /// [`Arena::order`] builds one: **the machine still does nothing a pilot could
+    /// `Arena::order` builds one: **the machine still does nothing a pilot could
     /// not.** The next decide tick orders a speed again as soon as the step on the
     /// heading it wants is open, which is Q.7's own rule unchanged.
     ///
@@ -927,7 +927,7 @@ impl Arena {
     /// [`ReflexUnit::avoid`]) and it clears `searched_ms`, so the next tick
     /// searches at once rather than waiting out `repath_ms` against an obstacle
     /// that is not going to move. The re-search is still under
-    /// [`ReflexMemory::may_search`]'s per-window budget, so a field that all stops
+    /// `ReflexMemory::may_search`'s per-window budget, so a field that all stops
     /// at once cannot spend more searches than a field that does not.
     pub fn note_blocked(&mut self, unit: ObjId, cell: (u16, u16), cause: BlockedCause, t_ms: i64) {
         if self

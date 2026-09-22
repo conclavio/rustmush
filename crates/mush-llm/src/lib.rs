@@ -9,16 +9,16 @@
 //!
 //! - [`types`] — provider-neutral request/response types (Anthropic-shaped
 //!   content blocks; the OpenAI adapter down-converts).
-//! - [`provider`] — the [`LlmProvider`](provider::LlmProvider) trait,
-//!   [`ProviderCaps`](provider::ProviderCaps), and the [`LlmError`] taxonomy.
+//! - [`provider`] — the [`LlmProvider`] trait,
+//!   [`ProviderCaps`], and the [`LlmError`] taxonomy.
 //! - [`anthropic`] / [`openai`] — the two hand-rolled reqwest adapters
 //!   (feature-gated `anthropic` / `openai`, both default-on).
-//! - [`service`] — [`LlmService`](service::LlmService): route by model-id
+//! - [`service`] — [`LlmService`]: route by model-id
 //!   prefix, layered daily budgets, priority concurrency + per-provider QPS,
 //!   retry with a circuit breaker, and an audit row per call.
 //! - [`budget`] / [`audit`] / [`config`] — the ledger, audit sink, and TOML
 //!   config structs.
-//! - [`mock`] — a network-free [`MockProvider`](mock::MockProvider) for tests
+//! - [`mock`] — a network-free [`MockProvider`] for tests
 //!   (feature `mock`, default-on).
 //! - [`agent`] — the bounded tool loop ([`agent::run`]) an NPC turn and the
 //!   worldgen planner both run on: rounds, the answered-only echo, one repair,

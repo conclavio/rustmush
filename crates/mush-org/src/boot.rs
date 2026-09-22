@@ -11,7 +11,7 @@
 //! Every authority the engine reads is re-derived from live records, so the safe
 //! failure is always *less* authority: a dropped record simply stops authorizing,
 //! and dangling references (a scope whose parent is missing, a delegation whose
-//! source grant is gone) are already fail-closed by [`crate::authorize`]'s
+//! source grant is gone) are already fail-closed by [`crate::authorize()`]'s
 //! depth-bounded, existence-checking walks. The allocator resume never hands out a
 //! live (or previously seen) id: `meta` is authoritative but floored at one past
 //! the max id actually parsed.

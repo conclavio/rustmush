@@ -2,7 +2,7 @@
 //!
 //! An in-process driver for integration-style tests: no sockets, no tokio,
 //! no session layer — just a [`World`], the core command
-//! [`Registry`](mush_core::Registry), and helpers that make asserting on
+//! [`Registry`], and helpers that make asserting on
 //! [`OutputEvent`] streams pleasant.
 //!
 //! The centerpiece is [`TestWorld`]:

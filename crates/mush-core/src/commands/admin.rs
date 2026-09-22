@@ -87,7 +87,7 @@ pub fn narrative_actor(ev: &OutputEvent) -> Option<ObjId> {
 /// those name no one and are delivered to the whole room exactly as before.
 ///
 /// Movement/arrival/departure, take/drop/give, and connect/disconnect echoes
-/// are emitted as *unattributed* narratives ([`crate::commands::narrative_emit`],
+/// are emitted as *unattributed* narratives (`crate::commands::narrative_emit`,
 /// `actor: None`) so their wire form is unchanged, but they still reveal a
 /// mover: those carry their subject in the routing layer instead
 /// ([`crate::output::Outbox::to_room_from`] → `Audience::Room::subject`),

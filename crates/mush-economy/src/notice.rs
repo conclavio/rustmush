@@ -76,7 +76,7 @@ pub struct PendingNotice {
     /// Standing was checked when the line was *emitted*; a queue is a delay, and an
     /// officer removed from an organization while they were away used to connect
     /// three weeks later and read every contract transition the org had had since.
-    /// [`render_pending`] re-asks [`acts_for`] at delivery and drops what no longer
+    /// `render_pending` re-asks [`acts_for`] at delivery and drops what no longer
     /// holds. `None` — every notice written before this field, and every notice an
     /// object is told about itself — is always delivered.
     #[serde(default, skip_serializing_if = "Option::is_none")]

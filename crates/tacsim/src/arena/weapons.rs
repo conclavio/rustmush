@@ -400,7 +400,7 @@ fn against_sight(weapon_cm: u64, sight_cm: u32) -> u64 {
 /// the plot recorded at the sighting that last refreshed the contact — and every
 /// number a pilot reads off a contact is computed from it, including the chance
 /// `LOCK` and `WEAPONSTATUS` quote
-/// (`crate::arena::resolution::Arena::resolve_seen`). For a target that has moved
+/// (`crate::arena::Arena::resolve_seen`). For a target that has moved
 /// since that sighting the two differ, which is what a stale track costs; while
 /// the target is in continuous view the plot is at most one `sensors.pass_ms` old
 /// and they agree. Cut S.1's justification for reading the target here — *a held

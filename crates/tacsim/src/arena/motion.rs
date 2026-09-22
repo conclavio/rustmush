@@ -19,7 +19,7 @@
 //! **16b cut E.3 put one delay into step 4, for traffic alone** (16c `B-46`, §5's
 //! Q10). Ground, the window's edge and a slope still stop a unit dead at the
 //! centimetre it was refused. A cell held by **another unit** opens a *hold*
-//! instead ([`hold_at_boundary`]): the unit is clamped at the boundary keeping the
+//! instead (`hold_at_boundary`): the unit is clamped at the boundary keeping the
 //! speed it had, nothing is journalled and nobody is told, and if the way clears
 //! it drives on without ever having stopped. Only a hold on one cell that outlasts
 //! `[tacsim.arena].occupied_stop_ms` of arena time becomes step 4's literal stop,

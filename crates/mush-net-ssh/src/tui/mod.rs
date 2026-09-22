@@ -1,12 +1,12 @@
 //! Server-side ratatui TUI over SSH (milestone M15, interface plan I2) —
 //! the third renderer of the shared per-connection
-//! [`OutputEvent`](mush_proto::OutputEvent) stream (line = `mush-ansi`, web
+//! [`OutputEvent`] stream (line = `mush-ansi`, web
 //! = JSON, TUI = ratatui).
 //!
 //! This module lives entirely in the transport layer: it never touches the
-//! single-writer world. `@tui` flips the connection into [`Mode::Tui`], the
+//! single-writer world. `@tui` flips the connection into `Mode::Tui`, the
 //! output pump applies each event to a [`TuiApp`] and repaints one coalesced
-//! frame through a clean-room [`SshBackend`], and raw input is decoded into
+//! frame through a clean-room `SshBackend`, and raw input is decoded into
 //! keys the modal shell acts on. `@notui` (or the detach hotkey) flips back
 //! to line mode, which is byte-for-byte unaffected when a connection never
 //! enters the TUI (invariant T1).
@@ -17,7 +17,6 @@
 //! key never sends a mutating command (D-I-18), and on the scene screen the
 //! room's one-letter exits are keys (D-I-19).
 //!
-//! [`Mode::Tui`]: crate::server (private)
 
 pub mod app;
 mod backend;
@@ -34,9 +33,9 @@ use mush_proto::{ClientCaps, OutputEvent};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-/// A connected TUI: the ratatui [`Terminal`] (owning the [`SshBackend`] and
+/// A connected TUI: the ratatui [`Terminal`] (owning the `SshBackend` and
 /// the double-buffer diff) plus the [`TuiApp`] state. Held in the connection
-/// `Shared` while [`Mode::Tui`](crate::server) is active; both the output
+/// `Shared` while `Mode::Tui` is active; both the output
 /// pump and the input handler reach it under the connection lock.
 pub struct TuiSession {
     terminal: Terminal<SshBackend>,

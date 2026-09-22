@@ -4,7 +4,7 @@
 //! commands (tacsim STARTUP/HEADING, later) reach only its crew.
 //!
 //! The `command_subject_links` on `World` are treated as a pure projection of
-//! [`HostAssignments`]: any change recomputes and republishes an actor's links
+//! [`crate::HostAssignments`]: any change recomputes and republishes an actor's links
 //! from scratch. This sidesteps the coarse `retract_command_subjects(owner,
 //! actor)` API (which drops ALL of an actor's `sim` links) — we drop them all
 //! and republish the survivors. `World::destroy` already scrubs links for a

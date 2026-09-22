@@ -16,7 +16,7 @@
 //!   (`reg.job_queue(JobQueueSpec { .. })`) — a queue's `min_role` gates
 //!   who can work it and see its full listing; a job's opener and
 //!   assignee always see their own.
-//! - Persistence is write-through via [`ModuleOp`](mush_core::ModuleOp)s
+//! - Persistence is write-through via [`ModuleOp`]s
 //!   in the `jobs` namespace: `job:{id}` and `note:{char}:{category}`
 //!   JSON documents plus a `meta` doc carrying the id counter, so job
 //!   numbering stays sequential across reboots. Boot data arrives through
@@ -32,7 +32,7 @@
 //! untouched and is reported to the approver. Producing modules register
 //! handlers via [`register_payload_handler`] and open payload-carrying
 //! jobs via [`open_job`]; the exported registry handle ([`JobsApi`])
-//! lives in a module state slot on the world — see [`api`] for the full
+//! lives in a module state slot on the world — see `api` for the full
 //! pattern write-up. The WoD XP-spend flow consumes this in M6.
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,

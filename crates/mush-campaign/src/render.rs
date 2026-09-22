@@ -95,7 +95,7 @@ pub(crate) fn acts_for(w: &World, who: ObjId, principal: &PrincipalId) -> bool {
 /// membership — any named side, any committed unit's controller — was write access
 /// to somebody else's operation and somebody else's money. `commands.rs` asks its own
 /// `may_amend` / `may_activate` / `may_roster` / `may_commit_unit` / `may_resolve`
-/// beside it now; this predicate is unchanged, and [`acts_for`]'s doc comment below
+/// beside it now; this predicate is unchanged, and `acts_for`'s doc comment below
 /// is true of the code again.
 #[must_use]
 pub fn lens_for(w: &World, doc: &OperationDoc, who: ObjId) -> Lens {

@@ -93,7 +93,7 @@ pub fn scope_for(visibility: &EconomicVisibility) -> CanonScope {
 ///
 /// It reads `RootFact.canon` — the `CanonId` the commit itself returned, stamped on
 /// the operation document and flushed in the same batch, and written **only** after a
-/// successful commit ([`settle_root`]). Cut 9 asked `mush_canon::records_for_source`
+/// successful commit (`settle_root`). Cut 9 asked `mush_canon::records_for_source`
 /// instead, which 08f §4.6's R3 row calls a **bounded read seam** in its own words:
 /// `CanonState::recent()` (the *unsealed* 16 KB chunk) plus `sealed_tail`, a
 /// **boot-time** snapshot of two sealed chunks that is never refreshed at runtime. So

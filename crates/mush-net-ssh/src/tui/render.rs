@@ -124,7 +124,7 @@ pub struct RenderCtx<'a> {
     /// The channel the backlog pane shows.
     pub selected_channel: Option<&'a str>,
     /// **The pane's inner rect, `(width, height)`** (16b cut Q.4), where the
-    /// caller knows it: [`super::app::TuiApp::draw_pane`] passes the rect it is
+    /// caller knows it: `super::app::TuiApp::draw_pane` passes the rect it is
     /// about to paint into, and the input paths (scrolling, the highlighted
     /// row) pass `None` because they ask what the rows ARE, not how many fit.
     ///
@@ -2253,7 +2253,7 @@ fn designator_of(contact: &Value) -> String {
 ///    frame's own `cell`, grid width, grid height)` — centred on the platform
 ///    and clamped to the arena, the SAME rule `VIEW` uses and differing only in
 ///    size. It answers `(x0, y0, w, h)`. The grid's size is the pane's, less
-///    [`MAP_CHROME_ROWS`]; with no pane it is [`COCKPIT_MAP_FALLBACK`], the
+///    `MAP_CHROME_ROWS`; with no pane it is [`COCKPIT_MAP_FALLBACK`], the
 ///    seventy-eight by twenty the committed fixtures are composed at.
 /// 2. The terrain is `window_rows(map rows, map width, map height, x0, y0, w,
 ///    h)`: row `0` is the window's SOUTH row, each exactly `w` glyphs.
@@ -2262,7 +2262,7 @@ fn designator_of(contact: &Value) -> String {
 ///    cell less the window origin, and a later marker overwrites an earlier one
 ///    on the same cell. A contact whose `cell` is null or outside the window is
 ///    not drawn (it is still in the contacts pane).
-/// 4. A contact's glyph is [`contact_glyph`]'s: `?` unknown, `+` friendly, `x`
+/// 4. A contact's glyph is `contact_glyph`'s: `?` unknown, `+` friendly, `x`
 ///    hostile.
 /// 5. The rows print NORTH-UP: `y` from `h - 1` down to `0`.
 ///

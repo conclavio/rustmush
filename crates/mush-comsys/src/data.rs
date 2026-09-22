@@ -110,7 +110,7 @@ impl Default for ChannelColor {
 /// self-documenting JSON doc).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelFlags {
-    /// Announce unread counts at login ("[Public] 3 messages since …").
+    /// Announce unread counts at login (`"[Public] 3 messages since …"`).
     #[serde(default)]
     pub loud: bool,
     /// Suppress comtitles on this channel.

@@ -5,7 +5,7 @@
 //! `Box<dyn GameModule>` **before** persisted world load. Each module's
 //! [`GameModule::register`] runs once against a [`Registrar`], which is a
 //! thin, identity-carrying view over the existing
-//! [`Registry`](crate::cmd::Registry) — commands and alias stages land in
+//! [`Registry`] — commands and alias stages land in
 //! the same tables the core uses (there is no second registry, ever), and
 //! everything else (hooks, ticks, observers, panel feeds, …) lands in the
 //! registry's module tables.
@@ -18,7 +18,7 @@
 //!   outbox's deferred side-channel and drained by the world task into the
 //!   current `WriteBatch` (write-through, same atomicity as object writes);
 //! - typed state via [`Registrar::state`] slots living on the
-//!   [`World`](crate::world::World);
+//!   [`World`];
 //! - scenes (the tactical seam) via [`Ctx::start_scene`] /
 //!   [`Ctx::end_scene`] / scene ticks / the per-scene state store and map
 //!   blob.
@@ -1475,7 +1475,7 @@ pub struct StackedContext {
 }
 
 /// Per-actor input-context stacks, owned by the
-/// [`World`](crate::world::World).
+/// [`World`].
 ///
 /// **Transient parser state**: contexts are trait objects and cannot be
 /// cloned — cloning a `World` yields empty stacks (a cloned world is a
@@ -1664,7 +1664,7 @@ impl fmt::Display for StateSlotDenied {
 
 impl std::error::Error for StateSlotDenied {}
 
-/// Typed module state living on the [`World`](crate::world::World): an
+/// Typed module state living on the [`World`]: an
 /// anymap over `TypeId`. Slots are declared via [`Registrar::state`] (or
 /// inserted at boot) and accessed through [`Ctx::state`] /
 /// [`Ctx::state_mut`].
@@ -1804,7 +1804,7 @@ pub struct PersistDelegation {
 }
 
 /// The module-facing registration tables carried by the
-/// [`Registry`](crate::cmd::Registry) — one registry, extended (treaty
+/// [`Registry`] — one registry, extended (treaty
 /// ruling 4), never a second one.
 #[derive(Default)]
 pub struct ModuleTables {
@@ -4668,7 +4668,7 @@ impl Ctx<'_> {
     /// state slots. The engine's own namespace-crossing helpers — the scene
     /// API, which writes the scene's OWNING namespace whoever calls it, and
     /// the world timeline, which writes an engine-owned namespace no module
-    /// may be named after — take [`Ctx::persist_engine_owned`] instead: the
+    /// may be named after — take `Ctx::persist_engine_owned` instead: the
     /// engine mediates those, so they are not a module reaching across.
     pub fn persist(&mut self, op: ModuleOp) {
         // This is on every module write path, so the fast path is one

@@ -91,7 +91,7 @@ pub fn listing_holder_text(listing: ListingId) -> String {
 /// makes it a pattern (10b §3.4, amended).
 ///
 /// # Errors
-/// [`LOT_IDENTITY`] if the key cannot be built.
+/// `LOT_IDENTITY` if the key cannot be built.
 pub fn listing_holder(listing: ListingId) -> Result<ScopedIdempotencyKey, LotError> {
     let id = IdempotencyKeyText::parse_canonical(format!("listing{:016x}", listing.0))
         .map_err(|_| LOT_IDENTITY)?;

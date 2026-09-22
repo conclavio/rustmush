@@ -432,7 +432,7 @@ impl CustodyEval for WorldCustody<'_> {
 /// E7 cut 2 binds every balance to an **E3 custody endpoint** and adds no second
 /// custody model: this is the one question it asks, answered here so the rules
 /// stay E3's — the vault's own lifecycle, the frozen provider table's
-/// `backing_valid`, and [`resolve`]'s exactly-one-claiming-provider rule.
+/// `backing_valid`, and `resolve`'s exactly-one-claiming-provider rule.
 /// Nothing here mutates, and nothing here is a permission check: who may *see*
 /// or *use* an endpoint is the caller's own disclosure question.
 #[derive(Clone, Debug, PartialEq, Eq)]

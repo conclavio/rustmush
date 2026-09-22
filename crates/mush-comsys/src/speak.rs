@@ -12,7 +12,7 @@
 //! with at least one live connection** (link-dead members receive nothing,
 //! so their cursor must not move), **ungagged**, **pass the channel's see
 //! lock**, and are **not `@ignore`-ing the speaker**; exactly those members
-//! have their [`Membership::last_read`] cursor advanced (and mirrored),
+//! have their [`crate::data::Membership::last_read`] cursor advanced (and mirrored),
 //! which is what makes the login unread notice honest.
 
 use mush_core::lock::MAX_LOCK_DEPTH;

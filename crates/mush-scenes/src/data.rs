@@ -208,7 +208,7 @@ pub enum SceneStatus {
 
 impl SceneStatus {
     /// Whether the scene still holds its members (movement freeze, NPC
-    /// suppression, exclusivity apply): every status except [`Closed`].
+    /// suppression, exclusivity apply): every status except [`SceneStatus::Closed`].
     #[must_use]
     pub fn holds_members(self) -> bool {
         !matches!(self, SceneStatus::Closed)
@@ -940,7 +940,7 @@ pub(crate) fn persist_scene(out: &mut Outbox, s: &SceneRecord) {
     );
 }
 
-/// The public half of [`persist_scene`], for the **one** cross-crate writer this
+/// The public half of `persist_scene`, for the **one** cross-crate writer this
 /// crate has: `mush-sim`'s journey arrival, which raises an onboard scene's IC
 /// floor through [`SceneRecord::raise_ic_floor_on_arrival`] and must mirror the
 /// raised record in the same `Outbox` batch as the arrival itself (E7 cut 6 B4,

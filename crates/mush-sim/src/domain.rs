@@ -415,7 +415,7 @@ impl ActivationBook {
 // applier, and nothing here constructs a `DomainClock::Pulse` or touches the
 // composition-frozen `ClockProviderRegistry`.
 
-/// What one [`raise`] did.
+/// What one `raise` did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RaiseOutcome {
     /// The domain is not `Active`; only an active domain promotes.

@@ -22,7 +22,7 @@
 //! `[tacsim.sensors].condition_green_permille` and `condition_yellow_permille`,
 //! passed in rather than read here, because this module has no configuration and
 //! [`crate::arena::state::Arena`] has exactly one place that recomputes a cached
-//! band ([`crate::arena::state::Arena::set_unit`]). They are configuration and not
+//! band (`crate::arena::state::Arena::set_unit`). They are configuration and not
 //! constants so the owner can tune them on a box with a server-child restart and
 //! no build, and not content because shipped content is compiled into the binary
 //! and an operator pack cannot override a shipped id.
@@ -266,7 +266,7 @@ impl Condition {
     /// A section does not come back. The bands are otherwise a *snapshot* and the
     /// newer one wins outright — but a reading a platform holds may carry one
     /// fact its sensors never took: the section its own gunner watched come apart
-    /// ([`crate::arena::state::Arena::observe_section_lost`]), written in with the
+    /// (`crate::arena::state::Arena::observe_section_lost`), written in with the
     /// **old look's** stamp because it is not a look. A teammate's share taken
     /// between that look and the fire is therefore *stamped* newer while knowing
     /// strictly less, and adopting it whole would make `SCAN` contradict the line

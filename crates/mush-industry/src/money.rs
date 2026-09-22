@@ -213,12 +213,11 @@ pub fn order_price(order: &WorkOrder) -> Amount {
     )
 }
 
-/// What a budget operation refused on. `bond.rs`'s [`BondError`] shape, including
+/// What a budget operation refused on. `bond.rs`'s `BondError` shape, including
 /// W2's transient rule: `RetryShortly` / `JournalUnavailable` / `EconomyFrozen` are
 /// a **wait with no attempt counted**, never a re-apply and never a miss
 /// (docs/design/13, W-D2 / W-D4).
 ///
-/// [`BondError`]: mush_campaign
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HoldError {
     /// The economy is not composed, or is frozen.
@@ -397,7 +396,7 @@ pub fn release(ctx: &mut Ctx<'_>, order: WorkOrderId, hold: &Hold) -> Result<(),
 ///
 /// **The owner-operator case is a recorded ZERO-NET posting** (independent verify
 /// fold, C1/B9; owner decision F1(b)). When the facility's owner holds only the
-/// budget account, [`payee_of`] answers that account, and the capture still writes
+/// budget account, `payee_of` answers that account, and the capture still writes
 /// both lines — the debit and the credit land on one account, so the posted balance
 /// is unmoved and only the reservation is spent. It is memoed
 /// `industry.wo.self` so a reader of the journal can tell a self-transfer from a

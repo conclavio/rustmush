@@ -9,7 +9,7 @@
 //!    `mem:{npc}:{subject}` module documents, written by the `remember` tool
 //!    and the summarizer.
 //!
-//! Recall v1 is deliberately dumb ([`recall`]): fetch records whose subject
+//! Recall v1 is deliberately dumb ([`LongTermStore::recall`]): fetch records whose subject
 //! matches a present player's name, newest-first. Embedding recall is a
 //! documented M10 seam behind the [`MemoryRecall`] trait — **not built here**.
 
@@ -80,7 +80,7 @@ pub const HARD_CAP: usize = BUFFER_CAP * 2;
 
 impl MemoryBuffer {
     /// Append an event, enforcing the hard RAM cap (oldest dropped past
-    /// [`HARD_CAP`]) and the aggregate byte ceiling.
+    /// `HARD_CAP`) and the aggregate byte ceiling.
     pub fn push(&mut self, ts: i64, text: impl Into<String>) {
         let text = crate::action::sanitize_line(&text.into(), MAX_MEMORY_EVENT_CHARS);
         if text.is_empty() {
@@ -285,7 +285,7 @@ impl LongTermStore {
     }
 
     /// The durable record for `(npc, subject)`, if any (subject matched by the
-    /// same slug [`recall`](LongTermStore::recall) uses). Backs
+    /// same slug [`LongTermStore::recall`] uses). Backs
     /// [`familiarity_of`](crate::knowledge::familiarity_of).
     #[must_use]
     pub fn record_for(&self, npc: ObjId, subject: &str) -> Option<&MemoryRecord> {

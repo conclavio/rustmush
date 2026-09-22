@@ -447,7 +447,7 @@ T1–S2 assumes of the shell, and nothing ruleset-specific.
 
 ```rust
 // mush-net-ssh/src/tui/screen.rs
-pub struct ScreenId(u8);                        // 1..=MAX_SCREENS, the hotkey digit
+pub struct ScreenId(u8);                        // 0..MAX_SCREENS, the hotkey digit
 pub struct Screen { name: &'static str, panes: Vec<PaneSpec>, keys: Vec<KeyBinding>,
                     degrade: Vec<PaneId> }      // drop order on narrow/short terminals
 pub struct PaneSpec { id: PaneId, title: String, right_title: fn(&TuiApp) -> String,
@@ -1154,7 +1154,7 @@ significant forks" order; each reversible on its own):**
   pilot learns that kit is attached, not which economy title it is.
 - **D-I8-4** The **web ships ONE screen `unit` at digit 6** hosting both
   layouts (`t` toggles damage / unit); the TUI keeps 8 damage + 9 unit. Cost,
-  recorded: on a tactics server the web's digits are exhausted, so I9's
+  recorded at I8: the web then used digits `1`–`9` (16b cut Q.4 later added the cockpit on `0`), so I9's
   `registerViewScreen` is refused (`no free hotkey digit`); the follow-up is a
   digitless-screen policy (web/README.md).
 - Defaults taken: authority = stationed ∨ controls ∨ staff; the ONE refusal
@@ -1242,9 +1242,9 @@ deviations:
   fixtures); web 43 (344 total).
 - **Residual.** Production composes the tactics module with an EMPTY
   catalog, so every player is in the no-unit state until a catalog is
-  composed — the screens are honest, not useful, until then. The TUI is at
-  `MAX_SCREENS`; the web's digits are exhausted on a tactics server (I9's
-  view screens refused) — a digitless-screen policy is the follow-up. The
+  composed — the screens are honest, not useful, until then. As built in 16b cut Q.4,
+  `MAX_SCREENS` is 10 and digit `0` opens the cockpit in both clients;
+  the existing screens retain digits `1` through `9`. The
   damage screen's column balance (Main takes every surplus column while
   the right column clips its rows at 32) wants a layout weight, not a
   `min_w`. `tactics.vitals` stacks beside the character's `.vitals` in
@@ -2415,7 +2415,7 @@ Six standing rules:
 | `COMPOSING_MIN_INTERVAL_MS` | 2000 | bridge |
 | `COMPOSING_IDLE_MS` | 5000 | web client |
 | `COMPOSING_TTL_S` / `THINKING_TTL_S` | 8 / 20 | clients |
-| `MAX_SCREENS` / `MAX_PANES_PER_SCREEN` | 9 / 8 | TUI |
+| `MAX_SCREENS` / `MAX_PANES_PER_SCREEN` | 10 / 8 | TUI |
 | `GUTTER_W` (screens) / line-mode fact gutter | 10 / 9 | TUI, web, `mush-ansi` |
 | `TUI_HISTORY` | 200 | TUI (matches the web) |
 | `SCROLLBACK_CAP` | TUI 1000 / web 5000 | the two rings differ (look-back LB-26) |

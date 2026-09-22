@@ -612,7 +612,7 @@ impl LlmService {
     /// The streaming entry point. Runs the same pre-flight (kill switch, route,
     /// budget pre-check, semaphore, QPS, breaker) and settles the budget +
     /// writes the audit row when the terminal
-    /// [`StreamEvent::Done`](crate::types::StreamEvent::Done) arrives. The
+    /// [`StreamEvent::Done`] arrives. The
     /// concurrency permit is held for the stream's lifetime.
     ///
     /// **WS17-S0 ruling: this entry point stays.** It has exactly one caller in

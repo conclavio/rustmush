@@ -89,7 +89,7 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
         Self::with_link(accounts, sessions, Arc::new(world), guard)
     }
 
-    /// Wire the bridge with an explicit [`GatewayLink`] (M16b): the forked
+    /// Wire the bridge with an explicit [`crate::GatewayLink`] (M16b): the forked
     /// `mush-gateway` passes a socket-client link instead of an in-process
     /// world handle.
     pub fn with_link(

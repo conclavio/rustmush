@@ -712,7 +712,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         );
     }
 
-    /// Answer a [`Query::NarrativeBacklog`] locally (interface plan I12) from
+    /// Answer a [`mush_proto::Query::NarrativeBacklog`] locally (interface plan I12) from
     /// the caller's own resume ring — the ring is a per-viewer, already
     /// perceive/@ignore-gated backlog, so the reply carries only lines this
     /// viewer already saw. Read-only and conn-scoped (never re-enters the

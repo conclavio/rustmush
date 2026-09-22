@@ -19,7 +19,7 @@
 //!    scene (the ticker dies with it); a `SceneEnded` hook cleans up.
 //! 3. **`RulesetStateStore`** — every battle tick bumps each member's
 //!    `heat` in the per-`(scene, obj)` state store (each change persists a
-//!    whole-scene snapshot [`ModuleOp`](mush_core::ModuleOp)), and
+//!    whole-scene snapshot [`ModuleOp`]), and
 //!    `+btest/start` opens the battle's window on the atlas (S4), which
 //!    core composites and never interprets.
 //! 4. **Panel keyframe/delta frames** — the `tactics.map` feed emits one
@@ -138,7 +138,7 @@ pub const CONTESTED_MSG: &str = "The ground ahead is contested: movement there i
      battle window.";
 
 /// In-RAM working state (a [`Registrar::state`] slot). Everything that
-/// must survive a reboot rides [`ModuleOp`](mush_core::ModuleOp)s instead.
+/// must survive a reboot rides [`ModuleOp`]s instead.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TacticsState {
     /// Fires of the `pulse` fast tick since boot.

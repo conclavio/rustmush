@@ -87,9 +87,9 @@ pub(crate) fn seed_assessment(ctx: &mut Ctx<'_>, t: &Tenancy) {
 ///
 /// # Errors
 ///
-/// [`HousingError::NoSuchProperty`], [`HousingError::Withdrawn`],
-/// [`HousingError::AlreadyLet`], [`HousingError::NoSuchCadence`],
-/// [`HousingError::Exhausted`], [`HousingError::NotLoaded`], plus whatever
+/// [`crate::HousingError::NoSuchProperty`], [`crate::HousingError::Withdrawn`],
+/// [`crate::HousingError::AlreadyLet`], [`crate::HousingError::NoSuchCadence`],
+/// [`crate::HousingError::Exhausted`], [`crate::HousingError::NotLoaded`], plus whatever
 /// [`Tenancy::new`] and [`crate::accept`] refuse (the tenant caps).
 pub fn create_tenancy(
     ctx: &mut Ctx<'_>,

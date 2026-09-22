@@ -94,6 +94,38 @@ jobs:
       - name: Every toggleable feature is named by a job
         run: cargo test -p mush-contract-tests --test feature_matrix_inventory
 
+  documentation:
+    name: Workspace documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Resolve every documentation link
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --locked --workspace --no-deps --document-private-items
+
+  release:
+    name: Deployable release binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build the embedded SPA
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+      - name: Exercise the release embed guard and thin LTO with native TLS
+        run: cargo build --locked --release -p mushd -p mush-server -p mush-gateway --features mushd/tls,mush-gateway/tls
+
   # WS25-S6: a new instance is PROVISIONED by rendering
   # `deploy/instance/mushd.toml.tmpl` against an `instance.env`, and until this
   # job existed nothing ran the rendered thing past a TEXT check.
@@ -209,9 +241,11 @@ jobs:
         run: |
           bash -n scripts/reset-instance.sh
           shellcheck scripts/reset-instance.sh
+          bash scripts/tests/reset-instance.sh
           bash -n deploy/instance/render.sh
           bash -n deploy/dev1/deploy.sh
           bash -n deploy/dev1-split/deploy.sh
+          bash scripts/tests/check-web-bundle.sh
 
   kernel-contracts:
     name: K8 kernel contracts
@@ -230,6 +264,15 @@ jobs:
           cargo test -p mush-contract-tests --test gate5_fault_matrix
           cargo test -p mush-contract-tests --test schedule_source
           cargo test -p mush-contract-tests --test ci_gated_test_inventory
+      # The live provider remains an explicit, owner-funded opt-in. This exact
+      # test filter exercises its report path with no external provider or key.
+      - name: The LLM cost report with a mock provider
+        env:
+          TACSIM_LLM_COST_RUN: "1"
+          TACSIM_LLM_COST_MOCK: "1"
+          TACSIM_LLM_COST_MINUTES: "0.1"
+          TACSIM_LLM_COST_UNITS: "4"
+        run: cargo test -p tacsim --test harness tacsim_harness_llm_cost_run -- --exact --nocapture
       # WS01-S11: the world task must never panic, so the number of places it
       # could is budgeted per crate under panic_budget/ and only a reviewed
       # diff raises one. The same target refuses `panic = "abort"`, which would
@@ -441,5 +484,7 @@ jobs:
         run: npm ci
       - name: Test
         run: npm test
+      - name: Source commit stamp
+        run: node --test scripts/stamp-commit.test.mjs
       - name: Build
         run: npm run build

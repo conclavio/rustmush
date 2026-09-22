@@ -278,7 +278,7 @@ const NARRATIVE_RING_INVARIANT: &str = "Narrative must reach the resume ring onl
 /// honours it with no per-feed table anywhere. A `Panel` whose
 /// `data.schema.retain` is this string is a **whole-state keyframe** — the newest
 /// one is the whole truth and the ones before it are not history — so
-/// [`SessionManager::deliver_to_session`] drops every earlier ring entry of the
+/// `SessionManager::deliver_to_session` drops every earlier ring entry of the
 /// same feed that also carries the marker before recording it.
 ///
 /// Why it exists: the arena's cockpit feed sends a keyframe per pilot per pulse,

@@ -3,7 +3,7 @@
 //! elimination").
 //!
 //! One entry point — [`Arena::resolve_impact`], the body of the
-//! [`DueKind::Impact`](crate::arena::state::DueKind::Impact) cut W.1 scheduled —
+//! [`DueKind::Impact`] cut W.1 scheduled —
 //! and everything below it is the shape of one hit: re-validate, choose a section,
 //! spend the armour, overflow into the internals, and apply the consequence if the
 //! section is gone.
@@ -23,7 +23,7 @@
 //! round that was aimed correctly and went wide, which is the draw's answer.
 //!
 //! All six are journalled as the `reason` field of
-//! [`EventKind::Miss`](crate::arena::ledger::EventKind::Miss), and the set is the
+//! [`EventKind::Miss`], and the set is the
 //! whole vocabulary — a seventh is a reviewed diff here.
 //!
 //! # One plan per impact, and why that matters
@@ -178,7 +178,7 @@ pub fn is_wreck(unit: &mush_tactics::TacticalUnit) -> bool {
 /// no disabled motion, no lost track — however the record read. A tank whose left
 /// track had been shot off in a previous match, or by a staff `@unit/damage`, drove
 /// at full speed and turned both ways; a tank whose hull was a wreck started up and
-/// fought, and could never be wrecked again because [`Arena::plan_hit`] fires a
+/// fought, and could never be wrecked again because `Arena::plan_hit` fires a
 /// section's consequences only on the **transition** to zero internals.
 ///
 /// This is the missing read: the sections the record calls `destroyed` (and the
@@ -340,7 +340,7 @@ impl Arena {
     /// worse than silence.
     ///
     /// Everything it can do to the target it does through
-    /// [`Arena::apply_hit`]: one plan, atomically.
+    /// `Arena::apply_hit`: one plan, atomically.
     pub fn resolve_impact(&mut self, shot_seq: u64, t_ms: i64, journal: &mut Vec<Notice>) {
         let Some(shot) = self.shots.remove(&shot_seq) else {
             return;
@@ -483,7 +483,7 @@ impl Arena {
 
     /// **What a beam would lose on the way to a cell the target is not necessarily
     /// in** (16b cut F.3), percent — [`Arena::fire_attenuation`]'s advice half, for
-    /// the cone [`crate::arena::resolution::Arena::resolve_seen`] advertises.
+    /// the cone [`crate::arena::Arena::resolve_seen`] advertises.
     #[must_use]
     pub fn fire_attenuation_at(&self, shooter: ObjId, target: ObjId, cell: (u16, u16)) -> u32 {
         self.fire_trace_at(shooter, target, cell)

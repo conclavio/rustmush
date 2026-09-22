@@ -13,11 +13,11 @@
 //! Creating an account **never touches `World`**: the flow is
 //!
 //! 1. validate names + password, pre-check the character name against the
-//!    world's player index ([`WorldHandle::name_free`]);
+//!    world's player index ([`ServiceReq::NameFree`]);
 //! 2. reserve the account record — [`ObjectStore::create_account`] is
 //!    server-side atomic, so concurrent creates race safely;
 //! 3. ask the world task to create the Player
-//!    ([`WorldHandle::create_player`]), which **waits for the store to
+//!    ([`ServiceReq::CreatePlayer`]), which **waits for the store to
 //!    acknowledge the creation batch** (durable write-through);
 //! 4. link the character ([`ObjectStore::link_character`], atomic append), and
 //!    on failure take the mapping step 3 put in the server's live account
@@ -26,7 +26,7 @@
 //!
 //! Steps 1 and 3 are the two requests that cross the boundary, and both wait out
 //! the world's one transient refusal rather than reporting it (16b cut F.4 follow-up):
-//! see [`COMMIT_RETRY_ATTEMPTS`].
+//! see `COMMIT_RETRY_ATTEMPTS`.
 //!
 //! Only after all of that does the caller emit its confirmation output —
 //! the ack gate PLAN's write-through design requires. The store has no
@@ -38,7 +38,7 @@
 //! ## `accounts.json` import (one-time)
 //!
 //! If `data_dir/accounts.json` (the M1 interim store) exists at boot,
-//! [`import_accounts_json`] copies every record into the store (existing
+//! [`mush_config::accounts::import_accounts_json`] copies every record into the store (existing
 //! store accounts win) and renames the file to `accounts.json.imported` so
 //! the import never runs twice.
 

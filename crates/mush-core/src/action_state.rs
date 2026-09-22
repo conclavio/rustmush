@@ -2398,7 +2398,7 @@ impl PreparedRecord {
 /// One-shot transaction materialization. It intentionally does not implement
 /// `Clone` or serialization.
 ///
-/// It owns the store's commit reservation through [`ReservationGuard`], so a
+/// It owns the store's commit reservation through `ReservationGuard`, so a
 /// coordinator that gives up between `prepare` and staging hands the slot back
 /// on the way out instead of wedging every later transaction with
 /// [`ActionStateError::CommitPending`] (core-action-8).

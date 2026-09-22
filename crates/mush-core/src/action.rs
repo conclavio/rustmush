@@ -2,7 +2,7 @@
 //!
 //! This is deliberately the pre-transaction half of K2. It defines stable,
 //! canonical identities and validates metadata, but it cannot mutate a
-//! [`World`](crate::World), install RAM images, submit persistence, or claim
+//! [`World`], install RAM images, submit persistence, or claim
 //! authoritative completion. Commit-token storage and authoritative receipts
 //! belong to K3.
 

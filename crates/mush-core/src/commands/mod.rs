@@ -1,6 +1,6 @@
 //! The core command set: speech, looking, movement, item handling,
 //! `@`-building, and info commands — all registered through the one
-//! [`Registry`](crate::cmd::Registry) and dispatched per treaty ruling 5.
+//! [`Registry`] and dispatched per treaty ruling 5.
 
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 

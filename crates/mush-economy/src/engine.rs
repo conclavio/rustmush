@@ -239,7 +239,7 @@ pub trait AuthEval {
     /// `true` if this authority may take `object` out of `vault` **while a live
     /// contract's `DepositInto` still locks it** (E4b2 verify fold, M2+M3).
     ///
-    /// The default is `false`, and [`crate::WorldAuth`] keeps it: no command, staff
+    /// The default is `false`, and `crate::api::WorldAuth` keeps it: no command, staff
     /// included, opens a custody lock. The only `true` comes from
     /// `ContractAuth::unwinding`, for a deposit that contract itself recorded — which
     /// is what lets an unwind post its refund *before* the state change, so a refused
@@ -259,7 +259,7 @@ pub trait AuthEval {
     /// the counterparty's vault forever.
     ///
     /// It is **authority-shaped, never cause- or key-shaped** (08c §5.1): the
-    /// default is `false`, [`crate::WorldAuth`] keeps it, so no `@vault/withdraw`
+    /// default is `false`, `crate::api::WorldAuth` keeps it, so no `@vault/withdraw`
     /// can reach it; the only `true` comes from `ContractAuth::unwinding`, for a
     /// deposit that contract recorded, to the backing of an `Active` vault that
     /// deposit's own depositor owns.
@@ -2022,7 +2022,7 @@ pub fn apply_delta(
     (next.finish(), tx)
 }
 
-/// [`apply_delta`] applied to a **clone** of `snapshot`: the pure form the rigs
+/// `apply_delta` applied to a **clone** of `snapshot`: the pure form the rigs
 /// and the boot-time probes use. The post path never takes this — it applies the
 /// delta to the live snapshot at install (W1-F1).
 #[must_use]

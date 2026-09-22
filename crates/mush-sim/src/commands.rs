@@ -2260,7 +2260,7 @@ fn arrival_parent(ctx: &Ctx<'_>, place: ObjId) -> Result<SpatialParent, CmdError
 /// journey is flown from, plus the placement its last leg arrives at.
 ///
 /// **E7c7 (cut 6 fold, B6).** The id is first offered to the
-/// composition-installed [`RouteCatalogState`] — an authored `RouteDef` carries
+/// composition-installed [`crate::RouteCatalogState`] — an authored `RouteDef` carries
 /// its own legs, drive class, declared propellant and alignment band, so those
 /// three accessors finally have a caller. A hand-typed id that names no authored
 /// route, or a line that also lists places, still builds the **manual fixture

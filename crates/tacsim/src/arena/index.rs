@@ -32,7 +32,7 @@
 //!    `floor(sqrt(s)) ≤ r` is exactly `s < (r+1)²` — [`within_cm`] is that, and it
 //!    is the one test [`SpatialIndex::in_range`] decides membership with.
 //!    [`range_cm`] stays, for the one place a distance is *stored*
-//!    (`crate::arena::step::Arena::frame_contacts`).
+//!    (`crate::arena::Arena::frame_contacts`).
 //! 2. **The cell window is preferred whenever the pose is on the window.** The old
 //!    rule took the cell branch only while the covered area was no larger than the
 //!    unit count, which on a 300-unit arena meant any reach past about eight cells

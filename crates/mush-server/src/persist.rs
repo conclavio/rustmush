@@ -2270,7 +2270,7 @@ const MAX_TOMBSTONE_GAP: usize = 1_000_000;
 /// - any corrupt object document was discovered — silently omitting an
 ///   otherwise independent object would be authoritative state loss;
 /// - `meta:next_id` is implausibly far beyond the stored object count
-///   ([`MAX_TOMBSTONE_GAP`]) — checked **before** hydration allocates;
+///   (`MAX_TOMBSTONE_GAP`) — checked **before** hydration allocates;
 /// - hydration itself rejects the data (dangling references, duplicate
 ///   ids, name collisions);
 /// - the hydrated world is missing Limbo `#0` or God `#1` — without them

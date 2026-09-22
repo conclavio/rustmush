@@ -247,7 +247,7 @@ pub fn from_sheet(schema: &SheetSchema, doc: &SheetDoc, store: &SheetStore) -> V
 }
 
 /// The generic pool ladder, in one place (interface plan I8 lifted it out of
-/// [`bounded`] so the tactical unit view judges a cell exactly as a sheet
+/// `bounded` so the tactical unit view judges a cell exactly as a sheet
 /// pool is judged): an empty span is `Ok`, an empty pool `Down`, a quarter or
 /// less `Crit`, half or less `Warn`. Bounds are righted and `current` clamped
 /// first. It is a **depletion** ladder — right for armor, structure, ammo and

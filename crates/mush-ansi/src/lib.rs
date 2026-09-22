@@ -1,7 +1,7 @@
 //! # mush-ansi — `OutputEvent` -> ANSI renderer
 //!
 //! The SSH-side renderer for the shared semantic protocol (design 02 §5.7):
-//! [`render`] turns each [`mush_proto::OutputEvent`] into classic MUSH text
+//! [`render()`] turns each [`mush_proto::OutputEvent`] into classic MUSH text
 //! lines, resolving semantic span tags through an [`AnsiTheme`], merging
 //! explicit span styles over theme styles (explicit fields win), and
 //! downgrading colors to the connection's
@@ -22,7 +22,7 @@
 //!   stripped (embedded `\n` becomes a line break) — spans can never
 //!   smuggle raw escapes to another player's terminal.
 //!
-//! [`ansi_len`], [`wrap`] and [`wrap_indent`] are public because
+//! [`ansi_len`], [`wrap()`] and [`wrap_indent`] are public because
 //! `mush-net-ssh` reuses them for line-editor redraw math and the TUI's
 //! scrollback gutter.
 

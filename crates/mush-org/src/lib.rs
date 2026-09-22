@@ -2,7 +2,7 @@
 //! library the economy (E2+) owns accounts and vaults through.
 //!
 //! This crate is **world-free**: it defines the id vocabulary, the record model,
-//! the authoritative [`OrgState`] snapshot, the pure [`authorize`] engine, and the
+//! the authoritative [`OrgState`] snapshot, the pure [`authorize()`] engine, and the
 //! closed [`OrgMutationPlan`] validate-then-apply — all unit-tested on hand-built
 //! state, exactly the shipped M31/M32 pure-library shape. The `OrgModule` that
 //! attaches this to the world (persistence, boot, commands, the destroy scrub,
@@ -15,7 +15,7 @@
 //!   are scrubbed ([`OrgState`] scrub), and per-record `revision` +
 //!   [`ExpectedRevision`] are only *secondary* staleness guards.
 //! - **Default-deny, explicit-deny-wins**, with the total resolution
-//!   `authorized = (grant OR policy_allow) AND NOT policy_deny` ([`authorize`]).
+//!   `authorized = (grant OR policy_allow) AND NOT policy_deny` ([`authorize()`]).
 //! - **Delegation fully re-resolves its live source** each call (never a
 //!   `source_revision` equality — an expired source bumps no revision).
 //! - **Disclosure-safe**: [`Decision::Deny`] carries a staff-safe reason; a hidden

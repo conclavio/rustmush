@@ -1,10 +1,10 @@
 //! **One running match, as a task** (16b cut T.2, T1; doc 16 §3.1 "The seam is
-//! seven messages", "The arena core is a library", "Clock and lag", "Failure").
+//! eight messages", "The arena core is a library", "Clock and lag", "Failure").
 //!
 //! [`crate::arena`] is a library with no clock, no task and no I/O. This is the
 //! thin wrapper doc 16 §3.1 describes and the *only* place the arena meets a
-//! runtime: it owns one [`Arena`], a bounded inbox, a bounded egress, a timer
-//! driven by [`StepOutput::next_due_ms`], a watchdog at `tempo.stall_ms`, the
+//! runtime: it owns one [`crate::arena::Arena`], a bounded inbox, a bounded egress, a timer
+//! driven by [`crate::arena::StepOutput::next_due_ms`], a watchdog at `tempo.stall_ms`, the
 //! unwind boundary, and a `watch` stop signal. It is deliberately **not** under
 //! `arena/`: the gate in `crates/mush-contract-tests/tests/arena_library.rs`
 //! refuses the word `tokio` in every file of that directory, and this file is the
@@ -24,12 +24,14 @@
 //! task  -> world  ArenaOut::Ended       the match is over, with its ledger digest
 //! ```
 //!
-//! **`Deliberate` is an eighth message where doc 16 §3.1 names seven**, and
-//! [`ArenaOut::Deliberate`] says why and what it deliberately is not.
+//! `Deliberate` is doc 16 §3.1's eighth conceptual seam message. The table
+//! includes `LedgerAck` and `Lagged` reliability signals, while custody out
+//! is a spawn argument: it lists all nine runtime enum variants.
+//! [`crate::arena_task::ArenaOut::Deliberate`] explains its report-only contract.
 //!
-//! `CustodyOut` is the argument to [`spawn_arena`] rather than a message — a
+//! `CustodyOut` is the argument to [`crate::arena_task::spawn_arena`] rather than a message — a
 //! match is checked out exactly once, at the moment it starts — and `CustodyIn`
-//! is cut T.3's: this cut ends a match with [`ArenaOut::Ended`] and T.3 turns
+//! is cut T.3's: this cut ends a match with [`crate::arena_task::ArenaOut::Ended`] and T.3 turns
 //! that into a check-in.
 //!
 //! # The timer, and why a message never steps
@@ -45,7 +47,7 @@
 //! # Failure
 //!
 //! `step` runs under [`std::panic::catch_unwind`]. A panic ends the task with
-//! [`ArenaOut::Ended`] carrying [`EndReason::Void`], and **nothing the faulted
+//! [`crate::arena_task::ArenaOut::Ended`] carrying [`crate::arena::EndReason::Void`], and **nothing the faulted
 //! pulse produced leaves** — there is no `StepOutput` to publish, and the task
 //! never touches the arena's chunk egress again. A pulse that takes longer than
 //! `tempo.stall_ms` is voided by the watchdog after it returns (the arena has no
@@ -124,7 +126,7 @@ pub enum ArenaOut {
     /// the last closed ledger chunk's timestamp instead, which is nought for the
     /// first minutes of a match and a minute stale after that. There is no
     /// per-pulse frame on a match nobody's view is changing in, so the message
-    /// itself carries the clock and [`Task::publish`] sends it when there is a
+    /// itself carries the clock and `Task::publish` sends it when there is a
     /// frame **or** when the arena second has moved since the last one it sent.
     ///
     /// **What the rule does, stated against the pulse rate and not against the
@@ -172,7 +174,7 @@ pub enum ArenaOut {
     /// **The squads with something new to decide about** (16b cut N.2; doc 16 §6
     /// "Deliberation").
     ///
-    /// **This is an eighth message, and doc 16 §3.1 says the seam is seven.** It is
+    /// **This is the eighth conceptual message in doc 16 §3.1.** It is
     /// here because doc 16 §6 puts the deliberation trigger on *the commander's
     /// contact set* — which only the arena can see — and the request itself on the
     /// world's own provider path, so something has to cross. It is the narrowest

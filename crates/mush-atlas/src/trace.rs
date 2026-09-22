@@ -511,7 +511,7 @@ fn sight_of(t: &Trace) -> Sight {
 /// sight", §3.6 step 2).
 ///
 /// [`line_of_sight`] with no feature overlay and no units on the line: the same
-/// [`walk`], the same opacity, attenuation and elevation rules, over a grid that
+/// `walk`, the same opacity, attenuation and elevation rules, over a grid that
 /// is only classes and elevations. It is what the combat arena's perception pass
 /// traces with, because the arena holds a cell grid and may hold no window and no
 /// records at all (doc 16 §3.1, D-16-1/D-16-3).
