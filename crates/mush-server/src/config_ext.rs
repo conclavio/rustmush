@@ -298,6 +298,9 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
                 stall_ms: cfg.arena.tempo.stall_ms,
             },
             max_catch_up_steps: cfg.arena.max_catch_up_steps,
+            // 16b cut E.3: how long a unit holds against another unit in its way
+            // before the hold becomes doc 16 §3.4 step 4's stop.
+            occupied_stop_ms: cfg.arena.occupied_stop_ms,
             intents: tacsim::config::IntentsConfig {
                 max_pending_per_unit: cfg.arena.intents.max_pending_per_unit,
             },
@@ -915,6 +918,7 @@ mod tests {
         let cfg = tacsim_cfg(
             "[tacsim.arena]\n\
              max_catch_up_steps = 2\n\
+             occupied_stop_ms = 1500\n\
              deliberate_min_ms = 12000\n\
              [tacsim.arena.tempo]\n\
              quiet_ms = 4000\n\
@@ -986,6 +990,8 @@ mod tests {
                     stall_ms: 1_500,
                 },
                 max_catch_up_steps: 2,
+                // 16b cut E.3: the traffic hold's horizon.
+                occupied_stop_ms: 1_500,
                 deliberate_min_ms: 12_000,
                 intents: tacsim::config::IntentsConfig {
                     max_pending_per_unit: 3
@@ -1138,6 +1144,13 @@ mod tests {
                 "max_catch_up_steps = 0\n",
                 "[tacsim.arena].max_catch_up_steps",
                 "0",
+            ),
+            // 16b cut E.3: 0 is legal (the pre-cut rule), a minute is not.
+            (
+                "[tacsim.arena]",
+                "occupied_stop_ms = 60001\n",
+                "[tacsim.arena].occupied_stop_ms",
+                "60001",
             ),
             (
                 "[tacsim.arena.intents]",

@@ -7526,3 +7526,91 @@ fn d4_one_scripted_drive_through_a_bubble_journals_the_receiver_at_three_cadence
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 16b cut E.3 (16c `B-44`) — a routeless machine is checked every substep
+// ---------------------------------------------------------------------------
+
+/// **A routeless machine no longer drives at a bluff between its decide ticks**
+/// (16b cut E.3; 16c `B-44`).
+///
+/// 16b cut Q.7 put the crossing's own question into `follow`: a machine steering
+/// at a goal with no route is steering at a *direction* nobody has checked the
+/// ground along, so the one cell it would cross first is tested and a machine
+/// that would be refused it is ordered to stop. But `follow` runs at the decide
+/// tick — once a second of arena time under the shipped doctrine — and motion
+/// runs four times in that second at the substep ceiling, so for up to a whole
+/// tick the machine drove at the cliff with nothing between it and the refusal.
+/// 16c's `B-44` row counted five `blocked` lines on exactly this window.
+///
+/// The fixture is `x6_a_refused_route_is_bounded_work`'s worst case: the sealed
+/// plateau, one node behind the cliff, a limited tank with nowhere else to be, so
+/// the machine's goal is a cell no route reaches and it steers at the seam for
+/// the whole run. Over thirty seconds of arena time it is refused nothing at all,
+/// against the five `blocked` lines 16c's row counted.
+///
+/// **What closes the row here, measured and not assumed.** The pre-pass fires
+/// **zero** times on this window (the count printed below is `follow`'s own decide
+/// ticks and no more): the bearing to the sealed goal runs over open ground right
+/// up to the seam, so 16b cut Q.7's tick-time check inside `follow` catches every
+/// approach on its own, and 16b cut E.3's braking profile takes the machine's
+/// speed down as it closes on a goal it will never reach. So this test is **not**
+/// the regression test for [`Arena::hold_routeless`] and must not be read as one:
+/// it would stay green with the pre-pass deleted. The pre-pass's own work is
+/// proved where it can be isolated —
+/// `tests/reflex.rs`'s `a_routeless_machine_is_ordered_to_stop_within_one_substep_of_a_stop`
+/// for the case `follow` cannot see, and `arena::reflex`'s own
+/// `e3_the_pre_pass_holds_a_routeless_machine_and_skips_everyone_else` for its
+/// guards and its intent count.
+#[test]
+fn e3_a_routeless_machine_is_held_off_the_cliff_every_substep() {
+    let catalog = catalog();
+    let cfg = ArenaConfig::default();
+    let pulses = usize::try_from(30_000_i64 / 500).unwrap_or(0);
+    let mut definition = plateau(false);
+    definition.waypoints = relief_waypoint((40, 2));
+    let mut arena = arena_over(
+        &catalog,
+        vec![under_reflex(blind(unit_of(
+            &catalog,
+            content::LINE_TANK,
+            RED,
+            Team::Red,
+            (2, 4),
+        )))],
+        definition,
+        &cfg,
+    );
+    let mut wall = 0_i64;
+    let mut bytes: Vec<u8> = Vec::new();
+    let counters = run_logged(&mut arena, &mut wall, 500, pulses, &mut bytes);
+    let events = ledger_of(&mut arena, &mut bytes);
+    let stops = blocked_cells(&events, RED);
+    println!(
+        "e3_routeless: blocked={} intents={} ticks={} path_failures={}",
+        stops.len(),
+        counters.intents,
+        counters.ticks,
+        counters.path_failures
+    );
+    assert!(
+        stops.is_empty(),
+        "a routeless machine was refused a cell it should never have driven at: {stops:?}"
+    );
+    // The tank never got up onto the plateau either, which is the other half of
+    // the claim: it was held off the seam, not carried over it.
+    let (cell, z, _) = standing(&arena, RED);
+    assert!(
+        cell.0 < 20 && z == 0,
+        "the tank got onto a plateau nothing can climb: {cell:?} at {z} cm"
+    );
+    // The brief's second assertion for this fixture — "`ReflexCounters::intents`
+    // shows the holds" — is **not** made here, because the measurement says there
+    // are none to show: see the header. What is asserted is that the controller
+    // ran at all, so that `stops.is_empty()` is a fact about a machine that was
+    // being driven and not about one that never moved.
+    assert!(
+        counters.ticks > 0,
+        "the controller never ran, so nothing was measured"
+    );
+}

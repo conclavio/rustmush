@@ -81,6 +81,7 @@ use mush_atlas::Cover;
 use mush_core::ObjId;
 use smol_str::SmolStr;
 
+use crate::arena::index::range_between;
 use crate::arena::intents::{Intent, IntentKind, IntentOutcome, apply_intent, resolve_startup};
 use crate::arena::ledger::EventKind;
 use crate::arena::motion::BlockedCause;
@@ -108,8 +109,8 @@ pub const ARRIVE_CELLS: u16 = 1;
 /// it is bounded for the same reason everything else here is.
 pub const MAX_ENTRY_SCAN: usize = 1_024;
 
-/// **The most cells one unit remembers being stopped at** (16b cut Q.7), oldest
-/// dropped.
+/// **The most cells one unit remembers being stopped at** (16b cut Q.7), the
+/// **least recently stopped at** dropped (16b cut E.3, `B-43`).
 ///
 /// Eight, because the list is a memory of *this* stop and the two or three before
 /// it — a tank that is being herded round a wreck needs the wreck's cell and the
@@ -255,9 +256,11 @@ pub struct ReflexUnit {
     /// Written by [`Arena::note_blocked`] off the `Blocked` **ledger event** —
     /// the one place the cell and the cause are both in hand — and read by the
     /// path search, which treats every listed cell as impassable. At most
-    /// [`REFLEX_AVOID_MAX`] entries, oldest dropped; a repeat of a listed cell
-    /// refreshes its stamp; an entry older than [`REFLEX_AVOID_TTL_MS`] is
-    /// dropped at the top of a tick.
+    /// [`REFLEX_AVOID_MAX`] entries, the **least recently stopped at** dropped
+    /// (16b cut E.3, `B-43`: evicting by insertion order dropped the cell the
+    /// unit kept being stopped at, because a repeat refreshes a stamp in place);
+    /// a repeat of a listed cell refreshes its stamp; an entry older than
+    /// [`REFLEX_AVOID_TTL_MS`] is dropped at the top of a tick.
     ///
     /// It is **not** occupancy and it cannot be used as one: the unit knows it
     /// was refused a cell, and never what refused it. The occupant may be a
@@ -746,6 +749,80 @@ impl Arena {
         true
     }
 
+    /// **A routeless machine is asked every substep whether the cell in front of
+    /// it is still open** (16b cut E.3; 16c `B-44`), before motion runs.
+    ///
+    /// 16b cut Q.7 put that question into [`Arena::follow`]: a machine steering at
+    /// a goal with no route is steering at a *direction* nobody has checked the
+    /// ground along, so the one cell it would cross first is tested with the
+    /// crossing's own rule and a machine that would be refused it is ordered to
+    /// stop. But `follow` runs at the decide tick — once a second of arena time —
+    /// and motion runs eight times in that second at the fastest tempo, so for up
+    /// to a whole tick the machine drove at a bluff, a wreck or the cell it was
+    /// just stopped at with nothing between it and the refusal.
+    ///
+    /// So the question is asked at motion's own cadence. For every unit the
+    /// controller is flying whose power is online, whose speed order is not
+    /// already zero, and whose machine has a goal and an **empty route** — a route
+    /// is a sequence of edges the search has already checked — the cell on the
+    /// unit's **actual** `pose.heading_mdeg` (not the heading it was ordered onto;
+    /// motion will cross the one the tank is pointing at) is put to
+    /// [`Arena::first_step_is_open`] with the machine's own remembered stops.
+    /// Where it answers `false` the unit is ordered `Speed { cms: 0 }` through
+    /// [`apply_intent`], at its own current epoch, exactly the way
+    /// [`Arena::order`] builds one: **the machine still does nothing a pilot could
+    /// not.** The next decide tick orders a speed again as soon as the step on the
+    /// heading it wants is open, which is Q.7's own rule unchanged.
+    ///
+    /// It draws nothing, reads the rows in unit-id order (the map's own), and
+    /// collects the ids before it orders any of them, so no borrow is held across
+    /// [`apply_intent`]. The four cheap tests come first and the map lookup last,
+    /// because this runs once per substep over the whole field.
+    pub fn hold_routeless(&mut self, counters: &mut ReflexCounters) {
+        let mut holding: Vec<ObjId> = Vec::new();
+        for (id, row) in self.reflex.rows() {
+            if !row.route.is_empty() {
+                continue;
+            }
+            if row.goal.is_none() {
+                continue;
+            }
+            let Some(unit) = self.unit(*id) else {
+                continue;
+            };
+            if unit.controller != Controller::Reflex
+                || unit.power != Power::Online
+                || unit.desired_speed_cms == 0
+            {
+                continue;
+            }
+            let Some(here) = self.definition.terrain.cell_of(&unit.pose) else {
+                continue;
+            };
+            if self.first_step_is_open(unit, here, unit.pose.heading_mdeg, &row.avoid) {
+                continue;
+            }
+            holding.push(*id);
+        }
+        for id in holding {
+            let kind = IntentKind::Speed { cms: 0 };
+            let channel = kind.channel_required();
+            let intent = Intent {
+                unit: id,
+                channel,
+                epoch: self.epochs.current(id, channel),
+                kind,
+                seq: 1,
+            };
+            counters.intents = counters.intents.saturating_add(1);
+            // A speed is a **continuous** order: `apply_intent` writes it straight
+            // onto the unit and never queues it, so there is nothing to take back
+            // out of the pending queue the way `Arena::order` does for a discrete
+            // action.
+            let _ = apply_intent(self, &intent);
+        }
+    }
+
     /// **Note that a shot of `shooter`'s had no line** (doc 16 §6's `no line`
     /// edge), which is W's `blocked` and `cover` miss reasons read as a fact about
     /// where the shooter is standing.
@@ -803,8 +880,23 @@ impl Arena {
             // seven cells it learned out of the list.
             Some(entry) => entry.1 = t_ms,
             None => {
+                // **16b cut E.3 (16c `B-43`)**: the list evicts the **least
+                // recently stopped at**, not the one that happens to sit at index
+                // zero. Insertion order and recency are not the same order — a
+                // repeat refreshes an entry's stamp in place — so the old rule
+                // dropped exactly the cell the unit kept being stopped at, which
+                // is the one cell it must not forget. Ties go to the lowest index,
+                // so the choice is a function of the list and not of its scan.
                 if row.avoid.len() >= REFLEX_AVOID_MAX {
-                    row.avoid.remove(0);
+                    let oldest = row
+                        .avoid
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(index, (_, at_ms))| (*at_ms, *index))
+                        .map(|(index, _)| index);
+                    if let Some(index) = oldest {
+                        row.avoid.remove(index);
+                    }
                 }
                 row.avoid.push((cell, t_ms));
             }
@@ -2085,7 +2177,12 @@ impl Arena {
             return;
         }
         plan.heading_mdeg = Some(heading);
-        plan.speed_cms = Some(i32::try_from(unit.mobility.max_speed_cms).unwrap_or(i32::MAX));
+        plan.speed_cms = Some(braking_speed_cms(
+            unit,
+            goal,
+            cell_cm,
+            i64::from(memory.cfg.decide_ms),
+        ));
     }
 
     /// **Whether the one cell on `heading` is a cell this unit may enter** (16b
@@ -2230,6 +2327,71 @@ impl Arena {
             }
         }
     }
+}
+
+/// **The speed a machine orders while it is closing on its goal** (16b cut E.3;
+/// 16c `B-42`), so that it arrives there instead of driving through it.
+///
+/// Before this cut [`Arena::follow`] ordered `max_speed_cms` flat until the unit
+/// was inside the one-cell arrive window and then ordered zero. A stock tank
+/// needs 56 m to stop from 15 m/s at 2 m/s², and the controller decides once a
+/// second, so the machines coasted through their goals: through the firing stop
+/// 16b cut E.1 had just priced, and — for a withdrawing tank — past its own entry
+/// zone and out the far side, restarting its rally clock.
+///
+/// The profile is the classical one, in whole centimetres and `u64` throughout
+/// ([`u64::isqrt`]; doc 16 §3.1's D-16-4 forbids a float in arena state and this
+/// is arena arithmetic):
+///
+/// ```text
+/// d      = max(0, range(pose, goal cell centre) − ARRIVE_CELLS × cell_cm)
+/// d_eff  = max(0, d − |speed_cms| × decide_ms / 1000)
+/// v_stop = isqrt(2 × brake_cms2 × d_eff)
+/// order  = min(max_speed_cms, v_stop)
+/// ```
+///
+/// `d` is measured to the **goal** and not to the route's next cell, because the
+/// route is consumed cell by cell and its end *is* the goal: braking for the next
+/// cell would crawl the whole way. `d_eff` is the one-tick lookahead — where the
+/// unit will be when the controller next gets to think — without which a profile
+/// sampled at 1 Hz orders a speed the tank has already outrun by the time it
+/// obeys it. A unit with no braking rate at all orders `max_speed_cms`, which is
+/// the pre-cut behaviour and the only honest answer for a platform that cannot
+/// slow down.
+///
+/// The range is planar: the goal cell's own elevation is not read, so a goal up a
+/// hill is not braked for a few metres early. That is the same simplification
+/// [`Arena::stand_off_cell`] makes, and the arrive window is a cell wide.
+fn braking_speed_cms(unit: &UnitState, goal: (u16, u16), cell_cm: i64, decide_ms: i64) -> i32 {
+    let ceiling = u64::from(unit.mobility.max_speed_cms);
+    let brake = u64::from(unit.mobility.brake_cms2);
+    let capped = i32::try_from(ceiling).unwrap_or(i32::MAX);
+    if brake == 0 {
+        return capped;
+    }
+    let side = cell_cm.max(1);
+    let to_x = i64::from(goal.0)
+        .saturating_mul(side)
+        .saturating_add(side / 2);
+    let to_y = i64::from(goal.1)
+        .saturating_mul(side)
+        .saturating_add(side / 2);
+    let range = range_between(
+        unit.pose.x_cm,
+        unit.pose.y_cm,
+        unit.pose.z_cm,
+        to_x,
+        to_y,
+        unit.pose.z_cm,
+    );
+    let window = u64::from(ARRIVE_CELLS).saturating_mul(u64::try_from(side).unwrap_or(1));
+    let distance = range.saturating_sub(window);
+    let ahead = u64::from(unit.speed_cms.unsigned_abs())
+        .saturating_mul(u64::try_from(decide_ms.max(0)).unwrap_or(0))
+        / 1_000;
+    let effective = distance.saturating_sub(ahead);
+    let stopping = brake.saturating_mul(2).saturating_mul(effective).isqrt();
+    i32::try_from(ceiling.min(stopping)).unwrap_or(i32::MAX)
 }
 
 /// **The 8-neighbour step nearest a bearing** (16b cut Q.7).
@@ -2774,6 +2936,28 @@ mod tests {
         assert_eq!(row.avoid.len(), REFLEX_AVOID_MAX);
         assert_eq!(row.avoid.first().copied(), Some(((1, 1), 9_000)));
 
+        // **16b cut E.3 (16c `B-43`): the list evicts the LEAST RECENTLY STOPPED
+        // AT and not the entry at index zero.** The two orders differ exactly
+        // because a repeat refreshes a stamp in place: `(1, 1)` was the oldest
+        // insert and is now the newest stop, so a list that evicted by insertion
+        // order would drop the one cell the unit keeps being stopped at — the
+        // wreck — and keep seven it drove past once. One more distinct cell
+        // overflows the list: `(1, 1)` survives and `(2, 1)`, whose stamp is the
+        // least, goes.
+        arena.note_blocked(ObjId(4), (9, 1), BlockedCause::Occupied, 9_500);
+        let row = arena.reflex.unit(ObjId(4)).cloned().unwrap_or_default();
+        assert_eq!(row.avoid.len(), REFLEX_AVOID_MAX);
+        let cells: Vec<(u16, u16)> = row.avoid.iter().map(|(cell, _)| *cell).collect();
+        assert!(
+            cells.contains(&(1, 1)),
+            "the refreshed cell was evicted by its insertion order: {cells:?}"
+        );
+        assert!(
+            !cells.contains(&(2, 1)),
+            "the least recently stopped at survived: {cells:?}"
+        );
+        assert!(cells.contains(&(9, 1)), "the new stop is in: {cells:?}");
+
         // Every other cause throws the route away and remembers nothing: the
         // ground is not going to move out of the way, and the search already
         // knows about it.
@@ -2810,6 +2994,130 @@ mod tests {
                 .reflex
                 .unit(ObjId(4))
                 .is_some_and(|row| row.avoid.is_empty())
+        );
+    }
+
+    /// **The pre-pass orders the one machine it is for, counts the order, and
+    /// leaves everybody else alone** (16b cut E.3; 16c `B-44`).
+    ///
+    /// [`Arena::hold_routeless`] is five guards and one question, and every guard
+    /// is load-bearing: the route test is what keeps a follower in a column out of
+    /// it (16c `B-46` on the one ground the match uses), the controller test is
+    /// what keeps it off a seated pilot's tank, and the power and speed tests are
+    /// what keep it from ordering a stop onto a tank that is already standing
+    /// still. None of them is reachable from an end-to-end fixture, because
+    /// `Arena::follow`'s own tick-time check answers the same question a tick
+    /// later and hides the difference; so each is asked here directly, of the
+    /// function, with the count it is supposed to leave behind.
+    ///
+    /// The window is `test_support`'s eight by eight of passable ground, and the
+    /// closed step is the machine's **own remembered stop** rather than a painted
+    /// cliff: `first_step_is_open`'s `avoid` clause is the cheapest way to shut one
+    /// cell without moving the ground under the other cases.
+    #[test]
+    fn e3_the_pre_pass_holds_a_routeless_machine_and_skips_everyone_else() {
+        use crate::arena::state::Power;
+
+        /// One case: build the field, let `edit` bend one thing about it, run the
+        /// pre-pass once, and report what the unit was left ordering and what the
+        /// pass counted.
+        fn asked(edit: impl FnOnce(&mut Arena)) -> (i32, u32) {
+            // Cell (3, 3) of a 1,000 cm window, facing north, which
+            // `octant_step(0)` makes the step onto (3, 4).
+            let mut arena = arena_of(vec![tank(ObjId(4), Team::Red, pose(3_500, 3_500))]);
+            if let Some(state) = arena.unit_mut(ObjId(4)) {
+                state.controller = Controller::Reflex;
+                state.power = Power::Online;
+                state.desired_speed_cms = 800;
+            }
+            arena.reflex.adopt(ObjId(4), ReflexState::Patrol);
+            if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
+                row.goal = Some((3, 7));
+                row.route.clear();
+                row.avoid = vec![((3, 4), 0)];
+            }
+            edit(&mut arena);
+            let mut counters = ReflexCounters::default();
+            arena.hold_routeless(&mut counters);
+            (
+                arena
+                    .unit(ObjId(4))
+                    .map_or(i32::MIN, |state| state.desired_speed_cms),
+                counters.intents,
+            )
+        }
+
+        // The case the pass exists for: a machine with a goal, no route, way on,
+        // and the cell in front of it one it has just been stopped at.
+        assert_eq!(
+            asked(|_| {}),
+            (0, 1),
+            "a routeless machine pointed at a closed cell was not ordered to stand, or the order \
+             was not counted"
+        );
+        // A machine whose route is not empty is a machine the search has already
+        // checked the ground for — every follower in a column at the ford.
+        assert_eq!(
+            asked(|arena| {
+                if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
+                    row.route = vec![(3, 4), (3, 5)];
+                }
+            }),
+            (800, 0),
+            "the pass took a machine that had a route"
+        );
+        // A machine with nowhere to be is not being driven anywhere.
+        assert_eq!(
+            asked(|arena| {
+                if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
+                    row.goal = None;
+                }
+            }),
+            (800, 0),
+            "the pass took a machine with no goal"
+        );
+        // **A seated pilot's tank is theirs.** The controller does nothing a pilot
+        // cannot, and it does nothing to a unit it is not flying.
+        assert_eq!(
+            asked(|arena| {
+                if let Some(state) = arena.unit_mut(ObjId(4)) {
+                    state.controller = Controller::Pilot;
+                }
+            }),
+            (800, 0),
+            "the pass ordered a seated pilot's tank to stop"
+        );
+        // A cold hull is not going anywhere and `apply_intent` would refuse the
+        // order anyway; the pass does not pay for the map lookup to find out.
+        assert_eq!(
+            asked(|arena| {
+                if let Some(state) = arena.unit_mut(ObjId(4)) {
+                    state.power = Power::Starting;
+                }
+            }),
+            (800, 0),
+            "the pass took a hull whose power was not up"
+        );
+        // Already standing: nothing to order and nothing to count.
+        assert_eq!(
+            asked(|arena| {
+                if let Some(state) = arena.unit_mut(ObjId(4)) {
+                    state.desired_speed_cms = 0;
+                }
+            }),
+            (0, 0),
+            "the pass re-ordered a stop onto a machine that was already standing"
+        );
+        // And the question itself: with the cell in front open, the machine keeps
+        // its way.
+        assert_eq!(
+            asked(|arena| {
+                if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
+                    row.avoid.clear();
+                }
+            }),
+            (800, 0),
+            "the pass stopped a machine whose next cell was open"
         );
     }
 

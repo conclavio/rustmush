@@ -2260,8 +2260,15 @@ fn a_dry_withdrawal_drives_on_where_an_armed_one_stands_and_fights() {
     assert_eq!(dry_fired, 0, "it had nothing to fire");
     // Cell 9 to the red entry zone at columns 0 and 1 is seven cells of ground,
     // and twenty seconds at ten metres a second is more than enough of it.
+    //
+    // **16b cut E.3 lowered the floor from 5,000 cm** (the run made 4,990). The
+    // machine now brakes for its entry cell instead of driving flat out at it
+    // (16c `B-42`), so a fixed twenty seconds buys it a little less ground —
+    // deliberately, because the old behaviour was a tank that shot past the goal
+    // and restarted its rally clock. What this test is about is the *difference*
+    // between the two magazines, and that is untouched: 4,990 cm against nothing.
     assert!(
-        dry_west > 5_000 && dry_west > armed_west + 3_000,
+        dry_west > 4_500 && dry_west > armed_west + 3_000,
         "a dry tank drives home instead of stopping in front of the gun: \
          {dry_west} cm against the armed tank's {armed_west} cm"
     );
@@ -2762,15 +2769,33 @@ fn withdraw_stand_and_rally_are_one_event_list_and_one_hash_sequence_at_three_ca
     }
 }
 
-/// The cells one run of [`wreck_detour`] avoided, sorted, and the west-most
-/// place it reached.
-fn avoided_and_arrival(cadence_ms: i64) -> (Vec<(u16, u16)>, i64) {
+/// **What one run of [`wreck_detour`] did** (16b cut E.3 gave it a third field).
+struct Detour {
+    /// Every cell the machine remembered being stopped at, sorted.
+    avoided: Vec<(u16, u16)>,
+    /// The west-most centimetre it reached.
+    west_most: i64,
+    /// The arena millisecond the hold against the wreck opened at, and the one
+    /// the stop it matured into was journalled at.
+    matured: Option<(i64, i64)>,
+}
+
+/// The cells one run of [`wreck_detour`] avoided, sorted, the west-most place it
+/// reached, and — **16b cut E.3** — the arena milliseconds the hold against the
+/// wreck opened at and the stop it matured into was journalled at.
+///
+/// The hold is read at each pulse boundary, which is coarser than the substep it
+/// opens on; that is enough, because a hold lives two seconds and every pulse
+/// here is under six hundred milliseconds, so the reading taken before the stop
+/// is the hold that matured into it.
+fn avoided_and_arrival(cadence_ms: i64) -> Detour {
     let mut arena = wreck_detour();
     arena.clock.pin_tempo_for_tests(Tempo::Quiet);
     let mut bytes: Vec<u8> = Vec::new();
     let mut wall = 0_i64;
     let mut seen: Vec<(u16, u16)> = Vec::new();
     let mut west_most = i64::MAX;
+    let mut holds: Vec<(i64, i64)> = Vec::new();
     while arena.now_ms < 40_000 {
         let out = arena.step(wall, &[], &[]);
         absorb(&out, &mut bytes);
@@ -2779,11 +2804,34 @@ fn avoided_and_arrival(cadence_ms: i64) -> (Vec<(u16, u16)>, i64) {
                 seen.push(cell);
             }
         }
+        if let Some(hold) = arena.unit(RED).and_then(|unit| unit.occupied_hold) {
+            holds.push((arena.now_ms, hold.since_ms));
+        }
         west_most = west_most.min(arena.unit(RED).map_or(i64::MAX, |unit| unit.pose.x_cm));
         wall += cadence_ms;
     }
+    let log = events(&mut arena, &mut bytes);
+    let stopped_at = log
+        .iter()
+        .find(|event| {
+            matches!(
+                event.kind,
+                tacsim::arena::ledger::EventKind::Blocked { unit, .. } if unit == RED
+            )
+        })
+        .map(|event| event.t_ms);
+    let matured = stopped_at.and_then(|at| {
+        holds
+            .iter()
+            .rfind(|(read_at, _)| *read_at <= at)
+            .map(|(_, since_ms)| (*since_ms, at))
+    });
     seen.sort_unstable();
-    (seen, west_most)
+    Detour {
+        avoided: seen,
+        west_most,
+        matured,
+    }
 }
 
 #[test]
@@ -2796,22 +2844,45 @@ fn a_ragged_partition_reaches_the_same_place_with_the_same_avoided_cells() {
     // Q.6: position while accelerating or turning is first-order in the substep).
     // What the model does promise is the OUTCOME — the tank learns the same cell,
     // goes round the same wreck and gets through the same causeway.
+    //
+    // **16b cut E.3 put a traffic hold's maturity across the ragged partition.**
+    // The hold opens at a substep boundary and matures at the first boundary at
+    // or after `since_ms + occupied_stop_ms`, so under a 370 ms pulse the stamp
+    // moves with the partition exactly as every other event timestamp does — and
+    // a difference between the two runs' timestamps is expected and is not a
+    // defect. What each run promises on its own is that the stop is not early and
+    // is inside one substep of its due time.
     let regular = avoided_and_arrival(500);
     let ragged = avoided_and_arrival(370);
     assert!(
-        !regular.0.is_empty(),
+        !regular.avoided.is_empty(),
         "nothing was avoided, so nothing was compared"
     );
     assert_eq!(
-        regular.0, ragged.0,
+        regular.avoided, ragged.avoided,
         "the set of avoided cells moved with the partition"
     );
     assert!(
-        regular.1 < 4_000 && ragged.1 < 4_000,
+        regular.west_most < 4_000 && ragged.west_most < 4_000,
         "both runs are through the causeway: {} cm regular, {} cm ragged",
-        regular.1,
-        ragged.1
+        regular.west_most,
+        ragged.west_most
     );
+    for (what, run) in [("regular", regular.matured), ("ragged", ragged.matured)] {
+        let (since_ms, stopped_at) =
+            run.unwrap_or_else(|| panic!("the {what} run never matured a hold into a stop"));
+        let due = since_ms + 2_000;
+        assert!(
+            stopped_at >= due,
+            "the {what} run stopped at {stopped_at} ms, before the hold opened at {since_ms} ms \
+             was due at {due} ms"
+        );
+        assert!(
+            stopped_at - due < 250,
+            "the {what} run stopped {} ms past its due time, which is more than one substep",
+            stopped_at - due
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4720,4 +4791,804 @@ fn e2_an_unreachable_order_and_a_hot_gun_are_one_log_at_three_cadences() {
             "the field ended differently at {cadence} ms"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.3 — driving (16c `B-42`, `B-43`, `B-44`, `B-46`; §5's Q10)
+// ---------------------------------------------------------------------------
+
+/// **A one-cell-wide causeway**: walls over columns 6 to 9 on every row but 8, so
+/// the only way west is a four-cell corridor a column has to file through.
+///
+/// It is the ford of the shipped proving ground in fixture form — the one place
+/// every solo match crosses, and the one `B-46` is about.
+fn causeway() -> Vec<(u16, u16, TerrainCell)> {
+    (0..SIDE)
+        .flat_map(|y| (6..10_u16).map(move |x| (x, y, wall())))
+        .filter(|(_, y, _)| *y != 8)
+        .collect()
+}
+
+/// A window whose patrol graph is **one node**, so every machine on it drives the
+/// same way rather than splitting at the nearest waypoint.
+fn one_way_west(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
+    definition_with(
+        paint,
+        Waypoints::new(
+            vec![Waypoint {
+                id: SmolStr::new("west"),
+                x: 1,
+                y: 8,
+            }],
+            &[],
+        ),
+    )
+}
+
+/// **A column of `count` machines nose to tail on row 8, east of the causeway,
+/// with the lowest id at the REAR** — which is the worst case for the release
+/// (16b cut E.3).
+///
+/// Units integrate in unit-id order, so a follower whose id sorts *below* its
+/// leader's integrates before the leader has moved and reaches a cell the leader
+/// is still standing in. Putting the lowest id at the rear therefore makes every
+/// follower meet its leader's cell, one substep per unit down the column: the
+/// case the hold exists for, and the case the parked-head measurement below is
+/// about.
+fn column_of(count: u16) -> Arena {
+    let units: Vec<CustodyUnit> = (0..count)
+        .map(|n| {
+            // `n` is the place in the column from the head: head at (10, 8), rear
+            // furthest east, and the id falls as the place rises.
+            tank(
+                in_column(n),
+                Team::Red,
+                centre(10 + n, 8),
+                Vec::new(),
+                Controller::Reflex,
+            )
+        })
+        .collect();
+    arena_on(
+        one_way_west(&causeway()),
+        units,
+        &arena_cfg(reflex_cfg()),
+        &[],
+    )
+}
+
+/// The machine `n` places behind the head of a [`column_of`].
+fn in_column(n: u16) -> ObjId {
+    ObjId(200 - u32::from(n))
+}
+
+/// **`B-46`: a follower at the ford is held and never stopped** (16b cut E.3).
+///
+/// Two machines nose to tail on the causeway, the follower with the lower id so
+/// that it integrates first and meets the cell its leader has not vacated. Before
+/// this cut it was stopped dead at every cell of the corridor, journalled a
+/// `blocked` line for each, was told `Held: something is in the way.` and taught
+/// its own machine to avoid the cell its leader was about to leave.
+#[test]
+fn a_follower_at_the_ford_is_held_and_journals_nothing() {
+    let mut arena = column_of(2);
+    let (head, follower) = (in_column(0), in_column(1));
+    assert!(follower.0 < head.0, "the follower must integrate first");
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut stalled: Vec<i64> = Vec::new();
+    let mut rolling = false;
+    let mut learned: Vec<(u16, u16)> = Vec::new();
+    // **The window is the crossing, and it ends when the head arrives**: once the
+    // head has stopped on the node they are both driving at, the follower is
+    // standing behind a machine that is not going to move again, and doc 16 §3.4
+    // step 4's stop is exactly what it is owed. What the cut is about is the
+    // ford, not the destination.
+    let mut arrived_at: Option<i64> = None;
+    while arena.now_ms < 30_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        let head_speed = arena.unit(head).map_or(0, |unit| unit.speed_cms);
+        let follower_speed = arena.unit(follower).map_or(0, |unit| unit.speed_cms);
+        rolling |= follower_speed > 0;
+        if arrived_at.is_none() && arena.unit(head).is_some_and(|unit| unit.pose.x_cm < 3_000) {
+            arrived_at = Some(arena.now_ms);
+        }
+        if arrived_at.is_none() {
+            for cell in avoided(&arena, follower) {
+                if !learned.contains(&cell) {
+                    learned.push(cell);
+                }
+            }
+            if rolling && head_speed > 0 && follower_speed == 0 {
+                stalled.push(arena.now_ms);
+            }
+        }
+        wall += 500;
+    }
+    let arrived_at = arrived_at.expect("the head crossed the causeway and reached its node");
+    let log = events(&mut arena, &mut bytes);
+    assert!(
+        stalled.is_empty(),
+        "the follower lost its way while the leader was still moving, at {stalled:?} ms"
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|event| event.kind.as_str() == "blocked" && event.t_ms <= arrived_at)
+            .count(),
+        0,
+        "a column that never stopped journalled a stop before the head arrived"
+    );
+    assert!(
+        learned.is_empty(),
+        "the follower learned to avoid a cell its own leader was standing in: {learned:?}"
+    );
+    assert!(
+        arena
+            .unit(follower)
+            .is_some_and(|unit| unit.pose.x_cm < 6_000),
+        "the follower never got through the causeway: {:?}",
+        arena.unit(follower).map(|unit| unit.pose.x_cm)
+    );
+}
+
+/// **The long column** (16b cut E.3, review E-04): six machines nose to tail on
+/// the causeway, the lowest id at the rear, the head free to move.
+///
+/// Two seconds of hold covers a release that travels rearward one substep per
+/// unit, and six is inside the shipped roster's four a side either way. Nothing
+/// is stopped, nothing is journalled and nobody learns a teammate's transient
+/// cell.
+#[test]
+fn a_six_machine_column_files_through_the_ford_learning_nothing() {
+    let mut arena = column_of(6);
+    let ids: Vec<ObjId> = (0..6).map(in_column).collect();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut rolling = false;
+    let mut stalled: Vec<(i64, usize)> = Vec::new();
+    let mut arrived_at: Option<i64> = None;
+    while arena.now_ms < 60_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        let speeds: Vec<i32> = ids
+            .iter()
+            .map(|id| arena.unit(*id).map_or(0, |unit| unit.speed_cms))
+            .collect();
+        rolling |= speeds.iter().all(|speed| *speed > 0);
+        if arrived_at.is_none()
+            && arena
+                .unit(ids[0])
+                .is_some_and(|unit| unit.pose.x_cm < 3_000)
+        {
+            arrived_at = Some(arena.now_ms);
+        }
+        if rolling && arrived_at.is_none() {
+            for (place, speed) in speeds.iter().enumerate() {
+                if *speed == 0 {
+                    stalled.push((arena.now_ms, place));
+                }
+            }
+        }
+        wall += 500;
+    }
+    let arrived_at = arrived_at.expect("the head crossed the causeway and reached its node");
+    let log = events(&mut arena, &mut bytes);
+    assert!(
+        stalled.is_empty(),
+        "machines in the column lost their way before the head arrived: {stalled:?}"
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|event| event.kind.as_str() == "blocked" && event.t_ms <= arrived_at)
+            .count(),
+        0,
+        "the column journalled a stop before the head arrived"
+    );
+    // The corridor is (6, 8) to (9, 8) and the column's own cells are (10, 8)
+    // east: no machine ever learned one of them.
+    for id in &ids {
+        let learned = avoided(&arena, *id);
+        assert!(
+            learned
+                .iter()
+                .all(|(x, y)| !(*y == 8 && (6..SIDE).contains(x))),
+            "#{} learned a cell a teammate was standing in: {learned:?}",
+            id.0
+        );
+    }
+}
+
+/// **The parked head, MEASURED and not asserted** (16b cut E.3, review E-04).
+///
+/// The same six, with the head held where it stands for 5,000 ms of arena time
+/// and then released. Two seconds of hold is clean for a column of up to eight
+/// being released; a column whose head is itself stopped for longer than that
+/// matures its tail into stops, and each of those teaches a teammate's transient
+/// cell for `REFLEX_AVOID_TTL_MS`. That is HEAD's behaviour delayed and made
+/// rare, not removed, and the three numbers this prints are the evidence for or
+/// against the second-stop rule 16b cut E.3 deliberately did not build.
+#[test]
+fn e3_a_parked_head_is_measured_and_reported() {
+    let mut arena = column_of(6);
+    let ids: Vec<ObjId> = (0..6).map(in_column).collect();
+    let head = ids[0];
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    // (1) the column gets under way and files into the corridor.
+    while arena.now_ms < 8_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        wall += 500;
+    }
+    // (2) the head stops where it stands for five seconds — a pilot's tank in
+    // the ford, which is longer than the hold and so compresses the column into
+    // real stops.
+    let parked_from = arena.now_ms;
+    arena.set_controller(head, Controller::Pilot, ReflexState::Patrol);
+    while arena.now_ms < parked_from + 5_000 {
+        if let Some(unit) = arena.unit_mut(head) {
+            unit.desired_speed_cms = 0;
+        }
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        wall += 500;
+    }
+    let released_at = arena.now_ms;
+    arena.set_controller(head, Controller::Reflex, ReflexState::Patrol);
+    let mut through: Option<i64> = None;
+    // Every teammate's cell any of the six ever remembered, over the whole
+    // episode: the entries age out after `REFLEX_AVOID_TTL_MS`, so a reading
+    // taken at the end would under-count.
+    let mut taught: Vec<(ObjId, (u16, u16))> = Vec::new();
+    while arena.now_ms < released_at + 60_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        // Only while the release is still travelling down the column: past that
+        // the six converge on one node and queue at the destination, which is
+        // doc 16 §3.4 step 4 doing its job and not what this measures.
+        if arena.now_ms <= released_at + 10_000 {
+            for id in &ids {
+                for cell in avoided(&arena, *id) {
+                    if !taught.contains(&(*id, cell)) {
+                        taught.push((*id, cell));
+                    }
+                }
+            }
+        }
+        if through.is_none()
+            && ids
+                .iter()
+                .all(|id| arena.unit(*id).is_some_and(|unit| unit.pose.x_cm < 6_000))
+        {
+            through = Some(arena.now_ms);
+        }
+        wall += 500;
+    }
+    let log = events(&mut arena, &mut bytes);
+    let matured = log
+        .iter()
+        .filter(|event| {
+            event.kind.as_str() == "blocked"
+                && (parked_from..=released_at + 10_000).contains(&event.t_ms)
+        })
+        .count();
+    let learners: usize = ids
+        .iter()
+        .filter(|id| taught.iter().any(|(who, _)| who == *id))
+        .count();
+    println!(
+        "e3_parked_head: parked at {parked_from} ms, released at {released_at} ms; \
+         {matured} stops matured between the park and ten seconds past the release, \
+         {learners} of 6 machines learned a cell in that window ({taught:?}), the last was \
+         through {} ms after the release",
+        through.map_or(-1, |at| at - released_at)
+    );
+    assert!(
+        through.is_some(),
+        "the column never cleared the causeway after the release"
+    );
+}
+
+/// **`B-46` at a wreck**: the machine learns the cell two seconds later and takes
+/// the other gap, which is
+/// `a_wreck_in_the_causeway_is_learned_and_the_other_gap_is_taken` with the hold
+/// in front of it (16b cut E.3).
+#[test]
+fn a_wreck_in_the_ford_is_held_against_for_two_seconds_and_then_learned() {
+    let band: Vec<(u16, u16, TerrainCell)> = (0..SIDE)
+        .filter(|y| *y != 8 && *y != 2)
+        .map(|y| (4_u16, y, wall()))
+        .collect();
+    let mut arena = arena_of(
+        vec![
+            tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Reflex),
+            tank(RED2, Team::Red, centre(4, 8), Vec::new(), Controller::Pilot),
+        ],
+        &band,
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    wreck_it(&mut arena, RED2);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut met_at: Option<i64> = None;
+    let mut west_most = i64::MAX;
+    // The entries age out after `REFLEX_AVOID_TTL_MS`, so what the machine
+    // learned is the union over the run and not a reading taken at the end.
+    let mut learned: Vec<(u16, u16)> = Vec::new();
+    while arena.now_ms < 60_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        // The first pulse that ended with the machine standing against a cell.
+        if met_at.is_none()
+            && arena
+                .unit(RED)
+                .is_some_and(|unit| unit.occupied_hold.is_some())
+        {
+            met_at = Some(arena.now_ms);
+        }
+        for cell in avoided(&arena, RED) {
+            if !learned.contains(&cell) {
+                learned.push(cell);
+            }
+        }
+        west_most = west_most.min(arena.unit(RED).map_or(i64::MAX, |unit| unit.pose.x_cm));
+        wall += 500;
+    }
+    let met_at = met_at.expect("the machine never met the wreck");
+    let log = events(&mut arena, &mut bytes);
+    let stops: Vec<i64> = log
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                tacsim::arena::ledger::EventKind::Blocked { unit, x, y }
+                    if unit == RED && (x, y) == (4, 8)
+            )
+        })
+        .map(|event| event.t_ms)
+        .collect();
+    assert_eq!(
+        stops.len(),
+        1,
+        "one wreck is one stop, and the hold does not add another: {stops:?}"
+    );
+    assert!(
+        stops[0] >= met_at + 1_500,
+        "the stop arrived {} ms after the machine was first read standing against the wreck, \
+         which is inside the two-second hold (the hold is read at the end of the pulse it opened \
+         in, so the margin a 500 ms pulse can promise is a pulse short of 2,000)",
+        stops[0] - met_at
+    );
+    assert_eq!(
+        learned,
+        vec![(4, 8)],
+        "one remembered cell, and it is the wreck's"
+    );
+    assert!(
+        west_most < 4_000,
+        "it is through the other gap: west-most {west_most} cm"
+    );
+}
+
+/// A long east-west road, `len` cells by eight, with one patrol node at `node`.
+fn road(len: u16, node: (u16, u16)) -> ArenaDefinition {
+    let cells = vec![ground(); usize::from(len) * 8];
+    ArenaDefinition {
+        id: SmolStr::new("tacsim.arena.reflex.road"),
+        terrain: ArenaTerrain::new(len, 8, CELL_CM, cells).expect("the road window"),
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: 0,
+                y0: 0,
+                x1: 1,
+                y1: 7,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: len - 2,
+                y0: 0,
+                x1: len - 1,
+                y1: 7,
+            },
+        ],
+        key_spots: Vec::new(),
+        waypoints: Waypoints::new(
+            vec![Waypoint {
+                id: SmolStr::new("goal"),
+                x: node.0,
+                y: node.1,
+            }],
+            &[],
+        ),
+    }
+}
+
+/// **`B-42`: a machine brakes for its goal instead of driving through it** (16b
+/// cut E.3).
+///
+/// Forty cells of road and a tank with the shipped ratio — fifteen metres a
+/// second, two metres a second squared of brake, which is fifty-six metres and
+/// seven and a half seconds to stop. Before this cut the controller ordered
+/// `max_speed_cms` flat until the unit was inside the one-cell arrive window and
+/// then ordered zero, so the machine coasted five cells past everywhere it meant
+/// to be.
+#[test]
+fn a_machine_brakes_into_its_goal_and_does_not_overshoot_it() {
+    let mut heavy = tank(
+        RED,
+        Team::Red,
+        centre(44, 4),
+        Vec::new(),
+        Controller::Reflex,
+    );
+    heavy.mobility = TrackedRules {
+        max_speed_cms: 1_500,
+        accel_cms2: 100,
+        brake_cms2: 200,
+        turn_rate_mdeg_s: 30_000,
+        reverse_factor_pct: 40,
+    };
+    let mut arena = arena_on(road(48, (4, 4)), vec![heavy], &arena_cfg(reflex_cfg()), &[]);
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut at_arrival: Option<i32> = None;
+    let mut west_most = u16::MAX;
+    let mut top = 0_i32;
+    while arena.now_ms < 180_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        let Some(unit) = arena.unit(RED) else {
+            break;
+        };
+        top = top.max(unit.speed_cms);
+        if let Some((x, y)) = arena.definition.terrain.cell_of(&unit.pose) {
+            west_most = west_most.min(x);
+            // The tick it first reads arrived: inside `ARRIVE_CELLS` of (4, 4).
+            if at_arrival.is_none() && x.abs_diff(4).max(y.abs_diff(4)) <= 1 {
+                at_arrival = Some(unit.speed_cms);
+            }
+        }
+        wall += 500;
+    }
+    let at_arrival = at_arrival.expect("the machine never reached its goal");
+    println!(
+        "e3_braking: top {top} cm/s, {at_arrival} cm/s on the tick it first read arrived, \
+         west-most cell {west_most}"
+    );
+    assert!(
+        top >= 1_400,
+        "the machine never got up to speed, so nothing was measured: {top} cm/s"
+    );
+    // **The measured figure is 415 cm/s**, and the number is worth being exact
+    // about rather than rounding to a slogan. The profile is the maximum-braking
+    // curve, `v = isqrt(2 × brake × d)`, and a tank on it sheds exactly
+    // `brake_cms2` a second — which is all the tank has. The controller decides
+    // twice a second, so the last tick before the arrive window still carries up
+    // to a tick of the curve it cannot have shed yet. A quarter of `max_speed`
+    // at the window, against the whole of it before this cut, is the claim; the
+    // tank is standing still a second and a half later, which the last assertion
+    // is.
+    assert!(
+        at_arrival <= 500,
+        "it arrived at {at_arrival} cm/s, which is not braking for the goal"
+    );
+    assert!(
+        west_most >= 3,
+        "it overshot its goal at (4, 4) to cell {west_most}, past the arrive window"
+    );
+    assert_eq!(
+        arena.unit(RED).map(|unit| unit.speed_cms),
+        Some(0),
+        "and it is standing on it at the end"
+    );
+}
+
+/// [`road`] with the **Red entry zone in the middle of it**, so that a machine
+/// running home can drive through the zone and out the far side.
+///
+/// Every other window in this file puts Red's zone against the west wall, where
+/// an overshoot is impossible by construction: the window's own edge stops the
+/// tank inside the arrive window and there is nothing for the rally clock to
+/// notice. The zone here is eight cells in from it.
+fn road_home(len: u16, zone_x: u16, node: (u16, u16)) -> ArenaDefinition {
+    ArenaDefinition {
+        entry_zones: vec![
+            EntryZone {
+                team: Team::Red,
+                x0: zone_x,
+                y0: 0,
+                x1: zone_x + 1,
+                y1: 7,
+            },
+            EntryZone {
+                team: Team::Blue,
+                x0: len - 2,
+                y0: 0,
+                x1: len - 1,
+                y1: 7,
+            },
+        ],
+        ..road(len, node)
+    }
+}
+
+/// **`B-42`'s other half: a withdrawn machine's rally clock is not restarted by
+/// an overshoot** (16b cut E.3).
+///
+/// A hurt machine runs for its entry zone. Once it has arrived and has nothing
+/// hostile on its board the quiet clock starts; a machine that drove through its
+/// own entry zone and out the far side would stop being *arrived*, and the clock
+/// would start again from nothing every time it came back.
+///
+/// **The fixture has to make the overshoot possible, or it proves nothing.** This
+/// file's default tank stops in 1,000 cm — one cell, which is the arrive window —
+/// and its entry zone is against the west wall, so before this cut it could not
+/// leave the window whatever it did, and a test built on it would stay green with
+/// the braking profile reverted. So: the road window with Red's zone eight cells
+/// in from the wall, and the shipped ratio of 1,500 cm/s against 200 cm/s² of
+/// brake — 5.6 cells of stopping distance against a one-cell window. Ordering
+/// `max_speed_cms` flat until the window and zero inside it, which is what the
+/// controller did before this cut, puts the tank several cells past its own zone
+/// and starts the clock again when it comes back.
+#[test]
+fn a_withdrawn_machines_rally_clock_is_not_restarted_by_an_overshoot() {
+    let mut heavy = tank(
+        RED,
+        Team::Red,
+        centre(40, 4),
+        vec![cannon()],
+        Controller::Reflex,
+    );
+    heavy.mobility = TrackedRules {
+        max_speed_cms: 1_500,
+        accel_cms2: 100,
+        brake_cms2: 200,
+        turn_rate_mdeg_s: 30_000,
+        reverse_factor_pct: 40,
+    };
+    let mut arena = arena_on(
+        road_home(48, 8, (44, 4)),
+        vec![heavy],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 4_000, &mut bytes);
+    hurt(&mut arena, RED);
+    let mut wall = arena.now_ms;
+    let mut started: Option<i64> = None;
+    let mut restarts: Vec<(i64, i64)> = Vec::new();
+    let mut withdrew = false;
+    let mut west_most = u16::MAX;
+    while arena.now_ms < 90_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        let quiet = arena.reflex.unit(RED).and_then(|row| row.quiet_since_ms);
+        match (started, quiet) {
+            (None, Some(at)) => started = Some(at),
+            (Some(was), Some(at)) if at != was => restarts.push((was, at)),
+            _ => {}
+        }
+        if let Some((x, _)) = arena
+            .unit(RED)
+            .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose))
+        {
+            west_most = west_most.min(x);
+        }
+        let running = state_of(&arena, RED) == Some(ReflexState::Withdraw);
+        withdrew |= running;
+        // The rally is what ends the run home, and this test is about the clock
+        // that leads to it: stop once the machine has come back.
+        if withdrew && !running {
+            break;
+        }
+        wall += 500;
+    }
+    println!("e3_rally: west-most cell {west_most}, clock started at {started:?}");
+    assert!(
+        withdrew,
+        "the machine never broke off, so nothing was measured"
+    );
+    assert!(
+        started.is_some(),
+        "the machine never arrived home, so the clock never started"
+    );
+    assert!(
+        restarts.is_empty(),
+        "the rally clock was restarted after the machine had arrived: {restarts:?}"
+    );
+    // And the reason it was not: the machine braked into its zone instead of
+    // driving through it. The goal is the clamped corner `(9, 4)` and the arrive
+    // window is a cell wide, so cell 8 is the west edge of *home*.
+    assert!(
+        west_most >= 8,
+        "it drove out of its own entry zone to cell {west_most}, which is what restarts the clock"
+    );
+}
+
+/// **The convoy and the wreck, at three cadences** (16b cut E.3; 16b §11's
+/// mandatory cross-tempo test).
+///
+/// One scripted log in which a follower holds behind its leader and is released,
+/// the leader is then wrecked in front of it, the follower holds against the
+/// wreck, matures into a stop, learns the cell and detours round it. One event
+/// list and one per-substep hash sequence at 5,000, 1,000 and 500 ms — which is
+/// the whole of the rate-independence claim for the hold, because all three
+/// cadences are whole multiples of the 250 ms substep and therefore share one
+/// partition.
+fn convoy_and_wreck() -> Arena {
+    let band: Vec<(u16, u16, TerrainCell)> = (0..SIDE)
+        .filter(|y| *y != 8 && *y != 2)
+        .map(|y| (4_u16, y, wall()))
+        .collect();
+    arena_on(
+        one_way_west(&band),
+        vec![
+            // The follower sorts below the leader, so it integrates first.
+            tank(RED, Team::Red, centre(7, 8), Vec::new(), Controller::Reflex),
+            tank(
+                RED2,
+                Team::Red,
+                centre(6, 8),
+                Vec::new(),
+                Controller::Reflex,
+            ),
+        ],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    )
+}
+
+/// The leader is wrecked where it stands, so the follower behind it meets a hole
+/// in the map that does not move.
+fn the_leader_is_wrecked(arena: &mut Arena) {
+    wreck_it(arena, RED2);
+}
+
+#[test]
+fn the_convoy_and_the_wreck_are_one_event_list_and_one_hash_sequence_at_three_cadences() {
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| replay_of(cadence, 60_000, convoy_and_wreck, the_leader_is_wrecked))
+        .collect();
+    let first = runs.first().expect("three replays");
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    assert!(
+        kinds.iter().any(|kind| kind.contains("blocked")),
+        "the follower never matured a stop against the wreck, so nothing was compared: {kinds:?}"
+    );
+    assert!(first.hashes.len() >= 100, "{} substeps", first.hashes.len());
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+}
+
+/// **`B-44`: a routeless machine is checked every substep, not every tick** (16b
+/// cut E.3).
+///
+/// The case `follow` cannot see, because it happens between two of its ticks. A
+/// stop throws the machine's route away and puts the refused cell on its
+/// remembered list, both at the substep the stop happened on — and the machine is
+/// then routeless, with a goal, with a standing speed order and pointed straight
+/// at a cell it has just learned to avoid. Until this cut it re-accelerated and
+/// pushed at that cell for the rest of the decide tick; now the pre-pass at the
+/// top of the next substep orders `Speed 0` through the same door a pilot's own
+/// order goes through, and the machine stands until its next tick can plan.
+///
+/// The measure is the arena time between the `blocked` line and the speed order
+/// coming off: one substep, not one `decide_ms`. The decide grid is printed and
+/// asserted with it, so that the reading cannot be a tick that happened to fall
+/// inside the substep — this is the fixture 16c's `B-44` row is closed on, and
+/// `arena::reflex`'s own
+/// `e3_the_pre_pass_holds_a_routeless_machine_and_skips_everyone_else` is what
+/// holds the pass's five guards.
+#[test]
+fn a_routeless_machine_is_ordered_to_stop_within_one_substep_of_a_stop() {
+    // A whole second between decisions, so "the next tick" and "the next substep"
+    // are four substeps apart and the difference is visible.
+    let cfg = arena_cfg(ReflexConfig {
+        decide_ms: 1_000,
+        repath_ms: 4_000,
+        ..ReflexConfig::default()
+    });
+    let mut arena = arena_of(
+        vec![
+            tank(RED, Team::Red, centre(6, 8), Vec::new(), Controller::Reflex),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(5, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &cfg,
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    // Pulses of 250 ms, so every pulse is exactly one substep and the reading is
+    // at the granularity the pre-pass runs at.
+    let mut stopped_at: Option<i64> = None;
+    let mut ordered_off_at: Option<i64> = None;
+    let mut intents_on_the_order = 0_u32;
+    while arena.now_ms < 30_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        // The stop is read off the unit's own per-substep flag rather than off the
+        // ledger, because a 250 ms pulse is one substep and the ledger's chunks
+        // are flushed on their own cadence.
+        if stopped_at.is_none() {
+            if arena.unit(RED).is_some_and(|unit| unit.blocked) {
+                stopped_at = Some(arena.now_ms);
+            }
+        } else if ordered_off_at.is_none()
+            && arena
+                .unit(RED)
+                .is_some_and(|unit| unit.desired_speed_cms == 0)
+        {
+            ordered_off_at = Some(arena.now_ms);
+            intents_on_the_order = out.reflex.intents;
+        }
+        if ordered_off_at.is_some() {
+            break;
+        }
+        wall += 250;
+    }
+    let stopped_at = stopped_at.expect("the parked tank stopped the machine");
+    let ordered_off_at = ordered_off_at.expect("the machine was never ordered to stand");
+    // **The decide grid, so that the 250 ms reading cannot be a coincidence.** A
+    // unit's ticks are at `id % decide_ms` and every `decide_ms` after it
+    // (`Arena::schedule_reflex_tick`), so this is exactly the arena time at which
+    // `follow` could have ordered the same speed on its own.
+    let grid = |at: i64| (at - i64::from(RED.0) % 1_000).rem_euclid(1_000);
+    println!(
+        "e3_b44: stopped at {stopped_at} ms, ordered off at {ordered_off_at} ms, \
+         {} ms past that pulse's decide tick, {intents_on_the_order} intents on the pulse",
+        grid(ordered_off_at)
+    );
+    assert!(
+        ordered_off_at - stopped_at <= 250,
+        "the machine kept its speed order for {} ms after it was stopped, which is the decide \
+         tick and not the substep: stopped at {stopped_at} ms, ordered off at {ordered_off_at} ms",
+        ordered_off_at - stopped_at
+    );
+    assert_ne!(
+        grid(ordered_off_at),
+        0,
+        "the order came off on a decide tick, where `follow` would have ordered it too: this \
+         fixture is not measuring the pre-pass"
+    );
+    assert!(
+        intents_on_the_order > 0,
+        "the pulse the order came off on counted no intent, so nothing went through `apply_intent`"
+    );
+    // And the order came through the pilot's own door: the controller counted it.
+    assert!(
+        arena
+            .reflex
+            .unit(RED)
+            .is_some_and(|row| row.route.is_empty() && row.goal.is_some()),
+        "the machine was not routeless with a goal, so this is not `B-44`'s case"
+    );
 }

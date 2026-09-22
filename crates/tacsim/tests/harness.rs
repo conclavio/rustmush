@@ -1571,6 +1571,31 @@ fn occurrences(bytes: &[u8], needle: &str) -> u64 {
     u64::try_from(String::from_utf8_lossy(bytes).matches(needle).count()).unwrap_or(0)
 }
 
+/// **The cell every `blocked` line in a chunk names** (16b cut E.3).
+///
+/// The event carries the refused cell and no cause — the cause on the event is
+/// cut M's (16c `T-04`) — so the only way to say whether a stop was traffic or
+/// ground is to ask the window about the cell it names. The chunk is JSONL and
+/// the line's shape is fixed by `EventKind::Blocked`, so this reads the two
+/// integers out of it rather than deserialising a whole event per stop.
+fn blocked_cells_of(bytes: &[u8]) -> Vec<(u16, u16)> {
+    let text = String::from_utf8_lossy(bytes);
+    text.lines()
+        .filter(|line| line.contains("\"kind\":\"blocked\""))
+        .filter_map(|line| {
+            let after = |key: &str| -> Option<u16> {
+                let at = line.find(key)? + key.len();
+                let rest = line.get(at..)?;
+                let end = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                rest.get(..end)?.parse::<u16>().ok()
+            };
+            Some((after("\"x\":")?, after("\"y\":")?))
+        })
+        .collect()
+}
+
 /// `<stem>-arena.<ext>` beside the baseline's report, so the two measurements do
 /// not overwrite each other's JSON.
 fn arena_report_path(given: &str) -> std::path::PathBuf {
@@ -1854,6 +1879,10 @@ fn tacsim_harness_arena_step() {
         chunks: u64,
         bytes: u64,
         blocked: u64,
+        /// **16b cut E.3**: every refused cell, so the stops can be split by
+        /// where they happened — the only question the window can answer about an
+        /// event that carries no cause.
+        blocked_at: Vec<(u16, u16)>,
         locked: u64,
         fired: u64,
         impacts: u64,
@@ -1868,6 +1897,7 @@ fn tacsim_harness_arena_step() {
             counts.chunks += 1;
             counts.bytes += u64::try_from(chunk.bytes.len()).unwrap_or(0);
             counts.blocked += occurrences(&chunk.bytes, "\"kind\":\"blocked\"");
+            counts.blocked_at.extend(blocked_cells_of(&chunk.bytes));
             counts.locked += occurrences(&chunk.bytes, "\"kind\":\"locked\"");
             counts.fired += occurrences(&chunk.bytes, "\"kind\":\"fired\"");
             counts.impacts += occurrences(&chunk.bytes, "\"kind\":\"impact\"");
@@ -1979,6 +2009,7 @@ fn tacsim_harness_arena_step() {
         counts.chunks += 1;
         counts.bytes += u64::try_from(chunk.bytes.len()).unwrap_or(0);
         counts.blocked += occurrences(&chunk.bytes, "\"kind\":\"blocked\"");
+        counts.blocked_at.extend(blocked_cells_of(&chunk.bytes));
         counts.locked += occurrences(&chunk.bytes, "\"kind\":\"locked\"");
         counts.fired += occurrences(&chunk.bytes, "\"kind\":\"fired\"");
         counts.impacts += occurrences(&chunk.bytes, "\"kind\":\"impact\"");
@@ -2138,6 +2169,54 @@ fn tacsim_harness_arena_step() {
             CELL_CM,
             harness_mobility().max_speed_cms
         )
+    );
+    // **16b cut E.3**: the stops split by what refused them, so that "`blocked`
+    // fell" is evidence and not an observation. The `blocked` event carries the
+    // refused cell and no cause — the cause on the event is cut M's (16c `T-04`)
+    // — so the window is all there is to ask, and each bucket is named for what
+    // the window can actually answer:
+    //
+    // - **`impassable`**: the named cell is off the window or is a cell nothing
+    //   tracked may enter. Only `BlockedCause::Impassable` can name one, so this
+    //   bucket is exact.
+    // - **`ring`**: a passable cell on the window's **outer ring**. An `Edge`
+    //   refusal names `nearest_on_window`, which clamps each axis into the window
+    //   and therefore always names a passable ring cell (the unit's own), so every
+    //   edge stop is in here. A crossing refused by a unit or a bank that happens
+    //   to sit on the ring is in here too, and on a 256-cell window the ring is
+    //   under two per cent of the ground.
+    // - **`interior`**: a passable cell off the ring — a crossing refused by
+    //   another unit, or by a bank too steep to climb, which this field's ground
+    //   barely has. No edge stop can reach this bucket, which is the whole point:
+    //   this is the number that moves with `occupied_stop_ms` and nothing else in
+    //   the split does.
+    let terrain = &arena.definition.terrain;
+    let on_ring = |x: u16, y: u16| -> bool {
+        x == 0
+            || y == 0
+            || x.saturating_add(1) >= terrain.width()
+            || y.saturating_add(1) >= terrain.height()
+    };
+    let mut interior = 0_usize;
+    let mut ring = 0_usize;
+    let mut impassable = 0_usize;
+    for (x, y) in &counts.blocked_at {
+        if terrain
+            .get(*x, *y)
+            .is_some_and(tacsim::arena::state::TerrainCell::passable)
+        {
+            if on_ring(*x, *y) {
+                ring += 1;
+            } else {
+                interior += 1;
+            }
+        } else {
+            impassable += 1;
+        }
+    }
+    println!(
+        "harness_arena_blocked_split: interior={interior} ring={ring} impassable={impassable} of {} lines",
+        counts.blocked_at.len()
     );
     println!(
         "harness_arena_counters: blocked={} ledger_bytes={} chunks={} frames_per_pulse_mean={frames_mean:.2} moving_at_end={moving} held_at_end={held} lagged_pulses={lagged_pulses} ended={}",
@@ -2312,6 +2391,12 @@ fn tacsim_harness_arena_step() {
         },
         "counters": {
             "blocked_events": counts.blocked,
+            // 16b cut E.3: and where the refused cells were — the split above,
+            // named for what the window can answer rather than for a cause the
+            // event does not carry.
+            "blocked_interior_passable": interior,
+            "blocked_ring_passable": ring,
+            "blocked_impassable": impassable,
             "ledger_bytes_streamed": counts.bytes,
             "ledger_chunks": counts.chunks,
             "frames_per_pulse_mean": num(frames_mean),

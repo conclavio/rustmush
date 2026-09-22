@@ -243,6 +243,8 @@ reserved_rooms = []
 # naming that key.
 [tacsim.arena]
 max_catch_up_steps = 4
+# (16b cut E.3) arena ms a unit holds against another unit in its way, keeping its speed, before it stops and says so; 0 stops it at once
+occupied_stop_ms = 2000
 # 16b cut N.2: the floor under one squad's deliberation requests, arena ms.
 deliberate_min_ms = 30000
 

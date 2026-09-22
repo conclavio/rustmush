@@ -238,6 +238,8 @@ reserved_rooms = []                # extra rooms (#N) that may never become prop
 # wall time between pulses and clamped: past the clamp the arena records
 # `lagged` and skips the idle time rather than expanding dt to hide it.
 max_catch_up_steps = 4             # periods of wall time one pulse may absorb before it records `lagged`
+# (16b cut E.3) arena ms a unit holds against another unit in its way, keeping its speed, before it stops and says so; 0 stops it at once
+occupied_stop_ms = 2000
 deliberate_min_ms = 30000          # (16b cut N.2) the least ARENA time between two deliberation requests for one squad: the floor under the event-driven trigger
 
 [tacsim.arena.tempo]               # (16b cut G) the adaptive tempo: how often the arena steps

@@ -181,6 +181,25 @@ pub struct ArenaConfig {
     /// records `lagged` and skips the idle time rather than expanding `dt`
     /// (doc 16 §3.1 "Clock and lag").
     pub max_catch_up_steps: u32,
+    /// **Arena milliseconds a unit holds against another unit in its way, keeping
+    /// its speed, before it stops and says so** (16b cut E.3; 16c `B-46`, §5's
+    /// Q10).
+    ///
+    /// Doc 16 §3.4 step 4 stops a unit dead at every refused crossing. That is the
+    /// rule for ground, and it is what breaks a column: a follower whose id sorts
+    /// below its leader's integrates first, reaches the cell the leader has not
+    /// vacated yet, and is stopped — at the ford, every time, needing a dozen
+    /// seconds to rebuild way and teaching its machine to avoid the cell its own
+    /// leader was about to leave. So an occupancy refusal is *held against* for
+    /// this long ([`crate::arena::state::UnitState::occupied_hold`]) and only then
+    /// becomes the literal stop, with its `blocked` line, its pilot notice and its
+    /// lesson. Impassable ground, the window's edge and a slope are untouched.
+    ///
+    /// **Zero is the rule as it stood before the cut**: every occupancy refusal is
+    /// a stop at once. Two seconds is long enough for a column of up to eight to
+    /// be released one substep per unit and short enough that a real obstacle — a
+    /// wreck in the ford — is learned while the match is still worth playing.
+    pub occupied_stop_ms: u32,
     /// The per-unit intent-queue bound.
     pub intents: IntentsConfig,
     /// **The least arena time between two deliberation requests for one squad**
@@ -208,6 +227,7 @@ impl Default for ArenaConfig {
         ArenaConfig {
             tempo: TempoConfig::default(),
             max_catch_up_steps: 4,
+            occupied_stop_ms: 2_000,
             intents: IntentsConfig::default(),
             deliberate_min_ms: 30_000,
             ledger: LedgerConfig::default(),
@@ -717,6 +737,15 @@ impl ArenaConfig {
             "[tacsim.arena].max_catch_up_steps",
             1,
             u64::from(self.max_catch_up_steps),
+        )?;
+        // **16b cut E.3**: 0 is the pre-cut rule (every occupancy refusal is a
+        // stop at once) and a minute of pushing at a wreck before anybody is told
+        // is a match nobody can read.
+        between(
+            "[tacsim.arena].occupied_stop_ms",
+            0,
+            60_000,
+            u64::from(self.occupied_stop_ms),
         )?;
         at_least(
             "[tacsim.arena.intents].max_pending_per_unit",

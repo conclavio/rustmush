@@ -660,6 +660,27 @@ pub struct MotionCarry {
     pub north: i64,
 }
 
+/// **A unit standing against another unit's cell, and since when** (16b cut E.3;
+/// 16c `B-46`, §5's Q10) — the state [`UnitState::occupied_hold`] carries, whose
+/// doc is the rule.
+///
+/// The cell is the one the crossing was refused, not the one the unit is standing
+/// in, because the hold is about *what is in the way*: a unit that turns and is
+/// refused a different cell has a different hold, and the clock starts again.
+/// `since_ms` is the arena millisecond the substep that opened the hold **ended**
+/// at, so the maturity test is arena time on both sides and never a count of
+/// pulses (doc 16 §3.1, D-16-2).
+///
+/// It carries no serde derives, for [`MotionCarry`]'s reason: [`UnitState`] has
+/// none and nothing in the tree encodes one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OccupiedHold {
+    /// The cell the crossing was refused, `(x, y)`.
+    pub cell: (u16, u16),
+    /// The arena millisecond the substep that opened the hold ended at.
+    pub since_ms: i64,
+}
+
 /// A unit's power state (doc 16 §3.3 "Startup").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1130,6 +1151,32 @@ pub struct UnitState {
     /// ledger event of its own, and a unit can sit in a cell for many substeps
     /// after the crossing that set it.
     pub grade_pct: u16,
+    /// **The cell this unit is standing against, and since when** (16b cut E.3;
+    /// 16c `B-46`, §5's Q10), or `None` when it is standing against nothing.
+    ///
+    /// Doc 16 §3.4 step 4 stops a unit dead at every refused crossing, which is
+    /// the right rule for ground and the wrong one for **traffic**: a follower
+    /// whose id sorts below its leader's integrates first, reaches the cell the
+    /// leader has not vacated yet, and is stopped — needing a dozen seconds to
+    /// rebuild way, at the ford, every time. So an occupancy refusal opens a
+    /// *hold* instead: the unit is clamped at the boundary keeping the speed it
+    /// had, nothing is journalled and nobody is told. Only when the hold on one
+    /// cell outlasts [`crate::config::ArenaConfig::occupied_stop_ms`] of arena
+    /// time does it become step 4's literal stop, with its `blocked` line, its
+    /// pilot notice and its lesson for the machine, exactly as before and two
+    /// seconds later.
+    ///
+    /// One writer, [`crate::arena::motion::integrate`], which also clears it: on
+    /// an accepted crossing, on a refusal of a different cell or of any other
+    /// cause, on a substep that moved the unit without a refusal, on
+    /// `desired_speed_cms == 0`, and on the wreck / dead-engine / cold-power stop.
+    /// A substep that covered no whole centimetre leaves it alone, which is
+    /// [`UnitState::held`]'s own rule.
+    ///
+    /// It **is** folded into [`crate::arena::hash::state_hash`], for `grade_pct`'s
+    /// argument word for word: authoritative state with one writer that decides a
+    /// later refusal and moves with no ledger line of its own.
+    pub occupied_hold: Option<OccupiedHold>,
     /// **What the last substep of motion did not spend** (16b cut Q.6; doc 16
     /// §3.1 "Rate independence") — the fractional turn, speed change and distance
     /// that would otherwise be truncated away three times a substep.
@@ -1263,11 +1310,19 @@ pub struct UnitState {
     /// order being taken off ([`crate::arena::motion::integrate`]), and left alone
     /// in between.
     ///
-    /// **Output only.** Nothing in the arena decides anything by it — the reflex
-    /// controller still reads `blocked`, and the ledger's `blocked` event is still
-    /// that flag's rising edge — and it is deliberately **not** folded into
+    /// **Output only.** Nothing in the arena decides anything by it — the ledger's
+    /// `blocked` event is the *flag* beside it rising, and the reflex controller
+    /// learns from that **event** (16b cut Q.7's
+    /// [`Arena::note_blocked`](crate::arena::state::Arena), not from either flag)
+    /// — and it is deliberately **not** folded into
     /// [`crate::arena::hash::state_hash`], for the reason `held_losses` is not: it
     /// is a fact about what a pilot is being shown.
+    ///
+    /// **16b cut E.3**: a *hold* against another unit
+    /// ([`UnitState::occupied_hold`]) is neither a stop nor a substep that moved,
+    /// so it leaves this exactly as it was — a tank already held against a wreck
+    /// stays held through the two seconds before the next stop matures, and the
+    /// pilot therefore still hears one line and not one per cycle.
     pub held: bool,
     /// The seat has gone linkdead (doc 07 §1.2): the tank keeps its continuous
     /// orders and accepts no discrete action.
@@ -2850,6 +2905,8 @@ impl Arena {
                 // A unit opens the match standing still, so it entered its cell by
                 // no edge at all: grade zero, which is the flat factor.
                 grade_pct: 0,
+                // **16b cut E.3**: and it is not standing against anybody.
+                occupied_hold: None,
                 // **16b cut Q.6**: and it has spent no arena time moving, so there
                 // is no fraction of a turn, a speed change or a centimetre to
                 // carry into its first substep.

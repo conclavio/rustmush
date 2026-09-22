@@ -89,14 +89,14 @@ fn centre_of(cell: (u16, u16)) -> (i64, i64) {
 ///   machine **ordered** to a stop — three readings of the pulse that carries it,
 ///   and they are the cut's headline measure: a machine that fires from
 ///   `Approach`, or from a kilometre out, or while it is still ordered to drive,
-///   is the defect this cut exists to close. Its *actual* speed is deliberately
-///   not asserted there: `Approach → Engage` and `engage_orders` are one tick,
-///   `resolve_fire` has no speed gate, and the stock tank sheds 15 m/s at 2 m/s²
-///   over seven and a half seconds — so at E.1 the first shot is fired at close
-///   to full speed, which is what a crew with a line does. What is asserted
-///   instead is that the machine really does come to a stop: if it is still in
-///   `Engage` ten arena seconds later, it has read zero on at least one pulse in
-///   between. 16b cut E.3 adds the braking profile and tightens this.
+///   is the defect this cut exists to close. `Approach → Engage` and
+///   `engage_orders` are one tick and `resolve_fire` has no speed gate, so the
+///   shot leaves while the tank is still rolling, which is what a crew with a
+///   line does. **16b cut E.3 tightened the three claims about that roll**: with
+///   `B-42`'s braking profile the shot is fired *below the ceiling* (measured
+///   1,097 cm/s of 1,500), the machine reads zero inside seven arena seconds of
+///   it (measured 6,750 ms, which is 1,097 cm/s at the stock 200 cm/s² of brake),
+///   and from that zero until it leaves `Engage` it never reads above zero again.
 /// * **(c)** no machine is ever in `Engage` at a plot range past `release_cm`
 ///   plus one tick of a target opening the range, plus a cell.
 /// * **(d) `T-32`**: the match spends time in more than one tempo, which it
@@ -240,32 +240,72 @@ fn e1_two_stock_machines_close_to_their_real_reach_and_fight() {
         at_the_shot.desired_speed_cms, 0,
         "the machine was still ordered to drive when it fired: {at_the_shot:?}"
     );
-    // And it really does come to a stop: if it is still engaged ten arena seconds
-    // later, it read zero somewhere in between. The window is scoped to the shot
-    // rather than to the match, so a stop the machine made half a minute earlier
-    // is not what satisfies it.
-    let until_ms = first.t_ms + 10_000;
-    let still_engaged = seen
+    // **16b cut E.3 tightened the two claims E.1 left here.**
+    //
+    // The first shot is fired *braking*, not at full speed and not stopped. The
+    // machine fires on the tick it crosses `engage_cm`, and that tick is a couple
+    // of cells short of its stand-off cell, so `B-42`'s profile has had a tick or
+    // two to bite and no more — the stock tank sheds two metres a second squared.
+    // **Measured: 1,097 cm/s of a 1,500 cm/s tank** at the pulse that carried the
+    // shot, against the whole 1,500 before this cut. What is asserted is
+    // therefore *below the ceiling with room to spare*, and not a figure the
+    // arithmetic cannot reach: a machine that fired at its ceiling did not brake
+    // for its band at all.
+    assert!(
+        at_the_shot.speed_cms <= 1_200,
+        "the first shot was fired at {} cm/s, which is not a machine braking into its band: \
+         {at_the_shot:?}",
+        at_the_shot.speed_cms
+    );
+    // And it really does come to a stop, and then stays stopped for as long as it
+    // holds the band. **The window is the stock tank's own physics and not a
+    // round number**: 1,097 cm/s at 200 cm/s² is five and a half seconds of
+    // braking, and the `speed 0` order was itself given at the tick before the
+    // shot, so the measured shot-to-stop figure is 6,750 ms and the horizon is
+    // seven seconds. The window is scoped to the shot rather than to the match,
+    // so a stop the machine made half a minute earlier is not what satisfies it.
+    let until_ms = first.t_ms + 7_000;
+    let after: Vec<&Seen> = seen
         .iter()
-        .filter(|row| row.unit == shooter && row.at_ms >= until_ms)
+        .filter(|row| row.unit == shooter && row.at_ms > first.t_ms)
+        .collect();
+    let still_engaged = after
+        .iter()
+        .filter(|row| row.at_ms >= until_ms)
         .min_by_key(|row| row.at_ms)
         .is_some_and(|row| row.state == ReflexState::Engage);
+    let first_zero = after
+        .iter()
+        .find(|row| row.speed_cms == 0)
+        .map(|row| row.at_ms);
+    println!(
+        "e1_shipped_duel: the shooter first read zero {} ms after its first shot",
+        first_zero.map_or(-1, |at| at - first.t_ms)
+    );
     if still_engaged {
-        let stopped: Vec<i64> = seen
+        let stopped: Vec<i64> = after
             .iter()
-            .filter(|row| {
-                row.unit == shooter
-                    && (first.t_ms..=until_ms).contains(&row.at_ms)
-                    && row.speed_cms == 0
-            })
+            .filter(|row| row.at_ms <= until_ms && row.speed_cms == 0)
             .map(|row| row.at_ms)
             .collect();
         assert!(
             !stopped.is_empty(),
-            "ten seconds after its first shot the machine is still engaged and has never read \
+            "seven seconds after its first shot the machine is still engaged and has never read \
              zero: it is fighting rolling"
         );
-        println!("e1_shipped_duel: the shooter read zero at {stopped:?}");
+        // From the first zero until it leaves `Engage` it never reads above zero:
+        // a machine that holds its band holds it standing still.
+        let from = stopped.first().copied().unwrap_or(until_ms);
+        let rolling: Vec<(i64, i32)> = after
+            .iter()
+            .take_while(|row| row.state == ReflexState::Engage)
+            .filter(|row| row.at_ms >= from && row.speed_cms > 0)
+            .map(|row| (row.at_ms, row.speed_cms))
+            .collect();
+        assert!(
+            rolling.is_empty(),
+            "the machine started rolling again while it was still holding its band: {rolling:?}"
+        );
     }
 
     // (c) `Engage` is never held past the firing ceiling.
@@ -420,4 +460,87 @@ fn e1_the_rig_poses_its_units_the_way_the_check_out_does() {
         assert_eq!(unit.fight_inner_cm(1_000), 60_000);
         assert_eq!(unit.fight_limit_cm(1_000), 60_000);
     }
+}
+
+/// **Two machines of one side cross the shipped ford in column and stop each
+/// other nowhere** (16b cut E.3; 16c `B-46`).
+///
+/// The proving ground has one ford on the east-west road, which is where every
+/// solo match crosses and the one place a column is forced nose to tail. Before
+/// this cut the follower was stopped dead at the cells its leader had not
+/// vacated, journalled a `blocked` line for each, and learned to avoid the cells
+/// its own leader was standing in — on the one piece of ground the whole match
+/// has to use.
+///
+/// Red slots 1 and 2 at their authored musters, both on the machine, no hostiles
+/// at all, four minutes of arena time: whatever the two of them do, neither is
+/// ever stopped by the other, and neither remembers a cell the other was in.
+#[test]
+fn e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other() {
+    let world = booted_world();
+    let mut arena = shipped_arena(
+        &world,
+        &[&[Muster::reflex(Team::Red, 1), Muster::reflex(Team::Red, 2)]],
+    );
+    let one = support::tank(&world, Team::Red, 1);
+    let two = support::tank(&world, Team::Red, 2);
+    let opened = arena
+        .units
+        .iter()
+        .map(|unit| unit.pose.x_cm)
+        .collect::<Vec<i64>>();
+    // Every cell either machine ever remembered being stopped at, and the extent
+    // of the ground they covered. The remembered cells age out after
+    // `REFLEX_AVOID_TTL_MS`, so this is the union over the run.
+    let mut learned: Vec<(mush_core::ObjId, (u16, u16))> = Vec::new();
+    let mut east_most = 0_i64;
+    let mut bytes = run_until(&mut arena, 240_000, 1_000, |arena, _out| {
+        for id in [one, two] {
+            let Some(row) = arena.reflex.unit(id) else {
+                continue;
+            };
+            for (cell, _) in &row.avoid {
+                if !learned.contains(&(id, *cell)) {
+                    learned.push((id, *cell));
+                }
+            }
+        }
+        east_most = east_most.max(
+            arena
+                .units
+                .iter()
+                .map(|unit| unit.pose.x_cm)
+                .max()
+                .unwrap_or(0),
+        );
+    });
+    let log = ledger_events(&mut arena, &mut bytes);
+    let stops: Vec<(i64, Option<mush_core::ObjId>)> = log
+        .iter()
+        .filter(|event| event.kind.as_str() == "blocked")
+        .map(|event| (event.t_ms, support::unit_of_event(event)))
+        .collect();
+    println!(
+        "e3_shipped_column: opened at {opened:?} cm, east-most {east_most} cm, \
+         {} stops, remembered {learned:?}",
+        stops.len()
+    );
+    assert!(
+        stops.is_empty(),
+        "the two machines stopped each other on the shipped ground: {stops:?}"
+    );
+    assert!(
+        learned.is_empty(),
+        "a machine learned to avoid a cell on the one road the match has to use: {learned:?}"
+    );
+    // And they really did drive: a run in which nothing moved would pass the two
+    // assertions above and prove nothing.
+    assert!(
+        arena.units.iter().any(|unit| {
+            opened
+                .iter()
+                .all(|from| (unit.pose.x_cm - *from).abs() > 10_000)
+        }),
+        "neither machine went anywhere, so the ford was never crossed"
+    );
 }

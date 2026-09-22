@@ -104,6 +104,19 @@ pub struct Frame {
     /// Where it is.
     pub pose: Pose,
     /// How fast, cm/s; negative is reverse.
+    ///
+    /// **16b cut E.3 decided what this reads while a tank is held against another
+    /// unit** ([`crate::arena::state::UnitState::occupied_hold`]): the speed it
+    /// had. A hold keeps `speed_cms` and does not set
+    /// [`crate::arena::state::UnitState::held`], so for up to
+    /// `[tacsim.arena].occupied_stop_ms` the pilot carries the speed they ordered,
+    /// a pose that is not advancing, and no `HELD` — and then, at the stop, `0`
+    /// and `HELD` together. That is deliberate. Reporting `0` while holding would
+    /// make the speed of every tank following another in column flicker to zero
+    /// for a substep at a time, and it would disclose nothing a pilot is not
+    /// already told sooner: the stop's own `Held: something is in the way.` is a
+    /// sentence only [`crate::arena::motion::BlockedCause::Occupied`] produces,
+    /// and it arrives no later than it ever did plus the hold.
     pub speed_cms: i32,
     /// Whether its power is up.
     pub power: Power,
@@ -828,8 +841,25 @@ impl Arena {
         // loop, so the `ReflexTick` of this very substep already knows.
         let mut learned: Vec<(ObjId, (u16, u16), crate::arena::motion::BlockedCause)> = Vec::new();
 
+        // **16b cut E.3** (16c `B-44`), before motion: a machine steering at a
+        // goal with no route is steering at a direction nobody has checked, and
+        // until this cut it only found that out at its own decide tick — once a
+        // second of arena time, against eight substeps of driving. The pre-pass
+        // asks the crossing's own question of the cell in front of every such
+        // machine and orders the ones that would be refused to stop, through the
+        // same door a pilot's `SPEED 0` goes through.
+        self.hold_routeless(reflex);
+
         // ---- (a) motion ----
         {
+            // **16b cut E.3**: the arena millisecond this substep *ends* at, and
+            // the key that prices a traffic hold against it. Both are read before
+            // the borrow below, because arena time itself is not advanced until
+            // (c) — a hold opened here is stamped with the boundary the motion
+            // belongs to, which is the same boundary the `blocked` notices below
+            // are stamped with.
+            let end_ms = self.now_ms.saturating_add(i64::from(dt_ms));
+            let occupied_stop_ms = self.arena_cfg.occupied_stop_ms;
             self.index.rebuild(&self.definition.terrain, &self.units);
             let terrain = &self.definition.terrain;
             let index = &mut self.index;
@@ -841,7 +871,7 @@ impl Arena {
                 let was_blocked = unit.blocked;
                 let was_held = unit.held;
                 let from = terrain.cell_of(&unit.pose);
-                let outcome = integrate(unit, dt_ms, terrain, index);
+                let outcome = integrate(unit, dt_ms, terrain, index, end_ms, occupied_stop_ms);
                 if outcome.moved
                     && let Some(from) = from
                     && let Some(to) = terrain.cell_of(&unit.pose)

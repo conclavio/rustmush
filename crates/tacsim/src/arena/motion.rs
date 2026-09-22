@@ -16,6 +16,19 @@
 //!    the window — and a refusal stops the unit at the boundary with `speed = 0`
 //!    and one `blocked` notice.
 //!
+//! **16b cut E.3 put one delay into step 4, for traffic alone** (16c `B-46`, §5's
+//! Q10). Ground, the window's edge and a slope still stop a unit dead at the
+//! centimetre it was refused. A cell held by **another unit** opens a *hold*
+//! instead ([`hold_at_boundary`]): the unit is clamped at the boundary keeping the
+//! speed it had, nothing is journalled and nobody is told, and if the way clears
+//! it drives on without ever having stopped. Only a hold on one cell that outlasts
+//! `[tacsim.arena].occupied_stop_ms` of arena time becomes step 4's literal stop,
+//! with its `blocked` line, its pilot notice and its lesson for the machine —
+//! exactly as before, two seconds later. The reason is a column at a ford: a
+//! follower that integrates before its leader reaches the cell the leader has not
+//! vacated yet, and stopping it dead cost it a dozen seconds of rebuilding way and
+//! taught its machine to avoid the cell its own leader was about to leave.
+//!
 //! **16b cut X.6 put the ground's third dimension into steps 2 and 4.** The
 //! slope of the edge a unit crossed to reach its cell surcharges that cell's
 //! `move_cost` for as long as it stands there, and an edge steeper than the
@@ -83,7 +96,7 @@ use mush_sim::data::Pose;
 
 use crate::arena::index::SpatialIndex;
 use crate::arena::slope;
-use crate::arena::state::{ArenaTerrain, Power, Side, TerrainCell, UnitState};
+use crate::arena::state::{ArenaTerrain, OccupiedHold, Power, Side, TerrainCell, UnitState};
 
 /// **The scale each axis of [`crate::arena::state::MotionCarry`] is measured in**
 /// (16b cut Q.6): the millisecond's thousand times [`SIN_ONE`]'s fixed point.
@@ -273,15 +286,31 @@ pub struct MotionOutcome {
 /// smoke of 2026-09-18 found the difference: a tank ordered forward against a
 /// river bank read `0 kph` with no `HELD` on exactly those substeps. `held` is
 /// deliberately **output only** — nothing in the arena reads it, it is not folded
-/// into [`crate::arena::hash::state_hash`], and the reflex controller still reads
-/// `blocked`, so no outcome moves with it.
+/// into [`crate::arena::hash::state_hash`], and the reflex controller learns from
+/// the `blocked` **event** (16b cut Q.7's `Arena::note_blocked`) rather than from
+/// either flag, so no outcome moves with it.
+///
+/// **16b cut E.3's two parameters.** `end_ms` is the arena millisecond this
+/// substep **ends** at — `now_ms + dt_ms` at the one production call site — and
+/// `occupied_stop_ms` is `[tacsim.arena].occupied_stop_ms`. Together they are the
+/// whole of the traffic hold: a hold opens and matures at arena timestamps, never
+/// after a count of substeps, so nothing about how a pulse was cut decides when a
+/// tank stops (doc 16 §3.1, D-16-2). `occupied_stop_ms == 0` is the rule as it
+/// stood before the cut: every occupancy refusal is a stop at once.
+///
+/// A hold settles [`UnitState::held`] to neither value: it is not a stop and it
+/// covered no ground, so the condition stays exactly as it was — which is what
+/// keeps a tank pushing at a wreck telling its pilot one line and not one every
+/// two seconds.
 pub fn integrate(
     unit: &mut UnitState,
     dt_ms: u32,
     terrain: &ArenaTerrain,
     index: &SpatialIndex,
+    end_ms: i64,
+    occupied_stop_ms: u32,
 ) -> MotionOutcome {
-    let outcome = advance(unit, dt_ms, terrain, index);
+    let outcome = advance(unit, dt_ms, terrain, index, end_ms, occupied_stop_ms);
     // **The `held` condition** (16b cut F.2), settled once, at the one exit: a
     // stop sets it, a substep that covered ground clears it, and a tank that is
     // no longer being ordered anywhere is not being held against anything. A
@@ -303,12 +332,21 @@ fn advance(
     dt_ms: u32,
     terrain: &ArenaTerrain,
     index: &SpatialIndex,
+    end_ms: i64,
+    occupied_stop_ms: u32,
 ) -> MotionOutcome {
     unit.blocked = false;
     if dt_ms == 0 {
         return MotionOutcome::default();
     }
     let dt = i64::from(dt_ms);
+    // **16b cut E.3**: a unit that is no longer being driven anywhere is not being
+    // held against anything, which is [`UnitState::held`]'s own rule one field
+    // over. It is cleared here, before the substep, so a coasting tank that is
+    // refused on its way to a stop opens no hold it could never mature.
+    if unit.desired_speed_cms == 0 {
+        unit.occupied_hold = None;
+    }
 
     // ---- 1. the heading turns toward the ordered one, shortest arc ----
     turn(unit, dt);
@@ -356,6 +394,8 @@ fn advance(
         unit.carry.east = 0;
         unit.carry.north = 0;
         unit.blocked = true;
+        // 16b cut E.3: a stop of any other cause ends whatever hold there was.
+        unit.occupied_hold = None;
         return MotionOutcome {
             moved: false,
             blocked_at: Some((0, 0)),
@@ -372,11 +412,16 @@ fn advance(
 
     // ---- 4. a crossing tests the cell entered ----
     match terrain.cell_of(&unit.pose) {
-        Some(to) if to == from => MotionOutcome {
-            moved: true,
-            blocked_at: None,
-            blocked_by: None,
-        },
+        Some(to) if to == from => {
+            // 16b cut E.3: a substep that moved and was not refused is a substep
+            // the unit is standing against nothing.
+            unit.occupied_hold = None;
+            MotionOutcome {
+                moved: true,
+                blocked_at: None,
+                blocked_by: None,
+            }
+        }
         Some(to) => {
             // **16b cut X.6**: the cell entered is fetched **once** here and read
             // three times below — by the refusal, by the elevation and by the
@@ -399,20 +444,62 @@ fn advance(
                     // **16b cut X.6**: and the slope it came up, which the next
                     // substep's terrain factor is measured against.
                     unit.grade_pct = u16::try_from(crossing.grade_pct()).unwrap_or(u16::MAX);
+                    // 16b cut E.3: the crossing was accepted, so whatever it was
+                    // standing against it is not standing against it now.
+                    unit.occupied_hold = None;
                     MotionOutcome {
                         moved: true,
                         blocked_at: None,
                         blocked_by: None,
                     }
                 }
-                // Impassable, occupied, too steep or more than one cell away:
-                // stop at the boundary.
-                Some(cause) => stop_at_boundary(unit, terrain, from, to, cause),
+                // **16b cut E.3**: another unit in the way is *held against* for
+                // `occupied_stop_ms` of arena time before it becomes doc 16 §3.4
+                // step 4's stop. Everything else — impassable ground, a slope,
+                // more than one cell away — stops at the boundary at once, and
+                // ends any hold that was open.
+                Some(BlockedCause::Occupied) => {
+                    let on_this_cell = unit.occupied_hold.is_some_and(|hold| hold.cell == to);
+                    // The hold on **this** cell has outlasted the key — or the key
+                    // is zero, which is the rule as it stood before this cut.
+                    let mature = occupied_stop_ms == 0
+                        || unit.occupied_hold.is_some_and(|hold| {
+                            hold.cell == to
+                                && end_ms.saturating_sub(hold.since_ms)
+                                    >= i64::from(occupied_stop_ms)
+                        });
+                    if mature {
+                        unit.occupied_hold = None;
+                        return stop_at_boundary(unit, terrain, from, to, BlockedCause::Occupied);
+                    }
+                    // A unit that is no longer being driven anywhere is not
+                    // pushing at anything — it is coasting to a stop of its own,
+                    // and a clock it can never run out is a clock that should not
+                    // be started. It holds at the boundary and opens nothing.
+                    if unit.desired_speed_cms == 0 {
+                        unit.occupied_hold = None;
+                        return hold_at_boundary(unit, terrain, from);
+                    }
+                    if !on_this_cell {
+                        // A refusal of a *different* cell is a different hold, and
+                        // the clock starts again from this substep's end.
+                        unit.occupied_hold = Some(OccupiedHold {
+                            cell: to,
+                            since_ms: end_ms,
+                        });
+                    }
+                    hold_at_boundary(unit, terrain, from)
+                }
+                Some(cause) => {
+                    unit.occupied_hold = None;
+                    stop_at_boundary(unit, terrain, from, to, cause)
+                }
             }
         }
         // Off the window (doc 16 §3.2 "Edges").
         None => {
             let nearest = nearest_on_window(terrain, &unit.pose);
+            unit.occupied_hold = None;
             stop_at_boundary(unit, terrain, from, nearest, BlockedCause::Edge)
         }
     }
@@ -556,6 +643,10 @@ fn accelerate(unit: &mut UnitState, dt: i64, move_cost: u32) {
         unit.carry.speed = 0;
         unit.carry.east = 0;
         unit.carry.north = 0;
+        // **16b cut E.3**: and a tank that has just been stopped dead is not
+        // holding against anybody either — the hold is a thing a unit with way on
+        // does, and this one has none.
+        unit.occupied_hold = None;
         return;
     }
     let scaled = |ceiling: u32| -> i32 {
@@ -706,13 +797,8 @@ fn refusal(
 }
 
 /// Stop the unit at the boundary it could not cross: the pose is clamped into the
-/// cell it already occupies — **both** axes, so a refused diagonal cannot deposit
-/// it in an untested edge-adjacent cell — the speed goes to zero, and the stop is
-/// reported against `refused`.
-///
-/// "At the boundary" is the last whole centimetre of its own cell, because
-/// [`ArenaTerrain::cell_of`] gives a boundary to the cell it opens: at 1,000 cm
-/// cells, column 3 is `3_000..=3_999`.
+/// cell it already occupies ([`clamp_into_cell`]), the speed goes to zero, and the
+/// stop is reported against `refused`.
 ///
 /// **16b cut Q.6**: and the three motion carries go with the speed. The rule is
 /// [`crate::arena::heat`]'s — a carry belongs to arena time that was actually
@@ -726,13 +812,7 @@ fn stop_at_boundary(
     refused: (u16, u16),
     cause: BlockedCause,
 ) -> MotionOutcome {
-    let side = i64::from(terrain.cell_cm());
-    let low_x = i64::from(from.0).saturating_mul(side);
-    let low_y = i64::from(from.1).saturating_mul(side);
-    let moved_x = unit.pose.x_cm;
-    let moved_y = unit.pose.y_cm;
-    unit.pose.x_cm = moved_x.clamp(low_x, low_x.saturating_add(side).saturating_sub(1));
-    unit.pose.y_cm = moved_y.clamp(low_y, low_y.saturating_add(side).saturating_sub(1));
+    clamp_into_cell(unit, terrain, from);
     unit.speed_cms = 0;
     unit.carry.speed = 0;
     unit.carry.east = 0;
@@ -743,6 +823,88 @@ fn stop_at_boundary(
         blocked_at: Some(refused),
         blocked_by: Some(cause),
     }
+}
+
+/// **Hold the unit at the boundary it could not cross, keeping its way** (16b cut
+/// E.3; 16c `B-46`, §5's Q10) — the traffic half of doc 16 §3.4 step 4.
+///
+/// The pose is clamped into the cell the unit already occupies exactly as
+/// [`stop_at_boundary`] clamps it, **both** axes, so the invariant this module's
+/// head states is as true of a hold as of a stop: no unit ever occupies a cell
+/// that was not tested on entry. The two travel carries go with it, for
+/// [`stop_at_boundary`]'s reason and this one more: a clamped fraction of a
+/// centimetre would cross the boundary on the next substep without being tested
+/// again.
+///
+/// **What it keeps is `speed_cms` and `carry.speed`**, which is the whole point —
+/// a follower in a column that is held for a substep and let through on the next
+/// drives on at the speed it had, rather than rebuilding fifteen metres a second
+/// from nothing at every cell of the ford. [`UnitState::blocked`] stays `false`,
+/// nothing is reported against the outcome, so the substep journals no `blocked`
+/// line, stages no notice and teaches no machine: to everything downstream this
+/// is a substep in which a unit did not move.
+///
+/// **What a pilot's frame reads during a hold, decided** (16b cut E.3).
+/// `Frame::speed_cms` reads [`UnitState::speed_cms`], which a hold keeps, and
+/// `Frame::blocked` reads [`UnitState::held`], which a hold does not set: so for
+/// up to `occupied_stop_ms` the pilot carries the speed they had, a pose that is
+/// not advancing, and no `HELD`. That is deliberate and it is not a new channel.
+/// The pilot of a tank stopped dead by another unit is sent `Held: something is
+/// in the way.` — a sentence only [`BlockedCause::Occupied`] produces — and at
+/// HEAD that arrived on the *first* substep, so "a unit and not ground" was
+/// already disclosed, sooner than any reading of a frozen pose could disclose it;
+/// the hold tells nobody anything earlier or more than before, and the sentence
+/// stays `something`. The alternative, reporting `0` while holding, would make
+/// the speed of every tank following another in column flicker to zero for a
+/// substep at a time.
+///
+/// **What keeping the heading and the way costs, recorded** (16b cut E.3). A hold
+/// clamps the pose but leaves `heading_mdeg` alone, so a unit refused a cell while
+/// it is on a **diagonal** heading is parked at the corner of its own cell with
+/// full way on, and the first substep whose other axis also crosses enters the
+/// *diagonal* neighbour instead — tested on entry like every other crossing, so
+/// the invariant this module's head states is untouched, but the unit has gone
+/// round the obstacle rather than waited behind it. That is not new in kind: at
+/// HEAD a tank under a standing speed order stopped, rebuilt its way and crept
+/// the same way round a second or two later. The hold makes it a substep or two
+/// instead. Where a machine is steering a route the route is what decides and the
+/// drift is a cell of it; where a pilot is driving, the tank goes where it is
+/// pointed. Terrain refusals are unchanged, so 16c §6's "sliding along an obstacle
+/// after a terrain refusal" is still not built: this is traffic, and it is the
+/// reason `a_stop_a_wreck_and_a_cold_hull_all_zero_the_carries` runs its
+/// [`BlockedCause::Occupied`] row at `occupied_stop_ms = 0`.
+fn hold_at_boundary(
+    unit: &mut UnitState,
+    terrain: &ArenaTerrain,
+    from: (u16, u16),
+) -> MotionOutcome {
+    clamp_into_cell(unit, terrain, from);
+    unit.carry.east = 0;
+    unit.carry.north = 0;
+    MotionOutcome {
+        moved: false,
+        blocked_at: None,
+        blocked_by: None,
+    }
+}
+
+/// Clamp a pose that has just left `from` back into it — **both** axes, so a
+/// refused diagonal cannot deposit the unit in an untested edge-adjacent cell.
+///
+/// "At the boundary" is the last whole centimetre of its own cell, because
+/// [`ArenaTerrain::cell_of`] gives a boundary to the cell it opens: at 1,000 cm
+/// cells, column 3 is `3_000..=3_999`. It is the one piece [`stop_at_boundary`]
+/// and [`hold_at_boundary`] share, and sharing it is what makes "a hold leaves the
+/// unit exactly where a stop would have" true by construction rather than by two
+/// copies agreeing.
+fn clamp_into_cell(unit: &mut UnitState, terrain: &ArenaTerrain, from: (u16, u16)) {
+    let side = i64::from(terrain.cell_cm());
+    let low_x = i64::from(from.0).saturating_mul(side);
+    let low_y = i64::from(from.1).saturating_mul(side);
+    let moved_x = unit.pose.x_cm;
+    let moved_y = unit.pose.y_cm;
+    unit.pose.x_cm = moved_x.clamp(low_x, low_x.saturating_add(side).saturating_sub(1));
+    unit.pose.y_cm = moved_y.clamp(low_y, low_y.saturating_add(side).saturating_sub(1));
 }
 
 /// The on-window cell nearest to a pose that is off it — each axis clamped into
@@ -770,6 +932,8 @@ mod tests {
 
     const A: ObjId = ObjId(4);
     const B: ObjId = ObjId(9);
+    /// A third hull, parked (16b cut E.3).
+    const C: ObjId = ObjId(11);
 
     /// An arena whose units are online and ordered nowhere.
     fn running(units: Vec<crate::arena::state::CustodyUnit>) -> Arena {
@@ -786,14 +950,39 @@ mod tests {
         index
     }
 
-    /// One substep for one unit, with the index rebuilt from the current poses.
+    /// **The shipped `[tacsim.arena].occupied_stop_ms`** (16b cut E.3), which
+    /// [`step_one`] drives under.
+    const OCCUPIED_STOP_MS: u32 = 2_000;
+
+    /// One substep for one unit, with the index rebuilt from the current poses,
+    /// under the shipped traffic hold.
+    ///
+    /// **16b cut E.3**: the arena's own `now_ms` is the clock — this advances it
+    /// by the substep it just ran, so `end_ms` is arena time and a hold against
+    /// another unit matures after `occupied_stop_ms` of it. A fixture that drives
+    /// two units through one conceptual substep therefore advances the clock
+    /// twice; none of those measures arena time, and every fixture that measures
+    /// a hold drives one unit.
     fn step_one(arena: &mut Arena, id: ObjId, dt_ms: u32) -> MotionOutcome {
+        step_under(arena, id, dt_ms, OCCUPIED_STOP_MS)
+    }
+
+    /// [`step_one`] under a named `[tacsim.arena].occupied_stop_ms` — `0` is the
+    /// rule as it stood before 16b cut E.3.
+    fn step_under(
+        arena: &mut Arena,
+        id: ObjId,
+        dt_ms: u32,
+        occupied_stop_ms: u32,
+    ) -> MotionOutcome {
         let index = index_of(arena);
         let terrain = arena.definition.terrain.clone();
+        let end_ms = arena.now_ms.saturating_add(i64::from(dt_ms));
+        arena.now_ms = end_ms;
         let Some(unit) = arena.unit_mut(id) else {
             return MotionOutcome::default();
         };
-        integrate(unit, dt_ms, &terrain, &index)
+        integrate(unit, dt_ms, &terrain, &index, end_ms, occupied_stop_ms)
     }
 
     /// `count` substeps of `dt_ms` each — the shape a real pulse has, and the
@@ -821,6 +1010,25 @@ mod tests {
         pulse_ms: u32,
         substep_max_ms: u32,
     ) -> (usize, usize) {
+        drive_under(
+            arena,
+            id,
+            total_ms,
+            pulse_ms,
+            substep_max_ms,
+            OCCUPIED_STOP_MS,
+        )
+    }
+
+    /// [`drive`] under a named `[tacsim.arena].occupied_stop_ms`.
+    fn drive_under(
+        arena: &mut Arena,
+        id: ObjId,
+        total_ms: u32,
+        pulse_ms: u32,
+        substep_max_ms: u32,
+        occupied_stop_ms: u32,
+    ) -> (usize, usize) {
         let mut spent = 0_u32;
         let mut journalled = 0_usize;
         let mut told = 0_usize;
@@ -829,7 +1037,7 @@ mod tests {
         while spent < total_ms {
             let pulse = pulse_ms.min(total_ms - spent);
             for dt in crate::arena::clock::substeps(pulse, substep_max_ms) {
-                let outcome = step_one(arena, id, dt);
+                let outcome = step_under(arena, id, dt, occupied_stop_ms);
                 if outcome.blocked_at.is_some() && !was_blocked {
                     journalled += 1;
                 }
@@ -1188,8 +1396,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_occupied_cell_stops_the_unit_and_the_lower_id_wins() {
+    /// Two tanks nose to tail, one cell apart, under the shipped hold.
+    fn nose_to_tail() -> Arena {
         let mut arena = running(vec![
             tank(A, Team::Red, pose(3_900, 3_500)),
             tank(B, Team::Blue, pose(4_500, 3_500)),
@@ -1200,11 +1408,59 @@ mod tests {
             unit.speed_cms = 1_000;
             unit.desired_speed_cms = 1_000;
         }
-        // A is in cell 3 and B holds cell 4: A is refused, B moves on.
+        arena
+    }
+
+    /// **16b cut E.3 turned the first half of this into a hold.** A is in cell 3
+    /// and B holds cell 4: A is refused, but a refusal by another *unit* keeps
+    /// A's way and says nothing for `occupied_stop_ms` — so the outcome names no
+    /// cell and no cause, `blocked` stays down, and the only thing the refusal
+    /// costs A is the ground it did not cover. The **lower-id-wins** half is
+    /// unchanged: A is still refused the cell B holds, and B still moves on.
+    #[test]
+    fn an_occupied_cell_holds_the_unit_and_the_lower_id_wins() {
+        let mut arena = nose_to_tail();
         let outcome = step_one(&mut arena, A, 250);
-        assert_eq!(outcome.blocked_at, Some((4, 3)));
+        assert_eq!(outcome.blocked_at, None, "a hold journals nothing");
+        assert_eq!(outcome.blocked_by, None, "and tells nobody");
+        assert!(!outcome.moved);
         assert_eq!(arena.unit(A).map(|u| u.pose.x_cm), Some(3_999));
+        assert_eq!(
+            arena.unit(A).map(|u| u.speed_cms),
+            Some(1_000),
+            "a held unit keeps its way, which is the whole of the cut"
+        );
+        assert_eq!(arena.unit(A).map(|u| u.blocked), Some(false));
+        assert_eq!(
+            arena.unit(A).and_then(|u| u.occupied_hold),
+            Some(OccupiedHold {
+                cell: (4, 3),
+                since_ms: 250
+            })
+        );
         let onward = step_one(&mut arena, B, 250);
+        assert_eq!(onward.blocked_at, None);
+        assert_eq!(arena.unit(B).map(|u| u.pose.x_cm), Some(4_750));
+    }
+
+    /// **`occupied_stop_ms = 0` is the rule as it stood before 16b cut E.3**, byte
+    /// for byte: the old body of the test above, run under the key.
+    #[test]
+    fn at_a_zero_horizon_an_occupied_cell_stops_the_unit_at_once() {
+        let mut arena = nose_to_tail();
+        let outcome = step_under(&mut arena, A, 250, 0);
+        assert_eq!(outcome.blocked_at, Some((4, 3)));
+        assert_eq!(outcome.blocked_by, Some(BlockedCause::Occupied));
+        assert_eq!(arena.unit(A).map(|u| u.pose.x_cm), Some(3_999));
+        assert_eq!(arena.unit(A).map(|u| u.speed_cms), Some(0));
+        assert_eq!(arena.unit(A).map(|u| u.blocked), Some(true));
+        assert_eq!(arena.unit(A).map(|u| u.held), Some(true));
+        assert_eq!(
+            arena.unit(A).and_then(|u| u.occupied_hold),
+            None,
+            "a stop leaves no hold behind"
+        );
+        let onward = step_under(&mut arena, B, 250, 0);
         assert_eq!(onward.blocked_at, None);
         assert_eq!(arena.unit(B).map(|u| u.pose.x_cm), Some(4_750));
     }
@@ -1267,10 +1523,19 @@ mod tests {
         assert_eq!(arena.unit(A).map(|u| u.pose.x_cm), Some(999));
     }
 
+    /// **The invariant, walked** (doc 16 §3.4 step 4): a random walk over a window
+    /// with an impassable band and two units, asserted after every substep.
+    ///
+    /// **16b cut E.3 put a third unit in the way and made the walk assert the
+    /// hold too.** A hold clamps the pose exactly as a stop does, and this is the
+    /// property that says so: a unit that is being held against another unit's
+    /// cell for two seconds is a unit that has *not* crossed into it, at any
+    /// substep of those two seconds. `C` is parked in the middle of the walk so
+    /// that traffic refusals are certain rather than incidental, and the run
+    /// asserts that at least one hold was really opened — a walk in which nothing
+    /// ever held would pass this invariant and prove nothing about the cut.
     #[test]
     fn no_unit_ever_occupies_a_cell_that_was_not_tested_on_entry() {
-        // A random walk over a window with an impassable band and two units,
-        // asserting the invariant of doc 16 §3.4 step 4 after every substep.
         let mut cells = vec![ground(); 64];
         for y in 0..8_u16 {
             if let Some(cell) = cells.get_mut(usize::from(y) * 8 + 5) {
@@ -1281,15 +1546,22 @@ mod tests {
         let mut arena = running(vec![
             tank(A, Team::Red, pose(1_500, 1_500)),
             tank(B, Team::Blue, pose(2_500, 2_500)),
+            // Parked: it is never stepped, so it is a hole in the map with a hull.
+            tank(C, Team::Blue, pose(3_500, 2_500)),
         ]);
         arena.definition.terrain = terrain.clone();
         for unit in &mut arena.units {
             unit.desired_speed_cms = 1_000;
             unit.speed_cms = 1_000;
         }
+        if let Some(parked) = arena.unit_mut(C) {
+            parked.speed_cms = 0;
+            parked.desired_speed_cms = 0;
+        }
         // A deterministic pseudo-random heading per unit per substep, from the
         // arena's own draw primitive rather than a generator with state.
         let mut seed = 2_350_u64;
+        let mut ever_held = false;
         for substep in 0..400_u32 {
             seed = crate::arena::rng::splitmix64(seed);
             let ids = [A, B];
@@ -1302,6 +1574,9 @@ mod tests {
                     }
                 }
                 step_one(&mut arena, *id, 250);
+                ever_held |= arena
+                    .unit(*id)
+                    .is_some_and(|unit| unit.occupied_hold.is_some());
                 // The invariant, after every single integrate: on the window, on
                 // a passable cell, and alone in it.
                 let mut seen: Vec<(u16, u16)> = Vec::new();
@@ -1323,6 +1598,11 @@ mod tests {
                 }
             }
         }
+        assert!(
+            ever_held,
+            "no unit was ever held against another's cell, so the walk said nothing about 16b \
+             cut E.3's clamp"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1599,6 +1879,15 @@ mod tests {
     /// **A refused substep banks no distance it never travelled** (16b cut Q.6):
     /// every stop, every wreck, every dead engine and every cold hull zeroes the
     /// carries — [`crate::arena::heat`]'s own rule for a unit that has gone cold.
+    ///
+    /// **16b cut E.3**: the occupancy row runs at `occupied_stop_ms = 0`, and it
+    /// is honest to say why. This test's claim is about the *carries a refusal
+    /// banks*, not about the wait a traffic hold puts in front of the stop; at the
+    /// shipped two seconds the same fixture's tank slips diagonally past the
+    /// parked one while it is being held, which is the cut working and would turn
+    /// this row into a different test. What a **hold** does to the two travel
+    /// carries — it zeroes them, exactly as the stop does — is pinned by
+    /// `a_hold_zeroes_the_travel_carries_and_keeps_the_speed_and_its_carry`.
     #[test]
     fn a_stop_a_wreck_and_a_cold_hull_all_zero_the_carries() {
         // (a) the four refusals. Each fixture drives a tank on a heading whose
@@ -1624,11 +1913,12 @@ mod tests {
                 cell.elev_cm = 900;
             }
         }
-        for (cause, terrain, units) in [
+        for (cause, terrain, units, stop_ms) in [
             (
                 BlockedCause::Impassable,
                 ArenaTerrain::new(8, 8, 1_000, banded(0)).expect("the band window"),
                 vec![tank(A, Team::Red, pose(3_800, 3_500))],
+                OCCUPIED_STOP_MS,
             ),
             (
                 BlockedCause::Occupied,
@@ -1637,16 +1927,20 @@ mod tests {
                     tank(A, Team::Red, pose(3_800, 3_500)),
                     tank(B, Team::Blue, pose(4_500, 3_500)),
                 ],
+                // 16b cut E.3: see this test's head.
+                0,
             ),
             (
                 BlockedCause::TooSteep,
                 ArenaTerrain::new(8, 8, 1_000, cliff).expect("the cliff window"),
                 vec![tank(A, Team::Red, pose(3_800, 3_500))],
+                OCCUPIED_STOP_MS,
             ),
             (
                 BlockedCause::Edge,
                 ArenaTerrain::new(8, 8, 1_000, banded(100)).expect("the open window"),
                 vec![tank(A, Team::Red, pose(7_800, 3_500))],
+                OCCUPIED_STOP_MS,
             ),
         ] {
             let mut arena = running(units);
@@ -1662,7 +1956,7 @@ mod tests {
             // 216.28 cm north, so the first substep stays inside its own cell and
             // banks a fraction of a centimetre on each axis. That is what makes
             // the assertion after the refusal mean something on both of them.
-            let first = step_one(&mut arena, A, 250);
+            let first = step_under(&mut arena, A, 250, stop_ms);
             assert_eq!(first.blocked_by, None, "{cause:?}: refused too early");
             assert!(
                 arena
@@ -1670,7 +1964,7 @@ mod tests {
                     .is_some_and(|unit| unit.carry.east != 0 && unit.carry.north != 0),
                 "{cause:?}: nothing was carried into the refusal"
             );
-            let outcome = step_one(&mut arena, A, 250);
+            let outcome = step_under(&mut arena, A, 250, stop_ms);
             assert_eq!(outcome.blocked_by, Some(cause));
             assert_eq!(
                 arena.unit(A).map(|unit| unit.carry),
@@ -1754,5 +2048,377 @@ mod tests {
             Some((0, 0)),
             "a finished order left a carry behind"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut E.3: the traffic hold (16c `B-46`, §5's Q10)
+    // -----------------------------------------------------------------------
+
+    /// **A follower behind a leader that moves off never stops at all** (16b cut
+    /// E.3), which is the whole reason the hold exists.
+    ///
+    /// `A` sorts below `B`, so it integrates first and reaches the cell `B` has
+    /// not vacated yet — the column at the ford, in two tanks. Before this cut it
+    /// was stopped dead and needed eleven seconds at 1 m/s² to rebuild way; now it
+    /// is held, keeps its fifteen metres a second, and drives into the cell on the
+    /// substep after the leader leaves it.
+    #[test]
+    fn a_follower_is_held_behind_its_leader_and_never_loses_its_way() {
+        let mut arena = nose_to_tail();
+        let mut outcomes: Vec<MotionOutcome> = Vec::new();
+        let mut speeds: Vec<i32> = Vec::new();
+        let mut cells: Vec<Option<(u16, u16)>> = Vec::new();
+        for _ in 0..3 {
+            outcomes.push(step_one(&mut arena, A, 250));
+            speeds.push(arena.unit(A).map_or(0, |unit| unit.speed_cms));
+            cells.push(
+                arena
+                    .unit(A)
+                    .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose)),
+            );
+            step_one(&mut arena, B, 250);
+        }
+        assert!(
+            outcomes.iter().all(|out| out.blocked_by.is_none()),
+            "the follower was stopped: {outcomes:?}"
+        );
+        assert!(
+            outcomes.iter().all(|out| out.blocked_at.is_none()),
+            "the follower journalled a stop: {outcomes:?}"
+        );
+        assert_eq!(
+            speeds,
+            vec![1_000, 1_000, 1_000],
+            "the follower's speed fell while it was being held"
+        );
+        assert_eq!(
+            cells,
+            vec![Some((3, 3)), Some((3, 3)), Some((4, 3))],
+            "the follower did not enter the cell on the substep after the leader left it"
+        );
+        assert_eq!(
+            arena.unit(A).and_then(|unit| unit.occupied_hold),
+            None,
+            "an accepted crossing clears the hold"
+        );
+        assert_eq!(arena.unit(A).map(|unit| unit.held), Some(false));
+    }
+
+    /// **A hold against a parked unit matures into doc 16 §3.4 step 4's stop
+    /// after exactly `occupied_stop_ms` of arena time** (16b cut E.3), with the
+    /// event, the cause and the zeroed speed the stop always had.
+    #[test]
+    fn a_hold_against_a_parked_unit_matures_into_the_stop() {
+        let mut arena = nose_to_tail();
+        // The leader is never stepped, so it is a parked obstacle.
+        let mut refusals: Vec<(i64, MotionOutcome)> = Vec::new();
+        for _ in 0..12 {
+            let outcome = step_one(&mut arena, A, 250);
+            refusals.push((arena.now_ms, outcome));
+            if outcome.blocked_by.is_some() {
+                break;
+            }
+        }
+        let (stopped_at, stop) = *refusals.last().expect("twelve substeps");
+        let holds = &refusals[..refusals.len() - 1];
+        assert!(
+            holds
+                .iter()
+                .all(|(_, out)| !out.moved && out.blocked_by.is_none() && out.blocked_at.is_none()),
+            "a hold moved or reported something: {holds:?}"
+        );
+        assert_eq!(
+            stopped_at, 2_250,
+            "the hold opened at the end of the substep that met the obstacle (250 ms) and the \
+             stop is the first substep at or past 250 + 2,000 ms"
+        );
+        assert_eq!(stop.blocked_by, Some(BlockedCause::Occupied));
+        assert_eq!(stop.blocked_at, Some((4, 3)));
+        assert_eq!(arena.unit(A).map(|unit| unit.speed_cms), Some(0));
+        assert_eq!(arena.unit(A).map(|unit| unit.pose.x_cm), Some(3_999));
+        assert_eq!(arena.unit(A).map(|unit| unit.blocked), Some(true));
+        assert_eq!(arena.unit(A).map(|unit| unit.held), Some(true));
+        assert_eq!(
+            arena.unit(A).and_then(|unit| unit.occupied_hold),
+            None,
+            "the stop consumed the hold"
+        );
+
+        // And a tank with a standing speed order cycles: it re-accelerates, opens
+        // a second hold and matures it two seconds later, so the ledger takes one
+        // `blocked` line per cycle and not one per substep.
+        let mut cycles = 0_usize;
+        let from = arena.now_ms;
+        while arena.now_ms < from + 5_000 {
+            if step_one(&mut arena, A, 250).blocked_by.is_some() {
+                cycles += 1;
+            }
+        }
+        assert_eq!(
+            cycles, 2,
+            "a standing order against a parked obstacle is one stop per {OCCUPIED_STOP_MS} ms \
+             and not one per substep"
+        );
+    }
+
+    /// **A hold zeroes the two travel carries and keeps the speed and its own
+    /// carry** (16b cut E.3) — the half of 16b cut Q.6's rule that a hold shares
+    /// with a stop, and the half it does not.
+    #[test]
+    fn a_hold_zeroes_the_travel_carries_and_keeps_the_speed_and_its_carry() {
+        let mut arena = running(vec![
+            tank(A, Team::Red, pose(3_800, 3_500)),
+            tank(B, Team::Blue, pose(4_500, 3_500)),
+        ]);
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.pose.heading_mdeg = 90_000;
+            unit.desired_heading_mdeg = 90_000;
+            // Mid-ramp, so `carry.speed` is alive and has to survive the hold.
+            unit.speed_cms = 111;
+            unit.desired_speed_cms = 999;
+            unit.mobility.accel_cms2 = 333;
+        }
+        // Due east at 111 cm/s: 27.75 cm a substep, so it banks a carry and
+        // creeps at the boundary. Push until the refusal.
+        let mut outcome = step_one(&mut arena, A, 250);
+        let mut substeps = 1;
+        while arena
+            .definition
+            .terrain
+            .cell_of(&arena.unit(A).map_or(pose(0, 0), |unit| unit.pose.clone()))
+            == Some((3, 3))
+            && arena.unit(A).and_then(|unit| unit.occupied_hold).is_none()
+        {
+            outcome = step_one(&mut arena, A, 250);
+            substeps += 1;
+            assert!(substeps < 40, "it never reached the parked tank");
+        }
+        assert_eq!(outcome, MotionOutcome::default(), "a hold reports nothing");
+        let held = arena.unit(A).expect("the follower");
+        assert_eq!(
+            (held.carry.east, held.carry.north),
+            (0, 0),
+            "a hold banked a fraction of a centimetre it was clamped back out of"
+        );
+        assert!(
+            held.speed_cms > 111,
+            "the hold shed the way the substep built: {} cm/s",
+            held.speed_cms
+        );
+        assert_ne!(held.carry.speed, 0, "the ramp's own carry was thrown away");
+    }
+
+    /// **The five things that clear a hold** (16b cut E.3), one fixture each.
+    #[test]
+    fn a_hold_is_cleared_by_a_turn_by_an_order_of_zero_and_by_a_cold_hull() {
+        // (a) turning away inside the cell and moving.
+        let mut arena = nose_to_tail();
+        step_one(&mut arena, A, 250);
+        assert!(arena.unit(A).is_some_and(|u| u.occupied_hold.is_some()));
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.pose.heading_mdeg = 270_000;
+            unit.desired_heading_mdeg = 270_000;
+        }
+        step_one(&mut arena, A, 250);
+        assert_eq!(
+            arena.unit(A).and_then(|u| u.occupied_hold),
+            None,
+            "a substep that moved and was not refused leaves nothing to hold against"
+        );
+
+        // (b) the speed order coming off.
+        let mut arena = nose_to_tail();
+        step_one(&mut arena, A, 250);
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.desired_speed_cms = 0;
+        }
+        step_one(&mut arena, A, 250);
+        assert_eq!(arena.unit(A).and_then(|u| u.occupied_hold), None);
+
+        // (c) the wreck, the dead engine and the cold hull.
+        for limits in [
+            Some(MotionLimits {
+                wreck: true,
+                ..MotionLimits::default()
+            }),
+            Some(MotionLimits {
+                motion_disabled: true,
+                ..MotionLimits::default()
+            }),
+            None,
+        ] {
+            let mut arena = nose_to_tail();
+            step_one(&mut arena, A, 250);
+            assert!(arena.unit(A).is_some_and(|u| u.occupied_hold.is_some()));
+            if let Some(unit) = arena.unit_mut(A) {
+                match limits {
+                    Some(limits) => unit.limits = limits,
+                    None => unit.power = Power::Off,
+                }
+            }
+            step_one(&mut arena, A, 250);
+            assert_eq!(
+                arena.unit(A).and_then(|u| u.occupied_hold),
+                None,
+                "a tank stopped dead is holding against nobody: {limits:?}"
+            );
+        }
+    }
+
+    /// **The fifth clear: a refusal of a *different* cell is a different hold, and
+    /// the clock starts again** (16b cut E.3) — the one the other fixture does not
+    /// cover, and the one with a consequence worth writing down.
+    ///
+    /// A unit wedged into the corner between two parked hulls, its heading put
+    /// east and north turn about, is refused `(4, 3)`, then `(3, 4)`, then
+    /// `(4, 3)`: each refusal names a cell the open hold does not, so each opens a
+    /// new hold stamped at this substep's end and `end_ms − since_ms` never
+    /// reaches `occupied_stop_ms`. **It therefore holds for as long as its heading
+    /// keeps changing**: no `stop_at_boundary`, so no `blocked` line, no
+    /// `Held: something is in the way.` and no lesson for its machine. That is the
+    /// decided rule (each cell is judged on its own two seconds, so a tank edged
+    /// round one obstacle into another is not stopped on the first one's clock),
+    /// and the reason it is bounded in the shipped lane is that nothing changes a
+    /// heading every substep: `Arena::follow` orders one at its decide tick, a
+    /// pilot orders one when they type, and [`turn`] sweeps between them on the
+    /// shortest arc — monotonically, so each cell along the sweep is refused once
+    /// and the last one's clock runs out. The second half of this test is that
+    /// last part: hold the heading still and the stop arrives on schedule.
+    #[test]
+    fn a_refusal_of_a_different_cell_restarts_the_clock() {
+        let mut arena = running(vec![
+            tank(A, Team::Red, pose(3_900, 3_900)),
+            tank(B, Team::Blue, pose(4_500, 3_500)),
+            tank(C, Team::Blue, pose(3_500, 4_500)),
+        ]);
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.speed_cms = 1_000;
+            unit.desired_speed_cms = 1_000;
+        }
+        // Ten seconds of arena time — five times the horizon — with the heading
+        // put east and north turn about.
+        let mut cells: Vec<(u16, u16)> = Vec::new();
+        for substep in 0..40_u32 {
+            let heading = if substep % 2 == 0 { 90_000 } else { 0 };
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.pose.heading_mdeg = heading;
+                unit.desired_heading_mdeg = heading;
+            }
+            let outcome = step_one(&mut arena, A, 250);
+            assert_eq!(
+                outcome,
+                MotionOutcome::default(),
+                "a stop matured at substep {substep} although the refused cell kept changing"
+            );
+            let hold = arena
+                .unit(A)
+                .and_then(|unit| unit.occupied_hold)
+                .expect("a hold against the hull it was refused");
+            assert_eq!(
+                hold.since_ms, arena.now_ms,
+                "the clock did not start again at substep {substep}, so a hold on one cell was \
+                 being aged on another cell's stamp"
+            );
+            cells.push(hold.cell);
+        }
+        assert!(
+            cells.contains(&(4, 3)) && cells.contains(&(3, 4)),
+            "the fixture never alternated, so nothing was measured: {cells:?}"
+        );
+        assert_eq!(
+            arena.unit(A).map(|unit| unit.speed_cms),
+            Some(1_000),
+            "and it kept its way for the whole of it"
+        );
+
+        // Now hold the heading still. The next refusal of `(4, 3)` opens the last
+        // hold, and two seconds of arena time after that the stop arrives.
+        if let Some(unit) = arena.unit_mut(A) {
+            unit.pose.heading_mdeg = 90_000;
+            unit.desired_heading_mdeg = 90_000;
+        }
+        let mut stopped_at: Option<i64> = None;
+        let mut opened_at: Option<i64> = None;
+        for _ in 0..12_u32 {
+            let outcome = step_one(&mut arena, A, 250);
+            if opened_at.is_none() {
+                opened_at = arena
+                    .unit(A)
+                    .and_then(|unit| unit.occupied_hold)
+                    .map(|hold| hold.since_ms);
+            }
+            if outcome.blocked_by.is_some() {
+                stopped_at = Some(arena.now_ms);
+                assert_eq!(outcome.blocked_at, Some((4, 3)));
+                break;
+            }
+        }
+        let (opened_at, stopped_at) = (
+            opened_at.expect("a last hold"),
+            stopped_at.expect("the stop never matured with the heading held still"),
+        );
+        assert_eq!(
+            stopped_at - opened_at,
+            i64::from(OCCUPIED_STOP_MS),
+            "the stop arrived {} ms after the hold opened",
+            stopped_at - opened_at
+        );
+    }
+
+    /// **Ground, the window's edge and a slope still stop a unit dead** (16b cut
+    /// E.3): no hold is opened for any of the three, at the shipped horizon.
+    #[test]
+    fn impassable_ground_an_edge_and_a_slope_stop_at_once_and_open_no_hold() {
+        let mut band = vec![ground(); 64];
+        for y in 0..8_u16 {
+            if let Some(cell) = band.get_mut(usize::from(y) * 8 + 4) {
+                cell.move_cost = 0;
+            }
+        }
+        let mut cliff = vec![ground(); 64];
+        for y in 0..8_u16 {
+            if let Some(cell) = cliff.get_mut(usize::from(y) * 8 + 4) {
+                cell.elev_cm = 900;
+            }
+        }
+        for (cause, terrain, at, refused) in [
+            (
+                BlockedCause::Impassable,
+                ArenaTerrain::new(8, 8, 1_000, band).expect("the band window"),
+                pose(3_900, 3_500),
+                (4_u16, 3_u16),
+            ),
+            (
+                BlockedCause::TooSteep,
+                ArenaTerrain::new(8, 8, 1_000, cliff).expect("the cliff window"),
+                pose(3_900, 3_500),
+                (4, 3),
+            ),
+            (
+                BlockedCause::Edge,
+                ArenaTerrain::new(8, 8, 1_000, vec![ground(); 64]).expect("the open window"),
+                pose(7_900, 3_500),
+                (7, 3),
+            ),
+        ] {
+            let mut arena = running(vec![tank(A, Team::Red, at)]);
+            arena.definition.terrain = terrain;
+            if let Some(unit) = arena.unit_mut(A) {
+                unit.pose.heading_mdeg = 90_000;
+                unit.desired_heading_mdeg = 90_000;
+                unit.speed_cms = 1_000;
+                unit.desired_speed_cms = 1_000;
+                unit.slope_limit_pct = Some(60);
+            }
+            let outcome = step_one(&mut arena, A, 250);
+            assert_eq!(outcome.blocked_by, Some(cause));
+            assert_eq!(outcome.blocked_at, Some(refused));
+            assert_eq!(arena.unit(A).map(|unit| unit.speed_cms), Some(0));
+            assert_eq!(
+                arena.unit(A).and_then(|unit| unit.occupied_hold),
+                None,
+                "{cause:?} opened a traffic hold"
+            );
+        }
     }
 }

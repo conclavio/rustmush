@@ -56,7 +56,10 @@ the arena.` at the boundary, and `Held: the slope ahead is too steep for the
 tank.` where the ground would take the tank but the bank onto it will not. That
 last one is the one to drive **round**: tracks stop at 45 per cent, legs at 70,
 and a slope too steep to climb is too steep to drop off, so a bank is never a
-one-way door. `STATUS` carries `HELD` until you order something that frees it.
+one-way door. Another unit in your way does not stop you at once: the tank holds
+against it at the speed it had and goes on if the way clears; only when it has
+not cleared in two seconds does the tank stop and the line arrive. `STATUS`
+carries `HELD` until you order something that frees it.
 Deep water is impassable to a tracked tank; the proving ground has one ford, on
 the east-west road.
 

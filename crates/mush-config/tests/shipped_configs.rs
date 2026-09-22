@@ -756,6 +756,13 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
             cfg.tacsim.arena.reflex.stand_min_permille, 175,
             "{env_file}: 16b cut E.1's en-route stand floor"
         );
+        // **16b cut E.3**: and the traffic hold's horizon, for the same reason —
+        // 0 is the pre-cut rule and a box that ran it by accident would stop every
+        // follower in every column at the ford.
+        assert_eq!(
+            cfg.tacsim.arena.occupied_stop_ms, 2_000,
+            "{env_file}: 16b cut E.3's traffic hold"
+        );
     }
     let example = Config::load(&root.join("mushd.toml.example"))
         .unwrap_or_else(|e| panic!("mushd.toml.example does not parse: {e}"));
@@ -765,6 +772,7 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
     );
     assert_eq!(example.tacsim.arena.reflex.rally_ms, 20_000);
     assert_eq!(example.tacsim.arena.reflex.stand_min_permille, 175);
+    assert_eq!(example.tacsim.arena.occupied_stop_ms, 2_000);
 }
 
 /// **16b cut D.3 (`B-33`): every shipped configuration writes the unattended

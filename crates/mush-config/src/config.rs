@@ -68,6 +68,7 @@
 //! | `[tacsim.arena.tempo].substep_max_ms` | `250` | the longest substep a pulse is cut into (doc 16 §3.1 rate independence) |
 //! | `[tacsim.arena.tempo].stall_ms` | `2000` | milliseconds one pulse may take before the watchdog voids the match |
 //! | `[tacsim.arena].max_catch_up_steps` | `4` | periods of wall time one pulse may absorb before the arena records `lagged` and skips the idle time |
+//! | `[tacsim.arena].occupied_stop_ms` | `2000` | **16b cut E.3** (doc 16 §3.4 step 4): arena milliseconds a unit holds against another unit in its way, keeping its speed, before it stops and says so; `0` stops it at once. Ground, the window's edge and a slope are untouched |
 //! | `[tacsim.arena].deliberate_min_ms` | `30000` | **16b cut N.2** (doc 16 §6): the least ARENA time between two deliberation requests for one squad — the floor under the event-driven trigger |
 //! | `[tacsim.arena.intents].max_pending_per_unit` | `8` | discrete actions one unit may have queued at once |
 //! | `[tacsim.arena.ledger].summary_ms` | `5000` | arena milliseconds between `position_summary` ledger events (doc 16 §4) |
@@ -924,6 +925,18 @@ pub struct TacsimArenaCfg {
     /// records `lagged` and skips the idle time rather than expanding `dt` to hide
     /// it (doc 16 §3.1 "Clock and lag"; doc 06 §6.4).
     pub max_catch_up_steps: u32,
+    /// **Arena milliseconds a unit holds against another unit in its way, keeping
+    /// its speed, before it stops and says so** (**16b cut E.3**; doc 16 §3.4 step
+    /// 4).
+    ///
+    /// A refused crossing stops a unit dead, which is right for ground and wrong
+    /// for traffic: a follower that reaches the cell its leader has not vacated
+    /// yet was stopped and needed a dozen seconds to rebuild way, at the ford,
+    /// every time. It now holds at the boundary keeping its speed, journalling
+    /// nothing and telling nobody, and only a hold on one cell that outlasts this
+    /// becomes the stop. `0` is the rule as it stood before the cut. Impassable
+    /// ground, the window's edge and a slope are untouched.
+    pub occupied_stop_ms: u32,
     /// The least **arena** time between two deliberation requests for one squad,
     /// milliseconds (**16b cut N.2**; doc 16 §6 "Deliberation": *event-driven with a
     /// floor of `command.deliberate_min_ms` (30,000)*).
@@ -949,6 +962,7 @@ impl Default for TacsimArenaCfg {
         TacsimArenaCfg {
             tempo: TacsimTempoCfg::default(),
             max_catch_up_steps: 4,
+            occupied_stop_ms: 2_000,
             deliberate_min_ms: 30_000,
             intents: TacsimIntentsCfg::default(),
             ledger: TacsimLedgerCfg::default(),
@@ -2326,6 +2340,8 @@ scene_turn_dedline_secs = 30
             (250, 2_000)
         );
         assert_eq!(arena.max_catch_up_steps, 4);
+        // 16b cut E.3: two seconds of holding against traffic before the stop.
+        assert_eq!(arena.occupied_stop_ms, 2_000);
         assert_eq!(arena.intents.max_pending_per_unit, 8);
         assert_eq!(
             (
@@ -2383,6 +2399,7 @@ scene_turn_dedline_secs = 30
         let cfg: Config = toml::from_str(
             "[tacsim.arena]\n\
              max_catch_up_steps = 2\n\
+             occupied_stop_ms = 1500\n\
              [tacsim.arena.tempo]\n\
              quiet_ms = 4000\n\
              alert_ms = 900\n\
@@ -2423,6 +2440,8 @@ scene_turn_dedline_secs = 30
 
         let arena = &cfg.tacsim.arena;
         assert_eq!(arena.max_catch_up_steps, 2);
+        // 16b cut E.3: the traffic hold's horizon, written out like the rest.
+        assert_eq!(arena.occupied_stop_ms, 1_500);
         assert_eq!(
             (
                 arena.tempo.quiet_ms,

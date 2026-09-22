@@ -543,11 +543,20 @@ fn one_scripted_log_at_three_cadences_is_one_event_list_and_one_hash_sequence() 
         "the log did not start the tank up: {:?}",
         first.kinds()
     );
+    // **16b cut E.3 changed this count from two to four, at all three cadences
+    // alike.** The band is still one stop: impassable ground refuses at once and
+    // the flag stays up for as long as the order holds the tank against it. The
+    // parked tank is now three, because a traffic refusal is a *hold* that keeps
+    // the mover's way and matures into the stop two seconds later — and then the
+    // standing `SPEED 1000` re-accelerates it into a second hold, and a third.
+    // One `blocked` line per two-second cycle is bounded and deliberate (16c
+    // `T-04` owns the cause on the event); what matters here is that the three
+    // are at the same arena milliseconds in every replay.
     assert_eq!(
         first.count("blocked"),
-        2,
-        "the log did not stop twice — once against the parked tank, once at the \
-         band: {:?}",
+        4,
+        "the log did not stop four times — three cycles against the parked tank, \
+         once at the band: {:?}",
         first.kinds()
     );
     assert_eq!(first.count("position_summary"), 12);
@@ -1286,6 +1295,174 @@ fn a_stop_tells_the_pilot_once_and_names_what_stopped_it() {
             "the stop names neither the unit nor its side: {line}"
         );
     }
+}
+
+/// **One pulse's reading of the held pilot's own frame** (16b cut E.3): the arena
+/// millisecond, the speed, the `HELD` condition, the cell and every notice line.
+type Reading = (i64, i32, bool, Option<(u16, u16)>, Vec<String>);
+
+/// **16b cut E.3 (16c `B-46`, §5's Q10): another unit in the way holds a tank
+/// before it stops it, and what the pilot reads while it holds is decided.**
+///
+/// A seated pilot drives east into a cell a tank they have never detected is
+/// parked in (this fixture's units carry no sensor at all, so the obstacle is as
+/// invisible as doc 16 §3.6 ever makes one). Four claims:
+///
+/// * **nothing is said for two seconds** — no notice at all while the hold runs,
+///   and then exactly one `Held: something is in the way.`, which is the same
+///   sentence HEAD said, later and never sooner;
+/// * **the frame during the hold** carries the speed the tank had, `blocked`
+///   false, a pose that does not leave its own cell, and nothing that names or
+///   places the obstacle;
+/// * **the frame after the stop** carries `0` and `blocked`, which is what
+///   `STATUS` prints `HELD` off — so the condition follows the stop and not the
+///   hold;
+/// * **one `blocked` ledger line** for the whole episode, because the pilot's
+///   standing order is taken off as soon as the line arrives.
+#[test]
+fn another_unit_holds_a_tank_for_two_seconds_and_then_stops_it_with_one_line() {
+    let mut arena = arena_of(
+        vec![
+            tank(MOVER, Team::Red, centre(10, 30)),
+            tank(PARKED, Team::Blue, centre(12, 30)),
+        ],
+        &MatchConfig::default(),
+    );
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    if let Some(unit) = arena.unit_mut(MOVER) {
+        unit.power = Power::Online;
+        unit.pose.heading_mdeg = 90_000;
+        unit.desired_heading_mdeg = 90_000;
+        unit.speed_cms = 1_000;
+        unit.desired_speed_cms = 1_000;
+    }
+    // Half-second pulses, so the two seconds of holding are four readings and not
+    // one. Each reading is the mover's own frame.
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut readings: Vec<Reading> = Vec::new();
+    let mut wall = 0_i64;
+    for _ in 0..20 {
+        let out = arena.step(wall, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        let mut said = false;
+        for (who, frame) in &out.frames {
+            if *who != ObjId(1_000) {
+                continue;
+            }
+            let lines = tacsim::match_::cockpit::notice_lines(frame);
+            said |= lines.iter().any(|line| line.starts_with("Held:"));
+            readings.push((
+                arena.now_ms,
+                frame.speed_cms,
+                frame.blocked,
+                frame.cell,
+                lines,
+            ));
+        }
+        wall += 500;
+        // The pilot has been told; the rest of the episode is what they do next.
+        if said {
+            break;
+        }
+    }
+
+    // The pose never leaves the cell it was tested into, hold or stop.
+    assert!(
+        readings
+            .iter()
+            .all(|(_, _, _, cell, _)| matches!(cell, Some((x, 30)) if *x <= 11)),
+        "the tank crossed into the parked tank's cell: {readings:?}"
+    );
+    // The line arrives once, and only at the stop.
+    let told: Vec<(i64, &String)> = readings
+        .iter()
+        .flat_map(|(at, _, _, _, lines)| lines.iter().map(move |line| (*at, line)))
+        .filter(|(_, line)| line.starts_with("Held:"))
+        .collect();
+    assert_eq!(
+        told.len(),
+        1,
+        "the pilot was told more than once, or not at all: {told:?}"
+    );
+    let (said_at, line) = told[0];
+    assert_eq!(line, "Held: something is in the way.");
+    // The first reading at which the tank had stopped short of the parked one.
+    let first_held = readings
+        .iter()
+        .find(|(_, _, _, cell, _)| matches!(cell, Some((11, 30))))
+        .map(|(at, ..)| *at)
+        .expect("the tank reached the boundary");
+    assert!(
+        said_at >= first_held + 2_000,
+        "the line arrived {} ms after the tank first met the obstacle, which is inside the \
+         two-second hold",
+        said_at - first_held
+    );
+
+    // The frame during the hold, decided: the speed it had, no `HELD`, and
+    // nothing naming the obstacle.
+    let holding: Vec<&Reading> = readings
+        .iter()
+        .filter(|(at, _, _, cell, _)| *at < said_at && matches!(cell, Some((11, 30))))
+        .collect();
+    assert!(
+        holding.len() >= 3,
+        "the hold was not read often enough to say anything: {holding:?}"
+    );
+    assert!(
+        holding
+            .iter()
+            .all(|(_, speed, blocked, _, lines)| *speed == 1_000 && !*blocked && lines.is_empty()),
+        "a held tank read a speed it did not have, a `HELD` it had not earned, or a line \
+         nobody said: {holding:?}"
+    );
+    for (_, _, _, _, lines) in &readings {
+        for line in lines {
+            assert!(
+                !line.contains(&format!("#{}", PARKED.0))
+                    && !line.contains("blue")
+                    && !line.contains("12"),
+                "a line named or placed the obstacle: {line}"
+            );
+        }
+    }
+
+    // And after the stop: zero, and the condition the cockpit prints `HELD` off.
+    let stopped = readings
+        .iter()
+        .find(|(at, ..)| *at == said_at)
+        .expect("the reading the line came on");
+    assert_eq!(
+        (stopped.1, stopped.2),
+        (0, true),
+        "the stop did not zero the speed and raise the condition: {stopped:?}"
+    );
+
+    // One `blocked` line for the whole episode: the order comes off at the line,
+    // which is what a pilot who has been told does.
+    if let Some(unit) = arena.unit_mut(MOVER) {
+        unit.desired_speed_cms = 0;
+    }
+    for _ in 0..8 {
+        let out = arena.step(wall, &[], &[]);
+        for chunk in &out.ledger_chunks {
+            bytes.extend_from_slice(&chunk.bytes);
+        }
+        wall += 500;
+    }
+    arena.ledger.flush();
+    for chunk in arena.ledger.take_chunks() {
+        bytes.extend_from_slice(&chunk.bytes);
+    }
+    let stops = String::from_utf8(bytes)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok())
+        .filter(|event| matches!(event.kind, EventKind::Blocked { unit, .. } if unit == MOVER))
+        .count();
+    assert_eq!(stops, 1, "one episode, one `blocked` line");
 }
 
 #[test]

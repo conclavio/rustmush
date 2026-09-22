@@ -62,10 +62,12 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    11. **the controller byte** (16b cut N.1): `0` pilot, `1` reflex;
 ///    12. **`grade_pct`** (16b cut X.6), `u16` — the uphill slope of the edge the
 ///        unit entered its cell by;
-///    13. **the four motion carries** (16b cut Q.6), in field order: `carry.turn`
+///    13. **the traffic hold** (16b cut E.3): a presence byte, then the held
+///        cell's two `u16` and the `i64` arena millisecond it opened at;
+///    14. **the four motion carries** (16b cut Q.6), in field order: `carry.turn`
 ///        as `u32`, `carry.speed` as `u32`, `carry.east` as `i64` and
 ///        `carry.north` as `i64`;
-///    14. **the platform's own receiver** (16b cut D.4): a presence byte, then
+///    15. **the platform's own receiver** (16b cut D.4): a presence byte, then
 ///        `budget`, `budget_max` and `reach_permille` as `u16`.
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
@@ -253,6 +255,18 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// **not** folded: it is laid down once by [`Arena::new`] off the check-out
 /// record and never moves, which is `slope_limit_pct`'s and `jammer`'s argument
 /// word for word.
+///
+/// **Cut E.3's extension**: [`crate::arena::state::UnitState::occupied_hold`], on
+/// `grade_pct`'s argument exactly. It is authoritative state with one writer
+/// ([`crate::arena::motion::integrate`]), it decides a *later* refusal — whether
+/// the next crossing this unit is refused is a hold or doc 16 §3.4 step 4's stop
+/// — and it moves with **no ledger line at all**, because a hold is by
+/// construction the substep that journals nothing. A replay that opened its hold
+/// one substep earlier would stop one substep earlier two seconds later, and
+/// nothing else in here would differ until the difference had accumulated into a
+/// whole centimetre of pose. The cell and the stamp both go in: a hold against a
+/// different cell is a different hold, and a hold that started earlier matures
+/// earlier.
 #[must_use]
 pub fn state_hash(arena: &Arena) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
@@ -296,6 +310,17 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fnv1a64_update(hash, &[unit.controller.code()]);
         // 16b cut X.6: the slope it is standing on.
         hash = fnv1a64_update(hash, &unit.grade_pct.to_le_bytes());
+        // **16b cut E.3**: and what it is standing *against* — see this function's
+        // head for why a hold is hashed where the slope limit beside it is not.
+        match unit.occupied_hold {
+            Some(hold) => {
+                hash = fnv1a64_update(hash, &[1_u8]);
+                hash = fnv1a64_update(hash, &hold.cell.0.to_le_bytes());
+                hash = fnv1a64_update(hash, &hold.cell.1.to_le_bytes());
+                hash = fnv1a64_update(hash, &hold.since_ms.to_le_bytes());
+            }
+            None => hash = fnv1a64_update(hash, &[0_u8]),
+        }
         // 16b cut Q.6: the fractions of a turn, a speed change and a centimetre
         // that the last substep did not spend.
         hash = fnv1a64_update(hash, &unit.carry.turn.to_le_bytes());
@@ -644,6 +669,48 @@ mod tests {
             unit.slope_limit_pct = Some(45);
         }
         assert_eq!(state_hash(&limited), base);
+    }
+
+    /// **16b cut E.3's extension**: a traffic hold is a fact with one writer that
+    /// decides a later refusal and moves with no ledger line at all, so it has to
+    /// move the hash — and the cell and the stamp each on their own, because a
+    /// hold against a different cell is a different hold and a hold that opened
+    /// earlier matures earlier.
+    #[test]
+    fn the_hash_folds_the_cell_a_unit_is_held_against_and_since_when() {
+        use crate::arena::state::OccupiedHold;
+
+        let base = state_hash(&two_tanks());
+        let mut held = two_tanks();
+        if let Some(unit) = held.unit_mut(ObjId(9)) {
+            unit.occupied_hold = Some(OccupiedHold {
+                cell: (4, 3),
+                since_ms: 2_000,
+            });
+        }
+        let first = state_hash(&held);
+        assert_ne!(first, base, "a hold went unhashed");
+        // The cell alone.
+        if let Some(unit) = held.unit_mut(ObjId(9)) {
+            unit.occupied_hold = Some(OccupiedHold {
+                cell: (3, 4),
+                since_ms: 2_000,
+            });
+        }
+        assert_ne!(state_hash(&held), first, "the held cell went unhashed");
+        // The stamp alone.
+        if let Some(unit) = held.unit_mut(ObjId(9)) {
+            unit.occupied_hold = Some(OccupiedHold {
+                cell: (4, 3),
+                since_ms: 2_250,
+            });
+        }
+        assert_ne!(state_hash(&held), first, "the hold's stamp went unhashed");
+        // And letting it go is the state it was in before.
+        if let Some(unit) = held.unit_mut(ObjId(9)) {
+            unit.occupied_hold = None;
+        }
+        assert_eq!(state_hash(&held), base);
     }
 
     /// **16b cut Q.1's extension**: a provisional number moves without a

@@ -2858,3 +2858,63 @@ fn the_receiver_and_the_regression_name_only_what_that_pilot_already_holds() {
         tacsim::arena::perception::contact_refusal()
     );
 }
+
+/// **16b cut E.3's traffic hold tells a pilot nothing about what is in the way**
+/// (doc 16 §1, §3.6; 16c `B-46`).
+///
+/// The cut changed *when* `Held: something is in the way.` arrives, so the
+/// observer rule has to be asked again. Two halves, and neither needs a live
+/// match to answer:
+///
+/// * **during the hold there is no line at all.** A hold is by construction the
+///   substep that reports no cause, and `crate::arena::step` stages the pilot's
+///   blocked notice off `MotionOutcome::blocked_by` — so a pilot held by a unit
+///   they have not detected is sent nothing for up to
+///   `[tacsim.arena].occupied_stop_ms`, which is later than HEAD told them and
+///   never sooner. `tacsim`'s own
+///   `another_unit_holds_a_tank_for_two_seconds_and_then_stops_it_with_one_line`
+///   is that half driven end to end through `Arena::step`, with the frame during
+///   the hold pinned as well.
+/// * **after it, the one line names and places nothing.** The sentence is the
+///   same sentence it always was, and the notice it is rendered from has no field
+///   an object number, a name, a contact, a designator, a side or a cell could
+///   travel in — so there is nothing for a later renderer to leak either.
+#[test]
+fn e3_the_traffic_stops_one_line_names_nothing_and_places_nothing() {
+    use tacsim::arena::motion::BlockedCause;
+    use tacsim::arena::perception::{FrameNotice, NoticeKind};
+    use tacsim::arena::state::ContactId;
+    use tacsim::match_::cockpit;
+
+    let notice = FrameNotice::Blocked {
+        cause: BlockedCause::Occupied,
+    };
+    let frame = d4_stub_frame(ContactId(0x0123_4567_89ab_cdef));
+    let line = cockpit::notice_line(&frame, &notice, &[]);
+    assert_eq!(line, "Held: something is in the way.");
+    no_sixteen_digit_word(&line, "the traffic stop's line");
+    for leak in [
+        "bearing", "contact", "red", "blue", "X1", "RA", "BA", "#", "cell", "unit",
+    ] {
+        assert!(
+            !line.contains(leak),
+            "the traffic stop's line leaked {leak:?}:\n{line}"
+        );
+    }
+    assert!(
+        !line.chars().any(|c| c.is_ascii_digit()),
+        "the traffic stop's line carried a number:\n{line}"
+    );
+
+    // And the shape: the notice can carry a cause and nothing else, so no
+    // renderer of it can name or place the unit that was in the way.
+    assert_eq!(notice.cause(), Some(BlockedCause::Occupied));
+    assert_eq!(notice.contact(), None);
+    assert_eq!(notice.designator(), None);
+    assert_eq!(notice.named(), None);
+    assert_eq!(notice.weapon(), None);
+    assert_eq!(notice.section(), None);
+    assert_eq!(notice.refusal(), None);
+    assert_eq!(notice.order(), None);
+    assert_eq!(notice.kind(), NoticeKind::Blocked);
+}
