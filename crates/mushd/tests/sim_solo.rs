@@ -465,13 +465,26 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
         seen.contains("No such contact."),
         "a guessed designator is one byte-identical refusal: {seen}"
     );
-    // `CONTACTS` is waited on by its own echo, because whether it answers `No
-    // contacts.` or a row is a fact about the sensor stagger; what it may never
-    // answer is a name.
+    // Wait for `CONTACTS` to answer either no contacts or a row, retrying the
+    // command's transients within one deadline. Only a row carries `(rel `;
+    // an unsolicited acquisition notice's bearing cannot satisfy this wait.
+    // Either sensor-stagger outcome must still withhold the other unit's name.
     let mark = ada.mark();
-    ada.send_line("CONTACTS").await;
-    ada.expect_one_of_after(mark, &["No contacts.", "bearing"])
-        .await;
+    wait_until(
+        STEP_TIMEOUT,
+        "the solo contact list to answer",
+        async || {
+            let response_mark = ada.mark();
+            ada.send_line("CONTACTS").await;
+            ada.expect_one_of_after(
+                response_mark,
+                &["No contacts.", "(rel ", COMMIT_PENDING, CONTROL_UNKNOWN],
+            )
+            .await
+                < 2
+        },
+    )
+    .await;
     let seen = strip_ansi(&ada.seen[mark..]);
     assert!(
         !seen.contains("Blue Tank"),

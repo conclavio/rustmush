@@ -169,6 +169,19 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
             match frames.read::<ToGateway>().await.unwrap().unwrap() {
                 ToGateway::RequestDisposition {
                     request: seen,
+                    disposition: GatewayRequestDisposition::Busy,
+                } if seen == request.uid => {
+                    assert!(owned.is_none(), "Busy arrived after Owned");
+                    // Busy proves no intent was reserved. Retry the exact
+                    // request within the enclosing deadline; once Owned has
+                    // arrived, only the original completion may satisfy us.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    write_frame(&mut writer, &ToServer::Input(request.clone()))
+                        .await
+                        .unwrap();
+                }
+                ToGateway::RequestDisposition {
+                    request: seen,
                     disposition: GatewayRequestDisposition::Owned { token, status },
                 } if seen == request.uid => owned = Some((token, status)),
                 ToGateway::RequestDisposition {
@@ -180,6 +193,12 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
                     assert_eq!(receipt.status(), &status);
                     assert_eq!(receipt.commit(), owned_token.to_string());
                     break (owned_token, status, receipt);
+                }
+                ToGateway::RequestDisposition {
+                    request: seen,
+                    disposition,
+                } if seen == request.uid => {
+                    panic!("unexpected authoritative disposition: {disposition:?}");
                 }
                 _ => {}
             }
@@ -400,6 +419,16 @@ async fn tampered_offer_tag_is_rejected_before_intent() {
             } = frames.read::<ToGateway>().await.unwrap().unwrap()
                 && seen == request.uid
             {
+                if disposition == GatewayRequestDisposition::Busy {
+                    // Admission may be busy before offer validation. Retry
+                    // the same tampered input within the enclosing deadline,
+                    // then still require the exact permanent rejection.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    write_frame(&mut writer, &ToServer::Input(request.clone()))
+                        .await
+                        .unwrap();
+                    continue;
+                }
                 break disposition;
             }
         }
