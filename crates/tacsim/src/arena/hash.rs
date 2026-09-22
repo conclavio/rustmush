@@ -80,7 +80,10 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///    cut N.2) and, from **16b cut Q.7**, the avoided cells — their count as
 ///    `u64`, then per entry the cell's two `u16` and the stop's `i64` stamp — and
 ///    `stand_until_ms`, `quiet_since_ms` (each a presence byte then an `i64`) and
-///    the `rallied` byte.
+///    the `rallied` byte; then, from **16b cut E.4**, `last_plot` (a presence
+///    byte, then the cell's two `u16` and the plot's `i64` stamp),
+///    `unheld_since_ms` (a presence byte then an `i64`) and `hunt` (a presence
+///    byte then the cell's two `u16`).
 /// 4. **The shadow contact store** (16b cut S.1), in its own iteration order —
 ///    viewer object number ascending, then contact id ascending, which is what
 ///    the two `BTreeMap`s give: per contact the viewer's `u32`, the contact id's
@@ -387,6 +390,32 @@ pub fn state_hash(arena: &Arena) -> u64 {
         hash = fold_stamp(hash, row.stand_until_ms);
         hash = fold_stamp(hash, row.quiet_since_ms);
         hash = fnv1a64_update(hash, &[u8::from(row.rallied)]);
+        // **16b cut E.4**: the three fields that make `Patrol` something other
+        // than a fixed cycle — where the machine last saw something and when,
+        // how long it has held nothing at all, and the far entry cell it is
+        // crossing to. Each is written from an arena timestamp and read at an
+        // arena timestamp, so two cadences of one scripted match fold the same
+        // bytes; each is a *decision* the controller made and would otherwise
+        // reach a pose several substeps later, which is the whole reason the
+        // machines are folded at all.
+        match row.last_plot {
+            Some(((x, y), at_ms)) => {
+                hash = fnv1a64_update(hash, &[1_u8]);
+                hash = fnv1a64_update(hash, &x.to_le_bytes());
+                hash = fnv1a64_update(hash, &y.to_le_bytes());
+                hash = fnv1a64_update(hash, &at_ms.to_le_bytes());
+            }
+            None => hash = fnv1a64_update(hash, &[0_u8]),
+        }
+        hash = fold_stamp(hash, row.unheld_since_ms);
+        match row.hunt {
+            Some((x, y)) => {
+                hash = fnv1a64_update(hash, &[1_u8]);
+                hash = fnv1a64_update(hash, &x.to_le_bytes());
+                hash = fnv1a64_update(hash, &y.to_le_bytes());
+            }
+            None => hash = fnv1a64_update(hash, &[0_u8]),
+        }
     }
     for (viewer, id, held) in arena.contacts.all() {
         hash = fnv1a64_update(hash, &viewer.0.to_le_bytes());

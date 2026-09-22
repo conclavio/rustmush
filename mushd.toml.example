@@ -283,6 +283,10 @@ engage_band_permille = 700         # the fraction of a weapon's reach Engage hol
 rally_ms = 20000                   # (16b cut Q.7) arena ms a withdrawn unit waits with nothing hostile on its board before it comes back into the fight -- once; at or above decide_ms
 # (16b cut E.1) armour plus internals, per mille, below which a machine on its way home will not turn and fight even something close; once home it always shoots back
 stand_min_permille = 175           # 0 to 1000, and never above withdraw_permille
+# (16b cut E.4) arena ms a machine that lost its contact keeps driving to where it last saw it; 0 = straight back to the patrol
+search_ms = 60000
+# (16b cut E.4) arena ms with nothing hostile held before a patrolling machine crosses to the other side's entry zone to look; 0 = never
+hunt_after_ms = 90000
 
 [tacsim.match]                     # (16b cut G) the match lifecycle's slots and timeouts
 startup_ms = 10000                 # ms STARTUP takes to carry a unit's power from starting to online; until then motion and fire refuse

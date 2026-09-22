@@ -13,10 +13,10 @@
 
 mod support;
 
-use support::{Muster, booted_world, ledger_events, run_until, shipped_arena};
+use support::{Muster, Timeline, booted_world, ledger_events, run_until, shipped_arena};
 use tacsim::arena::clock::Tempo;
 use tacsim::arena::reflex::ReflexState;
-use tacsim::arena::state::{Arena, Team};
+use tacsim::arena::state::{Arena, EndReason, Team};
 
 /// One cell of the shipped window, centimetres.
 const CELL_CM: i64 = 1_000;
@@ -94,9 +94,14 @@ fn centre_of(cell: (u16, u16)) -> (i64, i64) {
 ///   shot leaves while the tank is still rolling, which is what a crew with a
 ///   line does. **16b cut E.3 tightened the three claims about that roll**: with
 ///   `B-42`'s braking profile the shot is fired *below the ceiling* (measured
-///   1,097 cm/s of 1,500), the machine reads zero inside seven arena seconds of
-///   it (measured 6,750 ms, which is 1,097 cm/s at the stock 200 cm/s² of brake),
-///   and from that zero until it leaves `Engage` it never reads above zero again.
+///   950 cm/s of 1,500), the machine reads zero inside seven arena seconds of it
+///   (measured 5,750 ms, which is 950 cm/s at the stock 200 cm/s² of brake), and
+///   from that zero until it leaves `Engage` it never reads above zero again.
+///   (E.3 measured 1,097 cm/s and 6,750 ms; **16b cut E.4's hunt** sends the two
+///   machines at each other's entry zones at 90 s of arena time instead of
+///   leaving them on their waypoint loops, so they meet on different ground and
+///   the tick the edge is crossed on is a different one. The bounds are
+///   unchanged and both readings still sit well inside them.)
 /// * **(c)** no machine is ever in `Engage` at a plot range past `release_cm`
 ///   plus one tick of a target opening the range, plus a cell.
 /// * **(d) `T-32`**: the match spends time in more than one tempo, which it
@@ -475,6 +480,14 @@ fn e1_the_rig_poses_its_units_the_way_the_check_out_does() {
 /// Red slots 1 and 2 at their authored musters, both on the machine, no hostiles
 /// at all, four minutes of arena time: whatever the two of them do, neither is
 /// ever stopped by the other, and neither remembers a cell the other was in.
+///
+/// **16b cut E.4 made this bite harder without touching an assertion.** With
+/// nothing hostile ever held, both machines now cross to Blue's entry zone at
+/// `hunt_after_ms` — together, within a second of each other, which is the
+/// deliberate un-staggered hunt — so the run really is a two-machine column on
+/// the one piece of ground the match has to use, and the east-most reading moved
+/// from 130,288 cm to 238,528 cm. `far_entry_cell`'s clamp keeps each of them on
+/// its own row; the two claims below are what says the pair of rules works.
 #[test]
 fn e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other() {
     let world = booted_world();
@@ -543,4 +556,184 @@ fn e3_two_machines_of_one_side_cross_the_ford_without_stopping_each_other() {
         }),
         "neither machine went anywhere, so the ford was never crossed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The endgame (16b cut E.4; 16c `B-04`)
+// ---------------------------------------------------------------------------
+
+/// **The bound every endgame case is held to**, arena milliseconds.
+///
+/// Fifteen minutes. The live smoke of 2026-09-20 is what fixes it: with the
+/// human dead, a 1 v 2 machine endgame went quiet for five minutes and had not
+/// ended at 533 s of arena time, and a 1 v 1 took 7 m 42 s. The owner plays
+/// solo, so when they die the match has to end **among the machines** and in
+/// minutes; the only exits before this cut were `SIM ABORT`, which records no
+/// result, and the one-hour cap.
+const ENDGAME_MS: i64 = 900_000;
+
+/// Play a field out until it ends or the bound runs out, at a one-second
+/// cadence, taking a [`Timeline`] reading every ten arena seconds.
+fn play_to_the_end(
+    arena: &mut Arena,
+    mut watch: impl FnMut(&Arena),
+) -> (Option<EndReason>, i64, Timeline, std::time::Duration) {
+    let opened = std::time::Instant::now();
+    let mut timeline = Timeline::new();
+    run_until(arena, ENDGAME_MS, 1_000, |arena, out| {
+        timeline.sample(arena, out.reflex.path_failures);
+        watch(arena);
+    });
+    let wall = opened.elapsed();
+    let reason = arena.ended.map(|end| end.reason);
+    (reason, arena.now_ms, timeline, wall)
+}
+
+/// The one assertion all three cases make, with the diagnosis in the message
+/// rather than the number alone.
+fn ended_by_elimination(
+    case: &str,
+    reason: Option<EndReason>,
+    at_ms: i64,
+    timeline: &Timeline,
+    wall: std::time::Duration,
+) {
+    println!("{case}: ended {reason:?} at {at_ms} ms, wall {wall:?} in the debug profile");
+    assert!(
+        matches!(reason, Some(EndReason::Elimination { winner: Some(_) })),
+        "{case}: the match ended {reason:?} at {at_ms} ms of arena time, not by an elimination \
+         with a winner inside {ENDGAME_MS} ms. What the machines were doing:\n{}",
+        timeline.render()
+    );
+}
+
+/// **A hurt machine against two healthy ones ends by elimination** (16b cut
+/// E.4; 16c `B-04`) — the case the sub-cut exists for, and the live smoke's own
+/// shape.
+///
+/// Red Tank 1 opens hurt to just under `withdraw_permille` (see
+/// `support::hurt_to_withdraw`: every facet's armour at its floor plus one, no
+/// internals touched, so every section is still `intact`), against Blue Tanks 1
+/// and 2 at full health, all three at their authored musters, all three on the
+/// machine, shipped doctrine, no pilots at all.
+///
+/// Two things are asserted before the bound, because a case whose hurt machine
+/// never withdrew has not run: the health it opens at is under
+/// `withdraw_permille` and at or above `stand_min_permille`, and the machine is
+/// in `Withdraw` within five decide ticks of its power coming online.
+#[test]
+fn e4_a_hurt_machine_against_two_ends_by_elimination() {
+    let world = booted_world();
+    let mut arena = shipped_arena(
+        &world,
+        &[
+            &[Muster::reflex(Team::Red, 1).hurt()],
+            &[Muster::reflex(Team::Blue, 1), Muster::reflex(Team::Blue, 2)],
+        ],
+    );
+    let hurt = support::tank(&world, Team::Red, 1);
+
+    let doctrine = arena.arena_cfg.reflex.clone();
+    let health = arena.reflex_health_permille(hurt);
+    println!(
+        "e4_hurt_one_v_two: #{} opens at {health} per mille (withdraw under {}, stand at or above \
+         {})",
+        hurt.0, doctrine.withdraw_permille, doctrine.stand_min_permille
+    );
+    assert!(
+        health < doctrine.withdraw_permille,
+        "the hurt machine opens at {health} per mille, which is not under `withdraw_permille` of \
+         {}: it would never withdraw and the case observes nothing",
+        doctrine.withdraw_permille
+    );
+    assert!(
+        health >= doctrine.stand_min_permille,
+        "the hurt machine opens at {health} per mille, under `stand_min_permille` of {}: it could \
+         never stand on its way home",
+        doctrine.stand_min_permille
+    );
+
+    let mut online_ms: Option<i64> = None;
+    let mut withdrew_ms: Option<i64> = None;
+    let (reason, at_ms, timeline, wall) = play_to_the_end(&mut arena, |arena| {
+        if online_ms.is_none()
+            && arena
+                .unit(hurt)
+                .is_some_and(|unit| unit.power == tacsim::arena::state::Power::Online)
+        {
+            online_ms = Some(arena.now_ms);
+        }
+        if withdrew_ms.is_none()
+            && arena
+                .reflex
+                .unit(hurt)
+                .is_some_and(|row| row.state == ReflexState::Withdraw)
+        {
+            withdrew_ms = Some(arena.now_ms);
+        }
+    });
+    let online = online_ms.unwrap_or_else(|| {
+        panic!(
+            "the hurt machine never brought its power up:\n{}",
+            timeline.render()
+        )
+    });
+    let withdrew = withdrew_ms.unwrap_or_else(|| {
+        panic!(
+            "the hurt machine never withdrew, so this case did not run:\n{}",
+            timeline.render()
+        )
+    });
+    let grace = 5 * i64::from(doctrine.decide_ms);
+    println!("e4_hurt_one_v_two: online at {online} ms, withdrew at {withdrew} ms");
+    assert!(
+        withdrew <= online.saturating_add(grace),
+        "the hurt machine came online at {online} ms and did not withdraw until {withdrew} ms, \
+         which is more than five decide ticks:\n{}",
+        timeline.render()
+    );
+    ended_by_elimination("e4_hurt_one_v_two", reason, at_ms, &timeline, wall);
+}
+
+/// **Two healthy machines, one against one, end by elimination** (16b cut E.4;
+/// 16c `B-04`) — the live smoke's 7 m 42 s case, with the bound on it.
+#[test]
+fn e4_a_healthy_one_against_one_ends_by_elimination() {
+    let world = booted_world();
+    let mut arena = shipped_arena(
+        &world,
+        &[
+            &[Muster::reflex(Team::Red, 1)],
+            &[Muster::reflex(Team::Blue, 1)],
+        ],
+    );
+    let (reason, at_ms, timeline, wall) = play_to_the_end(&mut arena, |_| {});
+    ended_by_elimination("e4_healthy_one_v_one", reason, at_ms, &timeline, wall);
+}
+
+/// **A dry loser is found and finished** (16b cut E.4; 16c `B-04`).
+///
+/// Red Tank 1 opens with every magazine empty, so it is `is_dry` on its first
+/// decide tick: it withdraws at once, it never rallies (a unit with nothing to
+/// fire has no fight to come back to), and it parks in its own entry zone. Blue
+/// Tank 1 has to go and find it — which before this cut nothing made it do,
+/// because no patrol loop passes through an entry zone.
+#[test]
+fn e4_a_dry_loser_is_found_and_finished() {
+    let world = booted_world();
+    let mut arena = shipped_arena(
+        &world,
+        &[
+            &[Muster::reflex(Team::Red, 1).dry()],
+            &[Muster::reflex(Team::Blue, 1)],
+        ],
+    );
+    let dry = support::tank(&world, Team::Red, 1);
+    assert!(
+        arena.unit(dry).is_some_and(|unit| unit.armed_at_checkout()
+            && unit.weapons.iter().all(|w| unit.weapon_ammo(&w.id) == 0)),
+        "the dry machine checked out with rounds, so this case does not run"
+    );
+    let (reason, at_ms, timeline, wall) = play_to_the_end(&mut arena, |_| {});
+    ended_by_elimination("e4_dry_loser", reason, at_ms, &timeline, wall);
 }

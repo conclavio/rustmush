@@ -283,6 +283,10 @@ engage_band_permille = 700
 rally_ms = 20000
 # (16b cut E.1) armour plus internals, per mille, below which a machine on its way home will not turn and fight even something close; once home it always shoots back
 stand_min_permille = 175
+# (16b cut E.4) arena ms a machine that lost its contact keeps driving to where it last saw it; 0 = straight back to the patrol
+search_ms = 60000
+# (16b cut E.4) arena ms with nothing hostile held before a patrolling machine crosses to the other side's entry zone to look; 0 = never
+hunt_after_ms = 90000
 
 [tacsim.match]
 startup_ms = 10000

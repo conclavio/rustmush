@@ -85,6 +85,8 @@
 //! | `[tacsim.arena.reflex].engage_band_permille` | `700` | the fraction of a weapon's reach `Engage` holds |
 //! | `[tacsim.arena.reflex].rally_ms` | `20000` | **16b cut Q.7** (doc 16 §6): arena milliseconds a withdrawn unit waits, with nothing hostile on its board, before it comes back into the fight — once |
 //! | `[tacsim.arena.reflex].stand_min_permille` | `175` | **16b cut E.1** (doc 16 §6): armour plus internals, per mille, below which a machine on its way home will not turn and fight even something close; once home it always shoots back. Not above `withdraw_permille` |
+//! | `[tacsim.arena.reflex].search_ms` | `60000` | **16b cut E.4** (`B-04`, doc 16 §6's `lost` edge): arena milliseconds a machine that lost its contact keeps driving to where it last saw it; `0` is off, and anything else is `decide_ms` to `600000` |
+//! | `[tacsim.arena.reflex].hunt_after_ms` | `90000` | **16b cut E.4** (`B-04`): arena milliseconds with nothing hostile held before a patrolling machine crosses to the other side's entry zone to look; `0` is off, and anything else is at least `decide_ms` |
 //! | `[tacsim.match].startup_ms` | `10000` | **16b cut G** (doc 16 §3.3): milliseconds `STARTUP` takes to bring a unit's power online |
 //! | `[tacsim.match].board_timeout_ms` | `120000` | milliseconds `Boarding` waits before unseated slots are dropped (doc 16 §3.8) |
 //! | `[tacsim.match].max_duration_ms` | `3600000` | the longest a match runs before it ends as a timeout |
@@ -1029,6 +1031,33 @@ pub struct TacsimReflexCfg {
     /// refused naming both keys: a machine only runs home below the second, so a
     /// floor above it is a doctrine branch nothing could ever be in.
     pub stand_min_permille: u32,
+    /// **How long a machine keeps driving to where it last saw its target**
+    /// (16b cut E.4; 16c `B-04`), arena milliseconds.
+    ///
+    /// A contact expires after three sensor passes, and the `lost` edge used to
+    /// drop the machine straight back onto a waypoint walk that may lead away
+    /// from the tank that has just driven behind a tree line. It goes and looks
+    /// first now.
+    ///
+    /// `0` is off — the pre-E.4 rule exactly — and anything else is `decide_ms`
+    /// to `600000`, or the boot is refused naming the key. The plot is one
+    /// decide tick old when the machine first reads it, so at `decide_ms`
+    /// exactly the search lasts that one tick.
+    pub search_ms: u32,
+    /// **How long a patrolling machine that holds nothing hostile waits before it
+    /// crosses to the other side's entry zone to look** (16b cut E.4; 16c
+    /// `B-04`), arena milliseconds.
+    ///
+    /// The waypoint walk is a fixed cycle per unit id, so two sides' loops need
+    /// never meet, and a withdrawn machine parks in its own entry zone, which no
+    /// loop passes through. That is the match that goes quiet for ever and never
+    /// ends. The other side's entry zone is the one place a beaten enemy is
+    /// certain to be, and it is map knowledge — the arena's own zones, no unit's
+    /// pose.
+    ///
+    /// `0` is off, and anything else is at least `decide_ms`, or the boot is
+    /// refused naming the key.
+    pub hunt_after_ms: u32,
 }
 
 impl Default for TacsimReflexCfg {
@@ -1047,6 +1076,10 @@ impl Default for TacsimReflexCfg {
             rally_ms: 20_000,
             // 16b cut E.1: half of `withdraw_permille`.
             stand_min_permille: 175,
+            // 16b cut E.4: a minute of driving to the last plot, and a minute and
+            // a half of nothing at all before a machine goes and looks.
+            search_ms: 60_000,
+            hunt_after_ms: 90_000,
         }
     }
 }

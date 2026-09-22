@@ -10,6 +10,17 @@
 //!   any state, on a wreck or a disabling ──→ Disabled
 //! ```
 //!
+//! **`Patrol` is where a machine that has nothing to fight decides what to do**,
+//! and since 16b cut E.4 it has four answers, taken in this order: a movement
+//! order's cell; **the search**, the cell of the plot of the target it has just
+//! lost, for `reflex.search_ms`; **the hunt**, a cell of the *other* side's entry
+//! zone, once `reflex.hunt_after_ms` has passed with nothing hostile held at all;
+//! and then the arena pack's waypoint graph, which is what it walked before. A
+//! movement order drops both clocks' goals and restarts the hunt's wait. The
+//! search and the hunt close 16c `B-04`'s *endgame that never ends*: the
+//! waypoint walk is a fixed cycle per unit id, so two sides' loops need never
+//! meet, and a withdrawn machine parks in an entry zone no loop passes through.
+//!
 //! It drives the harness's field of 300; the AI fill of a lobby that boards fewer
 //! pilots than there are tanks, behind `[tacsim.match].ai_fill` (off by default —
 //! `crate::config::MatchConfig::ai_fill` says why); and — replacing K4's idle
@@ -173,7 +184,20 @@ pub enum ReflexState {
     /// Cold: the only order it gives is `STARTUP`.
     #[default]
     Startup,
-    /// Walking the arena's waypoint graph.
+    /// **Looking for something to fight.** Its goal is the first of these that
+    /// answers (16b cut E.4):
+    ///
+    /// 1. **a movement order** — `Advance`'s cell, or `Hold`'s "where you
+    ///    stand" (16b cut N.2);
+    /// 2. **the search** — [`ReflexUnit::last_plot`], while it is younger than
+    ///    [`crate::config::ReflexConfig::search_ms`] and the machine has not
+    ///    arrived at it: where it last saw the target it has just lost;
+    /// 3. **the hunt** — [`ReflexUnit::hunt`], the other side's entry zone,
+    ///    once [`crate::config::ReflexConfig::hunt_after_ms`] has passed with
+    ///    nothing hostile held at all;
+    /// 4. **the waypoint walk** — [`Arena::patrol_goal`], the arena pack's
+    ///    graph, which is what `Patrol` was and still is when the three above
+    ///    have nothing to say.
     Patrol,
     /// Closing on the hostile the utility score picked.
     Approach,
@@ -302,6 +326,45 @@ pub struct ReflexUnit {
     /// arrives*: not idle, not a hold — the machine below, exactly as it ran before
     /// an order arrived and exactly as it runs after one expires.
     pub order: Option<StandingOrder>,
+    /// **Where this machine last saw its target, and when** (16b cut E.4; 16c
+    /// `B-04`): the cell of the target's plot, and the arena millisecond of the
+    /// tick that read it.
+    ///
+    /// Written by the tick that ends with a target and a plot on the window, in
+    /// `Approach`, in `Engage` and in a `Withdraw` that stood and fought. Read by
+    /// `Patrol`, which drives to it for
+    /// [`crate::config::ReflexConfig::search_ms`] — so the `lost` edge is a crew
+    /// going to the last place it had something, and not a crew turning its back
+    /// on it.
+    ///
+    /// It is the machine's **own** last plot and never the target's live cell
+    /// (doc 16 §1, and 16b cut F.3's rule applied once more): a target that moves
+    /// after the contact expires does not drag the search after it.
+    ///
+    /// Cleared by arrival within [`ARRIVE_CELLS`], by an age past `search_ms`
+    /// (an age of exactly `search_ms` still searches), by `search_ms == 0`, by
+    /// entering `Withdraw`, by every tick of a movement order (`Advance`,
+    /// `Hold`), and by the `unreachable` edge when it was the search's own goal
+    /// that no route reached.
+    pub last_plot: Option<((u16, u16), i64)>,
+    /// **Since when this machine has held nothing hostile at all** (16b cut E.4;
+    /// 16c `B-04`), arena milliseconds, or `None` while it holds one.
+    ///
+    /// The clock [`crate::config::ReflexConfig::hunt_after_ms`] runs against. It
+    /// is `Patrol`'s: every other state restarts it at the tick it is read, and
+    /// so does every tick of a movement order, so a machine that has just come
+    /// out of a fight, or out from under an order, starts the wait over.
+    pub unheld_since_ms: Option<i64>,
+    /// **The cell of the other side's entry zone this machine is crossing to**
+    /// (16b cut E.4; 16c `B-04`), or `None`.
+    ///
+    /// Set once the clock above has run out, from [`Arena::far_entry_cell`],
+    /// which reads the arena definition's zones and no unit's pose. Cleared, and
+    /// the clock restarted, by arrival within [`ARRIVE_CELLS`] (which also
+    /// forgets the waypoint the walk was on, so it resumes from the node nearest
+    /// the far edge), by the `unreachable` edge on it, by every tick of a
+    /// movement order, and by leaving `Patrol` for any reason.
+    pub hunt: Option<(u16, u16)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +524,13 @@ impl ReflexMemory {
             row.stand_until_ms = None;
             row.quiet_since_ms = None;
             row.rallied = false;
+            // **16b cut E.4**: and a clean memory of what it last saw and how
+            // long it has seen nothing. A seat released into `Withdraw` must not
+            // inherit its pilot's last contact as a place to drive to, and the
+            // hunt's clock starts when the machine takes the tank over.
+            row.last_plot = None;
+            row.unheld_since_ms = None;
+            row.hunt = None;
         }
     }
 
@@ -1174,6 +1244,10 @@ impl Arena {
                         row.target = None;
                         row.goal = None;
                         row.route.clear();
+                        // **16b cut E.4**: a machine breaking off does not search.
+                        // Its goal is its own entry zone, and the last place it
+                        // saw the enemy is the one place it must not drive to.
+                        row.last_plot = None;
                     }
                 }
                 Objective::Hold | Objective::Advance { .. } => {
@@ -1210,6 +1284,9 @@ impl Arena {
             row.target = None;
             row.goal = None;
             row.route.clear();
+            // **16b cut E.4**: `Withdraw` does not search — see the order's own
+            // arm above for why.
+            row.last_plot = None;
         }
 
         // ---- the hostile edges ----
@@ -1277,6 +1354,11 @@ impl Arena {
         // each one is and why the doctrine band is applied after the order's cap.
         let cell_cm = self.definition.terrain.cell_cm();
         let ranges = ranges(unit, cell_cm, &memory.cfg, order.as_ref());
+        // **16b cut E.4**: the cell a `Withdraw` that stood and fought turned
+        // onto. `Withdraw` clears `row.target` on entry and `withdraw_stand`
+        // chooses its own candidate without writing one back, so the stand is the
+        // one plot this tick holds that `row.target` cannot name.
+        let mut stood_cell: Option<(u16, u16)> = None;
         match row.state {
             ReflexState::Startup | ReflexState::Disabled => {}
             ReflexState::Patrol => {
@@ -1284,6 +1366,25 @@ impl Arena {
                 // the commander named; `hold` parks where the unit stands. Both
                 // leave the waypoint the machine was walking to alone, so doctrine
                 // picks it up again at expiry rather than starting from nothing.
+                //
+                // **16b cut E.4**: but neither of the endgame's two clocks. A
+                // movement order is the head of `Patrol`'s list, and a commander
+                // who said *go there* is not answered at the order's expiry by a
+                // machine turning round for a plot it saw before the order, or
+                // finishing a crossing it had started before it: both goals are
+                // dropped on every ordered tick, and the hunt's wait restarts on
+                // each, so it is counted from the order's end and not through it
+                // (the order suppresses the hostile edges, so what the squad saw
+                // while it obeyed was never read by the clock anyway).
+                let movement = matches!(
+                    order.as_ref().map(|order| order.objective),
+                    Some(Objective::Advance { .. } | Objective::Hold)
+                );
+                if movement {
+                    row.last_plot = None;
+                    row.hunt = None;
+                    row.unheld_since_ms = Some(t_ms);
+                }
                 match order.as_ref().map(|order| order.objective) {
                     Some(Objective::Advance { to }) => {
                         if row.goal != Some(to) {
@@ -1296,7 +1397,19 @@ impl Arena {
                         row.route.clear();
                         plan.speed_cms = Some(0);
                     }
-                    _ => self.patrol_goal(id, &mut row, here),
+                    // **16b cut E.4 (16c `B-04`)**: with no movement order the
+                    // goal is the search, then the hunt, then the waypoint walk.
+                    // Each answers `true` when it has taken the goal, so the one
+                    // below it is not asked; a movement order above never reaches
+                    // here, and has just cleared both clocks' goals, so neither
+                    // survives one.
+                    _ => {
+                        if !self.search_goal(t_ms, &mut row, here, &memory.cfg)
+                            && !self.hunt_goal(id, t_ms, &mut row, here, &memory.cfg)
+                        {
+                            self.patrol_goal(id, &mut row, here);
+                        }
+                    }
                 }
             }
             // **16b cut F.3**: every range, goal and heading below is read off the
@@ -1411,6 +1524,7 @@ impl Arena {
                     counters,
                 );
                 if let Some((contact, plot)) = cornered {
+                    stood_cell = plot.cell(&self.definition.terrain);
                     row.stand_until_ms = Some(t_ms.saturating_add(
                         REFLEX_STAND_TICKS.saturating_mul(i64::from(memory.cfg.decide_ms)),
                     ));
@@ -1463,6 +1577,36 @@ impl Arena {
             }
         }
 
+        // ---- what this tick saw, and how long it has seen nothing (16b cut E.4)
+        //      ----
+        //
+        // The search's memory is written **last**, from the plot this tick
+        // actually acted on: `Approach` and `Engage` write the plot of their own
+        // target, and a `Withdraw` that stopped and fought writes the plot it
+        // turned onto. It is the cell of the **plot** and not of the target, so a
+        // tank that drives on after the contact expires does not drag the search
+        // after it (doc 16 §1); a plot that is off the window writes nothing,
+        // because there is no cell to drive to.
+        if let Some(cell) = stood_cell {
+            row.last_plot = Some((cell, t_ms));
+        } else if matches!(row.state, ReflexState::Approach | ReflexState::Engage)
+            && let Some((contact, _)) = row.target
+            && let Some(cell) = self
+                .plot_of(id, contact)
+                .and_then(|plot| plot.cell(&self.definition.terrain))
+        {
+            row.last_plot = Some((cell, t_ms));
+        }
+        // The hunt belongs to `Patrol` and to nothing else: a machine that has
+        // left it — for a fight, for home, for an order — gives its crossing up
+        // and starts the wait again from here, so it is a minute and a half of
+        // *nothing at all* that sends a machine over and never a minute and a
+        // half measured through a battle.
+        if row.state != ReflexState::Patrol {
+            row.hunt = None;
+            row.unheld_since_ms = Some(t_ms);
+        }
+
         // ---- the route, and the steer ----
         if !matches!(row.state, ReflexState::Startup | ReflexState::Disabled)
             && plan.speed_cms.is_none()
@@ -1484,6 +1628,150 @@ impl Arena {
         }
         memory.units.insert(id, row);
         plan
+    }
+
+    /// **`Patrol`'s first goal: where the machine last saw something** (16b cut
+    /// E.4; 16c `B-04`). Answers whether it took the goal.
+    ///
+    /// A contact expires after three sensor passes and the `lost` edge drops the
+    /// machine here. Before this cut the waypoint walk took it wherever the
+    /// graph's fixed cycle said, which may be directly away from the tank that
+    /// has just driven behind a tree line; now it drives to
+    /// [`ReflexUnit::last_plot`] for [`crate::config::ReflexConfig::search_ms`]
+    /// of arena time first.
+    ///
+    /// The three ways it ends are all clears of `last_plot`, so a machine whose
+    /// search is over asks this once more and is answered `false`: **arrival**
+    /// within [`ARRIVE_CELLS`] (it went and looked and there was nothing there),
+    /// **age** past `search_ms` (an age of exactly `search_ms` still searches —
+    /// see the comparison below for why), and the key at **`0`**, which
+    /// reproduces the pre-E.4 `lost` edge exactly. The fourth is the
+    /// `unreachable` edge, in [`Arena::follow`], and a movement order clears it
+    /// too, in `decide`'s `Patrol` arm.
+    ///
+    /// A hostile found on the way pre-empts it without this being asked at all:
+    /// the hostile edges run above the state's own body and put the machine in
+    /// `Approach`.
+    fn search_goal(
+        &self,
+        t_ms: i64,
+        row: &mut ReflexUnit,
+        here: Option<(u16, u16)>,
+        cfg: &ReflexConfig,
+    ) -> bool {
+        let Some((cell, at_ms)) = row.last_plot else {
+            return false;
+        };
+        // The age is compared **inclusively**: the plot was written by the last
+        // tick that held the target and the `lost` edge is read one decide tick
+        // later, so the first `Patrol` tick always finds it exactly `decide_ms`
+        // old. At the validated floor (`search_ms == decide_ms`) a strict
+        // comparison would drop it on that tick and the key would be `0` under
+        // another name; inclusively the machine drives at it for that one tick.
+        if cfg.search_ms == 0 || t_ms.saturating_sub(at_ms) > i64::from(cfg.search_ms) {
+            row.last_plot = None;
+            return false;
+        }
+        if here.is_some_and(|here| {
+            here.0.abs_diff(cell.0).max(here.1.abs_diff(cell.1)) <= ARRIVE_CELLS
+        }) {
+            row.last_plot = None;
+            return false;
+        }
+        if row.goal != Some(cell) {
+            row.goal = Some(cell);
+            row.route.clear();
+        }
+        true
+    }
+
+    /// **`Patrol`'s second goal: a machine that has seen nobody goes and looks**
+    /// (16b cut E.4; 16c `B-04`). Answers whether it took the goal.
+    ///
+    /// The waypoint walk is `choices[id % choices.len()]`, a deterministic loop
+    /// per unit id on a graph of two roads and four spurs, so two sides' loops
+    /// need never come within a sight of each other — and a withdrawn machine
+    /// parks in its own entry zone, which no loop passes through except at the
+    /// two road ends. Measured at HEAD before this cut: a dry Red tank on its
+    /// entry cell from 30 s, a Blue tank walking the east half of the map, and
+    /// nothing at all for the next fifteen minutes of arena time.
+    ///
+    /// So a machine that has held nothing hostile at all
+    /// ([`Arena::holds_a_hostile`], which is E.2's reading: a contact that reads
+    /// dead is not a hostile) for
+    /// [`crate::config::ReflexConfig::hunt_after_ms`] crosses to the **other**
+    /// side's entry zone, which is the one place on the map a beaten enemy is
+    /// certain to be. It reads [`Arena::far_entry_cell`], which is the arena
+    /// definition's own zones and no unit's pose at all, so the machine has been
+    /// told nothing about anybody.
+    ///
+    /// **It is not staggered by unit id, on purpose.** Every machine of a side
+    /// starts its clock within one decide period of the others, so a side that
+    /// has seen nobody sets out within a second of itself — which is wanted: a
+    /// side that crosses together arrives together, and one that trickled across
+    /// by id would be met one at a time. What keeps it from being a traffic jam
+    /// is already here: [`Arena::far_entry_cell`]'s clamp keeps each machine on
+    /// its own row, [`ReflexMemory::may_search`] rations the searches, and 16b
+    /// cut E.3's hold is what a column at a ford needs.
+    ///
+    /// A far zone that answers `None` — no other side has one, or nothing in it
+    /// is passable — restarts the clock rather than leaving it run out, so the
+    /// scan is paid once per `hunt_after_ms` and not once per tick. That is the
+    /// honest cost of an answer that is honestly nothing.
+    fn hunt_goal(
+        &self,
+        id: ObjId,
+        t_ms: i64,
+        row: &mut ReflexUnit,
+        here: Option<(u16, u16)>,
+        cfg: &ReflexConfig,
+    ) -> bool {
+        if self.holds_a_hostile(id) {
+            row.unheld_since_ms = None;
+            row.hunt = None;
+            return false;
+        }
+        if let Some(cell) = row.hunt {
+            if here.is_some_and(|here| {
+                here.0.abs_diff(cell.0).max(here.1.abs_diff(cell.1)) <= ARRIVE_CELLS
+            }) {
+                // It went and looked. The walk resumes from the nearest node —
+                // which at the far edge is the enemy's own end of the road — and
+                // the next hunt, `hunt_after_ms` later, starts from wherever that
+                // walk has taken it, so successive crossings sweep different rows
+                // of the zone.
+                //
+                // The waypoint it was walking to before it crossed is forgotten
+                // **here**: [`Arena::patrol_goal`] keeps a node it holds and asks
+                // the graph for the nearest only when it holds none, so without
+                // this the machine would turn round at the far edge and drive the
+                // whole map back to a node on its own side.
+                row.hunt = None;
+                row.unheld_since_ms = Some(t_ms);
+                row.waypoint = None;
+                row.from_waypoint = None;
+                return false;
+            }
+            if row.goal != Some(cell) {
+                row.goal = Some(cell);
+                row.route.clear();
+            }
+            return true;
+        }
+        let since = *row.unheld_since_ms.get_or_insert(t_ms);
+        if cfg.hunt_after_ms == 0 || t_ms.saturating_sub(since) < i64::from(cfg.hunt_after_ms) {
+            return false;
+        }
+        let Some(cell) = self.far_entry_cell(id) else {
+            row.unheld_since_ms = Some(t_ms);
+            return false;
+        };
+        row.hunt = Some(cell);
+        if row.goal != Some(cell) {
+            row.goal = Some(cell);
+            row.route.clear();
+        }
+        true
     }
 
     /// `Patrol`'s goal: the node it is walking to, advanced when it arrives.
@@ -1958,6 +2246,109 @@ impl Arena {
         best.map(|(_, cell)| cell)
     }
 
+    /// **The hunt's goal: a cell of some OTHER side's entry zone** (16b cut E.4;
+    /// 16c `B-04`), or `None`.
+    ///
+    /// [`Arena::entry_cell`] is deliberately **not** touched by this cut — not
+    /// its zone choice, not its metric, not its fallback — so `Withdraw`'s goal
+    /// is exactly what it was. This is a second function with its own rule, and
+    /// the whole of that rule is here:
+    ///
+    /// * over the entry zones whose team is **not** this unit's, **in zone
+    ///   order**;
+    /// * each zone's candidate is its **clamped corner** — the unit's own cell
+    ///   clamped into the zone — when that cell is passable, else the **nearest
+    ///   passable cell of the zone by Manhattan distance**, which is the metric
+    ///   [`Arena::entry_cell`]'s scan already ranks by, so the file has one
+    ///   ranking and not two;
+    /// * the scan reads the zone's rows **nearest the unit's own row first** —
+    ///   the clamped row, then one either side, then two — because
+    ///   [`MAX_ENTRY_SCAN`] is 1,024 cells and a shipped zone is 16 by 256, so a
+    ///   row-major scan from `y0` would hand a machine standing on row 200 a
+    ///   cell on row 60;
+    /// * one budget of [`MAX_ENTRY_SCAN`] cells is shared across every zone;
+    /// * the answer is the candidate **nearest the unit** by that same distance,
+    ///   ties to the **lower zone index**.
+    ///
+    /// **It never answers a cell the passability test rejected.**
+    /// [`Arena::entry_cell`] ends `.or(Some(clamped))`, which can hand back the
+    /// impassable corner it has just refused; for a `Withdraw` that is a goal the
+    /// search fails on and a fallback waypoint catches, but for a hunt it would
+    /// be an unreachable cell re-asserted every `hunt_after_ms` for the rest of
+    /// the match. When the budget runs out with nothing found, or no other side
+    /// has a zone at all, this answers `None` and the hunt does nothing — which
+    /// is the honest answer, and [`Arena::hunt_goal`] restarts its clock on it so
+    /// the scan is paid once per `hunt_after_ms`.
+    fn far_entry_cell(&self, id: ObjId) -> Option<(u16, u16)> {
+        let unit = self.unit(id)?;
+        let (here_x, here_y) = self.definition.terrain.cell_of(&unit.pose)?;
+        let passable = |x: u16, y: u16| {
+            self.definition
+                .terrain
+                .get(x, y)
+                .is_some_and(crate::arena::state::TerrainCell::passable)
+        };
+        let reach = |x: u16, y: u16| u32::from(x.abs_diff(here_x)) + u32::from(y.abs_diff(here_y));
+        let mut best: Option<(u32, (u16, u16))> = None;
+        let mut read = 0_usize;
+        for zone in self
+            .definition
+            .entry_zones
+            .iter()
+            .filter(|zone| zone.team != unit.team)
+        {
+            let (x0, x1) = (zone.x0.min(zone.x1), zone.x0.max(zone.x1));
+            let (y0, y1) = (zone.y0.min(zone.y1), zone.y0.max(zone.y1));
+            let (cx, cy) = (here_x.clamp(x0, x1), here_y.clamp(y0, y1));
+            if passable(cx, cy) {
+                let distance = reach(cx, cy);
+                if best.is_none_or(|(far, _)| distance < far) {
+                    best = Some((distance, (cx, cy)));
+                }
+                continue;
+            }
+            // The rows nearest the unit's own first: `cy`, then `cy - 1` and
+            // `cy + 1`, then two, and so on to the ends of the zone.
+            let span = u32::from(y1.saturating_sub(y0));
+            'zone: for offset in 0..=span {
+                for below in [true, false] {
+                    if !below && offset == 0 {
+                        // The clamped row is read once, not twice.
+                        continue;
+                    }
+                    let at = if below {
+                        u32::from(cy).checked_sub(offset)
+                    } else {
+                        u32::from(cy).checked_add(offset)
+                    };
+                    let Some(Ok(y)) = at.map(u16::try_from) else {
+                        continue;
+                    };
+                    if y < y0 || y > y1 {
+                        continue;
+                    }
+                    for x in x0..=x1 {
+                        read = read.saturating_add(1);
+                        if read > MAX_ENTRY_SCAN {
+                            break 'zone;
+                        }
+                        if !passable(x, y) {
+                            continue;
+                        }
+                        let distance = reach(x, y);
+                        if best.is_none_or(|(far, _)| distance < far) {
+                            best = Some((distance, (x, y)));
+                        }
+                    }
+                }
+            }
+            if read > MAX_ENTRY_SCAN {
+                break;
+            }
+        }
+        best.map(|(_, cell)| cell)
+    }
+
     /// **Armour plus internals, per mille of what the unit was authored with**
     /// (reconciliation (c) of the cut brief), read off the M32 cells on
     /// `UnitState::unit`.
@@ -2148,6 +2539,26 @@ impl Arena {
                             row.order = None;
                             plan.expired = Some((order.squad, order.objective.as_str()));
                         }
+                        // **16b cut E.4 (16c `B-04`, and `B-41`'s lesson applied
+                        // twice more)**: a search goal or a hunt goal that no
+                        // route reaches is given up **here**, beside the order's,
+                        // or the `Patrol` arm would re-assert it on the very next
+                        // tick and the fallback waypoint would never hold — a
+                        // plot sealed inside a building, or an island cell of the
+                        // far zone, would then cost a failed search every
+                        // `repath_ms` for as long as the clock allowed. Given up,
+                        // each costs exactly one: the search is over, and the hunt
+                        // starts its wait again.
+                        if row
+                            .last_plot
+                            .is_some_and(|(cell, _)| row.goal == Some(cell))
+                        {
+                            row.last_plot = None;
+                        }
+                        if row.hunt.is_some_and(|cell| row.goal == Some(cell)) {
+                            row.hunt = None;
+                            row.unheld_since_ms = Some(t_ms);
+                        }
                         self.fall_back_to_waypoint(id, row, here);
                     }
                 }
@@ -2185,17 +2596,37 @@ impl Arena {
         ));
     }
 
-    /// **Whether the one cell on `heading` is a cell this unit may enter** (16b
-    /// cut Q.7), asked exactly as [`crate::arena::motion`]'s step 4 will ask it.
+    /// **Whether the one cell on `heading` is a cell this unit would plan
+    /// through** (16b cut Q.7).
     ///
     /// The neighbour is the octant of the bearing — the eight compass directions,
-    /// each owning 45 degrees — because that is the cell the crossing will test
-    /// first. Then four questions, in the crossing's own order: it is on the
-    /// window, its class is passable, the edge onto it is within this unit's slope
-    /// limit **either way**, and on a diagonal its shoulders are not a cliff
-    /// ([`shoulder_refuses`], the search's own rule read out of the search's own
-    /// module). And one of this cut's: it is not a cell the unit has been stopped
-    /// at.
+    /// each owning 45 degrees — because that is the cell
+    /// [`crate::arena::motion`]'s step 4 will test first. Then four questions: it
+    /// is on the window, its class is passable, the edge onto it is within this
+    /// unit's slope limit **either way**, and on a diagonal its shoulders are not
+    /// a cliff ([`shoulder_refuses`]). And one of Q.7's own: it is not a cell the
+    /// unit has been stopped at ([`ReflexUnit::avoid`]).
+    ///
+    /// # It is the search's rule, not the crossing's — deliberately stricter
+    ///
+    /// **16b cut E.4 (16c `T-42`)** corrects what this paragraph used to claim.
+    /// It said the four questions were asked "exactly as `motion`'s step 4 will
+    /// ask" them, "in the crossing's own order", shoulder rule included. That is
+    /// not true and cannot be: `crate::arena::motion::refusal` applies **no**
+    /// shoulder rule at all — its own doc says a diagonal crossing tests the
+    /// diagonal neighbour and nothing else — and the crossing knows nothing of a
+    /// machine's remembered stops.
+    ///
+    /// What this really is: **the search's own edge rule
+    /// ([`crate::arena::path`]'s, shoulders and all) plus the remembered stops**,
+    /// which is strictly stricter than the crossing. That is the right way round
+    /// and is the reason the function exists: a routeless machine is steering at
+    /// a *direction* no search has checked, and the one thing it must never do is
+    /// take a step its own search would refuse to plan — it would be stopped or
+    /// turned aside, and then re-plan into the same step next tick. A cell motion
+    /// would have let it through and the search would not costs it one held
+    /// substep and a route a tick later; the other way round costs it the rest of
+    /// the match.
     ///
     /// A unit with no slope limit at all is refused by no slope, exactly as
     /// `path` and `motion` refuse it by none.
@@ -3138,6 +3569,25 @@ mod tests {
             2,    // stand_until_ms
             3,    // quiet_since_ms
             4,    // rallied
+            // **16b cut E.4**: the last plot, then its cell alone and its
+            // stamp alone against it — a machine that saw the same cell a
+            // second later is a different machine, because `search_ms` is
+            // measured off that stamp, and so is one that saw a different
+            // cell at the same moment — then the hunt's clock, and the hunt's
+            // cell twice. Each probe is checked against every earlier one, so
+            // 6 against 5 is the cell alone, 7 against 5 the stamp alone, and
+            // 10 against 9 the hunt's cell alone: a fold that wrote only the
+            // presence byte and the stamp would pass the first probe of each
+            // and be caught by the second. `last_plot`'s first cell is
+            // deliberately the same `(3, 4)` the hunt's first is, so a fold
+            // that mixed the two would be caught here and not only by a
+            // cadence.
+            5,  // last_plot
+            6,  // last_plot's cell alone
+            7,  // last_plot's stamp alone
+            8,  // unheld_since_ms
+            9,  // hunt
+            10, // hunt's cell alone
         ] {
             let mut arena = build();
             if let Some(row) = arena.reflex.units.get_mut(&ObjId(4)) {
@@ -3146,7 +3596,13 @@ mod tests {
                     1 => row.avoid.push(((3, 4), 2_000)),
                     2 => row.stand_until_ms = Some(1_500),
                     3 => row.quiet_since_ms = Some(1_500),
-                    _ => row.rallied = true,
+                    4 => row.rallied = true,
+                    5 => row.last_plot = Some(((3, 4), 1_000)),
+                    6 => row.last_plot = Some(((5, 6), 1_000)),
+                    7 => row.last_plot = Some(((3, 4), 2_000)),
+                    8 => row.unheld_since_ms = Some(1_500),
+                    9 => row.hunt = Some((3, 4)),
+                    _ => row.hunt = Some((5, 6)),
                 }
             }
             let hash = crate::arena::hash::state_hash(&arena);
@@ -3157,6 +3613,35 @@ mod tests {
             );
             moved.push(hash);
         }
+    }
+
+    /// **`adopt` hands the new state a clean endgame memory** (16b cut E.4): a
+    /// seat released into `Withdraw` must not inherit its pilot-era plot as a
+    /// place to drive to, nor a crossing, nor a clock that has been running
+    /// since before the machine had the tank.
+    #[test]
+    fn adopt_forgets_the_search_and_the_hunt() {
+        let mut memory = ReflexMemory::default();
+        memory.adopt(ObjId(4), ReflexState::Patrol);
+        if let Some(row) = memory.units.get_mut(&ObjId(4)) {
+            row.last_plot = Some(((3, 4), 1_000));
+            row.unheld_since_ms = Some(1_500);
+            row.hunt = Some((5, 6));
+        }
+        // The same state again is idempotent: a second `Control` of the same
+        // kind does not restart a machine halfway through a patrol.
+        memory.adopt(ObjId(4), ReflexState::Patrol);
+        assert_eq!(
+            memory
+                .unit(ObjId(4))
+                .and_then(|row| row.last_plot.map(|(cell, _)| cell)),
+            Some((3, 4))
+        );
+        memory.adopt(ObjId(4), ReflexState::Withdraw);
+        let row = memory.unit(ObjId(4)).expect("the row");
+        assert_eq!(row.last_plot, None, "the plot survived the adoption");
+        assert_eq!(row.unheld_since_ms, None, "the clock survived the adoption");
+        assert_eq!(row.hunt, None, "the crossing survived the adoption");
     }
 
     #[test]

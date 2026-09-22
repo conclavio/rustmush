@@ -328,6 +328,11 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
                 rally_ms: cfg.arena.reflex.rally_ms,
                 // 16b cut E.1: the floor under an en-route stand.
                 stand_min_permille: cfg.arena.reflex.stand_min_permille,
+                // 16b cut E.4: how long a lost contact is worth driving to, and
+                // how long a machine that has seen nobody waits before it goes
+                // and looks.
+                search_ms: cfg.arena.reflex.search_ms,
+                hunt_after_ms: cfg.arena.reflex.hunt_after_ms,
             },
         },
         match_: tacsim::config::MatchConfig {
@@ -947,6 +952,8 @@ mod tests {
              engage_band_permille = 600\n\
              rally_ms = 9000\n\
              stand_min_permille = 120\n\
+             search_ms = 30000\n\
+             hunt_after_ms = 45000\n\
              [tacsim.match]\n\
              startup_ms = 5000\n\
              board_timeout_ms = 60000\n\
@@ -1016,6 +1023,9 @@ mod tests {
                     rally_ms: 9_000,
                     // 16b cut E.1: the en-route stand's health floor.
                     stand_min_permille: 120,
+                    // 16b cut E.4: the search and the hunt, mapped like the rest.
+                    search_ms: 30_000,
+                    hunt_after_ms: 45_000,
                 },
             }
         );
@@ -1314,6 +1324,27 @@ mod tests {
                 "[tacsim.match].unattended_ms",
                 "9999",
             ),
+            // 16b cut E.4 (`B-04`): both new doctrine clocks are off-or-a-band,
+            // and a value inside the band that is shorter than one decision is
+            // the one an operator actually reaches for.
+            (
+                "[tacsim.arena.reflex]",
+                "search_ms = 500\n",
+                "[tacsim.arena.reflex].search_ms",
+                "500",
+            ),
+            (
+                "[tacsim.arena.reflex]",
+                "search_ms = 600001\n",
+                "[tacsim.arena.reflex].search_ms",
+                "600001",
+            ),
+            (
+                "[tacsim.arena.reflex]",
+                "hunt_after_ms = 500\n",
+                "[tacsim.arena.reflex].hunt_after_ms",
+                "500",
+            ),
         ] {
             let cfg = tacsim_cfg(&format!("{block}\n{body}"));
             let error = tacsim_config(&cfg)
@@ -1332,6 +1363,23 @@ mod tests {
             assert!(
                 tacsim_config(&cfg).is_ok(),
                 "{body:?} should boot: 0 is off and 10000 is the floor"
+            );
+        }
+        // **16b cut E.4**: and both ends of each new clock's own band. `0` is the
+        // key turned off — the pre-E.4 machine exactly — and these fragments
+        // carry no `decide_ms` of their own, so the floor is its default of
+        // 1,000 and 1,000 and 600,000 are the band's two edges.
+        for body in [
+            "search_ms = 0\n",
+            "search_ms = 1000\n",
+            "search_ms = 600000\n",
+            "hunt_after_ms = 0\n",
+            "hunt_after_ms = 1000\n",
+        ] {
+            let cfg = tacsim_cfg(&format!("[tacsim.arena.reflex]\n{body}"));
+            assert!(
+                tacsim_config(&cfg).is_ok(),
+                "{body:?} should boot: 0 is off and the rest are inside the band"
             );
         }
     }

@@ -725,6 +725,19 @@ fn the_hand_written_dev_box_parses_and_runs_the_simulator() {
             cfg.tacsim.arena.reflex.stand_min_permille <= cfg.tacsim.arena.reflex.withdraw_permille,
             "{relative}: [tacsim.arena.reflex].stand_min_permille is above withdraw_permille"
         );
+        // **16b cut E.4**: both endgame clocks are off, or at least one decision
+        // — a clock shorter than the tick that reads it never fires the way its
+        // operator thinks it does.
+        assert!(
+            cfg.tacsim.arena.reflex.search_ms == 0
+                || cfg.tacsim.arena.reflex.search_ms >= cfg.tacsim.arena.reflex.decide_ms,
+            "{relative}: [tacsim.arena.reflex].search_ms is under decide_ms"
+        );
+        assert!(
+            cfg.tacsim.arena.reflex.hunt_after_ms == 0
+                || cfg.tacsim.arena.reflex.hunt_after_ms >= cfg.tacsim.arena.reflex.decide_ms,
+            "{relative}: [tacsim.arena.reflex].hunt_after_ms is under decide_ms"
+        );
     }
 }
 
@@ -763,6 +776,17 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
             cfg.tacsim.arena.occupied_stop_ms, 2_000,
             "{env_file}: 16b cut E.3's traffic hold"
         );
+        // **16b cut E.4**: and the two clocks that make a solo match end. A box
+        // that ran the search or the hunt off by accident is the match that goes
+        // quiet for ever, which is the whole of what the sub-cut was for.
+        assert_eq!(
+            cfg.tacsim.arena.reflex.search_ms, 60_000,
+            "{env_file}: 16b cut E.4's search"
+        );
+        assert_eq!(
+            cfg.tacsim.arena.reflex.hunt_after_ms, 90_000,
+            "{env_file}: 16b cut E.4's hunt"
+        );
     }
     let example = Config::load(&root.join("mushd.toml.example"))
         .unwrap_or_else(|e| panic!("mushd.toml.example does not parse: {e}"));
@@ -773,6 +797,8 @@ fn q7_the_rendered_instances_field_machines_and_the_example_does_not() {
     assert_eq!(example.tacsim.arena.reflex.rally_ms, 20_000);
     assert_eq!(example.tacsim.arena.reflex.stand_min_permille, 175);
     assert_eq!(example.tacsim.arena.occupied_stop_ms, 2_000);
+    assert_eq!(example.tacsim.arena.reflex.search_ms, 60_000);
+    assert_eq!(example.tacsim.arena.reflex.hunt_after_ms, 90_000);
 }
 
 /// **16b cut D.3 (`B-33`): every shipped configuration writes the unattended

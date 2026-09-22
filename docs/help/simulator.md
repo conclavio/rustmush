@@ -123,6 +123,10 @@ twenty quiet seconds with nothing hostile in sight it turns round and comes back
 in, once. A tank whose pilot left does the same, so a disconnection leaves your
 side a teammate rather than a parked target.
 
+A machine that loses you goes to where it last saw you before it goes back to its
+patrol, and one that has seen nobody for a minute and a half crosses to the other
+side's entry zone to look.
+
 With the fill switched off, `SIM AI` answers `AI fill is off on this server.`
 and both sides need a pilot of their own, as before.
 

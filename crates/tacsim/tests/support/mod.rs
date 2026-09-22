@@ -43,6 +43,7 @@
 
 use mush_core::ObjId;
 use mush_sim::data::Pose;
+use mush_tactics::{CellAddr, TacticalUnit, UnitMutationOp, UnitMutationPlan};
 use mush_testkit::TestWorld;
 use smol_str::SmolStr;
 use tacsim::arena::ledger::LedgerEvent;
@@ -77,6 +78,26 @@ pub struct Muster {
     /// posture, so an override onto a wall or onto another unit's cell is
     /// relocated into the side's entry zone exactly as production relocates one.
     pub at: Option<(u16, u16)>,
+    /// **What has already happened to this tank when the match opens** (16b cut
+    /// E.4), applied to its M32 record **before** [`Arena::new`] reads it — so
+    /// the arena's own check-out sizes the magazines and the health from the
+    /// state the case wanted, exactly as it would for a tank that checked in
+    /// that way after a previous match.
+    pub wear: Option<Wear>,
+}
+
+/// **The condition a [`Muster`] opens in** (16b cut E.4).
+///
+/// Both are written as one [`UnitMutationPlan`] through [`mush_tactics::apply`],
+/// so the cells that change are changed the way the damage pipeline changes them
+/// and nothing else moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wear {
+    /// [`hurt_to_withdraw`]: under `withdraw_permille`, above
+    /// `stand_min_permille`, every section still `intact`.
+    Hurt,
+    /// [`shot_dry`]: every magazine empty, nothing else touched.
+    Dry,
 }
 
 impl Muster {
@@ -88,6 +109,7 @@ impl Muster {
             slot,
             controller: Controller::Reflex,
             at: None,
+            wear: None,
         }
     }
 
@@ -109,6 +131,106 @@ impl Muster {
             ..self
         }
     }
+
+    /// Open hurt enough to withdraw (16b cut E.4) — see [`hurt_to_withdraw`].
+    #[must_use]
+    pub fn hurt(self) -> Muster {
+        Muster {
+            wear: Some(Wear::Hurt),
+            ..self
+        }
+    }
+
+    /// Open with every magazine empty (16b cut E.4) — see [`shot_dry`].
+    #[must_use]
+    pub fn dry(self) -> Muster {
+        Muster {
+            wear: Some(Wear::Dry),
+            ..self
+        }
+    }
+}
+
+/// **A tank hurt to just under `withdraw_permille`** (16b cut E.4), by its
+/// outcome and not by a recipe.
+///
+/// Every **facet** `armor` cell is set to its own `min + 1` and no `internals`
+/// cell is touched, so every section stays `intact` — nothing here is a
+/// consequence, and the machine that checks out of it is a whole tank that has
+/// had its plate shot off rather than a half-wrecked one.
+///
+/// `Arena::reflex_health_permille` sums **every** `armor` and `internals` cell,
+/// each from its own floor, so on the shipped `line_tank` — eleven armoured
+/// facets totalling 2,320, and 670 of internals over five sections — the answer
+/// is (11 + 670) of 2,990, **227 per mille**: under the shipped
+/// `withdraw_permille` of 350, so the machine runs for home on its first decide
+/// tick, and above `stand_min_permille` of 175, so the run home may still turn
+/// and fight.
+///
+/// This is the helper the plan asks for because `tests/reflex.rs`'s two-cell
+/// `hurt` recipe does not scale: the same two ops leave the shipped tank at 800
+/// per mille, a healthy machine that never withdraws and a case that observes
+/// nothing.
+#[must_use]
+pub fn hurt_to_withdraw(unit: &TacticalUnit) -> TacticalUnit {
+    let ops: Vec<UnitMutationOp> = unit
+        .cells()
+        .filter_map(|(addr, cell)| match addr {
+            CellAddr::Facet { .. } if cell_named(addr) == Some("armor") => {
+                Some(UnitMutationOp::SetCell {
+                    addr: addr.clone(),
+                    value: cell.min.saturating_add(1).min(cell.max),
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    apply_plan(unit, ops, "test:e4-hurt")
+}
+
+/// **A tank whose every magazine is empty** (16b cut E.4).
+///
+/// Every **component** `ammo` cell to nought, which is what `Arena::new` sizes
+/// `UnitState::ammo` from: the rows are still there (so `armed_at_checkout` is
+/// true and the tank is `is_dry`, not unarmed), and they all read zero.
+#[must_use]
+pub fn shot_dry(unit: &TacticalUnit) -> TacticalUnit {
+    let ops: Vec<UnitMutationOp> = unit
+        .cells()
+        .filter_map(|(addr, cell)| match addr {
+            CellAddr::Component { .. } if cell_named(addr) == Some("ammo") => {
+                Some(UnitMutationOp::SetCell {
+                    addr: addr.clone(),
+                    value: cell.min.max(0),
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    apply_plan(unit, ops, "test:e4-dry")
+}
+
+/// The cell name one address carries, whatever kind of address it is.
+fn cell_named(addr: &CellAddr) -> Option<&str> {
+    match addr {
+        CellAddr::Facet { cell, .. }
+        | CellAddr::Section { cell, .. }
+        | CellAddr::Unit { cell }
+        | CellAddr::Component { cell, .. } => Some(cell.as_str()),
+    }
+}
+
+/// One plan, applied through M32's own `apply` — refuse-not-clamp, journalled,
+/// atomic.
+fn apply_plan(unit: &TacticalUnit, ops: Vec<UnitMutationOp>, reason: &str) -> TacticalUnit {
+    if ops.is_empty() {
+        return unit.clone();
+    }
+    let plan = UnitMutationPlan::new(ops, None, Some(SmolStr::new(reason)))
+        .unwrap_or_else(|why| panic!("{reason} builds a plan: {why:?}"));
+    mush_tactics::apply(unit, &plan, 0)
+        .unwrap_or_else(|why| panic!("{reason} applies: {why:?}"))
+        .0
 }
 
 /// The production roster, composed exactly as `mush_server::boot` composes it,
@@ -192,6 +314,13 @@ pub fn shipped_arena(world: &TestWorld, sides: &[&[Muster]]) -> Arena {
             let cells = mush_tactics::module::unit_of(w, id)
                 .unwrap_or_else(|| panic!("#{} is a tactical unit", id.0))
                 .clone();
+            // **16b cut E.4**: the wear goes on before `Arena::new`, so the
+            // check-out reads the magazines and the plate the case wanted.
+            let cells = match muster.wear {
+                Some(Wear::Hurt) => hurt_to_withdraw(&cells),
+                Some(Wear::Dry) => shot_dry(&cells),
+                None => cells,
+            };
             let placed = mush_sim::pose_of(w, id).map(|(_, pose)| pose);
             // The override is offered as the world pose, so `opening_pose`
             // corrects an illegal one the way production corrects it.
@@ -301,6 +430,70 @@ pub fn ledger_events(arena: &mut Arena, bytes: &mut Vec<u8>) -> Vec<LedgerEvent>
         .lines()
         .filter_map(|line| serde_json::from_str::<LedgerEvent>(line).ok())
         .collect()
+}
+
+/// **How often [`Timeline`] takes a reading**, arena milliseconds.
+pub const TIMELINE_EVERY_MS: i64 = 10_000;
+
+/// **What the machines were doing, every ten arena seconds** (16b cut E.4).
+///
+/// A shipped-scale endgame case that fails has failed after fifteen minutes of
+/// arena time, and the number it prints — "it had not ended" — is not a
+/// diagnosis. This is: one line per unit per sample, with the state, the cell,
+/// the goal, the target and the health, so the failure message says what the
+/// machines were *doing* at 300 s, 600 s and 900 s.
+///
+/// The `path_failures` it carries is the run's **field-wide** running total, not
+/// one unit's: [`tacsim::arena::reflex::ReflexCounters`] is per pulse and per
+/// field, and there is no per-unit failure count in the tree to read.
+#[derive(Clone, Debug, Default)]
+pub struct Timeline {
+    next_ms: i64,
+    failures: u32,
+    lines: Vec<String>,
+}
+
+impl Timeline {
+    /// An empty timeline, due its first reading at 0 ms.
+    #[must_use]
+    pub fn new() -> Timeline {
+        Timeline::default()
+    }
+
+    /// Take a reading if this pulse crossed the next ten-second mark, and add
+    /// `path_failures` to the running total either way. Called from
+    /// [`run_until`]'s pulse hook.
+    pub fn sample(&mut self, arena: &Arena, path_failures: u32) {
+        self.failures = self.failures.saturating_add(path_failures);
+        if arena.now_ms < self.next_ms {
+            return;
+        }
+        self.next_ms = arena
+            .now_ms
+            .saturating_sub(arena.now_ms.rem_euclid(TIMELINE_EVERY_MS))
+            .saturating_add(TIMELINE_EVERY_MS);
+        for (id, row) in arena.reflex.all() {
+            let cell = cell_of(arena, id);
+            self.lines.push(format!(
+                "  {:>7} ms #{:<4} {:<9} at {:?} goal {:?} target {:?} health {} ‰ (field \
+                 path_failures {})",
+                arena.now_ms,
+                id.0,
+                row.state.as_str(),
+                cell,
+                row.goal,
+                row.target.map(|(_, target)| target.0),
+                arena.reflex_health_permille(id),
+                self.failures
+            ));
+        }
+    }
+
+    /// Every line taken, for a failure message.
+    #[must_use]
+    pub fn render(&self) -> String {
+        self.lines.join("\n")
+    }
 }
 
 /// The object id a `fired`, `blocked` or `destroyed` line names.

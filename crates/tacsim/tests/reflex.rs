@@ -1013,15 +1013,39 @@ fn a_contact_that_expires_drops_the_machine_back_to_patrol() {
     if let Some(state) = arena.unit_mut(BLUE) {
         state.pose = centre(15, 15);
     }
-    run(&mut arena, 20_000, &mut bytes);
+    assert!(
+        e4_run_until_state(&mut arena, RED, ReflexState::Patrol, 20_000, &mut bytes),
+        "the contact should have expired and dropped the machine back to `Patrol`"
+    );
     assert!(
         arena.contacts.of(RED).count() == 0,
         "the contact should have expired"
     );
-    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
     let row = arena.reflex.unit(RED).cloned().expect("a machine");
     assert_eq!(row.target, None);
-    assert!(row.goal.is_some(), "a patrol has a node to walk to");
+    // **16b cut E.4 (16c `B-04`)**: the state is still `Patrol` and always was,
+    // but the **goal** is no longer a node of the waypoint graph. It is the cell
+    // the machine last saw the tank in, for `reflex.search_ms` of arena time or
+    // until it gets there — `Patrol`'s own second answer. Before this cut the
+    // walk took over at this tick, and its fixed cycle per unit id could lead
+    // the machine directly away from the tank that had just driven over a ridge.
+    assert_eq!(
+        row.goal,
+        Some((9, 8)),
+        "the goal after the `lost` edge is the last plot's own cell"
+    );
+    assert_eq!(row.last_plot.map(|(cell, _)| cell), Some((9, 8)));
+
+    // And when it has been there and found nothing, the walk has it back.
+    run(&mut arena, 40_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
+    let row = arena.reflex.unit(RED).cloned().expect("a machine");
+    assert_eq!(row.last_plot, None, "arrival ends the search");
+    let goal = row.goal.expect("a patrol has a node to walk to");
+    assert!(
+        waypoint_cells().contains(&goal),
+        "and the waypoint walk resumes: {goal:?}"
+    );
     let log = events(&mut arena, &mut bytes);
     assert!(count(&log, "lost") > 0);
 }
@@ -1291,6 +1315,11 @@ struct Replay {
     events: Vec<(i64, String, u64)>,
     hashes: Vec<u64>,
     finals: Vec<Final>,
+    /// How many pulses it took — **16b cut E.4**'s guard, the shape
+    /// `perception.rs`'s replay carries: three cadences really are three
+    /// different numbers of pulses, so an equality of the three is a property
+    /// and not three copies of one run.
+    pulses: u32,
 }
 
 fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
@@ -1328,8 +1357,10 @@ fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
     let mut wall = 0_i64;
+    let mut pulses = 0_u32;
     loop {
         let out = arena.step(wall, &[], &[]);
+        pulses = pulses.saturating_add(1);
         absorb(&out, &mut bytes);
         hashes.extend(arena.substep_hashes.iter().copied());
         if arena.now_ms >= until_ms || out.ended.is_some() {
@@ -1367,6 +1398,7 @@ fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
         events,
         hashes,
         finals,
+        pulses,
     }
 }
 
@@ -2573,8 +2605,10 @@ fn replay_of(
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
     let mut wall = 0_i64;
+    let mut pulses = 0_u32;
     loop {
         let out = arena.step(wall, &[], &[]);
+        pulses = pulses.saturating_add(1);
         absorb(&out, &mut bytes);
         hashes.extend(arena.substep_hashes.iter().copied());
         if arena.now_ms == SCRIPT_AT_MS {
@@ -2615,6 +2649,7 @@ fn replay_of(
         events,
         hashes,
         finals,
+        pulses,
     }
 }
 
@@ -2920,6 +2955,7 @@ fn replay_released_cold(cadence_ms: i64, until_ms: i64) -> Replay {
     let mut hashes: Vec<u64> = Vec::new();
     let mut wall = 0_i64;
     let mut sent = false;
+    let mut pulses = 0_u32;
     loop {
         let release = if !sent && arena.now_ms >= SCRIPT_AT_MS {
             sent = true;
@@ -2934,6 +2970,7 @@ fn replay_released_cold(cadence_ms: i64, until_ms: i64) -> Replay {
             Vec::new()
         };
         let out = arena.step(wall, &release, &[]);
+        pulses = pulses.saturating_add(1);
         absorb(&out, &mut bytes);
         hashes.extend(arena.substep_hashes.iter().copied());
         if arena.now_ms >= until_ms || out.ended.is_some() {
@@ -2971,6 +3008,7 @@ fn replay_released_cold(cadence_ms: i64, until_ms: i64) -> Replay {
         events,
         hashes,
         finals,
+        pulses,
     }
 }
 
@@ -5231,7 +5269,21 @@ fn a_machine_brakes_into_its_goal_and_does_not_overshoot_it() {
         turn_rate_mdeg_s: 30_000,
         reverse_factor_pct: 40,
     };
-    let mut arena = arena_on(road(48, (4, 4)), vec![heavy], &arena_cfg(reflex_cfg()), &[]);
+    // **16b cut E.4**: the hunt is off. This claim is about braking into one
+    // goal and nothing else, and the run is 180 s: with the shipped 90 s clock
+    // the machine, idle on its node and holding nothing, would cross to Blue's
+    // zone at the east end of the road and come back, and "standing on it at
+    // the end" would be a second arrival the test knows nothing about, held by
+    // a few seconds of margin.
+    let mut arena = arena_on(
+        road(48, (4, 4)),
+        vec![heavy],
+        &arena_cfg(ReflexConfig {
+            hunt_after_ms: 0,
+            ..reflex_cfg()
+        }),
+        &[],
+    );
     let mut bytes: Vec<u8> = Vec::new();
     let mut wall = 0_i64;
     let mut at_arrival: Option<i32> = None;
@@ -5591,4 +5643,1746 @@ fn a_routeless_machine_is_ordered_to_stop_within_one_substep_of_a_stop() {
             .is_some_and(|row| row.route.is_empty() && row.goal.is_some()),
         "the machine was not routeless with a goal, so this is not `B-44`'s case"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.4 — the endgame (16c `B-04`, `T-42`)
+// ---------------------------------------------------------------------------
+
+/// **A seven-cell sight**, for the search's own fixtures.
+///
+/// [`SIGHT_CELLS`]' ten leave no corner of a sixteen-cell window a tank can be
+/// lost in — every cell of row 8 is within ten of (15, 15) — and [`sight`]'s
+/// five are too short to hold a target far enough away that the drive to its
+/// plot is visible for more than a pulse. Seven is the one that gives both: a
+/// fighting reach of 7,000 cm, `engage_cm` of 4,900, and two corners a pilot
+/// tank can sit in and not be seen from anywhere on the search's route.
+const E4_SIGHT_CELLS: u16 = 7;
+
+/// `Ranges::engage_cm` at [`E4_SIGHT_CELLS`]: seven tenths of 7,000 cm.
+const E4_ENGAGE_CM: i64 = 4_900;
+
+/// The doctrine a cut E.4 fixture runs on: [`reflex_cfg`] with the two endgame
+/// clocks named, so every test below says which of them it is about and turns
+/// the other one off.
+fn e4_cfg(search_ms: u32, hunt_after_ms: u32) -> ArenaConfig {
+    arena_cfg(ReflexConfig {
+        search_ms,
+        hunt_after_ms,
+        ..reflex_cfg()
+    })
+}
+
+/// A machine that sees seven cells and carries the cannon, against a parked
+/// pilot tank, on `paint`ed ground under `cfg`.
+fn e4_field(
+    red: (u16, u16),
+    blue: (u16, u16),
+    paint: &[(u16, u16, TerrainCell)],
+    cfg: &ArenaConfig,
+) -> Arena {
+    e4_pinned(arena_of(
+        e4_units(red, blue, vec![cannon()]),
+        paint,
+        cfg,
+        &[BLUE],
+    ))
+}
+
+/// **A fixture on one tempo** (16b cut E.4).
+///
+/// What makes a pulse of these tests one decide tick is **not** this pin: a
+/// pulse's `dt` is the wall interval (`Clock::advance`, clamped only by
+/// `max_catch_up_steps` periods of the current tempo, which every tempo's
+/// period clears), and [`run`], [`e4_run_until_state`] and
+/// [`e4_run_until_hunt`] all step the wall 500 ms at a time — which is
+/// [`reflex_cfg`]'s own `decide_ms` — so one pulse is one decision at any
+/// tempo. The pin only keeps the tempo's own transitions (and their `tempo`
+/// ledger lines) out of the fixture, so the log a test reads is the machine's
+/// and nothing else. It changes no outcome (doc 16 §3.1's D-16-2 is the whole
+/// point); [`replay_of`] pins `Quiet` over it for its own reasons.
+fn e4_pinned(mut arena: Arena) -> Arena {
+    arena.clock.pin_tempo_for_tests(Tempo::Engaged);
+    arena
+}
+
+/// The same two units, so a test that needs its own [`ArenaDefinition`] fields
+/// them through [`arena_on`].
+fn e4_units(red: (u16, u16), blue: (u16, u16), weapons: Vec<WeaponSummary>) -> Vec<CustodyUnit> {
+    vec![
+        with_sight(
+            tank(
+                RED,
+                Team::Red,
+                centre(red.0, red.1),
+                weapons,
+                Controller::Reflex,
+            ),
+            E4_SIGHT_CELLS,
+        ),
+        tank(
+            BLUE,
+            Team::Blue,
+            centre(blue.0, blue.1),
+            Vec::new(),
+            Controller::Pilot,
+        ),
+    ]
+}
+
+/// The fixture window with a named set of entry zones.
+///
+/// The hunt's whole input is the arena definition's zones (doc 16 §1: map
+/// knowledge, and no unit's pose), so a test of it has to be able to say what
+/// they are.
+fn e4_definition(paint: &[(u16, u16, TerrainCell)], zones: Vec<EntryZone>) -> ArenaDefinition {
+    ArenaDefinition {
+        entry_zones: zones,
+        ..definition(paint)
+    }
+}
+
+/// Red's own zone, the two west columns — every fixture's, unchanged.
+fn red_zone() -> EntryZone {
+    EntryZone {
+        team: Team::Red,
+        x0: 0,
+        y0: 0,
+        x1: 1,
+        y1: SIDE - 1,
+    }
+}
+
+/// A blue zone of this shape, which is what a hunt answers out of.
+fn blue_zone(x0: u16, x1: u16, y0: u16, y1: u16) -> EntryZone {
+    EntryZone {
+        team: Team::Blue,
+        x0,
+        y0,
+        x1,
+        y1,
+    }
+}
+
+/// Where the machine is going.
+fn goal_of(arena: &Arena, unit: ObjId) -> Option<(u16, u16)> {
+    arena.reflex.unit(unit).and_then(|row| row.goal)
+}
+
+/// The cell it last saw something in, and when.
+fn last_plot_of(arena: &Arena, unit: ObjId) -> Option<((u16, u16), i64)> {
+    arena.reflex.unit(unit).and_then(|row| row.last_plot)
+}
+
+/// The far entry cell it is crossing to.
+fn hunt_of(arena: &Arena, unit: ObjId) -> Option<(u16, u16)> {
+    arena.reflex.unit(unit).and_then(|row| row.hunt)
+}
+
+/// The cell a unit stands in.
+fn cell_of_unit(arena: &Arena, unit: ObjId) -> Option<(u16, u16)> {
+    arena
+        .unit(unit)
+        .and_then(|state| arena.definition.terrain.cell_of(&state.pose))
+}
+
+/// Every cell the waypoint graph offers as a goal — what "it went back to its
+/// patrol" means.
+fn waypoint_cells() -> Vec<(u16, u16)> {
+    vec![(1, 8), (14, 8)]
+}
+
+/// **Step 500 ms at a time until `unit`'s machine is in `state`**, answering
+/// whether it got there inside `limit_ms` of arena time.
+///
+/// A claim about *the tick after an edge* cannot be made on the state a
+/// ten-second run ends in: the machine searched, arrived and went back to its
+/// walk while the run was still going, and the run's last pulse says only the
+/// last of those. So the pulses are read as they go, exactly as
+/// `tests/shipped_scale.rs` reads its own.
+fn e4_run_until_state(
+    arena: &mut Arena,
+    unit: ObjId,
+    state: ReflexState,
+    limit_ms: i64,
+    bytes: &mut Vec<u8>,
+) -> bool {
+    let until = arena.now_ms.saturating_add(limit_ms);
+    let mut wall = arena.now_ms;
+    while arena.now_ms < until {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, bytes);
+        if state_of(arena, unit) == Some(state) {
+            return true;
+        }
+        if out.ended.is_some() {
+            break;
+        }
+        wall += 500;
+    }
+    false
+}
+
+/// **Step until `unit` sets a hunt**, answering the cell it was standing in and
+/// the cell it chose.
+///
+/// Both are needed together and neither afterwards: the hunt's cell is the
+/// clamped corner of the far zone **on the machine's own row**, and a machine
+/// walking its patrol changes rows while the clock runs, so a test that read
+/// the cell at the end of a run would be asserting against a row the machine
+/// was not standing on when it chose.
+fn e4_run_until_hunt(
+    arena: &mut Arena,
+    unit: ObjId,
+    limit_ms: i64,
+    bytes: &mut Vec<u8>,
+) -> Option<((u16, u16), (u16, u16))> {
+    let until = arena.now_ms.saturating_add(limit_ms);
+    let mut wall = arena.now_ms;
+    while arena.now_ms < until {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, bytes);
+        if let Some(cell) = hunt_of(arena, unit) {
+            let here = arena
+                .unit(unit)
+                .and_then(|state| arena.definition.terrain.cell_of(&state.pose));
+            return here.map(|here| (here, cell));
+        }
+        if out.ended.is_some() {
+            break;
+        }
+        wall += 500;
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Fix A — the search
+// ---------------------------------------------------------------------------
+
+/// **A machine that loses its contact drives to where it last saw it** (16b cut
+/// E.4; 16c `B-04`), and not to its waypoint.
+///
+/// Three claims in one run, because they are three moments of one arc:
+///
+/// * the goal after the `lost` edge is [`ReflexUnit::last_plot`]'s cell and not
+///   a node of the graph;
+/// * **the observer rule from the machine's side**: the target is moved again
+///   *after* its contact has expired, and the goal does not follow it. The
+///   search is the machine's own memory of a plot, never a reading of where
+///   anything now is (doc 16 §1, 16b cut F.3's rule read once more);
+/// * on **arrival** `last_plot` is cleared and the next goal is a waypoint — it
+///   went and looked, and there was nothing there. Read at the pulse the clear
+///   happens and not at the end of a run, with the machine's cell and the
+///   plot's age asserted, so an arrival cannot be mistaken for an age-out.
+///
+/// The fourth moment of the arc — a hostile found on the way — is
+/// [`e4_a_hostile_found_while_searching_pre_empts_it`].
+#[test]
+fn e4_a_lost_contact_is_searched_for_where_it_was_last_seen() {
+    // Twenty seconds of search, no hunt: this test is about the first of the two
+    // clocks and nothing else.
+    let mut arena = e4_field((2, 8), (6, 8), &[], &e4_cfg(20_000, 0));
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 6_000, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Engage),
+        "4,000 cm is inside the {E4_ENGAGE_CM} cm band, so the machine holds it"
+    );
+    assert_eq!(
+        last_plot_of(&arena, RED).map(|(cell, _)| cell),
+        Some((6, 8)),
+        "and an `Engage` tick writes the plot it is holding"
+    );
+
+    // Over the hill: (15, 15) is more than seven cells from anywhere on row 8
+    // between x = 2 and x = 6, so nothing refreshes the contact and the
+    // time-to-live takes it.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(15, 15);
+    }
+    assert!(
+        e4_run_until_state(&mut arena, RED, ReflexState::Patrol, 20_000, &mut bytes),
+        "the contact should have expired and dropped the machine back to `Patrol`"
+    );
+    assert_eq!(arena.contacts.of(RED).count(), 0, "the contact expired");
+    assert_eq!(
+        goal_of(&arena, RED),
+        Some((6, 8)),
+        "the goal is the cell it last saw the tank in, not a waypoint"
+    );
+    assert!(
+        !waypoint_cells().contains(&(6, 8)),
+        "the fixture would say nothing if the plot's cell were also a node"
+    );
+
+    // The observer rule: the tank moves again, and the goal does not follow it.
+    // (15, 0) is also out of sight from every cell of the route.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(15, 0);
+    }
+    let until = arena.now_ms + 1_000;
+    run(&mut arena, until, &mut bytes);
+    let here = cell_of_unit(&arena, RED).expect("the machine is on the window");
+    assert!(
+        here.0.abs_diff(6).max(here.1.abs_diff(8)) > tacsim::arena::reflex::ARRIVE_CELLS,
+        "it has already arrived at the plot, so the claim below is about nothing: {here:?}"
+    );
+    assert_eq!(
+        goal_of(&arena, RED),
+        Some((6, 8)),
+        "the search is the machine's own last plot, never a reading of where the target now is"
+    );
+
+    // It arrives, finds nothing, and goes back to its patrol. Read at the pulse
+    // the search is given up, so what is asserted is *why* it was given up.
+    let stamped = last_plot_of(&arena, RED)
+        .map(|(_, at)| at)
+        .expect("the search is live");
+    let until = arena.now_ms + 25_000;
+    let mut wall = arena.now_ms;
+    let mut cleared: Option<(i64, (u16, u16))> = None;
+    while arena.now_ms < until {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        if last_plot_of(&arena, RED).is_none() {
+            cleared = cell_of_unit(&arena, RED).map(|here| (arena.now_ms, here));
+            break;
+        }
+        wall += 500;
+    }
+    let (at_ms, here) = cleared.expect("the search never ended");
+    assert!(
+        here.0.abs_diff(6).max(here.1.abs_diff(8)) <= tacsim::arena::reflex::ARRIVE_CELLS,
+        "the search was given up at {here:?}, which is not an arrival at (6, 8)"
+    );
+    assert!(
+        at_ms - stamped < 20_000,
+        "and it was given up {} ms after the plot was stamped, which is an age-out and not an          arrival",
+        at_ms - stamped
+    );
+    let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+    assert!(
+        waypoint_cells().contains(&goal),
+        "after the search the waypoint walk resumes: {goal:?}"
+    );
+}
+
+/// **A hostile found on the way to the last plot pre-empts the search** (16b
+/// cut E.4; the brief's search item, *a hostile detected on the way*).
+///
+/// The search is `Patrol`'s goal, and the hostile edges run **above** the
+/// state's own body, so a machine driving to where it last saw something turns
+/// on anything it finds before it gets there. The claim is made while the
+/// search is live — `last_plot` still set and the machine short of it — which
+/// is the only moment it says anything: after the search is over the hostile
+/// edges would pre-empt a waypoint walk, and that is a different claim.
+///
+/// The second tank is handed to the machine's store as a classified contact
+/// (this file's head says why a test may) so that the pre-emption lands on the
+/// next tick rather than after `classify_after_ms`, inside which a machine
+/// four cells from its plot would have arrived.
+#[test]
+fn e4_a_hostile_found_while_searching_pre_empts_it() {
+    let mut arena = e4_field((2, 8), (6, 8), &[], &e4_cfg(20_000, 0));
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 6_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(15, 15);
+    }
+    assert!(
+        e4_run_until_state(&mut arena, RED, ReflexState::Patrol, 20_000, &mut bytes),
+        "the contact should have expired and dropped the machine back to `Patrol`"
+    );
+    assert_eq!(
+        goal_of(&arena, RED),
+        Some((6, 8)),
+        "the search has the goal"
+    );
+    let here = cell_of_unit(&arena, RED).expect("the machine is on the window");
+    assert!(
+        here.0.abs_diff(6).max(here.1.abs_diff(8)) > tacsim::arena::reflex::ARRIVE_CELLS,
+        "it has already arrived at the plot, so the search is not live: {here:?}"
+    );
+
+    // Over the ridge to the south of its route, four cells off: in sight, and
+    // not on the plot's cell, so the new target cannot be mistaken for the old
+    // search.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(4, 12);
+    }
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let until = arena.now_ms + 500;
+    run(&mut arena, until, &mut bytes);
+    assert!(
+        matches!(
+            state_of(&arena, RED),
+            Some(ReflexState::Approach | ReflexState::Engage)
+        ),
+        "a hostile found on the way outranks the search: {:?}",
+        state_of(&arena, RED)
+    );
+    assert_eq!(
+        target_of(&arena, RED),
+        Some(BLUE),
+        "and the machine has turned on it"
+    );
+    assert_eq!(
+        last_plot_of(&arena, RED).map(|(cell, _)| cell),
+        Some((4, 12)),
+        "and the plot it now remembers is the new one, not the search it gave up"
+    );
+}
+
+/// **A plot older than `search_ms`, and `search_ms = 0`, are both the old `lost`
+/// edge** (16b cut E.4) — the pre-E.4 edge, reproduced two ways, each read one
+/// pulse at a time.
+///
+/// The two cases are one table because the claim is one claim: the search is a
+/// clock and nothing else, and a machine whose clock has run out (or was never
+/// wound) is the machine this file has always tested. What each case counts is
+/// how many `Patrol` ticks drove at the plot, and where the machine stood when
+/// the plot was dropped — which must not be an arrival.
+#[test]
+fn e4_an_aged_plot_and_a_search_switched_off_are_both_the_old_lost_edge() {
+    for (search_ms, driven, why) in [
+        // The validated floor, one decide tick. The plot was written by the last
+        // tick that held the target and the `lost` edge is read one tick later,
+        // so the first `Patrol` tick finds it exactly `search_ms` old: the age
+        // is compared inclusively, so that tick drives at it — the one tick the
+        // floor promises — and the next drops it, four cells short.
+        (500_u32, 1_usize, "a plot aged past `search_ms`"),
+        // Off: the first `Patrol` tick drops it unread.
+        (0, 0, "`search_ms` switched off"),
+    ] {
+        let mut arena = e4_field((2, 8), (6, 8), &[], &e4_cfg(search_ms, 0));
+        let mut bytes: Vec<u8> = Vec::new();
+        run(&mut arena, 6_000, &mut bytes);
+        assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage), "{why}");
+        if let Some(state) = arena.unit_mut(BLUE) {
+            state.pose = centre(15, 15);
+        }
+        let until = arena.now_ms + 5_000;
+        let mut wall = arena.now_ms;
+        let mut drove = 0_usize;
+        let mut dropped_at: Option<(u16, u16)> = None;
+        while arena.now_ms < until {
+            let out = arena.step(wall, &[], &[]);
+            absorb(&out, &mut bytes);
+            if state_of(&arena, RED) == Some(ReflexState::Patrol) {
+                if goal_of(&arena, RED) == Some((6, 8)) {
+                    drove += 1;
+                }
+                if dropped_at.is_none() && last_plot_of(&arena, RED).is_none() {
+                    dropped_at = cell_of_unit(&arena, RED);
+                }
+            }
+            wall += 500;
+        }
+        assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol), "{why}");
+        assert_eq!(
+            drove, driven,
+            "{why}: the machine drove at the plot for {drove} ticks"
+        );
+        let here = dropped_at.unwrap_or_else(|| panic!("{why}: the plot was never dropped"));
+        assert!(
+            here.0.abs_diff(6).max(here.1.abs_diff(8)) > tacsim::arena::reflex::ARRIVE_CELLS,
+            "{why}: the plot was dropped at {here:?}, which is an arrival and not an age-out"
+        );
+        let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+        assert!(
+            waypoint_cells().contains(&goal),
+            "{why}: the goal should be a waypoint, and it is {goal:?}"
+        );
+    }
+}
+
+/// **A last plot no route reaches costs exactly one failed search** (16b cut
+/// E.4; 16c `B-41`'s lesson applied to the search).
+///
+/// The blue tank sits in [`a_pocket`]'s sealed corner and the machine is handed
+/// a classified contact on it by hand. The contact expires; the search goal is
+/// [`POCKET`], which no route reaches; the `unreachable` edge fires once, and
+/// because `follow` clears `last_plot` there the `Patrol` arm cannot re-assert
+/// it on the next tick. Before that clear the cost would have been one failed
+/// search every `repath_ms` for the whole of `search_ms` — which is `B-41`
+/// exactly, in a second place.
+#[test]
+fn e4_a_last_plot_behind_a_wall_costs_one_failed_search_and_is_not_re_asserted() {
+    let mut arena = e4_field((6, 8), POCKET, &a_pocket(), &e4_cfg(60_000, 0));
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let until = arena.now_ms + 1_000;
+    let closing = run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Approach),
+        "the pocket is 8,600 cm off, outside the 4,900 cm band"
+    );
+    assert_eq!(
+        last_plot_of(&arena, RED).map(|(cell, _)| cell),
+        Some(POCKET),
+        "an `Approach` tick writes the plot it is closing on"
+    );
+    assert_eq!(
+        closing.path_failures, 0,
+        "the stand-off cell is ordinary ground and the route to it is found"
+    );
+
+    // Now let the contact go. The search takes the goal, fails once, and never
+    // asks again.
+    let until = arena.now_ms + 20_000;
+    let searching = run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        searching.path_failures, 1,
+        "a sealed last plot should cost exactly one failed search, and it cost {}",
+        searching.path_failures
+    );
+    assert_eq!(
+        last_plot_of(&arena, RED),
+        None,
+        "the `unreachable` edge gives the search up, or the `Patrol` arm re-asserts it every tick"
+    );
+    let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+    assert!(
+        waypoint_cells().contains(&goal),
+        "and the waypoint walk has it: {goal:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fix B — the hunt
+// ---------------------------------------------------------------------------
+
+/// **A machine that has seen nobody crosses to the other side's entry zone**
+/// (16b cut E.4; 16c `B-04`), and comes back to its patrol when it finds
+/// nothing there.
+///
+/// Red stands on row 3 and Blue's zone is the two east columns, so the clamped
+/// corner is (14, 3) — which is deliberately **not** a node of the waypoint
+/// graph (the two nodes are (1, 8) and (14, 8)), or the test could not tell a
+/// hunt from a walk.
+#[test]
+fn e4_a_machine_that_has_seen_nobody_crosses_to_look() {
+    // Three seconds of nothing held, no search: this test is about the second
+    // clock alone. The blue tank sits in the far corner, out of the seven-cell
+    // sight from every cell of the crossing, so what ends the hunt is arrival
+    // and not a contact.
+    let mut arena = e4_field((6, 3), (15, 15), &[], &e4_cfg(0, 3_000));
+    let mut bytes: Vec<u8> = Vec::new();
+    // Read one pulse at a time: the tick the clock first reads, and the pulse
+    // the hunt is set on, so the claim is *at* `hunt_after_ms` and not merely
+    // *by* the end of a run. A clock seeded at check-out, or one that fired
+    // early, would pass a test that only waited for the crossing.
+    let mut wall = arena.now_ms;
+    let mut started: Option<i64> = None;
+    // The pulse the hunt was set on, the cell the machine stood in, the cell
+    // it chose.
+    type Chosen = (i64, (u16, u16), (u16, u16));
+    let mut chosen: Option<Chosen> = None;
+    while arena.now_ms < 20_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        if started.is_none() {
+            started = arena.reflex.unit(RED).and_then(|row| row.unheld_since_ms);
+        }
+        if let Some(cell) = hunt_of(&arena, RED) {
+            chosen = cell_of_unit(&arena, RED).map(|here| (arena.now_ms, here, cell));
+            break;
+        }
+        wall += 500;
+    }
+    let (set_ms, here, cell) =
+        chosen.expect("a machine that has seen nobody for three seconds should cross");
+    let started = started.expect("the clock started at the first `Patrol` tick");
+    let due = started + 3_000;
+    assert!(
+        set_ms - 500 < due && due <= set_ms,
+        "the clock started at {started} ms, so the hunt is due at {due} ms, and it was set in the          pulse ending {set_ms} ms"
+    );
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(
+        cell,
+        (SIDE - 2, here.1),
+        "the clamped corner of the OTHER side's zone, on the machine's own row: it was standing          in {here:?}"
+    );
+    assert_eq!(
+        goal_of(&arena, RED),
+        Some(cell),
+        "and while it is set it is `Patrol`'s goal"
+    );
+    assert!(
+        !waypoint_cells().contains(&cell),
+        "the fixture would say nothing if the hunt cell were also a node: {cell:?}"
+    );
+
+    // It crosses, finds nothing, and the walk resumes from the node nearest the
+    // far edge. **Read at the arrival and not at the end of a long run**: `hunt_after_ms`
+    // is three seconds here, so a machine left to itself for twenty of them has
+    // arrived, walked on and set out again, and the last pulse would say only
+    // the last of that. Successive hunts are the design (the walk carries the
+    // machine to a different row each time, so the crossings sweep the zone);
+    // what this asserts is the clear that ends one of them.
+    let mut arrived: Option<i64> = None;
+    let until = arena.now_ms + 25_000;
+    let mut wall = arena.now_ms;
+    while arena.now_ms < until {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        if hunt_of(&arena, RED).is_none() {
+            arrived = Some(arena.now_ms);
+            break;
+        }
+        if out.ended.is_some() {
+            break;
+        }
+        wall += 500;
+    }
+    let at_ms = arrived.expect("the machine should have crossed and arrived");
+    let here = cell_of_unit(&arena, RED).expect("the machine is on the window");
+    assert!(
+        here.0.abs_diff(cell.0).max(here.1.abs_diff(cell.1)) <= tacsim::arena::reflex::ARRIVE_CELLS,
+        "the hunt was given up at {here:?}, which is not an arrival at {cell:?}"
+    );
+    let since = arena
+        .reflex
+        .unit(RED)
+        .and_then(|row| row.unheld_since_ms)
+        .expect("the clock is restarted at the arrival tick");
+    assert!(
+        at_ms - 500 < since && since <= at_ms,
+        "the clock should be restarted at the arrival tick (in the pulse ending {at_ms} ms) and          it reads {since} ms"
+    );
+    // The walk resumes at once, and from the node **nearest the far edge**,
+    // (14, 8) — not the one it was walking to when the clock ran out. It set
+    // out from (6, 3), whose nearest node is (1, 8) on its own side: a machine
+    // that kept that node would turn round at the far edge and drive the whole
+    // window back, and the next hunt would start from where it began.
+    assert_eq!(
+        goal_of(&arena, RED),
+        Some((14, 8)),
+        "after the crossing the walk resumes from the node nearest the far edge"
+    );
+    assert_eq!(
+        cell_of_unit(&arena, RED)
+            .and_then(|here| arena.definition.waypoints.nearest(here.0, here.1))
+            .and_then(|node| arena.definition.waypoints.node(node))
+            .map(|node| (node.x, node.y)),
+        Some((14, 8)),
+        "the fixture would say nothing if (14, 8) were not the node nearest the arrival"
+    );
+}
+
+/// **The hunt reads the map and no unit's pose** (16b cut E.4; doc 16 §1, the
+/// observer rule from the machine's side).
+///
+/// Two fields differing in one thing only: whether the enemy is standing in the
+/// zone the machine crosses to. The machine holds no contact on it either way —
+/// both cells are well outside its seven-cell sight — and the cell it picks is
+/// the same, because [`Arena::far_entry_cell`] reads the arena definition's
+/// entry zones and nothing else. A hunt that went *where the enemy is* rather
+/// than *where a side comes in* would be hidden truth steering a unit.
+#[test]
+fn e4_the_hunt_reads_the_arena_definition_and_never_a_unit() {
+    let crossing = |blue: (u16, u16)| {
+        let mut arena = e4_field((6, 3), blue, &[], &e4_cfg(0, 3_000));
+        let mut bytes: Vec<u8> = Vec::new();
+        let found = e4_run_until_hunt(&mut arena, RED, 20_000, &mut bytes);
+        assert_eq!(
+            arena.contacts.of(RED).count(),
+            0,
+            "the machine must hold nothing when it chooses, or the fields differ in two things"
+        );
+        found
+    };
+    // (15, 0) is inside Blue's own entry zone; (6, 15) is nowhere near it. Both
+    // are more than seven cells from every cell the machine stands in.
+    let standing_there = crossing((15, 0)).expect("the machine crosses");
+    let standing_elsewhere = crossing((6, 15)).expect("the machine crosses");
+    assert_eq!(
+        standing_there, standing_elsewhere,
+        "the hunt followed the enemy's pose instead of the arena's own entry zones"
+    );
+}
+
+/// **What the hunt's clock reads is `holds_a_hostile`** (16b cut E.4; 16c
+/// `B-04`, on 16b cut E.2's reading of *hostile*).
+///
+/// The machine carries no weapon, so `best_hostile` gives it no target and it
+/// stays in `Patrol` whatever it can see — which is the one shape in which a
+/// machine both holds a hostile and reaches the hunt's own arm. It sees the
+/// **whole window** (sixteen cells), so the hostile it holds is never lost to
+/// the waypoint walk carrying it out of sight: what the clock reads is the
+/// classification, and nothing about range. Three arenas, each read **every
+/// pulse**, because a machine that crossed, arrived and was cleared again
+/// would end a long run in exactly the state one that never crossed does:
+///
+/// * a hostile in sight — it never crosses, on any pulse, and once the
+///   classification lands the clock is held at `None`;
+/// * the same hostile, on a hold the machine **knows** is dead (16b cut E.2's
+///   `known_dead`) — not a hostile, so it crosses, with the tank still in plain
+///   sight;
+/// * `hunt_after_ms` at nought — never, on any pulse.
+#[test]
+fn e4_a_hostile_held_stops_the_clock_and_a_dead_one_does_not() {
+    let unarmed = |cfg: &ArenaConfig, blue: (u16, u16)| {
+        let mut units = e4_units((6, 3), blue, Vec::new());
+        if let Some(red) = units.first_mut() {
+            red.sensor = Some(SensorProfile {
+                max_range_cells: SIDE,
+                ..sight()
+            });
+        }
+        e4_pinned(arena_of(units, &[], cfg, &[BLUE]))
+    };
+    // Every pulse of `run_ms`, with `check` asked of each.
+    let watch = |arena: &mut Arena, run_ms: i64, check: &dyn Fn(&Arena)| {
+        let mut bytes: Vec<u8> = Vec::new();
+        let until = arena.now_ms + run_ms;
+        let mut wall = arena.now_ms;
+        while arena.now_ms < until {
+            let out = arena.step(wall, &[], &[]);
+            absorb(&out, &mut bytes);
+            check(arena);
+            wall += 500;
+        }
+    };
+
+    // (a) A hostile in sight, held and classified. Six seconds of clock, which
+    // is longer than the three `classify_after_ms` takes after the first pass
+    // detects it, so the classification lands before the clock could run out
+    // and the claim is about the hold and not about a race.
+    let mut arena = unarmed(&e4_cfg(0, 6_000), (9, 3));
+    watch(&mut arena, 20_000, &|arena| {
+        assert_eq!(
+            hunt_of(arena, RED),
+            None,
+            "a machine that can see the enemy does not go looking for it (at {} ms)",
+            arena.now_ms
+        );
+    });
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Patrol),
+        "an unarmed machine has no target and patrols whatever it sees"
+    );
+    assert!(
+        arena.contacts.of(RED).any(|(_, held)| matches!(
+            held.class,
+            Classification::Classified { team } if team == Team::Blue
+        )),
+        "and it really is holding the tank: the fixture says nothing otherwise"
+    );
+    assert_eq!(
+        arena.reflex.unit(RED).and_then(|row| row.unheld_since_ms),
+        None,
+        "and its clock is not merely ignored, it is held at `None`"
+    );
+
+    // (b) The same hold, marked the way the kill line marks it. It is no longer
+    // a hostile, so the clock runs and the machine crosses — with the tank
+    // still in its sight, so it is the mark and not a lost contact that let it
+    // go.
+    let mut arena = unarmed(&e4_cfg(0, 6_000), (9, 3));
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 5_000, &mut bytes);
+    learn_the_kill(&mut arena, RED, BLUE);
+    let (here, cell) = e4_run_until_hunt(&mut arena, RED, 20_000, &mut bytes)
+        .expect("a contact that reads dead is not a hostile, so the clock runs");
+    assert!(
+        arena
+            .contacts
+            .of(RED)
+            .any(|(_, held)| held.target == BLUE && arena.contact_reads_dead(held)),
+        "the hold it crossed under is the one it knows is dead, still held"
+    );
+    assert_eq!(
+        cell,
+        (SIDE - 2, here.1),
+        "and the crossing is the far zone's clamped corner on its own row"
+    );
+
+    // (c) The key at nought: never, on any pulse.
+    let mut arena = unarmed(&e4_cfg(0, 0), (15, 15));
+    watch(&mut arena, 30_000, &|arena| {
+        assert_eq!(
+            hunt_of(arena, RED),
+            None,
+            "`hunt_after_ms = 0` never hunts (at {} ms)",
+            arena.now_ms
+        );
+    });
+    let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+    assert!(
+        waypoint_cells().contains(&goal),
+        "and it is on the waypoint walk: {goal:?}"
+    );
+}
+
+/// **What `far_entry_cell` answers, and what it refuses to answer** (16b cut
+/// E.4; 16c `B-04`).
+///
+/// Three windows, each differing from the fixture only in its entry zones and
+/// the ground inside them:
+///
+/// * **the clamped corner is impassable** — the answer is the nearest passable
+///   cell of that zone by Manhattan distance, reading the rows nearest the
+///   machine's own first, and **never the corner**. `entry_cell`'s own
+///   `.or(Some(clamped))` would have answered the wall;
+/// * **nothing in the zone is passable** — `None`, and the machine keeps its
+///   waypoint walk rather than driving at a cell no route reaches;
+/// * **no other side has a zone at all** — `None`, same.
+#[test]
+fn e4_the_hunt_never_answers_a_cell_the_ground_refused() {
+    // (a) The whole of the zone's near column is wall, so the clamped corner is
+    // impassable whatever row the machine has walked to by the time the clock
+    // runs out. The scan then reads the machine's own row first, finds (14, r)
+    // refused and (15, r) open at a Manhattan distance nothing on the rows
+    // either side can beat, and answers that. `entry_cell`'s own
+    // `.or(Some(clamped))` would have answered the wall.
+    // The wall stops at row 12, so the far column is **reachable** round the
+    // bottom of it. A column walled end to end would seal the zone off, and the
+    // `unreachable` edge would take the hunt back inside the same tick: the
+    // fixture would then be the island case below wearing this one's name.
+    let walled_column: Vec<(u16, u16, TerrainCell)> =
+        (0..=12_u16).map(|y| (SIDE - 2, y, wall())).collect();
+    let walled_corner = e4_definition(
+        &walled_column,
+        vec![red_zone(), blue_zone(SIDE - 2, SIDE - 1, 0, SIDE - 1)],
+    );
+    let mut arena = e4_pinned(arena_on(
+        walled_corner,
+        e4_units((6, 3), (15, 15), vec![cannon()]),
+        &e4_cfg(0, 3_000),
+        &[BLUE],
+    ));
+    let mut bytes: Vec<u8> = Vec::new();
+    let (here, cell) = e4_run_until_hunt(&mut arena, RED, 20_000, &mut bytes)
+        .expect("the zone has passable cells, so the hunt has a goal");
+    assert!(
+        here.1 <= 12,
+        "the machine walked past the wall's end, so its clamped corner is passable and the          fixture asks nothing: {here:?}"
+    );
+    assert_ne!(
+        cell,
+        (SIDE - 2, here.1),
+        "the hunt answered the impassable corner the passability test had just refused"
+    );
+    assert!(
+        arena
+            .definition
+            .terrain
+            .get(cell.0, cell.1)
+            .is_some_and(TerrainCell::passable),
+        "and whatever it answered is ground a tank can stand on: {cell:?}"
+    );
+    assert_eq!(
+        cell,
+        (SIDE - 1, here.1),
+        "the nearest passable cell of the machine's own row, {here:?} being where it stood"
+    );
+
+    // (b) The whole zone is wall. `None`, and the walk goes on.
+    let sealed: Vec<(u16, u16, TerrainCell)> = (0..=5_u16).map(|y| (11_u16, y, wall())).collect();
+    let no_way_in = e4_definition(&sealed, vec![red_zone(), blue_zone(11, 11, 0, 5)]);
+    let mut arena = e4_pinned(arena_on(
+        no_way_in,
+        e4_units((6, 3), (15, 15), vec![cannon()]),
+        &e4_cfg(0, 3_000),
+        &[BLUE],
+    ));
+    let mut bytes: Vec<u8> = Vec::new();
+    let counted = run(&mut arena, 15_000, &mut bytes);
+    assert_eq!(
+        hunt_of(&arena, RED),
+        None,
+        "a zone with no passable cell is honestly nothing, not a wall to drive at"
+    );
+    // Both nodes are reachable on this window, so a failed search can only
+    // be a hunt at a cell the ground refused — which the `unreachable` edge
+    // would clear inside the same tick, leaving the two assertions above
+    // green. The count is what tells `None` from *the wall, given up*.
+    assert_eq!(
+        counted.path_failures, 0,
+        "the hunt answered a refused cell and paid a failed search for it"
+    );
+    let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+    assert!(
+        waypoint_cells().contains(&goal),
+        "and the machine keeps its waypoint walk: {goal:?}"
+    );
+
+    // (c) No other side has a zone. Same answer, for a different reason.
+    let one_zone = e4_definition(&[], vec![red_zone()]);
+    let mut arena = e4_pinned(arena_on(
+        one_zone,
+        e4_units((6, 3), (15, 15), vec![cannon()]),
+        &e4_cfg(0, 3_000),
+        &[BLUE],
+    ));
+    let mut bytes: Vec<u8> = Vec::new();
+    let counted = run(&mut arena, 15_000, &mut bytes);
+    assert_eq!(hunt_of(&arena, RED), None);
+    assert_eq!(counted.path_failures, 0, "and no search was paid for it");
+    let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+    assert!(waypoint_cells().contains(&goal), "{goal:?}");
+}
+
+/// **A hunt cell no route reaches costs one failed search per `hunt_after_ms`
+/// and no more** (16b cut E.4) — the island the adversarial review named.
+///
+/// The other side's zone is the one cell of [`POCKET`], which [`a_pocket`]
+/// seals: passable ground, so `far_entry_cell` answers it honestly, and no
+/// route at all. The `unreachable` edge gives the hunt up and restarts the
+/// clock, so the cost is bounded by the clock and not by `repath_ms` — which at
+/// this fixture's doctrine (`repath_ms = 0`) would be one failure every 500 ms
+/// of arena time for ever.
+#[test]
+fn e4_an_island_hunt_cell_costs_one_failed_search_per_clock() {
+    let hunt_after_ms = 5_000_i64;
+    let island = e4_definition(
+        &a_pocket(),
+        vec![
+            red_zone(),
+            blue_zone(POCKET.0, POCKET.0, POCKET.1, POCKET.1),
+        ],
+    );
+    let mut arena = e4_pinned(arena_on(
+        island,
+        e4_units((6, 8), (15, 0), vec![cannon()]),
+        &e4_cfg(0, 5_000),
+        &[BLUE],
+    ));
+    let mut bytes: Vec<u8> = Vec::new();
+    // Past the first crossing, so the count below is of steady-state failures.
+    run(&mut arena, 6_000, &mut bytes);
+    let from = arena.now_ms;
+    let until = from + 40_000;
+    let counted = run(&mut arena, until, &mut bytes);
+    let elapsed = arena.now_ms - from;
+    let ceiling = u32::try_from(elapsed / hunt_after_ms + 1).unwrap_or(u32::MAX);
+    println!(
+        "e4_island_hunt: {} failed searches in {elapsed} ms of arena time, ceiling {ceiling}",
+        counted.path_failures
+    );
+    assert!(
+        counted.path_failures > 0,
+        "the hunt never fired, so nothing was measured"
+    );
+    assert!(
+        counted.path_failures <= ceiling,
+        "an island hunt cell cost {} failed searches in {elapsed} ms, which is more than one per \
+         `hunt_after_ms`: the `unreachable` edge is not giving the hunt up",
+        counted.path_failures
+    );
+}
+
+/// Write an `Advance { to }` for `unit`'s squad onto its machine, live for
+/// `ttl_ms` from now.
+fn e4_advance(arena: &mut Arena, unit: ObjId, to: (u16, u16), ttl_ms: u32) {
+    e4_order(
+        arena,
+        unit,
+        tacsim::deliberation::Objective::Advance { to },
+        ttl_ms,
+    );
+}
+
+/// Write `objective` for `unit`'s squad onto its machine, live for `ttl_ms`
+/// from now.
+fn e4_order(
+    arena: &mut Arena,
+    unit: ObjId,
+    objective: tacsim::deliberation::Objective,
+    ttl_ms: u32,
+) {
+    let squad = arena
+        .squad_of(unit)
+        .map(|roster| roster.id)
+        .expect("one reflex machine is a squad of one");
+    let told = tacsim::deliberation::Order {
+        squad,
+        objective,
+        target: None,
+        horizon_ms: ttl_ms,
+        constraints: tacsim::deliberation::Constraints::default(),
+        ttl_ms,
+        issued_ms: arena.now_ms,
+    };
+    arena.reflex.set_order(
+        unit,
+        tacsim::deliberation::StandingOrder::accepted(told, arena.now_ms),
+    );
+}
+
+/// Step until `unit`'s order has expired, answering the pulse it went on.
+fn e4_run_until_unordered(
+    arena: &mut Arena,
+    unit: ObjId,
+    limit_ms: i64,
+    bytes: &mut Vec<u8>,
+) -> Option<i64> {
+    let until = arena.now_ms.saturating_add(limit_ms);
+    let mut wall = arena.now_ms;
+    while arena.now_ms < until {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, bytes);
+        if arena
+            .reflex
+            .unit(unit)
+            .is_some_and(|row| row.order.is_none())
+        {
+            return Some(arena.now_ms);
+        }
+        wall += 500;
+    }
+    None
+}
+
+/// **A movement order outranks both clocks, and neither clock's goal survives
+/// it** (16b cut E.4, on 16b cut N.2's order steering).
+///
+/// `Patrol`'s goal is a list in order, and the movement order is the head of it:
+/// a commander who says *go there* is not answered with *I would rather look
+/// over here* — and not at the order's expiry either. Two arcs, each run
+/// **through** a short order to the tick after it expires:
+///
+/// * **the search** — the order lands with a live `last_plot` (twenty seconds
+///   old at expiry, well inside the minute of `search_ms`); at expiry the goal
+///   is a waypoint and not the plot;
+/// * **the hunt** — the order lands with the machine already crossing; at
+///   expiry `hunt` is `None`, the goal is a waypoint, and the hunt's wait is
+///   counted from the order's end, not through it.
+#[test]
+fn e4_a_movement_order_outranks_the_search_and_the_hunt() {
+    // (a) The search.
+    let mut arena = e4_field((2, 8), (6, 8), &[], &e4_cfg(60_000, 3_000));
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 6_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    let (plot, _) = last_plot_of(&arena, RED).expect("the machine has something to search for");
+
+    // The tank goes over the hill and a commander names a cell in the same
+    // breath. The order steers: `Advance` drops the target, the machine goes to
+    // `Patrol`, and the goal is the commander's cell — not the plot, and not the
+    // far entry zone once the hunt's three seconds have gone by.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(15, 15);
+    }
+    e4_advance(&mut arena, RED, (2, 2), 20_000);
+    let until = arena.now_ms + 500;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
+    assert_eq!(
+        last_plot_of(&arena, RED),
+        None,
+        "the order's first tick gives the search up"
+    );
+    let until = arena.now_ms + 10_000;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        hunt_of(&arena, RED),
+        None,
+        "the hunt is never set under a movement order"
+    );
+    let goal = goal_of(&arena, RED).expect("an ordered machine has the commander's cell");
+    assert!(
+        goal == (2, 2) || (goal.0.abs_diff(2).max(goal.1.abs_diff(2)) <= 1),
+        "the goal should be the ordered cell and it is {goal:?}"
+    );
+    let expired =
+        e4_run_until_unordered(&mut arena, RED, 20_000, &mut bytes).expect("the order runs out");
+    assert_eq!(
+        last_plot_of(&arena, RED),
+        None,
+        "the search does not come back when the order runs out"
+    );
+    assert_eq!(hunt_of(&arena, RED), None);
+    let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+    assert_ne!(
+        goal, plot,
+        "the machine turned round for a plot it saw before the order"
+    );
+    assert!(
+        waypoint_cells().contains(&goal),
+        "at expiry the walk resumes: {goal:?}"
+    );
+    let since = arena
+        .reflex
+        .unit(RED)
+        .and_then(|row| row.unheld_since_ms)
+        .expect("the hunt's clock is running");
+    assert!(
+        since > expired - 1_000,
+        "the hunt's wait should count from the order's end ({expired} ms), and it reads {since} ms"
+    );
+
+    // (b) The hunt: a machine already crossing when the order lands.
+    let mut arena = e4_field((6, 3), (15, 15), &[], &e4_cfg(0, 3_000));
+    let mut bytes: Vec<u8> = Vec::new();
+    let (_, crossing) =
+        e4_run_until_hunt(&mut arena, RED, 20_000, &mut bytes).expect("the machine crosses");
+    e4_advance(&mut arena, RED, (2, 2), 5_000);
+    let until = arena.now_ms + 500;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(
+        hunt_of(&arena, RED),
+        None,
+        "the order's first tick gives the hunt up"
+    );
+    assert_eq!(goal_of(&arena, RED), Some((2, 2)));
+    let expired =
+        e4_run_until_unordered(&mut arena, RED, 10_000, &mut bytes).expect("the order runs out");
+    assert_eq!(
+        hunt_of(&arena, RED),
+        None,
+        "the crossing does not resume when the order runs out"
+    );
+    let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+    assert_ne!(
+        goal, crossing,
+        "the machine went back to the crossing it was ordered off"
+    );
+    assert!(
+        waypoint_cells().contains(&goal),
+        "at expiry the walk resumes: {goal:?}"
+    );
+    let since = arena
+        .reflex
+        .unit(RED)
+        .and_then(|row| row.unheld_since_ms)
+        .expect("the hunt's clock is running");
+    assert!(
+        since > expired - 1_000,
+        "the hunt's wait should count from the order's end ({expired} ms), and it reads {since} ms"
+    );
+}
+
+/// **`Withdraw` forgets the search, and a stand writes one** (16b cut E.4).
+///
+/// Three of the search's writers and clears that no other test reaches:
+///
+/// * **the health edge** clears `last_plot` on entry — a hurt machine that ran
+///   home and rallied inside `search_ms` would otherwise drive straight back to
+///   the plot where it was hurt;
+/// * **a commander's `Withdraw`** clears it on entry, for the same reason;
+/// * **a `Withdraw` that stands and fights writes it**, from the plot it turned
+///   onto — the one writer that cannot read `row.target`, which `Withdraw`
+///   clears, and which the builder carries in a local of its own.
+#[test]
+fn e4_withdraw_forgets_the_search_and_a_stand_writes_one() {
+    // (a) The health edge. Four cells apart, inside the 4,900 cm band: the
+    // machine holds it and remembers the plot.
+    let mut arena = e4_field((6, 8), (10, 8), &[], &e4_cfg(60_000, 0));
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 6_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Engage));
+    assert_eq!(
+        last_plot_of(&arena, RED).map(|(cell, _)| cell),
+        Some((10, 8))
+    );
+    // 166 per mille: under `stand_min_permille`, so nothing on the way home
+    // writes a plot back.
+    hurt(&mut arena, RED);
+    assert!(
+        e4_run_until_state(&mut arena, RED, ReflexState::Withdraw, 2_000, &mut bytes),
+        "a machine hurt this far breaks off"
+    );
+    assert_eq!(
+        last_plot_of(&arena, RED),
+        None,
+        "the health edge's first tick gives the search up"
+    );
+    // Home, out of sight of the tank (nine cells off), and quiet: it rallies,
+    // and the walk it rallies to is the graph's and not the plot it was hurt
+    // at.
+    assert!(
+        e4_run_until_state(&mut arena, RED, ReflexState::Patrol, 60_000, &mut bytes),
+        "the machine should have rallied"
+    );
+    // The rally is decided inside `Withdraw`'s own arm and leaves the goal
+    // empty; the first `Patrol` tick is the one after it.
+    let until = arena.now_ms + 500;
+    run(&mut arena, until, &mut bytes);
+    assert_eq!(last_plot_of(&arena, RED), None);
+    let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+    assert!(
+        waypoint_cells().contains(&goal),
+        "a rallied machine walks the graph, and it is driving at {goal:?}"
+    );
+
+    // (b) A commander's `Withdraw`, on a healthy machine: the tank is 4,000 cm
+    // off, outside the running stand's 2,333 cm, so the first tick in
+    // `Withdraw` writes nothing back either.
+    let mut arena = e4_field((6, 8), (10, 8), &[], &e4_cfg(60_000, 0));
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 6_000, &mut bytes);
+    assert!(last_plot_of(&arena, RED).is_some());
+    e4_order(
+        &mut arena,
+        RED,
+        tacsim::deliberation::Objective::Withdraw,
+        30_000,
+    );
+    assert!(
+        e4_run_until_state(&mut arena, RED, ReflexState::Withdraw, 2_000, &mut bytes),
+        "the order puts the machine in `Withdraw`"
+    );
+    assert_eq!(
+        last_plot_of(&arena, RED),
+        None,
+        "the order's first tick gives the search up"
+    );
+
+    // (c) The stand. `withdraw_and_rally`'s machine breaks off at 277 per
+    // mille beside a classified tank one cell away, and stands on its first
+    // `Withdraw` tick. It never held a target before it broke off (the health
+    // edge takes it straight out of `Patrol`), so a plot it remembers can only
+    // be the stand's.
+    let mut arena = e4_pinned(withdraw_and_rally());
+    let mut bytes: Vec<u8> = Vec::new();
+    let until = arena.now_ms + 5_000;
+    let mut wall = arena.now_ms;
+    let mut stood: Option<((u16, u16), Option<ObjId>)> = None;
+    while arena.now_ms < until {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        if state_of(&arena, RED) == Some(ReflexState::Withdraw)
+            && let Some((cell, _)) = last_plot_of(&arena, RED)
+        {
+            stood = Some((cell, target_of(&arena, RED)));
+            break;
+        }
+        wall += 500;
+    }
+    let (cell, target) = stood.expect("a machine that stood and fought wrote no plot");
+    assert_eq!(
+        cell,
+        (9, 8),
+        "the plot it turned onto is the tank's own cell"
+    );
+    assert_eq!(
+        target, None,
+        "and `Withdraw` holds no target, so the plot came from the stand"
+    );
+}
+
+/// **A fight gives the hunt up, and the wait starts again from it** (16b cut
+/// E.4) — `hunt` belongs to `Patrol` and to nothing else.
+#[test]
+fn e4_a_fight_gives_the_hunt_up() {
+    let mut arena = e4_field((6, 3), (15, 15), &[], &e4_cfg(0, 3_000));
+    let mut bytes: Vec<u8> = Vec::new();
+    let (here, _) =
+        e4_run_until_hunt(&mut arena, RED, 20_000, &mut bytes).expect("the machine crosses");
+    // Something turns up three cells ahead of it on the crossing, classified
+    // (this file's head says why a test may hand it over).
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(here.0 + 3, here.1);
+    }
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    let until = arena.now_ms + 500;
+    run(&mut arena, until, &mut bytes);
+    assert!(
+        matches!(
+            state_of(&arena, RED),
+            Some(ReflexState::Approach | ReflexState::Engage)
+        ),
+        "the machine turned on what it found: {:?}",
+        state_of(&arena, RED)
+    );
+    assert_eq!(
+        hunt_of(&arena, RED),
+        None,
+        "leaving `Patrol` gives the crossing up"
+    );
+    let since = arena
+        .reflex
+        .unit(RED)
+        .and_then(|row| row.unheld_since_ms)
+        .expect("the clock is restarted, not stopped");
+    assert!(
+        arena.now_ms - 500 < since && since <= arena.now_ms,
+        "the wait restarts at the tick it left `Patrol` (in the pulse ending {} ms), and it          reads {since} ms",
+        arena.now_ms
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The cross-tempo property (16b §11)
+// ---------------------------------------------------------------------------
+
+/// The whole arc in one fixture: contact, lost, search, arrival, quiet, hunt,
+/// arrival in the far zone, contact.
+///
+/// The clocks are short enough that all of it fits inside 45 s of arena time,
+/// and the ground is the plain fixture window, so nothing in the replay depends
+/// on a search finding a way round anything.
+fn a_search_and_a_hunt() -> Arena {
+    e4_field((2, 8), (6, 8), &[], &e4_cfg(20_000, 10_000))
+}
+
+/// The one thing the script does: the blue tank pulls out to the far corner of
+/// its own entry zone, where the hunt will eventually find it.
+fn blue_pulls_into_its_zone(arena: &mut Arena) {
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(15, 14);
+    }
+}
+
+/// What [`e4_the_arc_at_500`] saw of the middle of the arc.
+#[derive(Debug, Default)]
+struct Arc {
+    /// A `Patrol` tick whose goal was the live `last_plot`'s cell.
+    searched: bool,
+    /// A pulse on which `hunt` was set.
+    hunted: bool,
+    /// A pulse, once the hunt had been set, on which the machine stood within
+    /// [`tacsim::arena::reflex::ARRIVE_CELLS`] of the far zone's near column.
+    crossed: bool,
+}
+
+/// [`replay_of`]'s loop at 500 ms over [`a_search_and_a_hunt`] and
+/// [`blue_pulls_into_its_zone`], read each pulse for the search and the hunt.
+fn e4_the_arc_at_500() -> Arc {
+    let mut arena = a_search_and_a_hunt();
+    arena.clock.pin_tempo_for_tests(Tempo::Quiet);
+    let mut arc = Arc::default();
+    let mut wall = 0_i64;
+    loop {
+        let out = arena.step(wall, &[], &[]);
+        if arena.now_ms == SCRIPT_AT_MS {
+            blue_pulls_into_its_zone(&mut arena);
+        }
+        if let Some(row) = arena.reflex.unit(RED) {
+            arc.searched |= row.state == ReflexState::Patrol
+                && row
+                    .last_plot
+                    .is_some_and(|(cell, _)| row.goal == Some(cell));
+            arc.hunted |= row.hunt.is_some();
+            arc.crossed |=
+                arc.hunted && cell_of_unit(&arena, RED).is_some_and(|here| here.0 >= SIDE - 3);
+        }
+        if arena.now_ms >= 45_000 || out.ended.is_some() {
+            break;
+        }
+        wall += 500;
+    }
+    arc
+}
+
+/// **The search and the hunt at three cadences are one event list and one hash
+/// sequence** (16b §11; doc 16 §3.1's D-16-2).
+///
+/// Both clocks are read at an arena millisecond, off fields written at an arena
+/// millisecond, inside a due event that lands at the same arena millisecond at
+/// every tempo — so a replay of this arc at 5,000, 1,000 and 500 ms is one
+/// match. A clock read once per *pulse* would give three different matches, and
+/// that is the one thing this cut was not allowed to do.
+#[test]
+fn e4_the_search_and_the_hunt_are_one_log_at_three_cadences() {
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| {
+            replay_of(
+                cadence,
+                45_000,
+                a_search_and_a_hunt,
+                blue_pulls_into_its_zone,
+            )
+        })
+        .collect();
+    let first = runs.first().expect("three replays");
+    // The arc really did happen: a machine that never lost a contact, or never
+    // crossed, would compare equal three ways and prove nothing. The log says
+    // the two ends of it — a `lost`, and a `detected` after it.
+    let kinds: Vec<(i64, &str)> = first
+        .events
+        .iter()
+        .filter_map(|(t_ms, kind, _)| kind.split('"').nth(3).map(|kind| (*t_ms, kind)))
+        .collect();
+    println!("e4_search_and_hunt: {} events, {kinds:?}", kinds.len());
+    let lost_at = kinds
+        .iter()
+        .find(|(_, kind)| *kind == "lost")
+        .map(|(t_ms, _)| *t_ms)
+        .unwrap_or_else(|| {
+            panic!("the contact never expired, so there was nothing to search for: {kinds:?}")
+        });
+    assert!(
+        kinds
+            .iter()
+            .any(|(t_ms, kind)| *kind == "detected" && *t_ms > lost_at),
+        "nothing was found again after the `lost` at {lost_at} ms, so the arc never closed:          {kinds:?}"
+    );
+    assert!(
+        first.hashes.len() > 3,
+        "a replay of one pulse is not a cross-tempo property"
+    );
+    // The guard: three cadences really are three different numbers of pulses.
+    let counts: Vec<u32> = runs.iter().map(|run| run.pulses).collect();
+    assert!(
+        counts.windows(2).all(|pair| pair[0] != pair[1]),
+        "the three replays ran the same number of pulses: {counts:?}"
+    );
+    // And the middle of the arc, which the log does not name: the same script
+    // at the finest cadence (the replay's own loop, so the same match as the
+    // third replay above), read pulse by pulse for the search's goal and the
+    // hunt's. A replay whose hunt never fired would still agree with itself
+    // three ways.
+    let arc = e4_the_arc_at_500();
+    println!("e4_search_and_hunt: {arc:?}");
+    assert!(
+        arc.searched,
+        "the machine never drove at its last plot: {arc:?}"
+    );
+    assert!(
+        arc.hunted,
+        "the hunt never fired inside the replay: {arc:?}"
+    );
+    assert!(
+        arc.crossed,
+        "the machine never reached the far zone on its hunt: {arc:?}"
+    );
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        assert_eq!(
+            run.events, first.events,
+            "cadence {at}: the event list differs"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "cadence {at}: the per-substep hash sequence differs"
+        );
+        assert_eq!(run.finals, first.finals, "cadence {at}: the field differs");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `T-42` — three properties the code claimed and no test held
+// ---------------------------------------------------------------------------
+
+/// **The curtain of `curtain`, with the machine's own row left open.**
+///
+/// [`curtain`] walls every row of column 9, which seals the window in two: a
+/// machine west of it could never drive at a plot east of it, and the far
+/// waypoint would be a node no route reaches. Row 0 is left open, which is a
+/// way round and **not** a way through: the line from row 8 to row 8 still
+/// crosses (9, 8), so the wall stops the sight and nothing else, which is what
+/// the edge is about.
+fn curtain_with_a_gap() -> Vec<(u16, u16, TerrainCell)> {
+    curtain().into_iter().filter(|(_, y, _)| *y != 0).collect()
+}
+
+/// **The `no line` edge** (doc 16 §6; 16c `T-42`): a round of the machine's own
+/// stopped by the ground re-plans it.
+///
+/// No test in the tree reached [`Arena::note_no_line`] before this one. The
+/// machine holds the band on a pilot tank; the pilot drives behind a wall and
+/// the contact lives another three seconds, so the machine still believes in
+/// the plot and fires at it. The round is accepted, traced, and stopped: the
+/// black box records a miss whose reason is `blocked`, `damage`'s re-validation
+/// calls `note_no_line`, and the next tick throws the goal away, falls out of
+/// `Engage` into `Approach` and — 16b cut E.1's rule — drives at the plot's own
+/// cell.
+#[test]
+fn e4_t42_a_round_stopped_by_the_ground_re_plans_the_machine() {
+    // The curtain is a wall down column 9, painted from the start (the terrain
+    // is immutable for the life of a match). Both tanks open **west** of it, so
+    // the line is clear and the band is held; the pilot then drives east through
+    // the one gap the fixture leaves and the wall is between them.
+    // A five-hundred-millisecond breech, because the contact lives only three
+    // sensor passes after the tank goes behind the wall and the stock cannon's
+    // four-second cycle would spend all of them.
+    let quick = WeaponSummary {
+        cycle_ms: 500,
+        ..cannon()
+    };
+    let mut arena = e4_pinned(arena_on(
+        definition(&curtain_with_a_gap()),
+        e4_units((6, 8), (8, 8), vec![quick]),
+        &e4_cfg(60_000, 0),
+        &[BLUE],
+    ));
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 6_000, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED),
+        Some(ReflexState::Engage),
+        "it holds the band on a tank it can see"
+    );
+    let before = count(&events(&mut arena, &mut bytes), "fired");
+
+    // Behind the wall. The contact is not refreshed but it lives another three
+    // passes, and the machine keeps firing at where it last saw it.
+    if let Some(state) = arena.unit_mut(BLUE) {
+        state.pose = centre(11, 8);
+    }
+    assert!(
+        e4_run_until_state(&mut arena, RED, ReflexState::Approach, 3_000, &mut bytes),
+        "the `no line` edge should have taken the machine out of `Engage` within three seconds"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert!(
+        count(&log, "fired") > before,
+        "the machine never fired at the plot, so no round was ever stopped"
+    );
+    let blocked = log
+        .iter()
+        .filter(|event| {
+            serde_json::to_value(&event.kind)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("reason")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .as_deref()
+                == Some(tacsim::arena::damage::BLOCKED)
+        })
+        .count();
+    assert!(
+        blocked > 0,
+        "no round resolved as a `blocked` miss, so the `no line` edge was never fed"
+    );
+    assert!(
+        arena.reflex.unit(RED).is_some_and(|row| !row.no_line),
+        "and the tick that re-planned on it cleared the flag"
+    );
+    assert_eq!(
+        goal_of(&arena, RED),
+        Some((8, 8)),
+        "and 16b cut E.1's rule puts the goal on the plot's own cell"
+    );
+}
+
+/// **The `avoid` clause of `first_step_is_open`** (16c `T-42`): a routeless
+/// machine holds rather than drive into a cell it was stopped at, and drives
+/// again when the entry ages out.
+///
+/// The path budget is nought, so the machine never has a route and every step
+/// it takes is a step on a bearing nobody has checked — which is the whole case
+/// the one-cell test exists for. The cell in front of it is then written into
+/// [`ReflexUnit::avoid`] through [`Arena::note_blocked`], the public door the
+/// `Blocked` ledger event uses.
+#[test]
+fn e4_t42_a_routeless_machine_holds_at_a_cell_it_was_stopped_at() {
+    let mut arena = e4_field(
+        (6, 8),
+        (15, 15),
+        &[],
+        &arena_cfg(ReflexConfig {
+            // No search at all: a machine that never routes is the subject.
+            max_path_queries: 0,
+            ..e4_cfg(0, 0).reflex
+        }),
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 4_000, &mut bytes);
+    let here = arena
+        .unit(RED)
+        .and_then(|unit| arena.definition.terrain.cell_of(&unit.pose))
+        .expect("the machine is on the window");
+    assert!(
+        arena
+            .reflex
+            .unit(RED)
+            .is_some_and(|row| row.route.is_empty()),
+        "with no path budget the machine has no route, which is what makes this the one-cell case"
+    );
+    assert!(
+        arena
+            .unit(RED)
+            .is_some_and(|unit| unit.desired_speed_cms > 0),
+        "and it is driving east at the far waypoint"
+    );
+
+    // The cell in front of it — the one step on the bearing to its goal, which
+    // on this fixture is the west node and therefore the cell to the **west**.
+    // Taking `here.0 + 1` on faith would write a cell behind the machine into
+    // the list and assert nothing at all.
+    let goal = goal_of(&arena, RED).expect("a patrol has a node to walk to");
+    assert_eq!(goal.1, here.1, "the walk is along the machine's own row");
+    let ahead = if goal.0 < here.0 {
+        (here.0.saturating_sub(1), here.1)
+    } else {
+        (here.0.saturating_add(1), here.1)
+    };
+    let at_ms = arena.now_ms;
+    arena.note_blocked(
+        RED,
+        ahead,
+        tacsim::arena::motion::BlockedCause::Occupied,
+        at_ms,
+    );
+    let until = arena.now_ms + 3_000;
+    run(&mut arena, until, &mut bytes);
+    let held = arena.unit(RED).map_or(-1, |unit| unit.desired_speed_cms);
+    assert_eq!(
+        held, 0,
+        "a routeless machine whose next cell is one it was stopped at should hold, and it was \
+         ordered {held} cm/s at {ahead:?}"
+    );
+
+    // And it goes again when the entry ages out — the list ages, it is not
+    // cleared on a goal change.
+    let until = at_ms + tacsim::arena::reflex::REFLEX_AVOID_TTL_MS + 3_000;
+    run(&mut arena, until, &mut bytes);
+    assert!(
+        arena
+            .unit(RED)
+            .is_some_and(|unit| unit.desired_speed_cms > 0),
+        "the remembered stop should have aged out and the machine driven on"
+    );
+}
+
+/// The `Spent` draw, as a function nothing but the cadence can vary.
+fn both_sides_dry() -> Arena {
+    dry_pair(0, 0)
+}
+
+/// The same with the last round in the air — `a_round_still_in_flight_holds_the
+/// _draw_off`'s own fixture, so the replay is of the case the draw is held off
+/// for and not only of the easy one.
+fn one_round_in_flight() -> Arena {
+    let mut arena = dry_pair(1, 0);
+    if let Some(weapon) = arena
+        .unit_mut(RED)
+        .and_then(|state| state.weapons.first_mut())
+    {
+        weapon.muzzle_speed_cms = 1_000;
+    }
+    arena
+}
+
+/// **Both sides fire their last round in the middle of the match**: two machines
+/// facing each other with one round each, so the draw is called by the arena
+/// after both rounds have left the breech and landed — several pulses in, at
+/// every cadence, and not on the opening substep as [`both_sides_dry`]'s is.
+fn both_fire_their_last() -> Arena {
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[],
+    );
+    for unit in [RED, BLUE] {
+        if let Some(state) = arena.unit_mut(unit) {
+            state.ammo.insert(SmolStr::new("cannon"), 1);
+        }
+    }
+    arena
+}
+
+/// **`EndReason::Spent` at three cadences** (16c `T-42`; doc 16 §3.8; 16b §11).
+///
+/// `two_dry_sides_end_in_a_draw_and_one_dry_side_plays_on` runs one cadence, so
+/// nothing in the tree said that the arena millisecond a match runs out of
+/// ammunition at is a fact of arena time rather than of how often the arena is
+/// stepped. Three scripts: the plain draw (both magazines empty at check-out,
+/// so it is called on the opening substep and the three runs are one call —
+/// kept because it is the case the other two grow from), the one whose last
+/// round is still in the air when the magazines empty, and the one where both
+/// sides fire their last round mid-match. The two that fire are guarded: the
+/// rounds really left the breech before the end, and the replay really was
+/// several pulses at three different counts.
+#[test]
+fn e4_t42_the_spent_draw_is_one_log_at_three_cadences() {
+    for (build, what, rounds) in [
+        (both_sides_dry as fn() -> Arena, "both sides dry", 0_usize),
+        (one_round_in_flight as fn() -> Arena, "a round in flight", 1),
+        (
+            both_fire_their_last as fn() -> Arena,
+            "both fire their last",
+            2,
+        ),
+    ] {
+        let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+            .into_iter()
+            .map(|cadence| replay_of(cadence, 30_000, build, no_script))
+            .collect();
+        let first = runs.first().expect("three replays");
+        let ended: Vec<&(i64, String, u64)> = first
+            .events
+            .iter()
+            .filter(|(_, kind, _)| kind.contains("match_ended"))
+            .collect();
+        println!("e4_spent ({what}): ended {ended:?}");
+        assert_eq!(
+            ended.len(),
+            1,
+            "{what}: the match should end exactly once: {ended:?}"
+        );
+        let (end_ms, end_kind, _) = ended.first().copied().expect("one end");
+        assert!(
+            end_kind.contains("spent"),
+            "{what}: and it should end `Spent`: {ended:?}"
+        );
+        let fired: Vec<i64> = first
+            .events
+            .iter()
+            .filter(|(_, kind, _)| kind.split('"').nth(3) == Some("fired"))
+            .map(|(t_ms, _, _)| *t_ms)
+            .collect();
+        assert_eq!(
+            fired.len(),
+            rounds,
+            "{what}: {} rounds left the breech, not {rounds}",
+            fired.len()
+        );
+        if rounds > 0 {
+            // At or before: the stock cannon's round crosses three cells inside
+            // the substep that fired it, so both of `both_fire_their_last`'s
+            // land at the millisecond they left and the draw is called there —
+            // thirteen seconds in, which is what makes it mid-match.
+            assert!(
+                *end_ms > 0 && fired.iter().all(|t_ms| t_ms <= end_ms),
+                "{what}: every round was fired before the draw at {end_ms} ms: {fired:?}"
+            );
+            assert!(
+                first.hashes.len() > 3,
+                "{what}: a replay of one pulse is not a cross-tempo property"
+            );
+            let counts: Vec<u32> = runs.iter().map(|run| run.pulses).collect();
+            assert!(
+                counts.windows(2).all(|pair| pair[0] != pair[1]),
+                "{what}: the three replays ran the same number of pulses: {counts:?}"
+            );
+        }
+        for (at, run) in runs.iter().enumerate().skip(1) {
+            assert_eq!(
+                run.events, first.events,
+                "{what}, cadence {at}: the event list differs"
+            );
+            assert_eq!(
+                run.hashes, first.hashes,
+                "{what}, cadence {at}: the per-substep hash sequence differs"
+            );
+            assert_eq!(
+                run.finals, first.finals,
+                "{what}, cadence {at}: the field differs"
+            );
+        }
+    }
 }

@@ -323,6 +323,44 @@ pub struct ReflexConfig {
     /// doctrine branch no unit could ever be in. Every shipped file carries 350
     /// there, so the default of 175 — half of it — is well clear.
     pub stand_min_permille: u32,
+    /// **How long a machine keeps driving to where it last saw its target**, arena
+    /// milliseconds (16b cut E.4; 16c `B-04`; doc 16 §6's `lost` edge).
+    ///
+    /// A contact expires after three sensor passes, and before this cut the `lost`
+    /// edge dropped the machine straight back to `Patrol` — whose waypoint walk is
+    /// a fixed cycle per unit id, and may lead directly away from the tank that
+    /// has just driven behind a tree line. A crew that loses a contact drives to
+    /// the last place it had one; so does the machine now.
+    ///
+    /// **`0` turns the search off**, which is the pre-E.4 rule exactly. Otherwise
+    /// it is validated at or above `decide_ms` and at most ten minutes. The floor
+    /// is exact and not a round number: the plot is written by the last tick that
+    /// held the target and the `lost` edge is read one decide tick later, so the
+    /// first `Patrol` tick always finds it `decide_ms` old. The age is compared
+    /// inclusively, so at the floor the machine drives at it for that one tick;
+    /// anything under the floor would drop it unread and be `0` under another
+    /// name.
+    pub search_ms: u32,
+    /// **How long a patrolling machine that holds nothing hostile waits before it
+    /// crosses to the other side's entry zone to look**, arena milliseconds (16b
+    /// cut E.4; 16c `B-04`).
+    ///
+    /// The waypoint walk is deterministic per unit id, so two sides' loops need
+    /// never come within a sight of each other — and a withdrawn machine parks in
+    /// its own entry zone, which no patrol loop passes through except at the two
+    /// road ends. That is the match that goes quiet for ever, and it was measured
+    /// at HEAD before this key existed: a dry Red tank parked on its entry cell
+    /// from 30 s of arena time, a Blue tank walking the east half of the map, and
+    /// nothing at all for the next fifteen minutes.
+    ///
+    /// The other side's entry zone is the one place on the map a beaten enemy is
+    /// certain to be, and it is **map knowledge** — the arena definition's own
+    /// zones, never any unit's pose — so a machine that goes there has not been
+    /// told anything about anybody (doc 16 §1).
+    ///
+    /// **`0` turns the hunt off.** Otherwise it is validated at or above
+    /// `decide_ms`.
+    pub hunt_after_ms: u32,
 }
 
 impl Default for ReflexConfig {
@@ -343,6 +381,10 @@ impl Default for ReflexConfig {
             rally_ms: 20_000,
             // 16b cut E.1: half of `withdraw_permille`.
             stand_min_permille: 175,
+            // 16b cut E.4: a minute of driving to the last plot, and a minute and
+            // a half of nothing at all before a machine goes and looks.
+            search_ms: 60_000,
+            hunt_after_ms: 90_000,
         }
     }
 }
@@ -818,6 +860,28 @@ impl ArenaConfig {
                  [tacsim.arena.reflex].withdraw_permille ({}): a machine only runs home below the \
                  second, so it could never turn and fight on the way",
                 self.reflex.stand_min_permille, self.reflex.withdraw_permille
+            ));
+        }
+        // **16b cut E.4**: off, or long enough to be read once — the plot is a
+        // decide tick old when `Patrol` first reads it, and the age is compared
+        // inclusively — and short enough to be a search and not a standing
+        // order. The or-zero form is written the way
+        // `[tacsim.match].unattended_ms`'s is.
+        if self.reflex.search_ms != 0
+            && (self.reflex.search_ms < self.reflex.decide_ms || self.reflex.search_ms > 600_000)
+        {
+            return Err(format!(
+                "[tacsim.arena.reflex].search_ms is 0 (off) or {} to 600000; {} is not",
+                self.reflex.decide_ms, self.reflex.search_ms
+            ));
+        }
+        // **16b cut E.4**: off, or at least one decision. A hunt shorter than one
+        // decide tick would be asked before the clock that gates it had ever been
+        // read.
+        if self.reflex.hunt_after_ms != 0 && self.reflex.hunt_after_ms < self.reflex.decide_ms {
+            return Err(format!(
+                "[tacsim.arena.reflex].hunt_after_ms is 0 (off) or at least {}; {} is not",
+                self.reflex.decide_ms, self.reflex.hunt_after_ms
             ));
         }
         Ok(())
