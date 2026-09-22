@@ -737,3 +737,168 @@ fn e4_a_dry_loser_is_found_and_finished() {
     let (reason, at_ms, timeline, wall) = play_to_the_end(&mut arena, |_| {});
     ended_by_elimination("e4_dry_loser", reason, at_ms, &timeline, wall);
 }
+
+// ---------------------------------------------------------------------------
+// The immobile machine (16b cut AA.1; 16c `B-76`)
+// ---------------------------------------------------------------------------
+
+/// **Blue's cell for the engine-out duel**: on the ford road, 50 cells due east
+/// of Red Tank 1's authored muster at `(6, 97)`, which is a road cell too.
+const ENGINE_OUT_BLUE: (u16, u16) = (56, 97);
+
+/// **Two machines with their engines gone still fight out to their reach** (16b
+/// cut AA.1; 16c `B-76`).
+///
+/// Red Tank 1 at its authored muster `(6, 97)` and Blue Tank 1 at
+/// [`ENGINE_OUT_BLUE`] `(56, 97)` — both **road** cells, 50,000 cm apart on one
+/// row with a clear line: past `ENGAGE_CM` and inside `RELEASE_CM`, the window a
+/// dead engine used to make permanent. Both check out with the engine killed
+/// through `hull.rear` by their M32 records (`support::engine_struck`: the two
+/// cells to their minimum and `SetSectionCondition { engine, destroyed }`, which
+/// is what `plan_hit` writes on the transition), so `limits.motion_disabled`
+/// comes from the arena's own `entry_consequences` and not from a test's flag.
+///
+/// **The ground is chosen for the sensor, not for the look of it.** Both
+/// machines are stopped for the whole run, and `visual_mk1` sees a stopped
+/// machine at its own cell's class — road 1,000 per mille (60 cells), ground 900
+/// (54), grass 800 (48) — so a road-to-grass pairing at 50 cells would be
+/// one-sided. Road to road, each sees the other at the full 60 cells.
+///
+/// At HEAD each re-planned a stand-off cell it could not drive to on every tick,
+/// never fired, and — armed — held its side up for good. Now each journals a shot
+/// from between the two edges inside two arena minutes, without moving. An
+/// elimination is not required (two 105 mm guns at 500 m against front plate may
+/// take longer than the bound); if the match ends it is printed.
+#[test]
+fn aa1_two_machines_with_their_engines_gone_still_fight_out_to_their_reach() {
+    let world = booted_world();
+    let mut arena = shipped_arena(
+        &world,
+        &[
+            &[Muster::reflex(Team::Red, 1).engine_out()],
+            &[Muster::reflex(Team::Blue, 1)
+                .engine_out()
+                .at(ENGINE_OUT_BLUE)],
+        ],
+    );
+    let red = support::tank(&world, Team::Red, 1);
+    let blue = support::tank(&world, Team::Blue, 1);
+    let red_cell = support::cell_of(&arena, red).expect("red opened on the window");
+    let blue_cell = support::cell_of(&arena, blue).expect("blue opened on the window");
+    assert_eq!(red_cell, (6, 97), "red's authored muster");
+    assert_eq!(
+        blue_cell, ENGINE_OUT_BLUE,
+        "blue kept the cell it asked for"
+    );
+    for cell in [red_cell, blue_cell] {
+        assert_eq!(
+            arena
+                .definition
+                .terrain
+                .get(cell.0, cell.1)
+                .map(|terrain| terrain.class),
+            Some(mush_atlas::TerrainClass::Road),
+            "{cell:?} is not a road cell, so a stopped machine there is not seen at 60 cells"
+        );
+    }
+    let apart = range_cm(centre_of(red_cell), centre_of(blue_cell));
+    assert!(
+        apart > ENGAGE_CM && apart <= RELEASE_CM,
+        "the two are {apart} cm apart, which is not between the two edges"
+    );
+    for id in [red, blue] {
+        let Some(unit) = arena.unit(id) else {
+            panic!("#{} is in the arena", id.0)
+        };
+        assert!(
+            unit.limits.motion_disabled,
+            "#{}'s destroyed engine did not disable its motion at the check-out",
+            id.0
+        );
+        assert!(unit.armed_at_checkout(), "#{} carries its gun", id.0);
+        assert_eq!(
+            arena.reflex_health_permille(id),
+            909,
+            "#{}: (2,990 - 150 - 120) of 2,990, conditions not counted",
+            id.0
+        );
+        assert!(!arena.out_of_action(id), "#{} is not out of action", id.0);
+    }
+    let opened: Vec<(mush_core::ObjId, i64, i64, u32)> = [red, blue]
+        .into_iter()
+        .filter_map(|id| {
+            arena
+                .unit(id)
+                .map(|unit| (id, unit.pose.x_cm, unit.pose.y_cm, unit.pose.heading_mdeg))
+        })
+        .collect();
+
+    let mut timeline = Timeline::new();
+    let mut seen: Vec<(mush_core::ObjId, i64, Option<i64>)> = Vec::new();
+    let mut bytes = run_until(&mut arena, 120_000, 1_000, |arena, out| {
+        timeline.sample(arena, out.reflex.path_failures);
+        for (unit, row) in arena.reflex.all() {
+            let Some(state) = arena.unit(unit) else {
+                continue;
+            };
+            let plot = row
+                .target
+                .and_then(|(contact, _)| arena.contacts.resolve(unit, contact))
+                .map(|held| {
+                    range_cm(
+                        (state.pose.x_cm, state.pose.y_cm),
+                        (held.seen_at.x_cm, held.seen_at.y_cm),
+                    )
+                });
+            seen.push((unit, arena.now_ms, plot));
+        }
+    });
+    println!(
+        "aa1_engine_out_duel: ended {:?} at {} ms",
+        arena.ended.as_ref().map(|end| end.reason),
+        arena.now_ms
+    );
+    let log = ledger_events(&mut arena, &mut bytes);
+    for id in [red, blue] {
+        let first = log
+            .iter()
+            .filter(|event| event.kind.as_str() == "fired")
+            .find(|event| support::unit_of_event(event) == Some(id))
+            .unwrap_or_else(|| {
+                panic!(
+                    "#{} never fired ({} `locked` lines in the log). What the machines were \
+                     doing:\n{}",
+                    id.0,
+                    log.iter()
+                        .filter(|event| event.kind.as_str() == "locked")
+                        .count(),
+                    timeline.render()
+                )
+            });
+        let range = seen
+            .iter()
+            .filter(|(unit, at_ms, _)| *unit == id && *at_ms >= first.t_ms)
+            .min_by_key(|(_, at_ms, _)| *at_ms)
+            .and_then(|(_, _, plot)| *plot)
+            .unwrap_or_else(|| panic!("#{}'s plot at its first shot", id.0));
+        println!(
+            "aa1_engine_out_duel: #{} first fired at {} ms from {range} cm",
+            id.0, first.t_ms
+        );
+        assert!(
+            range > ENGAGE_CM && range <= RELEASE_CM,
+            "#{}'s first shot was taken at {range} cm, not between the two edges",
+            id.0
+        );
+    }
+    for (id, x_cm, y_cm, heading_mdeg) in opened {
+        assert_eq!(
+            arena
+                .unit(id)
+                .map(|unit| (unit.pose.x_cm, unit.pose.y_cm, unit.pose.heading_mdeg)),
+            Some((x_cm, y_cm, heading_mdeg)),
+            "#{} moved with its engine gone",
+            id.0
+        );
+    }
+}
