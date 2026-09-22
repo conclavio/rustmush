@@ -43,14 +43,53 @@ pub fn arena_clock_seconds(status: &str) -> Option<u64> {
     Some(minutes.parse::<u64>().ok()? * 60 + seconds.parse::<u64>().ok()?)
 }
 
-/// A durable cockpit billet is the observable for seat release after a dropped
-/// connection. It is independent of how long the session reaper takes to run.
+/// The durable cockpit billet written by boarding and removed by EXIT/check-in.
+/// A grace expiry releases the pilot's arena binding while retaining this
+/// billet until check-in; use the staff board to observe that release.
 pub async fn holds_a_cockpit(store: &Arc<dyn mush_store::ObjectStore>, unit: u32) -> bool {
     store
         .module_json_get("sim", &format!("assignment:{unit}"))
         .await
         .expect("the assignment read")
         .is_some_and(|value| value.pointer("/seats/cockpit").is_some())
+}
+
+/// Wait for the staff board to acknowledge a pilot's released arena binding.
+/// This is written by the same control release that makes a reconnect unable
+/// to reclaim the cockpit and hands the tank to its reflex controller.
+pub async fn wait_arena_pilot_left(term: &mut Term, callsign: &str, pilot: &str) {
+    let slot = format!("({callsign}): {pilot},");
+    wait_until(
+        STEP_TIMEOUT,
+        "the pilot's arena seat to release",
+        async || {
+            let mark = term.mark();
+            term.send_line("@arena/status").await;
+            if term
+                .expect_one_of_after(
+                    mark,
+                    &[
+                        "ledger writes awaiting",
+                        "please retry in a moment",
+                        "control state unknown",
+                    ],
+                )
+                .await
+                != 0
+            {
+                return false;
+            }
+            strip_ansi(&term.seen[mark..])
+                .lines()
+                .filter(|line| {
+                    let line = line.trim_start();
+                    line.starts_with("red:") || line.starts_with("blue:")
+                })
+                .flat_map(|line| line.split("; "))
+                .any(|entry| entry.contains(&slot) && entry.trim_end().ends_with(", left"))
+        },
+    )
+    .await;
 }
 
 /// Wait for simulation time rather than assuming that a wall-clock sleep

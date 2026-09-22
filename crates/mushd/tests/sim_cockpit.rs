@@ -445,7 +445,9 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
         "the purged shot's completed ledger",
         async || {
             ledger = ledger_text(&server.store, 1).await;
-            ledger.contains("match_ended")
+            // SIM ABORT closes the journal with `aborted`, not `match_ended`.
+            ledger.contains("\"kind\":\"aborted\"")
+                || ledger.contains("\\\"kind\\\":\\\"aborted\\\"")
         },
     )
     .await;
@@ -561,12 +563,7 @@ async fn past_the_grace_the_seat_is_released_and_the_pilot_cannot_reclaim_it() {
     .await;
     drop(ada);
     drop(ada_handle);
-    wait_until(
-        STEP_TIMEOUT,
-        "the expired cockpit billet to release",
-        async || !support::holds_a_cockpit(&server.store, red).await,
-    )
-    .await;
+    support::wait_arena_pilot_left(&mut god, "RA", "Ada").await;
 
     // The seat went with the session: the pilot comes back to a cockpit that is
     // not theirs any more — no reclaim line, and the verbs mean nothing — and

@@ -42,8 +42,14 @@ first failure, establish its cause, and record both the whole-workspace and focu
 Simulator integration waits in `mushd`'s `arena_story`, `arena_custody`, `observer_rule`,
 `sim_cockpit`, `sim_lobby`, `sim_reflex`, `sim_rematch`, `sim_solo`, `sim_units`, and
 `sim_weapons` use `tests/support::wait_until` for state transitions. Its deadline includes the
-SSH or store read itself. Grace expiry waits for the durable cockpit billet to disappear;
-ledger checks wait for the final event; movement premises use the arena's reported clock.
+SSH or store read itself. Grace expiry waits for the named pilot's exact slot to read `left`
+on the staff board, then asserts that reconnect does not restore cockpit control. The current
+disconnect path releases focus and the arena binding but retains the human pilot's durable
+billet until `EXIT` or check-in. The separate source-reviewed `B-81` in [16c](16c-simulator-backlog.md)
+records explicit `+focus` and `STARTUP` admission after release: verified by reading at `8366b3fe`,
+with no runtime probe and no established full control takeover; it is routed to cut B.4. Ledger checks
+wait for the actual terminal event (`aborted` after `SIM ABORT`); movement premises use the
+arena's reported clock.
 Finite scripted firing sequences retain their explicit firing cadence and transient backoff.
 The observer's provisional-phase tests load and select a test-owned sensor/unit pack with
 `classify_after_ms = 15000`; the weapon, unit and rematch fixtures wait for the classified

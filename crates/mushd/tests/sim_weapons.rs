@@ -745,7 +745,8 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     let mut ledger = String::new();
     wait_until(STEP_TIMEOUT, "the weapon match's ledger tail", async || {
         ledger = ledger_text(&server.store, 1).await;
-        ledger.contains("match_ended")
+        // SIM ABORT closes the journal with `aborted`, not `match_ended`.
+        ledger.contains("\"kind\":\"aborted\"") || ledger.contains("\\\"kind\\\":\\\"aborted\\\"")
     })
     .await;
     for kind in ["locked", "fired", "impact"] {

@@ -500,12 +500,7 @@ async fn past_the_grace_the_reflex_controller_drives_the_tank_home() {
     // The line goes, for good.
     drop(ada);
     drop(ada_handle);
-    wait_until(
-        STEP_TIMEOUT,
-        "Ada's cockpit billet to release",
-        async || !support::holds_a_cockpit(&server.store, red).await,
-    )
-    .await;
+    support::wait_arena_pilot_left(&mut god, "RA", "Ada").await;
     // The controller's movement is recorded in the final ledger. Give it six
     // seconds on its own clock, independent of the session-reaper schedule.
     support::wait_arena_seconds(&mut god, 6).await;
@@ -522,7 +517,7 @@ async fn past_the_grace_the_reflex_controller_drives_the_tank_home() {
         "the aborted match's ledger tail",
         async || {
             events = ledger_events(&server.store, 1).await;
-            count(&events, "match_ended") > 0
+            count(&events, "aborted") == 1
         },
     )
     .await;
@@ -581,7 +576,7 @@ async fn with_ai_fill_on_sim_ai_four_fields_all_eight_pods() {
     let mut events = Vec::new();
     wait_until(STEP_TIMEOUT, "the filled match's ledger tail", async || {
         events = ledger_events(&server.store, 1).await;
-        count(&events, "match_ended") > 0
+        count(&events, "aborted") == 1
     })
     .await;
     assert_eq!(
@@ -641,7 +636,7 @@ async fn with_ai_fill_on_the_default_size_is_the_larger_side() {
     let mut events = Vec::new();
     wait_until(STEP_TIMEOUT, "the sized match's ledger tail", async || {
         events = ledger_events(&server.store, 1).await;
-        count(&events, "match_ended") > 0
+        count(&events, "aborted") == 1
     })
     .await;
     assert_eq!(
