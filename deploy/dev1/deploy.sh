@@ -12,6 +12,9 @@ INSTANCE_DIR="$SELF/../instance"        # the shared template + render.sh
 
 echo "== rustmush dev1 deploy =="
 
+# Refuse a stale client before changing the instance, including on rollbacks.
+bash "$BUILD/scripts/check-web-bundle.sh" "$BUILD"
+
 # 1. Service user (shared across future mush instances).
 if ! id mush >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin mush

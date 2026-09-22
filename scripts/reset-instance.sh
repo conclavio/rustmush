@@ -14,34 +14,37 @@
 #   1. stop the unit, so nothing is writing while the store goes away;
 #   2. FLUSHDB this instance's OWN Redis — the one on REDIS_PORT, never the
 #      box's 6379 development instance;
-#   3. delete and recreate the data dir (the ledger archive, the quarantine
+#   3. empty the data dir, preserving ssh_host_ed25519 (the ledger archive, the quarantine
 #      spool, the offer/resolution/decision key rings and the logs all live
 #      under it), owned by the user the unit runs as;
-#   4. start the unit again.
+#   4. optionally bootstrap the first staff login, then start the unit again.
 #
 # The rendered `mushd.toml` is NOT touched: the config is the thing you keep.
 #
 # Usage:
-#   sudo scripts/reset-instance.sh <instance.env> --yes [--unit <name>]
+#   sudo scripts/reset-instance.sh <instance.env> --yes [--unit <name>] [--staff <account>]
 #
 # <instance.env> is the file the instance's mushd.toml was rendered from (see
 # deploy/instance/). It is READ, never sourced — a value here is a sed
 # replacement, not a shell word, and `INSTANCE_TITLE=rustmush dev3 (oWoD)` is a
 # good line in it and a syntax error to `.`.
 #
-# This runs on the Linux VPS. It is deliberately small and dependency-free
-# (systemctl, redis-cli, install, rm) so it can be read in one sitting.
+# This runs on the Linux VPS with systemctl, redis-cli, GNU coreutils and find;
+# optional staff bootstrap also uses runuser and the current server binary.
 
 set -euo pipefail
+# A shell invoked with -x must not echo the bootstrap password.
+set +x
 
 usage() {
-	echo "usage: $0 <instance.env> --yes [--unit <name>]" >&2
+	echo "usage: $0 <instance.env> --yes [--unit <name>] [--staff <account>]" >&2
 	exit 2
 }
 
 env_file=""
 confirmed=0
 unit=""
+staff=""
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -52,6 +55,12 @@ while [ "$#" -gt 0 ]; do
 	--unit)
 		[ "$#" -ge 2 ] || usage
 		unit="$2"
+		shift 2
+		;;
+	--staff)
+		[ "$#" -ge 2 ] && [ -z "$staff" ] || usage
+		staff="$2"
+		[ -n "$staff" ] || usage
 		shift 2
 		;;
 	-h | --help)
@@ -139,15 +148,30 @@ case "$data_dir" in
 	exit 1
 	;;
 esac
+if [ -L "$data_dir" ]; then
+	echo "$0: DATA_DIR must not be a symlink" >&2
+	exit 1
+fi
+# Canonicalize dot and repeated-slash components before the destructive path
+# check: '/opt/./' is still a top-level directory and must also be refused.
+command -v realpath >/dev/null 2>&1 || { echo "$0: realpath is not on PATH" >&2; exit 1; }
+data_dir="$(realpath -m -- "$data_dir")"
 if [ "$(dirname "$data_dir")" = "/" ]; then
 	echo "$0: DATA_DIR must be nested under a parent (got '$data_dir'); refusing to delete a top-level directory" >&2
 	exit 1
+fi
+host_key="$data_dir/ssh_host_ed25519"
+if [ -e "$host_key" ] || [ -L "$host_key" ]; then
+	if [ ! -f "$host_key" ] || [ -L "$host_key" ]; then
+		echo "$0: SSH host key must be a regular file: $host_key" >&2
+		exit 1
+	fi
 fi
 
 # Everything this needs, checked BEFORE anything is stopped. A missing
 # `redis-cli` discovered at step 2 would leave the instance down with its store
 # intact — the one outcome worse than not resetting at all.
-for tool in systemctl redis-cli install; do
+for tool in systemctl redis-cli install find; do
 	if ! command -v "$tool" >/dev/null 2>&1; then
 		echo "$0: $tool is not on PATH" >&2
 		exit 1
@@ -179,7 +203,51 @@ owner="$(systemctl show -p User --value "$unit" 2>/dev/null || true)"
 group="$(systemctl show -p Group --value "$unit" 2>/dev/null || true)"
 [ -n "$group" ] || group="$owner"
 
+# Resolve and preflight the optional CLI before stopping anything. Only the
+# account name reaches argv; the password stays in shell memory and a pipe.
+if [ -n "$staff" ]; then
+	if ! [[ "$staff" =~ ^[A-Za-z0-9_-]{3,20}$ ]] ||
+		[[ "${staff,,}" =~ ^(god|play|guest|new|root|admin)$ ]]; then
+		echo "$0: invalid or reserved staff account name" >&2
+		exit 1
+	fi
+	build_dir="$(require_value BUILD_DIR)"
+	config="$(dirname "$env_file")/mushd.toml"
+	bootstrap="$build_dir/target/release/mush-server"
+	[ -x "$bootstrap" ] || bootstrap="$build_dir/target/release/mushd"
+	if [ ! -x "$bootstrap" ] || [ ! -f "$config" ] || ! command -v runuser >/dev/null 2>&1; then
+		echo "$0: --staff needs the current mush-server or mushd, installed mushd.toml and runuser" >&2
+		exit 1
+	fi
+	runuser -u "$owner" -- "$bootstrap" --help | grep -q -- --bootstrap-staff || {
+		echo "$0: rebuild the binary with --bootstrap-staff support before resetting" >&2
+		exit 1
+	}
+	runuser -u "$owner" -- "$bootstrap" --config "$config" --check-config
+	staff_password=""
+	if [ -t 0 ]; then
+		IFS= read -r -s -p "Password for $staff: " staff_password
+		printf '\n' >&2
+		IFS= read -r -s -p "Confirm password: " staff_password_confirm
+		printf '\n' >&2
+		[ "$staff_password" = "$staff_password_confirm" ] || {
+			echo "$0: passwords did not match; instance unchanged" >&2
+			exit 1
+		}
+		unset staff_password_confirm
+	else
+		IFS= read -r staff_password || [ -n "$staff_password" ]
+	fi
+	# Match the Rust validator's byte limit, including UTF-8 input.
+	password_bytes="$(LC_ALL=C printf '%s' "$staff_password" | wc -c)"
+	if [ "$password_bytes" -lt 4 ] || [ "$password_bytes" -gt 128 ]; then
+		echo "$0: password must be 4-128 bytes" >&2
+		exit 1
+	fi
+fi
+
 echo "resetting instance '$instance': unit $unit, redis 127.0.0.1:$redis_port, data $data_dir"
+echo "preserving SSH host identity: $host_key (if present)"
 
 # Same rule as the tool check: prove the store answers before taking the game
 # down, or a wrong REDIS_PORT ends with a stopped unit and an untouched world.
@@ -196,15 +264,21 @@ systemctl stop "$unit"
 #    with no path selects, which is what the template renders.
 redis-cli -h 127.0.0.1 -p "$redis_port" -n 0 FLUSHDB
 
-# 3. The data dir, whole: the archive tier, the quarantine spool, the three key
-#    rings and the logs. Keys are regenerated on the next boot; keeping them
-#    beside a world that no longer exists is what makes a half-reset confusing.
-rm -rf -- "$data_dir"
+# 3. World-bound data goes; the SSH host identity is deliberately unchanged.
+#    Keep that file in place, so a failed wipe cannot lose a staged backup.
+#    find does not follow symlinks, and rm unlinks symlink entries themselves.
+if [ -d "$data_dir" ]; then
+	find "$data_dir" -mindepth 1 -maxdepth 1 ! -name ssh_host_ed25519 -exec rm -rf -- {} +
+fi
 install -d -o "$owner" -g "$group" -m 0750 -- "$data_dir"
 
-# 4. Back up, on an empty store: the boot seeds Limbo #0 and God #1 and nothing
-#    else, so the instance's own seed (its start rooms) has to be re-applied.
+# 4. Bootstrap while no gateway can register a player first. Failure leaves
+#    the service stopped, so the operator can retry the CLI on the empty store.
+if [ -n "$staff" ]; then
+	printf '%s\n' "$staff_password" | runuser -u "$owner" -- "$bootstrap" --config "$config" --bootstrap-staff "$staff"
+	unset staff_password
+fi
 systemctl start "$unit"
 
-echo "instance '$instance' reset. The world is a fresh seed: Limbo #0 and God #1."
-echo "Re-dig START_ROOM / START_ROOM_UNAPPROVED before letting anyone connect."
+echo "instance '$instance' reset; configured boot packs are applied on startup."
+echo "Check START_ROOM / START_ROOM_UNAPPROVED before letting anyone connect."

@@ -10,20 +10,11 @@ Each instance `<name>` gets:
   **external IPv4 only** (not `0.0.0.0`, not the tailscale address)
 
 The reference instance is **dev1** ([`dev1/`](dev1/)) — ports **6788/6789/6790**.
-A second instance **dev2** ([`dev2/`](dev2/)) runs the same game (a second box, not a second ruleset — 16b cut R-b)
-on ports **6791** (redis) / **6792** (ssh) / **6793** (https), `/opt/rustmush/dev2`.
+The unused dev2 deployment lane has been removed. A second testing instance can
+be provisioned from the shared template with its own data directory, Redis,
+ports, unit and IPC socket; no live instance is changed by this repository edit.
 
-## A new instance: render the template, do not copy a box
-
-`dev2/mushd.toml` predates [`instance/`](instance/) and omits **ten** sections —
-`[log]`, `[store.archive]`, `[offers]`, `[resolution]`, `[discord]`,
-`[economy]`, `[weather]`, `[worldgen]`, `[onboarding]`, `[npc]` — so each of
-those runs on a compiled-in default nobody chose: no log files, no ledger
-archive tier, key directories nobody provisioned, and every character starting
-in Limbo `#0`. Copying it inherits all of that silently. (`dev1/mushd.toml` was
-the other such file until 16b cut F.5 deleted it: dev1 renders the template now,
-from [`dev1/instance.env`](dev1/instance.env).)
-
+## A new instance: render the template
 A new instance renders [`instance/mushd.toml.tmpl`](instance/mushd.toml.tmpl)
 instead. It carries every section with a real value, and it is parameterised by
 an `instance.env` of plain `KEY=value` lines — copy
@@ -111,7 +102,7 @@ Pick fresh ports per instance, and rename the units (`<name>mush.service`,
 
 Each instance can run one of **two ways**:
 
-- **all-in-one `mushd`** (the default; what `dev2/` runs, and what `dev1/`'s own
+- **all-in-one `mushd`** (the default; what `dev1/`'s own
   `deploy.sh` still installs if you choose it) — one process serving SSH + the
   web client; a deploy = `systemctl restart`, which drops connections briefly.
 - **split, hot-restartable** ([`dev1-split/`](dev1-split/), M16c/M16d — and what
@@ -175,7 +166,7 @@ The SPA line is **not** optional: `web/dist` is git-ignored, so the archive
 never carries it, and `crates/mush-net-web/build.rs` embeds whatever is on disk
 and errors only when `index.html` is missing entirely. Since 16b cut Q.5
 `deploy.sh` refuses to start or reload anything when the shipped bundle is
-missing or older than `web/src`, and names the npm command — the bundle can be
+missing or its `web/dist/.commit` differs from the source commit, and names the npm command — the bundle can be
 built on the box (`cd …/build/web && npm ci && npm run build`, Node 22) or
 shipped as above.
 
@@ -226,7 +217,7 @@ unit, which the split deploy disabled but left installed: starting it puts a
 second process on 6789/6790 that the gateway already holds, so it fails to bind
 and `Restart=on-failure` loops it every five seconds — and, because no deploy
 script ran, the config it would have run on was never re-rendered. On a box
-running the all-in-one instead (dev2's shape), the equivalent line is
+running the all-in-one instead (the single-process shape), the equivalent line is
 `cargo build --release -p mushd --features tls && bash …/deploy/dev1/deploy.sh`,
 which likewise re-renders before it restarts.
 
@@ -256,22 +247,20 @@ the world they belonged to). It is scripted instead:
 sudo scripts/reset-instance.sh /opt/rustmush/dev1/instance.env --yes
 ```
 
-It stops the instance's unit (either shape — `<name>mush.service` or the split
-`<name>mush-gateway.service`), `FLUSHDB`s that instance's OWN Redis on its
-`REDIS_PORT`, deletes and recreates `DATA_DIR` owned by the unit's `User=`, and
-starts the unit again. The rendered `mushd.toml` is not touched: the config is
-the thing you keep. After a reset the world is a fresh seed — Limbo `#0` and God
-`#1` — so re-dig `START_ROOM` / `START_ROOM_UNAPPROVED` before letting anyone
-connect (on dev1 there is nothing to re-dig: both are `0`, and the starter area
-is re-applied on the next boot). The script READS `instance.env` with the same
-loop the render recipe uses; it never sources it.
+It stops the instance's unit (either shape), flushes that instance's Redis, and
+removes world-bound data: the archive, quarantine spool, offer/resolution/decision
+keys and logs. It **preserves `DATA_DIR/ssh_host_ed25519` in place**, so existing
+SSH host-key pins remain valid, and keeps the rendered configuration. Startup
+reapplies the configured boot packs; on dev1 both starting rooms are Limbo `#0`.
+The script reads the installed `instance.env`; it never sources it.
 
-This needs an `instance.env` on the box, which is what a **rendered** instance
-has: dev1's deploy scripts write `/opt/rustmush/dev1/instance.env` every time
-they run, so the line above is the reset for dev1 as written. dev2 still ships a
-hand-written `mushd.toml` and has no `instance.env`, so it has no scripted
-reset until it is converted.
-
+Add `--staff keeper` to create the first staff account before the service starts.
+The script prompts without echo on a terminal, or reads one password line from
+stdin. It validates the binary and config before stopping anything; a bootstrap
+failure after the wipe leaves the service stopped so the operator can retry the
+CLI below. The account is linked to God `#1`; passwords and hashes never appear
+in command arguments or output. The reset requires the current release binaries,
+`BUILD_DIR` in `instance.env`, and `mushd.toml` beside that installed file.
 **The first time**, the two steps are ordered: `deploy.sh` is what puts
 `instance.env` on the box, so it runs first, and the reset runs after it —
 
@@ -299,8 +288,7 @@ the templates cannot drift past the binaries that read them
 One key turns the simulator on: **`[tacsim].enabled`**. A rendered instance
 takes it from `TACSIM_ENABLED` in `instance.env`, which both
 [`instance/instance.env.example`](instance/instance.env.example) and
-[`dev1/instance.env`](dev1/instance.env) set to `true`; hand-written
-`deploy/dev2/mushd.toml` writes the key out as `true` directly;
+[`dev1/instance.env`](dev1/instance.env) set to `true`;
 `mushd.toml.example` ships it `false`, which is the documented default.
 
 What the key decides is the *arena*, not the rooms. The centre's lobby, its two
@@ -395,20 +383,32 @@ its next restart with no pack upgrade at all.
 
 ### The first staff login
 
-There is no scripted one. A fresh world seeds Limbo `#0` and God `#1`, and `#1`
-is linked to no account; `god` is a reserved account name, so it cannot be
-registered at the welcome screen. The one route that exists is the legacy
-one-time import: write `<DATA_DIR>/accounts.json` **before** the first boot,
+Stop the instance, then run the current `mush-server` (or all-in-one `mushd`)
+as its service user with `--bootstrap-staff <account>`. It boots the configured
+world without opening listeners, creates one durable account linked to God `#1`,
+and exits. It refuses an in-memory backend, invalid credentials, a live world's
+lifetime lock, or **any existing account**, including an imported legacy account.
+The empty-store check and account insertion are one atomic store operation, so
+concurrent attempts cannot create two first staff accounts.
 
-```json
-{"version": 1,
- "accounts": [{"name": "boss",
-               "hash": "<argon2id PHC string>",
-               "characters": [{"id": 1, "name": "God"}]}]}
+Only the account name goes on argv. The password is one redirected stdin line,
+4–128 bytes; direct terminal stdin is refused to avoid an echoed secret. In Bash:
+
+```bash
+sudo systemctl stop dev1mush-gateway
+sudo -v
+set +x
+IFS= read -rs -p 'Staff password: ' staff_password; printf '\n'
+printf '%s\n' "$staff_password" | sudo -u mush \
+  /opt/rustmush/dev1/build/target/release/mush-server \
+  --config /opt/rustmush/dev1/mushd.toml --bootstrap-staff keeper
+unset staff_password
+sudo systemctl start dev1mush-gateway
 ```
 
-and the boot imports it, logs `M1 accounts.json imported`, and renames the file
-to `accounts.json.imported`. Nothing shipped produces the hash: make it with any
-argon2id tool that emits a PHC string (`$argon2id$v=19$m=...`). After that,
-`connect boss <password>` at the welcome screen is God, and ordinary players
-register themselves with `create <name> <password>`.
+Check that bootstrap succeeded before starting the service. A password manager
+can supply stdin directly. The existing argon2id helper hashes the password; no
+manual PHC-string generation or `accounts.json` edit is needed. At the welcome
+screen, `connect keeper <password>` attaches God. Normal players register with
+`create <name> <password>` afterward. The legacy import remains supported, but
+bootstrap never replaces an existing account or password.
