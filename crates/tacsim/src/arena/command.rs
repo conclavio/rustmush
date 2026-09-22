@@ -136,6 +136,25 @@ pub struct SquadSignal {
     /// pilot uses, and one more centimetre figure in the prompt is a number it
     /// would have to do arithmetic on.
     pub sight_cm: u32,
+    /// **How long an order stands when the model does not say** (16b cut E.2;
+    /// 16c `T-56`), milliseconds.
+    ///
+    /// `[tacsim.arena].deliberate_min_ms` clamped into
+    /// `[crate::deliberation::order::MIN_TTL_MS,
+    /// crate::deliberation::order::MAX_TTL_MS]` — the floor under two requests
+    /// for one squad, which is exactly how long an order has to cover for the
+    /// squad not to be on doctrine while it waits for the next one. Before this
+    /// cut an omitted `ttl_ms` became `MIN_TTL_MS`, a thousand milliseconds:
+    /// dead at the next decide tick, with the commander's whole round trip spent
+    /// on an order nobody carried out.
+    ///
+    /// It rides the signal, and [`crate::deliberation::request::SquadBrief`]
+    /// copies it, so the default stays with the request that produced it across
+    /// the world's async hop. **The prompt never prints it**: the model is not
+    /// told what its silence means, the forced tool still requires `ttl_ms`, and
+    /// only the JSON-in-text fallback can omit one — the same posture
+    /// `SquadBrief::commander` has.
+    pub default_ttl_ms: u32,
     /// The squad's mean health, per mille of the authored totals.
     pub health_permille: u32,
     /// How many of the squad's machines are in each state, in
@@ -305,6 +324,14 @@ impl Arena {
                 // 16b cut E.1: the same product the commander's own frame carries,
                 // so the brief's band word is the word its pilots would read.
                 sight_cm: commander.sight_cm(self.definition.terrain.cell_cm()),
+                // **16b cut E.2** (16c `T-56`): the floor this module enforces,
+                // read here where it is already in hand, so an order that names
+                // no time to live stands exactly as long as the squad will wait
+                // for its next one.
+                default_ttl_ms: self.arena_cfg.deliberate_min_ms.clamp(
+                    crate::deliberation::order::MIN_TTL_MS,
+                    crate::deliberation::order::MAX_TTL_MS,
+                ),
                 health_permille: u32::try_from(health_total / health_count.max(1)).unwrap_or(1_000),
                 states,
                 cell: self.definition.terrain.cell_of(&commander.pose),

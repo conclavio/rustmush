@@ -6944,11 +6944,17 @@ fn reflex_duel() -> Arena {
 /// The controller is **driven**, not asked: `would_overheat` is private to
 /// `arena::reflex` and its only production caller is `engage_orders`, so the
 /// claim is made over the ledger a cooked reflex-held laser tank writes. Every
-/// `fired` line names the coaxial and none names the laser, and the run is kept
-/// inside the band where the laser is genuinely held — the platform is still hot
-/// enough at the end that one laser shot would carry it past the ceiling, which
-/// the last assertion pins so a longer window cannot quietly turn this into a
-/// test of dissipation.
+/// `fired` line names the coaxial and none names the laser.
+///
+/// **16b cut E.2 (16c `T-55`) made the platform's heat have to be held there.**
+/// The machine's question is now the engine's exactly — refuse AT the ceiling,
+/// accept and clamp below it — so a tank one point below its ceiling is a tank
+/// whose laser is legally available again, and a window over a hull that sheds
+/// three a second was quietly becoming a test of dissipation and of which
+/// substep the decide tick lands in. The fixture is held at the ceiling by
+/// **being a fixture that cannot cool** (`heat.per_s` of nought), and the last
+/// assertion is that it never left it — so "cooked" is a property of the tank
+/// under test and not of the arithmetic of a 500 ms pulse.
 #[test]
 fn d2_the_reflex_controller_takes_the_cold_gun_from_a_cooked_platform() {
     // The engine's own answer, which is what the controller has to agree with.
@@ -6965,6 +6971,14 @@ fn d2_the_reflex_controller_takes_the_cold_gun_from_a_cooked_platform() {
 
     // And the machine's, over five seconds of arena time.
     let mut arena = reflex_duel();
+    // A hull that cannot shed: `line_tank_laser` carries a `heat_sink` of three
+    // a second, and three a second is one whole point part-way through every
+    // 500 ms pulse — which under `T-55` is the difference between a laser the
+    // machine may not fire and one it may. `HeatState` is read once, by
+    // `Arena::new`, so this holds for the run.
+    if let Some(heat) = arena.unit_mut(RED).and_then(|state| state.heat.as_mut()) {
+        heat.per_s = 0;
+    }
     at_the_ceiling(&mut arena, RED);
     let mut bytes: Vec<u8> = Vec::new();
     let mut wall = 0_i64;
@@ -6990,14 +7004,18 @@ fn d2_the_reflex_controller_takes_the_cold_gun_from_a_cooked_platform() {
         !fired.iter().any(|line| line.contains("laser")),
         "the machine fired the laser from a cooked platform: {fired:?}"
     );
-    let left = arena
-        .unit(RED)
-        .and_then(tacsim::arena::state::UnitState::heat_now)
-        .unwrap_or(0);
-    assert!(
-        left.saturating_add(20) > 60,
-        "the platform cooled far enough for the laser to become available: {left}"
+    // And the platform was cooked for every one of them — it opened on its
+    // ceiling, it cannot cool and the coaxial adds nothing, so the laser was
+    // refused at the engine's own number at every decide tick in the window and
+    // not merely at the one this fixture happened to start on. Without this the
+    // three assertions above would pass over a tank that had quietly dropped a
+    // point and simply never cycled its laser.
+    assert_eq!(
+        arena.unit(RED).and_then(UnitState::heat_now),
+        arena.unit(RED).and_then(UnitState::heat_max),
+        "the platform left its ceiling, so the run stopped being about a cooked one"
     );
+    assert!(fired.len() >= 2, "one shot is not a habit: {fired:?}");
 }
 
 // ---------------------------------------------------------------------------

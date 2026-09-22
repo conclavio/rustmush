@@ -261,6 +261,8 @@ mod tests {
             states: vec![("patrol".to_string(), 2)],
             cell: Some((1, 1)),
             window: (16, 16),
+            // 16b cut E.2 (16c `T-56`).
+            default_ttl_ms: 30_000,
             contacts: Vec::new(),
         };
         let job = DeliberationJob::Deliberate {
@@ -328,6 +330,8 @@ mod tests {
             states: Vec::new(),
             cell: None,
             window: (16, 16),
+            // 16b cut E.2 (16c `T-56`).
+            default_ttl_ms: 30_000,
             contacts: Vec::new(),
         };
         let job = DeliberationJob::Deliberate { brief };

@@ -720,6 +720,42 @@ fn rounds_on_record(unit: &mush_tactics::TacticalUnit, weapon: &SmolStr) -> Opti
     Some(u32::try_from(held.current.max(0)).unwrap_or(u32::MAX))
 }
 
+/// **Which of a unit's sections carry [`crate::arena::resolution::Consequence::DestroyUnit`]**,
+/// one bit each (16b cut E.2, `B-45`) — the value of [`UnitState::fatal_sections`].
+///
+/// The walk is `TacticalUnit::sections()` in its own order, truncated to
+/// [`crate::arena::condition::MAX_SCANNED_SECTIONS`], because that is the order
+/// and the length [`crate::arena::condition::Condition::of`] packs a reading in:
+/// the mask exists to be ANDed with one, so the two have to be counted the same
+/// way or bit `i` of one would be a different section from bit `i` of the other.
+///
+/// A section the profile does not describe contributes nothing, exactly as
+/// [`crate::arena::damage::entry_consequences`] skips one.
+fn fatal_section_mask(
+    unit: &mush_tactics::TacticalUnit,
+    profile: &crate::arena::resolution::UnitProfile,
+) -> u32 {
+    let mut mask = 0_u32;
+    for (index, (id, _)) in unit
+        .sections()
+        .enumerate()
+        .take(crate::arena::condition::MAX_SCANNED_SECTIONS)
+    {
+        let fatal = profile.section(id.as_str()).is_some_and(|row| {
+            row.consequences.iter().any(|consequence| {
+                matches!(
+                    consequence,
+                    crate::arena::resolution::Consequence::DestroyUnit
+                )
+            })
+        });
+        if fatal {
+            mask |= 1_u32 << index;
+        }
+    }
+    mask
+}
+
 /// **What a unit does with heat** (16b cut X.1; doc 16 §9 item 1: *a `heat` cell
 /// and dissipation appear on the unit*).
 ///
@@ -1055,6 +1091,31 @@ pub struct UnitState {
     /// never moves, and what it *does* is the refusals the hash already folds
     /// through the poses.
     pub slope_limit_pct: Option<u32>,
+    /// **Which of this unit's sections kill it when they go**, one bit each (16b
+    /// cut E.2, `B-45`).
+    ///
+    /// Bit `i` is set when section `i` of the unit's **own section order** —
+    /// `unit.sections()`, which is the order every
+    /// [`crate::arena::condition::Condition`] on this unit is packed in — carries
+    /// [`crate::arena::resolution::Consequence::DestroyUnit`] in
+    /// [`UnitState::profile`]. At most
+    /// [`crate::arena::condition::MAX_SCANNED_SECTIONS`] bits, because that is
+    /// how many bands a reading packs and a bit nothing can be read against
+    /// would be a bit nothing can use.
+    ///
+    /// It is what turns a *reading* into the word "dead": a
+    /// [`crate::arena::condition::Condition`] is packed bands with no idea which
+    /// section is the body, so
+    /// [`Arena::contact_reads_dead`] masks a hold's destroyed sections with this
+    /// one. A unit whose profile names no fatal section has mask `0` and can
+    /// never **read** as dead — only [`ShadowContact::known_dead`] can say so of
+    /// it — which is the honest answer for content that authored no killing
+    /// blow.
+    ///
+    /// Laid down once in [`Arena::new`] and never moved, and **not** folded into
+    /// [`crate::arena::hash::state_hash`]: it is a fact about the unit's fit,
+    /// which is the argument `slope_limit_pct` and `jammer` make.
+    pub fatal_sections: u32,
     /// **The uphill slope of the edge this unit entered its cell by**, per cent
     /// (16b cut X.6; doc 16 §3.4 step 2).
     ///
@@ -1573,6 +1634,33 @@ pub struct ShadowContact {
     /// `detected` are byte for byte the same line, which is the argument cut Q.1
     /// made for the book itself.
     pub numbered: bool,
+    /// **This platform watched the target die** (16b cut E.2, `B-45`; 16c §5's
+    /// Q11).
+    ///
+    /// `false` at every insert site, including
+    /// [`ShadowContact::sighted`]'s own default. **One writer**: the
+    /// `EventKind::UnitDestroyed { unit, by: Some(shooter) }` arm of
+    /// `crate::arena::step`'s notice scan, beside the `Kill` line — the same
+    /// fact the shooter's pilot is sent, written at the same place and off the
+    /// same `by` cut D.4 (`T-08`) reads there.
+    ///
+    /// **A share never carries it.** [`Arena::share_pass`] builds a mesh copy
+    /// from [`ShadowContact::own_seen`], and a kill this platform watched is not
+    /// a *sighting*: it is one fact a gunner read through his own sight, exactly
+    /// as the destroyed band [`Arena::observe_section_lost`] writes is. A mesh
+    /// arrival therefore opens `false` and a teammate keeps its track until the
+    /// track expires, which is doc 16 §1's observer rule applied to the
+    /// machines.
+    ///
+    /// It dies with the row: `ShadowContacts::expire` removes the hold, so a
+    /// re-acquired blip on the same object knows nothing again.
+    ///
+    /// It **is** folded into [`crate::arena::hash::state_hash`], beside
+    /// `numbered` and for the same reason: it moves with no ledger line of its
+    /// own that names the **holder** — a `destroyed` line says who died and who
+    /// killed it and nothing about whose contact learned it — so a replay that
+    /// credited the kill to a different shooter would otherwise compare equal.
+    pub known_dead: bool,
 }
 
 /// **One platform's own sighting of a target** (16b cut F.3): the moment, and
@@ -1632,6 +1720,9 @@ impl ShadowContact {
             // contact by hand is therefore a hold with no number behind it, which
             // is the honest default.
             numbered: false,
+            // **16b cut E.2** (`B-45`): a fresh sighting has watched nothing die.
+            // The one writer is the kill line's own arm.
+            known_dead: false,
         }
     }
 
@@ -2716,6 +2807,12 @@ impl Arena {
             // drove and shot and could never be killed again; this reads the
             // consequences off the record and puts them in force before pulse one.
             let entry = crate::arena::damage::entry_consequences(&unit.unit, &unit.profile);
+            // **16b cut E.2** (`B-45`): which sections of this unit are the body,
+            // as one mask in the unit's own section order — the order every
+            // `Condition` is packed in, so a reading and this mask can be ANDed.
+            // Read once here for the reason the slope limit and the heat cells
+            // are: it is a fact about the fit that nothing in a match moves.
+            let fatal_sections = fatal_section_mask(&unit.unit, &unit.profile);
             let weapons: Vec<WeaponSummary> = unit
                 .weapons
                 .into_iter()
@@ -2749,6 +2846,7 @@ impl Arena {
                 power: Power::Off,
                 mobility: unit.mobility,
                 slope_limit_pct,
+                fatal_sections,
                 // A unit opens the match standing still, so it entered its cell by
                 // no edge at all: grade zero, which is the flat factor.
                 grade_pct: 0,

@@ -237,6 +237,22 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 /// pass's own timestamp. The `jammer` and `eccm` beside it stay out for the
 /// reason they always did: those are facts about the unit's fit that nothing in a
 /// match moves.
+///
+/// **Cut E.2's extension**, under the same one rule.
+/// [`crate::arena::state::ShadowContact::known_dead`] is what the shooter's own
+/// machine reads to drop a target it killed, and it moves with **no ledger line
+/// that names the holder**: a `destroyed` event carries the victim and the
+/// shooter, never the contact row the fact was written onto, so a replay that
+/// credited one shooter's kill to another platform's hold would compare equal
+/// and the two runs would then steer two different tanks. Folding it catches
+/// that at the substep it happened. Because the staging scan runs *after* the
+/// substep's hash is recorded, a kill at substep *k* is first folded at
+/// *k + 1*, exactly as `spent_said`'s writes are.
+///
+/// [`crate::arena::state::UnitState::fatal_sections`] beside it is deliberately
+/// **not** folded: it is laid down once by [`Arena::new`] off the check-out
+/// record and never moves, which is `slope_limit_pct`'s and `jammer`'s argument
+/// word for word.
 #[must_use]
 pub fn state_hash(arena: &Arena) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
@@ -380,7 +396,12 @@ pub fn state_hash(arena: &Arena) -> u64 {
         // **16b cut D.4**: whether this hold was opened under a number, which is
         // what decides the `identified` line and which moves with no
         // distinguishable event of its own — see this function's head.
-        hash = fnv1a64_update(hash, &[u8::from(held.numbered)]);
+        //
+        // **16b cut E.2** (`B-45`): and whether this platform watched the target
+        // die, beside it and for the same reason — the `destroyed` line that
+        // moves it names the victim and the shooter and never the **holder**,
+        // so the fold is the only thing that tells two replays apart.
+        hash = fnv1a64_update(hash, &[u8::from(held.numbered), u8::from(held.known_dead)]);
     }
     // **16b cut Q.1**: the provisional numbers, in the book's own map order.
     hash = fnv1a64_update(
@@ -804,6 +825,44 @@ mod tests {
         // And clean again is the same state: the fold is a function of the value
         // and not of how it got there.
         assert_eq!(with(None), base);
+    }
+
+    /// **16b cut E.2's extension** (`B-45`): whether the platform holding a
+    /// contact watched its target die. The `destroyed` line that moves it names
+    /// the victim and the shooter and never the holder, so nothing but this fold
+    /// tells two replays apart — and the static mask beside it never moves, so
+    /// it must not be folded at all.
+    #[test]
+    fn the_hash_folds_whether_a_hold_knows_its_target_is_dead_and_not_the_fatal_mask() {
+        use crate::arena::state::{Classification, ContactId, SeenPose, ShadowContact};
+
+        let base = state_hash(&two_tanks());
+        let hold = |known_dead: bool| {
+            let mut probe = two_tanks();
+            probe.contacts.insert(
+                ObjId(4),
+                ContactId(7),
+                ShadowContact {
+                    known_dead,
+                    ..ShadowContact::sighted(
+                        ObjId(9),
+                        Classification::Unknown,
+                        1_000,
+                        SeenPose::default(),
+                    )
+                },
+            );
+            state_hash(&probe)
+        };
+        assert_ne!(hold(false), base, "the contact itself went unhashed");
+        assert_ne!(hold(true), hold(false), "`known_dead` alone went unhashed");
+
+        // The mask is a fact about the unit's fit, not about the match.
+        let mut fitted = two_tanks();
+        if let Some(unit) = fitted.unit_mut(ObjId(9)) {
+            unit.fatal_sections = 0b101;
+        }
+        assert_eq!(state_hash(&fitted), base, "the fatal mask was folded");
     }
 
     #[test]

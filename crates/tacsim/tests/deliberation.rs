@@ -33,8 +33,8 @@ use mush_core::{AccountId, AccountIdentity, Ctx, GOD, ObjId, Outbox, ParsedArgs,
 use mush_proto::OutputEvent;
 use mush_sim::data::Pose;
 use mush_tactics::{
-    CellSpec, DefinitionRef, FacetId, FacetSpec, RulesValue, SectionId, SectionSpec, TacticalUnit,
-    UnitSpec,
+    CellAddr, CellSpec, DefinitionRef, FacetId, FacetSpec, RulesValue, SectionId, SectionSpec,
+    TacticalUnit, UnitMutationOp, UnitMutationPlan, UnitSpec,
 };
 use mush_testkit::TestWorld;
 use smol_str::SmolStr;
@@ -168,16 +168,31 @@ fn graph() -> Waypoints {
     )
 }
 
+/// **An impassable cell** — 16b cut E.2 (16c `B-41`) is about a goal no route
+/// reaches.
+fn wall() -> TerrainCell {
+    TerrainCell {
+        class: mush_atlas::TerrainClass::Wall,
+        elev_cm: 0,
+        move_cost: 0,
+    }
+}
+
 fn definition() -> ArenaDefinition {
+    definition_painted(&[])
+}
+
+/// The window with `paint`ed cells over uniform ground.
+fn definition_painted(paint: &[(u16, u16, TerrainCell)]) -> ArenaDefinition {
+    let mut cells = vec![ground(); usize::from(SIDE) * usize::from(SIDE)];
+    for (x, y, cell) in paint {
+        if let Some(slot) = cells.get_mut(usize::from(*y) * usize::from(SIDE) + usize::from(*x)) {
+            *slot = *cell;
+        }
+    }
     ArenaDefinition {
         id: SmolStr::new("tacsim.arena.deliberation"),
-        terrain: ArenaTerrain::new(
-            SIDE,
-            SIDE,
-            CELL_CM,
-            vec![ground(); usize::from(SIDE) * usize::from(SIDE)],
-        )
-        .expect("the test window"),
+        terrain: ArenaTerrain::new(SIDE, SIDE, CELL_CM, cells).expect("the test window"),
         entry_zones: vec![
             EntryZone {
                 team: Team::Red,
@@ -326,28 +341,40 @@ fn field(cfg: &ArenaConfig) -> Arena {
 
 /// The same field with a named scope — [`sight`] says which test wants which.
 fn field_seeing(cfg: &ArenaConfig, sight_cells: u16) -> Arena {
+    field_placed(cfg, sight_cells, &[], [(2, 8), (2, 9), (13, 8)])
+}
+
+/// The same field over `paint`ed ground with the three tanks where a test wants
+/// them — **16b cut E.2** (16c `B-41`) needs a cell no route reaches, and it
+/// needs the red pair somewhere a wall can seal them off from one.
+fn field_placed(
+    cfg: &ArenaConfig,
+    sight_cells: u16,
+    paint: &[(u16, u16, TerrainCell)],
+    cells: [(u16, u16); 3],
+) -> Arena {
     let mut arena = Arena::new(
         CustodyOut {
-            definition: definition(),
+            definition: definition_painted(paint),
             units: vec![
                 tank_seeing(
                     RED_A,
                     Team::Red,
-                    centre(2, 8),
+                    centre(cells[0].0, cells[0].1),
                     Controller::Reflex,
                     sight_cells,
                 ),
                 tank_seeing(
                     RED_B,
                     Team::Red,
-                    centre(2, 9),
+                    centre(cells[1].0, cells[1].1),
                     Controller::Reflex,
                     sight_cells,
                 ),
                 tank_seeing(
                     BLUE,
                     Team::Blue,
-                    centre(13, 8),
+                    centre(cells[2].0, cells[2].1),
                     Controller::Reflex,
                     sight_cells,
                 ),
@@ -1783,4 +1810,583 @@ fn e1_an_ordered_close_caps_the_squad_at_the_pilots_own_close() {
         fired_by(&events(&mut free, &mut free_bytes), RED_A) > 0,
         "with no band the same geometry is inside doctrine's own reach"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.2 — an ordered cell no route reaches ends the order for that unit
+// (16c `B-41`; doc 16 §6)
+//
+// At HEAD the `unreachable` edge fell back to a waypoint and `Patrol` re-asserted
+// the ordered cell on the very next tick, so the fallback never took: the unit
+// steered straight at ground it could not reach and paid a failed search every
+// `repath_ms` for the order's whole life. And because an `advance` suppresses the
+// hostile edges, a squad sent to an unreachable cell was a pacifist patrol for up
+// to `MAX_TTL_MS` with no way of telling the commander.
+// ---------------------------------------------------------------------------
+
+/// The five-by-five ring of wall that seals `(10, 8)` off from the rest of the
+/// window — the cell no route reaches.
+fn sealed_pocket() -> Vec<(u16, u16, TerrainCell)> {
+    let mut paint: Vec<(u16, u16, TerrainCell)> = Vec::new();
+    for x in 9..=11_u16 {
+        paint.push((x, 7, wall()));
+        paint.push((x, 9, wall()));
+    }
+    for y in 7..=9_u16 {
+        paint.push((9, y, wall()));
+        paint.push((11, y, wall()));
+    }
+    paint
+}
+
+/// The cell inside it.
+const POCKET: (u16, u16) = (10, 8);
+
+/// Step to `until_ms`, keeping the signals **and** the controller's counters —
+/// `B-41`'s claim is about how many searches a failed goal costs.
+fn run_counted(
+    arena: &mut Arena,
+    until_ms: i64,
+    bytes: &mut Vec<u8>,
+) -> (
+    Vec<tacsim::arena::command::SquadSignal>,
+    tacsim::arena::reflex::ReflexCounters,
+) {
+    let mut wall = arena.now_ms;
+    let mut signals = Vec::new();
+    let mut counters = tacsim::arena::reflex::ReflexCounters::default();
+    while arena.now_ms < until_ms {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, bytes);
+        counters.absorb(&out.reflex);
+        signals.extend(out.deliberation);
+        if out.ended.is_some() {
+            break;
+        }
+        wall += 500;
+    }
+    (signals, counters)
+}
+
+/// **Take blue's tank off the controller** so it stands where the fixture put
+/// it.
+///
+/// Every one of 16b cut E.2's deliberation tests is about what RED's squad does
+/// over tens of seconds of arena time, and a third reflex machine walking the
+/// two-node patrol graph crosses the whole window in that time — it drives onto
+/// the red pair, is held, and resets the very clocks and edges the tests are
+/// about. A seat with nobody in it is the cheapest way to have a field that
+/// stays where it was built.
+fn park(arena: &mut Arena, unit: ObjId) {
+    arena.set_controller(unit, Controller::Pilot, ReflexState::Withdraw);
+}
+
+/// The `order_expired` lines the black box holds, as `(unit, objective)`.
+fn expiries(events: &[LedgerEvent]) -> Vec<(u64, String)> {
+    events
+        .iter()
+        .filter(|event| event.kind.as_str() == "order_expired")
+        .filter_map(|event| {
+            let value = serde_json::to_value(&event.kind).ok()?;
+            Some((
+                value.get("unit")?.as_u64()?,
+                value.get("objective")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// The waypoint cells doctrine can fall back on.
+fn nodes(arena: &Arena) -> Vec<(u16, u16)> {
+    arena
+        .definition
+        .waypoints
+        .nodes()
+        .iter()
+        .map(|node| (node.x, node.y))
+        .collect()
+}
+
+#[test]
+fn e2_b41_an_unreachable_ordered_cell_ends_the_order_and_the_commander_hears() {
+    // The floor is nought so the signal the drop asks for is reported on the
+    // pulse it happened, which is what makes "the commander hears" a claim about
+    // this cut and not about `deliberate_min_ms`.
+    let cfg = arena_cfg(0);
+    let mut arena = field_placed(
+        &cfg,
+        NARROW_SIGHT_CELLS,
+        &sealed_pocket(),
+        [(2, 8), (2, 9), (13, 13)],
+    );
+    park(&mut arena, BLUE);
+    let mut bytes = Vec::new();
+    run_counted(&mut arena, 2_000, &mut bytes);
+
+    // Ten minutes of authority — `MAX_TTL_MS`, the worst case the row names.
+    issue(
+        &mut arena,
+        &order(Objective::Advance { to: POCKET }, 600_000),
+    );
+    let at = arena.now_ms;
+    let (signals, counters) = run_counted(&mut arena, at + 20_000, &mut bytes);
+
+    // One failed search per unit, over the whole of what would have been the
+    // order's life. At HEAD this was one per unit per `repath_ms` for ten
+    // minutes, and the goal flapped between the cell and the fallback every tick.
+    assert_eq!(
+        counters.path_failures, 2,
+        "the squad is a pair and each of them pays exactly one: {counters:?}"
+    );
+    assert_eq!(counters.orders_expired, 2);
+
+    // One line per unit, carrying the objective word, and nothing after it.
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(
+        expiries(&log),
+        vec![
+            (u64::from(RED_A.0), "advance".to_string()),
+            (u64::from(RED_B.0), "advance".to_string()),
+        ]
+    );
+    // At the arena millisecond of the tick whose search failed, which is the
+    // first decide tick past the order and not the order's nominal expiry.
+    let dropped_at = log
+        .iter()
+        .find(|event| event.kind.as_str() == "order_expired")
+        .map(|event| event.t_ms)
+        .expect("a line");
+    assert!(
+        dropped_at < at + 2_000,
+        "the drop waited for something: {dropped_at} ms against an order taken at {at} ms"
+    );
+
+    // The order is gone for both, and doctrine's own goal stands: a waypoint,
+    // and the machine is driving to it.
+    for unit in [RED_A, RED_B] {
+        assert!(
+            arena.reflex.order(unit).is_none(),
+            "#{} still has one",
+            unit.0
+        );
+        let goal = goal_of(&arena, unit).expect("doctrine has somewhere to be");
+        assert!(
+            nodes(&arena).contains(&goal),
+            "#{} is still steering at the cell it cannot reach: {goal:?}",
+            unit.0
+        );
+    }
+    assert_eq!(arena.reflex.under_order(arena.now_ms), 0);
+
+    // And the commander is told, through the one channel the expiry already had.
+    assert!(
+        signals.iter().any(|signal| signal.squad == red_one()
+            && signal.reason == tacsim::arena::command::SignalReason::OrderExpired),
+        "the squad never asked for a new order: {:?}",
+        signals
+            .iter()
+            .map(|signal| (signal.squad, signal.reason))
+            .collect::<Vec<_>>()
+    );
+
+    // Re-sent, the same cell costs exactly one more search and one more line per
+    // unit — the deliberation floor is what bounds how often a commander may do
+    // that, and here it is nought, so this is the worst case.
+    issue(
+        &mut arena,
+        &order(Objective::Advance { to: POCKET }, 600_000),
+    );
+    let from = arena.now_ms;
+    let (_, again) = run_counted(&mut arena, from + 10_000, &mut bytes);
+    assert_eq!(again.path_failures, 2, "{again:?}");
+    assert_eq!(again.orders_expired, 2);
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(expiries(&log).len(), 4);
+}
+
+#[test]
+fn e2_b41_a_reachable_cell_is_still_obeyed_to_arrival() {
+    // The other half of the rule: nothing about a sealed cell makes the machine
+    // shy of an ordered one it can reach.
+    let cfg = arena_cfg(0);
+    let mut arena = field_placed(
+        &cfg,
+        NARROW_SIGHT_CELLS,
+        &sealed_pocket(),
+        [(2, 8), (2, 9), (13, 13)],
+    );
+    park(&mut arena, BLUE);
+    let mut bytes = Vec::new();
+    run_counted(&mut arena, 2_000, &mut bytes);
+    issue(
+        &mut arena,
+        &order(Objective::Advance { to: POCKET }, 600_000),
+    );
+    let at = arena.now_ms;
+    run_counted(&mut arena, at + 5_000, &mut bytes);
+    assert!(
+        arena.reflex.order(RED_A).is_none(),
+        "the sealed cell dropped"
+    );
+
+    // A second order, naming a cell a route reaches.
+    issue(
+        &mut arena,
+        &order(Objective::Advance { to: (6, 3) }, 600_000),
+    );
+    let from = arena.now_ms;
+    let (_, counters) = run_counted(&mut arena, from + 30_000, &mut bytes);
+    assert_eq!(counters.path_failures, 0, "{counters:?}");
+    assert!(
+        arena.reflex.order(RED_A).is_some(),
+        "the second order stands"
+    );
+    let here = arena
+        .definition
+        .terrain
+        .cell_of(&arena.unit(RED_A).expect("the tank").pose)
+        .expect("on the window");
+    assert!(
+        here.0.abs_diff(6) <= 1 && here.1.abs_diff(3) <= 1,
+        "it never arrived: {here:?}"
+    );
+}
+
+#[test]
+fn e2_b41_doctrine_is_back_the_tick_after_the_order_drops() {
+    // The adversarial half of the row: an `advance` suppresses the hostile edges,
+    // so a squad sent to a cell nobody can reach was a pacifist patrol for the
+    // order's whole life. A hostile planted after the drop is closed on.
+    let cfg = arena_cfg(0);
+    let mut arena = field_placed(
+        &cfg,
+        NARROW_SIGHT_CELLS,
+        &sealed_pocket(),
+        [(2, 8), (2, 9), (13, 13)],
+    );
+    park(&mut arena, BLUE);
+    let mut bytes = Vec::new();
+    run_counted(&mut arena, 2_000, &mut bytes);
+    issue(
+        &mut arena,
+        &order(Objective::Advance { to: POCKET }, 600_000),
+    );
+
+    // Under the live order the contact is walked past: the objective drops the
+    // target on every tick.
+    let at = arena.now_ms;
+    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, at);
+    run_counted(&mut arena, at + 500, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED_A),
+        Some(ReflexState::Patrol),
+        "a movement order does not pursue"
+    );
+    assert!(arena.reflex.order(RED_A).is_none(), "and the order is over");
+
+    // On doctrine, the same contact is a target.
+    let from = arena.now_ms;
+    plant_contact(&mut arena, RED_A, BLUE, Team::Blue, from);
+    run_counted(&mut arena, from + 1_000, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED_A),
+        Some(ReflexState::Approach),
+        "the machine is on doctrine and fighting what it meets"
+    );
+}
+
+#[test]
+fn e2_b41_a_failed_goal_that_is_not_the_ordered_cell_drops_nothing() {
+    // The pin review E-04 asked for. `follow` is the one steer for every state,
+    // so its `Err` arm sees the stand-off cell, the run home and the patrol node
+    // fail as well as the ordered cell — and only the ordered cell ends an order.
+    let cfg = arena_cfg(0);
+
+    // (a) An `engage` order whose stand-off goal is inside the sealed pocket,
+    // because that is where the hostile the squad was pointed at is standing.
+    let mut arena = field_placed(
+        &cfg,
+        NARROW_SIGHT_CELLS,
+        &sealed_pocket(),
+        [(2, 8), (2, 9), POCKET],
+    );
+    park(&mut arena, BLUE);
+    let mut bytes = Vec::new();
+    run_counted(&mut arena, 2_000, &mut bytes);
+    issue(
+        &mut arena,
+        &order(Objective::Engage { target_hint: None }, 600_000),
+    );
+    let at = arena.now_ms;
+    let mut wall_ms = arena.now_ms;
+    let mut counters = tacsim::arena::reflex::ReflexCounters::default();
+    let mut ended = None;
+    while arena.now_ms < at + 6_000 {
+        let now = arena.now_ms;
+        plant_contact(&mut arena, RED_A, BLUE, Team::Blue, now);
+        let out = arena.step(wall_ms, &[], &[]);
+        absorb(&out, &mut bytes);
+        counters.absorb(&out.reflex);
+        // An ended match steps no further and its clock stops, so a loop that
+        // watched only `now_ms` would spin for ever the day red's pair lands a
+        // round on the tank parked in the pocket. Asserted, not merely broken
+        // on: an early end would shorten this window in silence.
+        if out.ended.is_some() {
+            ended = out.ended;
+            break;
+        }
+        wall_ms += 500;
+    }
+    assert!(
+        ended.is_none(),
+        "the match ended under the fixture: {ended:?}"
+    );
+    assert!(
+        counters.path_failures > 0,
+        "the stand-off cell was reachable, so nothing was proved: {counters:?}"
+    );
+    assert!(
+        arena.reflex.order(RED_A).is_some(),
+        "a stand-off goal that failed its search ended an `engage` order"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert!(expiries(&log).is_empty(), "{:?}", expiries(&log));
+
+    // (b) A `withdraw` order whose entry cell is walled off from the squad. The
+    // red zone is columns 0 and 1; a wall down column 2 puts it out of reach.
+    let blocked = wall();
+    let curtain: Vec<(u16, u16, TerrainCell)> = (0..SIDE).map(|y| (2_u16, y, blocked)).collect();
+    let mut arena = field_placed(
+        &cfg,
+        NARROW_SIGHT_CELLS,
+        &curtain,
+        [(5, 8), (5, 9), (13, 13)],
+    );
+    park(&mut arena, BLUE);
+    let mut bytes = Vec::new();
+    run_counted(&mut arena, 2_000, &mut bytes);
+    issue(&mut arena, &order(Objective::Withdraw, 600_000));
+    let at = arena.now_ms;
+    let (_, counters) = run_counted(&mut arena, at + 8_000, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED_A),
+        Some(ReflexState::Withdraw),
+        "the order still puts it in `Withdraw`"
+    );
+    assert!(
+        counters.path_failures > 0,
+        "the entry zone was reachable, so nothing was proved: {counters:?}"
+    );
+    assert!(
+        arena.reflex.order(RED_A).is_some(),
+        "an unreachable entry cell ended a `withdraw` order"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert!(expiries(&log).is_empty(), "{:?}", expiries(&log));
+}
+
+#[test]
+fn e2_b41_a_cell_sealed_only_by_a_remembered_stop_ends_the_order_too() {
+    // **The recorded cost of the rule.** The search that fails runs with the
+    // unit's own `avoid` list (16b cut Q.7), whose entries age out after
+    // `REFLEX_AVOID_TTL_MS` — so a cell sealed for thirty seconds by a remembered
+    // stop ends the order where a retry half a minute later would have kept it.
+    // The commander is told within one signal either way, which is the better
+    // half of that trade; a `SignalReason` that says WHY is new prompt vocabulary
+    // and is not built.
+    let cfg = arena_cfg(0);
+    // A band down column 8 with one gap, at row 8: every route east goes through
+    // (8, 8).
+    let band: Vec<(u16, u16, TerrainCell)> = (0..SIDE)
+        .filter(|y| *y != 8)
+        .map(|y| (8_u16, y, wall()))
+        .collect();
+    let mut arena = field_placed(&cfg, NARROW_SIGHT_CELLS, &band, [(2, 8), (2, 9), (13, 13)]);
+    park(&mut arena, BLUE);
+    let mut bytes = Vec::new();
+    run_counted(&mut arena, 2_000, &mut bytes);
+
+    // The gap is remembered as a stop — the production writer, off the `Blocked`
+    // ledger event, is what a tank held against a parked teammate there would
+    // have used.
+    let now = arena.now_ms;
+    for unit in [RED_A, RED_B] {
+        arena.note_blocked(
+            unit,
+            (8, 8),
+            tacsim::arena::motion::BlockedCause::Occupied,
+            now,
+        );
+    }
+    issue(
+        &mut arena,
+        &order(Objective::Advance { to: (13, 3) }, 600_000),
+    );
+    let at = arena.now_ms;
+    // A short window on purpose: past it the fallback waypoints on the far side
+    // of the band are unreachable too, which is doctrine's own business and not
+    // this row's.
+    let (_, counters) = run_counted(&mut arena, at + 1_500, &mut bytes);
+    assert_eq!(counters.path_failures, 2, "{counters:?}");
+    assert!(
+        arena.reflex.order(RED_A).is_none(),
+        "a transiently sealed route kept the order"
+    );
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(expiries(&log).len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.2 — a standing withdraw order is not rallied out of (16c `B-40`)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2_b40_a_standing_withdraw_order_is_not_rallied_out_of() {
+    // At HEAD a machine that got home under a `withdraw` order and waited out
+    // `rally_ms` rallied to `Patrol`, and the very next tick the order put it
+    // back into `Withdraw` and threw its route away: once per `rally_ms` for the
+    // order's whole life.
+    let cfg = arena_cfg(0);
+    let rally_ms = i64::from(ReflexConfig::default().rally_ms);
+    let mut arena = field_placed(
+        &cfg,
+        NARROW_SIGHT_CELLS,
+        &[],
+        // The red pair opens **in its own entry zone**, so it is home from the
+        // first tick and the only thing between it and the rally is the order.
+        [(1, 8), (1, 9), (13, 13)],
+    );
+    park(&mut arena, BLUE);
+    let mut bytes = Vec::new();
+    run_counted(&mut arena, 2_000, &mut bytes);
+    issue(&mut arena, &order(Objective::Withdraw, 600_000));
+
+    let at = arena.now_ms;
+    run_counted(&mut arena, at + 3 * rally_ms + 2_000, &mut bytes);
+    assert_eq!(
+        state_of(&arena, RED_A),
+        Some(ReflexState::Withdraw),
+        "three rally periods of quiet and it left the state its commander put it in"
+    );
+    let row = arena.reflex.unit(RED_A).cloned().expect("a machine");
+    assert_eq!(
+        row.quiet_since_ms, None,
+        "the quiet clock ran under a standing order"
+    );
+    assert!(!row.rallied, "the order spent the tank's one comeback");
+    assert!(arena.reflex.order(RED_A).is_some());
+}
+
+#[test]
+fn e2_b40_the_rally_runs_again_once_the_withdraw_order_has_expired() {
+    // And what the order was holding back: at the expiry a healthy machine is in
+    // `Patrol` at once, and a hurt one starts its quiet from that tick and
+    // rallies `rally_ms` later — not from some quiet minute in the middle of the
+    // order.
+    let cfg = arena_cfg(0);
+    let rally_ms = i64::from(ReflexConfig::default().rally_ms);
+
+    let mut whole = field_placed(&cfg, NARROW_SIGHT_CELLS, &[], [(1, 8), (1, 9), (13, 13)]);
+    park(&mut whole, BLUE);
+    let mut bytes = Vec::new();
+    run_counted(&mut whole, 2_000, &mut bytes);
+    issue(&mut whole, &order(Objective::Withdraw, 10_000));
+    let at = whole.now_ms;
+    run_counted(&mut whole, at + 11_000, &mut bytes);
+    assert_eq!(
+        state_of(&whole, RED_A),
+        Some(ReflexState::Patrol),
+        "a whole hull comes back the moment the order stops standing"
+    );
+
+    let mut hurt = field_placed(&cfg, NARROW_SIGHT_CELLS, &[], [(1, 8), (1, 9), (13, 13)]);
+    park(&mut hurt, BLUE);
+    hurt_to_withdraw(&mut hurt, RED_A);
+    let mut bytes = Vec::new();
+    run_counted(&mut hurt, 2_000, &mut bytes);
+    issue(&mut hurt, &order(Objective::Withdraw, 10_000));
+    let at = hurt.now_ms;
+    run_counted(&mut hurt, at + 11_000, &mut bytes);
+    assert_eq!(
+        state_of(&hurt, RED_A),
+        Some(ReflexState::Withdraw),
+        "`Withdraw` is terminal for a hurt tank until it has rallied"
+    );
+    let started = hurt
+        .reflex
+        .unit(RED_A)
+        .and_then(|row| row.quiet_since_ms)
+        .expect("the quiet clock starts at the expiry and not before it");
+    assert!(
+        started >= at + 10_000,
+        "the clock had been running under the order: {started} ms"
+    );
+    let from = hurt.now_ms;
+    run_counted(&mut hurt, from + rally_ms + 2_000, &mut bytes);
+    assert_eq!(state_of(&hurt, RED_A), Some(ReflexState::Patrol));
+    assert!(
+        hurt.reflex.unit(RED_A).is_some_and(|row| row.rallied),
+        "and it spent its one comeback here"
+    );
+}
+
+/// Take a tank under `withdraw_permille` without touching anything else: one
+/// plan, the hull's own two cells.
+fn hurt_to_withdraw(arena: &mut Arena, unit: ObjId) {
+    let ops = vec![
+        UnitMutationOp::SetCell {
+            addr: CellAddr::Facet {
+                section: SectionId::new("hull").expect("a section"),
+                facet: FacetId::new("front").expect("a facet"),
+                cell: mush_tactics::CellId::new("armor").expect("a cell"),
+            },
+            value: 1,
+        },
+        UnitMutationOp::SetCell {
+            addr: CellAddr::Section {
+                section: SectionId::new("hull").expect("a section"),
+                cell: mush_tactics::CellId::new("internals").expect("a cell"),
+            },
+            value: 2,
+        },
+    ];
+    let plan =
+        UnitMutationPlan::new(ops, None, Some(SmolStr::new("test:hurt"))).expect("a two-op plan");
+    let hurt = {
+        let state = arena.unit(unit).expect("the tank");
+        mush_tactics::apply(&state.unit, &plan, 0)
+            .expect("the plan applies")
+            .0
+    };
+    if let Some(state) = arena.unit_mut(unit) {
+        state.unit = hurt;
+    }
+}
+
+/// **16b cut E.2** (16c `T-56`): the signal carries the squad's own
+/// deliberation floor as the time to live an order that names none gets, clamped
+/// into the order vocabulary's own bounds.
+#[test]
+fn e2_t56_the_signal_carries_the_floor_as_the_default_time_to_live() {
+    for (floor, want) in [
+        (30_000_u32, 30_000_u32),
+        // Under `MIN_TTL_MS`: an operator may set a floor of half a second, and
+        // an order shorter than the vocabulary allows is not an order.
+        (500, 1_000),
+        // And over `MAX_TTL_MS`.
+        (900_000, 600_000),
+    ] {
+        let mut arena = field(&arena_cfg(floor));
+        park(&mut arena, BLUE);
+        let mut bytes = Vec::new();
+        let signals = run(&mut arena, 1_000, &mut bytes);
+        let signal = signals
+            .first()
+            .unwrap_or_else(|| panic!("the opening signal at a floor of {floor}"));
+        assert_eq!(signal.default_ttl_ms, want, "floor {floor}");
+        // And the brief the world builds from it carries the same number, which
+        // is what `order_of` reads across the async hop.
+        let brief = tacsim::deliberation::SquadBrief::from_signal(1, signal, 2);
+        assert_eq!(brief.default_ttl_ms, want);
+    }
 }

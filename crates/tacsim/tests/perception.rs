@@ -1869,11 +1869,23 @@ fn a_contact_row_prints_a_band_and_a_range_in_metres() {
     assert!(row.render().contains("500 m"), "{}", row.render());
 }
 
+/// **A contact on a wreck holds the `Alert` tempo until its holder knows** (16b
+/// cut E.2, 16c `B-45`; doc 16 §1, §3.1).
+///
+/// Cut F.3 gave this trigger a wreck filter, and read it off the **target's**
+/// live `limits.wreck` — which is a fact no platform on the field has been told.
+/// The tempo therefore fell at the arena millisecond a hull burned, through a
+/// wall, for a platform whose track was three seconds stale; and how often a
+/// pilot is sent a frame is something a pilot can count, so that was hidden
+/// truth reaching a pilot on the one surface this trigger's own doc says it must
+/// not. The filter is now [`Arena::contact_reads_dead`]: the hold's own
+/// knowledge.
+///
+/// `sees_wrecks: false` is untouched and still does what it was meant to do —
+/// the wreck stops being refreshed and the track expires — it simply takes the
+/// time to live to do it rather than one instant.
 #[test]
-fn a_contact_on_a_wreck_does_not_hold_the_alert_tempo() {
-    // Doc 16 §3.1's `Alert` trigger had no wreck filter, so a classified contact
-    // on a burnt-out hull held the whole arena at the 1,000 ms cadence — exactly
-    // what `sees_wrecks: false` was meant to let go of.
+fn a_contact_on_a_wreck_holds_the_alert_tempo_until_its_holder_knows() {
     let mut arena = watching();
     pass(&mut arena, EYE, 9, 9_000);
     assert!(
@@ -1884,9 +1896,34 @@ fn a_contact_on_a_wreck_does_not_hold_the_alert_tempo() {
         state.limits.wreck = true;
     }
     assert!(
-        !arena.contact_within_alert_range(),
-        "a contact on a wreck still raised Alert"
+        arena.contact_within_alert_range(),
+        "the hull burned and the eye's track said so before the eye did"
     );
+
+    // The knowledge, written where the kill line writes it: the eye's own round
+    // finished the tank. Now the trigger lets go.
+    let id = draw_contact_id(arena.seed, EYE, MARK);
+    if let Some(held) = arena.contacts.get_mut(EYE, id) {
+        held.known_dead = true;
+    }
+    assert!(
+        !arena.contact_within_alert_range(),
+        "a contact the holder knows is dead still raised Alert"
+    );
+
+    // And a contact whose unit has left the match is dropped at once, **with the
+    // kill still written on the hold**: *gone* is not *dead*, there is no unit
+    // for the fact to be about, and `Arena::contact_reads_dead` says so in that
+    // order — the lookup before the flag, which is what its doc claims and what
+    // every caller that tests `self.unit(target)` itself relies on.
+    arena.units.retain(|unit| unit.id != MARK);
+    let held = arena.contacts.get(EYE, id).copied().expect("the hold");
+    assert!(held.known_dead, "the fixture lost the fact it is about");
+    assert!(
+        !arena.contact_reads_dead(&held),
+        "a contact on a unit that has left the match read as dead"
+    );
+    assert!(!arena.contact_within_alert_range());
 }
 
 #[test]

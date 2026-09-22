@@ -272,12 +272,25 @@ pub struct ReflexUnit {
     /// cut Q.7), arena milliseconds; `None` while it holds one, or while it is
     /// still on its way home. [`crate::config::ReflexConfig::rally_ms`] of it is
     /// what returns the unit to `Patrol`.
+    ///
+    /// **16b cut E.2 (16c `B-40`)**: it is also held at `None` for the whole of
+    /// a live `Objective::Withdraw`. A unit a commander sent home does not rally
+    /// out of the order — the order would put it back in `Withdraw` on the next
+    /// tick — so the clock does not even start until the order has expired, and
+    /// the `rally_ms` a hurt unit then waits is counted from that tick and not
+    /// from some quiet minute in the middle of the order.
     pub quiet_since_ms: Option<i64>,
     /// **This unit has already come back into the fight once** (16b cut Q.7).
     ///
     /// The health edge is not taken twice: a tank that withdrew, waited out its
     /// quiet and rallied fights to the end. A commander's `Objective::Withdraw`
     /// still overrides it, and so does having nothing left to fire.
+    ///
+    /// **16b cut E.2 (16c `B-40`)**: a standing `Objective::Withdraw` is
+    /// therefore never what sets it. Under such an order the rally does not run
+    /// at all, so the one return a machine is owed is still owed when the order
+    /// ends — which is the right way round: the commander spent the order, not
+    /// the tank's one comeback.
     pub rallied: bool,
     /// **The squad order it is under** (16b cut N.2; doc 16 §6 "Deliberation"),
     /// with the arena milliseconds it was accepted at and runs out at.
@@ -858,6 +871,13 @@ impl Arena {
     /// the arena ran at 500 ms from the first classification to the end of the
     /// match. It now means what doc 16 §3.1's table says: hostiles are within
     /// weapons range of each other.
+    ///
+    /// **16b cut E.2 (16c `B-45`)**: and *hostile* is read off the contact,
+    /// through [`Arena::contact_reads_dead`], rather than off the target's live
+    /// wreck flag. The tempo now falls when the platforms holding the wreck
+    /// **learn** it — at the kill for whoever fired the round, at the track's
+    /// expiry for everybody else — and not at the arena millisecond the hull
+    /// burned. A contact whose unit has left the match still counts for nothing.
     #[must_use]
     pub fn hostile_in_weapons_range(&self) -> bool {
         let cell_cm = self.definition.terrain.cell_cm();
@@ -866,9 +886,8 @@ impl Arena {
             reach != 0
                 && self.contacts.of(viewer.id).any(|(_, held)| {
                     held.class.team().is_some_and(|team| team != viewer.team)
-                        && self
-                            .unit(held.target)
-                            .is_some_and(|target| !target.limits.wreck)
+                        && self.unit(held.target).is_some()
+                        && !self.contact_reads_dead(held)
                         && held.seen_at.range_from(&viewer.pose) <= reach
                 })
         })
@@ -1014,9 +1033,22 @@ impl Arena {
         // is the whole of what this unit knows (doc 16 §3.6), so a contact that has
         // expired, or whose unit has left the match, drops the machine back to
         // `Patrol`.
-        if let Some((contact, target)) = row.target
-            && (self.contacts.resolve(id, contact).map(|held| held.target) != Some(target)
-                || self.unit(target).is_none_or(|state| state.limits.wreck))
+        //
+        // **16b cut E.2 (16c `B-45`)**: and a target the platform **knows** is
+        // dead — its own kill, or a reading that shows the body gone
+        // ([`Arena::contact_reads_dead`]). Before this cut the edge read the
+        // target's live `limits.wreck`, so a machine dropped a target the pulse
+        // it died however stale its track, whoever killed it, through a wall and
+        // across the map. That is hidden truth steering a unit, which doc 16 §1
+        // forbids every other reader; a pilot in the same seat keeps the row on
+        // `CONTACTS` until it expires, and so does the machine now.
+        let held_target = row
+            .target
+            .and_then(|(contact, _)| self.contacts.resolve(id, contact));
+        if let Some((_, target)) = row.target
+            && (held_target.map(|held| held.target) != Some(target)
+                || self.unit(target).is_none()
+                || held_target.is_some_and(|held| self.contact_reads_dead(held)))
         {
             row.target = None;
             if matches!(row.state, ReflexState::Approach | ReflexState::Engage) {
@@ -1306,7 +1338,24 @@ impl Arena {
                     // hostile on the board for `rally_ms` of arena time: back to
                     // `Patrol`, once. A unit with nothing to fire never rallies —
                     // it has no fight to come back to.
-                    if self.holds_a_hostile(id) || !arrived || dry {
+                    //
+                    // **16b cut E.2 (16c `B-40`)**: and neither does a unit a
+                    // commander has told to break off. The rally is doctrine's
+                    // own answer to "the board is quiet"; under a live
+                    // `Objective::Withdraw` the arm at the top of this function
+                    // puts the machine straight back into `Withdraw` on the very
+                    // next tick and throws its route away with it, so what the
+                    // rally bought was one lost route per `rally_ms` for the
+                    // order's whole life. The clock is not merely ignored, it is
+                    // held at `None`: see [`ReflexUnit::quiet_since_ms`]. When
+                    // the order expires the expiry block above returns a healthy
+                    // unit to `Patrol` at once, and a hurt one starts its quiet
+                    // from that tick.
+                    let ordered_home = matches!(
+                        order.as_ref().map(|order| order.objective),
+                        Some(Objective::Withdraw)
+                    );
+                    if self.holds_a_hostile(id) || !arrived || dry || ordered_home {
                         row.quiet_since_ms = None;
                     } else {
                         let since = *row.quiet_since_ms.get_or_insert(t_ms);
@@ -1326,7 +1375,20 @@ impl Arena {
         if !matches!(row.state, ReflexState::Startup | ReflexState::Disabled)
             && plan.speed_cms.is_none()
         {
-            self.follow(id, t_ms, &mut row, here, memory, counters, &mut plan);
+            // **16b cut E.2 (16c `B-41`)**: the steer is handed the order this
+            // tick decided under — the one the squad filter above already
+            // applied — because a search that fails for the order's OWN cell
+            // ends the order for this unit, and nothing else does.
+            self.follow(
+                id,
+                t_ms,
+                &mut row,
+                here,
+                memory,
+                counters,
+                order.as_ref(),
+                &mut plan,
+            );
         }
         memory.units.insert(id, row);
         plan
@@ -1433,12 +1495,16 @@ impl Arena {
         }
         // **16b cut Q.7**: and the heat. The controller reads the platform's
         // ceiling the way `crate::arena::weapons`'s acceptance does — the `heat`
-        // cell against its own maximum — and skips a weapon whose shot would take
-        // it there, so it does not feed an `Overheated` refusal into the resolver
-        // every tick and then sit with a hot gun. A unit already at the ceiling
-        // fires nothing at all, which is the same sentence read at zero cost. A
-        // unit whose content declares no heat is never held back here, which is
-        // every stock tank.
+        // cell against its own maximum — so it does not feed an `Overheated`
+        // refusal into the resolver every tick and then sit with a hot gun.
+        //
+        // **16b cut E.2 (16c `T-55`)**: and it is the engine's line and not one
+        // shot short of it. The engine refuses AT the ceiling and accepts and
+        // clamps below it, so the machine takes a hot shot that will land it on
+        // the ceiling and holds its fire on the next tick — where before it
+        // declined the shot a pilot in the same seat could fire. A unit whose
+        // content declares no heat is never held back here, which is every stock
+        // tank. See [`would_overheat`].
         plan.fire = unit
             .weapons
             .iter()
@@ -1539,13 +1605,18 @@ impl Arena {
     /// It is the contact store and nothing else (doc 16 §3.6), so a unit that
     /// cannot see the enemy rallies and a unit being watched from a ridge does
     /// not.
+    ///
+    /// **16b cut E.2 (16c `B-45`)**: *live* is [`Arena::contact_reads_dead`] and
+    /// not the target's own wreck flag, so a machine that killed the last
+    /// hostile starts its quiet clock at once and one that watched a teammate do
+    /// it out of its own sight waits for the track to expire. A contact whose
+    /// unit has left the match is not a hostile either way.
     fn holds_a_hostile(&self, id: ObjId) -> bool {
         self.unit(id).is_some_and(|unit| {
             self.contacts.of(id).any(|(_, held)| {
                 matches!(held.class, Classification::Classified { team } if team != unit.team)
-                    && self
-                        .unit(held.target)
-                        .is_some_and(|target| !target.limits.wreck)
+                    && self.unit(held.target).is_some()
+                    && !self.contact_reads_dead(held)
             })
         })
     }
@@ -1573,6 +1644,14 @@ impl Arena {
     /// One trace, counted, and only when the range already says a shot is possible:
     /// the controller does not probe the map, it checks the one line it is about to
     /// spend a round on.
+    ///
+    /// **16b cut E.2 (16c `B-45`) deliberately left this alone**, with
+    /// [`Arena::fire_line`], the sensor pass's own `sees_wrecks` rule,
+    /// `Arena::resolve_lock`, `Arena::resolve_fire` and the impact's
+    /// re-validation. Those are **physics**: they answer *would this round
+    /// arrive*, which is not a thing the shooter knows in advance. A machine
+    /// that fires at a wreck it still believes in spends the round and reads a
+    /// miss, as a pilot would.
     fn reflex_has_line(&self, id: ObjId, target: ObjId, counters: &mut ReflexCounters) -> bool {
         counters.traces = counters.traces.saturating_add(1);
         let (sight, cover) = self.fire_line(id, target);
@@ -1636,7 +1715,13 @@ impl Arena {
             let Some(target) = self.unit(held.target) else {
                 continue;
             };
-            if target.limits.wreck {
+            // **16b cut E.2** (16c `B-45`): a candidate this platform **knows**
+            // is dead is no candidate. Read off the hold and not off
+            // `target.limits.wreck`, so the score ranks what the machine holds
+            // rather than what the world is; a track that has not caught up yet
+            // still ranks, and the machine spends a round finding out, exactly
+            // as a gunner would.
+            if self.contact_reads_dead(held) {
                 continue;
             }
             // **16b cut F.3**: scored off the plot — the range to where this
@@ -1825,6 +1910,13 @@ impl Arena {
     }
 
     /// Keep the route fresh and turn it into a heading and a speed.
+    ///
+    /// `order` is the standing order **this tick decided under** — already
+    /// filtered by [`Arena::decide`]'s squad test — and it is here for exactly
+    /// one thing: 16b cut E.2's `B-41` rule, that a failed search for the
+    /// order's own `Advance` cell ends the order for this unit. It is compared
+    /// against rather than `row.order` so that a unit whose roster moved under
+    /// the order, and which is therefore obeying nothing, drops nothing either.
     #[allow(clippy::too_many_arguments)]
     fn follow(
         &self,
@@ -1834,6 +1926,7 @@ impl Arena {
         here: Option<(u16, u16)>,
         memory: &mut ReflexMemory,
         counters: &mut ReflexCounters,
+        order: Option<&Order>,
         plan: &mut ReflexPlan,
     ) {
         let Some(unit) = self.unit(id) else {
@@ -1912,6 +2005,57 @@ impl Arena {
                         // instead, so the fallback cannot be the same refusal twice.
                         counters.path_failures = counters.path_failures.saturating_add(1);
                         let _ = why;
+                        // **16b cut E.2 (16c `B-41`)**: and when the goal that
+                        // failed is the live order's own `Advance` cell, the
+                        // **order is over for this unit**.
+                        //
+                        // Before this cut the fallback below took, and the
+                        // `Patrol` arm re-asserted the ordered cell on the very
+                        // next tick (`row.goal != Some(to)`), so the fallback
+                        // never held: the unit steered straight at ground no
+                        // route reaches and paid a failed search every
+                        // `repath_ms` for the order's whole life — and because
+                        // an `Advance` suppresses the hostile edges, a squad
+                        // sent to an unreachable cell was a pacifist patrol for
+                        // up to `MAX_TTL_MS`. The only channel back to the
+                        // commander, `Arena::note_order_expired`, fired on
+                        // expiry alone, so nobody was ever told.
+                        //
+                        // Nothing more is needed here: `Arena::reflex_tick`
+                        // already turns `plan.expired` into the one
+                        // `order_expired` line (this unit, its squad, the word
+                        // `advance`), counts it in
+                        // `ReflexCounters::orders_expired` and calls
+                        // `note_order_expired`, so the squad's next signal
+                        // carries `SignalReason::OrderExpired` and the commander
+                        // decides again — no sooner than `deliberate_min_ms`
+                        // after its last signal. From the next tick the unit is
+                        // on doctrine: the fallback waypoint stands because
+                        // nothing re-asserts the cell, the hostile edges run
+                        // again, and it fights what it meets.
+                        //
+                        // **Only the ordered cell.** A stand-off cell under an
+                        // `Engage` order, the entry cell under a `Withdraw` and
+                        // a patrol node all fail through this same arm and drop
+                        // nothing: they fall back exactly as they did.
+                        //
+                        // What it costs, stated: a commander that re-sends the
+                        // same unreachable cell buys one failed search per unit
+                        // per order, which the deliberation floor bounds at one
+                        // per `deliberate_min_ms`; and a unit whose route was
+                        // sealed only by a remembered stop
+                        // ([`ReflexUnit::avoid`], which ages out after
+                        // [`REFLEX_AVOID_TTL_MS`]) loses the rest of that order
+                        // where a retry thirty seconds later would have kept it.
+                        // The commander is told within one signal either way,
+                        // which is the better half of that trade.
+                        if let Some(order) = order
+                            && let Objective::Advance { to } = order.objective
+                            && row.goal == Some(to)
+                        {
+                            row.order = None;
+                            plan.expired = Some((order.squad, order.objective.as_str()));
+                        }
                         self.fall_back_to_waypoint(id, row, here);
                     }
                 }
@@ -2168,17 +2312,24 @@ fn is_dry(unit: &UnitState) -> bool {
 /// cell and its own maximum — plus the weapon's `heat_per_shot`. A platform with
 /// no heat at all answers `false` for every weapon.
 ///
-/// **It is the engine's own line and not one shot short of it.**
-/// [`crate::arena::state::UnitState::overheated`] refuses at the ceiling *and not
-/// merely past it*: a shot that would carry a unit past the maximum leaves it
-/// exactly at it, and the **next** shot is the one refused. So the controller
-/// declines a shot that would land the unit **above** the ceiling and takes the
-/// one that lands it on it — otherwise a weapon whose `heat_per_shot` equals its
-/// platform's whole ceiling would be a gun a pilot could fire from cold and a
-/// machine could never fire at all, which is the two halves of one platform
-/// disagreeing about whether the gun works. A unit already at the ceiling is
-/// asked the engine's own question and answers `true` for every weapon **that
-/// makes heat** — **16b cut D.2** (`B-16`) took the zero out of that set, in both
+/// **It is the engine's own line, and exactly it** (16b cut E.2, 16c `T-55`).
+///
+/// The engine refuses **at** the ceiling and accepts and clamps below it:
+/// [`crate::arena::state::UnitState::overheated`] is `now >= max`, and
+/// `Arena::raise_heat` writes `min(now + per_shot, max)`. So does the machine —
+/// this is [`crate::arena::state::UnitState::overheated`] and nothing else.
+///
+/// Until this cut it declined a shot that would land the unit **above** the
+/// ceiling, one whole shot short of the engine's line, so a pilot could fire a
+/// round a machine in the same tank could not: the two halves of one platform
+/// disagreeing about whether the gun works, which is the very sentence this
+/// paragraph used to make the other argument with. A hot shot below the ceiling
+/// is a shot the resolver accepts and clamps, so the machine takes it and cooks
+/// itself to the ceiling exactly as a crew would; the **next** one is refused,
+/// by both halves, at the same number.
+///
+/// A unit already at the ceiling answers `true` for every weapon **that makes
+/// heat** — **16b cut D.2** (`B-16`) took the zero out of that set, in both
 /// halves at once: the ceiling is what a hot shot would add to, and a weapon
 /// whose `heat_per_shot` is nought adds nothing, so a platform that has cooked
 /// itself may still fire its cold guns. `crate::arena::weapons`'s acceptance
@@ -2192,19 +2343,15 @@ fn would_overheat(unit: &UnitState, weapon: &str) -> bool {
     let Some(heat) = unit.heat.as_ref() else {
         return false;
     };
-    let Some(now) = unit.heat_now() else {
+    if unit.heat_now().is_none() {
         return false;
-    };
+    }
     // 16b cut D.2 (`B-16`): a cold gun is never held back, at the ceiling or
     // anywhere else.
-    let per_shot = heat.per_shot(weapon);
-    if per_shot == 0 {
+    if heat.per_shot(weapon) == 0 {
         return false;
     }
-    if now >= heat.max {
-        return true;
-    }
-    now.saturating_add(per_shot) > heat.max
+    unit.overheated()
 }
 
 /// The per-unit rows, for [`crate::arena::hash::state_hash`] — the one reader
@@ -2228,6 +2375,10 @@ mod tests {
     /// and below it — otherwise a cooked platform's cold gun is one a pilot may
     /// fire and a machine may not, which is the two halves of one platform
     /// disagreeing about whether the gun works.
+    ///
+    /// **16b cut E.2** (16c `T-55`) made the same sentence true one row higher:
+    /// the copy is now the engine's predicate exactly, so a **hot** gun one shot
+    /// short of the ceiling is one both halves fire.
     #[test]
     fn d2_a_weapon_that_makes_no_heat_never_holds_the_controller_back() {
         let mut unit = tank(ObjId(4), Team::Red, pose(1_500, 1_500));
@@ -2253,10 +2404,14 @@ mod tests {
         };
         // Cold: neither is held back.
         assert_eq!(asked(&arena), (false, false));
-        // One pulse short of the ceiling: the hot one's own shot would carry it
-        // past, the cold one adds nothing.
+        // One shot short of the ceiling. **16b cut E.2 (16c `T-55`) reversed
+        // this row**: the engine accepts a shot that would carry a unit past the
+        // maximum and clamps it there (`Arena::raise_heat`), and it refuses only
+        // AT the ceiling, so the machine takes this one too. Before the cut the
+        // hot gun read `true` here — a round a pilot in the same seat could fire
+        // and a machine could not.
         set_heat(&mut arena, ObjId(4), 50);
-        assert_eq!(asked(&arena), (true, false));
+        assert_eq!(asked(&arena), (false, false));
         // **At** the ceiling, which is the branch this cut changed: the engine
         // refuses the hot gun and takes the cold one, and so does the machine.
         set_heat(&mut arena, ObjId(4), 60);

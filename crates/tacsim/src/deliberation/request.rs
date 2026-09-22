@@ -92,6 +92,18 @@ pub struct SquadBrief {
     pub cell: Option<(u16, u16)>,
     /// The window's `(columns, rows)`, so `advance` can be bounded.
     pub window: (u16, u16),
+    /// **How long an order stands when the model does not say** (16b cut E.2;
+    /// 16c `T-56`), copied from
+    /// [`crate::arena::command::SquadSignal::default_ttl_ms`].
+    ///
+    /// Like [`SquadBrief::commander`] it **never reaches the prompt**:
+    /// [`user_prompt`] does not print it, the forced tool still lists `ttl_ms`
+    /// as required, and the only answer that can omit one is the JSON-in-text
+    /// fallback. It is a field rather than an argument to [`order_of`] because
+    /// the brief is what crosses the world task's async seam — the default has
+    /// to travel with the signal that produced it, or the reply would be
+    /// finished under a floor from some other match.
+    pub default_ttl_ms: u32,
     /// What the commander holds, nearest first.
     pub contacts: Vec<BriefContact>,
 }
@@ -163,6 +175,9 @@ impl SquadBrief {
                 .collect(),
             cell: signal.cell,
             window: signal.window,
+            // 16b cut E.2 (16c `T-56`): carried, not re-derived — the arena knows
+            // its own floor and the world does not.
+            default_ttl_ms: signal.default_ttl_ms,
             contacts,
         }
     }
@@ -334,7 +349,19 @@ fn order_of(brief: &SquadBrief, payload: &OrderPayload) -> Result<Order, String>
             None => return Err("`max_range_band` must be close, effective or far".to_string()),
         },
     };
-    let ttl_ms = payload.ttl_ms.unwrap_or(MIN_TTL_MS);
+    // **16b cut E.2** (16c `T-56`): an omitted time to live is the squad's own
+    // deliberation floor and not [`MIN_TTL_MS`]. A thousand milliseconds is dead
+    // at the next decide tick, so a reply that left the field out bought the
+    // commander a round trip and the squad nothing; the floor is how long the
+    // squad will wait for its next order, which is the only honest reading of
+    // "as long as I meant".
+    //
+    // The horizon rides along **on purpose**: an order that omits both now
+    // records a horizon of `default_ttl_ms` where it recorded 1,000. That is the
+    // existing rule (an unstated horizon is the time to live) reading a better
+    // number; nothing in `src/arena` reads `horizon_ms` today, so no behaviour
+    // moves with it, but it is in the order the `ordered` ledger line quotes.
+    let ttl_ms = payload.ttl_ms.unwrap_or(brief.default_ttl_ms);
     let order = Order {
         squad: brief.squad,
         objective,
@@ -505,6 +532,9 @@ mod tests {
             // is thirds of the lesser of. Here it reaches the gun's last band, so
             // the limit is 12,000 either way.
             sight_cm: 12_000,
+            // 16b cut E.2 (16c `T-56`): the shipped floor, clamped — what an
+            // order that names no time to live gets.
+            default_ttl_ms: 30_000,
             health_permille: 900,
             states: [0, 2, 0, 0, 0, 0],
             cell: Some((3, 4)),
@@ -655,6 +685,86 @@ mod tests {
                 ..OrderPayload::default()
             })
             .contains("max_range_band")
+        );
+    }
+
+    /// **16b cut E.2** (16c `T-56`): a reply that names no time to live gets the
+    /// squad's own deliberation floor, and the horizon rides along with it.
+    ///
+    /// Before this cut it got [`MIN_TTL_MS`] — a thousand milliseconds, dead at
+    /// the next decide tick — so a commander's whole round trip bought an order
+    /// nobody carried out.
+    #[test]
+    fn e2_t56_an_omitted_time_to_live_is_the_squads_own_floor() {
+        let brief = brief();
+        assert_eq!(brief.default_ttl_ms, 30_000, "carried from the signal");
+
+        let bare = |payload: OrderPayload| order_of(&brief, &payload).expect("a valid order");
+        let order = bare(OrderPayload {
+            objective: "hold".to_string(),
+            ..OrderPayload::default()
+        });
+        assert_eq!(order.ttl_ms, 30_000);
+        // The existing rule — an unstated horizon is the time to live — reading a
+        // better number. Nothing in `src/arena` reads `horizon_ms`, so no
+        // behaviour moves with it; it is what the `ordered` ledger line quotes.
+        assert_eq!(order.horizon_ms, 30_000);
+
+        // A stated time to live still wins, and still sets the unstated horizon.
+        let order = bare(OrderPayload {
+            objective: "hold".to_string(),
+            ttl_ms: Some(5_000),
+            ..OrderPayload::default()
+        });
+        assert_eq!((order.ttl_ms, order.horizon_ms), (5_000, 5_000));
+
+        // The horizon's own ceiling. At the shipped constants `MAX_TTL_MS` and
+        // `MAX_HORIZON_MS` are the same number, so a default can never exceed it
+        // on its own — the `min` is what keeps that true if either moves — and a
+        // horizon the model states is clamped either way.
+        let mut long = brief.clone();
+        long.default_ttl_ms = MAX_TTL_MS;
+        let order = order_of(
+            &long,
+            &OrderPayload {
+                objective: "hold".to_string(),
+                ..OrderPayload::default()
+            },
+        )
+        .expect("a valid order");
+        assert_eq!(order.horizon_ms, MAX_HORIZON_MS);
+        let order = bare(OrderPayload {
+            objective: "hold".to_string(),
+            horizon_ms: Some(MAX_HORIZON_MS + 1),
+            ..OrderPayload::default()
+        });
+        assert_eq!(order.horizon_ms, MAX_HORIZON_MS);
+    }
+
+    /// **The model is not told what its silence means** (16b cut E.2, 16c
+    /// `T-56`): the field rides the brief the way `SquadBrief::commander` does,
+    /// and the prompt is byte-identical whatever it holds.
+    #[test]
+    fn e2_t56_the_default_time_to_live_never_reaches_the_prompt() {
+        let mut short = brief();
+        short.default_ttl_ms = MIN_TTL_MS;
+        let mut long = brief();
+        long.default_ttl_ms = MAX_TTL_MS;
+        assert_eq!(user_prompt(&short), user_prompt(&long));
+        assert!(
+            !user_prompt(&short).contains("1000"),
+            "{}",
+            user_prompt(&short)
+        );
+        // And the forced tool still requires it, so only the JSON-in-text
+        // fallback can leave it out.
+        let schema = order_tool().input_schema;
+        assert_eq!(
+            schema.get("required").and_then(serde_json::Value::as_array),
+            Some(&vec![
+                serde_json::Value::String("objective".to_string()),
+                serde_json::Value::String("ttl_ms".to_string()),
+            ])
         );
     }
 

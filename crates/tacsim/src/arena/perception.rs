@@ -1444,6 +1444,13 @@ impl Arena {
                                 // its classification is not a rename and the
                                 // `identified` line is not said.
                                 numbered: false,
+                                // **16b cut E.2** (`B-45`): a share carries a
+                                // sighting and never a kill. The sharer may have
+                                // watched the target die; that is one fact its
+                                // own gunner read, and doc 16 §2 W6 lets the
+                                // mesh carry what its SENSORS took. The receiver
+                                // holds the track until the track expires.
+                                known_dead: false,
                             },
                         );
                         // Two transitions in one moment, both true of the teammate:
@@ -1494,6 +1501,15 @@ impl Arena {
     ///   not to where the target is. A tempo read off a position nobody holds
     ///   would be the one place in the arena where hidden truth reached a pilot,
     ///   because how often a pilot is sent a frame is something a pilot can count.
+    ///
+    /// **16b cut E.2 (16c `B-45`)** replaced that wreck filter with
+    /// [`Arena::contact_reads_dead`], which is the same sentence read the way
+    /// every other reader of this store reads it: the live flag on the target is
+    /// hidden truth, and a tempo that dropped the moment a hull burned — through
+    /// a wall, for a platform whose track is three seconds stale — would be
+    /// exactly the leak this function's own third bullet exists to close. A
+    /// contact whose **unit has left the match** is still dropped at once: there
+    /// is no unit for it to be a fact about.
     #[must_use]
     pub fn contact_within_alert_range(&self) -> bool {
         let reach = u64::from(self.alert_range_cm);
@@ -1502,11 +1518,61 @@ impl Arena {
         }
         self.units.iter().any(|viewer| {
             self.contacts.of(viewer.id).any(|(_, held)| {
-                self.unit(held.target)
-                    .is_some_and(|target| !target.limits.wreck)
+                self.unit(held.target).is_some()
+                    && !self.contact_reads_dead(held)
                     && held.seen_at.range_from(&viewer.pose) < reach
             })
         })
+    }
+
+    /// **Whether the platform holding this contact has any reason to believe its
+    /// target is dead** (16b cut E.2, `B-45`; 16c §5's Q11), which is the one
+    /// question every reader that used to look at `target.limits.wreck` was
+    /// really asking.
+    ///
+    /// Two ways, and they are the only two a platform can have earned:
+    ///
+    /// * [`ShadowContact::known_dead`] — this platform's own gunner killed it,
+    ///   which is the same fact its pilot is sent the `Kill` line about;
+    /// * its **reading** shows [`crate::arena::condition::ConditionBand::Destroyed`]
+    ///   on a section that kills the target when it goes
+    ///   ([`crate::arena::state::UnitState::fatal_sections`]) — a close look, or
+    ///   a section its own gunner watched come apart, or a teammate's share of
+    ///   either.
+    ///
+    /// Reading the **target's** static fit is not a leak: a platform that holds
+    /// a reading at all has already been sent that target's section vocabulary
+    /// (`Frame::scan_tables`), so nothing here is a word the holder was not
+    /// given.
+    ///
+    /// **A target that has left the match answers `false`, whichever way the
+    /// hold would otherwise have read** — the lookup is the first line of the
+    /// body and not the second, so the sentence is true of `known_dead` too.
+    /// There is no unit left for the fact to be about, and every caller tests
+    /// `self.unit(target)` separately anyway, because a unit that is *gone* is a
+    /// different fact from a unit that is *dead*: *gone* drops a target at once
+    /// and *dead* is what this answers.
+    ///
+    /// **What it costs.** A machine may hold a dead target for up to
+    /// `sensors.lost_after_passes × sensors.pass_ms` (three seconds as shipped)
+    /// plus the notice hysteresis, and may spend a burst on it — it fires, the
+    /// round is re-validated against the wreck and it reads a miss. That is what
+    /// a stale track costs, and it costs a pilot in the same seat exactly the
+    /// same thing: the row stays on `CONTACTS` until it expires. Doc 16 §1 and
+    /// §5 do not make an exception for a reader that happens to be a machine.
+    #[must_use]
+    pub fn contact_reads_dead(&self, held: &ShadowContact) -> bool {
+        // *Gone* first: a contact whose unit has left the match is not a fact
+        // about anything, so neither the kill this platform watched nor the
+        // reading it holds is a thing to answer with. It is the doc's sentence
+        // in the order the doc says it.
+        let Some(target) = self.unit(held.target) else {
+            return false;
+        };
+        held.known_dead
+            || held.seen_condition.is_some_and(|reading| {
+                reading.condition.destroyed_mask() & target.fatal_sections != 0
+            })
     }
 
     /// The first [`DueKind::SensorPass`] of **every unit**, at **`id % pass_ms`**

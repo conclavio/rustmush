@@ -327,6 +327,17 @@ pub enum EventKind {
     /// [`crate::deliberation::order::MIND_LINK_DROPPED`]'s meaning and neither is
     /// derived from the other, which is the same split every notice in this engine
     /// has.
+    ///
+    /// **16b cut E.2 (16c `B-41`) gave it a second cause**, and the line is
+    /// unchanged because what it records is still true of it: *the unit that
+    /// dropped to doctrine*. An `Objective::Advance` whose cell no route reaches
+    /// ends **for that unit** at the tick whose search failed, and journals this
+    /// same line with the word `advance`. The bridge's own
+    /// `mind link dropped` sentence is said off its wall-clock watch of the
+    /// order's expiry (`crate::arena_bridge::say_expired_orders`) and not off
+    /// this line, so no pilot hears anything new or sooner; what the squad gets
+    /// is `crate::arena::command::SignalReason::OrderExpired` on its next
+    /// signal, and the commander decides again.
     OrderExpired {
         /// The unit that dropped to doctrine.
         unit: ObjId,

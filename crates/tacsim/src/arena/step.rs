@@ -1606,6 +1606,26 @@ impl Arena {
                 if let Some(shooter) = by {
                     let held = self.named_target(shooter, unit);
                     self.stage_notice(shooter, FrameNotice::Kill { contact: held });
+                    // **16b cut E.2** (`B-45`; 16c §5's Q11): the shooter's own
+                    // eyes, the way the section arm above writes the band its
+                    // gunner watched go. The kill is knowledge this platform
+                    // earned — it is the very fact the `Kill` line it was just
+                    // sent carries — so its hold records it and
+                    // `Arena::contact_reads_dead` lets its machine drop the
+                    // target on the next tick. It is written **only** on the
+                    // hold the shooter already has: a platform that killed
+                    // something it never held learns nothing, because there is
+                    // no row for the fact to live on.
+                    //
+                    // Nobody else's hold moves. A teammate that watched through
+                    // its own sight has the destroyed band from the close look;
+                    // one that did not keeps its track until the track expires,
+                    // which is doc 16 §1's observer rule and not a courtesy.
+                    if let Some(id) = self.contacts.id_of(shooter, unit)
+                        && let Some(held) = self.contacts.get_mut(shooter, id)
+                    {
+                        held.known_dead = true;
+                    }
                 }
                 // **16b cut D.2** (`B-03`), after the gunner's line: the pilot in
                 // the wreck, who until this cut read nothing at all.

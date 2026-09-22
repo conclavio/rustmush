@@ -69,6 +69,14 @@ pub enum Objective {
     Hold,
     /// Make for this cell. The machine patrols to it instead of walking the
     /// waypoint graph.
+    ///
+    /// **16b cut E.2 (16c `B-41`): a cell no route reaches ends the order for
+    /// that unit.** The unit's path search fails once, the `unreachable` edge's
+    /// fallback waypoint takes, the order is dropped and the squad's next signal
+    /// says `order_expired` — because the alternative, which is what the engine
+    /// did until this cut, was a unit steering at ground it cannot reach for the
+    /// whole time to live, paying a failed search every `repath_ms`, with the
+    /// hostile edges suppressed and no way of telling the commander.
     Advance {
         /// The cell, as `(column, row)` of the arena window.
         to: (u16, u16),
@@ -315,6 +323,14 @@ impl Order {
 /// took it at, and `expires_ms` is that plus [`Order::ttl_ms`]. Expiry is measured
 /// in arena time for the same reason every other reflex deadline is (D-16-2): a
 /// time to live counted in pulses would be a different order at every tempo.
+///
+/// **There are two ways an order stops steering a unit** (16b cut E.2, 16c
+/// `B-41`). Running out unrenewed is the first and the one doc 16 §6 names; the
+/// second is an [`Objective::Advance`] whose cell that unit's path search cannot
+/// reach, which ends the order **for that unit alone**, at the tick the search
+/// failed. Both drop the machine to doctrine, both journal one
+/// `crate::arena::ledger::EventKind::OrderExpired` line, and both reach the
+/// commander as `crate::arena::command::SignalReason::OrderExpired`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StandingOrder {
     /// The order.

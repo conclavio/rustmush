@@ -238,6 +238,28 @@ impl Condition {
         Condition { bands, sections }
     }
 
+    /// **Which packed sections read [`ConditionBand::Destroyed`]**, one bit each
+    /// (16b cut E.2, `B-45`).
+    ///
+    /// Bit `i` for section `i` of the unit's own order, which is the order this
+    /// condition is packed in and the order
+    /// [`crate::arena::state::UnitState::fatal_sections`] numbers its own bits in
+    /// — so "does this reading say the body is gone" is one `&` of the two.
+    /// Slots past [`Condition::sections`] are not set, because a slot that is not
+    /// a section says nothing.
+    #[must_use]
+    pub const fn destroyed_mask(&self) -> u32 {
+        let mut mask = 0_u32;
+        let mut index = 0;
+        while index < MAX_SCANNED_SECTIONS {
+            if matches!(self.band(index), Some(ConditionBand::Destroyed)) {
+                mask |= 1_u32 << index;
+            }
+            index += 1;
+        }
+        mask
+    }
+
     /// **This condition, with every section `already` reads as destroyed still
     /// destroyed** (16b cut Q.2).
     ///

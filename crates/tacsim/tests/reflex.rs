@@ -335,6 +335,21 @@ fn with_sight(mut unit: CustodyUnit, cells: u16) -> CustodyUnit {
     unit
 }
 
+/// **The same tank on the mesh**: `cells` of scope and `share` cells of link.
+///
+/// [`sight`]'s own `share_range_cells` is nought, so every other fixture in this
+/// file runs with the mesh switched off and [`Arena::share_pass`] returns at its
+/// first guard. 16b cut E.2 (16c `B-45`) needs the opposite: a teammate whose
+/// hold was built by the mesh and by nothing its own sensors took.
+fn with_mesh(mut unit: CustodyUnit, cells: u16, share: u16) -> CustodyUnit {
+    unit.sensor = Some(SensorProfile {
+        max_range_cells: cells,
+        share_range_cells: share,
+        ..sight()
+    });
+    unit
+}
+
 /// A match short enough to test: power comes up in half a second.
 fn match_cfg() -> MatchConfig {
     MatchConfig {
@@ -2377,15 +2392,30 @@ fn an_overheated_machine_holds_its_fire_rather_than_feeding_a_refusal() {
         "and it is at the ceiling now, which is what stopped the second"
     );
 
-    // (c) **past it**: the same shot against a platform already carrying one.
-    // Eleven of a ceiling of ten is a shot the engine would accept and the heat
-    // would cap, and the controller declines it rather than spending the round
-    // for a refusal on the next tick.
+    // (c) **a shot that would go past it** — **16b cut E.2 (16c `T-55`)
+    // reversed this case.** Twenty on a platform carrying fifty of sixty is a
+    // shot the engine accepts and clamps (`Arena::raise_heat` writes
+    // `min(now + per_shot, max)`), so the machine takes it too: the two halves
+    // of one platform may not disagree about whether the gun works, which is
+    // the sentence `would_overheat`'s doc used to make the other argument with.
+    // It lands ON the ceiling, and the next tick is (a).
     let mut arena = heat_field();
-    heated(&mut arena, RED, 10, 1, 10);
+    heated(&mut arena, RED, 60, 50, 20);
     let mut bytes: Vec<u8> = Vec::new();
     let counters = run(&mut arena, 8_000, &mut bytes);
-    assert_eq!(counters.shots, 0, "it would have gone past: {counters:?}");
+    assert_eq!(
+        counters.shots, 1,
+        "the engine would have taken this shot and clamped: {counters:?}"
+    );
+    assert_eq!(
+        arena.unit(RED).and_then(|unit| unit.heat_now()),
+        Some(60),
+        "it landed on the ceiling rather than past it"
+    );
+    // And it held its fire afterwards, which is the other half of the same
+    // line: eight seconds is two cannon cycles.
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(count(&log, "fired"), 1, "the second shot was refused");
 }
 
 // ---------------------------------------------------------------------------
@@ -3643,6 +3673,1038 @@ fn e1_the_band_taken_and_given_up_is_one_event_list_at_three_cadences() {
         );
     }
     assert!(first.hashes.len() >= 100, "{} substeps", first.hashes.len());
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.2 — a dead target is knowledge (16c `B-45`; doc 16 §1, §5's Q11)
+//
+// Five live reads of the TARGET's own `limits.wreck` decided what a machine did
+// with a contact, which is hidden truth steering a unit: a machine dropped a
+// target the pulse it died, however stale its track, whoever killed it, through
+// a wall and across the map, where a pilot in the same seat keeps the row on
+// `CONTACTS` until it expires. They read the hold now, through
+// `Arena::contact_reads_dead`.
+// ---------------------------------------------------------------------------
+
+/// **A profile whose hull is the whole of the unit**: every band a round can
+/// arrive at reads `hull`, and `hull`'s consequence is `destroy_unit`. A round
+/// that lands therefore kills, which is what makes the kill test below a bounded
+/// number of pulses rather than a dice game.
+fn body_profile() -> tacsim::arena::resolution::UnitProfile {
+    let band = |name: &str| tacsim::arena::resolution::BandProfile {
+        band: SmolStr::new(name),
+        width_cm: 700,
+        height_cm: 350,
+        sections: vec![(SmolStr::new("hull"), 100)],
+    };
+    tacsim::arena::resolution::UnitProfile {
+        bands: ["front", "left", "right", "rear", "top"]
+            .into_iter()
+            .map(band)
+            .collect(),
+        sections: vec![tacsim::arena::resolution::SectionProfile {
+            id: SmolStr::new("hull"),
+            facets: ["front", "left", "right", "rear", "top"]
+                .into_iter()
+                .map(SmolStr::new)
+                .collect(),
+            consequences: vec![tacsim::arena::resolution::Consequence::DestroyUnit],
+            struck_through: None,
+        }],
+    }
+}
+
+/// The unit that goes with it: [`tactical_unit`]'s one hull widened to five
+/// facets of ten, so a hit on any band finds armour to pass.
+fn body_unit(id: ObjId) -> TacticalUnit {
+    let spec = UnitSpec {
+        definition: dref("unit", "tacsim.unit.line_tank"),
+        sections: vec![SectionSpec {
+            id: SectionId::new("hull").expect("a canonical section"),
+            condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+            facets: ["front", "left", "right", "rear", "top"]
+                .into_iter()
+                .map(|facet| FacetSpec {
+                    id: FacetId::new(facet).expect("a canonical facet"),
+                    cells: vec![CellSpec {
+                        id: mush_tactics::CellId::new("armor").expect("a cell"),
+                        min: 0,
+                        max: 10,
+                        init: 10,
+                    }],
+                })
+                .collect(),
+            slots: Vec::new(),
+            cells: vec![CellSpec {
+                id: mush_tactics::CellId::new("internals").expect("a cell"),
+                min: 0,
+                max: 8,
+                init: 8,
+            }],
+        }],
+        unit_cells: Vec::new(),
+        components: Vec::new(),
+        capabilities: Vec::new(),
+        mobility: None,
+        rules: rules(),
+    };
+    TacticalUnit::from_spec(&spec, id).expect("a one-section unit a round can kill")
+}
+
+/// A tank a round can kill.
+fn killable(mut unit: CustodyUnit) -> CustodyUnit {
+    unit.unit = body_unit(unit.id);
+    unit.profile = body_profile();
+    unit
+}
+
+/// **A two-section unit**, `hull` and `turret`. `TacticalUnit::sections` answers
+/// in section-id order, so `hull` is index 0 and `turret` index 1 — the indices a
+/// `Condition`'s bands are packed at and the bits `UnitState::fatal_sections`
+/// numbers.
+fn hull_and_turret(id: ObjId) -> TacticalUnit {
+    let section = |name: &str| SectionSpec {
+        id: SectionId::new(name).expect("a canonical section"),
+        condition: mush_tactics::ConditionId::new("intact").expect("a condition"),
+        facets: vec![FacetSpec {
+            id: FacetId::new("front").expect("a canonical facet"),
+            cells: vec![CellSpec {
+                id: mush_tactics::CellId::new("armor").expect("a cell"),
+                min: 0,
+                max: 10,
+                init: 10,
+            }],
+        }],
+        slots: Vec::new(),
+        cells: vec![CellSpec {
+            id: mush_tactics::CellId::new("internals").expect("a cell"),
+            min: 0,
+            max: 8,
+            init: 8,
+        }],
+    };
+    let spec = UnitSpec {
+        definition: dref("unit", "tacsim.unit.line_tank"),
+        sections: vec![section("hull"), section("turret")],
+        unit_cells: Vec::new(),
+        components: Vec::new(),
+        capabilities: Vec::new(),
+        mobility: None,
+        rules: rules(),
+    };
+    TacticalUnit::from_spec(&spec, id).expect("a two-section unit")
+}
+
+/// The profile that makes `hull` the body and the turret merely a gun mount:
+/// `UnitState::fatal_sections` is bit 0 alone.
+fn hull_is_the_body() -> tacsim::arena::resolution::UnitProfile {
+    let section = |name: &str, consequences: Vec<tacsim::arena::resolution::Consequence>| {
+        tacsim::arena::resolution::SectionProfile {
+            id: SmolStr::new(name),
+            facets: vec![SmolStr::new("front")],
+            consequences,
+            struck_through: None,
+        }
+    };
+    tacsim::arena::resolution::UnitProfile {
+        bands: Vec::new(),
+        sections: vec![
+            section(
+                "hull",
+                vec![tacsim::arena::resolution::Consequence::DestroyUnit],
+            ),
+            section(
+                "turret",
+                vec![tacsim::arena::resolution::Consequence::RemoveWeapons {
+                    section: SmolStr::new("turret"),
+                }],
+            ),
+        ],
+    }
+}
+
+/// A tank whose hull kills it and whose turret does not.
+fn two_sectioned(mut unit: CustodyUnit) -> CustodyUnit {
+    unit.unit = hull_and_turret(unit.id);
+    unit.profile = hull_is_the_body();
+    unit
+}
+
+/// **A five-metre pistol**: a weapon a tank carries so that it has a fighting
+/// reach and therefore a target, and never a shot — every distance in these
+/// fixtures is further than its one band.
+fn pistol() -> WeaponSummary {
+    WeaponSummary {
+        id: SmolStr::new("pistol"),
+        max_range_cm: 500,
+        bands: vec![WeaponBand {
+            max_range_cm: 500,
+            dispersion_mrad: 3,
+        }],
+        ..cannon()
+    }
+}
+
+/// A wall down column 9, every row: nothing west of it ever has a line to
+/// anything east of it.
+fn curtain() -> Vec<(u16, u16, TerrainCell)> {
+    (0..SIDE).map(|y| (9_u16, y, wall())).collect()
+}
+
+/// **A second blue tank, parked out of everybody's sight.**
+///
+/// Doc 16 §3.8's elimination ends a match the moment one side has nothing left,
+/// and an ended arena steps no further — so a fixture whose whole subject is
+/// what happens in the seconds *after* a kill needs the other side to still
+/// exist. It carries no weapon, it is never detected and nothing ever targets
+/// it.
+const BLUE2: ObjId = ObjId(11);
+
+/// That tank, at `cell`.
+fn bystander(cell: (u16, u16)) -> CustodyUnit {
+    tank(
+        BLUE2,
+        Team::Blue,
+        centre(cell.0, cell.1),
+        Vec::new(),
+        Controller::Pilot,
+    )
+}
+
+/// What the machine settled on.
+fn target_of(arena: &Arena, unit: ObjId) -> Option<ObjId> {
+    arena
+        .reflex
+        .unit(unit)
+        .and_then(|row| row.target)
+        .map(|(_, target)| target)
+}
+
+/// What `viewer` holds on `target`, if anything.
+fn hold_on(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<ShadowContact> {
+    let id = arena.contacts.id_of(viewer, target)?;
+    arena.contacts.get(viewer, id).copied()
+}
+
+/// Write a reading onto `viewer`'s hold on `target` with one section destroyed —
+/// the shape a close look, or a section the gunner watched come apart, leaves
+/// behind.
+fn plant_reading(arena: &mut Arena, viewer: ObjId, target: ObjId, destroyed: usize, at_ms: i64) {
+    let id = arena
+        .contacts
+        .id_of(viewer, target)
+        .expect("the viewer holds the target");
+    if let Some(held) = arena.contacts.get_mut(viewer, id) {
+        held.seen_condition = Some(tacsim::arena::condition::Reading {
+            at_ms,
+            condition: tacsim::arena::condition::Condition {
+                bands: 0,
+                sections: 2,
+            }
+            .with_band(
+                destroyed,
+                tacsim::arena::condition::ConditionBand::Destroyed,
+            ),
+        });
+    }
+}
+
+/// Mark `viewer`'s hold on `target` the way the kill line's own arm does.
+fn learn_the_kill(arena: &mut Arena, viewer: ObjId, target: ObjId) {
+    let id = arena.contacts.id_of(viewer, target).expect("the hold");
+    if let Some(held) = arena.contacts.get_mut(viewer, id) {
+        held.known_dead = true;
+    }
+}
+
+#[test]
+fn e2_b45_a_target_that_dies_out_of_sight_is_held_until_the_contact_expires() {
+    // (a) The machine holds a planted classified contact on a tank behind a
+    // curtain of wall: no line, no sight, so nothing will refresh or correct it.
+    let mut arena = arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(6, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                SIGHT_CELLS,
+            ),
+            killable(tank(
+                BLUE,
+                Team::Blue,
+                centre(12, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+            bystander((15, 15)),
+        ],
+        &curtain(),
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    run(&mut arena, now + 1_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Approach));
+    assert_eq!(target_of(&arena, RED), Some(BLUE));
+
+    // Killed by nobody this machine could have watched: the rig's own destroy,
+    // with no shooter, so no `Kill` line and no `known_dead`.
+    let at = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    arena.destroy_unit(BLUE, at, None, &mut journal);
+    run(&mut arena, at + 1_000, &mut bytes);
+    assert_eq!(
+        target_of(&arena, RED),
+        Some(BLUE),
+        "the machine dropped a target on a fact no platform on the field had"
+    );
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Approach));
+    let held = hold_on(&arena, RED, BLUE).expect("the hold is still there");
+    assert!(!held.known_dead, "nobody told it");
+    assert!(!arena.contact_reads_dead(&held));
+
+    // And it lets go when the track does, three passes after the last sighting
+    // and not a millisecond sooner.
+    run(&mut arena, at + 6_000, &mut bytes);
+    assert_eq!(arena.contacts.of(RED).count(), 0, "the track expired");
+    assert_eq!(target_of(&arena, RED), None);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
+}
+
+#[test]
+fn e2_b45_a_target_that_leaves_the_match_is_dropped_at_once() {
+    // (d) *Gone* is not *dead*: there is no unit for the contact to be a fact
+    // about, so the `lost` edge takes it on the next tick whatever the hold says.
+    let mut arena = arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(6, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                SIGHT_CELLS,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(12, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &curtain(),
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    run(&mut arena, now + 1_000, &mut bytes);
+    assert_eq!(target_of(&arena, RED), Some(BLUE));
+
+    let at = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+    arena.units.retain(|unit| unit.id != BLUE);
+    run(&mut arena, at + 1_000, &mut bytes);
+    assert_eq!(target_of(&arena, RED), None);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Patrol));
+}
+
+#[test]
+fn e2_b45_a_reading_that_shows_the_body_gone_drops_the_target_and_a_turret_does_not() {
+    // (c) The knowledge a close look earns. The blue tank is NOT a wreck in
+    // either half: what the machine acts on is its own reading, masked with the
+    // target's `fatal_sections` — `hull` is the body, `turret` is a gun mount.
+    let build = || {
+        arena_of(
+            vec![
+                with_sight(
+                    tank(
+                        RED,
+                        Team::Red,
+                        centre(6, 8),
+                        vec![cannon()],
+                        Controller::Reflex,
+                    ),
+                    SIGHT_CELLS,
+                ),
+                two_sectioned(tank(
+                    BLUE,
+                    Team::Blue,
+                    centre(12, 8),
+                    Vec::new(),
+                    Controller::Pilot,
+                )),
+            ],
+            &curtain(),
+            &arena_cfg(reflex_cfg()),
+            &[BLUE],
+        )
+    };
+    // The mask is the profile's, laid down at check-out and never moved.
+    assert_eq!(
+        build().unit(BLUE).map(|unit| unit.fatal_sections),
+        Some(0b01),
+        "`hull` is section 0 and the only one that kills"
+    );
+
+    for (destroyed, still_held) in [(0_usize, false), (1, true)] {
+        let mut arena = build();
+        let mut bytes: Vec<u8> = Vec::new();
+        run(&mut arena, 2_000, &mut bytes);
+        let now = arena.now_ms;
+        plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+        run(&mut arena, now + 1_000, &mut bytes);
+        assert_eq!(target_of(&arena, RED), Some(BLUE));
+
+        let at = arena.now_ms;
+        plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+        plant_reading(&mut arena, RED, BLUE, destroyed, at);
+        let held = hold_on(&arena, RED, BLUE).expect("the hold");
+        assert!(!held.known_dead, "this half is about the reading alone");
+        assert_eq!(arena.contact_reads_dead(&held), !still_held);
+        run(&mut arena, at + 1_000, &mut bytes);
+        assert_eq!(
+            target_of(&arena, RED).is_some(),
+            still_held,
+            "section {destroyed} destroyed: the machine read it wrong"
+        );
+        assert!(
+            arena.unit(BLUE).is_some_and(|unit| !unit.limits.wreck),
+            "the target is alive in both halves, which is what makes this about the reading"
+        );
+    }
+}
+
+#[test]
+fn e2_b45_the_two_tempo_triggers_read_the_hold_and_not_the_wreck() {
+    // Doc 16 §3.1's `Alert` and third `Engaged` triggers, which are the other two
+    // readers of the same sentence. How often a pilot is sent a frame is
+    // something a pilot can count, so a tempo that fell at the arena millisecond
+    // a hull burned would be hidden truth on a surface a pilot reads.
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Pilot,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(7, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[RED, BLUE],
+    );
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, 0);
+    assert!(arena.hostile_in_weapons_range());
+    assert!(arena.contact_within_alert_range());
+
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    arena.destroy_unit(BLUE, 0, None, &mut journal);
+    assert!(
+        arena.hostile_in_weapons_range(),
+        "the hull burned and the holder's track said so before the holder did"
+    );
+    assert!(arena.contact_within_alert_range());
+
+    learn_the_kill(&mut arena, RED, BLUE);
+    assert!(!arena.hostile_in_weapons_range());
+    assert!(!arena.contact_within_alert_range());
+}
+
+#[test]
+fn e2_b45_a_kill_starts_the_rally_clock_and_a_death_out_of_sight_does_not() {
+    // (e) `holds_a_hostile` through the rally. A hurt machine standing in its own
+    // entry zone has arrived, so the only thing between it and its quiet clock is
+    // whether it still holds a live hostile — and *live* is what it knows.
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(1, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            killable(tank(
+                BLUE,
+                Team::Blue,
+                centre(12, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+            bystander((15, 15)),
+        ],
+        &curtain(),
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    hurt(&mut arena, RED);
+    let quiet = |arena: &Arena| arena.reflex.unit(RED).and_then(|row| row.quiet_since_ms);
+
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    let now = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, now);
+    run(&mut arena, now + 1_000, &mut bytes);
+    assert_eq!(state_of(&arena, RED), Some(ReflexState::Withdraw));
+    assert_eq!(quiet(&arena), None, "it holds a live hostile");
+
+    // Killed by somebody else, out of this machine's sight: the board is not
+    // quiet yet, because nothing has told it.
+    let at = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    arena.destroy_unit(BLUE, at, None, &mut journal);
+    run(&mut arena, at + 1_000, &mut bytes);
+    assert_eq!(
+        quiet(&arena),
+        None,
+        "the clock started on a fact the machine had not been given"
+    );
+
+    // The same board with the kill written onto the hold, which is what the
+    // `Kill` line the shooter's pilot reads says: the clock starts at once.
+    learn_the_kill(&mut arena, RED, BLUE);
+    let from = arena.now_ms;
+    run(&mut arena, from + 1_000, &mut bytes);
+    assert!(
+        quiet(&arena).is_some(),
+        "a machine that watched its own round finish the tank is still waiting"
+    );
+}
+
+#[test]
+fn e2_b45_the_shooter_knows_its_own_kill_and_a_teammate_waits_for_the_track() {
+    // (b) The whole of it through the production path: a real `FIRE`, resolved by
+    // `Arena::resolve_fire`, whose `destroyed` line carries `by`. The writer is
+    // the notice scan's own arm, beside the `Kill` line the shooter's pilot gets.
+    //
+    // The second red machine here holds the tank through its **own** sight —
+    // the mesh is off in this fixture, as it is in every other one in this file
+    // ([`sight`]'s `share_range_cells` is nought), so what is proved is that the
+    // kill is written on one hold and no other. The mesh's own arm is the next
+    // test.
+    let mut arena = arena_of(
+        vec![
+            with_sight(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(8, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                SIGHT_CELLS,
+            ),
+            with_sight(
+                tank(
+                    RED2,
+                    Team::Red,
+                    centre(2, 8),
+                    vec![pistol()],
+                    Controller::Reflex,
+                ),
+                SIGHT_CELLS,
+            ),
+            killable(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+            // Out of both machines' ten-cell scopes, so nothing ever holds it
+            // and the only thing it does is keep the match from ending.
+            bystander((15, 0)),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut wall = 0_i64;
+    let mut ended = None;
+    while arena.now_ms < 90_000 {
+        let out = arena.step(wall, &[], &[]);
+        absorb(&out, &mut bytes);
+        // A match that has ended does nothing at all in `Arena::step` — its
+        // clock stops — so a loop that only watched the hull would spin for
+        // ever if the bystander ever stopped keeping blue on the board. It is
+        // asserted rather than merely broken on, because an early end would
+        // otherwise shorten this window in silence.
+        if out.ended.is_some() {
+            ended = out.ended;
+            break;
+        }
+        if arena.unit(BLUE).is_some_and(|unit| unit.limits.wreck) {
+            break;
+        }
+        wall += 500;
+    }
+    assert!(
+        ended.is_none(),
+        "the match ended under the fixture: {ended:?}"
+    );
+    assert!(
+        arena.unit(BLUE).is_some_and(|unit| unit.limits.wreck),
+        "the machine never killed it, so nothing was proved"
+    );
+
+    // The shooter's hold carries the kill, and the shooter's alone: the second
+    // red machine watched nothing and holds a track that still says the tank is
+    // there.
+    let shooter = hold_on(&arena, RED, BLUE).expect("the shooter's hold");
+    assert!(shooter.known_dead, "the gunner who killed it does not know");
+    assert!(arena.contact_reads_dead(&shooter));
+    let mate = hold_on(&arena, RED2, BLUE).expect("the teammate's hold");
+    assert!(
+        !mate.known_dead,
+        "a kill travelled to a platform that did not see it"
+    );
+    assert!(
+        !arena.contact_reads_dead(&mate),
+        "the teammate was handed a fact its own sensors never took"
+    );
+
+    // One tick later the shooter is off it and the teammate is not.
+    let at = arena.now_ms;
+    run(&mut arena, at + 1_000, &mut bytes);
+    assert_eq!(target_of(&arena, RED), None, "the shooter is still on it");
+    assert_eq!(
+        target_of(&arena, RED2),
+        Some(BLUE),
+        "the teammate let go of a track nothing had refreshed or contradicted"
+    );
+
+    // And the teammate lets go when the track expires: `sees_wrecks` is false, so
+    // nothing refreshes it once the hull is a wreck.
+    run(&mut arena, at + 6_000, &mut bytes);
+    assert_eq!(target_of(&arena, RED2), None);
+    let log = events(&mut arena, &mut bytes);
+    assert_eq!(
+        count(&log, "unit_destroyed"),
+        1,
+        "the kill went through the engine's own line, once"
+    );
+}
+
+#[test]
+fn e2_b45_a_share_carries_the_track_and_never_the_kill() {
+    // (b)'s other half, and the one the mesh's own arm is about. In the test
+    // above the second red machine has its **own** sighting of the tank; here it
+    // has no line to it at any range — the curtain down column 9 sees to that —
+    // so the only hold it has is the one `Arena::share_pass` built, and what
+    // that arm writes into `known_dead` is the whole of what is under test.
+    //
+    // A share carries a **sighting**: the sharer's own stamp, its own plot and
+    // its own reading (doc 16 §2 W6). A kill its gunner watched is not one of
+    // those, so it does not travel, and the teammate keeps its track until the
+    // track expires — which is doc 16 §1's observer rule applied to the
+    // machines, and the door this cut's own field doc says is shut.
+    let mut arena = arena_of(
+        vec![
+            with_mesh(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(6, 8),
+                    vec![cannon()],
+                    Controller::Pilot,
+                ),
+                SIGHT_CELLS,
+                5,
+            ),
+            with_mesh(
+                tank(
+                    RED2,
+                    Team::Red,
+                    centre(4, 8),
+                    vec![pistol()],
+                    Controller::Reflex,
+                ),
+                SIGHT_CELLS,
+                5,
+            ),
+            killable(tank(
+                BLUE,
+                Team::Blue,
+                centre(12, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+            // The side has to still exist after the kill or the match ends and
+            // nothing after it happens (doc 16 §3.8).
+            bystander((15, 15)),
+        ],
+        &curtain(),
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let mut bytes: Vec<u8> = Vec::new();
+    run(&mut arena, 2_000, &mut bytes);
+    assert!(
+        hold_on(&arena, RED2, BLUE).is_none(),
+        "the teammate saw through a wall, so the copy below is not a mesh copy"
+    );
+
+    // The sharer holds the tank and watched it die. The hold is planted and the
+    // kill written where the kill line's own arm writes it — which is the
+    // production path the test above drives end to end; what this one is about
+    // is what the mesh does with it afterwards.
+    let at = arena.now_ms;
+    plant_contact(&mut arena, RED, BLUE, Team::Blue, at);
+    let mut journal: Vec<tacsim::arena::perception::Notice> = Vec::new();
+    arena.destroy_unit(BLUE, at, None, &mut journal);
+    learn_the_kill(&mut arena, RED, BLUE);
+
+    // One pass of arena time: the sharer's own sensor pass finds that it holds
+    // something the mesh may carry and schedules the share at that same
+    // timestamp, and the teammate's row is created by `share_pass`'s insert arm.
+    run(&mut arena, at + 1_500, &mut bytes);
+    let mate = hold_on(&arena, RED2, BLUE).expect("the mesh handed the track over");
+    assert!(
+        mate.own_seen.is_none(),
+        "the teammate's own sensors took this, so it is not the arm under test"
+    );
+    assert!(
+        !mate.known_dead,
+        "a mesh copy opened already knowing a kill its platform never watched"
+    );
+    assert!(
+        mate.seen_condition.is_none(),
+        "the sharer had no reading to give, so nothing but the track travelled"
+    );
+    assert!(
+        !arena.contact_reads_dead(&mate),
+        "the teammate was handed a fact its own sensors never took"
+    );
+    assert!(
+        hold_on(&arena, RED, BLUE).is_some_and(|held| held.known_dead),
+        "the sharer stopped knowing its own kill"
+    );
+    assert_eq!(target_of(&arena, RED2), Some(BLUE));
+    assert_eq!(state_of(&arena, RED2), Some(ReflexState::Approach));
+
+    // And the passes after it take `share_pass`'s **update** arm on the very
+    // same row, which is where a later tidy-up would most easily let the kill
+    // across. It stays out of it, and the machine keeps closing on a tank that
+    // is not there — the cost this cut's predicate states.
+    run(&mut arena, at + 2_500, &mut bytes);
+    let mate = hold_on(&arena, RED2, BLUE).expect("the track is still inside its time to live");
+    assert!(mate.own_seen.is_none(), "still a mesh copy");
+    assert!(
+        !mate.known_dead,
+        "a share updated the copy and carried the kill with it"
+    );
+    assert_eq!(target_of(&arena, RED2), Some(BLUE));
+
+    // It lets go when the track expires, and not one millisecond sooner: the
+    // sharer's own sighting is what the copy's stamp is, and a wreck is never
+    // sighted again (`sees_wrecks: false`).
+    run(&mut arena, at + 6_000, &mut bytes);
+    assert_eq!(hold_on(&arena, RED2, BLUE), None, "the track expired");
+    assert_eq!(target_of(&arena, RED2), None);
+    assert_eq!(state_of(&arena, RED2), Some(ReflexState::Patrol));
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut E.2 — the cross-tempo property (16b §11: mandatory)
+// ---------------------------------------------------------------------------
+
+/// **Everything this cut moved, in one scripted log**: a red machine kills the
+/// blue tank with its own round while a second red machine holds a track it
+/// cannot refresh, the whole under a `withdraw` order on red's squad that runs
+/// out half way through.
+///
+/// What that exercises: the one new hashed field
+/// (`ShadowContact::known_dead`, written by the kill line's own arm and folded
+/// beside `numbered`), the two readers that decide what each machine does with
+/// its hold after the kill, the rally the standing order holds back (16c
+/// `B-40`), and the expiry that gives the squad back to doctrine. None of it may
+/// depend on how often the arena is stepped (doc 16 §3.1's D-16-2).
+///
+/// The pair is **meshed**, so the share pass runs over a hold that carries a
+/// kill for the whole of the replay: what a share does with `known_dead` is a
+/// fact of arena time like everything else here, and the one place a later tidy
+/// of `Arena::share_pass` could make it a fact of the pulse rate instead.
+/// `e2_b45_a_share_carries_the_track_and_never_the_kill` is the test of what the
+/// share carries; this is the test that it carries it at every cadence.
+fn a_kill_under_a_withdraw_order() -> Arena {
+    let mut arena = arena_of(
+        vec![
+            with_mesh(
+                tank(
+                    RED,
+                    Team::Red,
+                    centre(8, 8),
+                    vec![cannon()],
+                    Controller::Reflex,
+                ),
+                SIGHT_CELLS,
+                SIGHT_CELLS,
+            ),
+            with_mesh(
+                tank(
+                    RED2,
+                    Team::Red,
+                    centre(2, 8),
+                    vec![pistol()],
+                    Controller::Reflex,
+                ),
+                SIGHT_CELLS,
+                SIGHT_CELLS,
+            ),
+            killable(tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            )),
+            // Out of both scopes: the side has to still exist after the kill, or
+            // the match ends and the seconds this replay is about never happen.
+            bystander((15, 0)),
+        ],
+        &[],
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    let squad = arena
+        .squad_of(RED)
+        .map(|roster| roster.id)
+        .expect("red's pair is a squad");
+    let told = tacsim::deliberation::Order {
+        squad,
+        objective: tacsim::deliberation::Objective::Withdraw,
+        target: None,
+        horizon_ms: 30_000,
+        constraints: tacsim::deliberation::Constraints::default(),
+        ttl_ms: 25_000,
+        issued_ms: 0,
+    };
+    for unit in [RED, RED2] {
+        arena.reflex.set_order(
+            unit,
+            tacsim::deliberation::StandingOrder::accepted(told.clone(), 0),
+        );
+    }
+    arena
+}
+
+#[test]
+fn e2_a_kill_under_an_expiring_withdraw_order_is_one_log_at_three_cadences() {
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| replay_of(cadence, 40_000, a_kill_under_a_withdraw_order, no_script))
+        .collect();
+    let first = runs.first().expect("three replays");
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    // The story really happened, at one cadence, before anything is compared.
+    for want in [
+        "startup",
+        "detected",
+        "classified",
+        "fired",
+        "unit_destroyed",
+        "order_expired",
+        "lost",
+    ] {
+        assert!(
+            kinds.iter().any(|kind| kind.contains(want)),
+            "the replay never journalled a {want}, so nothing was compared: {kinds:?}"
+        );
+    }
+    assert!(first.hashes.len() >= 100, "{} substeps", first.hashes.len());
+
+    for (at, run) in runs.iter().enumerate().skip(1) {
+        let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
+        assert_eq!(
+            run.events, first.events,
+            "the event list diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.hashes, first.hashes,
+            "the hash sequence diverged at {cadence} ms"
+        );
+        assert_eq!(
+            run.finals, first.finals,
+            "the field ended differently at {cadence} ms"
+        );
+    }
+}
+
+/// **The cell in the corner pocket**, sealed by [`a_pocket`] and reached by no
+/// route at all.
+const POCKET: (u16, u16) = (13, 13);
+
+/// The ring of wall that seals it.
+fn a_pocket() -> Vec<(u16, u16, TerrainCell)> {
+    let mut paint: Vec<(u16, u16, TerrainCell)> = Vec::new();
+    for x in 12..=14_u16 {
+        paint.push((x, 12, wall()));
+        paint.push((x, 14, wall()));
+    }
+    for y in 12..=14_u16 {
+        paint.push((12, y, wall()));
+        paint.push((14, y, wall()));
+    }
+    paint
+}
+
+/// **The other two things this cut moved in the arena, in one scripted log**: an
+/// `advance` to a cell no route reaches, and a hot gun one shot short of its
+/// ceiling.
+///
+/// The machine opens under a ten-minute `Objective::Advance` on [`POCKET`]. Its
+/// first search for that cell fails, which under 16c `B-41` ends the order **for
+/// it** at that tick — one `order_expired` line at one arena millisecond, and
+/// doctrine from the tick after. Doctrine then classifies the tank in front of
+/// it and shoots: at fifty of a ceiling of sixty with a cannon that makes
+/// twenty, 16c `T-55` says the machine takes the shot the engine would take and
+/// clamps on the ceiling, and holds its fire afterwards at the same number the
+/// engine refuses at. Neither the tick the order ends at nor the shot may depend
+/// on how often the arena is stepped (doc 16 §3.1's D-16-2; 16b §11 makes a
+/// replay mandatory for what a cut adds to arena behaviour, and the kill above
+/// covers only `B-45` and `B-40`).
+fn an_unreachable_order_and_a_hot_gun() -> Arena {
+    let mut arena = arena_of(
+        vec![
+            tank(
+                RED,
+                Team::Red,
+                centre(6, 8),
+                vec![cannon()],
+                Controller::Reflex,
+            ),
+            tank(
+                BLUE,
+                Team::Blue,
+                centre(9, 8),
+                Vec::new(),
+                Controller::Pilot,
+            ),
+        ],
+        &a_pocket(),
+        &arena_cfg(reflex_cfg()),
+        &[BLUE],
+    );
+    heated(&mut arena, RED, 60, 50, 20);
+    let squad = arena
+        .squad_of(RED)
+        .map(|roster| roster.id)
+        .expect("one reflex machine is a squad of one");
+    let told = tacsim::deliberation::Order {
+        squad,
+        objective: tacsim::deliberation::Objective::Advance { to: POCKET },
+        target: None,
+        horizon_ms: 600_000,
+        constraints: tacsim::deliberation::Constraints::default(),
+        ttl_ms: 600_000,
+        issued_ms: 0,
+    };
+    arena
+        .reflex
+        .set_order(RED, tacsim::deliberation::StandingOrder::accepted(told, 0));
+    arena
+}
+
+#[test]
+fn e2_an_unreachable_order_and_a_hot_gun_are_one_log_at_three_cadences() {
+    let runs: Vec<Replay> = [5_000_i64, 1_000, 500]
+        .into_iter()
+        .map(|cadence| {
+            replay_of(
+                cadence,
+                20_000,
+                an_unreachable_order_and_a_hot_gun,
+                no_script,
+            )
+        })
+        .collect();
+    let first = runs.first().expect("three replays");
+    let kinds: Vec<&str> = first
+        .events
+        .iter()
+        .map(|(_, kind, _)| kind.as_str())
+        .collect();
+    for want in [
+        "startup",
+        "detected",
+        "classified",
+        "fired",
+        "order_expired",
+    ] {
+        assert!(
+            kinds.iter().any(|kind| kind.contains(want)),
+            "the replay never journalled a {want}, so nothing was compared: {kinds:?}"
+        );
+    }
+    // `B-41`'s line and not an expiry: the order was written for ten minutes and
+    // is over inside the first two seconds, at the tick whose search failed.
+    let dropped_at = first
+        .events
+        .iter()
+        .find(|(_, kind, _)| kind.contains("order_expired"))
+        .map(|(t_ms, _, _)| *t_ms)
+        .expect("a line");
+    assert!(
+        dropped_at < 2_000,
+        "the drop waited for the time to live: {dropped_at} ms"
+    );
+    // `T-55`'s shot: the machine takes the one the engine would take, and the
+    // ceiling it lands on is what keeps the rest of a twenty-second window
+    // quiet.
+    assert_eq!(
+        first
+            .events
+            .iter()
+            .filter(|(_, kind, _)| kind.contains("fired"))
+            .count(),
+        1,
+        "the hot gun fired something other than the engine's one legal shot"
+    );
+    assert!(first.hashes.len() >= 40, "{} substeps", first.hashes.len());
+
     for (at, run) in runs.iter().enumerate().skip(1) {
         let cadence = [5_000_i64, 1_000, 500].get(at).copied().unwrap_or(0);
         assert_eq!(
