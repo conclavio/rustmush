@@ -668,6 +668,11 @@ Size: large.
 
 ### Cut L: the operator is never locked out
 
+**Status:** Implemented on `codex/cut-l`; local validation complete,
+Linux/Redis validation and integration pending. Review:
+[PR #1](https://github.com/faenix7/rustmush/pull/1). See 16b's cut L as-built note
+for completed checks, the first failed sweep and remaining gates.
+
 **When it lands.** An operator can lift a tempban, reset an instance without changing its host key, make
 the first staff account from the command line, see a match start in the log, and trust the deploy's
 bundle check; the repository's front door describes the game that exists.
