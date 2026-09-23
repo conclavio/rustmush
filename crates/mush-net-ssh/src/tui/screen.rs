@@ -60,7 +60,9 @@ pub const JUMP_KEYS: [char; 2] = ['g', 'G'];
 /// published and stage no intent (`tacsim::match_::cockpit::register` says so
 /// in as many words). The other five — `STARTUP`, `HEADING`, `SPEED`, `LOCK`,
 /// `FIRE` — each stage one, so none of them is here and none of them is a bare
-/// key: the cockpit screen only ever PREFILLS them.
+/// key: the cockpit screen only ever PREFILLS them. **16b cut B.3** unbound
+/// `v` (`VIEW`'s grid never reached the TUI's screen); `view` stays listed,
+/// because the list is the web's too and a screen may yet bind it.
 pub const RUN_ALLOWLIST: &[&str] = &[
     "look",
     "l",
@@ -258,11 +260,13 @@ pub struct Screen {
     ///
     /// A rail — the WHO list, the channel list — is designed at a fixed
     /// width and reads worse stretched. A table is not: the tactical
-    /// screens' before/after and journal panes carry whole rows, and
-    /// `draw_pane` neither wraps nor scrolls sideways, so at a fixed 34 they
-    /// clipped their one job at every terminal size. The screen declares
-    /// which it is; `visible_panes` never reads this, so no survivor set
-    /// depends on it.
+    /// screens' before/after and journal panes carry whole rows, and at a
+    /// fixed 34 they clipped their one job at every terminal size. Since
+    /// 16b cut B.3 `draw_pane` wraps every panel row at its pane's edge, so a
+    /// narrow Right column no longer loses words — it spends rows — and the
+    /// share is what keeps a table row on ONE line where the terminal has the
+    /// width. The screen declares which it is; `visible_panes` never reads
+    /// this, so no survivor set depends on it.
     pub right_shares_surplus: bool,
     /// **The panel feed this screen needs to exist at all** (16b cut Q.4),
     /// mirroring the web's per-screen `gate`.
@@ -305,11 +309,11 @@ impl Screen {
 pub fn builtin_screens() -> Vec<Screen> {
     use super::render::{
         render_actions_rows, render_cockpit_contacts_rows, render_cockpit_damage_rows,
-        render_cockpit_map_rows, render_cockpit_status_rows, render_cockpit_weapons_rows,
-        render_intel_rows, render_mail_rows, render_map_rows, render_scene_rows,
-        render_unit_components_rows, render_unit_delta_rows, render_unit_journal_rows,
-        render_unit_plant_rows, render_unit_sections_compact_rows, render_unit_sections_rows,
-        render_view_rows,
+        render_cockpit_map_rows, render_cockpit_notices_rows, render_cockpit_status_rows,
+        render_cockpit_weapons_rows, render_intel_rows, render_mail_rows, render_map_rows,
+        render_scene_rows, render_unit_components_rows, render_unit_delta_rows,
+        render_unit_journal_rows, render_unit_plant_rows, render_unit_sections_compact_rows,
+        render_unit_sections_rows, render_view_rows,
     };
     let unit_query = || vec![(UNIT_FEED, Value::Object(serde_json::Map::new()))];
     vec![
@@ -838,6 +842,15 @@ pub fn builtin_screens() -> Vec<Screen> {
         //
         // The screen names nothing the frame does not: a contact is its
         // designator, its class word and its plot (doc 16 §1, §3.6).
+        //
+        // **16b cut B.3** (`B-10`): the widths are what an 80-column terminal
+        // can carry — the map 36, every side pane 22, and `22 + 36 + 22` is 80
+        // — so no pane is dropped for WIDTH at 80 and the contacts pane, the
+        // one `Enter` prefills a `lock` from, stays. Every panel row wraps at
+        // its pane's edge (`TuiApp::draw_pane`), so a narrow pane costs rows,
+        // not words. `damage` still goes for HEIGHT below about 31 rows (the
+        // status pane's `min_h`, below, says why), so at 80 by 24 and 100 by
+        // 30; at 120 by 34 every pane is drawn.
         Screen {
             id: COCKPIT_SCREEN,
             name: "cockpit",
@@ -851,10 +864,24 @@ pub fn builtin_screens() -> Vec<Screen> {
                         feed: COCKPIT_FEED,
                         render: render_cockpit_map_rows,
                     },
-                    min_w: 40,
+                    min_w: 36,
                     min_h: 6,
                     selectable: false,
                 },
+                // `min_h` 10 (16b cut B.3) is the most rows this block can
+                // take at its 20 inner columns: callsign, power, a speed line
+                // that wraps once when it carries `DESTROYED`/`IMMOBILE` or a
+                // three-digit kph (2), a heat row that wraps once when it
+                // carries `OVERHEATED` (`heat 40/100  OVERHEATED` is 23, 2),
+                // `receiver 15/40  60%` (19 characters at the content's
+                // two-digit `max_attenuation`, never wraps), scope, and a lock
+                // that wraps once past twenty characters (a kilometre's range
+                // at 100%, or a three-letter designator, 2). The lock is the
+                // last row, so a shorter pane
+                // would drop the one a gunner reads before FIRE. At 80 by 24
+                // the Left column holds it and the notices (12 + 5 of 17 body
+                // rows even with the vitals gauge); `damage` wants 7 more, so
+                // it is drawn from about 31 terminal rows.
                 PaneSpec {
                     id: PaneId("status"),
                     title: "status",
@@ -864,8 +891,8 @@ pub fn builtin_screens() -> Vec<Screen> {
                         feed: COCKPIT_FEED,
                         render: render_cockpit_status_rows,
                     },
-                    min_w: 34,
-                    min_h: 6,
+                    min_w: 22,
+                    min_h: 10,
                     selectable: false,
                 },
                 PaneSpec {
@@ -877,22 +904,31 @@ pub fn builtin_screens() -> Vec<Screen> {
                         feed: COCKPIT_FEED,
                         render: render_cockpit_damage_rows,
                     },
-                    min_w: 34,
+                    min_w: 22,
                     min_h: 5,
                     selectable: false,
                 },
-                // F.2's contract stands: the arena's `Sys` lines already land in
-                // the scrollback ring, so this screen shows that ring and never
-                // prints the frame's own `notices[].text` a second time. It
-                // rides the Left column so the map keeps the whole Main one —
-                // the map is what this screen exists for.
+                // **16b cut B.3** (`B-64`, 16c Q20): the frame's notices and
+                // the pilot's own replies, composed from FIELDS and never from
+                // a notice's `text` — `PanelStore::cockpit_notices`, a ring of
+                // `COCKPIT_NOTICES` lines that starts each match clean. It used
+                // to be the whole scrollback, which let channel chatter push a
+                // hit off the pane; the scrollback on screen 1 still keeps every
+                // sentence, and Q20 lets two screens word one event. A pilot on
+                // this screen reads `Locking BA.` here, because every `Sys` line
+                // the pilot is sent while seated rings too (not one answering
+                // the app's own background queries). It rides the Left column
+                // so the map keeps the whole Main one.
                 PaneSpec {
                     id: PaneId("notices"),
                     title: "notices",
                     role: BorderRole::Ic,
                     slot: PaneSlot::Left,
-                    content: PaneContent::Scrollback,
-                    min_w: 34,
+                    content: PaneContent::Panel {
+                        feed: COCKPIT_FEED,
+                        render: render_cockpit_notices_rows,
+                    },
+                    min_w: 22,
                     min_h: 3,
                     selectable: false,
                 },
@@ -905,7 +941,7 @@ pub fn builtin_screens() -> Vec<Screen> {
                         feed: COCKPIT_FEED,
                         render: render_cockpit_weapons_rows,
                     },
-                    min_w: 34,
+                    min_w: 22,
                     min_h: 4,
                     selectable: false,
                 },
@@ -918,7 +954,7 @@ pub fn builtin_screens() -> Vec<Screen> {
                         feed: COCKPIT_FEED,
                         render: render_cockpit_contacts_rows,
                     },
-                    min_w: 34,
+                    min_w: 22,
                     min_h: 4,
                     selectable: true,
                 },
@@ -961,11 +997,11 @@ pub fn builtin_screens() -> Vec<Screen> {
                     label: "pull",
                     action: KeyAction::Local(LocalAction::Refresh),
                 },
-                KeyBinding {
-                    key: 'v',
-                    label: "view",
-                    action: KeyAction::Run("view"),
-                },
+                // **16b cut B.3** (`B-63`): no `v`. `VIEW` answers a grid the
+                // line client prints, which this screen never showed — the map
+                // pane is the TUI's view — so the key ran a verb whose answer
+                // went nowhere a pilot on screen 0 could read it. The read keys
+                // below stay: their answers ring on the notices pane.
                 KeyBinding {
                     key: 'c',
                     label: "contacts",
@@ -1011,8 +1047,11 @@ pub fn builtin_screens() -> Vec<Screen> {
                 (ARENA_MAP_FEED, Value::Object(serde_json::Map::new())),
             ],
             // The contacts pane carries whole rows — a designator, a class, a
-            // bearing, a band, a range and an age — and `draw_pane` neither
-            // wraps nor scrolls sideways.
+            // bearing, a band, a range and an age — and a row that has the
+            // width is read on one line rather than wrapped onto two (16b cut
+            // B.3 wraps every panel row, so the surplus is now comfort, not the
+            // difference between a row and a clipped one). At 80 columns there
+            // is no surplus and the rows wrap; the Left column never shares it.
             right_shares_surplus: true,
             gate: Some(COCKPIT_FEED),
         },
@@ -1216,7 +1255,9 @@ mod tests {
             })
             .collect();
         // 16b cut Q.4 bound the cockpit's seven read verbs; the five that stage
-        // an arena intent are prefills and are not on the list at all.
+        // an arena intent are prefills and are not on the list at all. 16b cut
+        // B.3 (`B-63`) unbound `view`, whose grid the TUI never showed; the
+        // verb stays on the list, which is the web's too and is reserved.
         assert_eq!(
             bound,
             [
@@ -1224,7 +1265,6 @@ mod tests {
                 "inventory",
                 "+roll/last",
                 "+contacts",
-                "view",
                 "contacts",
                 "status",
                 "weaponstatus",
@@ -1290,14 +1330,25 @@ mod tests {
         for d in &cockpit.degrade {
             assert!(cockpit.pane(*d).is_some(), "degrade names {}", d.0);
         }
-        // Every pane but the notices ring reads the one feed.
+        // Every pane reads the one feed — the notices pane too since 16b cut
+        // B.3 (`B-64`): it is the frame's notices and the pilot's replies,
+        // not the scrollback.
         for pane in &cockpit.panes {
             match pane.content {
-                PaneContent::Scrollback => assert_eq!(pane.id, PaneId("notices")),
                 PaneContent::Panel { feed, .. } => assert_eq!(feed, COCKPIT_FEED),
-                _ => panic!("the cockpit declares only panel panes and the ring"),
+                _ => panic!("the cockpit declares only panel panes"),
             }
         }
+        let notices = cockpit.pane(PaneId("notices")).expect("a notices pane");
+        assert!(!notices.selectable, "the notices pane is read, not picked");
+        assert_eq!(notices.role, BorderRole::Ic);
+        // 16b cut B.3 (`B-10`): 22 + 36 + 22 is eighty columns, so no pane is
+        // dropped for width there, and the status pane holds its ten rows.
+        for pane in &cockpit.panes {
+            let want = if pane.id == PaneId("map") { 36 } else { 22 };
+            assert_eq!(pane.min_w, want, "{}", pane.id.0);
+        }
+        assert_eq!(cockpit.pane(PaneId("status")).map(|p| p.min_h), Some(10));
         assert!(
             cockpit
                 .pane(PaneId("contacts"))
@@ -1310,7 +1361,6 @@ mod tests {
             match binding.action {
                 KeyAction::Run(cmd) => assert!(
                     [
-                        "view",
                         "contacts",
                         "status",
                         "weaponstatus",
@@ -1319,7 +1369,7 @@ mod tests {
                         "bearing"
                     ]
                     .contains(&cmd),
-                    "{cmd:?} is not one of the seven read verbs"
+                    "{cmd:?} is not one of the six read verbs the screen binds"
                 ),
                 KeyAction::Prefill(line) => assert!(
                     ["lock ", "fire ", "heading ", "speed "].contains(&line),
@@ -1346,6 +1396,9 @@ mod tests {
             !JUMP_KEYS.contains(&'p') && !GLOBAL_KEYS.contains(&'p'),
             "`p` is on neither reserved list"
         );
+        // 16b cut B.3 (`B-63`): `v` ran a `VIEW` whose grid this screen never
+        // showed, so it is gone.
+        assert!(cockpit.binding('v').is_none(), "{order:?}");
     }
 
     /// The id range moved with the tenth screen: `0` is a digit now and `10`

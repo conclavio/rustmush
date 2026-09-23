@@ -20,11 +20,11 @@ The Hall #2 · Downtown · rain · IC 21:15 · n·North  e·East  quai
 │                                                                                              │└──────────────────────┘
 │                                                                                              │┌actions───────────────┐
 │                                                                                              ││+act brace — Brace    │
-│                                                                                              ││  Adopt a braced stanc│
+│                                                                                              ││  Adopt a braced      │
+│                                                                                              ││stance.               │
 │                                                                                              ││+act aim — Aim        │
-│                                                                                              ││  Take a moment to aim│
-│                                                                                              ││                      │
-│                                                                                              ││                      │
+│                                                                                              ││  Take a moment to    │
+│                                                                                              ││aim.                  │
 │                                                                                              ││                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘└──────────────────────┘
 [ Health /X□□□□□ Hurt ]  [ Willpower ▰▰▰▰▰▰▱▱ 6/8 ]  [ Blood ▰▰▱▱▱▱▱▱ 3/13 ]

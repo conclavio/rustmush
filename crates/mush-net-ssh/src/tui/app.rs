@@ -39,7 +39,9 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use serde_json::Value;
 
 use super::keys::{Key, KeyParser};
-use super::panels::{ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, PanelOutcome, PanelStore, UNIT_FEED};
+use super::panels::{
+    ARENA_MAP_FEED, COCKPIT_FEED, ChanMsg, NOTICE_SENTENCE_TAG, PanelOutcome, PanelStore, UNIT_FEED,
+};
 use super::render::{
     Entry, GUTTER_W, PaneRows, RenderCtx, dim_span_owned, legend_line, render_backlog_rows,
     render_channels_rows, render_event, render_rolls_rows, render_sheet_rows, render_vitals_rows,
@@ -151,13 +153,20 @@ impl StickyMode {
 }
 
 /// What the server told this connection before the TUI opened: the panel
-/// manifest from `Hello` and the character from `SessionInfo`.
+/// manifest from `Hello`, the character from `SessionInfo`, and the last room
+/// it was shown.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TuiManifest {
     /// Panel feed ids the server can publish (`Hello.panels`).
     pub panels: Vec<String>,
     /// The attached character's name.
     pub character: Option<String>,
+    /// **The last room this connection was shown** (16b cut B.3, `B-66`): a
+    /// bare `Room` event or one answering a query (`Reply { Room }`), recorded
+    /// by the output pump BEFORE its line/TUI branch, so a walk or a `BOARD`
+    /// taken inside the TUI is remembered for the next `@tui` too. A TUI opens
+    /// on it ([`TuiApp::set_manifest`]) instead of on `(no room yet)`.
+    pub room: Option<RoomView>,
 }
 
 /// What a decoded input burst asks the transport to do. Every burst that
@@ -318,8 +327,10 @@ pub struct TuiApp {
     /// cut Q.4). It is set once per match, so a pilot who walks away from the
     /// screen is never dragged back to it by the next pulse.
     cockpit_switched: Option<i64>,
-    /// **Whether a frame has ever said this viewer is seated** (16b cut Q.4):
-    /// the gate on the tenth tab, described on [`Self::screen_available`].
+    /// **Whether this viewer holds a seat** (16b cut Q.4; 16b cut B.3 made it
+    /// end with the seat): set by a match's first seated frame, cleared by the
+    /// cleared one — the gate on the tenth tab, described on
+    /// [`Self::screen_available`].
     cockpit_seat: bool,
 }
 
@@ -400,7 +411,20 @@ impl TuiApp {
     }
 
     /// Record what the server announced before the TUI opened.
+    ///
+    /// **16b cut B.3** (`B-66`): the manifest's last room seeds the app's room
+    /// AND its exit keys — through the same [`exit_keys`] the `Room` arm of
+    /// [`Self::apply_event`] uses — when the app holds no room yet, so `@tui`
+    /// opens on the status line of the room the player is standing in and the
+    /// scene screen's one-letter exits work before anything else arrives. A
+    /// room the app already holds is newer than the manifest's and is kept.
     pub fn set_manifest(&mut self, manifest: TuiManifest) {
+        if self.room.is_none()
+            && let Some(view) = manifest.room.as_ref()
+        {
+            self.room = Some(view.clone());
+            self.exit_keys = exit_keys(&view.exits);
+        }
         self.manifest = manifest;
         self.leave_a_screen_this_server_does_not_have();
     }
@@ -417,9 +441,10 @@ impl TuiApp {
     /// the push and the query answer `seated: false` to anyone who is not in a
     /// cockpit, so a bystander in `@tui` on an arena server has no cockpit tab
     /// at all, rather than one that would tell them a match is being fought.
-    /// The flag is STICKY for the session ([`Self::cockpit_seat`]): the cleared
-    /// frame is the last one a pilot gets, and it still has to find a screen to
-    /// render its empty state on.
+    /// The flag ([`Self::cockpit_seat`]) is held from a match's first seated
+    /// frame to the cleared one (16c Q21, 16b cut B.3): the tab goes with the
+    /// seat, and a pilot standing on it is moved to the first screen — the web
+    /// client's tab keeps the same hours.
     fn screen_available(&self, screen: &Screen) -> bool {
         match screen.gate {
             None => true,
@@ -435,9 +460,10 @@ impl TuiApp {
         self.screens.iter().filter(|s| self.screen_available(s))
     }
 
-    /// A hello that takes a gated screen away leaves the player standing on a
-    /// tab that is no longer drawn: put them back on the first screen, which is
-    /// never gated.
+    /// A hello that takes a gated screen away — or, since 16b cut B.3, the
+    /// cleared frame that takes the cockpit's seat — leaves the player standing
+    /// on a tab that is no longer drawn: put them back on the first screen,
+    /// which is never gated.
     fn leave_a_screen_this_server_does_not_have(&mut self) {
         let gone = self
             .screens
@@ -808,8 +834,12 @@ impl TuiApp {
     ///   not drag them back. The screen is opened FIRST, because its `on_enter`
     ///   carries an `arena.map` ask of its own and one terrain is enough: the
     ///   heal below takes that ask as its own and arms the latch on it.
+    /// * **The notices ring** (16b cut B.3, `B-64`) takes every seated frame's
+    ///   notices before anything else here, and a frame of a new match empties
+    ///   it first (`PanelStore::push_cockpit_notices`).
     /// * **A cleared frame** (`seated: false`, the last one a pilot gets)
-    ///   drops the map and re-arms both, so the next match starts clean.
+    ///   drops the map, the ring and the tab, and re-arms both latches, so the
+    ///   next match starts clean.
     fn follow_the_cockpit(&mut self, frame: &Value, now: i64) -> Vec<(String, Value)> {
         let mut queries = Vec::new();
         let seated = frame.get("seated").and_then(Value::as_bool) != Some(false);
@@ -818,14 +848,23 @@ impl TuiApp {
             .and_then(Value::as_i64)
             .filter(|_| seated)
         else {
-            // The seat is gone. The flag does NOT go with it: the tab has to
-            // stand one more paint so the empty state has a screen to be on.
+            // The seat is gone, and the tab goes with it (16b cut B.3, `B-63`,
+            // 16c Q21): the flag clears, and a pilot standing on screen 0 is
+            // moved to the first screen — the scene, where the sentence that
+            // said why (`You climb out…`) has landed. Nothing of the seat
+            // stays: the ground, the ring and both latches go too.
             self.panels.forget(ARENA_MAP_FEED);
+            self.panels.clear_cockpit_notices();
             self.map_asked_at = None;
             self.map_asked_for = None;
             self.cockpit_switched = None;
+            self.cockpit_seat = false;
+            self.leave_a_screen_this_server_does_not_have();
             return queries;
         };
+        // The ring first (16b cut B.3): the frame's own notices, composed from
+        // their fields, and a new match's frame empties it before they land.
+        self.panels.push_cockpit_notices(frame);
         self.cockpit_seat = true;
         let holds_the_ground = self.holds_the_ground(match_id);
         if !holds_the_ground && self.panels.get(ARENA_MAP_FEED).is_some() {
@@ -958,6 +997,10 @@ impl TuiApp {
     pub fn apply_event(&mut self, event: &OutputEvent) -> Vec<(String, Value)> {
         let now = self.now();
         let mut queries = Vec::new();
+        // Whether this event answers one of the app's OWN queries (16b cut
+        // B.3): the `Sys` arm rings only what the pilot was sent, never a
+        // refusal or a throttle line answering a background ask.
+        let answered = matches!(event, OutputEvent::Reply { .. });
         let event = match event {
             OutputEvent::Reply { event, .. } => event.as_ref(),
             other => other,
@@ -1083,6 +1126,29 @@ impl TuiApp {
                         line,
                     },
                 );
+            }
+            OutputEvent::Sys(text) => {
+                // **16b cut B.3** (the TUI half of 16b cut B.1's reply ring,
+                // Q20): while seated, every `Sys` line ALSO rings on the
+                // cockpit's notices pane, because a pilot kept on screen 0 has
+                // no scrollback in front of them — `Locking BA.` has to land
+                // where `lock BA` was typed. Every line, not a chosen subset,
+                // exactly as the web's `pushReply`; the one left out is the
+                // bridge's copy of a frame's own notice (its first span tagged
+                // `NOTICE_SENTENCE_TAG`), which the ring already composes from
+                // the frame. Nor does a `Sys` that ANSWERS one of this app's
+                // own queries ring (a `Reply`: a refusal or a throttle line
+                // answering the WHO tick, the map heal, a backlog page or the
+                // entry hydration, or a subscribe's acknowledgement) — the
+                // pilot typed none of those, and the web's `#routeReply` never
+                // rings one either. What the pilot types, a bare key's read
+                // verb included, is SUBMITTED, so its answer arrives bare. The
+                // line still falls through to the scrollback.
+                let sentence = text.0.first().and_then(|span| span.tag.as_deref())
+                    == Some(NOTICE_SENTENCE_TAG);
+                if !sentence && !answered {
+                    self.panels.push_cockpit_reply(&text.to_plain_text());
+                }
             }
             OutputEvent::MailNotice { unread, .. } => {
                 self.mail_unread = usize::try_from(*unread).unwrap_or(0);
@@ -2328,8 +2394,10 @@ impl TuiApp {
     /// the caller has one: [`Self::draw_pane`] passes the rect it is about to
     /// paint into, and the input paths — scrolling, jumping, the highlighted
     /// row — pass `None`, because they ask what the rows ARE and not how many
-    /// of them fit. Only the cockpit map reads it (`RenderCtx::pane`), and it
-    /// is neither selectable nor scrollable, so no input path ever needs it.
+    /// of them fit. Two renderers read it (`RenderCtx::pane`): the cockpit
+    /// map, which sizes its window and sheds its chrome by it, and — since 16b
+    /// cut B.3 — the cockpit's notices pane, which answers the tail of its
+    /// ring that fits. Neither is selectable, so no input path ever needs it.
     fn pane_rows(&self, spec: &PaneSpec, area: Option<(u16, u16)>) -> PaneRows {
         let ctx = RenderCtx {
             pane: area,
@@ -2636,9 +2704,11 @@ impl TuiApp {
         // The Right column shares the surplus with Main rather than staying
         // at `max(min_w)` at every width (interface plan I8): the tactical
         // screens' right column carries whole table rows — a before/after
-        // line is 36 columns for the reference frame — and `draw_pane`
-        // neither wraps nor scrolls sideways, so a fixed 34 clipped the pane
-        // at 160 columns just as at 80. `visible_panes` is unchanged, so no
+        // line is 36 columns for the reference frame — and a fixed 34 once
+        // clipped the pane at 160 columns just as at 80. Since 16b cut B.3
+        // `draw_pane` wraps every panel row at its pane's edge, so the share
+        // no longer decides whether a row is read at all: it keeps a row on
+        // ONE line where the terminal has the width. `visible_panes` is unchanged, so no
         // survivor set moves; only screens that DECLARE the split take it,
         // which keeps the rails (the WHO rail, the channel list) at the width
         // they were designed for.
@@ -2674,7 +2744,9 @@ impl TuiApp {
                 .map(|_| Constraint::Ratio(1, in_slot.len() as u32))
                 .collect();
             let areas = Layout::vertical(shares).split(column);
-            for (spec, rect) in in_slot.iter().zip(areas.iter()) {
+            let mins: Vec<u16> = in_slot.iter().map(|p| p.min_h + 2).collect();
+            let rects = honour_min_heights(&areas, &mins);
+            for (spec, rect) in in_slot.iter().zip(rects.iter()) {
                 self.draw_pane(frame, *spec, *rect);
             }
         }
@@ -2748,29 +2820,51 @@ impl TuiApp {
                 // index it was last at — the rows under it change as fast as
                 // the arena pulses.
                 let selected = self.anchored(spec.id, &rows);
-                let total = rows.rows.len();
-                let h = usize::from(inner.height);
-                let mut scroll = ui.scroll.min(total.saturating_sub(h));
-                if spec.selectable && selected < total {
-                    if selected < scroll {
-                        scroll = selected;
-                    } else if selected >= scroll + h {
-                        scroll = selected + 1 - h;
+                // **16b cut B.3** (`B-10`): every row wraps at the pane's edge
+                // into as many lines as it takes — the rule `scrollback_rows`
+                // has always used, through the same `wrap_spans` — so a narrow
+                // pane costs rows and never words. One rule for every panel
+                // pane on every screen. The map's rows are exactly the window's
+                // width and never wrap. Each wrapped line remembers its SOURCE
+                // row: the highlight lies on every line of the selected row, and
+                // `anchored`, `selected_row` and the keys stay on source rows.
+                let width = usize::from(inner.width);
+                let mut lines: Vec<(usize, Line<'static>)> = Vec::new();
+                // The first wrapped line of each source row (a prefix sum).
+                let mut first_line: Vec<usize> = Vec::with_capacity(rows.rows.len());
+                for (i, r) in rows.rows.into_iter().enumerate() {
+                    first_line.push(lines.len());
+                    let highlight = spec.selectable && i == selected && r.selectable;
+                    let style = if highlight {
+                        r.line.style.add_modifier(Modifier::REVERSED)
+                    } else {
+                        r.line.style
+                    };
+                    for spans in wrap_spans(&r.line.spans, width) {
+                        lines.push((i, Line::from(spans).style(style)));
                     }
                 }
-                let lines: Vec<Line<'static>> = rows
-                    .rows
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, r)| {
-                        if spec.selectable && i == selected && r.selectable {
-                            r.line
-                                .style(Style::default().add_modifier(Modifier::REVERSED))
-                        } else {
-                            r.line
-                        }
-                    })
-                    .collect();
+                let total = lines.len();
+                let h = usize::from(inner.height);
+                let mut scroll = ui.scroll.min(total.saturating_sub(h));
+                // The scroll follows the highlight over WRAPPED lines, anchored
+                // on the selected row's first line: it is always in view, and
+                // the rest of the row is brought in below it where it fits.
+                if spec.selectable
+                    && let Some(&anchor) = first_line.get(selected)
+                {
+                    let last = first_line
+                        .get(selected + 1)
+                        .map_or(total, |next| *next)
+                        .saturating_sub(1)
+                        .max(anchor);
+                    if anchor < scroll {
+                        scroll = anchor;
+                    } else if last >= scroll + h {
+                        scroll = (last + 1 - h).min(anchor);
+                    }
+                }
+                let lines: Vec<Line<'static>> = lines.into_iter().map(|(_, line)| line).collect();
                 frame.render_widget(
                     Paragraph::new(Text::from(lines))
                         .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
@@ -3018,6 +3112,62 @@ impl TuiApp {
             InputMode::NoEcho => String::new(),
         }
     }
+}
+
+/// **A column's pane rects with every pane at least its own `min_h`** (16b
+/// cut B.3), the equal shares `draw_body` splits a column into, repaired.
+///
+/// `visible_panes` keeps a pane only when its column has the rows for every
+/// survivor's `min_h` plus its border, so those rows exist; an equal split
+/// could still hand one pane less than it declared while a neighbour had rows
+/// to spare. The cockpit's status pane is the case: ten rows, the LOCK the
+/// last of them, and at 80 by 24 an even split with the notices pane gave it
+/// seven, so the one row a gunner reads before `FIRE` was the one cut. Where
+/// every pane already has its minimum the equal split stands unchanged (every
+/// other screen's golden is byte-identical); where one is short, rows move to it
+/// one at a time from the pane with the most to spare (the later of a tie),
+/// and the rects are re-stacked top to bottom in the column.
+fn honour_min_heights(areas: &[Rect], mins: &[u16]) -> Vec<Rect> {
+    let mut heights: Vec<u16> = areas.iter().map(|r| r.height).collect();
+    let short = |heights: &[u16]| {
+        heights
+            .iter()
+            .zip(mins)
+            .position(|(have, want)| have < want)
+    };
+    if short(&heights).is_none() {
+        return areas.to_vec();
+    }
+    while let Some(needy) = short(&heights) {
+        let donor = heights
+            .iter()
+            .zip(mins)
+            .enumerate()
+            .filter(|(_, (have, want))| have > want)
+            .max_by_key(|(i, (have, want))| (**have - **want, *i))
+            .map(|(i, _)| i);
+        let Some(donor) = donor else {
+            // No pane has a row to spare: `visible_panes` should have made
+            // this impossible, and the equal split is the honest fallback.
+            return areas.to_vec();
+        };
+        if let Some(h) = heights.get_mut(donor) {
+            *h -= 1;
+        }
+        if let Some(h) = heights.get_mut(needy) {
+            *h += 1;
+        }
+    }
+    let mut y = areas.first().map_or(0, |r| r.y);
+    areas
+        .iter()
+        .zip(heights)
+        .map(|(r, height)| {
+            let rect = Rect { y, height, ..*r };
+            y = y.saturating_add(height);
+            rect
+        })
+        .collect()
 }
 
 fn loading() -> PaneRows {
@@ -3860,6 +4010,7 @@ mod tests {
         app.set_manifest(TuiManifest {
             panels: vec!["tactics.unit".into()],
             character: None,
+            room: None,
         });
         app.feed_input(b"9");
         let text = super::super::frame_text(&mut app, 120, 34);
@@ -3901,12 +4052,14 @@ mod tests {
         app.set_manifest(TuiManifest {
             panels: vec!["tactics.unit".into()],
             character: None,
+            room: None,
         });
         app.feed_input(b"1");
         assert_eq!(names(&app.feed_input(b"9")), vec!["tactics.unit"]);
         app.set_manifest(TuiManifest {
             panels: vec!["tactics.unit".into(), "tactics.contacts".into()],
             character: None,
+            room: None,
         });
         app.feed_input(b"1");
         let r = app.feed_input(b"9");
@@ -3946,6 +4099,7 @@ mod tests {
         app.set_manifest(TuiManifest {
             panels: vec!["tactics.unit".into()],
             character: None,
+            room: None,
         });
         for digit in *b"89" {
             app.feed_input(b"1");
@@ -3977,6 +4131,7 @@ mod tests {
         app.set_manifest(TuiManifest {
             panels: vec!["wod.vitals".into()],
             character: None,
+            room: None,
         });
         for digit in *b"89" {
             app.feed_input(b"1");
@@ -4004,6 +4159,7 @@ mod tests {
         app.set_manifest(TuiManifest {
             panels: vec!["mek.unit".into()],
             character: None,
+            room: None,
         });
         let names: Vec<String> = app
             .feed_input(b"9")
@@ -4058,6 +4214,7 @@ mod tests {
         app.set_manifest(TuiManifest {
             panels: vec!["tactics.unit".into(), "tactics.contacts".into()],
             character: None,
+            room: None,
         });
         app.feed_input(b"9");
         let names: Vec<String> = app
@@ -4124,6 +4281,7 @@ mod tests {
                 "scenes".into(),
             ],
             character: Some("Nick".into()),
+            room: None,
         });
         let q: Vec<String> = app.entry_queries().into_iter().map(|(n, _)| n).collect();
         for expected in [
@@ -4169,6 +4327,7 @@ mod tests {
         bare.set_manifest(TuiManifest {
             panels: vec!["wod.vitals".into()],
             character: Some("Nick".into()),
+            room: None,
         });
         let q: Vec<String> = bare.entry_queries().into_iter().map(|(n, _)| n).collect();
         for absent in ["comsys.state", "scenes"] {
@@ -4197,6 +4356,7 @@ mod tests {
                 "intel".into(),
             ],
             character: Some("Nick".into()),
+            room: None,
         });
         let q: Vec<String> = full.entry_queries().into_iter().map(|(n, _)| n).collect();
         for expected in ["comsys.state", "scenes"] {
@@ -5248,6 +5408,7 @@ mod tests {
         TuiManifest {
             panels: vec![COCKPIT_FEED.to_string(), ARENA_MAP_FEED.to_string()],
             character: None,
+            room: None,
         }
     }
 
@@ -5312,6 +5473,7 @@ mod tests {
         bare.set_manifest(TuiManifest {
             panels: vec!["mail".into()],
             character: None,
+            room: None,
         });
         bare.feed_input(b"0");
         assert_eq!(
@@ -5373,10 +5535,12 @@ mod tests {
             ScreenId(1),
             "the seat went; nothing drags the player onto the empty cockpit"
         );
+        // 16b cut B.3 (`B-63`, 16c Q21): the tab goes with the seat. (It used
+        // to stand for the rest of the session.)
         let text = super::super::frame_text(&mut app, 120, 34);
         assert!(
-            text.contains("0 cockpit"),
-            "the tab still stands, so the empty state has a screen to be on:\n{text}"
+            !text.contains("0 cockpit"),
+            "the tab went with the seat:\n{text}"
         );
         // And a seat taken again IS a new seating: the screen opens for it.
         app.apply_event(&arena_keyframe(COCKPIT_FEED, next));
@@ -5788,8 +5952,11 @@ mod tests {
         );
     }
 
-    /// 16b cut Q.4: `seated: false` — the last frame a pilot is sent — is the
-    /// one-line empty state on the map and an empty everything else.
+    /// 16b cut Q.4: `seated: false` — the last frame a pilot is sent — empties
+    /// the cockpit. **16b cut B.3** (`B-63`): it takes the screen with it, so a
+    /// pilot standing on it lands on the scene, and nothing of the seat is left
+    /// to paint; the panes' own empty state is still the one line, for any
+    /// caller that asks them.
     #[test]
     fn a_cleared_frame_empties_the_cockpit() {
         let mut app = arena_app();
@@ -5801,19 +5968,48 @@ mod tests {
         let text = super::super::frame_text(&mut app, 120, 34);
         assert!(text.contains("Callsign RA"), "{text}");
         app.apply_event(&cockpit_cleared());
+        assert_eq!(app.active_screen(), ScreenId(1), "off the screen that went");
         let text = super::super::frame_text(&mut app, 120, 34);
-        assert!(
-            text.contains(super::super::render::NOT_IN_A_COCKPIT),
-            "the map pane says so:\n{text}"
-        );
-        for gone in ["Callsign RA", "Lock BA", "cannon", "BA  blue"] {
+        for gone in [
+            "Callsign RA",
+            "Lock BA",
+            "cannon",
+            "BA  blue",
+            "0 cockpit",
+            super::super::render::NOT_IN_A_COCKPIT,
+        ] {
             assert!(!text.contains(gone), "{gone:?} survived the clear:\n{text}");
+        }
+        let cockpit = app
+            .screens
+            .iter()
+            .find(|s| s.id == COCKPIT_SCREEN)
+            .cloned()
+            .expect("the cockpit screen");
+        for pane in &cockpit.panes {
+            let rows = app.pane_rows(pane, Some((40, 10)));
+            let text: Vec<String> = rows
+                .rows
+                .iter()
+                .map(super::super::render::PaneRow::text)
+                .collect();
+            assert!(
+                text.is_empty() || text == [super::super::render::NOT_IN_A_COCKPIT],
+                "{}: {text:?}",
+                pane.id.0
+            );
         }
     }
 
     /// 16b cut Q.4: the drop order. Damage first, then the weapons, then the
     /// contacts; the map, the status and the notices ring survive every
     /// terminal the TUI paints at.
+    ///
+    /// **16b cut B.3** (`B-10`): at 80 by 24 only `damage` goes, and for HEIGHT
+    /// — `22 + 36 + 22` is eighty columns, so the contacts pane, the one `Enter`
+    /// prefills a `lock` from, stays. Asserted on the PAINTED frame, because
+    /// `visible_panes` is asked with the body rect and a whole-terminal rect is
+    /// not one.
     #[test]
     fn the_cockpit_degrades_damage_then_weapons_then_contacts() {
         let mut app = arena_app();
@@ -5833,11 +6029,427 @@ mod tests {
             survivors(&app, 120, 28),
             vec!["map", "status", "damage", "notices", "weapons", "contacts"]
         );
-        assert_eq!(
-            survivors(&app, 80, 20),
-            vec!["map", "status", "notices"],
-            "the width drops damage, weapons and contacts in that order"
+        // Eighty by twenty-four, painted: every pane's title but damage's.
+        let text = super::super::frame_text(&mut app, 80, 24);
+        for title in ["status", "notices", "weapons", "contacts"] {
+            assert!(
+                text.contains(&format!("\u{250c}{title}")),
+                "{title} is painted at 80x24:\n{text}"
+            );
+        }
+        assert!(text.contains("\u{250c} map "), "the map, focused:\n{text}");
+        assert!(
+            !text.contains("\u{250c}damage"),
+            "damage goes first, for height:\n{text}"
         );
         assert_eq!(survivors(&app, 30, 20), vec!["map"]);
+    }
+
+    /// **16b cut B.3**: a column's equal split stands where every pane has its
+    /// `min_h`; where one is short, rows move to it from the pane with the most
+    /// to spare, and the rects stay stacked and inside the column.
+    #[test]
+    fn a_column_split_gives_every_pane_its_own_minimum() {
+        let col = Rect::new(0, 2, 22, 17);
+        let split = |n: u16| -> Vec<Rect> {
+            Layout::vertical((0..n).map(|_| Constraint::Ratio(1, u32::from(n))))
+                .split(col)
+                .to_vec()
+        };
+        // Fair already: untouched.
+        let fair = split(2);
+        assert_eq!(honour_min_heights(&fair, &[5, 5]), fair);
+        // The cockpit at 80x24: status wants twelve (ten rows and a border),
+        // notices five — the whole seventeen — and an even split gave the
+        // status nine.
+        let even = split(2);
+        let fixed = honour_min_heights(&even, &[12, 5]);
+        assert_eq!(fixed.iter().map(|r| r.height).collect::<Vec<_>>(), [12, 5]);
+        assert_eq!(fixed.first().map(|r| r.y), Some(2));
+        assert_eq!(fixed.get(1).map(|r| r.y), Some(14));
+        assert!(fixed.iter().all(|r| r.x == 0 && r.width == 22));
+        // Three panes, one short: the one with the most to spare gives.
+        let three = split(3);
+        let fixed = honour_min_heights(&three, &[10, 4, 1]);
+        let heights: Vec<u16> = fixed.iter().map(|r| r.height).collect();
+        assert_eq!(heights.iter().sum::<u16>(), 17);
+        assert_eq!(heights.first(), Some(&10), "{heights:?}");
+        assert!(
+            heights.iter().zip([10, 4, 1]).all(|(h, m)| *h >= m),
+            "{heights:?}"
+        );
+        // Not enough rows for everyone: the equal split is kept.
+        assert_eq!(honour_min_heights(&even, &[12, 12]), even);
+    }
+
+    /// Paint `app` at `w` by `h` and hand back the buffer, styles and all.
+    fn painted(app: &mut TuiApp, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut caps = app.caps();
+        caps.width = w;
+        caps.height = h;
+        app.set_caps(caps);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).expect("backend");
+        terminal.draw(|frame| app.draw(frame)).expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    /// The row of `buf` that holds `needle` starting at or after column `from`,
+    /// and the column it starts at.
+    fn find_in(buf: &ratatui::buffer::Buffer, needle: &str, from: u16) -> Option<(u16, u16)> {
+        let area = buf.area;
+        for y in 0..area.height {
+            let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+            let chars: Vec<char> = row.chars().collect();
+            let want: Vec<char> = needle.chars().collect();
+            for x in usize::from(from)..chars.len() {
+                if chars.get(x..x + want.len()) == Some(&want[..]) {
+                    return Some((u16::try_from(x).unwrap_or(0), y));
+                }
+            }
+        }
+        None
+    }
+
+    /// **16b cut B.3** (`B-10`): a panel row wider than its pane wraps into as
+    /// many lines as it takes — nothing is cut at the pane's edge — and the
+    /// highlight lies on EVERY line of the selected row.
+    #[test]
+    fn a_panel_row_wider_than_its_pane_wraps_and_keeps_its_highlight() {
+        let mut app = arena_app();
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        // 80 columns: the Right column is 22 wide, twenty inside its borders,
+        // and BA's row — `BA  blue  045°  far  450 m  1 s`, 31 characters —
+        // is two lines there. The highlight rests on it (the first row).
+        let buf = painted(&mut app, 80, 24);
+        let (x, y) = find_in(&buf, "BA  blue  045\u{b0}  far", 58).expect("BA's first line");
+        let (x2, y2) = find_in(&buf, "450 m  1 s", 58).expect("BA's second line");
+        assert_eq!(y2, y + 1, "the wrap continues on the next line");
+        assert_eq!(x2, x, "inside the same pane");
+        for (cx, cy) in [(x, y), (x2, y2)] {
+            assert!(
+                buf[(cx, cy)].modifier.contains(Modifier::REVERSED),
+                "the highlight lies on every line of the row ({cx}, {cy})"
+            );
+        }
+        // The next contact's row is not highlighted.
+        let (x3, y3) = find_in(&buf, "RB  red", 58).expect("RB's row");
+        assert!(!buf[(x3, y3)].modifier.contains(Modifier::REVERSED));
+        // And the scan row under BA, 43 characters, wraps rather than clips:
+        // every one of its five words is painted.
+        let text = super::super::frame_text(&mut app, 80, 24);
+        for word in [
+            "engine",
+            "hull",
+            "left_track/y",
+            "right_track/r",
+            "turret/d",
+        ] {
+            assert!(text.contains(word), "{word} was clipped:\n{text}");
+        }
+        // Moving the highlight keeps it on source rows: Down lands on RB, the
+        // next SELECTABLE row, not on BA's wrapped line or its scan row.
+        let contacts = app
+            .screen()
+            .panes
+            .iter()
+            .position(|p| p.id == PaneId("contacts"))
+            .expect("a contacts pane");
+        for _ in 0..contacts {
+            app.feed_input(b"\t");
+        }
+        app.feed_input(b"\x1b[B");
+        app.feed_input(b"\r");
+        assert_eq!(app.input_text(), "lock RB");
+    }
+
+    /// **16b cut B.3** (`B-10`): the scroll follows the highlight over WRAPPED
+    /// lines. At 80 by 24 the contacts pane holds seven lines and its rows take
+    /// thirteen, so moving the highlight to the last contact scrolls: X4's
+    /// FIRST line and its last are both in view and both reversed, and BA's
+    /// row, at the top, has gone off the pane.
+    #[test]
+    fn the_scroll_follows_a_wrapped_highlight_down_the_pane() {
+        let mut app = arena_app();
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        let contacts = app
+            .screen()
+            .panes
+            .iter()
+            .position(|p| p.id == PaneId("contacts"))
+            .expect("a contacts pane");
+        for _ in 0..contacts {
+            app.feed_input(b"\t");
+        }
+        // BA → RB → X3 → X4, source rows all (BA's scan row is not a stop).
+        for _ in 0..3 {
+            app.feed_input(b"\x1b[B");
+        }
+        let buf = painted(&mut app, 80, 24);
+        let (x, y) = find_in(&buf, "X4  unknown", 58).expect("X4's first line is in view");
+        let (x2, y2) = find_in(&buf, "600 m", 58).expect("X4's last line is in view");
+        assert_eq!(y2, y + 1, "the row's two lines, one under the other");
+        assert!(x2 >= x);
+        // `x` is the pane's first inner column: both lines start there.
+        for (cx, cy) in [(x, y), (x, y2), (x2, y2)] {
+            assert!(
+                buf[(cx, cy)].modifier.contains(Modifier::REVERSED),
+                "the highlight lies on every line of X4's row ({cx}, {cy})"
+            );
+        }
+        assert!(
+            find_in(&buf, "BA  blue", 58).is_none(),
+            "the pane scrolled: BA's row is off the top"
+        );
+        // The row above X4 is X3's, and it is not highlighted.
+        let (x3, y3) = find_in(&buf, "X3  unknown", 58).expect("X3's row above");
+        assert!(y3 < y);
+        assert!(!buf[(x3, y3)].modifier.contains(Modifier::REVERSED));
+        app.feed_input(b"\r");
+        assert_eq!(app.input_text(), "lock X4");
+    }
+
+    /// **16b cut B.3**: the map pane's rows are exactly the window's width in
+    /// glyphs, so the wrap every panel pane now takes never folds the ground.
+    #[test]
+    fn the_map_pane_rows_never_wrap() {
+        let mut app = arena_app();
+        app.apply_event(&arena_keyframe(
+            ARENA_MAP_FEED,
+            arena_json(ARENA_MAP_FIXTURE),
+        ));
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        let map = app
+            .screen()
+            .pane(PaneId("map"))
+            .copied()
+            .expect("a map pane");
+        // (pane, heading rows, grid rows, legend rows) — the chrome rule.
+        for (w, h, head, ground, legend) in [
+            (34u16, 15u16, 1usize, 13usize, 1usize),
+            (44, 20, 1, 18, 1),
+            (54, 24, 1, 22, 1),
+            (20, 3, 0, 2, 1),
+            (20, 2, 0, 2, 0),
+        ] {
+            let rows = app.pane_rows(&map, Some((w, h)));
+            assert_eq!(rows.rows.len(), head + ground + legend, "{w}x{h}");
+            assert_eq!(rows.rows.len(), usize::from(h), "{w}x{h}: exactly the pane");
+            for row in rows.rows.iter().skip(head).take(ground) {
+                assert_eq!(
+                    row.text().chars().count(),
+                    usize::from(w),
+                    "{w}x{h}: a grid row is the window's width"
+                );
+                assert_eq!(
+                    wrap_spans(&row.line.spans, usize::from(w)).len(),
+                    1,
+                    "{w}x{h}: a map row wrapped: {:?}",
+                    row.text()
+                );
+            }
+        }
+        // A crowd: twelve contacts around the pilot make a legend far wider
+        // than a 34-column pane. It is cut to one line, so no row of the pane
+        // wraps and the pane holds exactly its height — nothing to scroll.
+        let mut crowded = arena_json(COCKPIT_FIXTURE);
+        let (cx, cy) = (
+            crowded["cell"][0].as_i64().unwrap_or(0),
+            crowded["cell"][1].as_i64().unwrap_or(0),
+        );
+        let template = crowded["contacts"][0].clone();
+        crowded["contacts"] = serde_json::Value::Array(
+            (0..12)
+                .map(|i| {
+                    let mut c = template.clone();
+                    c["designator"] = serde_json::json!(format!("X{}", i + 10));
+                    c["cell"] = serde_json::json!([cx + i + 1, cy]);
+                    c
+                })
+                .collect(),
+        );
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, crowded));
+        let rows = app.pane_rows(&map, Some((34, 15)));
+        assert_eq!(rows.rows.len(), 15);
+        for row in &rows.rows {
+            assert_eq!(
+                wrap_spans(&row.line.spans, 34).len(),
+                1,
+                "a row of the crowded map wrapped: {:?}",
+                row.text()
+            );
+        }
+        let legend = rows.rows.last().map(super::super::render::PaneRow::text);
+        assert!(
+            legend.as_deref().is_some_and(|l| l.ends_with(" more")),
+            "the legend counts what it left off: {legend:?}"
+        );
+    }
+
+    /// **16b cut B.3** (`B-63`, `T-63`, 16c Q21): the tab exists from a match's
+    /// first seated frame to the cleared one. A pilot standing on it when the
+    /// seat goes lands on the first screen; a pilot on another screen stays
+    /// there; `0` is inert afterwards; and a new seat brings it back.
+    #[test]
+    fn the_tab_goes_with_the_seat() {
+        let mut app = arena_app();
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(!text.contains("0 cockpit"), "no seat, no tab:\n{text}");
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(text.contains("0 cockpit"), "{text}");
+        // Standing on it when the seat goes: moved to the first screen.
+        app.apply_event(&cockpit_cleared());
+        assert_eq!(app.active_screen(), ScreenId(1));
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(!text.contains("cockpit"), "the tab is gone:\n{text}");
+        let r = app.feed_input(b"0");
+        assert!(!r.redraw, "the digit is inert: {r:?}");
+        assert_eq!(app.active_screen(), ScreenId(1));
+        // A new seat brings it back (and opens it); a pilot who is on another
+        // screen when that seat goes is left where they are.
+        let mut next = arena_json(COCKPIT_FIXTURE);
+        next["match"] = serde_json::json!(8);
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, next));
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        app.feed_input(b"3");
+        assert_eq!(app.active_screen(), ScreenId(3));
+        app.apply_event(&cockpit_cleared());
+        assert_eq!(app.active_screen(), ScreenId(3), "left where they were");
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(!text.contains("0 cockpit"), "{text}");
+    }
+
+    /// The notices pane's rows, as text, off a painted-size render.
+    fn notice_rows(app: &TuiApp, pane: (u16, u16)) -> Vec<String> {
+        let spec = app
+            .screens
+            .iter()
+            .find(|s| s.id == COCKPIT_SCREEN)
+            .and_then(|s| s.pane(PaneId("notices")))
+            .copied()
+            .expect("a notices pane");
+        app.pane_rows(&spec, Some(pane))
+            .rows
+            .iter()
+            .map(super::super::render::PaneRow::text)
+            .collect()
+    }
+
+    /// **16b cut B.3** (`B-64`, `B-80`'s reset on the TUI): the notices pane
+    /// is the frame's notices composed from their fields — never the
+    /// scrollback — and it starts each match clean and ends with the seat.
+    #[test]
+    fn the_notices_ring_resets_on_a_new_match_and_on_the_cleared_frame() {
+        let mut app = arena_app();
+        // Chatter before the seat is the scrollback's, never the pane's.
+        app.apply_event(&OutputEvent::Sys(RichText::plain("Bob has connected.")));
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        assert_eq!(
+            notice_rows(&app, (20, 10)),
+            ["X4 new contact", "BA section destroyed: turret"]
+        );
+        // The next pulse of the same match adds its own and keeps the rest.
+        let mut pulse = arena_json(COCKPIT_FIXTURE);
+        pulse["notices"] = serde_json::json!([
+            { "kind": "locked", "designator": "RB", "friendly": true }
+        ]);
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, pulse));
+        assert_eq!(
+            notice_rows(&app, (40, 10)).last().map(String::as_str),
+            Some("RB (FRIENDLY) locked")
+        );
+        assert_eq!(notice_rows(&app, (40, 10)).len(), 3);
+        // A read verb's re-emitted frame carries `notices: []`: nothing rings.
+        let mut mirror = arena_json(COCKPIT_FIXTURE);
+        mirror["notices"] = serde_json::json!([]);
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, mirror));
+        assert_eq!(notice_rows(&app, (40, 10)).len(), 3);
+        // Match 8's first frame empties the ring before its own lines land.
+        let mut next = arena_json(COCKPIT_FIXTURE);
+        next["match"] = serde_json::json!(8);
+        next["notices"] = serde_json::json!([
+            { "kind": "acquired", "designator": "X1", "friendly": false }
+        ]);
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, next));
+        assert_eq!(notice_rows(&app, (40, 10)), ["X1 new contact"]);
+        // The cleared frame ends it.
+        app.apply_event(&cockpit_cleared());
+        assert!(app.panels().cockpit_notices().is_empty());
+        // Seated again with nothing rung: the pane says so.
+        let mut quiet = arena_json(COCKPIT_FIXTURE);
+        quiet["notices"] = serde_json::json!([]);
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, quiet));
+        assert_eq!(
+            notice_rows(&app, (40, 10)),
+            [super::super::render::NOTHING_YET]
+        );
+    }
+
+    /// **16b cut B.3** (the TUI half of B.1's reply ring, Q20): a `Sys` line
+    /// that arrives while seated is the ring's last line — `Locking BA.` lands
+    /// where `lock BA` was typed — and one that arrives before any frame is not.
+    /// The bridge's copy of a frame's own notice (tagged `arena-notice`) is left
+    /// out: the ring composed that notice from the frame already. So is a `Sys`
+    /// wrapped in a `Reply`, the answer to one of the app's own queries.
+    #[test]
+    fn a_reply_lands_on_the_notices_pane_while_seated() {
+        let mut app = arena_app();
+        app.apply_event(&OutputEvent::Sys(RichText::plain("Before the seat.")));
+        assert!(app.panels().cockpit_notices().is_empty());
+        app.apply_event(&arena_keyframe(COCKPIT_FEED, arena_json(COCKPIT_FIXTURE)));
+        app.apply_event(&OutputEvent::Sys(RichText::tag("arena", "Locking BA.")));
+        assert_eq!(
+            notice_rows(&app, (40, 10)).last().map(String::as_str),
+            Some("Locking BA.")
+        );
+        // A `Sys` answering one of the app's OWN queries is not the pilot's
+        // reply and does not ring (the web's `#routeReply` never rings one):
+        // the refusal of a background ask, a subscribe's acknowledgement.
+        let before = app.panels().cockpit_notices().len();
+        app.apply_event(&OutputEvent::Reply {
+            id: 0,
+            event: Box::new(OutputEvent::Sys(RichText::tag(
+                "error",
+                "Slow down: too many queries.",
+            ))),
+        });
+        assert_eq!(
+            app.panels().cockpit_notices().len(),
+            before,
+            "an answer to a query the pilot never typed is not rung"
+        );
+        // What a bare key's read verb answers arrives bare, and rings.
+        app.apply_event(&OutputEvent::Sys(RichText::tag("arena", "No lock held.")));
+        assert_eq!(
+            notice_rows(&app, (40, 10)).last().map(String::as_str),
+            Some("No lock held.")
+        );
+        let before = app.panels().cockpit_notices().len();
+        app.apply_event(&OutputEvent::Sys(RichText::tag(
+            NOTICE_SENTENCE_TAG,
+            "New contact X4: bearing 030\u{b0}, far.",
+        )));
+        assert_eq!(
+            app.panels().cockpit_notices().len(),
+            before,
+            "the notice's own sentence is not rung twice"
+        );
+        // Both still reach the scrollback on screen 1.
+        app.feed_input(b"1");
+        let text = super::super::frame_text(&mut app, 120, 34);
+        assert!(
+            text.contains("Locking BA.") && text.contains("New contact X4"),
+            "{text}"
+        );
+        // The pane shows the TAIL that fits: at three rows, the last three.
+        let tail = notice_rows(&app, (40, 3));
+        assert_eq!(tail.len(), 3);
+        assert_eq!(tail.last().map(String::as_str), Some("No lock held."));
+        // After the cleared frame nothing rings.
+        app.apply_event(&cockpit_cleared());
+        app.apply_event(&OutputEvent::Sys(RichText::plain("You climb out.")));
+        assert!(app.panels().cockpit_notices().is_empty());
     }
 }

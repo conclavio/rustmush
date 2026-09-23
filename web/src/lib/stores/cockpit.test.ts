@@ -287,4 +287,25 @@ describe("CockpitStore", () => {
     s.applyMap(42);
     expect(s.map).toBeNull();
   });
+
+  it("holds the tab from the first seated frame to the cleared one, across a rehydrate (16b cut B.3)", () => {
+    const s = new CockpitStore();
+    expect(s.seatedOnce).toBe(false);
+    // A map before any frame seats nobody.
+    s.applyMap(MAP());
+    expect(s.seatedOnce).toBe(false);
+    s.applyFrame(FRAME());
+    expect(s.seatedOnce).toBe(true);
+    // A full rehydrate drops the frame and keeps the tab.
+    s.clearForRehydrate();
+    expect(s.seated).toBe(false);
+    expect(s.seatedOnce).toBe(true);
+    // The cleared answer takes it.
+    s.applyFrame(CLEARED);
+    expect(s.seatedOnce).toBe(false);
+    // And a reset (`clear`) takes it too.
+    s.applyFrame(FRAME());
+    s.clear();
+    expect(s.seatedOnce).toBe(false);
+  });
 });

@@ -326,6 +326,28 @@ describe("composeWindow", () => {
     expect(cockpitView(theFrame(), win, []).legend).toBe("x BA  + RB  ? X3");
   });
 
+  it("names in the legend only the marker that owns its cell (16b cut B.3, B-62)", () => {
+    // Two contacts on one cell: the later is drawn, so the later is named —
+    // the TUI's `render_cockpit_map_rows` rule. A contact on the pilot's own
+    // cell overwrites the `@` (drawn first) and is named; the `@` never is.
+    const frame = theFrame();
+    const [ba, rb, x3] = frame.contacts;
+    const stacked: CockpitFrame = {
+      ...frame,
+      contacts: [
+        { ...ba!, cell: [2, 9] },
+        { ...x3!, cell: [14, 7] },
+        { ...rb!, cell: [2, 9] },
+        { ...x3!, designator: "X5", cell: [6, 4] },
+      ],
+    };
+    const win = composeWindow(theMap(), stacked, 78, 20);
+    expect(win.markers.map((m) => m.designator)).toEqual(["RA", "BA", "X3", "RB", "X5"]);
+    expect(win.grid[win.h - 1 - 9]?.charAt(2)).toBe("+");
+    expect(win.grid[win.h - 1 - 4]?.charAt(6)).toBe("?");
+    expect(cockpitView(stacked, win, []).legend).toBe("? X3  + RB  ? X5");
+  });
+
   it("subtracts a NON-ZERO window origin from every absolute cell", () => {
     // The committed fixture cannot catch this: its own origin is [0, 0].
     const frame: CockpitFrame = {

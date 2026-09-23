@@ -464,6 +464,32 @@ impl Term {
         }
     }
 
+    /// [`Self::expect`], reading only what arrived after `mark` (a byte offset
+    /// into `seen`), for a needle that may already be on the screen earlier.
+    async fn expect_after(&mut self, mark: usize, needle: &str) {
+        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        while !strip_ansi(&self.seen[mark..]).contains(needle) {
+            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "timeout waiting for {needle:?}; seen so far: {:?}",
+                        self.seen
+                    )
+                });
+            match msg {
+                Some(ChannelMsg::Data { data }) => {
+                    self.seen.push_str(&String::from_utf8_lossy(&data));
+                }
+                Some(_) => {}
+                None => panic!(
+                    "channel closed while waiting for {needle:?}; seen: {:?}",
+                    self.seen
+                ),
+            }
+        }
+    }
+
     async fn send_line(&mut self, line: &str) {
         let bytes = format!("{line}\r").into_bytes();
         self.channel.data(&bytes[..]).await.expect("send line");
@@ -1729,6 +1755,125 @@ async fn the_pump_tick_re_asks_a_lost_arena_map() {
     drop(tx);
     // Back to the scene (the frame opened screen 0), where Enter opens the box.
     term.send_bytes(b"1").await;
+    term.send_bytes(b"\r").await;
+    term.send_line("@notui").await;
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+// ---- 16b cut B.3: `@tui` opens on the room (`B-66`) ------------------------
+
+/// A room with one one-letter exit, as a `look` or a walk sends it.
+fn room_event(name: &str, id: &str) -> OutputEvent {
+    OutputEvent::Room(mush_proto::RoomView {
+        name: name.into(),
+        id: id.into(),
+        desc: RichText::plain("Stone walls."),
+        contents: vec![],
+        exits: vec![mush_proto::ExitRef {
+            name: "Up".into(),
+            aliases: vec!["u".into()],
+        }],
+        zone: None,
+        ambient: Default::default(),
+    })
+}
+
+/// TUI text with every space taken out: the TUI paints cells, and the spaces
+/// between words are never sent.
+fn squeezed(raw: &str) -> String {
+    strip_ansi(raw)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+/// The session's output queue, by the last character connected.
+fn last_tx(hooks: &MockHooks) -> (u64, mpsc::Sender<Arc<OutputEvent>>) {
+    let conn = hooks
+        .connected_chars
+        .lock()
+        .unwrap()
+        .last()
+        .expect("connected")
+        .0;
+    (conn, hooks.tx_of(conn).expect("the session's output queue"))
+}
+
+/// `B-66` in line mode: a room shown before `@tui` is the one the TUI opens on —
+/// its status line names it at once, rather than `(no room yet)` until the world
+/// happens to send another.
+#[tokio::test]
+async fn tui_opens_on_the_room_line_mode_was_last_shown() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("room-line", &hooks).await;
+    let (_, tx) = last_tx(&hooks);
+    tx.send(Arc::new(room_event("Scullery", "#40")))
+        .await
+        .expect("queue open");
+    term.expect("Scullery").await;
+    let opened = term.seen.len();
+    term.send_line("@tui").await;
+    term.expect_after(opened, "Alice").await; // the TUI is up (the WHO rail)
+    // The TUI paints cells and never sends the spaces between words, so the
+    // screen is read squeezed.
+    let screen = squeezed(&term.seen[opened..]);
+    assert!(screen.contains("Scullery#40"), "{screen:?}");
+    assert!(!screen.contains("noroomyet"), "{screen:?}");
+
+    drop(tx);
+    term.send_bytes(b"\r").await;
+    term.send_line("@notui").await;
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// `B-66` in TUI mode: the pump records the room BEFORE its line/TUI branch, so a
+/// room reached while the TUI is up — a walk, a `BOARD` — is the one a second
+/// `@tui` opens on after `@notui`. Before this the manifest was fed by the line
+/// renderer alone, which never sees a TUI-mode event, and `leave_tui` copied
+/// nothing back: the second TUI opened on the room the player had left.
+#[tokio::test]
+async fn a_room_seen_in_tui_mode_is_remembered_for_the_next_tui() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("room-tui", &hooks).await;
+    let (_, tx) = last_tx(&hooks);
+    tx.send(Arc::new(room_event("Scullery", "#40")))
+        .await
+        .expect("queue open");
+    term.expect("Scullery").await;
+    term.send_line("@tui").await;
+    term.expect("Alice").await;
+    // The walk, inside the TUI: a `Reply`-wrapped room too, as the attach look
+    // B.4 builds arrives.
+    let walked = term.seen.len();
+    tx.send(Arc::new(OutputEvent::Reply {
+        id: 0,
+        event: Box::new(room_event("Pantry", "#41")),
+    }))
+    .await
+    .expect("queue open");
+    term.expect_after(walked, "Pantry").await;
+    term.send_bytes(b"\r").await;
+    term.send_line("@notui").await;
+    // A fresh TUI: its first paint names the room the player walked to.
+    let reopened = term.seen.len();
+    term.send_line("@tui").await;
+    term.expect_after(reopened, "Alice").await;
+    let screen = squeezed(&term.seen[reopened..]);
+    assert!(screen.contains("Pantry#41"), "{screen:?}");
+    assert!(
+        !screen.contains("Scullery"),
+        "the room the player left: {screen:?}"
+    );
+
+    drop(tx);
     term.send_bytes(b"\r").await;
     term.send_line("@notui").await;
     term.send_line("QUIT").await;

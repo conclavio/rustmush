@@ -19,10 +19,10 @@ The Hall #2 · Downtown · rain · IC 21:15 · North  East  quai
 │                                                             ││rev 4 · gauss · section center_torso ok→damaged        │
 │                                                             ││rev 4 · gauss · component gauss ok→destroyed           │
 │                                                             ││rev 4 · gauss · asset gauss detached                   │
-│                                                             ││rev 4 · gauss · capability_granted tactics.mobility (ga│
-│                                                             ││rev 4 · gauss · capability_revoked tactics.mobility (ga│
-│                                                             ││                                                       │
-│                                                             ││                                                       │
+│                                                             ││rev 4 · gauss · capability_granted tactics.mobility    │
+│                                                             ││(gauss)                                                │
+│                                                             ││rev 4 · gauss · capability_revoked tactics.mobility    │
+│                                                             ││(gauss)                                                │
 │                                                             ││                                                       │
 │                                                             ││                                                       │
 │                                                             ││                                                       │

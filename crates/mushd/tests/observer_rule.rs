@@ -2450,6 +2450,71 @@ async fn the_tui_cockpit_shows_a_pilot_no_more_than_their_own_sensors_found() {
         &strip_ansi(&ada.seen[closing..]),
         "the TUI cockpit after detection",
     );
+
+    // ---- and when she climbs out (16b cut B.3, `B-63`, 16c Q21) ----------
+    //
+    // The tab goes with the seat: the cleared frame moves her off screen 0 to
+    // the scene, the digit is inert afterwards, and the cockpit's empty state
+    // is never painted — a screen that says `Not in a cockpit.` is a tab that
+    // outlived the seat. The TUI paints only the cells that change, so the
+    // screen she is on is read off the help overlay's first line (`scene
+    // screen`), which names the active screen whole.
+    ada.send_line("").await; // the box, empty: the focused map pane has no row
+    let leaving = ada.mark();
+    ada.send_line("EXIT").await;
+    ada.expect_after(leaving, "climb").await;
+    // The active tab is the one the strip names; `scene` there is the cleared
+    // frame having moved her.
+    ada.expect_after(leaving, "scene").await;
+    ada.send_line("").await; // an empty line: back to nav
+    // `0` reaches nothing now, and ONE help overlay proves both halves: its
+    // first line names the active screen whole (the TUI paints only the cells
+    // that change, so the strip alone cannot say which tab is lit). Had the
+    // cleared frame left her on the cockpit, or had `0` found a cockpit tab to
+    // open, it would read `cockpit screen`. The overlay is opened once and
+    // read before anything closes it: a close and a re-open land in one paint
+    // with no difference in it, so there would be nothing to read.
+    let pressed = ada.mark();
+    ada.send_line("0").await; // the digit, inert; its Return opens the box
+    ada.send_line("").await; // back to nav
+    ada.send_line("?").await; // help; the Return is swallowed while it is up
+    ada.expect_after(pressed, "screen").await;
+    let after_zero = squeezed(&ada.seen[pressed..]);
+    assert!(
+        after_zero.contains("scenescreen") && !after_zero.contains("cockpitscreen"),
+        "the cleared frame left her on the cockpit, or the digit reached one:\n{after_zero}"
+    );
+    for cockpit_word in ["Callsign", "Waitingforthearena"] {
+        assert!(
+            !after_zero.contains(cockpit_word),
+            "a cockpit pane painted after the seat went ({cockpit_word}):\n{after_zero}"
+        );
+    }
+    assert!(
+        !squeezed(&ada.seen[opened..]).contains("Notinacockpit"),
+        "the cockpit's empty state was painted: the tab outlived the seat"
+    );
+    // A fresh full screen, out of the tank: its entry queries ask the cockpit
+    // feed and she is answered `seated: false`, which paints nothing. So wait
+    // for a line painted AFTER that answer — a second `EXIT`, typed once the
+    // screen is up, is answered after every entry query ahead of it (one
+    // world, one inbox, one connection's replies in order) — and only then
+    // read the strip: a tab that answer had wrongly raised would be on screen
+    // by now, as `0 cockpit`.
+    ada.send_line("?").await; // close the help; the Return opens the box
+    ada.send_line("@notui").await;
+    let reopened = ada.mark();
+    ada.send_line("@tui").await;
+    ada.expect_after(reopened, "Ada").await;
+    ada.send_line("").await; // the box
+    let probed = ada.mark();
+    ada.send_line("EXIT").await;
+    ada.expect_after(probed, "pod.").await;
+    let strip = squeezed(&ada.seen[reopened..]);
+    assert!(
+        strip.contains("89") && !strip.contains("0cockpit"),
+        "no tenth tab once out of the tank:\n{strip}"
+    );
 }
 
 /// **`B-01`: the board is the observer rule too** (16b cut D.1; doc 16 §1, §5).

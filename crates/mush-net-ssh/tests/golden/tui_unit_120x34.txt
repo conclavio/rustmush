@@ -2,11 +2,11 @@ rustmush  1 scene   2 sheet   3 mail   4 chan 1   5 rolls   6 intel   7 actions 
 The Hall #2 · Downtown · rain · IC 21:15 · North  East  quai
 ┌plant─────────────────┐┌ sections ───────────────────────────────────────┐┌contacts───────────────────────────────────┐
 │✓ heat ▰▰▰▱▱ 20/30    ││Atlas #7  rev 3                                  ││contact       gen  rev  state  age  band   │
-│mobility ground.biped ││✗ center_torso  ok  structure ▰▰▰▰▰ 8/8          ││aabbccddeeff    1    3  held   12s  close  │
-│                      ││    rear/armor ▰▱▱▱▱ 1/6                         ││001122334455    1    3  held   12s  close  │
-│                      ││                                                 ││                                           │
-│                      ││                                                 ││                                           │
-│                      ││                                                 ││                                           │
+│mobility ground.biped ││✗ center_torso  ok  structure ▰▰▰▰▰ 8/8          ││source                                     │
+│                      ││    rear/armor ▰▱▱▱▱ 1/6                         ││aabbccddeeff    1    3  held   12s  close  │
+│                      ││                                                 ││local                                      │
+│                      ││                                                 ││001122334455    1    3  held   12s  close  │
+│                      ││                                                 ││local                                      │
 │                      ││                                                 ││                                           │
 │                      ││                                                 │└───────────────────────────────────────────┘
 │                      ││                                                 │┌weapons────────────────────────────────────┐
@@ -16,7 +16,7 @@ The Hall #2 · Downtown · rain · IC 21:15 · North  East  quai
 └──────────────────────┘└─────────────────────────────────────────────────┘│                                           │
 ┌grid──────────────────┐┌components───────────────────────────────────────┐│                                           │
 │(not published by this││unit                                             ││                                           │
-│                      ││  · tactics.mobility                             ││                                           │
+│server)               ││  · tactics.mobility                             ││                                           │
 │                      ││center_torso                                     │└───────────────────────────────────────────┘
 │                      ││  ✓ gauss               ok                       │┌comms──────────────────────────────────────┐
 │                      ││      ammo ▰▰▰▰▱ 9/12                            ││awaiting a station comms                   │

@@ -62,6 +62,22 @@ pub const ARENA_MAP_FEED: &str = "arena.map";
 /// permanent for the session once a flood bucket is hit. Five whole seconds
 /// is well outside a healthy round trip and still coalesces a damage burst.
 pub const RESYNC_LATCH_S: i64 = 5;
+/// **The most lines the cockpit's notices ring keeps** (16b cut B.3, `B-64`):
+/// the web's `COCKPIT_NOTICES`, the same number so the two panes read alike.
+pub const COCKPIT_NOTICES: usize = 50;
+/// The most characters one reply line may spend on the notices ring (16b cut
+/// B.3). A pane row wraps now, so this is not a width: it bounds what one
+/// server line can cost the ring, the way every other TUI renderer bounds the
+/// server text it keeps.
+pub const COCKPIT_REPLY_CHARS: usize = 200;
+/// **The span tag on the arena bridge's `Sys` copy of a frame's own notice**
+/// (`tacsim::arena_bridge::NOTICE_SENTENCE_TAG`, 16b cut B.1). The ring composes
+/// that notice from the frame's FIELDS, so ringing the sentence as a reply too
+/// would say every notice twice; a line whose first span carries this tag is the
+/// one `Sys` line [`PanelStore::push_cockpit_reply`]'s caller leaves out. This
+/// crate takes no `tacsim` dependency, so the word is copied here and pinned to
+/// the web's copy by a test.
+pub const NOTICE_SENTENCE_TAG: &str = "arena-notice";
 
 /// One feed's latest state.
 #[derive(Clone, Debug)]
@@ -107,6 +123,15 @@ pub struct PanelStore {
     rolls: VecDeque<Value>,
     unit_journal: VecDeque<Value>,
     backlog: HashMap<String, VecDeque<ChanMsg>>,
+    /// **The cockpit's notices ring** (16b cut B.3, `B-64`), oldest first, at
+    /// most [`COCKPIT_NOTICES`]: each seated frame's notices composed by
+    /// [`super::render::notice_words`] from their fields, and — while a seated
+    /// frame is held — every `Sys` line the pilot is sent, because on screen 0
+    /// this pane is the only reply surface there is.
+    cockpit_notices: VecDeque<String>,
+    /// The match the ring's lines belong to (16b cut B.3, `B-80`'s reset on
+    /// the TUI): a frame of another match empties it before its own lines land.
+    cockpit_notices_for: Option<i64>,
 }
 
 impl PanelStore {
@@ -128,12 +153,100 @@ impl PanelStore {
         self.feeds.get(feed)
     }
 
-    /// **Drop a feed's held frame** (16b cut Q.4): the arena map of a match
-    /// that is over describes ground the pilot is no longer on, and a stale map
-    /// under live markers is worse than no map — the pane says it is waiting
-    /// and the self-heal asks for the new one.
+    /// **Drop a feed, whole** (16b cut Q.4; 16b cut B.3, `T-64`): the arena map
+    /// of a match that is over describes ground the pilot is no longer on, and
+    /// a stale map under live markers is worse than no map — the pane says it
+    /// is waiting and the self-heal asks for the new one.
+    ///
+    /// Whole means the three maps a feed lives in: its held frame (`feeds`),
+    /// a view's gap cursor (`view_cursors`) and an outstanding resync latch
+    /// (`resync_pending`). Dropping only the frame left a cursor that would
+    /// judge the next keyframe against a stream that no longer exists, and a
+    /// latch that would swallow the next resync for up to [`RESYNC_LATCH_S`].
     pub fn forget(&mut self, feed: &str) {
         self.feeds.remove(feed);
+        self.view_cursors.remove(feed);
+        self.resync_pending.remove(feed);
+    }
+
+    /// **Ring one seated `arena.cockpit` frame's notices** (16b cut B.3,
+    /// `B-64`, Q20). A frame of another match than the ring's empties it
+    /// first (`B-80`'s reset: match 7's last lines never sit above match 8's
+    /// first); then each entry of `notices` is composed by
+    /// [`super::render::notice_words`] — from its fields, never its `text` —
+    /// and pushed when it says anything, the front dropped past
+    /// [`COCKPIT_NOTICES`]. Per-pulse frames carry only that pulse's notices,
+    /// and the copy a read verb re-emits carries `notices: []`, so nothing is
+    /// rung twice.
+    pub fn push_cockpit_notices(&mut self, frame: &Value) {
+        let match_id = frame.get("match").and_then(Value::as_i64);
+        if match_id != self.cockpit_notices_for {
+            self.cockpit_notices.clear();
+            self.cockpit_notices_for = match_id;
+        }
+        let Some(notices) = frame.get("notices").and_then(Value::as_array) else {
+            return;
+        };
+        for notice in notices {
+            let line = super::render::notice_words(notice);
+            if !line.is_empty() {
+                self.ring_cockpit_line(line);
+            }
+        }
+    }
+
+    /// **Ring one reply** (16b cut B.3, the TUI half of B.1's `pushReply`): the
+    /// plain text of a `Sys` line, while a SEATED `arena.cockpit` frame is held,
+    /// and nothing otherwise. On screen 0 this ring is the only reply surface —
+    /// a pilot who typed `lock BA` there expects `Locking BA.` on the pane — and
+    /// the scrollback on screen 1 keeps its own copy of the sentence (Q20).
+    ///
+    /// A reply of several lines (`help cockpit` answers its whole topic as one
+    /// `Sys`) rings as several: it is split at its line breaks BEFORE the
+    /// control characters are cleaned out, so two lines never run together —
+    /// the web's pane keeps the break too (`white-space: pre`). Each line is
+    /// cleaned, a blank one is skipped, and the reply as a whole spends at most
+    /// [`COCKPIT_REPLY_CHARS`]; the caller leaves out the one `Sys` line tagged
+    /// [`NOTICE_SENTENCE_TAG`].
+    pub fn push_cockpit_reply(&mut self, text: &str) {
+        let seated = self
+            .get(COCKPIT_FEED)
+            .is_some_and(|frame| frame.get("seated").and_then(Value::as_bool) != Some(false));
+        if !seated {
+            return;
+        }
+        let mut budget = COCKPIT_REPLY_CHARS;
+        for raw in text.lines() {
+            if budget == 0 {
+                break;
+            }
+            let line: String = super::render::clean(raw).chars().take(budget).collect();
+            if line.trim().is_empty() {
+                continue;
+            }
+            budget = budget.saturating_sub(line.chars().count());
+            self.ring_cockpit_line(line);
+        }
+    }
+
+    /// Empty the cockpit's notices ring and forget its match (16b cut B.3): the
+    /// cleared frame, the last one a pilot gets, leaves nothing of the seat.
+    pub fn clear_cockpit_notices(&mut self) {
+        self.cockpit_notices.clear();
+        self.cockpit_notices_for = None;
+    }
+
+    /// The cockpit's notices ring, oldest first (16b cut B.3).
+    #[must_use]
+    pub fn cockpit_notices(&self) -> &VecDeque<String> {
+        &self.cockpit_notices
+    }
+
+    fn ring_cockpit_line(&mut self, line: String) {
+        self.cockpit_notices.push_back(line);
+        while self.cockpit_notices.len() > COCKPIT_NOTICES {
+            self.cockpit_notices.pop_front();
+        }
     }
 
     /// Feed names held, sorted.
@@ -990,6 +1103,154 @@ mod tests {
                 0,
             ),
             PanelOutcome::NeedsResync(f.clone())
+        );
+    }
+
+    /// **16b cut B.3** (`T-64`): `forget` drops a feed from all three maps it
+    /// lives in — the frame, a view's gap cursor and the resync latch — so a
+    /// forgotten feed starts again exactly as one never seen.
+    #[test]
+    fn forget_forgets_the_cursor_and_the_latch() {
+        let mut st = PanelStore::new();
+        // A view's cursor: after seq 6, a keyframe at seq 2 is stale…
+        let data = serde_json::json!([{ "presentation": { "verb": "brace" } }]);
+        let fresh = ViewEnvelope::keyframe("legal.actions", 1, 7, 6, data.clone()).unwrap();
+        let older = ViewEnvelope::keyframe("legal.actions", 1, 7, 2, data.clone()).unwrap();
+        assert_eq!(st.apply_view(&fresh, 0), PanelOutcome::Stored);
+        assert_eq!(st.apply_view(&older, 0), PanelOutcome::Ignored);
+        // …and once forgotten there is no cursor to judge it against.
+        st.forget("legal.actions");
+        assert!(st.get("legal.actions").is_none());
+        assert_eq!(st.apply_view(&older, 0), PanelOutcome::Stored);
+
+        // A resync latch: the second delta inside the latch asks nothing…
+        let f = SmolStr::new("intel");
+        let delta = serde_json::json!({});
+        assert_eq!(
+            st.apply_panel(&f, PanelFrameKind::Delta, &delta, 10),
+            PanelOutcome::NeedsResync(f.clone())
+        );
+        assert!(st.resync_pending("intel"));
+        assert_eq!(
+            st.apply_panel(&f, PanelFrameKind::Delta, &delta, 11),
+            PanelOutcome::Ignored
+        );
+        // …and a forgotten feed asks at once, inside the same second.
+        st.forget("intel");
+        assert!(!st.resync_pending("intel"));
+        assert_eq!(
+            st.apply_panel(&f, PanelFrameKind::Delta, &delta, 11),
+            PanelOutcome::NeedsResync(f)
+        );
+    }
+
+    fn seated_frame(match_id: i64, notices: Value) -> Value {
+        serde_json::json!({ "match": match_id, "notices": notices })
+    }
+
+    fn acquired(designator: &str) -> Value {
+        serde_json::json!({ "kind": "acquired", "designator": designator, "friendly": false })
+    }
+
+    /// **16b cut B.3** (`B-64`, `B-80`): the ring keeps one match's lines, the
+    /// newest [`COCKPIT_NOTICES`], and takes a reply only while seated.
+    #[test]
+    fn the_cockpit_ring_is_one_match_capped_and_replies_only_while_seated() {
+        let mut st = PanelStore::new();
+        st.push_cockpit_reply("Locking BA.");
+        assert!(
+            st.cockpit_notices().is_empty(),
+            "no frame, no seat, no ring"
+        );
+        let feed = SmolStr::new_static(COCKPIT_FEED);
+        let frame = seated_frame(7, serde_json::json!([acquired("X4")]));
+        st.apply_panel(&feed, PanelFrameKind::Keyframe, &frame, 0);
+        st.push_cockpit_notices(&frame);
+        st.push_cockpit_reply("Locking \u{1b}[31mBA.");
+        assert_eq!(
+            st.cockpit_notices().iter().cloned().collect::<Vec<_>>(),
+            ["X4 new contact", "Locking [31mBA."],
+            "composed from fields, and the reply cleaned of its control byte"
+        );
+        for i in 0..COCKPIT_NOTICES {
+            st.push_cockpit_reply(&format!("reply {i}"));
+        }
+        assert_eq!(st.cockpit_notices().len(), COCKPIT_NOTICES);
+        assert_eq!(
+            st.cockpit_notices().front().map(String::as_str),
+            Some("reply 0"),
+            "the oldest lines go first"
+        );
+        st.push_cockpit_reply(&"z".repeat(COCKPIT_REPLY_CHARS + 40));
+        assert_eq!(
+            st.cockpit_notices().back().map(|l| l.chars().count()),
+            Some(COCKPIT_REPLY_CHARS)
+        );
+        // A frame of another match starts the ring again before its own lines.
+        let next = seated_frame(8, serde_json::json!([acquired("X1")]));
+        st.push_cockpit_notices(&next);
+        assert_eq!(
+            st.cockpit_notices().iter().cloned().collect::<Vec<_>>(),
+            ["X1 new contact"]
+        );
+        // The cleared frame: nothing rings after it, and the ring is empty.
+        let cleared = serde_json::json!({ "seated": false, "match": null, "notices": [] });
+        st.apply_panel(&feed, PanelFrameKind::Keyframe, &cleared, 1);
+        st.clear_cockpit_notices();
+        st.push_cockpit_reply("You climb out.");
+        assert!(st.cockpit_notices().is_empty());
+    }
+
+    /// **16b cut B.3**: a reply of several lines rings line by line — never
+    /// glued into one run-on line by the control-character clean — blank lines
+    /// are skipped, and the reply as a whole is bounded.
+    #[test]
+    fn a_reply_of_several_lines_rings_line_by_line() {
+        let mut st = PanelStore::new();
+        let feed = SmolStr::new_static(COCKPIT_FEED);
+        let frame = seated_frame(7, serde_json::json!([]));
+        st.apply_panel(&feed, PanelFrameKind::Keyframe, &frame, 0);
+        st.push_cockpit_notices(&frame);
+        st.push_cockpit_reply("COCKPIT\n\nThe end of a line.\r\nStart of the next.");
+        assert_eq!(
+            st.cockpit_notices().iter().cloned().collect::<Vec<_>>(),
+            ["COCKPIT", "The end of a line.", "Start of the next."]
+        );
+        // The whole reply spends at most COCKPIT_REPLY_CHARS, however many
+        // lines it is cut into.
+        let long = vec!["y".repeat(150); 4].join("\n");
+        st.push_cockpit_reply(&long);
+        let spent: Vec<usize> = st
+            .cockpit_notices()
+            .iter()
+            .skip(3)
+            .map(|l| l.chars().count())
+            .collect();
+        assert_eq!(spent, [150, COCKPIT_REPLY_CHARS - 150]);
+    }
+
+    /// The span tag the ring's caller skips is the bridge's, and the web reads
+    /// the same word (16b cut B.1's `NOTICE_SENTENCE_TAG` in `cockpit.ts`).
+    ///
+    /// All three copies are pinned here, the bridge's included: this crate
+    /// takes no `tacsim` dependency, so the bridge's source is read instead. A
+    /// renamed tag on the bridge alone would have both clients ring every
+    /// per-pulse notice twice — once composed, once as a reply.
+    #[test]
+    fn the_notice_sentence_tag_is_the_web_s() {
+        let web = include_str!("../../../../web/src/lib/cockpit.ts");
+        assert!(
+            web.contains(&format!(
+                "export const NOTICE_SENTENCE_TAG = \"{NOTICE_SENTENCE_TAG}\";"
+            )),
+            "the TUI's and the web's notice-sentence tags have drifted"
+        );
+        let bridge = include_str!("../../../tacsim/src/arena_bridge.rs");
+        assert!(
+            bridge.contains(&format!(
+                "pub const NOTICE_SENTENCE_TAG: &str = \"{NOTICE_SENTENCE_TAG}\";"
+            )),
+            "the TUI's and the arena bridge's notice-sentence tags have drifted"
         );
     }
 }

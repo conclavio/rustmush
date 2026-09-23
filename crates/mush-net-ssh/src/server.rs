@@ -1690,6 +1690,54 @@ fn render_line_event(sh: &mut Shared, ev: &OutputEvent, theme: &AnsiTheme, bytes
     }
 }
 
+/// **Remember the room a later `@tui` opens on** (16b cut B.3, `B-66`): a bare
+/// `Room` event, or a `Reply` whose inner event is one (16b cut B.4 makes the
+/// attach look a `Reply { Room }`), replaces [`TuiManifest::room`].
+///
+/// The output pump calls this for EVERY event BEFORE its line/TUI branch. In
+/// TUI mode the pump hands events to `TuiApp::apply_event` and
+/// [`render_line_event`] never sees them, and `leave_tui` copies nothing back,
+/// so a room recorded only on the line side went stale the moment a player
+/// walked (or `BOARD`ed) inside the TUI — and a second `@tui` opened on the
+/// room they had left.
+fn remember_the_room(manifest: &mut TuiManifest, ev: &OutputEvent) {
+    let inner = match ev {
+        OutputEvent::Reply { event, .. } => event.as_ref(),
+        other => other,
+    };
+    if let OutputEvent::Room(view) = inner {
+        manifest.room = Some(view.clone());
+    }
+}
+
+/// **The coalescing drain of the TUI side of the pump**: every event `ready`
+/// still has — the burst queued behind the one that woke the pump — recorded by
+/// [`remember_the_room`] and then applied to the TUI, the queries each asks for
+/// collected into `queries`. Answers whether a `Disconnect` was among them.
+///
+/// A walk inside the TUI arrives as a burst (the `Sys` line, then the `Room`),
+/// so the room is usually NOT the event that woke the pump (that one is
+/// recorded before the pump's line/TUI branch) but one drained here (16b cut
+/// B.3); the unit test drives this with such a burst.
+fn drain_into_tui(
+    manifest: &mut TuiManifest,
+    mut tui: Option<&mut TuiSession>,
+    mut ready: impl FnMut() -> Option<Arc<OutputEvent>>,
+    queries: &mut Vec<(String, serde_json::Value)>,
+) -> bool {
+    let mut disconnect = false;
+    while let Some(next) = ready() {
+        if matches!(&*next, OutputEvent::Disconnect { .. }) {
+            disconnect = true;
+        }
+        remember_the_room(manifest, &next);
+        if let Some(t) = tui.as_deref_mut() {
+            queries.extend(t.apply_event(&next));
+        }
+    }
+    disconnect
+}
+
 /// Render one system line the way a world `Sys` line renders.
 fn sys_line(sh: &Shared, theme: &AnsiTheme, out: &mut Vec<u8>, text: &str) {
     mush_ansi::render(
@@ -1852,6 +1900,10 @@ fn spawn_output_pump(
                         if matches!(&*ev, OutputEvent::Disconnect { .. }) {
                             done = true;
                         }
+                        // 16b cut B.3 (`B-66`): the room is remembered in
+                        // EITHER mode, before the branch, so the next `@tui`
+                        // opens on the room this connection was last shown.
+                        remember_the_room(&mut sh.manifest, &ev);
                         match sh.mode {
                             Mode::Tui => {
                                 // Coalesce: apply this event and every other
@@ -1859,13 +1911,14 @@ fn spawn_output_pump(
                                 if let Some(t) = sh.tui.as_mut() {
                                     queries.extend(t.apply_event(&ev));
                                 }
-                                while let Ok(next) = rx.try_recv() {
-                                    if matches!(&*next, OutputEvent::Disconnect { .. }) {
-                                        done = true;
-                                    }
-                                    if let Some(t) = sh.tui.as_mut() {
-                                        queries.extend(t.apply_event(&next));
-                                    }
+                                let Shared { manifest, tui, .. } = &mut *sh;
+                                if drain_into_tui(
+                                    manifest,
+                                    tui.as_deref_mut(),
+                                    || rx.try_recv().ok(),
+                                    &mut queries,
+                                ) {
+                                    done = true;
                                 }
                                 sh.tui.as_mut().map(|t| t.paint()).unwrap_or_default()
                             }
@@ -1928,4 +1981,99 @@ fn spawn_output_pump(
             )
             .await;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_proto::{ExitRef, RoomView};
+
+    fn room(name: &str) -> RoomView {
+        RoomView {
+            name: name.into(),
+            id: "#2".into(),
+            desc: RichText::plain("A room."),
+            contents: vec![],
+            exits: vec![ExitRef {
+                name: "North".into(),
+                aliases: vec!["n".into()],
+            }],
+            zone: None,
+            ambient: Default::default(),
+        }
+    }
+
+    /// 16b cut B.3 (`B-66`): the pump's record of the last room is fed by a
+    /// bare `Room` and by a `Room` answering a query (the attach look B.4
+    /// builds), each replacing the last; nothing else touches it.
+    #[test]
+    fn the_last_room_shown_is_remembered_bare_or_as_a_reply() {
+        let mut manifest = TuiManifest::default();
+        remember_the_room(&mut manifest, &OutputEvent::Room(room("Hall")));
+        assert_eq!(
+            manifest.room.as_ref().map(|r| r.name.as_str()),
+            Some("Hall")
+        );
+        remember_the_room(
+            &mut manifest,
+            &OutputEvent::Reply {
+                id: 0,
+                event: Box::new(OutputEvent::Room(room("Pod"))),
+            },
+        );
+        assert_eq!(manifest.room.as_ref().map(|r| r.name.as_str()), Some("Pod"));
+        remember_the_room(&mut manifest, &OutputEvent::Sys(RichText::plain("x")));
+        remember_the_room(
+            &mut manifest,
+            &OutputEvent::Reply {
+                id: 0,
+                event: Box::new(OutputEvent::Sys(RichText::plain("x"))),
+            },
+        );
+        assert_eq!(
+            manifest.room.as_ref().map(|r| r.name.as_str()),
+            Some("Pod"),
+            "only a room replaces the room"
+        );
+    }
+
+    /// 16b cut B.3 (`B-66`): a walk inside the TUI is a burst — the `Sys` line
+    /// wakes the pump and the `Room` is queued behind it — so the room is
+    /// recorded by the coalescing drain, not by the pre-branch call. The drain
+    /// records every event it applies, and reports a `Disconnect` among them.
+    #[test]
+    fn the_coalescing_drain_remembers_a_room_queued_behind_the_wake() {
+        let mut manifest = TuiManifest {
+            room: Some(room("Hall")),
+            ..TuiManifest::default()
+        };
+        let mut burst = vec![
+            Arc::new(OutputEvent::Sys(RichText::plain("You go north."))),
+            Arc::new(OutputEvent::Reply {
+                id: 3,
+                event: Box::new(OutputEvent::Room(room("Pantry"))),
+            }),
+            Arc::new(OutputEvent::Sys(RichText::plain("Bob has arrived."))),
+        ]
+        .into_iter();
+        let mut queries = Vec::new();
+        let gone = drain_into_tui(&mut manifest, None, || burst.next(), &mut queries);
+        assert!(!gone);
+        assert_eq!(
+            manifest.room.as_ref().map(|r| r.name.as_str()),
+            Some("Pantry"),
+            "the room queued behind the wake is the one remembered"
+        );
+        assert!(burst.next().is_none(), "the drain takes the whole burst");
+        let mut last = vec![Arc::new(OutputEvent::Disconnect {
+            reason: RichText::plain("bye"),
+        })]
+        .into_iter();
+        assert!(drain_into_tui(
+            &mut manifest,
+            None,
+            || last.next(),
+            &mut queries
+        ));
+    }
 }

@@ -57,6 +57,7 @@ fn fixture_app() -> TuiApp {
     app.set_manifest(TuiManifest {
         panels: vec!["wod.vitals".into(), "wod.sheet".into(), "mail".into()],
         character: Some("Nick".into()),
+        room: None,
     });
     let mut room = RoomView {
         name: "The Hall".into(),
@@ -425,9 +426,11 @@ fn every_screen_has_a_golden_at_the_budget_size() {
 
 /// I8 (the layout hole): the before/after table's job is to show both sides
 /// of a change, and at a fixed 34-column right column it could show neither
-/// — the contract's own reference row is 36 characters, and `draw_pane`
-/// neither wraps nor scrolls sideways. With the Right column sharing the
-/// surplus, screen 8 at 120 columns reads whole rows.
+/// — the contract's own reference row is 36 characters, and `draw_pane` then
+/// clipped at the pane's edge. With the Right column sharing the surplus,
+/// screen 8 at 120 columns reads whole rows, each on ONE line (since 16b cut
+/// B.3 a row too long for its pane wraps rather than clips; the share is what
+/// keeps these on one line).
 #[test]
 fn the_before_after_pane_shows_both_sides_at_one_twenty() {
     let mut app = tactical_app();
@@ -644,6 +647,7 @@ fn cockpit_app() -> TuiApp {
             "arena.map".into(),
         ],
         character: Some("Nick".into()),
+        room: None,
     });
     app.apply_event(&arena_panel("arena.map", ARENA_MAP));
     app.apply_event(&arena_panel("arena.cockpit", COCKPIT_FRAME));
@@ -750,9 +754,17 @@ fn a_window_away_from_the_corner_subtracts_its_own_origin() {
     );
 }
 
-/// The whole screen at the two budget sizes, on a server that publishes the
-/// arena feeds. The FIRST cockpit frame of a match opens the screen by itself,
-/// which is what the `active_screen` assertion pins.
+/// The whole screen at the budget sizes, on a server that publishes the arena
+/// feeds. The FIRST cockpit frame of a match opens the screen by itself, which
+/// is what the `active_screen` assertion pins.
+///
+/// **16b cut B.3** (`B-10`) added 100 by 30: at every size the contacts pane
+/// is painted — no pane goes for WIDTH at 80 columns — and `damage`, the first
+/// to go for HEIGHT, is drawn from 31 rows: the status pane's ten rows, the
+/// damage pane's five and the notices' three, each with its border, want 24
+/// body rows, and a 30-row terminal with the vitals gauge has 23. The notices pane is the frame's
+/// two notices composed from their fields — `X4 new contact` and `BA section
+/// destroyed: turret` — and none of the scrollback's chatter.
 #[test]
 fn the_cockpit_screen_paints_at_both_budget_sizes() {
     let mut app = cockpit_app();
@@ -761,7 +773,28 @@ fn the_cockpit_screen_paints_at_both_budget_sizes() {
         COCKPIT_SCREEN,
         "the first frame of a match opens the screen"
     );
-    for (w, h) in [(120u16, 34u16), (80, 24)] {
+    for (w, h) in [(80u16, 24u16), (100, 30), (120, 34)] {
+        let text = frame_text(&mut app, w, h);
+        for title in ["status", "notices", "weapons", "contacts"] {
+            assert!(
+                text.contains(&format!("\u{250c}{title}")),
+                "{w}x{h}: {title} is painted:\n{text}"
+            );
+        }
+        assert_eq!(
+            text.contains("\u{250c}damage"),
+            h > 30,
+            "{w}x{h}: damage goes for height below 31 rows:\n{text}"
+        );
+        for line in ["X4 new contact", "destroyed: turret"] {
+            assert!(text.contains(line), "{w}x{h}: the ring's {line:?}:\n{text}");
+        }
+        assert!(
+            !text.contains("Bob has connected") && !text.contains("anyone up"),
+            "{w}x{h}: the scrollback's chatter is not the notices pane:\n{text}"
+        );
+    }
+    for (w, h) in [(120u16, 34u16), (100, 30), (80, 24)] {
         let text = frame_text(&mut app, w, h);
         assert_eq!(text.lines().count(), usize::from(h));
         for line in text.lines() {
@@ -771,6 +804,101 @@ fn the_cockpit_screen_paints_at_both_budget_sizes() {
             );
         }
         check(&format!("tui_cockpit_{w}x{h}.txt"), &text);
+    }
+}
+
+/// **The status pane is painted whole at eighty columns** (16b cut B.3,
+/// `B-10`): a jammed receiver, a wreck (so the speed line carries `DESTROYED`
+/// and wraps once in the pane's twenty columns) and a lock, at 80 by 24 — the
+/// golden. Then the FULLEST block the frame can send, at every budget size: an
+/// overheated platform (`heat 100/100  OVERHEATED`, 24 characters, wraps once)
+/// and a lock past a kilometre at 100% (`Lock BA  1440 m  100%`, 21, wraps
+/// once) on top of the rest — ten rows. The Lock is the LAST row, so it is the
+/// one a short pane would lose, and it is the one a gunner reads before
+/// `FIRE`. The golden is the review; the assertions are the proof the status
+/// pane's `min_h` is right.
+#[test]
+fn the_jammed_wreck_s_status_is_painted_whole_at_eighty_columns() {
+    let arena_app = |frame: serde_json::Value| {
+        let mut app = fixture_app();
+        app.set_manifest(TuiManifest {
+            panels: vec![
+                "wod.vitals".into(),
+                "wod.sheet".into(),
+                "mail".into(),
+                "arena.cockpit".into(),
+                "arena.map".into(),
+            ],
+            character: Some("Nick".into()),
+            room: None,
+        });
+        app.apply_event(&arena_panel("arena.map", ARENA_MAP));
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static("arena.cockpit"),
+            kind: PanelFrameKind::Keyframe,
+            data: frame,
+        });
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        app
+    };
+    // The Left column is the first 22 glyphs of every body row: the status
+    // pane's words are read there and nowhere else.
+    let left = |text: &str| -> String {
+        text.lines()
+            .map(|line| line.chars().take(22).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut frame = fixture(COCKPIT_FRAME);
+    frame["receiver"] = serde_json::json!({ "budget": 15, "budget_max": 40, "reach_percent": 60 });
+    frame["wreck"] = serde_json::json!(true);
+    let mut app = arena_app(frame.clone());
+    let text = frame_text(&mut app, 80, 24);
+    for row in [
+        "Callsign RA",
+        "power online",
+        "DESTROYED",
+        "heat 40/100",
+        "receiver 15/40  60%",
+        "scope hostile",
+        "Lock BA  440 m  62%",
+    ] {
+        assert!(
+            left(&text).contains(row),
+            "{row:?} is not painted at 80x24:\n{text}"
+        );
+    }
+    for line in text.lines() {
+        assert!(line.chars().count() <= 80, "row too wide: {line:?}");
+    }
+    check("tui_cockpit_80x24_jammed.txt", &text);
+
+    // The fullest block: every row that can wrap does.
+    frame["heat"]["heat"] = serde_json::json!(100);
+    frame["heat"]["overheated"] = serde_json::json!(true);
+    frame["lock_range_m"] = serde_json::json!(1440);
+    frame["lock_percent"] = serde_json::json!(100);
+    let mut app = arena_app(frame);
+    for (w, h) in [(80u16, 24u16), (100, 30), (120, 34)] {
+        let text = frame_text(&mut app, w, h);
+        let column = left(&text);
+        for row in [
+            "Callsign RA",
+            "power online",
+            "43 kph  heading 045",
+            "DESTROYED",
+            "heat 100/100",
+            "OVERHEATED",
+            "receiver 15/40  60%",
+            "scope hostile",
+            "Lock BA  1440 m",
+            "100%",
+        ] {
+            assert!(
+                column.contains(row),
+                "{w}x{h}: {row:?} is not painted in the status pane:\n{text}"
+            );
+        }
     }
 }
 

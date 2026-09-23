@@ -219,6 +219,58 @@ mod tests {
         assert!(!bytes.is_empty());
     }
 
+    /// **16b cut B.3** (`B-66`): `@tui` opens on the room the connection was
+    /// last shown — the status line names it and the scene screen's exit keys
+    /// work — instead of `(no room yet)` until something else arrives. The pump
+    /// records the room into the manifest (`server::remember_the_room`), and
+    /// `TuiSession::new` hands it to the app through `set_manifest`.
+    #[test]
+    fn tui_opens_on_the_last_room_it_was_shown() {
+        use mush_proto::{ExitRef, RoomView};
+        let cellar = RoomView {
+            name: "Cellar".into(),
+            id: "#4".into(),
+            desc: RichText::plain("Damp stone."),
+            contents: vec![],
+            exits: vec![ExitRef {
+                name: "Up".into(),
+                aliases: vec!["u".into()],
+            }],
+            zone: None,
+            ambient: Default::default(),
+        };
+        let manifest = TuiManifest {
+            room: Some(cellar.clone()),
+            ..TuiManifest::default()
+        };
+        let mut sess = TuiSession::new(caps(), manifest);
+        assert_eq!(sess.app.exit_keys(), &[('u', "Up".to_string())]);
+        let text = frame_text(&mut sess.app, 80, 24);
+        let status = text.lines().nth(1).unwrap_or_default();
+        assert!(status.starts_with("Cellar #4"), "{text}");
+        assert!(!text.contains("no room yet"), "{text}");
+        // A room the app already holds is newer than the manifest's.
+        let mut app = TuiApp::new(caps());
+        app.apply_event(&OutputEvent::Room(RoomView {
+            name: "Attic".into(),
+            id: "#5".into(),
+            desc: RichText::plain("Dust."),
+            contents: vec![],
+            exits: vec![],
+            zone: None,
+            ambient: Default::default(),
+        }));
+        app.set_manifest(TuiManifest {
+            room: Some(cellar),
+            ..TuiManifest::default()
+        });
+        let text = frame_text(&mut app, 80, 24);
+        assert!(
+            text.lines().nth(1).unwrap_or_default().starts_with("Attic"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn frame_text_reads_the_painted_buffer() {
         let mut app = TuiApp::new(caps());

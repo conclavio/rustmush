@@ -11,7 +11,7 @@
 //! Panel data is read defensively: a missing or malformed field degrades to
 //! a placeholder rather than panicking (invariant T6).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use mush_ansi::{AnsiTheme, fmt_duration, merge_styles};
 use mush_proto::{
@@ -128,9 +128,12 @@ pub struct RenderCtx<'a> {
     /// about to paint into, and the input paths (scrolling, the highlighted
     /// row) pass `None` because they ask what the rows ARE, not how many fit.
     ///
-    /// Only [`render_cockpit_map_rows`] reads it: a map is the one pane whose
-    /// CONTENT is a function of its size — the window it carves out of the
-    /// arena — rather than a list the pane scrolls.
+    /// Two renderers read it: [`render_cockpit_map_rows`], because a map is a
+    /// pane whose CONTENT is a function of its size — the window it carves out
+    /// of the arena — rather than a list the pane scrolls; and, since 16b cut
+    /// B.3, [`render_cockpit_notices_rows`], which answers the TAIL of its ring
+    /// that fits, because the pane is not selectable and the newest line is the
+    /// one a pilot is waiting for.
     pub pane: Option<(u16, u16)>,
 }
 
@@ -185,8 +188,10 @@ pub fn hhmm(unix: i64) -> String {
     format!("{:02}:{:02}", s / 3600, (s % 3600) / 60)
 }
 
-/// `text` with control characters removed.
-fn clean(text: &str) -> String {
+/// `text` with control characters removed. `pub(crate)` since 16b cut B.3,
+/// so the cockpit's notices ring cleans a reply exactly as every renderer here
+/// cleans server text.
+pub(crate) fn clean(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }
 
@@ -1639,10 +1644,12 @@ pub fn render_unit_sections_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows 
 /// `condition` word and the section's FIRST cell on one line, every further
 /// cell on a four-column continuation row.
 ///
-/// A renderer cannot see its pane's width (nothing in [`RenderCtx`] carries
-/// it) and `draw_pane` neither wraps nor scrolls sideways, so a row must be
-/// narrow by construction or it is silently clipped: the head is at most
-/// 2 + 14 + 12 + 2 + a gauge, a continuation at most 4 + a gauge.
+/// The rows are narrow by construction: the head is at most 2 + 14 + 12 + 2 +
+/// a gauge, a continuation at most 4 + a gauge. This was once the only way a
+/// cell survived, when `draw_pane` clipped at the pane's edge; since 16b cut
+/// B.3 it wraps every panel row, so a long head would fold rather than be
+/// lost, and the one-cell-per-row shape stays because a column of gauges
+/// reads better than a gauge broken across two lines.
 #[must_use]
 pub fn render_unit_sections_compact_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     let Some(mut rows) = unit_header(data) else {
@@ -2268,6 +2275,24 @@ fn designator_of(contact: &Value) -> String {
 ///
 /// The rows this returns are, in order: the heading line, exactly `h` grid rows,
 /// then the marker legend. The parity test reads the `h` in the middle.
+///
+/// **The legend names what is drawn** (16b cut B.3, `B-62`). It lists, in frame
+/// order, each contact that OWNS its window cell — the last contact written
+/// there — so two contacts on one cell name the later, whose glyph is the one on
+/// screen; the earlier is still a row of the contacts pane. A contact under the
+/// pilot's own `@` cannot hide from the legend: the `@` is placed first and a
+/// contact overwrites it, so the `@` owns a cell only no contact is on. The web's
+/// `markerLegend` runs the same rule.
+///
+/// **The chrome goes before the grid does** (16b cut B.3, `B-65`). With the
+/// pane's height `h` known: four rows or more are the heading, `h − 2` grid rows
+/// and the legend; three are two grid rows and the legend, the heading shed;
+/// two or fewer are `h` grid rows and nothing else, because a map pane that
+/// cannot hold the ground AND its words keeps the ground. Every grid row is
+/// exactly the window's width in glyphs and the legend is cut to it
+/// ([`fit_legend`]), so no row of the pane ever wraps and the pane is exactly
+/// its height. With no pane (the input paths) the fallback window keeps both
+/// chrome rows.
 #[must_use]
 pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if !seated(data) {
@@ -2284,9 +2309,12 @@ pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     let height = cell_num(map, "height");
     let empty = Vec::new();
     let rows = map.get("rows").and_then(Value::as_array).unwrap_or(&empty);
-    let (grid_w, grid_h) = match ctx.pane {
-        Some((w, h)) => (w, h.saturating_sub(MAP_CHROME_ROWS).max(1)),
-        None => COCKPIT_MAP_FALLBACK,
+    // (grid width, grid height, heading?, legend?)
+    let (grid_w, grid_h, heading, with_legend) = match ctx.pane {
+        Some((w, h)) if h > MAP_CHROME_ROWS + 1 => (w, h - MAP_CHROME_ROWS, true, true),
+        Some((w, h)) if h == MAP_CHROME_ROWS + 1 => (w, h - 1, false, true),
+        Some((w, h)) => (w, h.max(1), false, false),
+        None => (COCKPIT_MAP_FALLBACK.0, COCKPIT_MAP_FALLBACK.1, true, true),
     };
     let you = cell_pair(data.get("cell"));
     let (x0, y0, w, h) =
@@ -2297,58 +2325,109 @@ pub fn render_cockpit_map_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     if let Some(cell) = you {
         put_marker(&mut grid, (x0, y0), cell, '@');
     }
-    let mut legend: Vec<String> = Vec::new();
-    if let Some(contacts) = data.get("contacts").and_then(Value::as_array) {
-        for contact in contacts {
-            let Some(cell) = cell_pair(contact.get("cell")) else {
-                continue;
-            };
-            let glyph = contact_glyph(contact);
-            if put_marker(&mut grid, (x0, y0), cell, glyph) {
-                legend.push(format!("{glyph} {}", designator_of(contact)));
-            }
+    // Which contact wrote each window cell LAST (16b cut B.3): only a lookup,
+    // never iterated, so the legend's order is the frame's and nothing else.
+    let mut owner: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut landed: Vec<(usize, char, (usize, usize))> = Vec::new();
+    let empty_contacts = Vec::new();
+    let contacts = data
+        .get("contacts")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty_contacts);
+    for (index, contact) in contacts.iter().enumerate() {
+        let Some(cell) = cell_pair(contact.get("cell")) else {
+            continue;
+        };
+        let glyph = contact_glyph(contact);
+        if let Some(at) = put_marker(&mut grid, (x0, y0), cell, glyph) {
+            owner.insert(at, index);
+            landed.push((index, glyph, at));
         }
     }
-    let sep = if ctx.utf8 { "\u{2014}" } else { "-" };
-    let mut out = vec![PaneRow::plain(Line::from(Span::styled(
-        format!(
-            "Map {sep} heading {:03}{}",
-            cell_num(data, "heading_deg"),
-            degree(ctx.utf8)
-        ),
-        Style::default().add_modifier(Modifier::BOLD),
-    )))];
+    let legend: Vec<String> = landed
+        .iter()
+        .filter(|(index, _, at)| owner.get(at) == Some(index))
+        .filter_map(|(index, glyph, _)| {
+            contacts
+                .get(*index)
+                .map(|contact| format!("{glyph} {}", designator_of(contact)))
+        })
+        .collect();
+    let mut out = Vec::with_capacity(h + 2);
+    if heading {
+        let sep = if ctx.utf8 { "\u{2014}" } else { "-" };
+        out.push(PaneRow::plain(Line::from(Span::styled(
+            format!(
+                "Map {sep} heading {:03}{}",
+                cell_num(data, "heading_deg"),
+                degree(ctx.utf8)
+            ),
+            Style::default().add_modifier(Modifier::BOLD),
+        ))));
+    }
     for y in (0..h).rev() {
         let row: String = grid.get(y).map(|r| r.iter().collect()).unwrap_or_default();
         out.push(PaneRow::plain(Line::from(Span::raw(row))));
     }
-    out.push(PaneRow::plain(Line::from(dim_span_owned(
-        &legend.join("  "),
-    ))));
+    if with_legend {
+        let width = ctx.pane.map(|(w, _)| usize::from(w));
+        out.push(PaneRow::plain(Line::from(dim_span_owned(&fit_legend(
+            &legend, width,
+        )))));
+    }
     PaneRows { rows: out }
 }
 
-/// Write `glyph` into the window at an ABSOLUTE arena `cell`, answering whether
-/// it landed. A cell south or west of the window's origin, or past its far
-/// corner, is not drawn — it is still listed in the contacts pane.
+/// **The legend on ONE line of the pane** (16b cut B.3, `B-65`): every panel
+/// row wraps now, and a legend that wrapped would push the map pane past its
+/// height — a second legend line cut off below the frame, and a pane with more
+/// lines than rows that Up and PgDn would scroll, heading and ground with it.
+/// So with the pane's width known the legend keeps whole entries, in frame
+/// order, while they fit, and says how many it left off (`x BA  + RB  3
+/// more`); every contact is still a row of the contacts pane. With no pane (the
+/// input paths) it is whole.
+fn fit_legend(entries: &[String], width: Option<usize>) -> String {
+    let whole = entries.join("  ");
+    let Some(width) = width else {
+        return whole;
+    };
+    if whole.chars().count() <= width {
+        return whole;
+    }
+    for keep in (0..entries.len()).rev() {
+        let kept = entries.get(..keep).unwrap_or_default();
+        let more = format!("{} more", entries.len() - keep);
+        let line = if kept.is_empty() {
+            more
+        } else {
+            format!("{}  {more}", kept.join("  "))
+        };
+        if line.chars().count() <= width {
+            return line;
+        }
+    }
+    String::new()
+}
+
+/// Write `glyph` into the window at an ABSOLUTE arena `cell`, answering the
+/// WINDOW cell it landed on (16b cut B.3: the legend's owner map is keyed on
+/// it). A cell south or west of the window's origin, or past its far corner, is
+/// not drawn — it is still listed in the contacts pane.
 fn put_marker(
     grid: &mut [Vec<char>],
     origin: (usize, usize),
     cell: (usize, usize),
     glyph: char,
-) -> bool {
+) -> Option<(usize, usize)> {
     let (x0, y0) = origin;
     let (x, y) = cell;
     if x < x0 || y < y0 {
-        return false;
+        return None;
     }
-    match grid.get_mut(y - y0).and_then(|row| row.get_mut(x - x0)) {
-        Some(slot) => {
-            *slot = glyph;
-            true
-        }
-        None => false,
-    }
+    let at = (x - x0, y - y0);
+    let slot = grid.get_mut(at.1).and_then(|row| row.get_mut(at.0))?;
+    *slot = glyph;
+    Some(at)
 }
 
 /// **The status pane** (16b cut Q.4): the callsign the whole arena calls this
@@ -2616,6 +2695,205 @@ fn scan_spans(contact: &Value, tables: &[Value], depth: ColorDepth) -> Option<Ve
         spans.push(Span::styled(text, band_style(letter, depth)));
     }
     (spans.len() > 1).then_some(spans)
+}
+
+/// The words one notice kind is said in (16b cut B.3, `B-64`) — the web's
+/// `NOTICE_WORDS` entry for entry. A kind this build predates falls back to its
+/// own wire word with the underscores opened out, which can name nothing the
+/// payload did not already carry.
+const NOTICE_WORDS: &[(&str, &str)] = &[
+    ("acquired", "new contact"),
+    ("classified", "identified"),
+    ("unidentified", "unidentified again"),
+    ("lost", "contact lost"),
+    ("lock_lost", "lock broken"),
+    ("locked", "locked"),
+    ("hit", "hit"),
+    ("miss", "miss"),
+    ("kill", "destroyed"),
+    ("struck", "hit taken"),
+    ("struck_spent", "hit on a dead section"),
+    ("section_lost", "section gone"),
+    ("target_section_lost", "section destroyed"),
+    ("refused", "refused"),
+    ("blocked", "held"),
+    ("power_online", "power online"),
+    ("destroyed", "your tank is destroyed"),
+    ("disabled", "your tank is out of the fight"),
+];
+
+/// Why an order was refused, in the pilot's words (`Refusal::as_str`; the web's
+/// `REFUSAL_WORDS`).
+const REFUSAL_WORDS: &[(&str, &str)] = &[
+    ("power_not_online", "power is not online"),
+    ("queue_full", "too many orders at once"),
+    ("wreck", "the tank is destroyed"),
+    ("motion_disabled", "the tank cannot move"),
+    ("no_contact", "no such contact"),
+    ("no_lock", "no lock"),
+    ("cycling", "still cycling"),
+    ("empty", "empty"),
+    ("overheated", "overheated"),
+    ("no_weapon", "no such weapon"),
+    ("epoch", "the seat changed hands"),
+];
+
+/// Why motion stopped, in the pilot's words (`BlockedCause::as_str`; the web's
+/// `CAUSE_WORDS`).
+const CAUSE_WORDS: &[(&str, &str)] = &[
+    ("impassable", "the ground will not take the tank"),
+    ("occupied", "something is in the way"),
+    ("edge", "the arena's edge"),
+    ("too_steep", "too steep: drive round"),
+];
+
+/// A table's words for `word`, else the wire word with its underscores opened.
+fn words_for(table: &[(&str, &str)], word: &str) -> String {
+    table
+        .iter()
+        .find(|(wire, _)| *wire == word)
+        .map_or_else(|| word.replace('_', " "), |(_, said)| (*said).to_string())
+}
+
+/// One string field of a notice as the web's decoder reads it (`optStr`):
+/// control characters out, trimmed, cut to `max` characters, and `None` for a
+/// missing, non-string or empty one. Every string read off a notice passes here.
+fn notice_str(notice: &Value, key: &str, max: usize) -> Option<String> {
+    let raw = notice.get(key).and_then(Value::as_str)?;
+    let text = truncate_chars(clean(raw).trim(), max);
+    (!text.is_empty()).then_some(text)
+}
+
+/// One integer of a notice's `detail`, `None` for a missing or non-integer one.
+/// The wire only ever carries integers there (seconds, heat, the heat limit).
+fn notice_int(detail: &Value, key: &str) -> Option<i64> {
+    detail.get(key).and_then(Value::as_i64)
+}
+
+/// **One line of the cockpit's notices ring** (16b cut B.3, `B-64`, Q20): the
+/// web's `noticeLine`, rule for rule, composed from the notice's own FIELDS and
+/// never from its `text` — the arena already sent that sentence as a `Sys` line
+/// (one sentence, one owner, 16b cut F.2).
+///
+/// * `refused` → `{ORDER}{ weapon} refused: {why}{, N s | , heat of max}`;
+/// * `blocked` → `held: {cause words}`, or `held` alone on a null cause;
+/// * `classified` / `unidentified` carrying `was` → `{was} {words}: {designator}`
+///   (the old name first, the name the row reads now after the colon);
+/// * anything else → `{designator}{ (FRIENDLY)} {words}{: section}`, with
+///   ` (already destroyed)` on a spent `hit`.
+///
+/// Every string read off the notice — the kind, `designator` and `was` (cut to
+/// 8), `section`, `weapon`, `refusal` and `cause` (24), `order` (16) — is
+/// cleaned and bounded exactly as the web's decoder does it, so a hostile
+/// string cannot break the pane. A notice with no string `kind` says nothing
+/// (the web drops it at decode). **Pinned against the committed
+/// `web/src/lib/fixtures/cockpit/notice_lines.json`**, so the two clients'
+/// wording cannot drift.
+#[must_use]
+pub fn notice_words(notice: &Value) -> String {
+    if notice.get("kind").and_then(Value::as_str).is_none() {
+        return String::new();
+    }
+    let kind = notice_str(notice, "kind", 32).unwrap_or_else(|| "?".to_string());
+    if kind == "refused" {
+        let order = notice_str(notice, "order", 16)
+            .unwrap_or_else(|| "order".to_string())
+            .to_uppercase();
+        let weapon = notice_str(notice, "weapon", 24)
+            .map(|w| format!(" {w}"))
+            .unwrap_or_default();
+        let why = notice_str(notice, "refusal", 24)
+            .map_or_else(|| "refused".to_string(), |r| words_for(REFUSAL_WORDS, &r));
+        let detail = notice
+            .get("detail")
+            .filter(|d| d.is_object())
+            .map(|d| {
+                match (
+                    notice_int(d, "secs"),
+                    notice_int(d, "heat"),
+                    notice_int(d, "max"),
+                ) {
+                    (Some(secs), _, _) => format!(", {secs} s"),
+                    (None, Some(heat), Some(max)) => format!(", {heat} of {max}"),
+                    _ => String::new(),
+                }
+            })
+            .unwrap_or_default();
+        return format!("{order}{weapon} refused: {why}{detail}");
+    }
+    if kind == "blocked" {
+        return notice_str(notice, "cause", 24).map_or_else(
+            || "held".to_string(),
+            |cause| format!("held: {}", words_for(CAUSE_WORDS, &cause)),
+        );
+    }
+    let words = words_for(NOTICE_WORDS, &kind);
+    let friendly = notice.get("friendly").and_then(Value::as_bool) == Some(true);
+    let named = notice_str(notice, "designator", 8)
+        .map(|d| format!("{d}{}", if friendly { " (FRIENDLY)" } else { "" }));
+    if (kind == "classified" || kind == "unidentified")
+        && let Some(was) = notice_str(notice, "was", 8)
+    {
+        // The mark goes with the name the row reads now (`X3 identified: RB
+        // (FRIENDLY)`): an own-side tank told apart must not read as a hostile.
+        return match named {
+            Some(named) => format!("{was} {words}: {named}"),
+            None => format!("{was} {words}"),
+        };
+    }
+    let head = match named {
+        Some(named) => format!("{named} {words}"),
+        None => words,
+    };
+    let line = match notice_str(notice, "section", 24) {
+        Some(section) => format!("{head}: {section}"),
+        None => head,
+    };
+    if kind == "hit" && notice.get("spent").and_then(Value::as_bool) == Some(true) {
+        format!("{line} (already destroyed)")
+    } else {
+        line
+    }
+}
+
+/// What the notices pane says while seated with nothing rung yet (16b cut B.3).
+pub const NOTHING_YET: &str = "Nothing yet.";
+
+/// **The notices pane** (16b cut B.3, `B-64`, Q20): the store's ring —
+/// [`PanelStore::cockpit_notices`], each seated frame's notices through
+/// [`notice_words`] and, while seated, the pilot's own replies — oldest first.
+///
+/// `data` is only asked whether the viewer is seated (the cleared frame says
+/// [`NOT_IN_A_COCKPIT`]); the lines are the ring's. With the pane's size known
+/// it answers only the TAIL that fits once wrapped at the pane's width: the
+/// pane is not selectable and does not follow a scroll, and the newest line —
+/// the answer to what the pilot just typed — is the one they are waiting for,
+/// so it is the oldest lines that go. With no size (the input paths) it answers
+/// the whole ring.
+#[must_use]
+pub fn render_cockpit_notices_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    if !seated(data) {
+        return PaneRows::one(NOT_IN_A_COCKPIT);
+    }
+    let ring = ctx.store.cockpit_notices();
+    if ring.is_empty() {
+        return PaneRows::one(NOTHING_YET);
+    }
+    let mut kept: Vec<PaneRow> = Vec::new();
+    let mut used = 0usize;
+    for line in ring.iter().rev() {
+        let row = Line::from(Span::raw(line.clone()));
+        if let Some((w, h)) = ctx.pane {
+            let cost = wrap_spans(&row.spans, usize::from(w)).len();
+            if !kept.is_empty() && used + cost > usize::from(h) {
+                break;
+            }
+            used += cost;
+        }
+        kept.push(PaneRow::plain(row));
+    }
+    kept.reverse();
+    PaneRows { rows: kept }
 }
 
 // ---------------------------------------------------------------------------
@@ -3984,10 +4262,10 @@ mod tests {
         );
     }
 
-    /// I8 (hole 4): the compact map has no width to spend — a renderer cannot
-    /// see its pane and `draw_pane` neither wraps nor scrolls sideways — so
-    /// every cell after the first gets its own indented row instead of being
-    /// appended to a line that silently clips.
+    /// I8 (hole 4): the compact map has no width to spend, so every cell after
+    /// the first gets its own indented row instead of being appended to one
+    /// long line (which clipped silently before 16b cut B.3, and would fold a
+    /// gauge across two lines since `draw_pane` wraps).
     #[test]
     fn the_compact_sections_pane_never_drops_a_cell() {
         let theme = AnsiTheme::classic();
@@ -4413,8 +4691,10 @@ mod tests {
         );
         assert_eq!(rows.get(4).and_then(|r| r.chars().nth(7)), Some('x'));
         assert_eq!(rows.get(5).and_then(|r| r.chars().nth(5)), Some('@'));
-        // The legend is the markers that landed, in frame order.
-        assert_eq!(rows.last().map(String::as_str), Some("? X2  x BA  + RB"));
+        // The legend is the markers that OWN their cell, in frame order (16b
+        // cut B.3, `B-62`): RB overwrote X2, so the legend names the `+` that is
+        // on screen and not the `?` under it. (It used to name both.)
+        assert_eq!(rows.last().map(String::as_str), Some("x BA  + RB"));
         // A contact in a far corner and one with no plot at all are neither
         // drawn nor named on the map.
         for off in ["X9", "X8"] {
@@ -4743,5 +5023,255 @@ mod tests {
                 "a terminal with no UTF-8 is sent ASCII only: {row:?}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 16b cut B.3: the legend, the chrome and the notices ring
+    // -----------------------------------------------------------------------
+
+    /// **16b cut B.3** (`B-62`): two contacts on one cell — the legend names
+    /// the LATER, whose glyph is the one drawn, and keeps frame order for the
+    /// rest; a contact on the pilot's own cell owns it (the `@` went first).
+    #[test]
+    fn the_legend_names_the_contact_that_owns_its_cell() {
+        let map = yard();
+        let frame = cockpit(
+            serde_json::json!([20, 15]),
+            serde_json::json!([
+                contact("BA", "blue", false, serde_json::json!([18, 15])),
+                contact("X3", "unknown", false, serde_json::json!([21, 16])),
+                contact("RB", "red", true, serde_json::json!([18, 15])),
+                contact("X5", "unknown", false, serde_json::json!([20, 15])),
+            ]),
+        );
+        let rows = map_rows(&frame, Some(&map), (10, 12));
+        assert_eq!(rows.get(5).and_then(|r| r.chars().nth(3)), Some('+'));
+        assert_eq!(
+            rows.get(5).and_then(|r| r.chars().nth(5)),
+            Some('?'),
+            "a contact on the pilot's cell overwrites the `@`"
+        );
+        // The legend, 16 columns, read off a pane wide enough to carry it
+        // whole (a narrower one cuts it to the pane: the next test).
+        let rows = map_rows(&frame, Some(&map), (20, 12));
+        assert_eq!(
+            rows.last().map(String::as_str),
+            Some("? X3  + RB  ? X5"),
+            "BA's cell is RB's; X5 owns the `@`'s: {rows:?}"
+        );
+    }
+
+    /// **16b cut B.3** (`B-65`): the map pane sheds its heading, then its
+    /// legend, before it gives up a row of ground — and renders exactly its
+    /// height every time.
+    #[test]
+    fn the_map_sheds_its_chrome_at_four_three_and_two_rows() {
+        let map = yard();
+        let frame = cockpit(
+            serde_json::json!([20, 15]),
+            serde_json::json!([contact("BA", "blue", false, serde_json::json!([21, 15]))]),
+        );
+        // Four rows: the heading, two rows of ground, the legend.
+        let rows = map_rows(&frame, Some(&map), (10, 4));
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert!(
+            rows.first().is_some_and(|r| r.starts_with("Map ")),
+            "{rows:?}"
+        );
+        assert_eq!(rows.last().map(String::as_str), Some("x BA"));
+        // Three: the heading goes, two rows of ground and the legend stay.
+        let rows = map_rows(&frame, Some(&map), (10, 3));
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert!(!rows.iter().any(|r| r.starts_with("Map ")), "{rows:?}");
+        assert_eq!(rows.last().map(String::as_str), Some("x BA"));
+        assert!(rows.iter().take(2).all(|r| r.chars().count() == 10));
+        // Two: ground only.
+        let rows = map_rows(&frame, Some(&map), (10, 2));
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows.iter().all(|r| r.chars().count() == 10), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains('@')), "{rows:?}");
+        // One: one row of ground, the pilot's own.
+        let rows = map_rows(&frame, Some(&map), (10, 1));
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows.first().is_some_and(|r| r.contains('@')), "{rows:?}");
+    }
+
+    /// **16b cut B.3** (`B-65`): a legend wider than the pane is cut to it —
+    /// whole entries in frame order, then how many were left off — so it is
+    /// one line, never wrapped below the frame, and the map pane never has a
+    /// line more than its height to scroll.
+    #[test]
+    fn a_crowded_legend_is_cut_to_the_pane_and_counts_the_rest() {
+        let map = yard();
+        let crowd: Vec<Value> = (0..7)
+            .map(|i| {
+                contact(
+                    &format!("X{}", i + 1),
+                    "unknown",
+                    false,
+                    serde_json::json!([16 + i, 17]),
+                )
+            })
+            .collect();
+        let frame = cockpit(serde_json::json!([20, 15]), Value::Array(crowd));
+        // Seven entries are 4 + 6 × 6 = 40 columns; the pane is 20.
+        let rows = map_rows(&frame, Some(&map), (20, 8));
+        assert_eq!(rows.len(), 8, "{rows:?}");
+        let legend = rows.last().cloned().unwrap_or_default();
+        assert_eq!(legend, "? X1  ? X2  5 more");
+        assert!(legend.chars().count() <= 20);
+        // Wide enough, it is whole.
+        let rows = map_rows(&frame, Some(&map), (40, 8));
+        assert_eq!(
+            rows.last().map(String::as_str),
+            Some("? X1  ? X2  ? X3  ? X4  ? X5  ? X6  ? X7")
+        );
+        // Too narrow even for a count: nothing, rather than a wrapped word.
+        assert_eq!(fit_legend(&["? X1".to_string()], Some(3)), "");
+        assert_eq!(fit_legend(&["? X1".to_string()], None), "? X1");
+    }
+
+    /// **16b cut B.3** (`B-64`): `notice_words` IS the web's `noticeLine`, pair
+    /// for pair, against the fixture B.1 committed for both clients — so the two
+    /// panes' wording cannot drift.
+    #[test]
+    fn notice_words_matches_the_committed_pairs() {
+        let pairs: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/notice_lines.json"
+        ))
+        .expect("notice_lines.json is a JSON array");
+        assert!(pairs.len() >= 18, "the fixture has every shape B.1 pinned");
+        for pair in &pairs {
+            let notice = pair.get("notice").expect("a notice");
+            let line = pair.get("line").and_then(Value::as_str).expect("a line");
+            assert_eq!(notice_words(notice), line, "{notice}");
+        }
+    }
+
+    /// **16b cut B.3**: the three word tables are the web's, entry for entry
+    /// and in order — read out of `cockpit.ts` itself, because the parity
+    /// fixture exercises only some of the words, and a word reworded on one
+    /// client alone would otherwise pass every test.
+    #[test]
+    fn the_notice_word_tables_are_the_web_s() {
+        let web = include_str!("../../../../web/src/lib/cockpit.ts");
+        let table = |name: &str| -> Vec<(String, String)> {
+            let head = format!("const {name}: ReadonlyMap<string, string> = new Map([");
+            let start = web
+                .find(&head)
+                .unwrap_or_else(|| panic!("{name} in cockpit.ts"));
+            let body = web.get(start + head.len()..).unwrap_or_default();
+            let body = body
+                .get(..body.find("]);").unwrap_or(0))
+                .unwrap_or_default();
+            body.lines()
+                .map(str::trim)
+                .filter(|l| l.starts_with("[\""))
+                .map(|l| {
+                    let inner = l.trim_start_matches("[\"").trim_end_matches("\"],");
+                    let (wire, said) = inner.split_once("\", \"").expect("a pair");
+                    (wire.to_string(), said.to_string())
+                })
+                .collect()
+        };
+        for (name, tui) in [
+            ("NOTICE_WORDS", NOTICE_WORDS),
+            ("REFUSAL_WORDS", REFUSAL_WORDS),
+            ("CAUSE_WORDS", CAUSE_WORDS),
+        ] {
+            let ours: Vec<(String, String)> = tui
+                .iter()
+                .map(|(w, s)| ((*w).to_string(), (*s).to_string()))
+                .collect();
+            assert_eq!(ours, table(name), "{name} has drifted from the web's");
+        }
+    }
+
+    /// **16b cut B.3**: every string read off a notice is cleaned and bounded,
+    /// exactly as the web's decoder does — a control byte never reaches the
+    /// pane, a designator is at most eight characters and a section 24, and a
+    /// notice with no string kind says nothing.
+    #[test]
+    fn notice_words_cleans_and_bounds_every_field() {
+        let hit = serde_json::json!({
+            "kind": "hit", "designator": "B\u{1b}A\u{7}", "friendly": false,
+            "section": "s".repeat(40), "spent": false
+        });
+        assert_eq!(notice_words(&hit), format!("BA hit: {}", "s".repeat(24)));
+        let long = serde_json::json!({ "kind": "acquired", "designator": "ABCDEFGHIJKL" });
+        assert_eq!(notice_words(&long), "ABCDEFGH new contact");
+        let refused = serde_json::json!({
+            "kind": "refused", "order": "fire\n", "weapon": "w".repeat(30),
+            "refusal": "a_new_reason", "detail": { "heat": 7, "max": 9 }
+        });
+        assert_eq!(
+            notice_words(&refused),
+            format!("FIRE {} refused: a new reason, 7 of 9", "w".repeat(24))
+        );
+        let was = serde_json::json!({
+            "kind": "classified", "designator": "BA", "was": "X2\u{1b}[2J",
+            "friendly": false
+        });
+        assert_eq!(notice_words(&was), "X2[2J identified: BA");
+        // An empty designator reads as none; a missing kind is no line at all.
+        let bare = serde_json::json!({ "kind": "lost", "designator": "  " });
+        assert_eq!(notice_words(&bare), "contact lost");
+        assert_eq!(notice_words(&serde_json::json!({ "kind": 3 })), "");
+        assert_eq!(notice_words(&Value::Null), "");
+    }
+
+    /// **16b cut B.3**: the notices pane is the ring, oldest first; the TAIL
+    /// that fits once wrapped when the pane's size is known; `Nothing yet.`
+    /// while seated with nothing rung; and the one empty line on a cleared
+    /// frame.
+    #[test]
+    fn the_notices_pane_answers_the_tail_of_the_ring() {
+        let theme = AnsiTheme::classic();
+        let mut store = PanelStore::new();
+        let feed = mush_proto::SmolStr::new_static("arena.cockpit");
+        let frame = cockpit(serde_json::json!([5, 5]), serde_json::json!([]));
+        store.apply_panel(&feed, mush_proto::PanelFrameKind::Keyframe, &frame, 0);
+        let rows = |store: &PanelStore, pane: Option<(u16, u16)>, data: &Value| -> Vec<String> {
+            let ctx = RenderCtx {
+                theme: &theme,
+                depth: ColorDepth::Ansi16,
+                utf8: true,
+                store,
+                selected_channel: None,
+                pane,
+            };
+            render_cockpit_notices_rows(data, &ctx)
+                .rows
+                .iter()
+                .map(PaneRow::text)
+                .collect()
+        };
+        assert_eq!(rows(&store, Some((20, 5)), &frame), [NOTHING_YET]);
+        for line in [
+            "one",
+            "two",
+            "a reply long enough to wrap twice here",
+            "four",
+        ] {
+            store.push_cockpit_reply(line);
+        }
+        assert_eq!(
+            rows(&store, None, &frame),
+            [
+                "one",
+                "two",
+                "a reply long enough to wrap twice here",
+                "four"
+            ]
+        );
+        // Twenty columns: the long reply is two lines, so four rows hold it
+        // and the two after it — `one` is the line that goes.
+        assert_eq!(
+            rows(&store, Some((20, 4)), &frame),
+            ["two", "a reply long enough to wrap twice here", "four"]
+        );
+        assert_eq!(rows(&store, Some((20, 1)), &frame), ["four"]);
+        let cleared = serde_json::json!({ "seated": false });
+        assert_eq!(rows(&store, Some((20, 4)), &cleared), [NOT_IN_A_COCKPIT]);
     }
 }

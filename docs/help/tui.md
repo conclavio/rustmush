@@ -185,22 +185,27 @@ reads the scene back, and is not taken as the line you were composing.
              contacts on it — `x` hostile, `+` friendly, `?` not told apart
              yet — and the line under it says which glyph is which. On the
              left: your callsign, your power, speed and heading, your heat,
-             the arena's tempo, your lock, what is left of your tank section
-             by section, and the arena's own lines as they arrive. On the
+             your scope, your lock, what is left of your tank section by
+             section, and the notices — what the arena tells you, and the
+             answer to anything you type while you are in the tank. On the
              right: your weapons with their cycle, rounds and chance, and
              your contacts — bearing, band, range, how old the plot is, and
-             the sections of any you have had a close look at.
-             `v` `c` `t` `w` `r` `b` `n` run VIEW, CONTACTS, STATUS,
-             WEAPONSTATUS, RANGE, BEARING and SCAN; `k` `f` `h` `m` open the
+             the sections of any you have had a close look at. At 80
+             columns every pane fits side by side, and a row too long for
+             its pane wraps onto the next line; on a short terminal the
+             damage pane is the first to go, and it wants about 31 rows.
+             `c` `t` `w` `r` `b` `n` run CONTACTS, STATUS, WEAPONSTATUS,
+             RANGE, BEARING and SCAN, and their answers land on the notices
+             pane; `k` `f` `h` `m` open the
              box with `lock `, `fire `, `heading ` and `speed ` ready, and
              none of those is sent until you press Enter. `p` pulls the
              panel again, and the map too if it has gone dark. On the contacts
              pane, Enter opens the box with `lock <contact>` ready and `s`
              with `scan <contact>`; neither goes in until you press Enter
              on it. The tab appears the first time a match sends you a
-             frame, and the screen opens itself then; both stay for the
-             rest of this `@tui` session, and once you are out of the
-             cockpit the screen reads `Not in a cockpit.`
+             frame, and the screen opens itself then; the tab goes when you
+             leave the tank, and if you were on it you are put back on the
+             scene screen.
 
 The two tactical screens are always in the tab strip, and they are honest
 when there is nothing to show: with no station and no unit of your own they

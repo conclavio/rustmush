@@ -29,7 +29,9 @@
 //   new match empties it before its own notices land, and a full rehydrate
 //   empties it through `clearForRehydrate`, which keeps the spent switch.
 // * **A cleared frame** (`seated: false`, the last one a pilot gets) drops
-//   everything and re-arms both, so the next match starts clean.
+//   everything and re-arms both, so the next match starts clean — the tab
+//   included (`seatedOnce`, 16b cut B.3): it stands from a match's first seated
+//   frame to the cleared one, on this client as on the TUI.
 //
 // Nothing here reads a clock of its own: `needsMap(now)` is given one, so the
 // latch is pinned without fake timers.
@@ -63,9 +65,27 @@ export class CockpitStore {
   /** The match id the screen has already been opened for (once per match). */
   #switchedFor: number | null = null;
 
+  /** Whether a seated frame has arrived since the last cleared one (16b cut
+   * B.3): reactive, because the tab strip is derived from it. */
+  #seatedOnce = $state(false);
+
   /** Whether this viewer is in a cockpit at all. */
   get seated(): boolean {
     return this.frame !== null;
+  }
+
+  /**
+   * **Whether the cockpit tab exists for this viewer** (16b cut B.3, `T-63`,
+   * 16c Q21): `true` from a match's first seated frame until the cleared one.
+   * It is not `seated`, because a full rehydrate drops the frame
+   * (`clearForRehydrate`) while the seat very likely still stands — the tab
+   * stays across the Wi-Fi blip, and the hello pass's re-asked frame either
+   * refills the screen or, if the seat went meanwhile, is the cleared answer
+   * that takes the tab. `GameApp.gate` hands it to the screen gates as
+   * `cockpitSeated`; the TUI's `cockpit_seat` keeps the same hours.
+   */
+  get seatedOnce(): boolean {
+    return this.#seatedOnce;
   }
 
   /** The match the held frame belongs to. */
@@ -100,6 +120,7 @@ export class CockpitStore {
       return false;
     }
     this.frame = frame;
+    this.#seatedOnce = true;
     if (!this.holdsTheGround && this.map !== null) {
       // Another match's terrain, or the unseated answer. The latch is NOT
       // touched here — a wrong answer is the case it guards.
@@ -214,7 +235,7 @@ export class CockpitStore {
    * **A full rehydrate** (16b cut B.2, `B-80`): the resume gap outgrew the
    * ring, so nothing held here can be trusted to be the world's — drop the
    * frame, the ground and the ring, and let the hello pass's re-asks refill
-   * them. Two things are KEPT, and that is the difference from `clear()`:
+   * them. Three things are KEPT, and that is the difference from `clear()`:
    *
    * * **The spent switch** (`#switchedFor`). A rehydrate re-answers the same
    *   match's frame, and the screen opens the moment a switch is owed (16b cut
@@ -228,6 +249,9 @@ export class CockpitStore {
    *   reopened. Its time stands; the match it was stamped with — the old
    *   frame's, still held when the hello landed — is forgotten, because the
    *   server answers the ask with whatever match this pilot is seated in now.
+   * * **The tab** (`#seatedOnce`, 16b cut B.3). The seat very likely still
+   *   stands, so the cockpit tab is not taken away by a blip; the re-asked
+   *   frame's cleared answer takes it if the seat is gone.
    */
   clearForRehydrate(): void {
     this.frame = null;
@@ -243,5 +267,6 @@ export class CockpitStore {
     this.#askedAt = null;
     this.#askedFor = null;
     this.#switchedFor = null;
+    this.#seatedOnce = false;
   }
 }

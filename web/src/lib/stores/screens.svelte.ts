@@ -33,6 +33,11 @@ export interface KeyBinding {
 export interface GateInput {
   panels: readonly string[];
   features: readonly string[];
+  /** Whether this viewer holds a cockpit seat (16b cut B.3, `T-63`, 16c
+   * Q21): `true` from a match's first seated frame until the cleared one, and
+   * kept across a full rehydrate (`CockpitStore.seatedOnce`). The cockpit's
+   * tab is gated on it, as the TUI's is on `cockpit_seat`. */
+  cockpitSeated: boolean;
 }
 
 export interface ScreenDef {
@@ -179,11 +184,12 @@ export const BUILTIN_SCREENS: readonly ScreenDef[] = [
     gate: (g) => hasPanel(g, "llm.dashboard"),
   },
   // The cockpit (16b cut Q.5; doc 16 §5), LAST in the table and last in the
-  // strip, on the tenth digit the TUI gave it. Gated on the manifest alone:
-  // the frame and the query both answer `seated: false` to anyone who is not
-  // in a cockpit, and the screen's own empty state (`Not in a cockpit.`) is
-  // byte-identical whether a match is being fought or not, so a bystander's
-  // tab tells them nothing (doc 16 §1).
+  // strip, on the tenth digit the TUI gave it. **16b cut B.3** (`T-63`, 16c
+  // Q21): gated on the feed AND a seat, as the TUI's tab is — it appears on a
+  // match's first seated frame and goes on the cleared one, so a bystander on
+  // an arena server has no tab at all rather than one that says a match
+  // exists (doc 16 §1), and a pilot who leaves the tank loses it (`activeDef`
+  // then falls back to the scene).
   //
   // None of the five ORDERING verbs is here: `STARTUP`, `HEADING`, `SPEED`,
   // `LOCK` and `FIRE` each stage an intent, so each is a prefill and none of
@@ -212,7 +218,7 @@ export const BUILTIN_SCREENS: readonly ScreenDef[] = [
       { key: "n", label: "scan the lock", action: { kind: "run", cmd: "scan" } },
     ],
     exitsAreKeys: false,
-    gate: (g) => hasPanel(g, COCKPIT_FEED),
+    gate: (g) => hasPanel(g, COCKPIT_FEED) && g.cockpitSeated,
   },
 ];
 

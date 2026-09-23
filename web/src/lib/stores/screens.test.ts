@@ -19,10 +19,18 @@ import {
 const full: GateInput = {
   panels: ["comsys", "mail", "wod.sheet", "wod.roll", "legal.actions", "worldgen.draft", "llm.dashboard"],
   features: ["mail", "channels"],
+  cockpitSeated: false,
 };
-const bare: GateInput = { panels: [], features: [] };
-/** A server that also publishes the arena's cockpit feed (16b cut Q.5). */
-const arena: GateInput = { panels: [...full.panels, "arena.cockpit"], features: full.features };
+const bare: GateInput = { panels: [], features: [], cockpitSeated: false };
+/** A server that also publishes the arena's cockpit feed (16b cut Q.5), seen by
+ * a pilot a frame has seated (16b cut B.3). */
+const arena: GateInput = {
+  panels: [...full.panels, "arena.cockpit"],
+  features: full.features,
+  cockpitSeated: true,
+};
+/** The same server seen by a bystander, or by a pilot after the cleared frame. */
+const unseated: GateInput = { ...arena, cockpitSeated: false };
 
 describe("validateScreens", () => {
   it("accepts the built-ins and refuses a mutating run, a reserved letter, a global key", () => {
@@ -147,6 +155,25 @@ describe("ScreensStore", () => {
     }
   });
 
+  it("the cockpit tab needs a seat as well as the feed (16b cut B.3, `T-63`, Q21)", () => {
+    const s = new ScreensStore();
+    // A bystander on an arena server: the feed is published, no frame has
+    // seated them, so there is no tab and the digit is inert — the TUI's rule.
+    expect(s.available(unseated).some((d) => d.id === "cockpit")).toBe(false);
+    expect(s.switchDigit(0, unseated)).toBe(false);
+    // Seated: the tab, on 0, and the digit reaches it.
+    expect(s.available(arena).some((d) => d.id === "cockpit")).toBe(true);
+    expect(s.switchDigit(0, arena)).toBe(true);
+    expect(s.activeDef(arena).id).toBe("cockpit");
+    // The seat goes while the pilot stands on the tab: it is no longer drawn,
+    // and `activeDef` puts them on the scene.
+    expect(s.activeDef(unseated).id).toBe("scene");
+    // A seat without the feed is no tab either (a manifest that dropped it).
+    expect(s.available({ ...full, cockpitSeated: true }).some((d) => d.id === "cockpit")).toBe(
+      false,
+    );
+  });
+
   it("the cockpit's `p` pulls, right after `m`, and the table still validates (16b cut B.2)", () => {
     // `g` would have been refused: it is the pane-jump key both clients take
     // before any binding. `p` is on neither reserved list, and it sits right
@@ -178,7 +205,11 @@ describe("ScreensStore", () => {
 describe("registerViewScreen (interface plan I9)", () => {
   it("registers a .view screen on a free digit, gated on the feed, idempotently", () => {
     const s = new ScreensStore();
-    const withView: GateInput = { panels: [...full.panels, "jobs.view"], features: full.features };
+    const withView: GateInput = {
+      panels: [...full.panels, "jobs.view"],
+      features: full.features,
+      cockpitSeated: false,
+    };
     expect(s.registerViewScreen("jobs.view")).toBeNull();
     const def = s.available(withView).find((d) => d.id === "view:jobs.view");
     expect(def).toBeDefined();

@@ -1201,11 +1201,24 @@ describe("the cockpit feeds", () => {
 
   const ARENA_PANELS = [COCKPIT_FEED, ARENA_MAP_FEED];
 
+  /** Whether the strip carries the cockpit tab (16b cut B.3, `T-63`). */
+  const hasTab = (app: GameApp): boolean =>
+    app.screens.available(app.gate).some((d) => d.id === "cockpit");
+  const clearedFrame = (): Record<string, unknown> => ({
+    schema: { id: "arena.cockpit", version: 1, retain: "latest" },
+    seated: false,
+  });
+
   it("hydrates both feeds, and neither on a server that publishes neither", () => {
-    const { ws } = boot(ARENA_PANELS);
+    const { app, ws } = boot(ARENA_PANELS);
     expect(ws.reqs().map(feedOf)).toEqual([null, null, COCKPIT_FEED, ARENA_MAP_FEED]);
+    // 16b cut B.3 (`T-63`, Q21): the manifest alone earns no tab — a
+    // bystander on an arena server has none until a frame seats them.
+    expect(hasTab(app)).toBe(false);
+    expect(app.gate.cockpitSeated).toBe(false);
     const bare = boot([SHEET_FEED]);
     expect(bare.ws.reqs().map(feedOf).filter((f) => f !== null)).toEqual([]);
+    expect(hasTab(bare.app)).toBe(false);
   });
 
   it("routes a pushed frame and a pulled map, and opens the screen once a match", () => {
@@ -1231,6 +1244,24 @@ describe("the cockpit feeds", () => {
     ws.deliver(panel(5, COCKPIT_FEED, "keyframe", cockpitFrame()));
     expect(app.screens.active).toBe("scene");
     expect(ws.reqs().slice(before)).toHaveLength(0);
+
+    // 16b cut B.3 (`T-63`, Q21): the tab came with the first seated frame and
+    // goes with the cleared one; a pilot standing on it lands on the scene.
+    expect(hasTab(app)).toBe(true);
+    app.screens.switchTo("cockpit", app.gate);
+    ws.deliver(panel(6, COCKPIT_FEED, "keyframe", clearedFrame()));
+    expect(hasTab(app)).toBe(false);
+    expect(app.screens.activeDef(app.gate).id).toBe("scene");
+    expect(app.screens.switchDigit(0, app.gate)).toBe(false);
+    // `active` itself still names the cockpit (only `activeDef` falls back),
+    // so put her on the scene for real: the reopen below must be a switch.
+    app.screens.switchTo("scene", app.gate);
+    expect(app.screens.active).toBe("scene");
+    // A new seat brings it back and opens it.
+    ws.deliver(panel(7, COCKPIT_FEED, "keyframe", { ...cockpitFrame(), match: 8 }));
+    expect(app.screens.active).toBe("cockpit");
+    expect(hasTab(app)).toBe(true);
+    expect(app.screens.activeDef(app.gate).id).toBe("cockpit");
   });
 
   it("takes a VIEW composite as one more status frame", () => {
@@ -1465,6 +1496,9 @@ describe("the cockpit feeds", () => {
     expect(app.cockpit.seated).toBe(false);
     expect(app.cockpit.map).toBeNull();
     expect(app.cockpit.notices).toEqual([]);
+    // 16b cut B.3: the tab survives the rehydrate — the seat very likely
+    // still stands, and the re-asked frame's answer decides.
+    expect(hasTab(app)).toBe(true);
     const asked = (feed: string): ReqFrame[] => next.reqs().filter((r) => feedOf(r) === feed);
     // The hello pass re-asked both feeds, once each.
     expect(asked(COCKPIT_FEED)).toHaveLength(1);
@@ -1486,6 +1520,25 @@ describe("the cockpit feeds", () => {
     next.deliver(panel(7, COCKPIT_FEED, "keyframe", cockpitFrame()));
     expect(asked(ARENA_MAP_FEED)).toHaveLength(1);
     expect(app.screens.active).toBe("scene");
+    expect(hasTab(app)).toBe(true);
+  });
+
+  it("a rehydrate whose seat went meanwhile loses the tab on the cleared answer (16b cut B.3)", () => {
+    const { app, ws } = boot(ARENA_PANELS);
+    ws.deliver(panel(3, COCKPIT_FEED, "keyframe", cockpitFrame()));
+    expect(app.screens.active).toBe("cockpit");
+    ws.drop();
+    vi.advanceTimersByTime(500);
+    const next = openHello(ARENA_PANELS);
+    next.deliver(env(0, { t: "resumed", d: { replayed: false } }));
+    // Still standing on the tab through the blip…
+    expect(hasTab(app)).toBe(true);
+    expect(app.screens.activeDef(app.gate).id).toBe("cockpit");
+    // …until the hello pass's re-ask is answered with the cleared frame.
+    const ask = next.reqs().filter((r) => feedOf(r) === COCKPIT_FEED)[0]!;
+    next.deliver(reply(5, ask.id, panelEvent(COCKPIT_FEED, "keyframe", clearedFrame())));
+    expect(hasTab(app)).toBe(false);
+    expect(app.screens.activeDef(app.gate).id).toBe("scene");
   });
 
   it("a tab resumed into the next match shows only that match's notices (B-80, T-42)", () => {

@@ -1107,9 +1107,15 @@ export class GameApp {
 
   // -- the shell (interface plan I4) -----------------------------------------
 
-  /** What the screen gates read. */
+  /** What the screen gates read. `cockpitSeated` (16b cut B.3, `T-63`) is the
+   * cockpit store's `seatedOnce`: the tab exists from a match's first seated
+   * frame to the cleared one, and survives a full rehydrate. */
   get gate(): GateInput {
-    return { panels: this.session.panels, features: this.session.features };
+    return {
+      panels: this.session.panels,
+      features: this.session.features,
+      cockpitSeated: this.cockpit.seatedOnce,
+    };
   }
 
   /** Act on a nav intent from the key model; `true` when it was consumed. */

@@ -437,9 +437,14 @@ regeneration — out of I8's no-wire-change boundary.
 
 ## The cockpit screen (16b cut Q.5, doc 16 §5)
 
-Screen `0`, present when the hello's manifest carries `arena.cockpit`, and
-opened by itself on the FIRST seated frame of each match id (never again for
-that id — a pilot who switches away is not dragged back by the next pulse).
+Screen `0`, present while the hello's manifest carries `arena.cockpit` AND
+this pilot holds a seat (16b cut B.3, 16c Q21: `GateInput.cockpitSeated`, fed
+by `CockpitStore.seatedOnce`) — from a match's first seated frame to the
+cleared one, kept across a full rehydrate, so a bystander has no tab at all —
+and opened by itself on the FIRST seated frame of each match id (never again
+for that id — a pilot who switches away is not dragged back by the next
+pulse). When the seat goes, a pilot standing on the tab falls back to the
+scene screen (`activeDef`); the TUI's tab keeps the same hours.
 
 **Two feeds, by what changes.** `arena.cockpit` is a whole-state keyframe
 pushed per arena pulse; `arena.map` is the whole arena's terrain, **pulled and

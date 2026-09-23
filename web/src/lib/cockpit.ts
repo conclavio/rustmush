@@ -810,8 +810,9 @@ export interface CockpitView {
   /** The map's own heading line. */
   heading: string;
   /** The marker legend, `glyph designator` joined by two spaces; `""` when no
-   * contact marker landed. Excludes the pilot and INCLUDES a marker a later one
-   * overwrote, exactly as the TUI's legend does. */
+   * contact marker landed. Excludes the pilot, and names only the markers that
+   * OWN their cell — the last one written there, whose glyph is the one on the
+   * map — exactly as the TUI's legend does (16b cut B.3, `B-62`). */
   legend: string;
   /** The status block: callsign, power, speed/heading (and the tank's own
    * limit), heat, the degraded receiver, scope, lock. */
@@ -970,14 +971,24 @@ export function terrainCacheKey(win: ComposedWindow, px: number): string {
   return `${win.x0},${win.y0},${win.w},${win.h},${px}`;
 }
 
-/** The marker legend: every contact marker that landed, in frame order. */
+/**
+ * **The marker legend** (16b cut B.3, `B-62`): the contact markers that OWN
+ * their cell, in frame order — the TUI's `render_cockpit_map_rows` rule. The
+ * last marker written to a cell owns it, so two contacts on one cell name the
+ * later, whose glyph is the one drawn; the earlier is still a row of the
+ * contacts table. The pilot's own `@` is written first, so a contact on the
+ * pilot's cell owns it and is named, and the `@` itself is never listed.
+ */
 export function markerLegend(win: ComposedWindow | null): string {
-  return win === null
-    ? ""
-    : win.markers
-        .filter((m) => m.kind !== "you")
-        .map((m) => `${m.glyph} ${m.designator}`)
-        .join("  ");
+  if (win === null) {
+    return "";
+  }
+  const owner = new Map<string, number>();
+  win.markers.forEach((m, i) => owner.set(`${m.x},${m.y}`, i));
+  return win.markers
+    .filter((m, i) => m.kind !== "you" && owner.get(`${m.x},${m.y}`) === i)
+    .map((m) => `${m.glyph} ${m.designator}`)
+    .join("  ");
 }
 
 /** The cell size, in canvas pixels, from which every marker is labelled — and
