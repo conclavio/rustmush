@@ -715,6 +715,71 @@ async fn d3_a_lead_concedes_and_the_board_names_the_winner() {
     say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
 }
 
+/// **`B-78`: a lead the boarding deadline drops leaves a lead who can concede**
+/// (16b cut AA.2), over SSH, through the real `BOARD` and the real deadline.
+///
+/// Before AA.2 the deadline dropped Ada's slot and kept her as red's lead, so red
+/// could not concede for the rest of the match: Cy read `Only a side's first
+/// pilot can concede for it.` and Ada `You hold no slot in the simulator.` Now
+/// Cy, red's next claimant, leads red and her concede is the result it always
+/// was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn aa2_a_lead_dropped_at_the_deadline_leaves_a_lead_who_can_concede() {
+    let server = boot("sim-lobby-aa2-heir").await;
+    let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god).await;
+
+    let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
+
+    // Into the team rooms BEFORE the match starts, for the reason
+    // `d3_a_lead_concedes_and_the_board_names_the_winner` gives.
+    let listing = ask(&mut god, "@find Red Room", "END OF LIST").await;
+    let red_room = dbref_of(&listing, "Red Room");
+    let listing = ask(&mut god, "@find Blue Room", "END OF LIST").await;
+    let blue_room = dbref_of(&listing, "Blue Room");
+    for (pilot, room) in [(ADA, red_room), (CY, red_room), (BO, blue_room)] {
+        say(
+            &mut god,
+            &format!("@teleport #{}=#{room}", pilot.0),
+            "Teleported",
+        )
+        .await;
+    }
+
+    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
+    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    say(&mut ada, "SIM START", "is boarding").await;
+    say(&mut cy, "BOARD", "climb into").await;
+    say(&mut bo, "BOARD", "climb into").await;
+    // Ada, red's lead, never boards. The deadline is a due world tick, so this is
+    // wall time and nothing has to be poked.
+    tokio::time::sleep(Duration::from_millis(u64::from(BOARD_MS) + 2_500)).await;
+    cy.expect("never boarded").await;
+    cy.expect("Good hunting").await;
+
+    // The dropped lead holds no slot, so no side.
+    say(
+        &mut ada,
+        "SIM CONCEDE",
+        "You hold no slot in the simulator.",
+    )
+    .await;
+    // Red's next claimant leads red now, and her concede is a result.
+    say(&mut cy, "SIM CONCEDE", "concedes for the red side").await;
+    bo.expect("Match 1 goes to blue when the arena answers.")
+        .await;
+    bo.expect("Its units are checked in.").await;
+
+    let status = one_line(&ask(&mut bo, "SIM STATUS", "blue:").await);
+    assert!(
+        status.contains("ended (match 1) — blue wins: red conceded"),
+        "{status}"
+    );
+}
+
 /// **`T-60`: `SIM ABORT` before a match is running, and the board's doubled
 /// word** (16b cut D.3).
 ///
