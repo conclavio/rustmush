@@ -169,6 +169,19 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
             match frames.read::<ToGateway>().await.unwrap().unwrap() {
                 ToGateway::RequestDisposition {
                     request: seen,
+                    disposition: GatewayRequestDisposition::Busy,
+                } if seen == request.uid => {
+                    assert!(owned.is_none(), "Busy arrived after Owned");
+                    // Busy proves no intent was reserved. Retry the exact
+                    // request within the enclosing deadline; once Owned has
+                    // arrived, only the original completion may satisfy us.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    write_frame(&mut writer, &ToServer::Input(request.clone()))
+                        .await
+                        .unwrap();
+                }
+                ToGateway::RequestDisposition {
+                    request: seen,
                     disposition: GatewayRequestDisposition::Owned { token, status },
                 } if seen == request.uid => owned = Some((token, status)),
                 ToGateway::RequestDisposition {
@@ -180,6 +193,12 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
                     assert_eq!(receipt.status(), &status);
                     assert_eq!(receipt.commit(), owned_token.to_string());
                     break (owned_token, status, receipt);
+                }
+                ToGateway::RequestDisposition {
+                    request: seen,
+                    disposition,
+                } if seen == request.uid => {
+                    panic!("unexpected authoritative disposition: {disposition:?}");
                 }
                 _ => {}
             }
@@ -361,6 +380,16 @@ async fn actor_field_cannot_spoof_the_authenticated_connection() {
             } = frames.read::<ToGateway>().await.unwrap().unwrap()
                 && seen == request.uid
             {
+                if disposition == GatewayRequestDisposition::Busy {
+                    // Admission can refuse before the actor check runs. Keep
+                    // the spoofed request byte-identical and retry only this
+                    // pre-ownership response inside the existing deadline.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    write_frame(&mut writer, &ToServer::Input(request.clone()))
+                        .await
+                        .unwrap();
+                    continue;
+                }
                 break disposition;
             }
         }
@@ -400,6 +429,16 @@ async fn tampered_offer_tag_is_rejected_before_intent() {
             } = frames.read::<ToGateway>().await.unwrap().unwrap()
                 && seen == request.uid
             {
+                if disposition == GatewayRequestDisposition::Busy {
+                    // Admission may be busy before offer validation. Retry
+                    // the same tampered input within the enclosing deadline,
+                    // then still require the exact permanent rejection.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    write_frame(&mut writer, &ToServer::Input(request.clone()))
+                        .await
+                        .unwrap();
+                    continue;
+                }
                 break disposition;
             }
         }
@@ -428,9 +467,10 @@ async fn tampered_offer_tag_is_rejected_before_intent() {
 /// relaunch loop with every session on the boundary dropped.
 ///
 /// The boundary must survive the pair, and the coordinator must remain the sole
-/// author of the request's outcome: exactly one disposition per uid, and it is
-/// the coordinator's own refusal of the spoofed actor. The release races the
-/// in-flight handler, so the pair is driven repeatedly — a single lost race is
+/// author of the request's outcome: after any pre-ownership Busy retries, exactly
+/// one terminal disposition per uid, the coordinator's refusal of the spoofed
+/// actor. The release races the in-flight handler, so the pair is driven
+/// repeatedly — a single lost race is
 /// what used to kill the process, and the fix must hold for every ordering.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_peer_release_of_a_coordinator_action_cannot_kill_the_reader_loop() {
@@ -465,6 +505,24 @@ async fn a_peer_release_of_a_coordinator_action_cannot_kill_the_reader_loop() {
                         seen, request.uid,
                         "no disposition may exist for a uid other than the one in flight"
                     );
+                    if disposition == GatewayRequestDisposition::Busy {
+                        // Nothing was owned, so retry the same frame pair.
+                        // Releasing again is essential: the admitted attempt
+                        // must still exercise the malicious-release race.
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                        write_frame(&mut writer, &ToServer::Input(request.clone()))
+                            .await
+                            .unwrap();
+                        write_frame(
+                            &mut writer,
+                            &ToServer::GatewayReleased {
+                                request: request.uid,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        continue;
+                    }
                     break disposition;
                 }
             }
@@ -984,6 +1042,16 @@ impl ObjectStore for PreflightFaultStore {
 
     fn clear_ban<'a>(&'a self, ip: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
         self.inner.clear_ban(ip)
+    }
+
+    fn put_tempban_lift(
+        &self,
+        lift: mush_store::TempbanLift,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.put_tempban_lift(lift)
+    }
+    fn get_tempban_lifts(&self) -> BoxFuture<'_, Result<Vec<mush_store::TempbanLift>, StoreError>> {
+        self.inner.get_tempban_lifts()
     }
 
     fn token_put(&self, hash: String, rec: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>> {

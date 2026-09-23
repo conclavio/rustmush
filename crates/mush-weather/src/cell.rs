@@ -4,7 +4,7 @@
 //! [`WeatherState`] lives in a module state slot on the `World` (in-RAM
 //! working state — not persisted as a slot). Every cell mutation mirrors to
 //! a `mod:weather:cell:{zone}` document via [`ModuleOp`], so persistence is
-//! write-through with command/tick atomicity; [`crate::WeatherModule::on_world_loaded`]
+//! write-through with command/tick atomicity; [`mush_core::GameModule::on_world_loaded`]
 //! rebuilds the cells from those documents at boot. The RNG is **not**
 //! persisted — it reseeds at boot, which is fine: cells carry the durable
 //! state and the machine only needs *some* deterministic stream from there.

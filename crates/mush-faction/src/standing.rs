@@ -1,5 +1,5 @@
 //! The faction-standing predicate provider (E1c) — the concrete
-//! [`OrgPredicateProvider`] that lets an org [`AccessPolicy`] gate on **live**
+//! [`OrgPredicateProvider`] that lets an org [`mush_org::AccessPolicy`] gate on **live**
 //! faction standing, without `mush-org` depending on the faction registry.
 //!
 //! An org policy rule whose subject is

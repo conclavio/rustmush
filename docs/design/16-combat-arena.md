@@ -23,7 +23,7 @@ Two acceptances define "done", both on the production composition:
 the simulator lobby, pick opposite teams, board their pods, receive the default tank, start it up, drive
 across terrain, see each other only once line of sight and sensor range allow, lock, fire cannons, and
 one tank is destroyed. The match records a result, both pilots leave, and a second match can start. One
-test in `mushd/tests` (in-process) and its twin in `mush-server` through the gateway boundary; both must
+test in `mushd/tests` (in-process) and its twin in `mush-gateway/tests/arena_story_split.rs` through the gateway boundary; both must
 pass, because the output path differs (§3.1).
 
 The observer rule is asserted surface by surface, never as one blanket claim: before detection the
@@ -82,7 +82,7 @@ ledger. The world task remains the single writer for everything else: identity, 
 rooms, the economy, and the durable records. The two share no state and no lock (D-16-1). Doc 06 §6.3 is
 amended accordingly (§11).
 
-**The seam is seven messages and nothing else.**
+**The seam is eight messages and nothing else.**
 
 ```text
 world -> arena   CustodyOut { definition, units[{cells, pose}], pilots[{unit, station, epoch}], seed }
@@ -92,6 +92,7 @@ world -> arena   Stop       { reason: Abort | Timeout | Void | Concede{by} | Una
 arena -> world   Ledger     { chunk }                                            (bounded egress)
 arena -> world   Frames     { now_ms, pilot -> frame }                           (latest-wins per pilot)
 arena -> world   CustodyIn  { units[{cells, final_pose, outcome}], result, ledger_digest, reason }
+arena -> world   Deliberate { match_id, signals: squad briefs }                  (droppable, N.2)
 ```
 
 - `Intent` is validated at the world (focus, lease, channel, epoch) when enqueued and **authorised at
@@ -111,6 +112,11 @@ arena -> world   CustodyIn  { units[{cells, final_pose, outcome}], result, ledge
   frame at all: it is sent when a frame exists or the arena second has moved since the last one sent,
   so the lobby board's clock is the arena's own and at worst an arena second stale (§11).
 - `CustodyIn` is applied per unit and per-unit fallible (§Custody).
+- `Deliberate` is a report-only squad signal; the world may request a bounded LLM
+  completion and return an ordinary `Intent`. The arena never waits for it.
+  These are eight conceptual seam messages. In `arena_task.rs`, `CustodyOut` is
+  the spawn argument and `CustodyIn` rides `Ended`; `LedgerAck` and `Lagged` also
+  carry reliability bookkeeping, making nine runtime enum variants in total.
 
 **The arena core is a library.** `tacsim::arena::Arena` holds the state and exposes
 `step(now_ms, controls, intents) -> StepOutput { ledger_chunks, frames, tempo, next_due_ms }`, a pure
@@ -554,7 +560,7 @@ that landed on an already spent section (Q.6).
 ## 5. Verbs and output
 
 Cockpit output is two feeds (16b cut Q.3, §11). `arena.cockpit` is pushed, carried as
-`Panel{feed, kind: Keyframe | Delta}` with the map frame (terrain glyphs plus the platform's contacts),
+`Panel{feed, kind: Keyframe}` with the map frame (terrain glyphs plus the platform's contacts),
 the status block (power, speed, heading, armor and internals per section as current over max, ammunition
 and ready state per weapon, current lock and its percentage), and the contacts list; plus `Notice`
 events for transitions and refusals. `arena.map` is the whole arena's terrain and nothing about any
@@ -594,22 +600,26 @@ holds any machine (AA.1). `lost` is read off the
 contact: a target is dead when the platform's own gunner killed it or its held reading shows a fatal
 section destroyed, and is otherwise held until the contact expires (E.2). Path queries use `[atlas].path_max_cells` raised to cover the
 window and are bounded per pulse (`harness.max_path_queries_per_pulse`). It drives the harness's
-non-fighting units and the AI fill of a later lobby; it is not part of the story test, and it is the
-fallback controller doc 07 §1.1 asks for once it exists. As built (16b cut Q.7, §11): a stop is learned
+non-fighting units and the lobby's configurable AI fill (Q.7); it is not part of the two-human
+story test, and it is the fallback controller for released or disconnected pilots (N.1). As built (16b cut Q.7, §11): a stop is learned
 at the journalled `blocked` event, `Withdraw` is not terminal (a cornered unit stands and shoots inside
 the bands above, and a unit home and quiet rallies to `Patrol` once, never while an `Objective::Withdraw`
 order stands: 16b cuts E.1 and E.2), and a unit that has run dry withdraws for good.
 
-**Deliberation** is the existing durable decision pipeline, requested per squad or commander rather
-than per unit, event-driven with a floor of `command.deliberate_min_ms` (30,000), returning an order
-(objective, target, horizon, constraints) with a time to live through the same admission (an omitted
-time to live is the floor, and the horizon defaults to it: 16b cut E.2); the fallback
-when nothing arrives is the reflex doctrine, not idle. Not in the story; the hook is the order type and
-the squad grouping.
+**Deliberation** (as built in N.2) uses `LlmService::complete` off the world loop,
+requested per squad, with a floor of `arena.deliberate_min_ms` (30,000), a bounded
+order (objective, target, horizon, constraints), a time to live and doctrine fallback.
+An omitted time to live is the floor, and the horizon defaults to it (16b cut E.2).
+The typed reply returns through normal intent admission. It does not use K7's durable
+decision pipeline: matches end on process restart, and there is no surviving match
+into which an old squad order could recover. Moving this onto K7 belongs with match
+resumption; the tradeoff is recorded in `tacsim/src/deliberation/mod.rs`.
 
-**Provider failure** changes nothing in the arena: the pipeline's retries, breaker and fallback never
-block a pulse. The visible in-world effect ("mind link dropped, unit on doctrine") is a notice when an
-order expires unrenewed. An `Advance` order whose cell no route reaches also ends, for that unit, at the
+**Provider failure** never blocks a pulse. `mush-llm` bounds requests, retries and
+budgets; a missing or invalid reply leaves an existing order active until its TTL
+expires, then the reflex controller falls back to doctrine. An order that
+expires unrenewed produces the in-world notice that the mind link has dropped.
+An `Advance` order whose cell no route reaches also ends, for that unit, at the
 tick its search failed, through the same `order_expired` ledger line and the squad's next signal (16b cut
 E.2), and so does an `Advance` held by a unit that cannot close, on its next decide tick (AA.1); the
 signal carries no reason and no mobility fact, and the pilots' notice still follows the order's nominal
@@ -617,7 +627,7 @@ time to live, so that end is announced late or, when the commander has replaced 
 all (a 16c candidate).
 
 **The cost run** (16a Q9b): a mode of the harness target gated by `TACSIM_LLM_COST_RUN=1`, the
-OpenRouter key and `TACSIM_LLM_COST_CAP_USD`, never run by CI, that turns deliberation on for N minutes
+OpenRouter key and `TACSIM_LLM_COST_CAP_USD`, never run against a live provider by CI, that turns deliberation on for N minutes
 of harness play and reports calls, tokens and USD per unit-minute, per squad and per match from
 `mush-llm`'s budget and audit records.
 
@@ -633,7 +643,7 @@ of harness play and reports calls, tokens and USD per unit-minute, per squad and
   -p tacsim` is acyclic by test.
 - `arena/`: the core library (`Arena`, `step`, tempo, motion, perception, resolution, damage, the reflex
   controller, the ledger, the RNG labels);
-- `arena_task.rs`: the tokio wrapper, the seven seam messages, the inbox and egress ring, the watchdog;
+- `arena_task.rs`: the tokio wrapper, the eight seam messages, the inbox and egress ring, the watchdog;
 - `cockpit/`: the verbs and the frame builder;
 - `match/`: the lifecycle state machine, custody, boot reconciliation, the result record;
 - `definitions/`: typed decoders for the content packs;
@@ -656,7 +666,7 @@ vocabulary lacks a verb, and the verb is added in Rust.
 
 ## 8. Tests
 
-- **A1**, the story test, in `mushd/tests` and `mush-server/tests`, with the surface-by-surface observer
+- **A1**, the story test, in `mushd/tests/arena_story.rs` and `mush-gateway/tests/arena_story_split.rs`, with the surface-by-surface observer
   assertions of §1.
 - **A2**, the harness, an ignored test in `crates/tacsim/tests/harness.rs` that drives `Arena::step`
   directly, named in `ci.yml` as `-p tacsim --test harness` (so `ci_gated_test_inventory` is satisfied),
@@ -706,7 +716,7 @@ See [16b](16b-combat-implementation-plan.md).
 ## 11. Supersessions and amendments
 
 - **doc 06 §6.3** "no task or channel per unit or domain": amended to "one writer per authority; a
-  running arena is an authority for its own facts; the seam is the seven messages of §3.1".
+  running arena is an authority for its own facts; the seam is the eight messages of §3.1".
 - **doc 06 §6.2** `FixedStep{period_ms}`: an arena's period is adaptive (§3.1); the `mush-sim`
   `DomainClock` floor of one second is unchanged for world-side domains.
 - **doc 07 §1.1**: until the reflex controller exists (16b cut N), a linkdead pilot's tank idles rather
@@ -747,12 +757,18 @@ See [16b](16b-combat-implementation-plan.md).
 - **§3.3 "A wreck", §6 "Deliberation" and "Provider failure" (orders, rally and knowledge)**: as built (E.2, 2026-09-22): a dead target is knowledge (16c's Q11): a contact carries `known_dead`, written once on the shooter's own hold beside its pilot's `Kill` line and never carried by a share, and a held reading whose destroyed sections include one the target's profile makes fatal reads dead too; one predicate, `Arena::contact_reads_dead`, replaced the five live reads of the target's wreck flag in the controller and both tempo triggers, so a machine drops a target at its own kill or a fatal reading and everyone else holds the track until it expires (about 3 s) and may spend a burst on it, while lines of fire, locks and impacts stay physics. An `Advance` whose cell no route reaches ends the order for that unit at the tick its search failed, through the existing `order_expired` line and the squad's next `OrderExpired` signal, only the ordered cell's own failed search doing it (`B-41`; the commander is not yet told why). No rally while an `Objective::Withdraw` order stands (`B-40`). `would_overheat` is the engine's own predicate (`T-55`). An order that omits `ttl_ms` lives `deliberate_min_ms`, carried as a field on the signal and the brief that the prompt does not print, and its default horizon follows it (`T-56`).
 - **§3.4 step 4 and §5 (driving)**: as built (E.3): an occupancy refusal is a hold before it is a stop. The unit is clamped at the boundary with its travel carries zeroed and its speed kept, journals nothing and is told nothing, until a hold on one cell has outlasted `[tacsim.arena].occupied_stop_ms` (2,000, arena time; 0 is the old rule) and becomes the literal stop with its `blocked` event, its `Held:` line and the machine's remembered cell; an accepted crossing, a refusal of another cell or cause, a substep that moved the unit and a zero desired speed clear the hold (`UnitState::occupied_hold`, hashed). Ground, edge and slope refusals stay literal (16c's Q10); 16c's sketch of no event at all was corrected because the remembered stops learn only from the event, and a machine held by a wreck in the ford would have pushed at it for ever. During the hold a pilot's frame reads the kept speed and no `HELD`, and `Held: something is in the way.` arrives after the hold, never sooner than before. Two seconds is clean for a column of up to eight (units integrate in id order); a longer compressed column still matures its tail and teaches a teammate's transient cell, measured and not cured. The controller orders the speed it can still stop from, `isqrt(2 × brake × distance)` with one tick of lookahead, so machines brake for their goals and the duel's first shot is fired braking, the shooter stopped within seven seconds (`B-42`); the remembered stops evict the least recent stamp (`B-43`); a routeless machine's next cell on its actual heading is checked every substep before motion and held through `apply_intent` (`B-44`, fixture-proved until `T-18`'s bluff). Under a ragged pulse the promise is the outcome and a hold's maturity within one substep, not one event list.
 - **§6 `Patrol` and §3.8 (the endgame)**: as built (E.4): the three shipped-scale cases (a hurt machine against two, a healthy one against one, a dry loser; the production roster on the authored ground, no pilots, shipped doctrine, hurt by outcome to 227 per mille) were run first un-fixed and showed 16c `B-04`'s cause: the dry loser parked on its entry cell in `Withdraw` while the winner walked the far half of the map for fifteen arena minutes. Two fixes: the search, a machine that loses its contact drives to its own last plot for `[tacsim.arena.reflex].search_ms` (60,000; 0 is off, otherwise `decide_ms` to 600,000); and the hunt, a patrol that has held nothing hostile for `hunt_after_ms` (90,000; 0 is off, otherwise at least `decide_ms`) crosses to another side's entry zone by `far_entry_cell`, which never answers an impassable cell (`entry_cell` untouched, a side setting out together and not staggered). `Patrol`'s goal is, in order, a movement order, the search, the hunt, the waypoint walk; arrival, age, a hostile held, `Withdraw`, an order and the `unreachable` edge clear them (`last_plot`, `unheld_since_ms` and `hunt`, hashed). All three cases end by elimination inside 900,000 ms (195,750 / 188,750 / 286,750). The `no line` edge, the `avoid` clause and `Spent` at three cadences have the tests `T-42` named. The help says a machine that loses you goes to where it last saw you, and one that has seen nobody for a minute and a half crosses to look. Known and left (16c candidates): the shooter searches the wreck it knows it killed, and a lone hunter can orbit its next cell in water at a one-cell turn radius.
+- **Cut L documentation correction (2026-09-22)**: A1's split twin lives in
+  `mush-gateway/tests/arena_story_split.rs`; the conceptual seam includes `Deliberate`;
+  cockpit panels currently send keyframes only; N.2 deliberation uses bounded
+  `LlmService` requests rather than durable K7 decisions; N.1/Q.7 already provide
+  AI takeover. CI exercises the cost report with `TACSIM_LLM_COST_MOCK=1`, without
+  a provider key. The live cost run remains an explicit owner-funded opt-in.
 - **§6 (the immobile machine)**: as built (16b cut AA.1, 2026-09-22): one reading, `UnitState::cannot_close` (`limits.motion_disabled`, a destroyed engine or both tracks, or `mobility.max_speed_cms == 0`, an authored hull with no speed, which still turns in place). `Approach` chooses its closing edge off it: `release_cm` for a machine that cannot close, `engage_cm` otherwise, so an immobile armed machine enters the existing `Engage` arm anywhere inside the reach it may fire across (the ceiling `engage_orders` holds and the edge `Engage` gives up at, so no oscillation; `hold_fire`, an order's band cap, power, ammunition and heat all hold because the arm is unchanged), where before this cut a tank whose engine was killed between 420 and 600 m re-planned a stand-off cell it could not drive to every tick, never fired again and, being armed, held its side up for the rest of the match (16c `B-76`). `Withdraw`'s `arrived` reads true for it, by the same argument as a machine with no home, so a hurt immobile tank stands and shoots back inside `release_cm` at any health and rallies once (Q8 extended one step past E.1's departure; drop the `cannot_close()` disjunct to reverse). An `Advance` it holds ends for it on its next decide tick through `B-41`'s own `plan.expired` and `order_expired` line, so the order layer cannot reopen the window for a ten-minute TTL; `Hold` is untouched. `best_hostile` has no reach term, so an immobile machine whose utility pick is a held plot past its `release_cm` still never fires (a residual, with the shared-sightings one); a mobile machine boxed in by wrecks or terrain keeps the same window, because the reading is a hull fact and not the map. The help's machines paragraph says it in one sentence (600 m for the stock tank). Hash sequences move wherever an immobile armed machine sits inside its reach or holds an `Advance`; no pinned value existed.
 - **§3.8 (the dropped lead)**: as built (AA.2): one writer of the side-lead succession, `Centre::resettle_leads`, rebuilt over both teams from the slots as they stand (the recorded lead stays while that account holds a slot on the side, else the side's first remaining claimant in claim order, else no entry), called by `SIM LEAVE` in place of its inline block and by the boarding deadline after its drop inside the same borrow, so a side whose lead never boarded is led by its first seated pilot and can `SIM CONCEDE` with a result (16c `B-78`). No announcement; the concede gate, `SIM START`'s and `SIM AI`'s gates, the claim rule and every refusal are unchanged, and the help's lead line says who leads after a drop. Not built: a lead who disconnects or `EXIT`s mid-match keeps the slot, so no succession runs and the side still cannot concede (a later row, cut B.4 or after); the help's and the refusals' "first pilot" is loosely true after a succession.
 - **§3.1 "Failure" and "Custody" (the stalled terminal pulse)**: as built (AA.3): the arena task reads `took > tempo.stall_ms` before it honours a pulse's own end; a stalled pulse that also ended the match is voided at the task (`MatchEnd { Void, t_ms: arena.now_ms }`, no `arena.stop`, no second step: `Arena::stop` is first-wins and `Arena::step` echoes an ended arena's original end before it reads the stop), so `Task::end` sends no units and the world restores every check-out snapshot; an end already `Void` or `LedgerOverflow` keeps its word, the non-terminal watchdog is unchanged, and the stalled pulse's chunks are still published as evidence (16c `B-79`). Recorded: the forced void is NOT journalled: the black box ends in whatever end the arena journalled (`match_ended`, `aborted`, or none for a ledger-full timeout) and carries no `void` event while the result and the seam say `void`; the journalled variant needs the library's ended short-circuit and first-wins stop to admit a later `Void`, only toward void being the safe direction. Built on 16c section 5's Q41 default (yes, void and every unit restored, not journalled) rather than the owner confirmation `B-79` was gated on; reversed by reverting the terminal arm of `Task::pulse` alone. Not built: a mushd-level stalled-terminal custody lens (a deterministic terminal stall through the server needs a racing fault verb or a `max_duration_ms` the validator refuses; the injected-panic lens already proves the world's void path).
 - **Before IC play** (additions, not changes): per-pulse state durability on an arena writer lane with
-  disjoint key ownership; resume from snapshot plus ledger tail; the 10 km arena; AI takeover of
-  dropped human slots.
+  disjoint key ownership; resume from snapshot plus ledger tail; the 10 km arena.
+  AI takeover of dropped human slots is already built (N.1 and Q.7).
 
 ---
 
@@ -760,7 +776,7 @@ See [16b](16b-combat-implementation-plan.md).
 
 | # | Decision | Source |
 |---|---|---|
-| D-16-1 | One arena task per map; the arena is the single writer for its facts while a match runs; the seam is the seven messages of §3.1; never a shared lock | 16a Q1 B, review |
+| D-16-1 | One arena task per map; the arena is the single writer for its facts while a match runs; the seam is the eight messages of §3.1; never a shared lock | 16a Q1 B, review |
 | D-16-2 | Adaptive tempo per arena: `Quiet` 5,000 ms, `Alert` 1,000 ms, `Engaged` 500 ms; the model is rate-independent through substeps and timestamped events | 16a Q2 B |
 | D-16-3 | OOC matches hold state in RAM and the arena never touches the store; the ledger is streamed through the world task; a crash voids the match; per-pulse durability and resume are requirements before IC play | 16a Q3 C, Q4 A, review |
 | D-16-4 | Integer authoritative state; integer `Pose`; draws derived from `(seed, label)`; a state hash per substep | 16a Q5 A, Q10 B, review |
@@ -775,7 +791,7 @@ See [16b](16b-combat-implementation-plan.md).
 | D-16-13 | `crates/tacsim` is the game and the composition root; definitions through the C1 registry; the closed vocabularies stay Rust; configuration plumbed end to end | 16a Q29 to Q32, review |
 | D-16-14 | The character rulesets are deleted first; `mush-ruleset` stays as the sheet library with one game sheet | 16a Q34 A, Q35 A |
 | D-16-15 | The story test and the harness are the acceptances; gates are never left red; the cost run is owner-directed | 16a Q7 to Q9, Q36 |
-| D-16-16 | Reflex controller in the game crate; deliberation through the decision pipeline per squad; provider failure is invisible to the pulse | 16a Q37 to Q39 |
+| D-16-16 | Reflex controller in the game crate; bounded deliberation through `LlmService` per squad (N.2 amendment); provider failure is invisible to the pulse | 16a Q37 to Q39 |
 | D-16-17 | W1 to W16 are ratified world facts | 16a §9 |
 | D-16-18 | Extension order: lasers, bipeds, thermal, ECM, ECCM, elevation | 16a Q40 |
 | D-16-19 | The harness follows D-H-8 in CI (report-only, on demand and scheduled) and asserts under `TACSIM_ASSERT=1` locally or on a dedicated runner; an owner wish to gate CI on it supersedes D-H-8 and is recorded here if given | review |

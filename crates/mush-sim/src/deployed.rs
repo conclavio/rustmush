@@ -11,11 +11,11 @@
 //! and one named error**:
 //!
 //! * [`DeployedUnits`] is a RAM index of `unit -> `[`DeployedMark`], owned by
-//!   this module and written only through [`mark`] and [`clear`].
+//!   this module and written only through [`crate::deployed::mark`] and [`crate::deployed::clear`].
 //! * [`refuse_if_deployed`] is the ONE shared helper every admission site calls.
 //! * [`UnitDeployed`] is the ONE named error they all render.
 //!
-//! **16b cut S.2** added the other half of the same index's job: [`excluded`], the
+//! **16b cut S.2** added the other half of the same index's job: [`crate::deployed::excluded`], the
 //! ONE predicate every *listing* site calls for doc 16 §3.6's world-side exclusion.
 //! An admission site refuses a write and says which match holds the unit; a listing
 //! site says nothing at all, because a listing that explained its own omission
@@ -187,7 +187,7 @@ pub fn refuse_if_deployed(w: &World, unit: ObjId) -> Result<(), UnitDeployed> {
     }
 }
 
-/// **What a world-side listing is about to show**, for [`excluded`] (16b cut S.2).
+/// **What a world-side listing is about to show**, for [`crate::deployed::excluded`] (16b cut S.2).
 ///
 /// Two kinds, because doc 16 §3.6's exclusion is about two kinds of thing — the
 /// deployed unit itself, and the domain it is mustered in — and one enum keeps them

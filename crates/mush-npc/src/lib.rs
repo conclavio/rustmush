@@ -25,7 +25,7 @@
 //!   rejects — never a command.
 //! - Prompts carry **no secrets**: only the NPC's own profile and public room
 //!   state (design 03 §7 rule 2). Player speech is delimited and `<`-escaped and
-//!   framed as in-fiction speech ([`prompt`]).
+//!   framed as in-fiction speech (`prompt`).
 //! - Output is hygiene-checked: length-capped, control/ANSI-stripped, and
 //!   rendered through the **normal** say/pose formatter with the NPC's true
 //!   name — it cannot forge another speaker or a system line.
@@ -38,7 +38,7 @@
 //!
 //! `mush-core` is sync and owns the world, so the design's "per-NPC task"
 //! becomes per-NPC state in a module state slot ([`NpcHostState`]) driven by the
-//! module's tick + observers ([`module`]):
+//! module's tick + observers (`module`):
 //!
 //! - **Observers** turn [`WorldEvent`](mush_core::module::WorldEvent)s into
 //!   [`Stimulus`]es and enqueue them — but only when a connected player shares
@@ -50,15 +50,15 @@
 //!   a [`TurnOutcome`], applied by the module's
 //!   [`AsyncCompletion`](mush_core::AsyncCompletion).
 //!
-//! The driver ([`mushd`]) routes the `npc` `Effect::ModuleAsync` to
+//! The driver (`mush-server`) routes the `npc` `Effect::ModuleAsync` to
 //! [`run_npc_turn_async`] (as it does worldgen) and supplies the
-//! [`AgentGrounding`](snapshot::AgentGrounding) adapter over the loaded ruleset
+//! [`AgentGrounding`] adapter over the loaded ruleset
 //! (sheet grounding + on-loop ability execution).
 //!
 //! ## The `wod_roll` UseAbility contract (for the grounding ruleset)
 //!
 //! `UseAbility` executes **on the world loop during re-entry**, through
-//! [`AgentGrounding::invoke_ability`](snapshot::AgentGrounding::invoke_ability),
+//! [`AgentGrounding::invoke_ability`],
 //! which the driver backs with
 //! [`Ruleset::invoke_ability`](mush_ruleset::Ruleset::invoke_ability) — that
 //! method takes `&mut World` + `&mut Outbox`, so it has everything it needs to
@@ -91,7 +91,7 @@
 //!
 //! ## Not built (documented seams)
 //!
-//! - **Embedding / vector recall** is the M10 [`MemoryRecall`](memory::MemoryRecall)
+//! - **Embedding / vector recall** is the M10 [`MemoryRecall`]
 //!   seam; recall v1 ([`LongTermStore::recall`](memory::LongTermStore::recall)) is
 //!   name-match only.
 //! - **Ambient timers** (`Stimulus::AmbientTimer`) are modeled but not yet

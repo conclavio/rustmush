@@ -1264,7 +1264,7 @@ impl EconomyStore {
     }
 
     /// What `account` has spent inside the trailing `period_secs` ending at `now`
-    /// (E6a step 1, D-E6-21): the sum of its [`EconomyStore::debit_window`] entries
+    /// (E6a step 1, D-E6-21): the sum of its `EconomyStore::debit_window` entries
     /// with `posted_at > now − period_secs`. An unrepresentable sum saturates, which
     /// is over any window — fail closed.
     #[must_use]
@@ -1363,7 +1363,7 @@ impl EconomyStore {
 /// The most entries one account's rolling-window tail keeps (E6a step 1 verify fold,
 /// D4). Four thousand posts inside one account's window is far past any legitimate
 /// wallet and well short of anything that costs memory; past it the tail stops being
-/// a sum and starts being a **latch** — see [`WindowTail::saturated`].
+/// a sum and starts being a **latch** — see `WindowTail::saturated`.
 pub const MAX_WINDOW_ENTRIES: usize = 4_096;
 
 /// One account's rolling-window tail: `(posted_at, debit)` oldest first, plus the

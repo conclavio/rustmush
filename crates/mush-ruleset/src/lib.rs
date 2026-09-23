@@ -7,7 +7,7 @@
 //! a web query handler — all driven from the one landed module API
 //! ([`mush_core::GameModule`] + [`mush_core::Registrar`]).
 //!
-//! A [`Ruleset`] **is** a [`GameModule`](mush_core::GameModule): it registers
+//! A [`Ruleset`] **is** a [`GameModule`]: it registers
 //! its commands, hooks, ticks, and panels through the normal
 //! [`Registrar`](mush_core::Registrar), and additionally answers
 //! sheet-schema, chargen, migration, and NPC-grounding questions.
@@ -18,11 +18,11 @@
 //! |---|---|
 //! | [`schema`] | [`SheetSchema`], [`FieldType`], [`DerivedExpr`], and the composable [`SheetSchemaBuilder`] — the splat seam |
 //! | [`doc`] | [`SheetDoc`] + [`ApprovalState`] with typed getters/setters |
-//! | [`validate`] | [`validate`](validate::validate) + [`SheetError`] |
+//! | [`mod@validate`] | [`validate`](validate::validate) + [`SheetError`] |
 //! | [`store`] | [`SheetStore`] — the validating/auditing facade over `World` attrs (treaty ruling 7) |
-//! | [`chargen`] | [`ChargenFlow`] + the [`BudgetPlan`](chargen::BudgetPlan) point accountant + the stage machine |
+//! | [`chargen`] | [`ChargenFlow`] + the [`BudgetPlan`] point accountant + the stage machine |
 //! | [`render`] | the classic terminal `+sheet` renderer |
-//! | [`commands`] | [`register_sheet_commands`](commands::register_sheet_commands) — reusable `+sheet`/`@sheet/set` + the web query |
+//! | [`commands`] | [`register_sheet_commands`] — reusable `+sheet`/`@sheet/set` + the web query |
 //!
 //! ## Sheet storage (treaty ruling 7)
 //!
@@ -39,7 +39,7 @@
 //! its own sections/fields — a "Disciplines" map, a Blood Pool track, a
 //! Generation background — **without editing the base**. See the [`schema`]
 //! module docs for the worked example; the same pattern extends chargen
-//! (add [`ChargenStage`](chargen::ChargenStage)s), abilities (extend a
+//! (add [`ChargenStage`]s), abilities (extend a
 //! section), and power pools (add fields).
 
 // WS01-S12: the panic-shaped restriction lints this crate measures zero of,
@@ -99,8 +99,8 @@ pub type RulesetId = SmolStr;
 ///
 /// A ruleset registers its commands/hooks/panels through the normal
 /// [`Registrar`](mush_core::Registrar) in
-/// [`GameModule::register`](mush_core::GameModule::register) — typically via
-/// [`register_sheet_commands`](commands::register_sheet_commands) for the
+/// [`GameModule::register`] — typically via
+/// [`register_sheet_commands`] for the
 /// generic sheet surface plus its own `+roll`/`+xp`/etc.
 pub trait Ruleset: GameModule {
     /// The stable ruleset id (defaults to the module

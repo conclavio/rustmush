@@ -181,7 +181,7 @@ pub struct CanonState {
     pub ledger: Ledger,
     /// The durable-id allocator resume point (persisted in the meta doc).
     pub next_canon_id: u64,
-    /// The decoded entries of the last [`SEALED_TAIL_CHUNKS`] **sealed** chunks, as
+    /// The decoded entries of the last `SEALED_TAIL_CHUNKS` **sealed** chunks, as
     /// they stood at boot (E6b independent verify fold, R3).
     ///
     /// `Ledger::restore_from_kv` restores a sealed tail chunk as an *empty* open

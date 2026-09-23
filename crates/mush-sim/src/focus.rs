@@ -189,7 +189,7 @@ pub struct ActiveFocus {
 
 /// The world-owned ephemeral focus map (B2). Installed via `reg.state(..)` — an
 /// in-RAM slot, **never persisted, never in an `Outbox`, never hydrated at
-/// boot**. Its single-writer atomicity (one `&mut` [`FocusState::claim`]
+/// boot**. Its single-writer atomicity (one `&mut` `FocusState::claim`
 /// relinquishing the prior focus and installing the new one in one borrow) is
 /// what makes "at most one foreground focus per account" hold against any
 /// interleaving of two connections of one account (invariant 1; answer 10).
@@ -243,7 +243,7 @@ impl FocusState {
     /// `SeatAudit` token and no distinctness check. This is verbatim the fence
     /// `ControlLeaseView::note_holder` already carries one file away
     /// (`seat.rs`), for the same reason. Tests reach it through
-    /// [`FocusState::claim_for_test`] behind the `testkit` feature.
+    /// `FocusState::claim_for_test` behind the `testkit` feature.
     pub(crate) fn claim(&mut self, focus: ActiveFocus) -> Vec<ActiveFocus> {
         let mut released = Vec::new();
         if let Some(prior) = self.by_account.remove(&focus.account) {
@@ -271,7 +271,7 @@ impl FocusState {
 
     /// Release an account's foreground focus. Idempotent: returns the released
     /// focus, or `None` when the account held none. The inverse of one half of
-    /// [`FocusState::claim`].
+    /// `FocusState::claim`.
     pub fn relinquish(&mut self, account: AccountId) -> Option<ActiveFocus> {
         let focus = self.by_account.remove(&account)?;
         self.by_actor.remove(&focus.actor);

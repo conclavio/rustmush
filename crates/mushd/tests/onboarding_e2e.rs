@@ -141,7 +141,7 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(&llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(&onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(&onboarding, &Default::default()));
 
     let mut engine = Engine::with_modules(world, registry, mods).expect("modules");
     modules::boot_modules(&mut engine, &*store)

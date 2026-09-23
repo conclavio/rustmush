@@ -6,7 +6,7 @@
 //! **deterministic** per-place Markov state machine driven by
 //! climate data files; there is no LLM flavor here (that is M10 — the line
 //! pools ship hand-written and leave a documented top-up seam, see
-//! [`climate`]).
+//! `climate`).
 //!
 //! ## How it hangs off the module API
 //!

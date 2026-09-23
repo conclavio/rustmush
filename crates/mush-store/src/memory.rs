@@ -10,7 +10,7 @@
 //!   the only fallible step, happens before any mutation);
 //! - upserts land before deletes, so an id in both lists ends up deleted;
 //! - module ops apply after the object writes, in queue order; module
-//!   streams are capped `VecDeque`s (exact trim — see [`MemStream`]) with
+//!   streams are capped `VecDeque`s (exact trim — see `MemStream`) with
 //!   monotonic `"N-0"` ids;
 //! - ban expiry mirrors Redis TTL: expired entries are pruned at read time
 //!   against the system clock.
@@ -64,6 +64,8 @@ struct Inner {
     accounts: HashMap<String, String>,
     /// ip → serialized `BanRec` JSON doc.
     bans: HashMap<String, String>,
+    /// Canonical IP -> serialized short-lived password-tempban lift.
+    tempban_lifts: HashMap<std::net::IpAddr, String>,
     /// token hash → serialized `TokenRecord` JSON doc (`token:{hash}` in
     /// Redis). Expired entries are pruned lazily at read time against the
     /// system clock, mirroring Redis TTL — like `bans`.
@@ -2140,6 +2142,21 @@ impl ObjectStore for InMemoryStore {
         })
     }
 
+    fn create_first_account(&self, rec: AccountRec) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            if rec.name.is_empty() {
+                return Err(StoreError::Invalid("empty account name".into()));
+            }
+            let doc = serde_json::to_string(&rec)?;
+            let mut inner = self.lock()?;
+            if !inner.accounts.is_empty() {
+                return Err(StoreError::AccountExists);
+            }
+            inner.accounts.insert(rec.name.to_lowercase(), doc);
+            Ok(())
+        })
+    }
+
     fn get_account<'a>(
         &'a self,
         name: &'a str,
@@ -2360,6 +2377,44 @@ impl ObjectStore for InMemoryStore {
         Box::pin(async move {
             let mut inner = self.lock()?;
             Ok(inner.bans.remove(ip).is_some())
+        })
+    }
+
+    fn put_tempban_lift(&self, lift: crate::TempbanLift) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            lift.validate()?;
+            if lift.expires_unix <= now_unix() {
+                return Err(StoreError::Invalid("tempban lift already expired".into()));
+            }
+            let mut inner = self.lock()?;
+            inner
+                .tempban_lifts
+                .insert(lift.ip, serde_json::to_string(&lift)?);
+            Ok(())
+        })
+    }
+
+    fn get_tempban_lifts(&self) -> BoxFuture<'_, Result<Vec<crate::TempbanLift>, StoreError>> {
+        Box::pin(async move {
+            let mut inner = self.lock()?;
+            let now = now_unix();
+            let mut out = Vec::new();
+            inner.tempban_lifts.retain(|_, doc| {
+                let Ok(lift) = serde_json::from_str::<crate::TempbanLift>(doc) else {
+                    return false;
+                };
+                if lift.expires_unix <= now {
+                    return false;
+                }
+                if out.len() <= 4_096 {
+                    out.push(lift);
+                }
+                true
+            });
+            if out.len() > 4_096 {
+                return Err(StoreError::Invalid("too many pending tempban lifts".into()));
+            }
+            Ok(out)
         })
     }
 

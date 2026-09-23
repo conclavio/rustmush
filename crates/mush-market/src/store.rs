@@ -157,7 +157,7 @@ impl MarketStore {
     /// never chose. It is exposed because the composition root's two halves — this
     /// name and `EconomyModule::with_title_issuers` — must agree, and a
     /// `mush-server` test has no other seam to say so through:
-    /// [`crate::module::MarketTables`] and its `issuer` field are `pub(crate)`.
+    /// `crate::module::MarketTables` and its `issuer` field are `pub(crate)`.
     #[must_use]
     pub fn issuer(&self) -> Option<&mush_org::SystemPrincipalId> {
         self.tables.issuer.as_ref()
@@ -443,7 +443,7 @@ impl MarketStore {
     /// Whether every derived index agrees with the records.
     ///
     /// A test-and-`debug_assert` predicate, not a runtime gate: the indexes are
-    /// re-derived by [`MarketStore::reindex`] on every write path and at boot, and
+    /// re-derived by `MarketStore::reindex` on every write path and at boot, and
     /// this is what says so out loud (E6a verify fold D7's shape).
     #[must_use]
     pub fn indexes_agree(&self) -> bool {

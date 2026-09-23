@@ -6,7 +6,7 @@
 //! stream so the two halves can run in separate processes. It is deliberately
 //! transport-agnostic: an [`IpcEndpoint`] is either a `127.0.0.1:port` TCP
 //! socket (the Windows-and-everywhere path) or, on Unix, a filesystem
-//! [`UnixListener`](tokio::net::UnixListener) path (the Linux prod default).
+//! `tokio::net::UnixListener` path (the Linux prod default).
 //! Both accept/connect down to a boxed [`AsyncRead`]/[`AsyncWrite`] pair, so
 //! the framing code above them never names a concrete stream type.
 //!
@@ -58,7 +58,7 @@ pub enum IpcEndpoint {
 impl IpcEndpoint {
     /// Parse a `[ipc].listen` value. A string that parses as a socket address
     /// (`127.0.0.1:6791`) is [`Tcp`](IpcEndpoint::Tcp); on Unix, anything else
-    /// is taken as a filesystem path for a [`Unix`](IpcEndpoint::Unix) socket.
+    /// is taken as a filesystem path for a `Unix` socket.
     /// On non-Unix a non-address string is an error (no Unix sockets there).
     ///
     /// # Errors

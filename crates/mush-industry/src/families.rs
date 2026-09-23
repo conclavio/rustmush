@@ -62,7 +62,7 @@ pub struct IndustryFamilies {
     pub runs: StateFamilyHandle<OreDepositId, ExtractionRun>,
     /// `industry.applied` — the committed bundle's own fact marker.
     pub applied: StateFamilyHandle<SmolStr, AppliedMarker>,
-    /// `industry.place_census` — how [`MAX_ORE_DEPOSITS_PER_PLACE`] is counted
+    /// `industry.place_census` — how [`crate::MAX_ORE_DEPOSITS_PER_PLACE`] is counted
     /// rather than merely declared (cut 2's fold B8 mechanism: an `ActionTxn`
     /// has no scan, so the count rides the same bundle as the record it counts).
     pub place_census: StateFamilyHandle<ObjId, PlaceCensus>,
@@ -235,7 +235,7 @@ impl IndustryFamilies {
     ///
     /// # Errors
     /// [`IndustryError`] on a duplicate id, a place already at
-    /// [`MAX_ORE_DEPOSITS_PER_PLACE`], or any inventory refusal. **Nothing is
+    /// [`crate::MAX_ORE_DEPOSITS_PER_PLACE`], or any inventory refusal. **Nothing is
     /// written on an error** — `ActionTxn` discards the whole mutation set.
     pub fn open_deposit(
         &self,
@@ -307,7 +307,7 @@ impl IndustryFamilies {
     /// # Errors
     /// [`IndustryError::ClaimExists`] on a duplicate id,
     /// [`IndustryError::Record`] when the subject is already at
-    /// [`MAX_CLAIMS_PER_SUBJECT`].
+    /// [`crate::MAX_CLAIMS_PER_SUBJECT`].
     pub fn file_claim(
         &self,
         txn: &mut ActionTxn<'_>,

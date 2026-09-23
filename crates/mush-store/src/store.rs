@@ -424,6 +424,19 @@ pub trait ObjectStore: Send + Sync {
     /// (case-insensitive) — under concurrent creates exactly one wins.
     fn create_account(&self, rec: AccountRec) -> BoxFuture<'_, Result<(), StoreError>>;
 
+    /// Create the first account only when no account exists, atomically with
+    /// respect to every account creator. Used by the offline staff bootstrap;
+    /// even an unreadable existing account must refuse with
+    /// [`StoreError::AccountExists`]. Backends without this capability fail
+    /// closed rather than approximating it with a scan followed by a write.
+    fn create_first_account(&self, _rec: AccountRec) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async {
+            Err(StoreError::Invalid(
+                "atomic first-account creation is unsupported".into(),
+            ))
+        })
+    }
+
     /// Fetch an account by name (case-insensitive). `Ok(None)` when absent.
     /// This is the verify path: the caller checks the password against
     /// [`AccountRec::argon2_hash`] itself — hashing never enters the store.
@@ -556,6 +569,15 @@ pub trait ObjectStore: Send + Sync {
 
     /// Lift the ban on `ip`. Returns whether a ban was actually removed.
     fn clear_ban<'a>(&'a self, ip: &'a str) -> BoxFuture<'a, Result<bool, StoreError>>;
+
+    /// Publish a short-lived password-tempban lift. Replaces the prior request
+    /// for this address; never changes a persisted siteban. Unsupported stores
+    /// must refuse the write rather than acknowledge a pardon they cannot deliver.
+    fn put_tempban_lift(&self, lift: crate::TempbanLift) -> BoxFuture<'_, Result<(), StoreError>>;
+
+    /// Read active lift requests without consuming them: every gateway guard
+    /// must receive the command. TTL and guard-local deduplication bound replay.
+    fn get_tempban_lifts(&self) -> BoxFuture<'_, Result<Vec<crate::TempbanLift>, StoreError>>;
 
     // ------------------------------------------------------------------
     // Web session tokens (`token:{hash}` keys, native TTL)

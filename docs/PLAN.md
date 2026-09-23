@@ -1,5 +1,12 @@
 # rustmush — Modern MUSH Server in Rust: Master Plan
 
+> **Historical plan.** This records the original milestone sequence, including
+> retired rulesets and superseded persistence choices. The current game is
+> TacSim, composed by `mush_server::boot::game_modules`; there is no `[rulesets]` selector.
+> For current behavior and remaining work, read [combat arena](design/16-combat-arena.md),
+> [its implementation record](design/16b-combat-implementation-plan.md), and
+> [the simulator backlog](design/16c-simulator-backlog.md).
+
 ## Context
 
 Greenfield project in `C:\Users\faeni\cc\rustmush` (currently empty, not yet a git repo): a TinyMUX/TinyMUSH/RhostMUSH-style game server in Rust with **SSH access instead of telnet**, a **native web client** (structured protocol, not an SSH wrapper), **native LLM integration** (worldbuilding assist + LLM-driven NPC agents), and **ruleset modules** — World of Darkness first, TacSim (btmux-style) later. Built-ins: chat channels (comsys), @mail, weather.

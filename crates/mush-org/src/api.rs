@@ -4,7 +4,7 @@
 //!
 //! - [`authorize_in_world`] — *may this actor exercise this capability on this
 //!   scope now?* over the live [`OrgStore`] slot, with the frozen predicate table
-//!   bridged in. The pure engine ([`crate::authorize`]) does the work; this only
+//!   bridged in. The pure engine ([`crate::authorize()`]) does the work; this only
 //!   supplies live state.
 //! - [`submit`] — apply a validated [`OrgMutationPlan`] to the live state and
 //!   persist exactly the touched docs + an audit entry + the allocator `meta`,

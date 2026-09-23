@@ -1,0 +1,1259 @@
+{
+  "schema_version": 1,
+  "cut": "L",
+  "frozen_source": "5f8353b3311d1e4dfb1517e259b2d5842f408bc1",
+  "final_runtime_source": "ffa12f6b191f6f2c2dc8085280a568f2c4562e50",
+  "final_spa_commit": "ffa12f6b191f6f2c2dc8085280a568f2c4562e50",
+  "scope": "Frozen full run plus final AA.3 and fixture continuation; no integrated-main or deployment claim.",
+  "hashes": {
+    "frozen_source_archive": {
+      "sha256": "7121055fb92729c0dc2a3ea8f0a4820a5f21e5cbf4bc0faa4face51444c9221e",
+      "bytes": 39270400
+    },
+    "frozen_spa_archive": {
+      "sha256": "59dfad2edb860b510e0c044f62b5f9c6a3fe07b35479363f3cf54fb2cd0f761b",
+      "bytes": 1556480
+    },
+    "frozen_runner": {
+      "sha256": "68f8faf0bab05daec6bc9be4123b8a02c15292992c53524fedfb2ad425f911ab",
+      "bytes": 6801
+    },
+    "final_spa_archive": {
+      "sha256": "0c053bb432ed16678e41f18b28571ad82918d1a20c637b48d89fdda85594e5ca",
+      "bytes": 1556480
+    },
+    "final_runner": {
+      "sha256": "139039ef69858084c1f43084ad0ea2282d92482e133d082fa585bb3a1b5285be",
+      "bytes": 6933
+    },
+    "source_delta": {
+      "sha256": "a1b261af63c6f8c57e146c32984849651f88472ccaa5d4629ed2218dfa6be017",
+      "bytes": 47296
+    },
+    "previous_staged_overlay_archive_sha256": "b7d3948ac5db274c795d6e211ee4e6cae89783b1315875bb2141eecaacc46e31",
+    "uploaded_overlay_archive_sha256": "65be55d3601ff3f7393baa6b68fa78814df0686a625ad2e853b5cbab58a02dc8",
+    "uploaded_overlay_hash_provenance": "computed from local archive",
+    "source_delta_observed_sha256": "a1b261af63c6f8c57e146c32984849651f88472ccaa5d4629ed2218dfa6be017",
+    "downloaded_evidence_archive_sha256": "c9403080ce34bcd8cb554c1a4716cf9ec65bbb8363ac29411d1fc90d2dc1e94f",
+    "frozen_manifest_sha256": "389a6802e1e5a41482565be8c447021561342df866c1e6aa39ed020bf75ac403",
+    "overlay_manifest_sha256": "9f08aeb6dbbb8ec2c6a06ca4d56e257a42221a9f44f9c843d8cc291c635243fe",
+    "evidence_manifest_sha256": "6744aeb0444c09d22908d2bb168c3c340987193057be7fce0e5c1062330d1ff6"
+  },
+  "source_delta": [
+    {
+      "path": "crates/mush-campaign/tests/e7c10.rs",
+      "before": {
+        "sha256": "26fb3239541683c24565288eb33232c9c82dfcb45943bbcaf9b869d31c985bb0",
+        "bytes": 109766
+      },
+      "after": {
+        "sha256": "ed0d7cee94c7361565ccdcdfa3a3f0928c78ac29c7a4701097bec7b84087741f",
+        "bytes": 110123
+      }
+    },
+    {
+      "path": "crates/mush-gateway/tests/authoritative_process_kill.rs",
+      "before": {
+        "sha256": "db32dbfa11511abae79f48d678e6478fd03dcdfecdd0a28cc6e9057ffcfa9f30",
+        "bytes": 29766
+      },
+      "after": {
+        "sha256": "1aee5738196260b4a2b123dc1b3d3942e66e448994b03a00b79c3ee4fd70f23c",
+        "bytes": 30703
+      }
+    },
+    {
+      "path": "crates/mush-server/tests/ipc_authoritative_action.rs",
+      "before": {
+        "sha256": "0d9d09870093d3199fea154bfcd58822ac73779f18b9b332dc68cf046651bf6b",
+        "bytes": 54499
+      },
+      "after": {
+        "sha256": "6b02794e141677ce7c37eaf8cd40c4a22dccb0ac9fd7f97e49a044717ad37506",
+        "bytes": 56007
+      }
+    },
+    {
+      "path": "crates/mush-server/tests/ipc_teardown.rs",
+      "before": {
+        "sha256": "d45a8b96fd88006e57a31f61f9512f02da4d2b017d1feef4d7d477489844d8fd",
+        "bytes": 6434
+      },
+      "after": {
+        "sha256": "918dc4ba81aa15fda34d0dcfdf6b5edcdf862093d0f04fdeda673743318664a1",
+        "bytes": 9841
+      }
+    },
+    {
+      "path": "crates/mush-sim/tests/e7c10.rs",
+      "before": {
+        "sha256": "3232af35e5ce657a2b4cb2ee28db323c340ac8ed47e5348458b883cc95d94cab",
+        "bytes": 36463
+      },
+      "after": {
+        "sha256": "c91eee52700978ef1a0a19b2a0b7d8808a94613cac06bed34385ee07f0dcb9cc",
+        "bytes": 36895
+      }
+    },
+    {
+      "path": "crates/mushd/tests/load_soak.rs",
+      "before": {
+        "sha256": "fc17e8b7d0d1c1c2faf787f4f75767e5ec12f4bae932dd806fafc4470c58db61",
+        "bytes": 30749
+      },
+      "after": {
+        "sha256": "82c0a49a02c5b2e343da476a5b653952d569e7a7dbedbf45ff93a0f42e0bc1fd",
+        "bytes": 31782
+      }
+    },
+    {
+      "path": "crates/tacsim/src/arena/state.rs",
+      "before": {
+        "sha256": "75f2a9fe4c67bf4aaaec62bfec96519c2506e5a1b7ee59aabe68931e69ac2b82",
+        "bytes": 173759
+      },
+      "after": {
+        "sha256": "fb1d9b8646496c497d2c650c168536f27afb7bee35e89e1a854d9f07be3611aa",
+        "bytes": 174130
+      }
+    },
+    {
+      "path": "crates/tacsim/src/arena_task.rs",
+      "before": {
+        "sha256": "7253247e229b20dfe59960ac0937c32806195c1873580ca66a7a242f0e67bb16",
+        "bytes": 30830
+      },
+      "after": {
+        "sha256": "7f7c92e6d214da7370c0cdfcc0b3c0012077ded1aa0c276493013817cce2fe99",
+        "bytes": 33339
+      }
+    },
+    {
+      "path": "crates/tacsim/tests/arena_task.rs",
+      "before": {
+        "sha256": "963d60ae2ca47dd1f3aed876fcbfdf26632ec4d69b35bfab4ba280b4a52074fa",
+        "bytes": 30925
+      },
+      "after": {
+        "sha256": "f96f263961d2c25bdf76f5addebec9ac8230bcde63343035d4d56baa229bdeba",
+        "bytes": 40845
+      }
+    }
+  ],
+  "frozen": {
+    "source_commit": "5f8353b3311d1e4dfb1517e259b2d5842f408bc1",
+    "aggregate": {
+      "pass": 31,
+      "fail": 3,
+      "pending": 0,
+      "declared_gates": 34,
+      "expected_gate_count": 34,
+      "done_recorded": true,
+      "runner_reported_failed_gates": 3,
+      "ended_at": "2026-09-23T02:36:50Z",
+      "agrees_with_gate_exits": true
+    },
+    "gates": [
+      {
+        "gate": "shellcheck-prepare",
+        "command": "bash \"${SANDBOX}/prepare-shellcheck.sh\"",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:41:04Z",
+        "log_sha256": "0cdafc34f5ff6d6d76e3e7012ad4a1801c6cd7be99156151baec7f09da8bab14"
+      },
+      {
+        "gate": "shellcheck",
+        "command": "\"${SANDBOX}/shellcheck/extracted/usr/bin/shellcheck\" scripts/reset-instance.sh",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:41:04Z",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "gate": "reset-syntax",
+        "command": "bash -n scripts/reset-instance.sh",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:41:04Z",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "gate": "render-syntax",
+        "command": "bash -n deploy/instance/render.sh",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:41:04Z",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "gate": "dev1-syntax",
+        "command": "bash -n deploy/dev1/deploy.sh",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:41:04Z",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "gate": "dev1-split-syntax",
+        "command": "bash -n deploy/dev1-split/deploy.sh",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:41:04Z",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "gate": "fmt",
+        "command": "cargo fmt --all --check",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:41:13Z",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "gate": "redis-suite",
+        "command": "cargo test --locked -p mush-store --test redis_suite -- --ignored --test-threads=1",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:41:31Z",
+        "log_sha256": "6fa809dac5eae85ceb7c66caffeb3adb5d6acaf92d607d234295598bc6e57ade",
+        "tests": {
+          "passed": 66,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "provisioning",
+        "command": "cargo test --locked -p mush-server --test provisioning_smoke",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:42:28Z",
+        "log_sha256": "5723621fe97be258b22207c3622104a65631fb0c24cb2bdc4d18b35cf9155c4b",
+        "tests": {
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "bootstrap-config",
+        "command": "cargo test --locked -p mush-config --lib bootstrap_",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:42:41Z",
+        "log_sha256": "7fe9c3af41a44e0c280531c41b541be3e272788614c43944ccb61076ae828bd9",
+        "tests": {
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 102,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "bootstrap-cli",
+        "command": "cargo test --locked -p mush-server -p mushd --test cli_args",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:43:54Z",
+        "log_sha256": "ea5d45aa6593a962e9952985c0944d640174ae88e1fbe6aa486d66ad25698b5c",
+        "tests": {
+          "passed": 17,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 2
+        }
+      },
+      {
+        "gate": "bootstrap-e2e",
+        "command": "python3 \"${SANDBOX}/bootstrap-e2e.py\"",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:43:56Z",
+        "log_sha256": "c3d7b9b462e644713be7f39df201eca85bd91e8a3f5ee1b93ca6197f51885564"
+      },
+      {
+        "gate": "authoritative-boot",
+        "command": "cargo test --locked -p mush-server --test authoritative_boot -- --test-threads=1",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:44:11Z",
+        "log_sha256": "856bc8445cc1dee0377d11c9b7887d78c611a07e85b16ebddb51aa17e36fddb9",
+        "tests": {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "redis-quarantine",
+        "command": "cargo test --locked -p mush-server --lib persist::tests::live_redis_wrong_type_bundle_quarantines_repairs_and_recovers -- --ignored --exact",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:44:49Z",
+        "log_sha256": "bcbbb19603b54a1767aa597ac75cd4256fe4ac994cb1c9c8206cfc5ddc04b494",
+        "tests": {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 270,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "redis-generations",
+        "command": "cargo test --locked -p mush-server --lib redis_round_trip_preserves_exact_generations -- --ignored",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:44:50Z",
+        "log_sha256": "bcc38684a61db1edd90d62c49e21353ccf555e9642b64d635764b3bdaf9756c9",
+        "tests": {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 270,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "split-process-recovery",
+        "command": "cargo test --locked -p mush-gateway --test authoritative_process_kill -- --test-threads=1",
+        "result": "fail",
+        "exit_code": 101,
+        "ended_at": "2026-09-23T00:48:21Z",
+        "log_sha256": "98c7fbbdf36c645a89dbad26c84d5ebb7223b36ab9614f7b9a40afbc7d47144c",
+        "tests": {
+          "passed": 2,
+          "failed": 1,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1,
+          "nested_summary_rows_excluded": 2,
+          "method": "last outer libtest summary only"
+        },
+        "qualification": "Recovery succeeded before the final shutdown-banner race; exact completion observation corrected in continuation."
+      },
+      {
+        "gate": "kill9-durability",
+        "command": "cargo test --locked -p mushd --test durability_e2e kill9_mid_play_world_survives_redis_gated -- --exact --test-threads=1",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:49:09Z",
+        "log_sha256": "2013d1cbd1e782fe0078bdf7e21617e1e7d9246519ff0d226b199eebfda8b2b1",
+        "tests": {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 2,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "redis-persistence",
+        "command": "cargo test --locked -p mushd --test persistence -- --test-threads=1",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:49:28Z",
+        "log_sha256": "6dc44f87b1ba2baf8ca555759a0964f89da75657c9bf0c9e119ccbe7f3963b3e",
+        "tests": {
+          "passed": 31,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "redis-m10c",
+        "command": "cargo test --locked -p mushd --test m10c_e2e m10c_persistence_twin_redis_gated -- --exact --test-threads=1",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:49:37Z",
+        "log_sha256": "5c7dd2776467fc91923bfd11857659f858bf2766382db874f4f03b5415998dbf",
+        "tests": {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 5,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "debug-build",
+        "command": "cargo build --locked -p mushd -p mush-server -p mush-gateway",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:52:27Z",
+        "log_sha256": "2a5585ec271682c50bf111937fadec34d5e1cf7a990c44feba5de952fabe69dc"
+      },
+      {
+        "gate": "provisioning-render",
+        "command": "bash \"${SANDBOX}/provisioning-render.sh\"",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T00:52:28Z",
+        "log_sha256": "0a457382ab846c1a19feb721219851e2b37abe3bdc1eafcbcc40545b8a15dd45"
+      },
+      {
+        "gate": "workspace-tests",
+        "command": "env -u REDIS_URL cargo test --locked --workspace --exclude mush-bot --no-fail-fast",
+        "result": "fail",
+        "exit_code": 101,
+        "ended_at": "2026-09-23T01:31:06Z",
+        "log_sha256": "8fc0157ab9017a9cea85876602ad9a8dc834974f70028894b5acc4b84fca040a",
+        "tests": {
+          "passed": 5747,
+          "failed": 7,
+          "ignored": 82,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 356,
+          "failed_tests": [
+            "a_peer_release_of_a_coordinator_action_cannot_kill_the_reader_loop",
+            "actor_field_cannot_spoof_the_authenticated_connection",
+            "e7c10_p1_desired_links_is_still_the_only_production_channelgrant_writer",
+            "e7c10_p2_no_legality_check_reads_a_seat_grant",
+            "e7c10_p2_the_c12_consumer_census_is_now_eight",
+            "slow_ws_client_is_detached_without_affecting_others",
+            "wedged_gateway_is_torn_down_by_write_timeout"
+          ],
+          "cargo_targets": 355,
+          "binary_targets": 312,
+          "doctest_targets": 43,
+          "method": "Independent log parse: 43 doctest targets include two summary partitions for mush_core; no nested worker summary is duplicated.",
+          "matches_previously_verified_census": true
+        }
+      },
+      {
+        "gate": "bot-tests",
+        "command": "env -u REDIS_URL cargo test --locked -p mush-bot",
+        "result": "fail",
+        "exit_code": 101,
+        "ended_at": "2026-09-23T01:41:26Z",
+        "log_sha256": "9ea48a3a84685aef78423ce8bd6cfc15270e4c0e948b339a858c6b6d2cce9bf8",
+        "tests": {
+          "passed": 208,
+          "failed": 3,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 5,
+          "failed_tests": [
+            "lab::cast_matrix_coordinates_real_speech_interruptions_with_isolated_memory_and_joined_evidence",
+            "lab::harness_accepts_clean_listener_shutdown_and_expected_headless_budget_exit",
+            "lab::harness_rejects_self_reported_success_without_world_evidence_and_handles_disconnect_fault"
+          ]
+        },
+        "qualification": "Pause-contaminated gate; retain actual failures and require the clean continuation rerun."
+      },
+      {
+        "gate": "reset-fixture",
+        "command": "bash scripts/tests/reset-instance.sh",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T01:41:27Z",
+        "log_sha256": "f03410676e8258bb26eba8d3da156a6b4b033eae9847eb07d012b70026e2c65b"
+      },
+      {
+        "gate": "bundle-fixture",
+        "command": "bash scripts/tests/check-web-bundle.sh",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T01:41:27Z",
+        "log_sha256": "f617c910a393f2a012f945a71bd6fcef8465c4e825cbf8dd90f2f90314178b0a"
+      },
+      {
+        "gate": "tls-listener",
+        "command": "cargo test --locked -p mush-net-web --features tls",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T01:43:18Z",
+        "log_sha256": "6ff5e0e3639f26a9f2115556390ee97261b0c9dabf800d9178782c2191f8a060",
+        "tests": {
+          "passed": 52,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 5
+        }
+      },
+      {
+        "gate": "clippy",
+        "command": "cargo clippy --locked --workspace --all-targets -- -D warnings",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T01:48:20Z",
+        "log_sha256": "8fc2fb865c1a80991c55368c083bb9c6756b75c8e24df13378be5b58ad92c3dc"
+      },
+      {
+        "gate": "tls-clippy",
+        "command": "cargo clippy --locked -p mush-net-web -p mush-gateway -p mushd --features mush-net-web/tls,mush-gateway/tls,mushd/tls --all-targets -- -D warnings",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T01:50:32Z",
+        "log_sha256": "fc00d06ee290771889d453690b1c9d9215f09ec6f4bb9a502478ca561a43720c"
+      },
+      {
+        "gate": "strict-rustdoc",
+        "command": "env RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps --document-private-items",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T01:52:55Z",
+        "log_sha256": "1b712988f4421076dcb7c0d82d5541d2aaca21fd60bd102ec0d16c1ce36f6b13"
+      },
+      {
+        "gate": "release-build",
+        "command": "cargo build --locked --release -p mushd -p mush-server -p mush-gateway --features mushd/tls,mush-gateway/tls",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:22:56Z",
+        "log_sha256": "d644e1b02a14ef16e3d347157df3df43c2ac87c151106ca40ec5ffb006b97955"
+      },
+      {
+        "gate": "release-harness",
+        "command": "env TACSIM_JSON=\"${SANDBOX}/harness.json\" TACSIM_UNITS=300 TACSIM_FIGHTING=24 TACSIM_WEAPONS=150 TACSIM_PULSES=60 TACSIM_SEED=2350 TACSIM_SENSOR_CELLS=24 TACSIM_SHARE_CELLS=8 cargo test --locked --release -p tacsim --test harness -- --ignored --test-threads=1 --nocapture",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:32:58Z",
+        "log_sha256": "90229fec46bd6ac9723686615973da4ac1c06c7ce17c2b4a7ae8663be3c9e2ca",
+        "tests": {
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 2,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "mock-cost",
+        "command": "env TACSIM_LLM_COST_RUN=1 TACSIM_LLM_COST_MOCK=1 TACSIM_LLM_COST_MINUTES=0.1 TACSIM_LLM_COST_UNITS=4 TACSIM_JSON=\"${SANDBOX}/harness.json\" cargo test --locked -p tacsim --test harness tacsim_harness_llm_cost_run -- --exact --nocapture",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:36:30Z",
+        "log_sha256": "4cc990dd3f3f05e78447437920426ec0c865217c9e2727a0a9c69354bb11300c",
+        "tests": {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 3,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "ts-export",
+        "command": "cargo test --locked -p mush-proto --features ts --test ts_export",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:36:50Z",
+        "log_sha256": "909e6449ffde7c7d7ce15a6d1306d59292236573fda60e4e96642860ad596b4e",
+        "tests": {
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "ts-drift",
+        "command": "diff -ru \"${SANDBOX}/proto-before\" web/src/lib/proto",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:36:50Z",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "continuation": {
+    "source_commit": "ffa12f6b191f6f2c2dc8085280a568f2c4562e50",
+    "aggregate": {
+      "pass": 12,
+      "fail": 0,
+      "pending": 0,
+      "declared_gates": 12,
+      "expected_gate_count": 12,
+      "done_recorded": true,
+      "runner_reported_failed_gates": 0,
+      "ended_at": "2026-09-23T03:16:23Z",
+      "agrees_with_gate_exits": true
+    },
+    "gates": [
+      {
+        "gate": "split-process-recovery",
+        "command": "cargo test --locked -p mush-gateway --test authoritative_process_kill -- --test-threads=1",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:41:57Z",
+        "log_sha256": "d2ee3a60e7112728a476c56dd54f75876f15504bb8a5d9dbb20d14daa72fa806",
+        "tests": {
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1,
+          "nested_summary_rows_excluded": 4,
+          "method": "last outer libtest summary only"
+        }
+      },
+      {
+        "gate": "campaign-census",
+        "command": "env -u REDIS_URL cargo test --locked -p mush-campaign --test e7c10",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:43:45Z",
+        "log_sha256": "0c4e31f4b896c194c8a52dd3410e003a0b5dc0cae69e93104c47eec5e6297f50",
+        "tests": {
+          "passed": 58,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "sim-census",
+        "command": "env -u REDIS_URL cargo test --locked -p mush-sim --test e7c10",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:45:09Z",
+        "log_sha256": "ceb4b794b04cae99320c5ac0aae4b129a2c4e39cbaf73784d9c20aa5fbf643a2",
+        "tests": {
+          "passed": 18,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "ipc-action",
+        "command": "env -u REDIS_URL cargo test --locked -p mush-server --test ipc_authoritative_action",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:45:44Z",
+        "log_sha256": "90df23bc5561184ca4ca5bbc7cac9aa2e79519c0f9ed2a7d6025d56e24eaabcb",
+        "tests": {
+          "passed": 8,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "ipc-teardown",
+        "command": "env -u REDIS_URL cargo test --locked -p mush-server --test ipc_teardown",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:45:58Z",
+        "log_sha256": "09889f5612162b27b6cc3ca1f34ea87260098ea217c4f51b749b7a28cb6f4702",
+        "tests": {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "load-soak",
+        "command": "env -u REDIS_URL cargo test --locked -p mushd --test load_soak",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:46:38Z",
+        "log_sha256": "47f4880d581a33c693fa147e17b790bbcdb5d09a1e0a3e98ce9fa69c3f5514aa",
+        "tests": {
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 1
+        }
+      },
+      {
+        "gate": "bot-tests",
+        "command": "env -u REDIS_URL cargo test --locked -p mush-bot",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:51:06Z",
+        "log_sha256": "18d1ad98b09bc6cc54c515030dbd9e8006df98637e7e1febc918f98f54b10aa1",
+        "tests": {
+          "passed": 262,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 14
+        }
+      },
+      {
+        "gate": "affected-clippy",
+        "command": "env -u REDIS_URL cargo clippy --locked -p mush-campaign -p mush-sim -p mush-server -p mushd -p mush-gateway -p tacsim --all-targets -- -D warnings",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:52:58Z",
+        "log_sha256": "e2caf142eb740d08423d6f80a13a0ce18a5de3b3f4a928136df0dd132bfd745e"
+      },
+      {
+        "gate": "tacsim-tests",
+        "command": "env -u REDIS_URL cargo test --locked -p tacsim",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:55:30Z",
+        "log_sha256": "4538e09ee137a2e05686bef19db67b648e88e79a9a15ec5de0e9436ca8003e35",
+        "tests": {
+          "passed": 884,
+          "failed": 0,
+          "ignored": 2,
+          "measured": 0,
+          "filtered": 0,
+          "summary_rows_counted": 25
+        }
+      },
+      {
+        "gate": "strict-rustdoc",
+        "command": "env RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps --document-private-items",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T02:56:03Z",
+        "log_sha256": "f7f5159c3e332b0cd6496072e0655b4a7e03b2570fe1b14ac675731c7682ad0a"
+      },
+      {
+        "gate": "release-build",
+        "command": "cargo build --locked --jobs 3 --release -p mushd -p mush-server -p mush-gateway --features mushd/tls,mush-gateway/tls",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T03:10:42Z",
+        "log_sha256": "dba37f2d6a47c26178eff22d61c63f32cb445a7d2e13382ecb6d3530d64bee20"
+      },
+      {
+        "gate": "release-harness",
+        "command": "env TACSIM_JSON=\"${CONTINUATION}/harness.json\" TACSIM_UNITS=300 TACSIM_FIGHTING=24 TACSIM_WEAPONS=150 TACSIM_PULSES=60 TACSIM_SEED=2350 TACSIM_SENSOR_CELLS=24 TACSIM_SHARE_CELLS=8 cargo test --locked --release -p tacsim --test harness -- --ignored --test-threads=1 --nocapture",
+        "result": "pass",
+        "exit_code": 0,
+        "ended_at": "2026-09-23T03:16:23Z",
+        "log_sha256": "b17a6e956514766edebb41e78da31ddd54116a328815b063894ef5628cb95fdd",
+        "tests": {
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 2,
+          "summary_rows_counted": 1
+        }
+      }
+    ],
+    "release_build_jobs": 3
+  },
+  "counting_note": "Per-gate test counts overlap; do not sum them into unique tests. Env-gated early returns remain libtest passes; dedicated gates prove those paths. Failed frozen runs remain recorded.",
+  "release_binaries": {
+    "mushd": {
+      "sha256": "aad02d04b8fbbc5b96cc7378d496891d58c142adfad0bda4ca29b5c960f2f628",
+      "bytes": 98768048,
+      "package_version": "0.1.0"
+    },
+    "mush-server": {
+      "sha256": "b48d08d6b4f0a0e494d01b573ebf820466cacf85a195496608a98228e341cc3e",
+      "bytes": 81560816,
+      "package_version": "0.1.0"
+    },
+    "mush-gateway": {
+      "sha256": "f27503909f67afde91ca592b5b2e34e2dbcd9ccd1da4d8f6eb329cf762b329d2",
+      "bytes": 40492520,
+      "package_version": "0.1.0"
+    }
+  },
+  "harness": {
+    "frozen": {
+      "arena": {
+        "report_sha256": "147ff436d9e38b6f301e945ca6d850c8679f6158fa23021f19f36a7eab16827c",
+        "deterministic_sha256": "aa3879608157b0a1ff4b3b09ed6b4d69985df415fbf0b475b76479579ca975eb",
+        "deterministic_leaf_count": 105,
+        "world": {
+          "arena_ms": 41500,
+          "cell_cm": 1000,
+          "move_cost_table": "harness-local (harness_move_cost); the authored arena is cut C's",
+          "passable_cells": 51258,
+          "pilots": 24,
+          "seed": 2350,
+          "side_cells": 256,
+          "units": 300
+        },
+        "tempos": [
+          {
+            "max_ms": 12.081,
+            "name": "arena_engaged",
+            "p50_ms": 1.633,
+            "p95_ms": 11.914,
+            "p99_ms": 12.027,
+            "period_ms": 500,
+            "pulses": 60
+          }
+        ],
+        "thresholds": {
+          "assert": false,
+          "cut_a_p99_ms": 5.0,
+          "cut_s_p99_ms": 12.0,
+          "engaged_p99_ms": 25,
+          "max_ledger_bytes": 67108864,
+          "max_share_ops_per_pulse": 256,
+          "max_traces_per_pulse": 4000
+        },
+        "arena_p99_within_12ms": false
+      },
+      "static": {
+        "report_sha256": "77d6fcfecc5477238d60ba56199df4e662adcd5eee831b03d122622f5857d032",
+        "deterministic_sha256": "f1399ddf6b8277df9fc5dd6d812471929e7706c1f7cdecd5a4e8a3fd2abffe65",
+        "deterministic_leaf_count": 42,
+        "world": {
+          "arena_m": 2560,
+          "cell_cm": 1000,
+          "fighting": 24,
+          "pulse_ms": 2000,
+          "pulses": 60,
+          "seed": 2350,
+          "sessions_placed": 24,
+          "side_cells": 256,
+          "units_placed": 300,
+          "units_requested": 300,
+          "weapons": 150
+        },
+        "tempos": [
+          {
+            "max_ms": 8.374,
+            "name": "current",
+            "p50_ms": 5.105,
+            "p95_ms": 6.623,
+            "p99_ms": 7.843,
+            "period_ms": 2000,
+            "pulses": 60
+          }
+        ],
+        "thresholds": {
+          "assert": false,
+          "engaged_p99_ms": 25,
+          "max_ledger_bytes": 67108864,
+          "max_path_queries_per_pulse": 64,
+          "max_traces_per_pulse": 4000
+        }
+      }
+    },
+    "final": {
+      "arena": {
+        "report_sha256": "3c70c20bb601352e8c7f313cf0531c099cf1037a5a7c9725090a5b5719cd006f",
+        "deterministic_sha256": "aa3879608157b0a1ff4b3b09ed6b4d69985df415fbf0b475b76479579ca975eb",
+        "deterministic_leaf_count": 105,
+        "world": {
+          "arena_ms": 41500,
+          "cell_cm": 1000,
+          "move_cost_table": "harness-local (harness_move_cost); the authored arena is cut C's",
+          "passable_cells": 51258,
+          "pilots": 24,
+          "seed": 2350,
+          "side_cells": 256,
+          "units": 300
+        },
+        "tempos": [
+          {
+            "max_ms": 15.167,
+            "name": "arena_engaged",
+            "p50_ms": 2.07,
+            "p95_ms": 14.854,
+            "p99_ms": 14.998,
+            "period_ms": 500,
+            "pulses": 60
+          }
+        ],
+        "thresholds": {
+          "assert": false,
+          "cut_a_p99_ms": 5.0,
+          "cut_s_p99_ms": 12.0,
+          "engaged_p99_ms": 25,
+          "max_ledger_bytes": 67108864,
+          "max_share_ops_per_pulse": 256,
+          "max_traces_per_pulse": 4000
+        },
+        "arena_p99_within_12ms": false
+      },
+      "static": {
+        "report_sha256": "24d8b68f523d4c40640f63706030333479fc188f1cbfdf0a90acc2ee5b7b6e49",
+        "deterministic_sha256": "f1399ddf6b8277df9fc5dd6d812471929e7706c1f7cdecd5a4e8a3fd2abffe65",
+        "deterministic_leaf_count": 42,
+        "world": {
+          "arena_m": 2560,
+          "cell_cm": 1000,
+          "fighting": 24,
+          "pulse_ms": 2000,
+          "pulses": 60,
+          "seed": 2350,
+          "sessions_placed": 24,
+          "side_cells": 256,
+          "units_placed": 300,
+          "units_requested": 300,
+          "weapons": 150
+        },
+        "tempos": [
+          {
+            "max_ms": 7.148,
+            "name": "current",
+            "p50_ms": 5.064,
+            "p95_ms": 6.168,
+            "p99_ms": 6.43,
+            "period_ms": 2000,
+            "pulses": 60
+          }
+        ],
+        "thresholds": {
+          "assert": false,
+          "engaged_p99_ms": 25,
+          "max_ledger_bytes": 67108864,
+          "max_path_queries_per_pulse": 64,
+          "max_traces_per_pulse": 4000
+        }
+      }
+    },
+    "frozen_arena_counters": {
+      "counters": {
+        "blocked_events": 325,
+        "blocked_impassable": 298,
+        "blocked_interior_passable": 27,
+        "blocked_ring_passable": 0,
+        "ended": null,
+        "frames_per_pulse_mean": 23.067,
+        "held_at_end": 26,
+        "lagged_pulses": 0,
+        "ledger_bytes_streamed": 1435041,
+        "ledger_chunks": 89,
+        "moving_at_end": 133
+      },
+      "weapons": {
+        "armed_units": 141,
+        "disabled_at_end": 3,
+        "fired_events": 783,
+        "hits": 710,
+        "impact_events": 783,
+        "in_flight_at_end": 0,
+        "locked_events": 420,
+        "misses": 73,
+        "rounds_left": 5217,
+        "rounds_loaded": 5640,
+        "rounds_spent": 423,
+        "sections_destroyed": 33,
+        "shot_seq_at_end": 783,
+        "units_destroyed": 11,
+        "wrecks_at_end": 11
+      },
+      "reflex": {
+        "decide_ms": 1000,
+        "max_path_queries_per_window": 64,
+        "path_max_cells": 65536,
+        "peak_per_pulse": {
+          "intents": 685,
+          "path_cells": 10171,
+          "path_deferred": 96,
+          "path_failures": 0,
+          "path_queries": 64,
+          "shots": 75,
+          "ticks": 299,
+          "traces": 14
+        },
+        "repath_ms": 4000,
+        "states_at_end": {
+          "approach": 4,
+          "disabled": 12,
+          "engage": 106,
+          "patrol": 174,
+          "startup": 0,
+          "withdraw": 4
+        },
+        "total": {
+          "intents": 18574,
+          "path_cells": 87008,
+          "path_deferred": 655,
+          "path_failures": 0,
+          "path_queries": 1006,
+          "shots": 708,
+          "ticks": 8918,
+          "traces": 253
+        },
+        "waypoint_nodes": 256,
+        "waypoint_pitch_cells": 16
+      },
+      "perception": {
+        "alert_range_cm": 362000,
+        "contacts_at_end": 940,
+        "lost_after_passes": 3,
+        "pass_ms": 1000,
+        "peak_per_pulse": {
+          "candidates": 5428,
+          "cell_probes": 34078,
+          "classified": 56,
+          "detected": 79,
+          "lost": 83,
+          "passes": 299,
+          "share_ops": 218,
+          "traces": 2525
+        },
+        "sensor_cells": 24,
+        "share_cells": 8,
+        "total": {
+          "candidates": 159730,
+          "cell_probes": 969250,
+          "classified": 986,
+          "detected": 1444,
+          "lost": 1267,
+          "passes": 8918,
+          "share_ops": 6188,
+          "traces": 73046
+        }
+      },
+      "substeps": {
+        "per_pulse_max": 2,
+        "per_pulse_min": 2
+      }
+    },
+    "final_vs_frozen": {
+      "arena": {
+        "leaves_compared": 105,
+        "equal": true,
+        "differences": []
+      },
+      "static": {
+        "leaves_compared": 42,
+        "equal": true,
+        "differences": []
+      }
+    },
+    "windows_comparisons": [
+      {
+        "baseline": "Windows original",
+        "source_revision_recorded_in_16b": "02ead118",
+        "kind": "arena",
+        "report_sha256": "eea7d91744e1429d7d4da289bc6245550cd7a567bff5ea4d87f81443dafe8307",
+        "tempos": [
+          {
+            "max_ms": 26.871,
+            "name": "arena_engaged",
+            "p50_ms": 5.934,
+            "p95_ms": 19.289,
+            "p99_ms": 24.665,
+            "period_ms": 500,
+            "pulses": 60
+          }
+        ],
+        "leaves_compared": 105,
+        "equal": true,
+        "differences": []
+      },
+      {
+        "baseline": "Windows quieter repeat",
+        "source_revision_recorded_in_16b": "02ead118",
+        "kind": "arena",
+        "report_sha256": "eea4b276bcee4d9de91b1b6d96d2d091cfab17830d515c1453965f36ce7b54c2",
+        "tempos": [
+          {
+            "max_ms": 7.528,
+            "name": "arena_engaged",
+            "p50_ms": 1.339,
+            "p95_ms": 6.867,
+            "p99_ms": 7.249,
+            "period_ms": 500,
+            "pulses": 60
+          }
+        ],
+        "leaves_compared": 105,
+        "equal": true,
+        "differences": []
+      },
+      {
+        "baseline": "Windows AA.1",
+        "source_revision_recorded_in_16b": "79f8ef80",
+        "kind": "arena",
+        "report_sha256": "0990bb39070504a4171b9c959f29baa643f1ed686d717ec8f303acfdafe027fb",
+        "tempos": [
+          {
+            "max_ms": 7.314,
+            "name": "arena_engaged",
+            "p50_ms": 1.246,
+            "p95_ms": 6.563,
+            "p99_ms": 7.124,
+            "period_ms": 500,
+            "pulses": 60
+          }
+        ],
+        "leaves_compared": 105,
+        "equal": true,
+        "differences": []
+      },
+      {
+        "baseline": "Windows original",
+        "source_revision_recorded_in_16b": "02ead118",
+        "kind": "static",
+        "report_sha256": "0bf74ee4be21a1c56d20b7cd28e4f961b236dfd94f36ea210f9dde652f2de9e7",
+        "tempos": [
+          {
+            "max_ms": 41.078,
+            "name": "current",
+            "p50_ms": 4.135,
+            "p95_ms": 9.244,
+            "p99_ms": 17.022,
+            "period_ms": 2000,
+            "pulses": 60
+          }
+        ],
+        "leaves_compared": 42,
+        "equal": true,
+        "differences": []
+      },
+      {
+        "baseline": "Windows AA.1",
+        "source_revision_recorded_in_16b": "79f8ef80",
+        "kind": "static",
+        "report_sha256": "fb0a7002011c6a8919656744fb9be1c863023a7d10170ff9ba408c9caadd241e",
+        "tempos": [
+          {
+            "max_ms": 4.713,
+            "name": "current",
+            "p50_ms": 3.401,
+            "p95_ms": 3.892,
+            "p99_ms": 4.101,
+            "period_ms": 2000,
+            "pulses": 60
+          }
+        ],
+        "leaves_compared": 42,
+        "equal": true,
+        "differences": []
+      }
+    ],
+    "timing_note": "Report-only timing when assert=false. Different host, OS and load prevent a controlled speedup/regression conclusion. JSON reports do not embed source/compiler/CPU provenance; source identity comes from the runner manifests."
+  },
+  "environment": {
+    "default_build_jobs": 2,
+    "release_profile": "release; configured Thin LTO unchanged",
+    "release_preflight_observations": {
+      "observed_cpus": 4,
+      "observed_available_memory_kib": 15130416,
+      "observed_load_average": [
+        1.997,
+        2.0,
+        2.0
+      ]
+    },
+    "redis": "Dedicated private loopback instance with JSON and search modules; no database contents included.",
+    "recorded_versions": {
+      "record_sha256": "6cc53214acbdb28101e21480c9edf5c0a06e7db68e1b78bdfb2f0b8169664ef7",
+      "versions": {
+        "rustc": "1.98.0",
+        "cargo": "1.98.0",
+        "redis": "8.10.1",
+        "bash": "5.2.21",
+        "shellcheck": "0.9.0",
+        "python": "3.12.3"
+      },
+      "kernel": {
+        "system": "Linux",
+        "release": "6.8.0-137-generic",
+        "architecture": "x86_64",
+        "nodename_omitted": true
+      },
+      "observed_at": "2026-09-23T02:27:25.333818+00:00"
+    }
+  },
+  "post_cleanup_receipt": {
+    "receipt_sha256": "99b700ff5dea917ba79d34b1babe0277eb01fcc5bea7bc3dace42616fb920943",
+    "collection_phase": "Fetched separately AFTER the immutable main evidence archive",
+    "hash_scope": "Separate cleanup receipt; not covered by the main archive's manifest",
+    "measurements": {
+      "at": "2026-09-23T03:20:21.469408+00:00",
+      "evidence_archive_sha256_verified_locally": "c9403080ce34bcd8cb554c1a4716cf9ec65bbb8363ac29411d1fc90d2dc1e94f",
+      "active_private_build_processes": [],
+      "private_redis_port_closed": 63987,
+      "free_bytes_before": 94006702080,
+      "free_bytes_after": 196513251328,
+      "reclaimed_bytes": 102506549248
+    },
+    "verified_archive_matches_downloaded_archive": true
+  },
+  "resource_records": {
+    "disk-reclaim": {
+      "record_sha256": "6cd6e8eb41894dac389178cc9f782439f673e293bac562ea2ec7605b8a425a32",
+      "measurements": {
+        "cutoff": "2026-09-23T01:31:06Z",
+        "logical_bytes": 139473772592,
+        "completed_executables_removed": 334,
+        "logical_GiB_reclaimed": 129.895
+      }
+    },
+    "disk-reclaim-resume": {
+      "record_sha256": "aa26fd1306dd94b538adf3fe5e872053eccce8c6b80bfa6c6137e59eda7ecbc9",
+      "measurements": {
+        "resumed_owned_processes": [
+          278661,
+          267006,
+          188538
+        ],
+        "at": "2026-09-23T01:41:04.052708+00:00",
+        "free_GiB": 127.5074348449707,
+        "live_health_record_present": true
+      }
+    }
+  },
+  "resource_note": "df reported 100% use; minimum observed free space was 115 MiB and no ENOSPC was observed. The owned runner/bot were paused. Reclaim retained source, logs and live paths. The interrupted bot gate is not a clean pass. Bounded subsequent service/journal checks do not prove absence of all historical impact.",
+  "cleanup": {
+    "private_redis_port_closed_observed": true,
+    "build_cache_cleanup_record_present": true
+  },
+  "frozen_release_binaries": {
+    "mushd": {
+      "sha256": "083dcf17c09654c1ac02cf1b76d6df53d418b673ab9bfcf5356ba06023bce1d1",
+      "bytes": 98760968
+    },
+    "mush-server": {
+      "sha256": "88e317af2496bb4db3f498d1804058f552d4d956fdd4c010e92f60bc73ace4e5",
+      "bytes": 81557888
+    },
+    "mush-gateway": {
+      "sha256": "6e898e7c564c54d120aa3c24c80774ee42b60c4fd4c8671a77dfdbf207932cee",
+      "bytes": 40492520
+    }
+  },
+  "source_markers": {
+    "frozen": "5f8353b3311d1e4dfb1517e259b2d5842f408bc1",
+    "final": "ffa12f6b191f6f2c2dc8085280a568f2c4562e50"
+  },
+  "evidence_integrity": {
+    "used_files_checked_against_manifest": 63,
+    "mismatches": []
+  },
+  "warnings": []
+}

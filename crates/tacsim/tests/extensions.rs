@@ -3663,7 +3663,7 @@ fn x6_production_roster() -> Vec<Box<dyn mush_core::GameModule>> {
         comp::npc_agent_adapter(),
         &mush_config::config::NpcCfg::default(),
     ));
-    mods.extend(comp::ruleset_modules(&onboarding, &game));
+    mods.extend(comp::sheet_modules(&onboarding, &game));
     mods.push(comp::tacsim_module(cfg));
     mods.push(comp::content_module_with(false, true).expect("the content module composes"));
     mods

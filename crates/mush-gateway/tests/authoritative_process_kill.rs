@@ -185,8 +185,7 @@ fn write_server_config(root: &Path, redis_url: &str, endpoint: SocketAddr) -> Pa
         format!(
             "[server]\nname = \"K8 process worker\"\ndata_dir = \"{data}\"\n\
              [store]\nstore = \"redis\"\nredis_url = \"{redis_url}\"\nreceipt_policy = \"applied\"\n\
-             [ipc]\nlisten = \"{endpoint}\"\n\
-             [rulesets]\nenabled = []\n"
+             [ipc]\nlisten = \"{endpoint}\"\n"
         ),
     )
     .unwrap();
@@ -304,18 +303,23 @@ fn gateway_config(root: &Path) -> Config {
 async fn start_gateway(
     root: &Path,
     launcher: ProcessServerLauncher,
-) -> (SocketAddr, RestartTrigger, std::thread::JoinHandle<()>) {
+) -> (
+    SocketAddr,
+    RestartTrigger,
+    oneshot::Receiver<Result<(), String>>,
+) {
     let store = seeded_gateway_store().await;
     let (ssh_tx, ssh_rx) = oneshot::channel();
     let (restart_tx, restart_rx) = oneshot::channel();
+    let (done_tx, done_rx) = oneshot::channel();
     let config = gateway_config(root);
-    let join = std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime
-            .block_on(mush_gateway::serve(
+    std::thread::spawn(move || {
+        let result = {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(mush_gateway::serve(
                 config,
                 GatewayOptions {
                     source: ServerSource::Restartable(Box::new(launcher)),
@@ -326,7 +330,11 @@ async fn start_gateway(
                     siteban_refresh: None,
                 },
             ))
-            .unwrap();
+        };
+        // Report after the runtime has dropped, so the next cut cannot race
+        // this gateway's remaining tasks or turn an expected shutdown into
+        // an unobserved thread panic.
+        let _ = done_tx.send(result);
     });
     let address = tokio::time::timeout(Duration::from_secs(30), ssh_rx)
         .await
@@ -336,7 +344,7 @@ async fn start_gateway(
         .await
         .expect("gateway restart trigger timed out")
         .expect("gateway dropped restart trigger");
-    (address, restart, join)
+    (address, restart, done_rx)
 }
 
 struct AcceptAll;
@@ -630,7 +638,7 @@ async fn run_process_cut(base_redis: &str, db: u32, cut: &'static str, owned_cut
         release: release.clone(),
         stop: stop.clone(),
     };
-    let (address, _restart, _gateway) = start_gateway(&root, launcher).await;
+    let (address, _restart, gateway_done) = start_gateway(&root, launcher).await;
     let (_client, mut term) = connect(address).await;
     // SSH binds independently of the server boundary. Remote Redis boot and
     // module hydration can take several seconds, so avoid turning that normal
@@ -675,8 +683,20 @@ async fn run_process_cut(base_redis: &str, db: u32, cut: &'static str, owned_cut
     );
 
     std::fs::write(&stop, b"stop\n").unwrap();
-    term.expect_after(term.mark(), "could not be restarted")
-        .await;
+    // Stopping the worker also refuses every subsequent launch, so the
+    // production supervisor must abandon and exit. Its final SSH notice may
+    // race transport closure; observe the actual completion instead.
+    let stopped = tokio::time::timeout(STEP_TIMEOUT, gateway_done)
+        .await
+        .expect("stopped gateway did not finish")
+        .expect("gateway thread dropped its completion");
+    assert_eq!(
+        stopped.expect_err("a stopped launcher must exhaust supervision"),
+        format!(
+            "{}: supervision abandoned (crash-loop); exiting so a supervisor restarts the whole gateway",
+            mush_gateway::SUPERVISION_ABANDONED_MARKER
+        ),
+    );
     admin.wipe_namespaces().await.unwrap();
     admin.close().await.ok();
     let _ = std::fs::remove_dir_all(root);

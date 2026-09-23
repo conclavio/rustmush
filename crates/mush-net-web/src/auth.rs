@@ -1,10 +1,10 @@
 //! `/api/auth/*` — login, register, logout.
 //!
 //! All three routes sit behind the tower_governor tight bucket (see
-//! `app::rate_limit`) and check [`WebHooks::is_ip_blocked`] first. Bad
+//! `app::rate_limit`) and check [`crate::WebHooks::is_ip_blocked`] first. Bad
 //! credentials answer a **uniform 401** — unknown account and wrong
 //! password are deliberately indistinguishable — and count one
-//! [`WebHooks::auth_failed`] against the address. Passwords and tokens are
+//! [`crate::WebHooks::auth_failed`] against the address. Passwords and tokens are
 //! never logged (the trace layer's span carries only method + path).
 
 use std::net::SocketAddr;

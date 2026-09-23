@@ -196,12 +196,12 @@ const MAX_LOCK_STRUCTURAL_DEPTH: u32 = 1024;
 ///   ([`World::attr`]); `Text` values match their text, `Json` values match
 ///   their compact serialization; a missing attribute fails, and an attribute
 ///   the lock may not *read* ([`AttrFlags::WIZARD_ONLY`], [`AttrFlags::SELF_ONLY`])
-///   poisons the whole key — see [`unreadable`].
+///   poisons the whole key — see `unreadable`.
 /// - `Indirect`: a missing target object fails; a target without that lock
 ///   type passes (an unset lock is unlocked, as in TinyMUX).
 ///
 /// Structural nesting (`!`, `&`, `|`) is bounded separately by
-/// [`MAX_LOCK_STRUCTURAL_DEPTH`]; a tree taller than that fails closed at the
+/// `MAX_LOCK_STRUCTURAL_DEPTH`; a tree taller than that fails closed at the
 /// bound instead of overflowing the world task's stack.
 #[must_use]
 pub fn eval_lock(w: &World, expr: &LockExpr, who: ObjId, depth: u8) -> bool {
@@ -242,7 +242,7 @@ fn unreadable(a: &Attr) -> bool {
 /// budget stays small.
 ///
 /// `Some(b)` is the key's answer; `None` means it tried to read an attribute
-/// it may not ([`unreadable`]). `None` is not `Some(false)`: it **absorbs**
+/// it may not (`unreadable`). `None` is not `Some(false)`: it **absorbs**
 /// through every operator, including `!`, so a term over a restricted
 /// attribute cannot be negated into a pass, and it does not depend on the
 /// attribute's value, so the refusal is byte-identical whether the value would
@@ -829,7 +829,7 @@ impl LockExpr {
     /// same-precedence children so the (left-associative) parser rebuilds
     /// the identical tree.
     ///
-    /// `budget` is the structural fence ([`MAX_LOCK_STRUCTURAL_DEPTH`]): the
+    /// `budget` is the structural fence (`MAX_LOCK_STRUCTURAL_DEPTH`): the
     /// printer recurses, and `Display` is reached from log lines and from
     /// `@examine` on trees the parser never saw, so past the budget it writes
     /// `#FALSE` and stops rather than descending. The budget sits far above

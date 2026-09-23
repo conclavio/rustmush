@@ -11,8 +11,8 @@ use mush_atlas::record::{RecordKey, SurfaceRef, TileOwner};
 use mush_atlas::window::{WindowFrame, capture, composite};
 use mush_atlas::{AtlasModule, AtlasState};
 use mush_content::{Appliers, ContentModule, ContentState, parse_pack};
-use mush_core::{CanonicalId, GameModule};
-use mush_testkit::TestWorld;
+use mush_core::{CanonicalId, Effects, Engine, GameModule, Outbox};
+use mush_testkit::{TestWorld, boot_world};
 use serde_json::{Value, json};
 
 fn cid(s: &str) -> CanonicalId {
@@ -49,18 +49,53 @@ fn region_pack(extra: Value) -> String {
     serde_json::to_string(&doc).expect("json")
 }
 
-fn boot(pack: &str) -> TestWorld {
+fn modules(pack: &str) -> Vec<Box<dyn GameModule>> {
     let mut appliers = Appliers::new();
     mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
-    let modules: Vec<Box<dyn GameModule>> = vec![
+    vec![
         Box::new(AtlasModule::new()),
         Box::new(
             ContentModule::new()
                 .with_appliers(appliers)
                 .with_boot_packs(vec![parse_pack(pack).expect("the pack parses")]),
         ),
-    ];
-    TestWorld::with_modules(modules)
+    ]
+}
+
+fn boot(pack: &str) -> TestWorld {
+    TestWorld::with_modules(modules(pack))
+}
+
+/// Inspect the rejected boot directly: a TestWorld must never serve this state.
+fn boot_error(pack: &str) -> String {
+    let (world, registry) = boot_world();
+    let mut engine =
+        Engine::with_modules(world, registry, modules(pack)).expect("modules register");
+    let error = engine
+        .modules_loaded(Default::default(), &mut Outbox::new(), &mut Effects::new())
+        .expect_err("an invalid first-boot heightfield must stop boot")
+        .to_string();
+    assert!(
+        error.contains("first-boot pack region.relief@1 stopped"),
+        "{error}"
+    );
+    let state = engine.world.module_state::<AtlasState>().expect("atlas");
+    assert!(
+        !state.records.tiles.contains_key(&field_tile_key()),
+        "a refused field imports nothing"
+    );
+    // The partial in-memory latch remains diagnostic evidence of the failed
+    // apply; it does not turn the failed first boot into a usable world.
+    let applied = engine
+        .world
+        .module_state::<ContentState>()
+        .expect("content")
+        .latches
+        .applied(&cid("region.relief"))
+        .expect("the failed apply is latched");
+    assert!(applied.entries().contains_key(&cid("region")));
+    assert!(!applied.entries().contains_key(&cid("field")));
+    error
 }
 
 fn atlas(tw: &TestWorld) -> &AtlasState {
@@ -178,14 +213,6 @@ fn a_le16_grid_imports_to_the_same_cells_as_its_text_twin() {
 #[test]
 fn scale_and_datum_shift_every_sample() {
     // Samples in metres above a field datum of two metres.
-    let tw = boot(&region_pack(field_entry(
-        &text_grid(),
-        "text",
-        json!({ "scale_cm": 100, "datum_cm": 200 }),
-    )));
-    // Too tall: 330 m + 2 m is past the tile's ±327 m — so only the low rows fit.
-    // (The whole field is refused, and nothing is imported.)
-    assert!(!atlas(&tw).records.tiles.contains_key(&field_tile_key()));
     let small = (0..4)
         .map(|_| "1 2 3 4".to_string())
         .collect::<Vec<_>>()
@@ -205,24 +232,28 @@ fn scale_and_datum_shift_every_sample() {
 }
 
 #[test]
+fn scaled_samples_outside_the_tile_range_fail_boot() {
+    // The last sample is 330 m + 2 m, past the tile's signed elevation range.
+    let error = boot_error(&region_pack(field_entry(
+        &text_grid(),
+        "text",
+        json!({ "scale_cm": 100, "datum_cm": 200 }),
+    )));
+    assert!(
+        error.contains("field")
+            && error.contains("sample 15 at 33200 cm")
+            && error.contains("tile's range"),
+        "the error names the entry, sample, and bound: {error}"
+    );
+}
+
+#[test]
 fn a_grid_whose_samples_disagree_with_its_shape_is_refused_naming_the_entry() {
     let short = "0 10 20\n100 110 120";
-    let tw = boot(&region_pack(field_entry(short, "text", json!({}))));
-    assert!(!atlas(&tw).records.tiles.contains_key(&field_tile_key()));
-    let content = tw.world().module_state::<ContentState>().expect("content");
-    let applied = content
-        .latches
-        .applied(&cid("region.relief"))
-        .expect("latched");
-    let anomaly = applied.anomaly().unwrap_or_default();
+    let error = boot_error(&region_pack(field_entry(short, "text", json!({}))));
     assert!(
-        anomaly.contains("field") && anomaly.contains("16 samples"),
-        "the anomaly names the entry and the count: {anomaly}"
-    );
-    // The region itself still applied: a bad field costs the field, not the region.
-    assert!(
-        applied.entries().contains_key(&cid("region")),
-        "the region applied before the field"
+        error.contains("field") && error.contains("16 samples") && error.contains("6 were given"),
+        "the error names the entry and both counts: {error}"
     );
 }
 
@@ -435,42 +466,25 @@ fn an_authored_class_grid_lands_per_cell_and_the_recipe_keeps_the_rest() {
 
 #[test]
 fn a_class_grid_of_the_wrong_shape_or_an_unknown_code_is_refused_naming_the_entry() {
-    let anomaly_of = |pack: &str| -> String {
-        let tw = boot(pack);
-        assert!(
-            !atlas(&tw).records.tiles.contains_key(&field_tile_key()),
-            "a refused field imports nothing"
-        );
-        tw.world()
-            .module_state::<ContentState>()
-            .expect("content")
-            .latches
-            .applied(&cid("region.relief"))
-            .expect("latched")
-            .anomaly()
-            .unwrap_or_default()
-            .to_string()
-    };
-
     // The grid declares 4×8 where the samples are 8×8.
     let mut codes = two_class_codes();
     codes.truncate(32);
-    let wrong = anomaly_of(&region_pack(field8(
+    let wrong = boot_error(&region_pack(field8(
         json!({ "classes": encode_classes(4, 8, &codes) }),
     )));
     assert!(
         wrong.contains("field") && wrong.contains("4×8") && wrong.contains("8×8"),
-        "the anomaly names the entry and both shapes: {wrong}"
+        "the error names the entry and both shapes: {wrong}"
     );
 
     // A code no class owns.
     let mut codes = two_class_codes();
     codes[0] = 200;
-    let unknown = anomaly_of(&region_pack(field8(
+    let unknown = boot_error(&region_pack(field8(
         json!({ "classes": encode_classes(8, 8, &codes) }),
     )));
     assert!(
         unknown.contains("field") && unknown.contains("200"),
-        "the anomaly names the entry and the code: {unknown}"
+        "the error names the entry and the code: {unknown}"
     );
 }

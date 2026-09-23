@@ -9,15 +9,15 @@
 //!
 //! # Where each piece lives, and why it is split in two
 //!
-//! [`ArenaTasks`] is a **shared handle** — an `Arc` over the table of live tasks,
+//! [`crate::arena_bridge::ArenaTasks`] is a **shared handle** — an `Arc` over the table of live tasks,
 //! the egress channel and two small queues. It is shared because the two halves
 //! that need it do not run in the same place: matches are started and driven from
-//! the **world task** (inside a [`Ctx`], where every authority check lives), and
+//! the **world task** (inside a [`mush_core::Ctx`], where every authority check lives), and
 //! the tasks are joined by the **process's shutdown tail**, which is outside the
 //! world loop entirely (`PersistHandles`). A table that only the world task could
 //! see would leave the shutdown tail nothing to join.
 //!
-//! [`ArenaRegistry`] is the module state slot, and everything on it is
+//! [`crate::arena_bridge::ArenaRegistry`] is the module state slot, and everything on it is
 //! world-task-only: the ledger the chunks are appended to, the epoch mirror
 //! intents are stamped from, the world's intent sequence, the panel feed the
 //! frames go out on, and one mirror row per match for `@arena/status`. Nothing
@@ -26,15 +26,15 @@
 //! # How the egress re-enters the world
 //!
 //! The arena's egress is one bounded `mpsc` the world loop drains without
-//! blocking. Handling a message needs a [`Ctx`] — a keyframe is queued on the
+//! blocking. Handling a message needs a [`mush_core::Ctx`] — a keyframe is queued on the
 //! outbox, a chunk is persisted through the module's own namespace — and the one
 //! mechanism in the tree for "run module code with a `Ctx` from the loop" is the
-//! typed async re-entry [`Effect::ModuleAsync`] /
+//! typed async re-entry [`mush_core::Effect::ModuleAsync`] /
 //! `WorldCommand::ModuleAsyncDone` already uses. So the host does exactly that
-//! and no second mechanism: it drains the receiver into [`ArenaTasks`]'s staging
+//! and no second mechanism: it drains the receiver into [`crate::arena_bridge::ArenaTasks`]'s staging
 //! queue and steps the world once with a
 //! `ModuleAsyncDone { module: "tacsim", .. }`, whose registered
-//! [`AsyncCompletion`] is [`ArenaEgress`] below. The messages themselves never go
+//! [`mush_core::module::AsyncCompletion`] is [`crate::arena_bridge::ArenaEgress`] below. The messages themselves never go
 //! through a serialization: they are moved, not encoded, which is why the staging
 //! queue exists at all. Both ends of it run on the world task, so the lock is
 //! uncontended.
@@ -49,7 +49,7 @@
 //!
 //! The acknowledgement is the E0 durable-commit high-water and nothing new. The
 //! handler records `(match, upto_chunk_seq)` unstamped; the host stamps it with
-//! the serial the next batch will take, and sends [`ArenaMsg::LedgerAck`] once
+//! the serial the next batch will take, and sends [`crate::arena_task::ArenaMsg::LedgerAck`] once
 //! the writer has published a high-water at or past it. A batch that is dropped
 //! or refused therefore never acknowledges, the arena's egress backs up, and the
 //! match is voided past `ledger.max_unflushed_chunks` — which is doc 16 §3.1's
@@ -680,7 +680,7 @@ impl ArenaRegistry {
             .collect()
     }
 
-    /// **Forget one pilot's seat** (16b cut F.1) — the undo of [`bind_pilot`],
+    /// **Forget one pilot's seat** (16b cut F.1) — the undo of [`Self::bind_pilot`],
     /// and the remembered frame with it.
     ///
     /// Until this cut the binding was written at check-out and removed only by
@@ -702,7 +702,7 @@ impl ArenaRegistry {
     }
 
     /// **Stamp the `Starting` hint for one pilot** (16b cut D.1), expiring at the
-    /// world second `until_s`. See [`ArenaRegistry::starting_hints`] for the four
+    /// world second `until_s`. See `ArenaRegistry::starting_hints` for the four
     /// ways it ends.
     pub fn hint_starting(&mut self, pilot: ObjId, until_s: i64) {
         self.starting_hints.insert(pilot, until_s);
@@ -1073,7 +1073,7 @@ pub fn forward_intent(
 /// `pilot → (match, unit)` binding goes, so a later reconnect of that account
 /// fires no `Control { Live }` and takes nothing back from the controller; and
 /// the centre's slot is marked `left`
-/// ([`crate::match_::lobby::slot_left`]), so `SIM STATUS` stops calling somebody
+/// (`crate::match_::lobby::slot_left`), so `SIM STATUS` stops calling somebody
 /// standing in the team room `seated`. All three are here, and not in `EXIT`,
 /// because `EXIT` is only one of the three routes to a `Released` — a `QUIT` and
 /// the linkdead grace running out are the others, and they reach a pilot's

@@ -52,6 +52,8 @@ pub struct MockState {
     /// Refused-token counts, kept apart from `auth_failed` exactly as the
     /// guard keeps the two counters apart.
     pub token_refused: Vec<IpAddr>,
+    /// Number of store lookups; a cool-off must not reach this seam.
+    pub token_checks: usize,
     pub logouts: Vec<String>,
     pub connects: Vec<(u64, String, u64)>,
     pub resumes: Vec<(u64, String, u64, u64)>,
@@ -167,6 +169,7 @@ impl WebHooks for MockWebHooks {
     }
 
     fn validate_token<'a>(&'a self, token: &'a str) -> BoxFuture<'a, TokenVerdict> {
+        self.state().token_checks += 1;
         Box::pin(async move {
             let st = self.state();
             if st.token_store_down {

@@ -56,7 +56,7 @@
 //! **closed** where E2 failed open:
 //!
 //! - **The money rules moved into the bridge** (§4.4). A negative delta on a
-//!   `System` faucet needs staff *in [`WorldAuth`]*, not merely in the command that
+//!   `System` faucet needs staff *in `WorldAuth`*, not merely in the command that
 //!   happens to build the plan — E2's comment said "gated by the command layer",
 //!   which stopped being true the moment `@econ/pay` learned about divisional
 //!   wallets. A scoped debit additionally needs the org `Active` and the scope

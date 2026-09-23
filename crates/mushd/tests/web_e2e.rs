@@ -100,7 +100,7 @@ async fn boot(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig 
 /// test. `boot` alone composes no ruleset, exactly as `server_modules` does not.
 async fn boot_pilot(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig {
     let ruleset =
-        modules::ruleset_modules(&mush_core::OnboardingConfig::default(), &Default::default());
+        modules::sheet_modules(&mush_core::OnboardingConfig::default(), &Default::default());
     boot_inner(tag, session_config, auth_burst, ruleset).await
 }
 

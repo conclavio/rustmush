@@ -5,7 +5,7 @@
 //!
 //! The jobs module owns a registry of **payload handlers** living in a
 //! typed module state slot ([`JobsApi`]) on the
-//! [`World`](mush_core::World). Because state slots are keyed by `TypeId`
+//! [`World`]. Because state slots are keyed by `TypeId`
 //! and `JobsApi` is exported, any other module can reach the registry
 //! through the module API alone — no direct dependency on the jobs
 //! module's internals, no second registry:
@@ -228,7 +228,7 @@ pub fn get_job(w: &World, id: u64) -> Option<&Job> {
 /// Append a comment to an existing job programmatically (RAM + write-through),
 /// the way a producing module attaches structured output to a ticket — the
 /// WoD `+roll /job <n>` switch pins a roll's summary to job `id`. Updates the
-/// in-RAM [`JobsState`] and queues the job-doc `JsonSet` on `ctx` so the store
+/// in-RAM `JobsState` and queues the job-doc `JsonSet` on `ctx` so the store
 /// and the read cache never diverge. Enforce visibility/permission at the call
 /// site; this is the low-level primitive. Returns the job's title on success.
 ///

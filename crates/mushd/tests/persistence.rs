@@ -875,7 +875,7 @@ async fn boot_onboarding_rig(
     };
     let mut mods: Vec<Box<dyn mush_core::GameModule>> =
         vec![Box::new(mush_jobs::JobsModule::new())];
-    mods.extend(mushd::modules::ruleset_modules(
+    mods.extend(mushd::modules::sheet_modules(
         &onboarding,
         &Default::default(),
     ));
@@ -1239,7 +1239,7 @@ async fn boot_sheet_rig(
     let mut registry = world_task::base_registry();
     register_server_commands(&mut registry, &staff).unwrap();
     let mut mods = mushd::modules::server_modules();
-    mods.extend(mushd::modules::ruleset_modules(
+    mods.extend(mushd::modules::sheet_modules(
         &mush_core::OnboardingConfig::default(),
         &Default::default(),
     ));
@@ -1542,6 +1542,16 @@ impl ObjectStore for FlakyStore {
 
     fn clear_ban<'a>(&'a self, ip: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
         self.inner.clear_ban(ip)
+    }
+
+    fn put_tempban_lift(
+        &self,
+        lift: mush_store::TempbanLift,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.put_tempban_lift(lift)
+    }
+    fn get_tempban_lifts(&self) -> BoxFuture<'_, Result<Vec<mush_store::TempbanLift>, StoreError>> {
+        self.inner.get_tempban_lifts()
     }
 
     fn token_put(&self, hash: String, rec: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>> {
@@ -2158,7 +2168,7 @@ async fn boot_npc_rig(
     mods.push(mushd::modules::npc_module(
         mushd::modules::npc_agent_adapter(),
     ));
-    mods.extend(mushd::modules::ruleset_modules(
+    mods.extend(mushd::modules::sheet_modules(
         &mush_core::OnboardingConfig::default(),
         &Default::default(),
     ));

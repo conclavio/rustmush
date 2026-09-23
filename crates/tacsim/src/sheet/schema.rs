@@ -27,8 +27,7 @@
 //! [`sheet_schema`] fallible and every constructor above it fallible with it,
 //! for an error no input can produce. [`SheetSchema`]'s fields are public, so
 //! the schema is written as the literal it is and the uniqueness the builder
-//! would have checked is checked by [`the builder accepts this
-//! schema`](tests) instead — at test time, over the same data.
+//! would have checked is checked by the `the_builder_accepts_this_schema` unit test instead — at test time, over the same data.
 
 use mush_ruleset::schema::{FieldDef, FieldType, SectionLayout, SheetSchema, SheetSection};
 use smol_str::SmolStr;

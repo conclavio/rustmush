@@ -340,7 +340,7 @@ impl CampaignStore {
     }
 
     /// **The muster ring** (E7 cut 10 fold, B1): keep this operation's newest
-    /// [`MAX_RETAINED_MUSTERS`] reports and return the cycles evicted, so the
+    /// [`crate::MAX_RETAINED_MUSTERS`] reports and return the cycles evicted, so the
     /// caller can `Del` their documents in the same bundle. Only
     /// [`CampaignStore::latest_muster`] reads the collection, so no history is
     /// needed at all.
@@ -713,7 +713,7 @@ pub(crate) fn put_crew(ctx: &mut Ctx<'_>, crew: CrewComplement) -> bool {
 }
 
 /// Install a muster report into RAM and queue its document, **evicting this
-/// operation's oldest reports past [`MAX_RETAINED_MUSTERS`] in the same bundle**
+/// operation's oldest reports past [`crate::MAX_RETAINED_MUSTERS`] in the same bundle**
 /// (E7 cut 10 fold, B1). A superseded report is `Del`eted by policy — it is not
 /// a stored set truncated on load, which §4 rule 1 forbids.
 pub(crate) fn put_muster(ctx: &mut Ctx<'_>, report: MusterReport) -> bool {

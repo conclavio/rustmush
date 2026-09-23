@@ -171,7 +171,7 @@ pub const FULL_SIGNATURE_PERMILLE: u32 = 1_000;
 /// The arena's own copy of `crate::definitions::sensor::SignatureRow`: the
 /// content decoder's type is `serde`-shaped and lives beside the pack loader,
 /// and the arena holds neither. Cut T's check-out copies the rows across
-/// ([`crate::match_::arena_def::sensor_profile`]).
+/// ([`crate::match_::sensor_profile`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignatureFactor {
     /// The ground the target stands on.
@@ -511,7 +511,7 @@ impl Jamming {
 /// doc 16 §9 items 4 and 5; 16c §5 Q17: *it knows its own receiver is degraded; it
 /// does not know who or from where*).
 ///
-/// It is the [`Jamming`] fold [`Arena::detections`] already made for the pass —
+/// It is the [`Jamming`] fold `Arena::detections` already made for the pass —
 /// the observer's own filter recovered out of it — read as two numbers about the
 /// platform's own machine and nothing else. There is **no source, no bearing, no
 /// team, no object number and no designator** on this type, so there is nothing

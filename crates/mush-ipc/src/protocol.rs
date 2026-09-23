@@ -1020,7 +1020,7 @@ pub enum ToGateway {
     /// the world loop never awaits a reply.
     CloseWebSessions {
         /// The characters whose structured connections to close (widened
-        /// `ObjId`s, as [`SendTarget::Char`](crate::SendTarget::Char)).
+        /// `ObjId`s, as [`SendTarget::Char`]).
         chars: Vec<u64>,
         /// A farewell event delivered to each structured connection just before
         /// it is dropped (the `@newpassword` "log in again" notice). `None`

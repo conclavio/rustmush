@@ -16,7 +16,7 @@
 //!
 //! [`bind`] is the one function that turns the second into
 //! the first, minting every reference through a scratch
-//! [`DefinitionRegistryBuilder`] with the same owner the module registers under,
+//! [`mush_core::DefinitionRegistryBuilder`] with the same owner the module registers under,
 //! so the refs it hands back are **the same values** `Registrar::definition`
 //! will produce. That is what lets the composition root build a
 //! `mush_tactics::UnitCatalog` and the module register the descriptors without
@@ -396,7 +396,7 @@ pub enum ComponentRole {
     /// pod is not something the unit *sees with*: `sensor_profile` reads a unit's
     /// first sensor mount, and a pod mounted as a sight would either shadow the
     /// sight or depend on which was authored first — which is exactly the *silent
-    /// `max`* [`crate::match_::arena_def::sensor_profile`]'s own note refuses. It
+    /// `max`* [`crate::match_::sensor_profile`]'s own note refuses. It
     /// names a sensor row all the same, because doc 16 §3.6 puts `jamming` on that
     /// row and this cut does not move it.
     Ecm {

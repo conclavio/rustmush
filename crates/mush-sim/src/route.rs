@@ -51,7 +51,7 @@ pub const MAX_LEGS: usize = 32;
 /// own; `mush-sim` already depends on `mush-economy` for [`crate::custody`].
 pub use mush_economy::CadenceId;
 
-/// One leg of a route **definition** — the planned counterpart of [`Leg`].
+/// One leg of a route **definition** — the planned counterpart of a live journey leg.
 ///
 /// `base_s` is the unladen traversal time at nominal thrust (1000 permille). The
 /// laden, drive-adjusted time is [`route_duration`]'s to compute; nothing here is a

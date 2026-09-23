@@ -231,10 +231,11 @@ async fn await_world(
 /// so naming it here is an error rather than a token quietly dropped.
 const CLI: CliSpec = CliSpec {
     program: "mushd",
-    usage: "Usage: mushd [--repl] [--check-config] [--config <path>]",
+    usage: "Usage: mushd [--repl] [--check-config] [--bootstrap-staff <account>] [--config <path>]",
     ipc: false,
     repl: true,
     check_config: true,
+    bootstrap_staff: true,
 };
 
 fn main() -> ExitCode {
@@ -290,6 +291,19 @@ fn main() -> ExitCode {
             &mush_server::boot::check_config(&config),
         )
         .exit_code();
+    }
+
+    if let Some(account) = &cli.bootstrap_staff {
+        return match mush_server::bootstrap::run(&config, account) {
+            Ok(()) => {
+                println!("Staff account {account} created and linked to God #1.");
+                ExitClass::Ok.exit_code()
+            }
+            Err(e) => {
+                eprintln!("mushd: {e}");
+                ExitClass::Failure.exit_code()
+            }
+        };
     }
 
     // Validate the integrity store before logging is allowed to create or

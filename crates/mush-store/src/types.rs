@@ -1328,6 +1328,50 @@ pub struct BanRec {
     pub reason: String,
 }
 
+/// One staff password-tempban pardon (`tempban-lift:{ip}`), retained for at
+/// most five minutes so every connection-owning guard can consume it once.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TempbanLift {
+    /// Canonical address; the guard applies its configured network prefix.
+    pub ip: std::net::IpAddr,
+    /// Unique request ID, distinct even for repeated lifts of one address.
+    pub id: String,
+    /// Unix milliseconds when staff issued the pardon (the failure cutoff).
+    pub issued_unix_ms: i64,
+    /// Unix seconds when this command expires.
+    pub expires_unix: i64,
+}
+
+impl TempbanLift {
+    /// Mint a staff pardon with a fresh request ID and five-minute retention.
+    ///
+    /// Repeated requests for the same address and Unix millisecond must have
+    /// distinct IDs so guards can consume each pardon exactly once.
+    #[must_use]
+    pub fn new(ip: std::net::IpAddr, issued_unix_ms: i64) -> Self {
+        Self {
+            ip,
+            id: format!("{:032x}", rand::random::<u128>()),
+            issued_unix_ms,
+            expires_unix: (issued_unix_ms / 1_000).saturating_add(300),
+        }
+    }
+
+    /// Reject malformed IDs or a retention interval longer than five minutes.
+    pub(crate) fn validate(&self) -> Result<(), StoreError> {
+        if self.id.is_empty()
+            || self.id.len() > 64
+            || self.issued_unix_ms < 0
+            || self.expires_unix <= self.issued_unix_ms / 1_000
+            || self.expires_unix > (self.issued_unix_ms / 1_000).saturating_add(300)
+        {
+            return Err(StoreError::Invalid("invalid tempban lift".into()));
+        }
+        Ok(())
+    }
+}
+
 /// Which authoritative phase caught a post-image readback mismatch.
 ///
 /// Both phases re-read every materialized replay target, but they mean
@@ -1653,6 +1697,25 @@ pub(crate) fn refuse_over_deep_object_doc(id: ObjId, doc: &str) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tempban_lift_requests_have_distinct_ids_with_the_same_cutoff() {
+        let ip = "192.0.2.7".parse().unwrap();
+        let issued_unix_ms = 1_700_000_000_123;
+        let first = TempbanLift::new(ip, issued_unix_ms);
+        let second = TempbanLift::new(ip, issued_unix_ms);
+
+        assert_ne!(first.id, second.id, "each staff request needs its own ID");
+        for lift in [first, second] {
+            assert_eq!(lift.ip, ip);
+            assert_eq!(lift.issued_unix_ms, issued_unix_ms);
+            assert_eq!(lift.expires_unix, 1_700_000_300);
+            assert_eq!(lift.id.len(), 32);
+            assert!(lift.id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            lift.validate()
+                .expect("new requests must be accepted by stores");
+        }
+    }
 
     /// A left-nested `&` chain `depth` [`mush_core::LockExpr`] nodes tall —
     /// the shape `@channel/perm <chan>=join=#1&#1&…` builds, and the one

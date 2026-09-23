@@ -11,10 +11,10 @@
 //!
 //! This module is both halves of the marker:
 //!
-//! * [`check_out`] writes `deployed { match, arena, snapshot }` onto the unit's
+//! * [`crate::custody::check_out`] writes `deployed { match, arena, snapshot }` onto the unit's
 //!   `unit:<obj>` document in **one** write, and publishes the unit into
 //!   [`mush_sim::deployed`], the world-side index every admission site reads.
-//! * [`check_in`] takes it back: one [`UnitMutationPlan`] of whatever the arena
+//! * [`crate::custody::check_in`] takes it back: one [`UnitMutationPlan`] of whatever the arena
 //!   returned through [`crate::unit::apply`], or — on `Void` — the check-out
 //!   snapshot restored and **no arena-derived cell committed at all**; then the
 //!   marker is cleared, in the same single write.

@@ -16,7 +16,7 @@
 //!
 //! ## What this module builds, and what it only drives
 //!
-//! Cut 8 **defines**: [`DomainClock::Pulse`](crate::data::DomainClock::Pulse)
+//! Cut 8 **defines**: [`DomainClock::Pulse`]
 //! (in `data.rs`), the production [`SimDomainClockProvider`], the
 //! [`StandingOrder`] family, the [`DomainTickCommit`] family, the `domain_tick`
 //! resolution action, the `domaintick` schedule source, and the boundary facts

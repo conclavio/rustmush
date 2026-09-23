@@ -1164,7 +1164,7 @@ impl SpatialState {
     }
 
     /// Advance a unit's control epoch (a control change); returns the new value.
-    /// Callers persist it via [`persist_control_gen`]. Monotonic across reboot.
+    /// Callers persist it via `persist_control_gen`. Monotonic across reboot.
     /// Refusal leaves the current epoch unchanged.
     pub fn bump_control_gen(&mut self, unit: ObjId) -> Result<u64, SpatialCounterError> {
         let next = self.next_control_generation(unit)?;

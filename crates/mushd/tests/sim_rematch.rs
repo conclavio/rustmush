@@ -35,6 +35,8 @@
 
 mod support;
 
+use support::{STEP_TIMEOUT, wait_until};
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -142,7 +144,7 @@ fn module_list(
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(llm)));
     mods.push(modules::npc_module(modules::npc_agent_adapter()));
-    mods.extend(modules::ruleset_modules(onboarding, &Default::default()));
+    mods.extend(modules::sheet_modules(onboarding, &Default::default()));
     mods.push(modules::tacsim_module(tacsim_config()));
     mods.push(modules::content_module_with(true, true).expect("the content module composes"));
     mods
@@ -335,16 +337,18 @@ async fn ask_whole(term: &mut Term, line: &str) -> String {
 
 /// A read repeated until its answer carries `needle`.
 async fn poll_whole(term: &mut Term, line: &str, needle: &str) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let seen = ask_whole(term, line).await;
-        if seen.contains(needle) {
-            return seen;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("`{line}` never said `{needle}`")
+    let mut seen = String::new();
+    wait_until(
+        STEP_TIMEOUT,
+        &format!("`{line}` to say `{needle}`"),
+        async || {
+            seen = ask_whole(term, line).await;
+            seen.contains(needle)
+        },
+    )
+    .await;
+    seen
 }
-
 /// One object's dbref, out of an `@find` listing.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -473,27 +477,41 @@ async fn back_to_the_lobby(term: &mut Term) {
 /// Bring power up, waiting for the arena to say it is online.
 async fn power_up(term: &mut Term) {
     say(term, "STARTUP", "Startup sequence").await;
-    poll_whole(term, "STATUS", "power online").await;
+    wait_until(STEP_TIMEOUT, "the tank to come online", async || {
+        ask(term, "STATUS", "power").await.contains("power online")
+    })
+    .await;
 }
-
 /// Wait until `CONTACTS` has something in it, and answer its opaque id.
 async fn wait_for_contact(term: &mut Term) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line("CONTACTS").await;
-        if term
-            .expect_one_of_after(mark, &["bearing", "No contacts."])
-            .await
-            == 0
-            && let Some(id) = designator_of(&strip_ansi(&term.seen[mark..]))
-        {
-            return id;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    panic!("nothing was ever detected");
+    let mut contact = None;
+    wait_until(
+        STEP_TIMEOUT,
+        "the sensor to acquire a contact",
+        async || {
+            let mark = term.mark();
+            term.send_line("CONTACTS").await;
+            if term
+                .expect_one_of_after(
+                    mark,
+                    &["(rel ", "No contacts.", COMMIT_PENDING, CONTROL_UNKNOWN],
+                )
+                .await
+                == 0
+            {
+                let seen = strip_ansi(&term.seen[mark..]);
+                // Keep the classified callsign: a provisional X-number may be
+                // renamed during subsequent status/weapon assertions.
+                if seen.contains("blue") || seen.contains("red") {
+                    contact = designator_of(&seen).filter(|id| !id.starts_with('X'));
+                }
+            }
+            contact.is_some()
+        },
+    )
+    .await;
+    contact.expect("waited for a contact")
 }
-
 /// Shoot the lock until the match ends. Answers how many rounds went out.
 ///
 /// The lock is waited for first: the cockpit's `FIRE` pre-check reads the **last
@@ -776,16 +794,6 @@ async fn a_restart_mid_match_through_the_lobby_leaves_no_body_in_a_pod() {
     say(&mut ada, "SIM ABORT", "aborts match").await;
 }
 
-/// Whether one unit's `assignment:<unit>` document carries a `cockpit` seat, as
-/// the store holds it.
-async fn holds_a_cockpit(store: &Arc<dyn ObjectStore>, unit: u32) -> bool {
-    store
-        .module_json_get("sim", &format!("assignment:{unit}"))
-        .await
-        .expect("the store read")
-        .is_some_and(|document| document.to_string().contains("cockpit"))
-}
-
 /// `@unit/show <unit>`, repeated until `settled` is happy with the listing.
 ///
 /// The boot reset happens inside `boot_matches`, before the front door serves a
@@ -801,14 +809,16 @@ async fn poll_unit_show(
     settled: impl Fn(&str) -> bool,
 ) -> String {
     let mut seen = String::new();
-    for _ in 0..RETRY_BUDGET {
-        seen = ask_whole(god, &format!("@unit/show #{unit}")).await;
-        if settled(&seen) {
-            return seen;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("{who}'s record never settled after the restart:\n{seen}")
+    wait_until(
+        STEP_TIMEOUT,
+        &format!("{who}'s record to settle after restart"),
+        async || {
+            seen = ask_whole(god, &format!("@unit/show #{unit}")).await;
+            settled(&seen)
+        },
+    )
+    .await;
+    seen
 }
 
 /// The same read, **waited for** — `arena_custody.rs`'s `until(..)` in the shape
@@ -824,14 +834,10 @@ async fn poll_unit_show(
 /// warm `login` beats all of that, and an unwaited assertion fails against
 /// correct code.
 async fn wait_for_cockpit(store: &Arc<dyn ObjectStore>, unit: u32, want: bool, who: &str) {
-    for _ in 0..100 {
-        if holds_a_cockpit(store, unit).await == want {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!(
-        "{who}'s `assignment:{unit}` document never {} a cockpit billet",
-        if want { "carried" } else { "gave up" }
-    );
+    wait_until(
+        STEP_TIMEOUT,
+        &format!("{who}'s cockpit billet to be held={want}"),
+        async || support::holds_a_cockpit(store, unit).await == want,
+    )
+    .await;
 }

@@ -138,7 +138,7 @@ pub struct Frame {
     /// later, which is the rule every other refusal on this surface follows.
     pub wreck: bool,
     /// **The tank cannot move** (16b cut D.2, `B-03`):
-    /// [`crate::arena::state::UnitLimits::motion_disabled`], a destroyed engine or
+    /// [`crate::arena::state::MotionLimits::motion_disabled`], a destroyed engine or
     /// a biped's second leg.
     ///
     /// The pilot's own tank, for the reason [`Frame::wreck`] is.
@@ -1783,7 +1783,7 @@ impl Arena {
     /// The key is `(the platform told, the target, the section)`: the victim's
     /// own key is `(victim, victim, section)`, because his tank is both. A `true`
     /// writes the entry, so the next round inside
-    /// [`SPENT_NOTICE_MS`](crate::arena::state::SPENT_NOTICE_MS) of arena time is
+    /// [`SPENT_NOTICE_MS`] of arena time is
     /// silent.
     ///
     /// It runs **whether or not anybody is seated on the platform and whether or
@@ -2055,7 +2055,7 @@ impl Arena {
     /// Q.2), the companion of [`Arena::frame_contacts`] and the other half of
     /// [`Frame::scan_tables`].
     ///
-    /// The two are built by one walk ([`Arena::frame_scope`]); this is the
+    /// The two are built by one walk (`Arena::frame_scope`); this is the
     /// caller that wants only the tables, exactly as `frame_contacts` is the one
     /// that wants only the rows.
     #[must_use]

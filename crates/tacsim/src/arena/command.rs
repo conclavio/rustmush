@@ -2,7 +2,7 @@
 //! §6 "Deliberation": *event-driven with a floor of `command.deliberate_min_ms`*).
 //!
 //! Deliberation is the world's: the request goes through the world task's own LLM
-//! re-entry seam, the reply comes back as an ordinary [`Intent`], and the arena
+//! re-entry seam, the reply comes back as an ordinary [`crate::arena::Intent`], and the arena
 //! never waits for either (doc 16 §6 "Provider failure": *the pipeline's retries,
 //! the breaker and the fallback never block a pulse*). But the **trigger** is the
 //! arena's, because doc 16 §6 puts it on *the commander's contact set*, and a
@@ -194,7 +194,7 @@ impl Arena {
     }
 
     /// **The squads with something new to decide about** — taken once per pulse by
-    /// [`crate::arena::step::Arena::step`] and reported on its output.
+    /// [`crate::arena::Arena::step`] and reported on its output.
     ///
     /// The cost is one pass over the squads, and for each of them **at most one
     /// counting pass** over the contacts its commander already holds — the same

@@ -38,6 +38,7 @@ const CLI: CliSpec = CliSpec {
     ipc: false,
     repl: false,
     check_config: true,
+    bootstrap_staff: false,
 };
 
 fn main() -> ExitCode {

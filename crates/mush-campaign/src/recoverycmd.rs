@@ -8,7 +8,7 @@
 //!
 //! # Staff are never the gate (Q7A(f))
 //!
-//! The **tick** grants. [`sweep`] is a fourth arm on cut 9's ONE
+//! The **tick** grants. `sweep` is a fourth arm on cut 9's ONE
 //! `campaign.operations` Coarse tick, with its own [`crate::recovery::MAX_RECOVERY_PER_FIRE`]
 //! budget and its own rotation cursor, so it can never starve the settlement lane.
 //! It stages **no authoritative submission**, so the tick-cadence rule cannot bind
@@ -417,12 +417,12 @@ fn close_grant(ctx: &mut Ctx<'_>, grant: &RecoveryGrant, now: i64) {
 ///
 /// **`Held` split in two** (independent verify fold, C10/B3; owner decision F5(a)).
 /// It used to carry all eight reasons a grant did not happen, three of which are
-/// facts about **one applicant** and not about the provider — and [`sweep`] treated
+/// facts about **one applicant** and not about the provider — and `sweep` treated
 /// every one of them as provider-wide: it paged `recovery:provider` with a
 /// recommendation (*"Add a hull the provider owns … or fund its pool account"*) that
 /// fixes none of the three, and then `break`, so **one applicant the provider could
 /// not pay stopped every other grant in the queue**. The rotation that should have
-/// contained the damage was broken independently (see [`sweep`]), so a blocker
+/// contained the damage was broken independently (see `sweep`), so a blocker
 /// holding the highest object id was re-visited first on every fire, for ever.
 /// Applying costs nothing and is not eligibility-gated, so it was reachable on
 /// purpose.

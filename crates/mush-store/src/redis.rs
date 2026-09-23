@@ -589,7 +589,7 @@ enum NonJsonModuleKey {
     Gone,
 }
 
-/// Classify a module key after `JSON.GET` has already reported wrong type.
+/// Classify a module key after a JSON read returned no document or wrong type.
 /// Only a positively identified stream may be omitted from the JSON listing;
 /// every other live Redis type is authoritative corruption.
 fn classify_non_json_module_key(
@@ -668,9 +668,9 @@ async fn json_doc_text(client: &Client, key: &str) -> Result<Option<String>, Sto
 const MGET_PAGE: usize = 256;
 
 /// [`json_doc_text`] for a page of keys in one round trip: `JSON.MGET keys… $`,
-/// each answer the root document's text or `None` for a key that is gone.
-/// A non-JSON key in the page is the wrong-type error the caller resolves
-/// per key.
+/// each answer the root document's text or `None` for a key that is gone or
+/// holds a non-JSON type. The caller must classify absent answers per key:
+/// RedisJSON's `JSON.MGET` deliberately returns null for wrong-type keys.
 async fn json_docs_text(
     client: &Client,
     keys: &[String],
@@ -714,20 +714,20 @@ async fn json_doc_text_classified(
     // skipping it; otherwise corrupt authoritative state could silently
     // disappear during boot.
     match json_doc_text(client, full_key).await {
-        Ok(text) => Ok(text),
-        Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {
-            let redis_type: String = client.r#type(full_key).await?;
-            match classify_non_json_module_key(full_key, &redis_type)? {
-                NonJsonModuleKey::Stream => {
-                    tracing::debug!(key = full_key, "skipping module stream key");
-                    Ok(None)
-                }
-                // The key may legitimately expire or be deleted between
-                // SCAN/JSON.GET/TYPE. There is no state left to hydrate.
-                NonJsonModuleKey::Gone => Ok(None),
-            }
+        Ok(Some(text)) => return Ok(Some(text)),
+        Ok(None) => {}
+        Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {}
+        Err(e) => return Err(e),
+    }
+    let redis_type: String = client.r#type(full_key).await?;
+    match classify_non_json_module_key(full_key, &redis_type)? {
+        NonJsonModuleKey::Stream => {
+            tracing::debug!(key = full_key, "skipping module stream key");
+            Ok(None)
         }
-        Err(e) => Err(e),
+        // The key may legitimately expire or be deleted between
+        // SCAN/JSON.GET/TYPE. There is no state left to hydrate.
+        NonJsonModuleKey::Gone => Ok(None),
     }
 }
 
@@ -1312,6 +1312,7 @@ impl RedisStore {
             "obj:*",
             "account:*",
             "ban:*",
+            "tempban-lift:*",
             "token:*",
             "discord:*",
             "meta:*",
@@ -2891,6 +2892,30 @@ impl ObjectStore for RedisStore {
         })
     }
 
+    fn create_first_account(&self, rec: AccountRec) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            if rec.name.is_empty() {
+                return Err(StoreError::Invalid("empty account name".into()));
+            }
+            // SCAN and JSON.SET execute without interleaving in this script,
+            // including ordinary create_account calls from another process.
+            // Inspect keys, not decoded records: corrupt accounts also block
+            // taking ownership of God. This is a one-time offline operation.
+            let created: i64 = self
+                .client
+                .eval(
+                    include_str!("lua/create_first_account.lua"),
+                    vec![account_key(&rec.name)],
+                    vec![serde_json::to_string(&rec)?],
+                )
+                .await?;
+            if created == 0 {
+                return Err(StoreError::AccountExists);
+            }
+            Ok(())
+        })
+    }
+
     fn get_account<'a>(
         &'a self,
         name: &'a str,
@@ -3160,6 +3185,56 @@ impl ObjectStore for RedisStore {
         Box::pin(async move {
             let removed: i64 = self.client.del(ban_key(ip)).await?;
             Ok(removed > 0)
+        })
+    }
+
+    fn put_tempban_lift(&self, lift: crate::TempbanLift) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            lift.validate()?;
+            if lift.expires_unix <= now_unix() {
+                return Err(StoreError::Invalid("tempban lift already expired".into()));
+            }
+            let key = format!("tempban-lift:{}", lift.ip);
+            let doc = serde_json::to_string(&lift)?;
+            let _: () = self
+                .client
+                .set(
+                    key,
+                    doc,
+                    Some(Expiration::EXAT(lift.expires_unix)),
+                    None,
+                    false,
+                )
+                .await?;
+            Ok(())
+        })
+    }
+
+    fn get_tempban_lifts(&self) -> BoxFuture<'_, Result<Vec<crate::TempbanLift>, StoreError>> {
+        Box::pin(async move {
+            let mut keys = self
+                .client
+                .scan_buffered("tempban-lift:*", Some(SCAN_PAGE), None);
+            let mut seen = std::collections::BTreeSet::new();
+            while let Some(key) = keys.try_next().await? {
+                if let Some(key) = key.as_str() {
+                    seen.insert(key.to_owned());
+                }
+                if seen.len() > 4_096 {
+                    return Err(StoreError::Invalid("too many pending tempban lifts".into()));
+                }
+            }
+            let mut out = Vec::with_capacity(seen.len());
+            for key in seen {
+                let doc: Option<String> = self.client.get(key.as_str()).await?;
+                let Some(doc) = doc else { continue };
+                let lift: crate::TempbanLift = serde_json::from_str(&doc)?;
+                lift.validate()?;
+                if lift.expires_unix > now_unix() {
+                    out.push(lift);
+                }
+            }
+            Ok(out)
         })
     }
 
@@ -3439,12 +3514,20 @@ impl ObjectStore for RedisStore {
             let mut out = ModuleDocs::default();
             // J4: the fetch is pipelined — one JSON.MGET per page of keys
             // instead of one JSON.GET per key (the fetch cost of every
-            // module's boot). A page that trips on a non-JSON key (a stream,
-            // or a type-clobbered key) falls back to the per-key path, which
-            // classifies each key positively before skipping it.
+            // module's boot). A null answer may be a stream, a gone key, or a
+            // type-clobbered document; classify it per key before skipping it.
+            // Servers that report wrong type for the whole page use the same
+            // per-key path for every answer.
             for page in keys.chunks(MGET_PAGE) {
                 let texts = match json_docs_text(&self.client, page).await {
-                    Ok(texts) => texts,
+                    Ok(mut texts) => {
+                        for (full_key, text) in page.iter().zip(&mut texts) {
+                            if text.is_none() {
+                                *text = json_doc_text_classified(&self.client, full_key).await?;
+                            }
+                        }
+                        texts
+                    }
                     Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {
                         let mut texts = Vec::with_capacity(page.len());
                         for full_key in page {
@@ -3455,7 +3538,7 @@ impl ObjectStore for RedisStore {
                     Err(e) => return Err(e),
                 };
                 for (full_key, text) in page.iter().zip(texts) {
-                    let Some(text) = text else { continue }; // gone between SCAN and GET
+                    let Some(text) = text else { continue }; // proven stream or gone key
                     let Some(key) = full_key.strip_prefix(&prefix) else {
                         continue; // unreachable under the SCAN pattern
                     };

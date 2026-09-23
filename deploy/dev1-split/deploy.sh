@@ -26,30 +26,10 @@ INSTANCE_DIR="$SELF/../instance"          # the shared template + render.sh
 
 echo "== rustmush dev1 SPLIT (hot-restart) deploy =="
 
-# 0. Preflight: the EMBEDDED WEB CLIENT (16b cut Q.5).
-#
-#    `web/dist` is git-ignored, so `git archive HEAD | tar -x` never ships it;
-#    `crates/mush-net-web/build.rs` embeds whatever is there and errors only
-#    when `web/dist/index.html` is MISSING. A tree that still has last
-#    deploy's bundle therefore builds clean, starts clean, and serves the OLD
-#    client — the one failure mode of this recipe that leaves no trace
-#    anywhere. Refuse it here, before anything is installed, started or
-#    reloaded, so a stale SPA is a failed deploy and not a mystery.
-#
-#    The bundle may be built on this box or shipped from the dev box (see
-#    ../README.md); either way it has to be NEWER than web/src.
-WEB="$BUILD/web"
-DIST="$WEB/dist/index.html"
-if [ ! -f "$DIST" ]; then
-  echo "FATAL: $DIST is missing — build the web client first: cd $WEB && npm ci && npm run build" >&2
-  exit 1
-fi
-STALE="$(find "$WEB/src" -type f -newer "$DIST" -print -quit 2>/dev/null || true)"
-if [ -n "$STALE" ]; then
-  echo "FATAL: $DIST is older than $STALE — rebuild the web client: cd $WEB && npm ci && npm run build" >&2
-  exit 1
-fi
-echo "web bundle: $DIST is newer than $WEB/src"
+# 0. Refuse a stale embedded client by source commit, including rollbacks.
+# npm run build stamps web/dist/.commit; git archive carries .source-commit.
+# The shared guard runs before any installed configuration or service changes.
+bash "$BUILD/scripts/check-web-bundle.sh" "$BUILD"
 
 # 1. Service user (shared across mush instances).
 if ! id mush >/dev/null 2>&1; then

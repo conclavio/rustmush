@@ -659,8 +659,7 @@ async fn a_store_that_cannot_answer_is_transient_not_a_dead_session() {
     assert!(st.auth_failed.is_empty(), "and never the tempban counter");
 }
 
-/// The refused-token cool-off: a 429 before anything is looked up, and no
-/// connection slot spent on it. The route must not confuse this with the
+/// The refused-token cool-off: browser-visible 4429 before token lookup. The route must not confuse this with the
 /// tempban (403) or with a dead token (4401) — it is the one genuinely
 /// transient refusal of the three, so the client is right to back off.
 #[tokio::test]
@@ -673,14 +672,17 @@ async fn ws_honours_the_refused_token_cooloff_without_touching_the_token() {
     let addr = spawn_server(hooks.clone(), test_config()).await;
 
     // Even a PERFECTLY GOOD token is refused while the cool-off runs.
-    let err = connect_ws(addr, "char=7").await.unwrap_err();
-    assert_http_status(err, 429);
+    let (mut ws, _) = connect_ws(addr, "char=7").await.expect("cool-off upgrades");
+    let (code, reason) = recv_close(&mut ws).await;
+    assert_eq!(code, 4429);
+    assert_eq!(reason, mush_net_web::TOKEN_COOLOFF);
+    hooks
+        .wait_for("cool-off slot released", |st| st.live_conns == 0)
+        .await;
     let st = hooks.state();
     assert!(st.connects.is_empty());
-    assert!(
-        st.conn_opens.is_empty(),
-        "refused before a connection slot is claimed"
-    );
+    assert_eq!(st.conn_opens.len(), 1, "the upgrade is bounded by a slot");
+    assert_eq!(st.token_checks, 0, "cool-off never queries the token store");
     assert!(
         st.token_refused.is_empty(),
         "a refusal the cool-off itself caused must not extend the cool-off"

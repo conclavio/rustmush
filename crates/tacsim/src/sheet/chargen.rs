@@ -16,8 +16,8 @@
 //! # The budget
 //!
 //! One pool, [`RATING_POINTS`] points, spent one-for-one on dots above the free
-//! [`RATING_MIN`](super::schema::RATING_MIN) each rating starts at, capped at
-//! [`RATING_MAX`](super::schema::RATING_MAX). `5/2/1` and `3/3/3` both spend it
+//! [`RATING_MIN`] each rating starts at, capped at
+//! [`RATING_MAX`]. `5/2/1` and `3/3/3` both spend it
 //! exactly; `5/5/1` is refused at the keystroke, not at submit.
 //!
 //! [`ApprovalState::Unapproved`]: mush_ruleset::ApprovalState::Unapproved
@@ -99,7 +99,7 @@ impl TacsimChargen {
 }
 
 /// `name` and `callsign` must both carry something: the callsign is how
-/// [`agent_profile`](super::agent_profile) names a pilot to the NPC layer, and a
+/// [`super::agent::agent_profile`] names a pilot to the NPC layer, and a
 /// filed sheet with a blank one is a bug report waiting to be written. (The
 /// cockpit does not print it — 16b cut F.4 corrected this comment and the
 /// `help chargen` sentence that repeated it.)

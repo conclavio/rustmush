@@ -40,7 +40,7 @@ fn region() -> Pack {
             "checkpoint.gate": { "kind": "checkpoint", "def": {
                 "region": "region.town", "name": "The Gate", "point": [150, 10, 0] } },
             "connection.road": { "kind": "connection", "def": {
-                "region": "region.town", "name": "The Road", "kind": "road",
+                "region": "region.town", "name": "The Road", "kind": "journey",
                 "from": { "neighborhood": "neighborhood.block", "point": [30, 30, 0] },
                 "to": { "neighborhood": "neighborhood.far", "point": [300, 300, 0] },
                 "direction": "both", "modes": ["foot"], "corridor": [[30, 30, 0], [300, 300, 0]] } }

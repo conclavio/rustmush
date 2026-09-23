@@ -2,8 +2,8 @@
 //! against a REAL booted `mush-server`.
 //!
 //! A minimal fake gateway completes the boundary handshake, attaches a
-//! connection, then STOPS DRAINING the server->gateway direction while flooding
-//! input that makes the world produce a large burst of output. The server's
+//! connection, then STOPS DRAINING the server->gateway direction while sending
+//! paced input that makes the world produce output. The server's
 //! socket send buffer fills, the writer's per-frame timeout ([`ipc].write_timeout_ms`)
 //! elapses on the blocked write, and the writer tears the boundary down by
 //! dropping its socket half — which the fake gateway observes as a clean EOF on
@@ -17,6 +17,7 @@
 //! gateway `restart_survival` suite — a teardown is just a boundary EOF.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use mush_config::config::Config;
@@ -24,6 +25,42 @@ use mush_core::GOD;
 use mush_ipc::{
     FrameReader, GatewayInput, GatewayRequest, ToGateway, ToServer, WireInbound, write_frame,
 };
+use tokio::sync::Notify;
+use tracing_subscriber::layer::SubscriberExt;
+
+const WRITE_TIMEOUT_MESSAGE: &str = "ipc write timed out; peer wedged, tearing down boundary";
+
+/// Observe the real writer's timeout before draining can relieve its pressure.
+/// This integration binary has one test, so its subscriber covers the booted
+/// server's runtime threads without modifying production instrumentation.
+struct WriteTimeoutObserver(Arc<Notify>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WriteTimeoutObserver {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().target() != "mush_server" {
+            return;
+        }
+        let mut visitor = TimeoutMessage(false);
+        event.record(&mut visitor);
+        if visitor.0 {
+            self.0.notify_one();
+        }
+    }
+}
+
+struct TimeoutMessage(bool);
+
+impl tracing::field::Visit for TimeoutMessage {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" && format!("{value:?}") == WRITE_TIMEOUT_MESSAGE {
+            self.0 = true;
+        }
+    }
+}
 
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("mush-ipcteardown-{tag}-{}", std::process::id()));
@@ -72,10 +109,27 @@ async fn boot_server() -> mush_ipc::IpcEndpoint {
 /// sees a clean EOF once the writer drops its socket half.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wedged_gateway_is_torn_down_by_write_timeout() {
+    let timed_out = Arc::new(Notify::new());
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(WriteTimeoutObserver(Arc::clone(&timed_out))),
+    )
+    .expect("install the test's write-timeout observer");
     let endpoint = boot_server().await;
-    let (reader, mut writer) = mush_ipc::connect(&endpoint)
-        .await
-        .expect("connect boundary");
+    #[cfg(unix)]
+    let mush_ipc::IpcEndpoint::Tcp(addr) = endpoint else {
+        panic!("the fixture binds a TCP boundary");
+    };
+    #[cfg(not(unix))]
+    let mush_ipc::IpcEndpoint::Tcp(addr) = endpoint;
+    let socket = tokio::net::TcpSocket::new_v4().expect("create fake gateway socket");
+    // Fix the peer's receive window before connect; Linux loopback autotuning
+    // can otherwise absorb the old finite flood without blocking any write.
+    socket
+        .set_recv_buffer_size(4096)
+        .expect("bound the fake gateway's receive buffer");
+    let stream = socket.connect(addr).await.expect("connect boundary");
+    stream.set_nodelay(true).expect("set TCP_NODELAY");
+    let (reader, mut writer) = stream.into_split();
     let mut frames = FrameReader::new(reader);
 
     // Handshake: the server greets with Hello first.
@@ -89,9 +143,9 @@ async fn wedged_gateway_is_torn_down_by_write_timeout() {
         "first frame is Hello"
     );
 
-    // Attach a connection playing God, then FLOOD input the world will answer
-    // with a large burst of output. We deliberately DO NOT read any of it, so
-    // the server's socket send buffer fills and the writer blocks on a write.
+    // Attach a connection playing God, then stop reading. A paced stream of
+    // large replies fills the kernel send buffer without racing to overflow
+    // the separate bounded frame queue (which is a different teardown path).
     write_frame(
         &mut writer,
         &ToServer::Inbound(WireInbound::ConnUp {
@@ -103,39 +157,63 @@ async fn wedged_gateway_is_torn_down_by_write_timeout() {
     )
     .await
     .expect("send ConnUp");
-    for sequence in 0..4000u64 {
-        let request = GatewayRequest::new(
-            7,
-            sequence,
-            GatewayInput::Cmd {
-                conn: 1,
-                actor: GOD,
-                line: "look".to_string(),
-            },
-        );
-        write_frame(&mut writer, &ToServer::Input(request.clone()))
-            .await
-            .expect("send Cmd");
-        write_frame(
-            &mut writer,
-            &ToServer::GatewayReleased {
-                request: request.uid,
-            },
-        )
-        .await
-        .expect("release Cmd");
-    }
+    let teardown_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    tokio::time::timeout_at(teardown_deadline, async {
+        let timeout_notification = timed_out.notified();
+        tokio::pin!(timeout_notification);
+        tokio::select! {
+            biased;
+            () = &mut timeout_notification => {}
+            () = async {
+                let line = format!("say {}", "w".repeat(6000));
+                let mut pace = tokio::time::interval(Duration::from_millis(10));
+                pace.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                for sequence in 0.. {
+                    // Cadence bounds the outstanding frame count while the
+                    // blocked writer's real one-second timeout elapses.
+                    pace.tick().await;
+                    let request = GatewayRequest::new(
+                        7,
+                        sequence,
+                        GatewayInput::Cmd {
+                            conn: 1,
+                            actor: GOD,
+                            line: line.clone(),
+                        },
+                    );
+                    if write_frame(&mut writer, &ToServer::Input(request.clone()))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    if write_frame(
+                        &mut writer,
+                        &ToServer::GatewayReleased { request: request.uid },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+            } => {
+                // A closed peer can end the producer as the timeout event is
+                // published. A transport error alone is never success: await
+                // the same notification without consuming its permit twice.
+                timeout_notification.await;
+            }
+        }
+    })
+    .await
+    .expect("a non-draining peer must trigger the real boundary write timeout");
 
-    // Give the writer's timeout (1s) time to elapse on the blocked write while we
-    // keep NOT reading, so draining does not unblock it.
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-
-    // Now drain: we read whatever the writer buffered before it wedged, then hit
+    // Only after the observed timeout, drain the writer's buffered frames to
     // EOF (`Ok(None)`) — the writer tore the boundary down by dropping its half.
     // Bound the drain so a regression (writer never tears down) fails fast rather
     // than hanging.
     let mut saw_deliver = false;
-    let torn_down = tokio::time::timeout(Duration::from_secs(20), async {
+    let torn_down = tokio::time::timeout_at(teardown_deadline, async {
         loop {
             match frames.read::<ToGateway>().await {
                 Ok(Some(ToGateway::Deliver { .. })) => saw_deliver = true,

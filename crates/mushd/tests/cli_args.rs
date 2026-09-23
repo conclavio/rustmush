@@ -24,6 +24,23 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 
 const BIN: &str = env!("CARGO_BIN_EXE_mushd");
 
+#[test]
+fn bootstrap_refuses_a_throwaway_store_without_booting() {
+    let dir = scratch("bootstrap-memory");
+    let config = throwaway_config(&dir);
+    assert_refused(
+        &[
+            "--config",
+            config.to_str().unwrap(),
+            "--bootstrap-staff",
+            "keeper",
+        ],
+        "requires the Redis store",
+    );
+    assert!(!dir.join("data/quarantine").exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("mush-cliargs-mushd-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -32,7 +49,7 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 /// A config that WOULD boot: everything in memory, every listener ephemeral,
-/// no rulesets. Its job is to make a regression loud — revert the parser and
+/// with the simulator disabled. Its job is to make a regression loud — revert the parser and
 /// these lines start a server that runs until the timeout kills it, instead of
 /// exiting for the wrong reason and accidentally passing.
 fn throwaway_config(dir: &Path) -> PathBuf {
@@ -51,8 +68,6 @@ fn throwaway_config(dir: &Path) -> PathBuf {
         "listen = \"127.0.0.1:0\"".to_string(),
         "[web]".to_string(),
         "listen = \"127.0.0.1:0\"".to_string(),
-        "[rulesets]".to_string(),
-        "enabled = []".to_string(),
     ]
     .join("\n");
     std::fs::write(&path, text).expect("write config");

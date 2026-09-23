@@ -75,7 +75,7 @@
 //! `SIM UNIT` lets a pilot field a biped or a laser tank out of one of these
 //! eight pods, which means a roster tank can be standing here as something its
 //! pack did not author — and a plan cannot turn a biped back into a tank, for
-//! the reason above. So [`reset_one`] asks one question before the diff: is the
+//! the reason above. So `reset_one` asks one question before the diff: is the
 //! held unit's schema the **authored** one? If it is not, the tank is
 //! re-instantiated through [`mush_tactics::module::refit_unit`] — the one seam
 //! that can — and the compare-first plan then runs exactly as before and finds

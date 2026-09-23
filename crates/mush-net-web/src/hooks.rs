@@ -316,23 +316,20 @@ pub trait WebHooks: Send + Sync {
     /// flushed store, a revoked account, an expired TTL) and is reconnecting
     /// on its own backoff. Counting that as a credential failure is what
     /// locked an operator out of SSH on 2026-09-20; see
-    /// `mush_config::ipguard`. Default: ignored.
+    /// `mush_config::ipguard`. Every embedder must supply this accounting.
     ///
     /// Only [`TokenVerdict::Refused`] feeds this. A
     /// [`TokenVerdict::Unavailable`] counts nothing at all: the store being
     /// down is the server's problem, and charging every reconnecting tab for
     /// it would arm a throttle precisely when recovery needs those
     /// reconnects.
-    fn token_refused(&self, _addr: IpAddr) {}
+    fn token_refused(&self, addr: IpAddr);
 
     /// Whether the address is inside a refused-token cool-off. Checked on
     /// every `/ws` upgrade *before* the token is looked up, so a probing
     /// client costs the store nothing. Never a ban: it does not affect
     /// [`is_ip_blocked`](Self::is_ip_blocked), the auth routes, or SSH.
-    /// Default: never throttled.
-    fn is_token_throttled(&self, _addr: IpAddr) -> bool {
-        false
-    }
+    fn is_token_throttled(&self, addr: IpAddr) -> bool;
 
     /// Claim a per-IP concurrent WS connection slot for a **freshly
     /// requested** upgrade, before it completes and before its token is

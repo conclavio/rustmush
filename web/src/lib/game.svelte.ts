@@ -273,6 +273,9 @@ export class GameApp {
       onStatus: (s) => {
         this.session.status = s;
       },
+      onTokenCooloff: () => {
+        this.scrollback.pushText("ev-sys ev-local", "Too many reconnects from this network; retrying in one minute.");
+      },
       onFullRehydrate: () => {
         // Resume gap outgrew the ring: the server fell back to a fresh
         // attach; fresh Room output follows and the hello-pass re-requested

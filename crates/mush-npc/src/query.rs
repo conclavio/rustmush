@@ -12,7 +12,6 @@
 //! pull another principal's informant reports. Reading intel does not mutate,
 //! so unlike `@mail` read this stays a query.
 //!
-//! [`cmd_intel`]: crate::module
 
 use mush_core::{ObjId, QueryHandler, World};
 use mush_faction::{FactionState, Principal};

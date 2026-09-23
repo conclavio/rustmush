@@ -15,7 +15,7 @@
 //! - **grant stage**: direct grants ∪ grants via the actor's active-membership
 //!   roles ∪ one-hop delegations — each checked for capability, scope containment
 //!   (depth-capped), validity window, and limit;
-//! - **policy stage**: [`AccessPolicy`] rules whose subject matches the actor;
+//! - **policy stage**: [`crate::AccessPolicy`] rules whose subject matches the actor;
 //! - a matching **Deny** always wins; an unresolvable registered predicate
 //!   **suppresses an Allow and satisfies a Deny** (fail-closed).
 //!

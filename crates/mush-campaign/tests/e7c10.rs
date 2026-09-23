@@ -1224,7 +1224,7 @@ fn e7c10_p2_no_legality_check_reads_a_seat_grant() {
         .expect("crates/")
         .to_path_buf();
     let mut offenders: Vec<String> = Vec::new();
-    let mut stack = vec![root];
+    let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -1241,10 +1241,17 @@ fn e7c10_p2_no_legality_check_reads_a_seat_grant() {
             if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
-            let name = path.to_string_lossy().replace('\\', "/");
-            if !name.contains("/src/") {
+            // Only `<crate>/src` counts: the checkout itself may live in a
+            // directory named `src`, which must not admit integration tests.
+            let relative = path.strip_prefix(&root).expect("within crates/");
+            if relative
+                .components()
+                .nth(1)
+                .is_none_or(|part| part.as_os_str() != "src")
+            {
                 continue;
             }
+            let name = relative.to_string_lossy().replace('\\', "/");
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             // A `SeatGrant` read anywhere but the campaign crate's own seat
             // lane would be a legality path reading workflow.

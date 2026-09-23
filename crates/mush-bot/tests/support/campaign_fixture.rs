@@ -279,6 +279,9 @@ impl SshHooks for Fixture {
         false
     }
     fn auth_failed(&self, _: IpAddr) {}
+    fn block_reason(&self, _: IpAddr) -> Option<mush_net_ssh::BlockReason> {
+        None
+    }
 }
 
 pub async fn serve(path: PathBuf) -> Result<()> {

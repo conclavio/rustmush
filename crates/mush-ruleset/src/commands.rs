@@ -12,7 +12,7 @@
 //!   panel feed, emitting the schema description + (staff-filtered) sheet data
 //!   as a `Panel` keyframe for the web sheet tab.
 //!
-//! It also claims the [`SHEET_ATTR_NS`](crate::store::SHEET_ATTR_NS)
+//! It also claims the [`SHEET_ATTR_NS`]
 //! attribute namespace so the core `@set` path cannot let players hand-edit
 //! `sheet:*` attributes behind the store's back (a conflict — another ruleset
 //! already protecting it — is fine and ignored).

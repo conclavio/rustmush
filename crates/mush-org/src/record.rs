@@ -157,7 +157,7 @@ pub struct OrgRole {
 }
 
 /// A capability + scope + optional limit a role confers — no grantee (the grantee
-/// is any member holding the role). Resolved lazily at [`crate::authorize`] time.
+/// is any member holding the role). Resolved lazily at [`crate::authorize()`] time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantTemplate {
     /// The capability conferred.

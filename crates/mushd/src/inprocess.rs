@@ -10,8 +10,8 @@
 //!
 //! The slow-client policing and link-dead reaping is the SHARED core in
 //! `mush-gateway`
-//! ([`transmit_and_police`](mush_gateway::delivery::transmit_and_police) and
-//! [`spawn_linkdead_reaper`](mush_gateway::delivery::spawn_linkdead_reaper)).
+//! ([`transmit_and_police`] and
+//! [`spawn_linkdead_reaper`]).
 //! This sink supplies only where a policed `ConnDown`/`SessionGone` is posted.
 //! It targets this loop's own inbound queue, reached through a weak sender: the
 //! world loop owns this sink for its whole lifetime, so a strong sender would

@@ -559,7 +559,7 @@ pub fn name_span(w: &World, id: ObjId) -> Span {
 /// - `GOING` husks never appear;
 /// - all of the above are waived when the looker controls the room/object
 ///   or holds the `SEE_HIDDEN` power;
-/// - an occupant the looker cannot [perceive](can_perceive) (the M11
+/// - an occupant the looker cannot [perceive](crate::module::can_perceive) (the M11
 ///   per-observer projection gate) is omitted — a free pass with no
 ///   `Perceive` hook registered, so the listing is unchanged for a game
 ///   without a concealment ruleset.

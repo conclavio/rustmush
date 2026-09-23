@@ -654,7 +654,7 @@ pub fn render_account_entry(
 /// Render an organization for a **listing** — the name iff the viewer may be told
 /// it exists, else "an organization" (08f §4.3 as amended, G3/D7).
 ///
-/// A thin named wrapper over [`render_principal`] and [`may_see_org`], not new
+/// A thin named wrapper over [`render_principal`] and `may_see_org`, not new
 /// logic: E6a step 1's fold D7 already built exactly that pair. The economy owns
 /// the *render*; a ruleset owns the *absence* — a hidden vendor's listings are
 /// simply not in its list for a non-member, never "No such".
@@ -718,7 +718,7 @@ pub(crate) fn hidden_text(ctx: &Ctx<'_>, resource: NamedResource) -> Option<&'st
 /// someone, and a payee who cannot see the reservation cannot tell whether they have
 /// been paid a promise or a story.
 ///
-/// It asks [`api::WorldAuth::acts_for`] — the *same* predicate that decides who may
+/// It asks `api::WorldAuth::acts_for` — the *same* predicate that decides who may
 /// capture — rather than an identity match (E4b1 verify fold, A2). An identity match
 /// is wrong in exactly the cases escrow is for: a hold made out to an **organization**
 /// was invisible to every person in it, and a hold made out to a **Thing** (a shop
@@ -757,7 +757,7 @@ pub fn may_view_hold(w: &World, actor: ObjId, id: HoldId) -> bool {
 /// party, or anyone who may view either of its two accounts (a landlord watching the
 /// credit side, a tenant watching the debit side).
 ///
-/// The party test is [`api::WorldAuth::acts_for`] and not an identity match (E6a
+/// The party test is `api::WorldAuth::acts_for` and not an identity match (E6a
 /// step 1 verify fold, D1) — the same A2 shape [`may_view_hold`] and the contract
 /// seams already use. An identity match was wrong in exactly the case E6a is for: an
 /// **organization** debtor was "a party" no person matched, so an officer holding
@@ -853,7 +853,7 @@ pub fn note_refusal(ctx: &mut Ctx<'_>, hidden: bool) {
 }
 
 /// Whether this resource renders as "No such …" for this actor — the predicate half
-/// of [`hidden_text`], for callers that are shaping a *message* rather than a refusal
+/// of `hidden_text`, for callers that are shaping a *message* rather than a refusal
 /// (E4b2 verify fold, A6).
 pub fn is_hidden(ctx: &Ctx<'_>, resource: NamedResource) -> bool {
     hidden_text(ctx, resource).is_some()

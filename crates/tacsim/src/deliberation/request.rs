@@ -29,7 +29,7 @@
 //! Every failure is *no order*, and no order is doc 16 §6's fallback: **the reflex
 //! doctrine, not idle**. A disabled `[llm]`, a missing route, a budget trip, an
 //! open breaker, a refusal, a malformed answer twice over — each ends as
-//! [`DeliberationReply::Refused`] with its word, the world says nothing to the
+//! [`crate::deliberation::DeliberationReply::Refused`] with its word, the world says nothing to the
 //! arena, and the squad keeps fighting on the machine cut N.1 built.
 
 use serde::{Deserialize, Serialize};
@@ -99,7 +99,7 @@ pub struct SquadBrief {
     /// Like [`SquadBrief::commander`] it **never reaches the prompt**:
     /// [`user_prompt`] does not print it, the forced tool still lists `ttl_ms`
     /// as required, and the only answer that can omit one is the JSON-in-text
-    /// fallback. It is a field rather than an argument to [`order_of`] because
+    /// fallback. It is a field rather than an argument to `order_of` because
     /// the brief is what crosses the world task's async seam — the default has
     /// to travel with the signal that produced it, or the reply would be
     /// finished under a floor from some other match.

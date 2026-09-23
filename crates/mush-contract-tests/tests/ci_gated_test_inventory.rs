@@ -12,8 +12,9 @@
 //! test is reachable from a job that supplies the backend**:
 //!
 //! - a test is **backend-gated** when its own body reads the `REDIS_URL`
-//!   environment variable, or the test carries `#[ignore]` — the two ways a
-//!   proof can skip itself under `cargo test --workspace`;
+//!   environment variable, carries `#[ignore]`, or reads an opt-in environment
+//!   flag (`RUN_*` / `*_RUN`) and returns early. Paid-provider opt-ins must
+//!   have an explicit exemption below; a named job alone does not enable them.
 //! - it is **covered** when `ci.yml` names the function verbatim, or (for an
 //!   integration target) names that whole target as `-p <pkg> --test <target>`.
 //!   A unit test under `src/` must be named verbatim: `-p <pkg> --lib` with a
@@ -57,11 +58,13 @@ struct DiscoveredTest {
     ignored: bool,
     /// The test's own body reads the live-backend variable.
     reads_live_backend: bool,
+    /// Explicit opt-in flags in an early-returning test body.
+    opt_in_flags: BTreeSet<String>,
 }
 
 impl DiscoveredTest {
-    const fn backend_gated(&self) -> bool {
-        self.ignored || self.reads_live_backend
+    fn backend_gated(&self) -> bool {
+        self.ignored || self.reads_live_backend || !self.opt_in_flags.is_empty()
     }
 
     /// `Some((package, target))` for `crates/<pkg>/tests/<target>.rs`.
@@ -75,6 +78,48 @@ impl DiscoveredTest {
         Some((package, target))
     }
 }
+
+/// Opt-in spelling is part of this source gate's contract. Knobs such as a
+/// duration or report path do not make a test optional.
+fn opt_in_flags(body: &str) -> BTreeSet<String> {
+    if !body
+        .lines()
+        .any(|line| line.trim_start().starts_with("return"))
+    {
+        return BTreeSet::new();
+    }
+    let needle = format!("env::var({}", '"');
+    body.split(&needle)
+        .skip(1)
+        .filter_map(|tail| tail.split_once('"').map(|(name, _)| name))
+        .filter(|name| name.starts_with("RUN_") || name.ends_with("_RUN"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Paid network calls require the operator's explicit opt-in. The cost report
+/// also runs under its exact CI filter with `TACSIM_LLM_COST_MOCK=1`; that
+/// exercises the report, not the live-provider exemption.
+const PAID_OPT_INS: &[(&str, &str, &str, &str)] = &[
+    (
+        "tacsim/tests/harness.rs",
+        "tacsim_harness_llm_cost_run",
+        "TACSIM_LLM_COST_RUN",
+        "Owner-funded cost measurement; CI uses the mock provider.",
+    ),
+    (
+        "mushd/tests/npc_smoke.rs",
+        "live_npc_dialogue_openrouter_smoke",
+        "RUN_LLM_SMOKE",
+        "Manual live-provider smoke; needs an operator-funded API key.",
+    ),
+    (
+        "mushd/tests/worldgen_smoke.rs",
+        "live_worldgen_openrouter_smoke",
+        "RUN_LLM_SMOKE",
+        "Manual live-provider smoke; needs an operator-funded API key.",
+    ),
+];
 
 fn collect_rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -169,6 +214,7 @@ fn scan_file(path: &Path, relative: &str, out: &mut Vec<DiscoveredTest>) {
             relative: relative.to_string(),
             ignored,
             reads_live_backend: body.contains(&needle),
+            opt_in_flags: opt_in_flags(&body),
         });
         index = end + 1;
     }
@@ -212,6 +258,25 @@ fn every_backend_gated_proof_is_named_by_a_ci_job() {
 
     let mut unowned: BTreeSet<String> = BTreeSet::new();
     for test in gated {
+        if !test.opt_in_flags.is_empty() {
+            for flag in &test.opt_in_flags {
+                if !PAID_OPT_INS
+                    .iter()
+                    .any(|(path, name, allowed_flag, reason)| {
+                        *path == test.relative
+                            && *name == test.name
+                            && *allowed_flag == flag
+                            && !reason.is_empty()
+                    })
+                {
+                    unowned.insert(format!(
+                        "{} ({}) requires {flag}: add explicit ownership/exemption",
+                        test.name, test.relative
+                    ));
+                }
+            }
+            continue;
+        }
         if workflow.contains(&test.name) {
             continue;
         }
@@ -229,6 +294,49 @@ fn every_backend_gated_proof_is_named_by_a_ci_job() {
          name each one (or its `-p <pkg> --test <target>`) in .github/workflows/ci.yml:\n  {}",
         unowned.into_iter().collect::<Vec<_>>().join("\n  ")
     );
+}
+
+#[test]
+fn paid_opt_in_exemptions_are_live_and_the_cost_report_has_a_mock_ci_run() {
+    let root = repo_root();
+    let tests = discovered_tests(&root);
+    for (path, name, flag, reason) in PAID_OPT_INS {
+        assert!(!reason.is_empty());
+        assert!(
+            tests.iter().any(|test| test.relative == *path
+                && test.name == *name
+                && test.opt_in_flags.contains(*flag)),
+            "stale paid-provider exemption: {path}::{name} ({flag})"
+        );
+    }
+    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+    let mock_step = workflow
+        .split("- name: The LLM cost report with a mock provider")
+        .nth(1)
+        .expect("the cost report has an explicit CI step")
+        .split("- name:")
+        .next()
+        .unwrap();
+    for needle in [
+        "TACSIM_LLM_COST_RUN: \"1\"",
+        "TACSIM_LLM_COST_MOCK: \"1\"",
+        "cargo test -p tacsim --test harness tacsim_harness_llm_cost_run -- --exact",
+    ] {
+        assert!(
+            mock_step.contains(needle),
+            "mock cost step is missing {needle}"
+        );
+    }
+    // A newly introduced opt-in cannot disappear merely because its test name
+    // has no `_gated` suffix, and a duration knob is not an opt-in.
+    assert_eq!(
+        opt_in_flags(&format!(
+            "if {} {{\n return;\n}}",
+            "std::env::var(\"RUN_NEW_PROVIDER\").is_err()"
+        )),
+        BTreeSet::from(["RUN_NEW_PROVIDER".to_string()])
+    );
+    assert!(opt_in_flags("std::env::var(\"TACSIM_UNITS\");\nreturn;").is_empty());
 }
 
 /// The companion half: the `*_gated` suffix stays the name a live-backend proof

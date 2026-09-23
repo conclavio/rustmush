@@ -2,7 +2,7 @@
 //! [`TypedCondition::Fact`](crate::TypedCondition::Fact) reaches the module that
 //! actually knows the answer.
 //!
-//! E4a shipped [`FactEval`](crate::FactEval), the pure engine's one-question
+//! E4a shipped [`FactEval`], the pure engine's one-question
 //! interface (`Option<bool>`, where `None` = unknown = unsatisfied). This is the
 //! **world-side** half: a wiring-frozen table of [`FactProvider`]s, each owning one
 //! `provider` namespace, and the [`WorldFacts`] bridge that turns an

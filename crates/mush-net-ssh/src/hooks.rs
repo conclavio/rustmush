@@ -191,10 +191,9 @@ pub trait SshHooks: Send + Sync {
     /// before it gives up) and reuses it on the welcome screen.
     ///
     /// Answering `None` for a blocked address is safe: the refusal is
-    /// unaffected, the client is simply told nothing. Default: `None`.
-    fn block_reason(&self, _addr: IpAddr) -> Option<BlockReason> {
-        None
-    }
+    /// unaffected, the client is simply told nothing. Every embedder must
+    /// explicitly choose how to explain the refusal.
+    fn block_reason(&self, addr: IpAddr) -> Option<BlockReason>;
 
     /// Count one failed credential check against the address.
     fn auth_failed(&self, addr: IpAddr);

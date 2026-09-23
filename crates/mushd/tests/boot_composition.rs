@@ -210,16 +210,9 @@ fn check_config_rejects_a_typod_receipt_policy() {
         "the refusal must name the offending value; got {stderr:?}"
     );
 
-    // ...and the config a box actually deploys passes, so the flag is usable
-    // as a gate rather than a thing that always says no.
-    //
-    // dev2's, not dev1's (16b cut F.5): dev1 renders its config from
-    // `deploy/dev1/instance.env` and has no committed `mushd.toml` to point at,
-    // and dev2 is both the box still shipping a hand-written file AND the box
-    // that runs THIS binary — dev1 is on the split pair. The rendered side of
-    // the same claim, over all three binaries, is CI's provisioning job and
-    // `crates/mush-server/tests/provisioning_smoke.rs`.
-    let deployed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/dev2/mushd.toml");
+    // The shipped example passes too. Every deployed instance now renders the
+    // shared template; provisioning_smoke covers that render over all binaries.
+    let deployed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mushd.toml.example");
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_mushd"))
         .args(["--check-config", "--config"])
         .arg(&deployed)

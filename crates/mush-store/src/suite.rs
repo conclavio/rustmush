@@ -198,6 +198,56 @@ pub async fn account_reserve_race(store: &dyn ObjectStore) {
     assert_eq!(stored.argon2_hash, expected, "winner's doc must be stored");
 }
 
+/// Two differently named bootstrap attempts cannot both take the first slot;
+/// an ordinary account also blocks bootstrap, but can join after bootstrap.
+pub async fn first_account_reserve_race(store: &dyn ObjectStore) {
+    let rec = |name: &str| AccountRec {
+        id: None,
+        name: name.into(),
+        argon2_hash: "test hash".into(),
+        created: now_unix(),
+        characters: vec![],
+        ssh_keys: vec![],
+        discord: None,
+    };
+    let (a, b) = futures::join!(
+        store.create_first_account(rec("first")),
+        store.create_first_account(rec("second"))
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    assert!(matches!(
+        if a.is_ok() { b } else { a },
+        Err(StoreError::AccountExists)
+    ));
+    assert_eq!(store.list_accounts().await.unwrap().len(), 1);
+    store.create_account(rec("ordinary")).await.unwrap();
+    assert!(matches!(
+        store.create_first_account(rec("third")).await,
+        Err(StoreError::AccountExists)
+    ));
+    assert_eq!(store.list_accounts().await.unwrap().len(), 2);
+}
+
+/// A normal registration on a fresh store prevents a later staff bootstrap.
+pub async fn ordinary_account_blocks_bootstrap(store: &dyn ObjectStore) {
+    let mut rec = AccountRec {
+        id: None,
+        name: "ordinary".into(),
+        argon2_hash: "test hash".into(),
+        created: now_unix(),
+        characters: vec![],
+        ssh_keys: vec![],
+        discord: None,
+    };
+    store.create_account(rec.clone()).await.unwrap();
+    rec.name = "keeper".into();
+    assert!(matches!(
+        store.create_first_account(rec).await,
+        Err(StoreError::AccountExists)
+    ));
+    assert!(store.get_account("keeper").await.unwrap().is_none());
+}
+
 /// Reserve → case-insensitive duplicate refused → get → link characters →
 /// list; unknown accounts behave.
 pub async fn account_lifecycle(store: &dyn ObjectStore) {
@@ -785,6 +835,45 @@ pub async fn ban_expiry(store: &dyn ObjectStore) {
     let bans = store.get_bans().await.expect("get_bans");
     assert_eq!(bans.len(), 1);
     assert_eq!(bans[0].ip, "1.2.3.4");
+}
+
+/// Lift requests expire, replace by address and remain visible to every reader;
+/// they cannot remove a persisted siteban.
+pub async fn tempban_lifts(store: &dyn ObjectStore) {
+    let now = now_unix();
+    let ip = "2001:db8::7".parse().unwrap();
+    store
+        .set_ban("2001:db8::7", None, "permanent")
+        .await
+        .unwrap();
+    let mut lift = crate::TempbanLift {
+        ip,
+        id: "one".into(),
+        issued_unix_ms: now * 1_000,
+        expires_unix: now + 300,
+    };
+    store.put_tempban_lift(lift.clone()).await.unwrap();
+    for _ in 0..3 {
+        assert_eq!(store.get_tempban_lifts().await.unwrap(), vec![lift.clone()]);
+    }
+    lift.id = "two".into();
+    store.put_tempban_lift(lift.clone()).await.unwrap();
+    assert_eq!(store.get_tempban_lifts().await.unwrap(), vec![lift.clone()]);
+    let newer = lift.clone();
+    lift.issued_unix_ms = (now - 10) * 1_000;
+    lift.expires_unix = now - 1;
+    assert!(store.put_tempban_lift(lift.clone()).await.is_err());
+    assert_eq!(
+        store.get_tempban_lifts().await.unwrap(),
+        vec![newer],
+        "an expired write cannot erase a newer pardon"
+    );
+    assert_eq!(store.get_bans().await.unwrap().len(), 1);
+    lift.expires_unix = now + 600;
+    assert!(
+        store.put_tempban_lift(lift).await.is_err(),
+        "retention must be bounded"
+    );
 }
 
 /// Fresh stores are stamped without running anything; version bumps run each
