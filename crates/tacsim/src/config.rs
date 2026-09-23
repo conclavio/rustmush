@@ -441,12 +441,15 @@ impl Default for TempoConfig {
     }
 }
 
-/// The bound on the arena's per-unit intent queue (**16b cut G**; doc 16 §3.1,
-/// pulse phase 2).
+/// The rate a seat's discrete orders are held to (**16b cut G**; doc 16 §3.1,
+/// pulse phase 2; a rate since **16b cut M.1**, `T-82`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntentsConfig {
-    /// The most discrete actions one unit may have queued at once. Continuous
-    /// controls are latest-wins and do not queue.
+    /// **The discrete orders one seat may give a unit per arena second; also the
+    /// size, per unit, of the world side's inbox and pre-pulse buffer** (16b cut
+    /// M.1, `T-82`). Counted in arena time, so the burst a pilot may send does
+    /// not depend on the tempo; the reflex controller's own orders are never
+    /// counted. Continuous controls are latest-wins and do not count.
     pub max_pending_per_unit: u32,
 }
 

@@ -1051,6 +1051,23 @@ struct Replay {
     rounds_left: u32,
     shots: u64,
     pulses: u32,
+    /// **16b cut M.1**: every `Refused` notice the red pilot was sent, as
+    /// `(arena ms of the pulse, order word, refusal)`.
+    refusals: Vec<(i64, String, Refusal)>,
+}
+
+/// **16b cut M.1**: the red pilot's `Refused` notices in one pulse's frames.
+fn red_refusals(out: &StepOutput, now_ms: i64, into: &mut Vec<(i64, String, Refusal)>) {
+    for (pilot, frame) in &out.frames {
+        if *pilot != RED_PILOT {
+            continue;
+        }
+        for notice in &frame.notices {
+            if let tacsim::arena::perception::FrameNotice::Refused { order, refusal, .. } = notice {
+                into.push((now_ms, order.to_string(), *refusal));
+            }
+        }
+    }
 }
 
 /// Drive `arena` through `script` at `cadence_ms` until `until_ms`, with the tempo
@@ -1074,6 +1091,10 @@ struct Replay {
 /// millisecond the script names. Everything after that (the flight time, the impact's
 /// own timestamp, the cycle) is a due event and is rate-independent by construction,
 /// which is the property under test.
+///
+/// **16b cut M.1**: each beat is its own zero-`dt` pulse, so a script may put two
+/// beats at one `t_ms` to mean two pulses inside one arena second. No script
+/// before that cut had two beats at one time, so none of theirs changed.
 fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) -> Replay {
     let mut bytes: Vec<u8> = Vec::new();
     let mut hashes: Vec<u64> = Vec::new();
@@ -1081,19 +1102,20 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
     let mut next = 0_usize;
     let mut pulses = 0_u32;
     let mut ended = false;
+    let mut refusals: Vec<(i64, String, Refusal)> = Vec::new();
     loop {
         arena.clock.pin_tempo_for_tests(Tempo::Quiet);
-        let mut intents: Vec<Intent> = Vec::new();
+        // 16b cut M.1 (`T-82`): each due beat in a zero-`dt` pulse of its own,
+        // so two beats at one `t_ms` are two pulses inside one arena second —
+        // the case a bound drained once a pulse cannot tell from a rate.
         while let Some(beat) = script.get(next) {
-            if beat.t_ms > arena.now_ms {
+            if ended || beat.t_ms > arena.now_ms {
                 break;
             }
-            intents.extend(beat.intents.iter().cloned());
             next += 1;
-        }
-        if !intents.is_empty() {
-            let out = arena.step(wall, &[] as &[Control], &intents);
+            let out = arena.step(wall, &[] as &[Control], &beat.intents);
             absorb(&out, &mut bytes);
+            red_refusals(&out, arena.now_ms, &mut refusals);
             hashes.extend(arena.substep_hashes.iter().copied());
             pulses += 1;
             ended = out.ended.is_some();
@@ -1104,6 +1126,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
         wall += cadence_ms;
         let out = arena.step(wall, &[] as &[Control], &[]);
         absorb(&out, &mut bytes);
+        red_refusals(&out, arena.now_ms, &mut refusals);
         hashes.extend(arena.substep_hashes.iter().copied());
         pulses += 1;
         if out.ended.is_some() || arena.now_ms >= until_ms {
@@ -1137,6 +1160,7 @@ fn replay(arena: &mut Arena, cadence_ms: i64, until_ms: i64, script: &[Beat]) ->
             .unwrap_or(0),
         shots: arena.next_shot_seq,
         pulses,
+        refusals,
     }
 }
 
@@ -1236,6 +1260,97 @@ fn one_scripted_lock_and_fire_at_three_cadences_is_one_shot_sequence() {
         assert_eq!(run.shots, first.shots);
         // And the cadence really did differ.
         assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+    }
+}
+
+/// **16b cut M.1** (`T-82`): the order bound is a rate in ARENA seconds, so it
+/// refuses the same orders at every cadence.
+///
+/// Eight `STARTUP`s at arena 0 and a ninth at 5,000 are nine orders in two arena
+/// seconds, and none is refused; nine at arena 0 in one pulse are nine in one,
+/// and the ninth is refused `queue_full`; and eight at arena 0 then a ninth at
+/// arena 0 **in a second pulse** are still nine in one arena second, and the
+/// ninth is refused — at 5,000, 1,000 and 500 ms alike, with one event list and
+/// one hash sequence, the seat-order window and count being folded into the
+/// hash. The third script is the one only a rate passes: before this cut the
+/// bound was a queue drained once a pulse, so the second pulse found the queue
+/// empty and took the ninth, and what a pilot could send in a burst was a
+/// function of the pulse rate.
+#[test]
+fn m1_the_order_rate_refuses_the_same_orders_at_every_cadence() {
+    let startups = |range: std::ops::RangeInclusive<u64>| -> Vec<Intent> {
+        range
+            .map(|seq| intent(RED, IntentKind::Startup, seq))
+            .collect()
+    };
+    let spread = vec![
+        Beat {
+            t_ms: 0,
+            intents: startups(1..=8),
+        },
+        Beat {
+            t_ms: 5_000,
+            intents: startups(9..=9),
+        },
+    ];
+    let burst = vec![Beat {
+        t_ms: 0,
+        intents: startups(1..=9),
+    }];
+    let two_pulses = vec![
+        Beat {
+            t_ms: 0,
+            intents: startups(1..=8),
+        },
+        Beat {
+            t_ms: 0,
+            intents: startups(9..=9),
+        },
+    ];
+    for (name, script, refused) in [
+        ("eight then one", spread, Vec::new()),
+        (
+            "nine at once",
+            burst,
+            vec![(0_i64, "startup".to_owned(), Refusal::QueueFull)],
+        ),
+        (
+            "eight then one in the same arena second",
+            two_pulses,
+            vec![(0_i64, "startup".to_owned(), Refusal::QueueFull)],
+        ),
+    ] {
+        let mut runs: Vec<(i64, Replay)> = Vec::new();
+        for cadence in [5_000_i64, 1_000, 500] {
+            let mut arena = scripted_arena();
+            let run = replay(&mut arena, cadence, 10_000, &script);
+            assert_eq!(
+                run.refusals, refused,
+                "{name}: the refusals at {cadence} ms"
+            );
+            runs.push((cadence, run));
+        }
+        let Some((_, first)) = runs.first() else {
+            panic!("three replays");
+        };
+        assert!(
+            first
+                .events
+                .iter()
+                .any(|(_, encoded, _, _)| encoded.contains("\"kind\":\"startup\"")),
+            "{name}: the startup was journalled"
+        );
+        for (cadence, run) in runs.iter().skip(1) {
+            assert_eq!(
+                run.events, first.events,
+                "{name}: the event list differs at {cadence} ms"
+            );
+            assert_eq!(
+                run.hashes, first.hashes,
+                "{name}: the per-substep hash sequence differs at {cadence} ms"
+            );
+            assert_ne!(run.pulses, first.pulses, "{cadence} ms ran the same pulses");
+        }
     }
 }
 

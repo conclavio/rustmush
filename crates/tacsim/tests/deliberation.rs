@@ -524,7 +524,7 @@ fn issue(arena: &mut Arena, order: &Order) -> Vec<IntentOutcome> {
                 kind: IntentKind::Order(Box::new(order.clone())),
                 seq: 0,
             };
-            apply_intent(arena, &intent)
+            apply_intent(arena, &intent, tacsim::arena::intents::IntentSource::Seat)
         })
         .collect()
 }
@@ -830,7 +830,11 @@ fn an_order_is_refused_for_a_unit_a_pilot_is_flying() {
         seq: 0,
     };
     assert_eq!(
-        apply_intent(&mut arena, &intent),
+        apply_intent(
+            &mut arena,
+            &intent,
+            tacsim::arena::intents::IntentSource::Seat
+        ),
         IntentOutcome::Refused(Refusal::NotReflex),
         "an order steers a machine, and a pilot's tank has none"
     );

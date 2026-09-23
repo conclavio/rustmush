@@ -261,8 +261,8 @@ alert_range_cm = 0                 # the held-contact range that raises Alert; 0
 substep_max_ms = 250               # the longest substep a pulse is cut into (floored at 50 ms, and at one cell per substep)
 stall_ms = 2000                    # ms one pulse may take before the watchdog VOIDS the match
 
-[tacsim.arena.intents]             # (16b cut G) the per-unit intent queue
-max_pending_per_unit = 8           # discrete actions (LOCK, FIRE, STARTUP) one unit may have queued; continuous controls are latest-wins and do not queue
+[tacsim.arena.intents]             # (16b cut G) the per-seat order rate
+max_pending_per_unit = 8           # discrete orders (LOCK, FIRE, STARTUP) one seat may give a unit per ARENA second (16b cut M.1); also the per-unit size of the world side's inbox and pre-pulse buffer; continuous controls are latest-wins and do not count
 
 [tacsim.arena.ledger]              # (16b cut G) the match ledger: the black box
 # JSON lines, chunked at 16 KiB and streamed out while the match runs, so arena

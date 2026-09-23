@@ -257,7 +257,12 @@ pub fn abort(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         .into());
     }
-    super::abort(ctx, match_id, StopReason::Abort);
+    // 16b cut M.1 (`B-49`): a busy arena changes nothing; the operator asks again.
+    if super::abort(ctx, match_id, StopReason::Abort) == super::AbortOutcome::Busy {
+        return Err(CmdError::msg(format!(
+            "Match {match_id} is busy; try @arena/abort again in a moment."
+        )));
+    }
     let actor = ctx.actor;
     ctx.out.sys_to_actor(
         actor,

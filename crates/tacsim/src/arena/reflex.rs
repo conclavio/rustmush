@@ -93,7 +93,9 @@ use mush_core::ObjId;
 use smol_str::SmolStr;
 
 use crate::arena::index::range_between;
-use crate::arena::intents::{Intent, IntentKind, IntentOutcome, apply_intent, resolve_startup};
+use crate::arena::intents::{
+    Intent, IntentKind, IntentOutcome, IntentSource, apply_intent, resolve_startup,
+};
 use crate::arena::ledger::EventKind;
 use crate::arena::motion::BlockedCause;
 use crate::arena::path::{PathScratch, path_with, shoulder_refuses};
@@ -892,7 +894,7 @@ impl Arena {
             // onto the unit and never queues it, so there is nothing to take back
             // out of the pending queue the way `Arena::order` does for a discrete
             // action.
-            let _ = apply_intent(self, &intent);
+            let _ = apply_intent(self, &intent, IntentSource::Machine);
         }
     }
 
@@ -2803,7 +2805,9 @@ impl Arena {
                 seq,
             };
             counters.intents = counters.intents.saturating_add(1);
-            if apply_intent(self, &intent) != IntentOutcome::Queued {
+            // **16b cut M.1** (`T-82`): the machine's own order, which the
+            // per-seat rate never counts — see `IntentSource`.
+            if apply_intent(self, &intent, IntentSource::Machine) != IntentOutcome::Queued {
                 continue;
             }
             // `apply_intent` pushed exactly this order to the back of the unit's

@@ -469,6 +469,11 @@ pub struct Ledger {
     bytes_total: u64,
     /// The running digest over every appended byte.
     digest: Sha256,
+    /// **The running digest over every byte handed out in a chunk** (16b cut
+    /// M.1, `B-48`), updated by [`Ledger::take_chunks`] over each chunk's
+    /// `bytes` in chunk order as it leaves. It is what the world's
+    /// `log:match.<id>` can reproduce: see [`Ledger::shipped_digest`].
+    shipped: Sha256,
 }
 
 impl Clone for Ledger {
@@ -482,6 +487,7 @@ impl Clone for Ledger {
             flushed_upto: self.flushed_upto,
             bytes_total: self.bytes_total,
             digest: self.digest.clone(),
+            shipped: self.shipped.clone(),
         }
     }
 }
@@ -512,6 +518,7 @@ impl Ledger {
             flushed_upto: 0,
             bytes_total: 0,
             digest: Sha256::new(),
+            shipped: Sha256::new(),
         }
     }
 
@@ -575,8 +582,17 @@ impl Ledger {
     ///
     /// The open chunk stays open — call [`Ledger::flush`] first to close it, which
     /// is what the end of a match does.
+    ///
+    /// **16b cut M.1** (`B-48`): every chunk handed out is folded into the
+    /// shipped digest here, in chunk order, as it leaves — so
+    /// [`Ledger::shipped_digest`] is always the SHA-256 of exactly the bytes the
+    /// egress has been given.
     pub fn take_chunks(&mut self) -> Vec<LedgerChunk> {
-        self.closed.drain(..).collect()
+        let chunks: Vec<LedgerChunk> = self.closed.drain(..).collect();
+        for chunk in &chunks {
+            self.shipped.update(&chunk.bytes);
+        }
+        chunks
     }
 
     /// Close the chunk being filled, if it holds anything, so the next
@@ -656,6 +672,22 @@ impl Ledger {
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
         self.digest.clone().finalize().into()
+    }
+
+    /// **The SHA-256 of every byte handed out in a chunk**, in chunk order (16b
+    /// cut M.1, `B-48`) — the concatenation of every [`LedgerChunk::bytes`]
+    /// [`Ledger::take_chunks`] has returned.
+    ///
+    /// It equals [`Ledger::digest`] whenever nothing is left in the open chunk or
+    /// the closed queue, which is every end whose step ran to completion: the
+    /// ending step calls [`Ledger::flush`] and then [`Ledger::take_chunks`]. It
+    /// differs where bytes were appended and never left — the open chunk of a
+    /// pulse that panicked before it flushed — and there it is the only digest
+    /// the world's `log:match.<id>` can reproduce, which is why the task reports
+    /// this one on its `Ended`.
+    #[must_use]
+    pub fn shipped_digest(&self) -> [u8; 32] {
+        self.shipped.clone().finalize().into()
     }
 
     /// The last appended event's sequence; `0` before the first.
@@ -1093,6 +1125,43 @@ mod tests {
         log.flush();
         assert_eq!(log.last_closed_seq(), 1);
         assert!(log.take_chunks().is_empty());
+    }
+
+    /// **16b cut M.1** (`B-48`): the shipped digest is the digest of what left in
+    /// chunks, so it equals the full one exactly when nothing is left behind.
+    #[test]
+    fn the_shipped_digest_covers_what_left_and_equals_the_digest_once_flushed() {
+        let mut log = ledger(1 << 20, 256);
+        let empty = log.shipped_digest();
+        assert_eq!(empty, log.digest(), "nothing appended, nothing shipped");
+        let _ = log.append(0, EventKind::MatchStarted, None, 0);
+        // An open chunk: appended and never handed out.
+        assert_ne!(log.shipped_digest(), log.digest());
+        assert_eq!(log.shipped_digest(), empty);
+        // Closed but not yet taken is still not shipped.
+        log.flush();
+        assert_ne!(log.shipped_digest(), log.digest());
+        let first = log.take_chunks();
+        assert_eq!(first.len(), 1);
+        assert_eq!(log.shipped_digest(), log.digest());
+        // A closed chunk taken while a later one is still open: they differ, and
+        // the shipped one is SHA-256 of the taken bytes alone.
+        let _ = log.append(1_000, EventKind::Void, None, 1);
+        log.flush();
+        let _ = log.append(2_000, EventKind::Void, None, 2);
+        let second = log.take_chunks();
+        assert_eq!(second.len(), 1);
+        assert_ne!(log.shipped_digest(), log.digest());
+        let mut expected = Sha256::new();
+        for chunk in first.iter().chain(&second) {
+            expected.update(&chunk.bytes);
+        }
+        let expected: [u8; 32] = expected.finalize().into();
+        assert_eq!(log.shipped_digest(), expected);
+        // Flushed and taken, the two agree again.
+        log.flush();
+        let _ = log.take_chunks();
+        assert_eq!(log.shipped_digest(), log.digest());
     }
 
     #[test]

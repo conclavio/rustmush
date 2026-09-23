@@ -200,8 +200,8 @@ pub use hash::state_hash;
 pub use heat::{COOL_CAUSE, MILLI, SHOT_CAUSE};
 pub use index::{SpatialIndex, range_cm};
 pub use intents::{
-    Control, ControlState, Intent, IntentKind, IntentOutcome, Refusal, apply_control, apply_intent,
-    drain_pending, resolve_startup,
+    Control, ControlState, Intent, IntentKind, IntentOutcome, IntentSource, Refusal, apply_control,
+    apply_intent, drain_pending, resolve_startup,
 };
 pub use ledger::{CHUNK_BYTES, EventKind, Ledger, LedgerChunk, LedgerEvent, LedgerFull};
 pub use motion::{MotionOutcome, cos_fx, integrate, sin_fx};

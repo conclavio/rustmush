@@ -416,6 +416,13 @@ pub enum SimError {
     /// lobby is exactly the thing a staff lever is for.
     #[error("Nothing is running yet. `SIM LEAVE` gives your slot up.")]
     NothingToAbort,
+    /// **`SIM ABORT` or `SIM CONCEDE` while the arena cannot take a stop** (16b
+    /// cut M.1, `B-49`): its inbox is full, or its result is already on its way
+    /// to the world ([`crate::match_::AbortOutcome::Busy`]). Nothing changed and
+    /// nothing was announced; the match is still the arena's to finish, and the
+    /// same verb a moment later lands.
+    #[error("The arena is busy; try that again in a moment.")]
+    ArenaBusy,
     /// A side has nobody.
     #[error("The {0} side has no pilots; a match takes at least one a side.")]
     EmptySide(&'static str),
@@ -2014,6 +2021,9 @@ pub fn ai(ctx: &mut Ctx<'_>, size: Option<u8>) -> Result<(), SimError> {
 /// `Running` and `Stopping` are unchanged and stay any participant's
 /// (doc 16 §3.8), because in all three there is a match with a name.
 ///
+/// **16b cut M.1** (`B-49`): an arena that cannot take the stop this instant is
+/// [`SimError::ArenaBusy`], with nothing changed and nothing announced.
+///
 /// # Errors
 ///
 /// [`SimError`], as the line the player sees.
@@ -2045,7 +2055,13 @@ pub fn abort(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     let name = display_name(ctx.w, actor);
     match (state, match_id) {
         (MatchState::Running | MatchState::Stopping, Some(match_id)) => {
-            crate::match_::abort(ctx, match_id, StopReason::Abort);
+            // 16b cut M.1 (`B-49`): a busy arena changes nothing and says nothing
+            // to the centre; the one who typed it is told to try again.
+            if crate::match_::abort(ctx, match_id, StopReason::Abort)
+                == crate::match_::AbortOutcome::Busy
+            {
+                return Err(SimError::ArenaBusy);
+            }
             announce(
                 ctx,
                 format!(
@@ -2080,7 +2096,9 @@ pub fn abort(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
 /// whatever the reason — and the check-in, the result document and the terminal
 /// board then follow exactly as they do for an elimination. A match whose task is
 /// already gone is finished there and then as an `Abort`, and the concede sentence
-/// is **not** said over it (see the body).
+/// is **not** said over it (see the body). An arena that cannot take the stop this
+/// instant is [`SimError::ArenaBusy`] (16b cut M.1, `B-49`): no concede is
+/// recorded and nothing is announced.
 ///
 /// # Errors
 ///
@@ -2106,7 +2124,13 @@ pub fn concede(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         // broken-world arm and not a path.
         (slot.team, centre.match_id.ok_or(SimError::Unavailable)?)
     };
-    crate::match_::abort(ctx, match_id, StopReason::Concede { by: team });
+    // 16b cut M.1 (`B-49`): a busy arena records no concede and announces
+    // nothing; the lead is told to try again, and the match is still running.
+    if crate::match_::abort(ctx, match_id, StopReason::Concede { by: team })
+        == crate::match_::AbortOutcome::Busy
+    {
+        return Err(SimError::ArenaBusy);
+    }
     // **The sentence belongs to a stop that is really in flight** (16b cut D.3).
     // The funnel finishes a match whose task is already gone **on the spot**, as
     // an `EndReason::Abort`, and [`on_match_finished`] then says `Match {id} is
@@ -2115,9 +2139,8 @@ pub fn concede(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     // board, record and result document all say `abort`, with no arena left to
     // come back and correct it. So the centre is asked whether it is still
     // running: a match with no arena has no result to concede, and nothing more
-    // to say. (The funnel's own `bool` cannot answer this — it is `true` on both
-    // arms, because a check-in that found its record is as much an effect as a
-    // stop that was taken.)
+    // to say. (The funnel's own answer could say so too — `Finished` — but the
+    // centre's state is the fact the sentence is about, so it is what is read.)
     if centre(ctx.w).is_none_or(|centre| centre.state != MatchState::Running) {
         return Ok(());
     }
@@ -2165,14 +2188,14 @@ fn call_off(ctx: &mut Ctx<'_>, why: String) {
 /// off does not stop matches.
 ///
 /// **The stamp is cleared, and the sentence said, only when the offer lands.**
-/// [`crate::arena_bridge::send_stop`] maps *every* failed offer to
-/// [`crate::arena_bridge::ControlRefusal::Gone`], a momentarily full inbox
-/// included (16c `B-49`, cut M's), and nothing ever re-stamps, because `EXIT` is
-/// one-way — so clearing on a failed send would disarm this path for the rest of
-/// the match, in exactly the long lagging fight that most needs it. A `Gone` or
-/// an `Unavailable` therefore leaves the stamp for the next tick and warns
-/// **once** per match; a `NoMatch` clears it silently, because the match it names
-/// is already over.
+/// Nothing ever re-stamps, because `EXIT` is one-way — so clearing on a failed
+/// send would disarm this path for the rest of the match, in exactly the long
+/// lagging fight that most needs it. A
+/// [`crate::arena_bridge::ControlRefusal::Busy`] — a momentarily full inbox, or
+/// an `Ended` already on its way (16b cut M.1, `B-49`) — therefore leaves the
+/// stamp for the next tick exactly as a `Gone` or an `Unavailable` does, and
+/// warns **once** per match; a `NoMatch` clears it silently, because the match it
+/// names is already over.
 pub fn unattended_deadline(ctx: &mut Ctx<'_>, now_ms: i64) {
     if require_layer(ctx.w).is_err() {
         return;

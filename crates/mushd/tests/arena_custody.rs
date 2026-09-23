@@ -360,6 +360,88 @@ fn pose_heading(placement: &Value) -> u64 {
         .unwrap_or_else(|| panic!("a direct placement carries a heading: {placement}"))
 }
 
+fn pose_y_cm(placement: &Value) -> i64 {
+    placement
+        .pointer("/parent/pose/y_cm")
+        .and_then(Value::as_i64)
+        .unwrap_or_else(|| panic!("a direct placement carries a pose: {placement}"))
+}
+
+/// Every ledger line one match wrote, parsed, in the order the arena wrote them
+/// (16b cut M.1) — `crates/mushd/tests/arena_story.rs`'s reader: a chunk document
+/// carries the chunk's exact bytes in its `lines` fields, collected in chunk order
+/// and split.
+async fn ledger_events(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value> {
+    let log = format!("match.{match_id}");
+    let mut events = Vec::new();
+    for chunk in 0..256 {
+        let key = mush_core::chunk_key(&log, chunk);
+        let Some(value) = store
+            .module_json_get("tacsim", key.as_str())
+            .await
+            .expect("the store read")
+        else {
+            break;
+        };
+        let mut lines: Vec<String> = Vec::new();
+        collect_lines(&value, &mut lines);
+        for blob in lines {
+            for line in blob.lines().filter(|line| !line.trim().is_empty()) {
+                events.push(
+                    serde_json::from_str::<Value>(line).unwrap_or_else(|error| {
+                        panic!("a ledger line is not JSON ({error}): {line}")
+                    }),
+                );
+            }
+        }
+    }
+    events
+}
+
+/// Every `"lines"` string in one chunk document, in document order.
+fn collect_lines(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                match (key.as_str(), child.as_str()) {
+                    ("lines", Some(text)) => out.push(text.to_owned()),
+                    _ => collect_lines(child, out),
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_lines(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `unit`'s `(x_cm, y_cm, heading_mdeg)` in every `position_summary` line, in
+/// order (16b cut M.1). A row is `[unit, x_cm, y_cm, z_cm, heading_mdeg]`.
+fn summaries_of(events: &[Value], unit: ObjId) -> Vec<(i64, i64, u64)> {
+    events
+        .iter()
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some("position_summary"))
+        .filter_map(|event| {
+            event
+                .get("units")
+                .and_then(Value::as_array)?
+                .iter()
+                .filter_map(Value::as_array)
+                .find(|row| row.first().and_then(Value::as_u64) == Some(u64::from(unit.0)))
+                .and_then(|row| {
+                    Some((
+                        row.get(1).and_then(Value::as_i64)?,
+                        row.get(2).and_then(Value::as_i64)?,
+                        row.get(4).and_then(Value::as_u64)?,
+                    ))
+                })
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // The lens
 // ---------------------------------------------------------------------------
@@ -449,6 +531,17 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     // 1,000 cm/s and fifty metres, which is five cells, and the assertion below
     // asks for three.
     wait_arena_seconds(&mut term, 10).await;
+    // **16b cut M.1** (`T-42`): then stop, so the pose the world gets back can be
+    // compared with the arena's own record of it. Braking from at most 1,000 cm/s
+    // at the tank's own rate takes about five seconds; the seventh covers one
+    // `position_summary` cadence after the stop.
+    say(
+        &mut term,
+        &format!("@arena/intent #{}=speed 0", RED.0),
+        "Ordered",
+    )
+    .await;
+    wait_arena_seconds(&mut term, 7).await;
 
     // --- check-in --------------------------------------------------------
     say(&mut term, "@arena/abort", "is stopping").await;
@@ -495,6 +588,36 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
         pose_heading(&after),
         90_000,
         "and on the bearing it was ordered onto: {after}"
+    );
+    // **16b cut M.1** (`T-42`): and it is the arena's number verbatim. A chunk
+    // reaches the store only at 16 KiB or at the end's flush, so the black box is
+    // read after the end — waiting for its terminal `aborted` line — and its last
+    // two `position_summary` rows for the red tank agree (it had stopped), and the
+    // placement IS the last one: a stopped tank's final pose is its last summary,
+    // and the check-in writes the pose the arena returned at `Ended`.
+    wait_until(
+        Duration::from_secs(20),
+        "the flushed black box",
+        async || {
+            ledger_events(&server.store, 1)
+                .await
+                .iter()
+                .any(|event| event.get("kind").and_then(Value::as_str) == Some("aborted"))
+        },
+    )
+    .await;
+    let summaries = summaries_of(&ledger_events(&server.store, 1).await, RED);
+    let [.., before_last, last] = summaries.as_slice() else {
+        panic!("the black box has fewer than two summaries of the red tank: {summaries:?}");
+    };
+    assert_eq!(
+        before_last, last,
+        "the red tank had stopped before the end: {summaries:?}"
+    );
+    assert_eq!(
+        (pose_x_cm(&after), pose_y_cm(&after), pose_heading(&after)),
+        *last,
+        "the placement is the arena's last summary, verbatim: {after}"
     );
 
     // (3) The match left exactly one result document, and it is an abort.

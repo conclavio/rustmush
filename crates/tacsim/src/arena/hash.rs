@@ -68,7 +68,11 @@ pub fn fnv1a64_update(state: u64, bytes: &[u8]) -> u64 {
 ///        as `u32`, `carry.speed` as `u32`, `carry.east` as `i64` and
 ///        `carry.north` as `i64`;
 ///    15. **the platform's own receiver** (16b cut D.4): a presence byte, then
-///        `budget`, `budget_max` and `reach_permille` as `u16`.
+///        `budget`, `budget_max` and `reach_permille` as `u16`;
+///    16. **the seat-order rate** (16b cut M.1, `T-82`): `orders_window_s` as
+///        `i64`, then `orders_in_window` as `u32`. Persistent state that decides a
+///        refusal notice is hashed: a replay whose pilot's order landed in a
+///        different arena second would refuse a different later one.
 /// 2. **The spent-section window** (16b cut D.2), in the map's own key order: the
 ///    count of entries as `u64`, then per entry the platform told's `u32`, the
 ///    target's `u32`, the section id's bytes and the arena millisecond as `i64`.
@@ -338,6 +342,10 @@ pub fn state_hash(arena: &Arena) -> u64 {
             }
             None => hash = fnv1a64_update(hash, &[0_u8]),
         }
+        // **16b cut M.1** (`T-82`): the seat-order rate's window and count — they
+        // persist between pulses and decide a `queue_full` refusal.
+        hash = fnv1a64_update(hash, &unit.orders_window_s.to_le_bytes());
+        hash = fnv1a64_update(hash, &unit.orders_in_window.to_le_bytes());
     }
     // **16b cut D.2**: the spent-section window, in the map's own key order.
     hash = fnv1a64_update(hash, &(arena.spent_said.len() as u64).to_le_bytes());
@@ -959,6 +967,28 @@ mod tests {
             unit.fatal_sections = 0b101;
         }
         assert_eq!(state_hash(&fitted), base, "the fatal mask was folded");
+    }
+
+    /// **16b cut M.1's extension** (`T-82`): the seat-order rate's window and
+    /// count each move the hash on their own — they decide a later `queue_full`.
+    #[test]
+    fn the_hash_folds_the_seat_order_window_and_its_count() {
+        let base = state_hash(&two_tanks());
+        let mut windowed = two_tanks();
+        if let Some(unit) = windowed.unit_mut(ObjId(9)) {
+            unit.orders_window_s = 3;
+        }
+        assert_ne!(state_hash(&windowed), base, "the window went unhashed");
+        let mut counted = two_tanks();
+        if let Some(unit) = counted.unit_mut(ObjId(9)) {
+            unit.orders_in_window = 3;
+        }
+        assert_ne!(state_hash(&counted), base, "the count went unhashed");
+        assert_ne!(state_hash(&counted), state_hash(&windowed));
+        if let Some(unit) = counted.unit_mut(ObjId(9)) {
+            unit.orders_in_window = 0;
+        }
+        assert_eq!(state_hash(&counted), base);
     }
 
     #[test]

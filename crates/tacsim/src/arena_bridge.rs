@@ -278,6 +278,39 @@ impl ArenaTasks {
         }
     }
 
+    /// **Offer one match its `Stop`, and classify a refusal** (16b cut M.1,
+    /// `B-49`). Four answers:
+    ///
+    /// - no such id in the table → [`ControlRefusal::NoMatch`];
+    /// - the offer lands → `Ok(())`;
+    /// - the offer fails while the task is live (a full inbox) →
+    ///   [`ControlRefusal::Busy`];
+    /// - the offer fails, the inbox is closed, and the task **has reported**
+    ///   ([`ArenaHandle::has_reported`]) → [`ControlRefusal::Busy`]: its `Ended`
+    ///   is staged or in the egress, and the world's `drain_egress` will reach
+    ///   `on_ended`, which finishes the match with the arena's own units;
+    /// - the offer fails, the inbox is closed, and the task has **not** reported
+    ///   → [`ControlRefusal::Gone`]: it died without a result.
+    ///
+    /// # Errors
+    ///
+    /// As above.
+    pub fn send_stop(&self, match_id: MatchId, reason: StopReason) -> Result<(), ControlRefusal> {
+        let Ok(tasks) = self.0.lock() else {
+            return Err(ControlRefusal::NoMatch);
+        };
+        let Some(live) = tasks.live.get(&match_id) else {
+            return Err(ControlRefusal::NoMatch);
+        };
+        match live.handle.offer(ArenaMsg::Stop(reason)) {
+            Ok(()) => Ok(()),
+            Err(_) if live.handle.is_live() || live.handle.has_reported() => {
+                Err(ControlRefusal::Busy)
+            }
+            Err(_) => Err(ControlRefusal::Gone),
+        }
+    }
+
     /// Park one drained egress message for the handler. `false` when the staging
     /// queue is full, which is a message the world could not handle and which its
     /// sender therefore never has acknowledged.
@@ -965,9 +998,21 @@ pub enum ControlRefusal {
     /// No such running match.
     #[error("that unit is not in a running match")]
     NoMatch,
-    /// The arena's inbox is full or its task has ended.
+    /// The arena's task has ended **without** reporting a result — the stop
+    /// signal, or a dropped inbox, neither of which the world does to a match
+    /// while it is alive — or (for a `Control`) its inbox would not take it.
     #[error("that match is not accepting messages")]
     Gone,
+    /// **The match cannot take a stop this instant, and is still the arena's**
+    /// (16b cut M.1, `B-49`): its inbox is full while its task is live, or its
+    /// task has already handed the world its `Ended` and that result is still on
+    /// its way through the shared egress. Either way the caller must change
+    /// nothing — the arena, not the world, will finish the match — and ask again
+    /// in a moment. Before this variant both cases were `Gone`, and an abort
+    /// then finished the match with no units, restoring every tank from its
+    /// check-out snapshot over the match's real damage.
+    #[error("that match is busy; try again in a moment")]
+    Busy,
     /// The tacsim layer did not compose.
     #[error("the arena is not available on this server")]
     Unavailable,
@@ -1177,24 +1222,20 @@ pub fn send_control(
 ///
 /// # Errors
 ///
-/// [`ControlRefusal`]: no such match, or a task that will not take it.
+/// [`ControlRefusal::Unavailable`] when the layer did not compose, and otherwise
+/// [`ArenaTasks::send_stop`]'s answers: `NoMatch`, `Busy` (a full inbox, or an
+/// `Ended` already on its way — change nothing and ask again) or `Gone` (the
+/// task died without a result).
 pub fn send_stop(
     ctx: &mut Ctx<'_>,
     match_id: MatchId,
     reason: StopReason,
 ) -> Result<(), ControlRefusal> {
-    let tasks = ctx
-        .w
+    ctx.w
         .module_state::<ArenaRegistry>()
         .ok_or(ControlRefusal::Unavailable)?
         .tasks
-        .clone();
-    if !tasks.live_ids().contains(&match_id) {
-        return Err(ControlRefusal::NoMatch);
-    }
-    tasks
-        .offer(match_id, ArenaMsg::Stop(reason))
-        .map_err(|_| ControlRefusal::Gone)
+        .send_stop(match_id, reason)
 }
 
 /// Put every channel of one pilot's unit at the state the world now knows.

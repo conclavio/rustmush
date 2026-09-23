@@ -71,7 +71,7 @@
 //! | `[tacsim.arena].max_catch_up_steps` | `4` | periods of wall time one pulse may absorb before the arena records `lagged` and skips the idle time |
 //! | `[tacsim.arena].occupied_stop_ms` | `2000` | **16b cut E.3** (doc 16 §3.4 step 4): arena milliseconds a unit holds against another unit in its way, keeping its speed, before it stops and says so; `0` stops it at once. Ground, the window's edge and a slope are untouched |
 //! | `[tacsim.arena].deliberate_min_ms` | `30000` | **16b cut N.2** (doc 16 §6): the least ARENA time between two deliberation requests for one squad — the floor under the event-driven trigger |
-//! | `[tacsim.arena.intents].max_pending_per_unit` | `8` | discrete actions one unit may have queued at once |
+//! | `[tacsim.arena.intents].max_pending_per_unit` | `8` | **16b cut M.1** (`T-82`): discrete orders one seat may give a unit per arena second; also the size, per unit, of the world side's inbox and pre-pulse buffer |
 //! | `[tacsim.arena.ledger].summary_ms` | `5000` | arena milliseconds between `position_summary` ledger events (doc 16 §4) |
 //! | `[tacsim.arena.ledger].max_bytes` | `67108864` | 64 MiB: at 90% summaries stop, at 100% the match is stopped with `Timeout` |
 //! | `[tacsim.arena.ledger].max_unflushed_chunks` | `256` | 16 KiB chunks the egress ring may hold before the match is stopped with `Void` |
@@ -1157,13 +1157,15 @@ impl Default for TacsimTempoCfg {
     }
 }
 
-/// `[tacsim.arena.intents]` — the bound on the arena's per-unit intent queue
-/// (**16b cut G**; doc 16 §3.1, pulse phase 2).
+/// `[tacsim.arena.intents]` — the rate a seat's discrete orders are held to
+/// (**16b cut G**; doc 16 §3.1, pulse phase 2; a rate since **16b cut M.1**).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TacsimIntentsCfg {
-    /// The most discrete actions (`LOCK`, `FIRE`, `STARTUP`) one unit may have
-    /// queued at once. Continuous controls are latest-wins and do not queue.
+    /// **The discrete orders (`LOCK`, `FIRE`, `STARTUP`) one seat may give a unit
+    /// per arena second; also the size, per unit, of the world side's inbox and
+    /// pre-pulse buffer** (16b cut M.1, `T-82`). Continuous controls are
+    /// latest-wins and do not count.
     pub max_pending_per_unit: u32,
 }
 

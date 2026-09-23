@@ -53,7 +53,7 @@ use smol_str::SmolStr;
 use crate::arena::clock::{Tempo, TempoSignals, substep_ms, substeps};
 use crate::arena::hash::state_hash;
 use crate::arena::intents::{
-    Control, Intent, IntentKind, IntentOutcome, Refusal, apply_control, apply_intent,
+    Control, Intent, IntentKind, IntentOutcome, IntentSource, Refusal, apply_control, apply_intent,
     drain_pending, resolve_startup,
 };
 use crate::arena::ledger::{EventKind, LedgerChunk};
@@ -568,7 +568,9 @@ impl Arena {
         // [`Arena::phase_two_tells`].
         let mut fire_intent_queued = false;
         for intent in intents {
-            let outcome = apply_intent(self, intent);
+            // **16b cut M.1** (`T-82`): every order in this slice came through the
+            // world's seam, so it is a seat's and counts against the rate.
+            let outcome = apply_intent(self, intent, IntentSource::Seat);
             if outcome == IntentOutcome::Queued && matches!(intent.kind, IntentKind::Fire { .. }) {
                 fire_intent_queued = true;
             }
@@ -1813,10 +1815,11 @@ impl Arena {
     /// * [`Refusal::PowerNotOnline`] — doc 16 §3.3's cold tank, refused at apply
     ///   when the cockpit's own mirror was a pulse stale;
     /// * [`Refusal::QueueFull`] — the ninth order of a burst was **dropped**, and
-    ///   silently. The bound it is the far side of is per *pulse*, which makes how
-    ///   many orders a pilot may burst a function of the tempo; that is cut A.2's
-    ///   and is recorded as a debt of its own. This cut does not create it — it
-    ///   stops the drop being silent, which is the defect `B-03` names.
+    ///   silently, which is the defect `B-03` names. The bound it is the far
+    ///   side of is a seat's discrete orders a unit per **arena second**
+    ///   (`apply_intent`, 16b cut M.1, `T-82`), the same at every tempo; before
+    ///   that cut it was a queue drained once a pulse, which made how many orders
+    ///   a pilot might burst a function of the tempo.
     ///
     /// The other five have nobody to tell. [`Refusal::Epoch`] is doc 16 §3.1's
     /// `FIRE` then `EXIT` burst working exactly as written: the pilot who left is
@@ -2733,9 +2736,11 @@ mod tests {
         );
 
         // (c) the ninth discrete order of one burst. `max_pending_per_unit` is
-        // eight and the queue is empty at the start of every phase 2, so the
-        // ninth is refused once however fast the arena is pulsing — which is the
-        // whole of why this is staged rather than dropped in silence.
+        // eight a seat a unit per arena second (16b cut M.1, `T-82`), and all
+        // nine are this seat's orders in arena second 0 (phase 2 runs before the
+        // clock moves), so the ninth is refused once however fast the arena is
+        // pulsing — which is the whole of why this is staged rather than
+        // dropped in silence.
         let mut arena = fresh();
         arena.step(0, &[], &[]);
         let burst: Vec<Intent> = (0..9)
@@ -2746,6 +2751,89 @@ mod tests {
             refusals(&out),
             vec![("startup".to_owned(), Refusal::QueueFull, None)],
             "one refusal for one dropped order"
+        );
+    }
+
+    /// **16b cut M.1** (`T-82`): (d) the bound is a rate in ARENA seconds,
+    /// counted on the seat that gave the order.
+    ///
+    /// Phase 2 runs at the arena time the previous pulse ended on, so a pulse
+    /// stepped to wall 500 applies its orders at arena 0, and one stepped to wall
+    /// 1,500 applies them at arena 1,000.
+    #[test]
+    fn m1_the_order_bound_is_a_rate_per_arena_second_counted_on_the_seat() {
+        // Eight in arena second 0, then a ninth in a later pulse still inside
+        // second 0: refused, although the queue was drained in between.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        let eight: Vec<Intent> = (0..8)
+            .map(|n: u64| order(A, IntentKind::Startup, n + 1))
+            .collect();
+        let out = arena.step(500, &[], &eight);
+        assert!(refusals(&out).is_empty(), "{:?}", refusals(&out));
+        assert!(arena.pending.is_empty(), "phase 4 drained the eight");
+        let out = arena.step(900, &[], &[order(A, IntentKind::Startup, 9)]);
+        assert_eq!(arena.now_ms, 900);
+        assert_eq!(
+            refusals(&out),
+            vec![("startup".to_owned(), Refusal::QueueFull, None)],
+            "the ninth order inside one arena second is refused, whatever the pulse rate"
+        );
+
+        // The same ninth in a pulse whose phase 2 runs at arena 1,000: accepted.
+        let mut arena = fresh();
+        arena.step(0, &[], &[]);
+        arena.step(500, &[], &eight);
+        arena.step(1_000, &[], &[]);
+        let out = arena.step(1_500, &[], &[order(A, IntentKind::Startup, 9)]);
+        assert!(
+            refusals(&out).is_empty(),
+            "a new arena second is a new count: {:?}",
+            refusals(&out)
+        );
+
+        // The machine's own orders are never counted.
+        let mut arena = fresh();
+        for n in 0..9_u64 {
+            assert_eq!(
+                apply_intent(
+                    &mut arena,
+                    &order(A, IntentKind::Startup, n + 1),
+                    IntentSource::Machine
+                ),
+                IntentOutcome::Queued,
+                "machine order {n}"
+            );
+        }
+
+        // A seat's order to a tank the reflex controller drives is still a seat's:
+        // a gunner left on a machine-driven hull is bounded like anybody.
+        let mut arena = fresh();
+        arena.set_controller(
+            A,
+            crate::arena::state::Controller::Reflex,
+            crate::arena::reflex::ReflexState::Withdraw,
+        );
+        let outcomes: Vec<IntentOutcome> = (0..9_u64)
+            .map(|n| {
+                apply_intent(
+                    &mut arena,
+                    &order(A, IntentKind::Startup, n + 1),
+                    IntentSource::Seat,
+                )
+            })
+            .collect();
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == IntentOutcome::Queued)
+                .count(),
+            8
+        );
+        assert_eq!(
+            outcomes.last(),
+            Some(&IntentOutcome::Refused(Refusal::QueueFull)),
+            "the ninth seat order on a reflex-driven unit is refused"
         );
     }
 

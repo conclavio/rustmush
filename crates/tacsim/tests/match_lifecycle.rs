@@ -3251,15 +3251,18 @@ async fn d3_the_unattended_clock_is_off_at_zero_and_never_stamps_a_slotless_matc
 /// **A stop the arena will not take keeps the stamp, warns once, and is retried
 /// until it lands** (16b cut D.3, `B-33`).
 ///
-/// [`tacsim::arena_bridge::send_stop`] maps **every** failed offer to
-/// `ControlRefusal::Gone`, a momentarily full inbox included (16c `B-49`, cut
-/// M's), and nothing ever re-stamps — so clearing the stamp on a failed send
-/// would disarm the path for the rest of the match, in exactly the long lagging
-/// fight that most needs it.
+/// [`tacsim::arena_bridge::send_stop`] answers a momentarily full inbox with
+/// `ControlRefusal::Busy` (16b cut M.1, `B-49`; `Gone` before it), and nothing
+/// ever re-stamps — so clearing the stamp on a failed send would disarm the path
+/// for the rest of the match, in exactly the long lagging fight that most needs
+/// it.
 ///
 /// The inbox is filled on a **current-thread** runtime, where the arena task only
 /// advances at an `await`: the offers below therefore stay in the queue, and the
-/// `yield_now` further down is what lets the task drain them.
+/// `yield_now` further down is what lets the task drain them. **16b cut M.1**
+/// keeps `3 × units + 2` of the inbox free of intents so a control or a stop
+/// always fits, so intents alone no longer fill it: the reserve is filled with
+/// harmless controls after them.
 ///
 /// `Centre::unattended_warned` is what makes the `warn` once-per-match, so it is
 /// the flag and not the log line that is asserted here.
@@ -3273,7 +3276,7 @@ async fn d3_an_unattended_stop_the_arena_will_not_take_is_kept_and_retried() {
     assert_eq!(rig.centre().unattended_since_ms, Some(0));
 
     // Fill the task's bounded inbox. Its bound is
-    // `intents.max_pending_per_unit × units`, so this terminates.
+    // `intents.max_pending_per_unit × units + 3 × units + 2`, so this terminates.
     let tasks = rig.tasks();
     let mut offered = 0_usize;
     while offered < 1_000
@@ -3297,6 +3300,27 @@ async fn d3_an_unattended_stop_the_arena_will_not_take_is_kept_and_retried() {
     }
     assert!(offered > 0, "the inbox took nothing at all");
     assert!(offered < 1_000, "the inbox never filled");
+    // 16b cut M.1: and the reserve, with controls for a unit the arena does not
+    // hold — `apply_control` raises that key's epoch and nothing else.
+    let mut reserved = 0_usize;
+    while reserved < 1_000
+        && tasks
+            .offer(
+                match_id,
+                tacsim::arena_task::ArenaMsg::Control(tacsim::arena::intents::Control {
+                    unit: ObjId(0),
+                    channel: tacsim::arena::state::Channel::Helm,
+                    epoch: 1,
+                    state: tacsim::arena::intents::ControlState::Live,
+                    pilot: None,
+                }),
+            )
+            .is_ok()
+    {
+        reserved += 1;
+    }
+    assert!(reserved > 0, "the reserve took no control");
+    assert!(reserved < 1_000, "the reserve never filled");
 
     // The deadline fires and the offer is refused: nothing is said, and the
     // stamp survives so the next tick tries again.
@@ -3807,4 +3831,227 @@ async fn b4_a_side_whose_pilots_all_left_has_no_lead() {
         );
     }
     assert_eq!(rig.state(), MatchState::Running);
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut M.1 — `B-49`: a busy arena is never an abort that voids
+// ---------------------------------------------------------------------------
+
+/// **A check-out of the running match's own tanks**, over the stand-in window —
+/// what a replacement task for the same match id is built from. The arena it
+/// builds is never stepped; it exists so its task can hold an inbox.
+fn replacement_custody(rig: &Rig) -> tacsim::arena::state::CustodyOut {
+    use tacsim::match_::{STAND_IN, custody_unit, resolution_for, stock_definition};
+
+    let w = rig.tw.world();
+    let catalog = w
+        .module_state::<tacsim::TacsimStore>()
+        .expect("the tacsim store")
+        .definitions()
+        .clone();
+    let match_id = rig.centre().match_id.expect("a running match");
+    let record = w
+        .module_state::<tacsim::match_::MatchBook>()
+        .and_then(|book| book.get(match_id))
+        .expect("the running match's record")
+        .clone();
+    let cell = i64::from(tacsim::match_::ARENA_CELL_CM);
+    let posture = mush_sim::data::passive_rules_value(serde_json::json!({}))
+        .expect("the engine's own passive posture");
+    let mut units = Vec::new();
+    for (column, (team, unit)) in record
+        .teams
+        .iter()
+        .flat_map(|roster| roster.units.iter().map(|unit| (roster.team, *unit)))
+        .enumerate()
+    {
+        let cells = mush_tactics::module::unit_of(w, unit)
+            .expect("the match's tank is a unit")
+            .clone();
+        let x = i64::try_from(column).unwrap_or(0) * 4 + 2;
+        let pose = mush_sim::data::Pose {
+            x_cm: x * cell + cell / 2,
+            y_cm: 4 * cell + cell / 2,
+            z_cm: 0,
+            heading_mdeg: 0,
+            posture: posture.clone(),
+        };
+        units.push(custody_unit(
+            &catalog,
+            cells,
+            unit,
+            team,
+            pose,
+            0,
+            tacsim::arena::state::Controller::Pilot,
+            0,
+        ));
+    }
+    tacsim::arena::state::CustodyOut {
+        definition: stock_definition(&smol_str::SmolStr::new_static(STAND_IN))
+            .expect("the stand-in window"),
+        units,
+        pilots: Vec::new(),
+        resolution: resolution_for(&catalog),
+        seed: 2_396,
+    }
+}
+
+/// **A busy arena is told to try again, and nothing changes** (16b cut M.1,
+/// `B-49`).
+///
+/// A running task empties its inbox the moment a message arrives, so a full one
+/// cannot be made on the live task. The running match's task is therefore
+/// replaced, under the same id, by one spawned on a current-thread runtime this
+/// test never drives: its inbox is filled with orders and then — because an
+/// order may never take the `3 × units + 2` slots kept for controls, stops and
+/// acks — with harmless controls, so a `Stop` meets a full inbox of a live task.
+/// `SIM ABORT`, `SIM CONCEDE` and `@arena/abort` each say their try-again
+/// sentence and leave the record `Running` with no result. Then the runtime goes,
+/// taking the task with it and no result behind it, and `SIM ABORT` finishes the
+/// match on the spot as it always did.
+///
+/// Before this cut every refused offer was `Gone`, so the first `SIM ABORT` here
+/// would have finished the match with no units and restored every tank from its
+/// check-out snapshot over the match's real damage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn m1_a_busy_arena_is_told_to_try_again_and_nothing_changes() {
+    let mut rig = Rig::boot(2);
+    duel(&mut rig);
+    let match_id = rig.centre().match_id.expect("a running match");
+    let tasks = rig.tasks();
+
+    // The replacement, on a runtime nobody drives.
+    let undriven = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a current-thread runtime");
+    let cfg = config();
+    let (handle, join) = tacsim::arena_task::spawn_arena(
+        undriven.handle(),
+        match_id,
+        replacement_custody(&rig),
+        &cfg.arena,
+        &cfg.match_,
+        &cfg.sensors,
+        tasks.egress_sender().expect("the egress sender"),
+    )
+    .expect("the replacement check-out is accepted");
+    let (displaced, displaced_join) = tasks
+        .insert(match_id, handle, join)
+        .expect("the running match's own task is displaced");
+    displaced.signal_stop();
+    tokio::time::timeout(std::time::Duration::from_secs(5), displaced_join)
+        .await
+        .expect("the displaced task stops")
+        .expect("the displaced task did not panic");
+
+    // Fill it: orders until the inbox refuses one, then controls into the
+    // reserve until it refuses those too.
+    let mut orders = 0_usize;
+    while orders < 1_000
+        && tasks
+            .offer(
+                match_id,
+                tacsim::arena_task::ArenaMsg::Intent(tacsim::arena::intents::Intent {
+                    unit: ObjId(0),
+                    channel: tacsim::arena::state::Channel::Helm,
+                    epoch: 0,
+                    kind: tacsim::arena::intents::IntentKind::Startup,
+                    seq: 0,
+                }),
+            )
+            .is_ok()
+    {
+        orders += 1;
+    }
+    assert!(
+        orders > 0 && orders < 1_000,
+        "the inbox took {orders} orders"
+    );
+    let mut controls = 0_usize;
+    while controls < 1_000
+        && tasks
+            .offer(
+                match_id,
+                tacsim::arena_task::ArenaMsg::Control(tacsim::arena::intents::Control {
+                    unit: ObjId(0),
+                    channel: tacsim::arena::state::Channel::Helm,
+                    epoch: 1,
+                    state: tacsim::arena::intents::ControlState::Live,
+                    pilot: None,
+                }),
+            )
+            .is_ok()
+    {
+        controls += 1;
+    }
+    assert_eq!(controls, 8, "the reserve is `3 × units + 2` for two units");
+    assert!(tasks.is_live(match_id), "the replacement task is live");
+
+    let untouched = |rig: &Rig| {
+        let record = rig
+            .tw
+            .world()
+            .module_state::<tacsim::match_::MatchBook>()
+            .and_then(|book| book.get(match_id))
+            .expect("the record")
+            .clone();
+        assert_eq!(record.state, MatchState::Running, "the record moved");
+        assert!(record.ended.is_none(), "a result was written");
+        assert_eq!(rig.state(), MatchState::Running, "the centre moved");
+    };
+
+    // `SIM ABORT`: the sentence to the one who typed it, and nothing to the room.
+    let heard = rig.say_overheard(1, "sim abort", 0);
+    assert!(
+        !heard.contains("aborts match"),
+        "a busy abort was announced: {heard}"
+    );
+    let said = rig.say(1, "sim abort");
+    assert!(
+        said.contains("The arena is busy; try that again in a moment."),
+        "{said}"
+    );
+    untouched(&rig);
+
+    // `SIM CONCEDE`, from red's lead: the same sentence, and no concede.
+    let said = rig.say(0, "sim concede");
+    assert!(
+        said.contains("The arena is busy; try that again in a moment."),
+        "{said}"
+    );
+    assert!(!said.contains("concedes for the"), "{said}");
+    untouched(&rig);
+
+    // `@arena/abort`: the verb's own sentence.
+    let said = rig.staff(&format!("@arena/abort {match_id}"));
+    assert!(
+        said.contains(&format!(
+            "Match {match_id} is busy; try @arena/abort again in a moment."
+        )),
+        "{said}"
+    );
+    untouched(&rig);
+
+    // The runtime goes, and the task with it — no result behind it.
+    undriven.shutdown_background();
+    for _ in 0..200 {
+        if !tasks.is_live(match_id) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(!tasks.is_live(match_id), "the undriven task's inbox closed");
+    assert_eq!(
+        tasks.send_stop(match_id, tacsim::arena::state::StopReason::Abort),
+        Err(tacsim::arena_bridge::ControlRefusal::Gone),
+        "a task that died without a result is `Gone`"
+    );
+    let said = rig.say(1, "sim abort");
+    assert!(
+        said.contains(&format!("Match {match_id} is over (abort).")),
+        "a match with no task is finished on the spot: {said}"
+    );
+    assert_eq!(rig.state(), MatchState::Aborted);
 }

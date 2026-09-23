@@ -574,6 +574,31 @@ async fn ledger_events(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Value
     events
 }
 
+/// **The black box's raw bytes** (16b cut M.1, `B-48`): every `lines` string of
+/// every chunk document, in chunk order, concatenated exactly — the same walk
+/// [`ledger_events`] makes, with no parse, no trim and no newline added. Its
+/// SHA-256 is what the result document's digest must be.
+async fn ledger_bytes(store: &Arc<dyn ObjectStore>, match_id: u64) -> String {
+    let log = format!("match.{match_id}");
+    let mut bytes = String::new();
+    for chunk in 0..256 {
+        let key = mush_core::chunk_key(&log, chunk);
+        let Some(value) = store
+            .module_json_get("tacsim", key.as_str())
+            .await
+            .expect("the store read")
+        else {
+            break;
+        };
+        let mut lines: Vec<String> = Vec::new();
+        collect_lines(&value, &mut lines);
+        for blob in lines {
+            bytes.push_str(&blob);
+        }
+    }
+    bytes
+}
+
 /// Every `"lines"` string in one chunk document, in document order.
 fn collect_lines(value: &Value, out: &mut Vec<String>) {
     match value {
@@ -1364,6 +1389,24 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("one digest per match: {result}"));
     assert_eq!(digest.len(), 64, "one sha-256 digest: {result}");
+    // **16b cut M.1** (`B-48`): and it is the digest of the log. Nothing asserted
+    // this before, and under backpressure the result could name bytes the log
+    // never got; now the arena task waits for every chunk before its `Ended` and
+    // reports the digest of what left it.
+    let logged = {
+        use sha2::{Digest as _, Sha256};
+        use std::fmt::Write as _;
+        let raw = ledger_bytes(&server.store, 1).await;
+        let mut hex = String::with_capacity(64);
+        for byte in Sha256::digest(raw.as_bytes()) {
+            let _ = write!(hex, "{byte:02x}");
+        }
+        hex
+    };
+    assert_eq!(
+        digest, logged,
+        "the result's digest is SHA-256 over the log's own lines, in chunk order"
+    );
     let rows = result
         .get("units")
         .and_then(Value::as_array)

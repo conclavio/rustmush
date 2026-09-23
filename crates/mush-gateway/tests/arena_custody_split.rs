@@ -21,16 +21,20 @@
 //! * the whole `@arena` lifecycle surface is live across the boundary — the read,
 //!   the refusals, and the fact that each one comes back as itself and not as a
 //!   broken pipe;
-//! * a server restart mid-session leaves the arena surface live, with no match
-//!   running and no custody left behind — doc 16 §8's "restart mid-match" seen
-//!   from the side the gateway can see;
+//! * a server restart **while a match is running** leaves the arena surface live,
+//!   with no match running and no custody left behind — doc 16 §8's "restart
+//!   mid-match" seen from the side the gateway can see, and (16b cut M.1, `T-42`)
+//!   the store's side of it: the boot reconciliation's result document;
 //! * the custody admission error is the same named sentence here as everywhere
 //!   else.
 //!
-//! What stays the `mushd` twin's is everything that is a claim about the
-//! **store**: the byte-identical record around an idle unit, the driven unit's
-//! final placement, the injected panic, the restart reconciliation's result
-//! document. This file can see only what the gateway can see.
+//! What stays the `mushd` twin's is the rest of the claims about the **store**:
+//! the byte-identical record around an idle unit, the driven unit's final
+//! placement, the injected panic. This file sees what the gateway can see, and
+//! (16b cut M.1, `T-42`) reads the server half's store for exactly two things
+//! of the restart: that both units' `deployed` markers were written before the
+//! crash and are gone after it, and the result document the boot
+//! reconciliation writes (`tacsim:match:<id>`, `abort` for `restart`).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -428,6 +432,54 @@ async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Ter
     )
 }
 
+/// **Wait until `check` answers `true`**, polling every 200 ms, or fail naming
+/// `label` (16b cut M.1). `crates/mushd/tests/support::wait_until`'s shape (cut L,
+/// `T-41`): `crates/mush-gateway/tests` has no shared support module, so this file
+/// carries its own copy, as it carries the rest of its rig.
+async fn wait_until(bound: Duration, label: &str, mut check: impl AsyncFnMut() -> bool) {
+    tokio::time::timeout(bound, async {
+        loop {
+            if check().await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{label} did not happen within {bound:?}"));
+}
+
+/// Whether `unit`'s authoritative record carries a `deployed` marker, as the
+/// server half's store holds it.
+async fn deployed(store: &Arc<dyn ObjectStore>, unit: u32) -> bool {
+    store
+        .module_json_get("tactics", &format!("unit:{unit}"))
+        .await
+        .expect("the store read")
+        .is_some_and(|document| document.get("deployed").is_some())
+}
+
+/// The match id in `Match N is running on ...`.
+fn running_match_id(answer: &str) -> u64 {
+    answer
+        .lines()
+        .find_map(|line| {
+            let rest = line.split_once("Match ")?.1;
+            let (id, tail) = rest.split_once(' ')?;
+            if tail.starts_with("is running on") {
+                id.parse::<u64>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no running match id in:
+{answer}"
+            )
+        })
+}
+
 /// The dbref `@find` printed beside `name`, as `<name>(#N)`.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -445,7 +497,16 @@ fn dbref_of(listing: &str, name: &str) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// The arena lifecycle surface is live across the boundary, and a restart
-/// mid-session leaves it live with nothing in custody.
+/// **while a match is running** leaves it live with nothing in custody.
+///
+/// **16b cut M.1** (`T-42`): the crash used to come after `@arena/abort` had
+/// already checked the units in, so "restarts with nothing in custody" was said
+/// of a match that had ended. It now comes while the match is `Running`, once
+/// both units' `deployed` markers are in the store (the wait
+/// `crates/mushd/tests/arena_custody.rs`'s restart test makes — without it the
+/// reboot may find no marker and write no result), and afterwards the lens
+/// asserts what "nothing in custody" means: no match running, the unit movable
+/// again, and the boot reconciliation's result document for the match.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_arena_surface_survives_the_split_and_a_server_restart() {
     let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
@@ -502,11 +563,13 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
         &god.ask("@find Blue Tank 1", "END OF LIST").await,
         "Blue Tank 1",
     );
-    god.say(
-        &format!("@arena/start tacsim.arena.proving_ground=#{red}/#{blue}"),
-        "is running on",
-    )
-    .await;
+    let started = god
+        .ask(
+            &format!("@arena/start tacsim.arena.proving_ground=#{red}/#{blue}"),
+            "is running on",
+        )
+        .await;
+    let match_id = running_match_id(&started);
     god.say("@arena/status", "running, tempo").await;
     god.say(&format!("@arena/intent #{red}=startup"), "Ordered")
         .await;
@@ -517,13 +580,14 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
         "deployed in arena match",
     )
     .await;
-    god.say("@arena/abort", "is stopping").await;
-    // The end itself is an *unsolicited* line the arena task pushes back through
-    // the boundary when the check-in lands, which is the last thing a split can
-    // break: an answer nobody asked for.
-    god.expect("Its units are checked in.").await;
+    // Both markers durable before the crash, or the reboot has nothing to
+    // reconcile and writes no result.
+    wait_until(STEP_TIMEOUT, "both custody markers to land", async || {
+        deployed(&server_store, red).await && deployed(&server_store, blue).await
+    })
+    .await;
 
-    // --- (3) make the server EXIT ON ITS OWN, mid-session ------------------
+    // --- (3) make the server EXIT ON ITS OWN, mid-match --------------------
     let before_crash = god.mark();
     let crash_tx = crash
         .lock()
@@ -548,6 +612,37 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
         "is not a tactical unit",
     )
     .await;
+    // The match that was running is on the record as the boot reconciliation's
+    // aborted restart, and neither unit carries a marker.
+    let key = format!("tacsim:match:{match_id}");
+    wait_until(STEP_TIMEOUT, "the restart's result document", async || {
+        server_store
+            .module_json_get("tacsim", &key)
+            .await
+            .expect("the store read")
+            .is_some_and(|result| {
+                result.get("outcome").and_then(serde_json::Value::as_str) == Some("abort")
+                    && result.get("reason").and_then(serde_json::Value::as_str) == Some("restart")
+            })
+    })
+    .await;
+    assert!(
+        !deployed(&server_store, red).await,
+        "the red marker survived"
+    );
+    assert!(
+        !deployed(&server_store, blue).await,
+        "the blue marker survived"
+    );
+    // Last, because it takes the tank off the map: the admission site that
+    // refused while the arena held the unit lets it go now.
+    let answer = god
+        .ask(&format!("@spatial/unplace #{red}"), "Unplaced")
+        .await;
+    assert!(
+        !answer.contains("deployed in arena match"),
+        "a unit the restart checked in is still refused as deployed: {answer}"
+    );
 
     drop(god);
 }

@@ -1341,6 +1341,21 @@ pub struct UnitState {
     pub shots_fired: u32,
     /// **How many of them landed** (16b cut W.2), likewise.
     pub hits: u32,
+    /// **The arena second the seat-order count below belongs to** (16b cut M.1,
+    /// `T-82`): `now_ms.div_euclid(1_000)` at the last discrete order a seat gave
+    /// this unit, `0` at check-out.
+    ///
+    /// Written only by [`crate::arena::intents::apply_intent`], for an order from
+    /// [`crate::arena::intents::IntentSource::Seat`]. It **is** folded into
+    /// [`crate::arena::hash::state_hash`] beside the count: persistent state that
+    /// decides a refusal notice is hashed.
+    pub orders_window_s: i64,
+    /// **How many discrete orders seats have given this unit in that arena
+    /// second** (16b cut M.1, `T-82`), against `intents.max_pending_per_unit`:
+    /// the discrete orders one seat may give a unit per arena second. An order
+    /// that finds it at the bound is refused `queue_full`; a new second resets
+    /// it. The machine's own orders are never counted. Hashed, with the window.
+    pub orders_in_window: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -2627,8 +2642,12 @@ pub struct Arena {
     /// one buffer for the whole match and not one per unit, and because a unit
     /// under a pilot carries no machine at all.
     pub reflex: crate::arena::reflex::ReflexMemory,
-    /// Queued discrete actions per unit, bounded by
-    /// `intents.max_pending_per_unit`.
+    /// Queued discrete actions per unit, with **no bound of their own** (16b
+    /// cut M.1, `T-82`): a seat's `intents.max_pending_per_unit` orders a unit
+    /// per arena second (counted in `apply_intent`) and the arena task's
+    /// per-unit pre-pulse bound (that value plus one) limit what reaches them;
+    /// the reflex controller's own orders are not counted, and phase 4 empties
+    /// the queue every pulse.
     pub pending: BTreeMap<ObjId, VecDeque<Intent>>,
     /// **The shots in flight**, by shot sequence (16b cut W.1; doc 16 §4 "Arena
     /// state": *scheduled impacts*).
@@ -2987,6 +3006,9 @@ impl Arena {
                 disabled: !entry.limits.wreck && weapons_left == 0 && entry.limits.motion_disabled,
                 shots_fired: 0,
                 hits: 0,
+                // **16b cut M.1** (`T-82`): no seat has ordered anything yet.
+                orders_window_s: 0,
+                orders_in_window: 0,
             });
         }
         states.sort_by_key(|state| state.id);

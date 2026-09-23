@@ -587,6 +587,13 @@ pub fn start(
             .w
             .module_state_mut::<MatchBook>()
             .ok_or(StartError::Unavailable)?;
+        // **16b cut M.1** (`T-12`): both arms insert the fresh `boarding`. A
+        // record already in `Boarding` used to be kept and this one dropped, so
+        // its roster, definition digest, `started_ms` and seed were not the
+        // custody's — the `CustodyOut` below always takes the fresh
+        // `seed_for(..)`, which never repeats. Replacing it makes every field of
+        // the record agree with the custody by construction; the `match` only
+        // gates the state.
         match book.matches.get(&match_id) {
             Some(record) if !record.state.may_start() => {
                 return Err(StartError::WrongState {
@@ -594,7 +601,9 @@ pub fn start(
                     state: record.state.as_str(),
                 });
             }
-            Some(_) => {}
+            Some(_) => {
+                book.matches.insert(match_id, boarding);
+            }
             None => {
                 book.prune_finished(MAX_TRACKED_MATCHES);
                 book.matches.insert(match_id, boarding);
@@ -1193,26 +1202,58 @@ pub(crate) fn release_seat(ctx: &mut Ctx<'_>, unit: ObjId) {
     }
 }
 
-/// Stop one match, for whatever reason (`@arena/abort`, `SIM ABORT`, a timeout).
+/// **What one stop through [`abort`] did** (16b cut M.1, `B-49`).
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbortOutcome {
+    /// The arena took the stop: the record is parked in `Stopping`, and the
+    /// check-in follows when the arena reports its end.
+    Stopping,
+    /// There was no task to take it (or no layer, or no such match), so the
+    /// world finished the match on the spot, with no units: every tank is
+    /// restored from its check-out snapshot.
+    Finished,
+    /// **The arena could not take it this instant and the match is still the
+    /// arena's**: a full inbox on a live task, or an `Ended` already on its way
+    /// through the shared egress ([`crate::arena_bridge::ControlRefusal::Busy`]).
+    /// Nothing was changed — no state write, no finish, no announcement — and
+    /// the caller tells whoever asked to try again in a moment.
+    Busy,
+}
+
+/// Stop one match, for whatever reason (`@arena/abort`, `SIM ABORT`, `SIM
+/// CONCEDE`).
 ///
 /// The stop is honoured at the arena's next pulse, and the check-in happens when
 /// the arena reports its end — never here. A match whose task is already gone is
 /// finished on the spot instead, so an abort always has an effect.
-pub fn abort(ctx: &mut Ctx<'_>, match_id: MatchId, reason: StopReason) -> bool {
-    if crate::arena_bridge::send_stop(ctx, match_id, reason).is_ok() {
-        if let Some(book) = ctx.w.module_state_mut::<MatchBook>()
-            && let Some(record) = book.get_mut(match_id)
-        {
-            record.state = MatchState::Stopping;
+///
+/// **16b cut M.1** (`B-49`): a match whose arena is only **busy** is left
+/// exactly as it is ([`AbortOutcome::Busy`]). Before this cut every refused offer
+/// fell to the no-task arm, so a `SIM ABORT` during a busy pulse — or in the
+/// window after the task had sent its `Ended` and before the world had drained
+/// it — finished the match with no units and restored every tank from its
+/// snapshot, discarding the match's damage; the real `Ended` then found no live
+/// record and was thrown away.
+pub fn abort(ctx: &mut Ctx<'_>, match_id: MatchId, reason: StopReason) -> AbortOutcome {
+    match crate::arena_bridge::send_stop(ctx, match_id, reason) {
+        Ok(()) => {
+            if let Some(book) = ctx.w.module_state_mut::<MatchBook>()
+                && let Some(record) = book.get_mut(match_id)
+            {
+                record.state = MatchState::Stopping;
+            }
+            return AbortOutcome::Stopping;
         }
-        return true;
+        Err(crate::arena_bridge::ControlRefusal::Busy) => return AbortOutcome::Busy,
+        Err(_) => {}
     }
     // No task: the world is the only thing left holding the match, so end it
     // here rather than leaving units deployed to nothing.
     // No units come back with it: there is no arena to return them, so every one
     // of them is restored from its check-out snapshot (doc 16 §3.1's fail-closed
     // read, the same one a void takes).
-    finish(
+    let _ = finish(
         ctx,
         match_id,
         MatchEnd {
@@ -1221,7 +1262,8 @@ pub fn abort(ctx: &mut Ctx<'_>, match_id: MatchId, reason: StopReason) -> bool {
         },
         String::new(),
         &[],
-    )
+    );
+    AbortOutcome::Finished
 }
 
 #[cfg(test)]

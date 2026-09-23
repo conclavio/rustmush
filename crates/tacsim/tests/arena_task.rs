@@ -20,7 +20,15 @@
 //!   match voids it too: the result is `Void` with no unit returned, and the
 //!   black box keeps the end the arena journalled — `match_ended` for a timeout,
 //!   `aborted` for an abort — and no `void` event; while the same terminal pulse
-//!   inside the bound keeps its reason and returns both tanks.
+//!   inside the bound keeps its reason and returns both tanks;
+//! - **(g)** (16b cut M.1) the seam under backpressure: an end waits for every
+//!   chunk and the held frame and reports the digest the chunks reproduce, and
+//!   the stop signal releases it; a frame the world could not take is held and
+//!   merged, at most sixty-four held notices a pilot and a frame the world can
+//!   take never cut; no control is dropped and a displaced
+//!   release still runs; a burst is bounded per unit with the newest refused;
+//!   the inbox keeps room for a control, a stop and an ack; and a stop that
+//!   meets an `Ended` in flight is `Busy` where a task that died is `Gone`.
 //!
 //! # Seeds
 //!
@@ -43,16 +51,20 @@ use mush_tactics::{
     CellSpec, DefinitionRef, FacetId, FacetSpec, RulesValue, SectionId, SectionSpec, TacticalUnit,
     UnitSpec,
 };
+use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
-use tacsim::arena::intents::{Intent, IntentKind};
+use tacsim::arena::intents::{Control, ControlState, Intent, IntentKind, Refusal};
 use tacsim::arena::ledger::{EventKind, LedgerEvent};
+use tacsim::arena::perception::FrameNotice;
 use tacsim::arena::state::{
     Arena, ArenaDefinition, ArenaTerrain, Channel, CustodyOut, CustodyUnit, EndReason, EntryZone,
-    Pilot, StopReason, Team, TerrainCell, TrackedRules,
+    Pilot, Power, StopReason, Team, TerrainCell, TrackedRules,
 };
+use tacsim::arena_bridge::{ArenaTasks, ControlRefusal};
 use tacsim::arena_task::{ArenaHandle, ArenaMsg, ArenaOut, MatchId, spawn_arena};
 use tacsim::config::{ArenaConfig, MatchConfig, SensorsConfig};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 /// Every seed this file arms an arena with, and which proof owns it. The two
 /// hooks in `arena/step.rs` key on the seed, so a duplicate here would let one
@@ -63,13 +75,30 @@ use tokio::sync::mpsc;
 /// `2_371` for the frame that outranks it, and `2_377` for the shipped config's
 /// clock. **16b cut AA.3** follows the same convention for its hook-free
 /// control: `2_381`, the terminal pulse inside the bound.
-const SEEDS: [(u64, &str); 6] = [
+///
+/// **16b cut M.1** adds its own rows (`2_356` onwards). None of its proofs arms
+/// a hook, but a row each keeps one match per proof and the rule in one place.
+const SEEDS: [(u64, &str); 17] = [
     (2_350, "the round trip"),
     (2_351, "the injected panic"),
     (2_352, "the stall"),
     (2_353, "the stop signal"),
     (2_354, "the stalled terminal pulse"),
     (2_355, "the stalled abort"),
+    (
+        2_356,
+        "M.1: an end that waits for its chunks and its held frame",
+    ),
+    (2_357, "M.1: a stop while the end waits"),
+    (2_358, "M.1: frames held and merged across a stall"),
+    (2_359, "M.1: sixty-four held notices a pilot"),
+    (2_390, "M.1: seventeen controls and a release in one window"),
+    (2_391, "M.1: a displaced release still runs"),
+    (2_392, "M.1: a burst bounded per unit, the newest refused"),
+    (2_393, "M.1: the inbox reserve"),
+    (2_394, "M.1: the Ended in flight"),
+    (2_395, "M.1: the task that died without a result"),
+    (2_397, "M.1: a frame the world can take is never cut"),
 ];
 
 /// **16b cut AA.3**: the stall hook is one global seed slot, and arming it
@@ -273,8 +302,21 @@ fn start_with(
     arena_cfg: &ArenaConfig,
     match_cfg: &MatchConfig,
 ) -> (ArenaHandle, mpsc::Receiver<ArenaOut>) {
-    let (egress_tx, egress_rx) = mpsc::channel(256);
-    let (handle, _join) = spawn_arena(
+    let (handle, _join, egress_rx) = start_with_egress(seed, arena_cfg, match_cfg, 256);
+    (handle, egress_rx)
+}
+
+/// **16b cut M.1**: [`start_with`], on an egress of `capacity` messages, handing
+/// back the task's join as well — the backpressure proofs need an egress the
+/// world is not draining, and the stop proofs need to see the task end.
+fn start_with_egress(
+    seed: u64,
+    arena_cfg: &ArenaConfig,
+    match_cfg: &MatchConfig,
+    capacity: usize,
+) -> (ArenaHandle, JoinHandle<()>, mpsc::Receiver<ArenaOut>) {
+    let (egress_tx, egress_rx) = mpsc::channel(capacity);
+    let (handle, join) = spawn_arena(
         &tokio::runtime::Handle::current(),
         MatchId(seed),
         custody(seed),
@@ -284,7 +326,7 @@ fn start_with(
         egress_tx,
     )
     .expect("the test check-out is accepted");
-    (handle, egress_rx)
+    (handle, join, egress_rx)
 }
 
 /// Every message the arena publishes for `how_long`, or until it ends.
@@ -487,6 +529,10 @@ async fn a_panic_in_step_voids_the_match_and_publishes_nothing_from_that_pulse()
     )
     .expect("the arming arena is accepted");
     armed.panic_on_next_step_for_tests();
+    // 16b cut M.1 (`B-48`): what the task's arena has appended by its first
+    // step — `match_started`, written by `Arena::new` into the open chunk from
+    // the same custody — and never shipped.
+    let appended = armed.ledger.digest();
     drop(armed);
 
     let (handle, mut rx) = start(seed, &arena_cfg);
@@ -513,6 +559,25 @@ async fn a_panic_in_step_voids_the_match_and_publishes_nothing_from_that_pulse()
         "and no frame either: {messages:#?}"
     );
     assert_eq!(messages.len(), 1, "the `Ended` is the only message");
+    // 16b cut M.1 (`B-48`): the reported digest is over what LEFT the ledger —
+    // nothing here, so the digest of no bytes — and not over the open chunk the
+    // faulted pulse never flushed, which `log:match.<id>` could never
+    // reproduce.
+    let reported = messages.iter().find_map(|message| match message {
+        ArenaOut::Ended { digest, .. } => Some(*digest),
+        _ => None,
+    });
+    let nothing: [u8; 32] = Sha256::digest(b"").into();
+    assert_eq!(
+        reported,
+        Some(nothing),
+        "Ended.digest is SHA-256 over the chunks that left, of which there are none"
+    );
+    assert_ne!(
+        reported,
+        Some(appended),
+        "Ended.digest covers the open chunk the faulted pulse never shipped"
+    );
     // The world keeps its handle and the task is gone.
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!handle.is_live(), "the task ended rather than looping");
@@ -1056,5 +1121,818 @@ async fn d1_a_pulse_that_carries_a_frame_is_never_suppressed_by_the_clock() {
             _ => true,
         }),
         "the arena's clock went backwards: {all:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16b cut M.1 — the seam: the end waits, frames are held, nothing is dropped
+// ---------------------------------------------------------------------------
+
+/// One order at the check-out's epoch, on the channel it needs.
+fn order(unit: ObjId, kind: IntentKind, seq: u64) -> ArenaMsg {
+    ArenaMsg::Intent(Intent {
+        unit,
+        channel: kind.channel_required(),
+        epoch: 1,
+        kind,
+        seq,
+    })
+}
+
+/// `FIRE` with a weapon the fixture tanks do not carry: phase 4 refuses it and
+/// stages a `Refused` notice for the pilot — a notice that exists nowhere else.
+fn fire(unit: ObjId, seq: u64) -> ArenaMsg {
+    order(
+        unit,
+        IntentKind::Fire {
+            weapon: SmolStr::new("cannon"),
+        },
+        seq,
+    )
+}
+
+/// `LOCK` on a contact nobody holds: refused `no_contact` in phase 4, said.
+fn lock(unit: ObjId, seq: u64) -> ArenaMsg {
+    order(
+        unit,
+        IntentKind::Lock {
+            contact: tacsim::arena::state::ContactId(0x5eed),
+        },
+        seq,
+    )
+}
+
+/// Every notice for `pilot`, with the index of the message it arrived in.
+fn notices_for(messages: &[ArenaOut], pilot: ObjId) -> Vec<(usize, FrameNotice)> {
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(at, message)| match message {
+            ArenaOut::Frames { frames, .. } => Some(
+                frames
+                    .iter()
+                    .filter(|(to, _)| *to == pilot)
+                    .flat_map(|(_, frame)| frame.notices.iter().cloned().map(move |n| (at, n)))
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// The `Refused` notices among them, as `(order word, refusal)`.
+fn refusals_for(messages: &[ArenaOut], pilot: ObjId) -> Vec<(String, Refusal)> {
+    notices_for(messages, pilot)
+        .into_iter()
+        .filter_map(|(_, notice)| match notice {
+            FrameNotice::Refused { order, refusal, .. } => Some((order.to_string(), refusal)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The indices of the `Frames` messages that carry a frame for `pilot`.
+fn frames_for(messages: &[ArenaOut], pilot: ObjId) -> Vec<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| {
+            matches!(message, ArenaOut::Frames { frames, .. }
+                if frames.iter().any(|(to, _)| *to == pilot))
+        })
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// **`B-48`: an end waits for every chunk and the held frame, then reports the
+/// digest the log can reproduce** (16b cut M.1).
+///
+/// A one-message egress the world does not read while the match closes several
+/// chunks: before this cut `Task::end` offered the backlog once with `try_send`
+/// and reported `Ledger::digest()`, so the result named bytes the log never got.
+/// Now every chunk arrives, in order, then the final held `Frames`, then one
+/// `Ended` whose digest is SHA-256 over the chunk bytes as received.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m1_an_end_waits_for_every_chunk_and_the_held_frame_and_reports_the_logs_digest() {
+    let seed = SEEDS[6].0;
+    let (handle, _join, mut rx) =
+        start_with_egress(seed, &fast_arena(), &MatchConfig::default(), 1);
+    // The opening pulse's frames take the one slot; everything after waits.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // A refusal staged in a pulse the world cannot take: held, not lost.
+    handle.offer(fire(RED, 1)).expect("the inbox takes a fire");
+    tokio::time::sleep(Duration::from_millis(3_000)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    // Long enough for the stopping pulse to run and `end` to be waiting.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let messages = collect(&mut rx, Duration::from_millis(10_000)).await;
+    let last = messages.len().saturating_sub(1);
+    assert!(
+        matches!(messages.get(last), Some(ArenaOut::Ended { .. })),
+        "the result is the last message: {messages:#?}"
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| matches!(message, ArenaOut::Ended { .. }))
+            .count(),
+        1,
+        "exactly one result"
+    );
+    assert!(
+        matches!(
+            messages.get(last.saturating_sub(1)),
+            Some(ArenaOut::Frames { .. })
+        ),
+        "the held frame is sent before the result: {messages:#?}"
+    );
+    // The opening frame took the slot, the chunks follow in order, and then the
+    // held frame and the end: nothing else interleaves.
+    assert!(matches!(messages.first(), Some(ArenaOut::Frames { .. })));
+    let chunk_seqs: Vec<u64> = messages
+        .iter()
+        .filter_map(|message| match message {
+            ArenaOut::Ledger { chunk, .. } => Some(chunk.seq),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        chunk_seqs.len() >= 3,
+        "several chunks closed while the world was not reading: {chunk_seqs:?}"
+    );
+    assert_eq!(
+        chunk_seqs,
+        (1..=chunk_seqs.len() as u64).collect::<Vec<u64>>(),
+        "every chunk arrives, in sequence, with no gap"
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| matches!(message, ArenaOut::Frames { .. }))
+            .count(),
+        2,
+        "the opening frame and the one held frame: {messages:#?}"
+    );
+    // The refusal arrives once, in the held frame, before the end.
+    let refused: Vec<(usize, FrameNotice)> = notices_for(&messages, RED_PILOT)
+        .into_iter()
+        .filter(|(_, notice)| matches!(notice, FrameNotice::Refused { .. }))
+        .collect();
+    assert_eq!(refused.len(), 1, "the refusal is said once: {refused:?}");
+    assert_eq!(refused.first().map(|(at, _)| *at), Some(last - 1));
+    // And the digest is the log's.
+    let mut log = Sha256::new();
+    for message in &messages {
+        if let ArenaOut::Ledger { chunk, .. } = message {
+            log.update(&chunk.bytes);
+        }
+    }
+    let log: [u8; 32] = log.finalize().into();
+    let reported = messages.iter().find_map(|message| match message {
+        ArenaOut::Ended { digest, .. } => Some(*digest),
+        _ => None,
+    });
+    assert_eq!(
+        reported,
+        Some(log),
+        "Ended.digest is SHA-256 over the chunks received"
+    );
+    assert_eq!(ended(&messages), Some(EndReason::Abort));
+}
+
+/// **`B-48`: the stop signal ends an end that is waiting on a full egress**
+/// (16b cut M.1).
+///
+/// A stopped wait sends no `Ended` and returns: the `watch` change the wait took
+/// never fires again, so falling through to the next send on a full egress would
+/// hang the task — and the shutdown tail's join with it.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m1_the_stop_signal_releases_an_end_waiting_on_a_full_egress() {
+    let seed = SEEDS[7].0;
+    let (handle, join, mut rx) = start_with_egress(seed, &fast_arena(), &MatchConfig::default(), 1);
+    tokio::time::sleep(Duration::from_millis(2_000)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        handle.is_live(),
+        "the task is still waiting in `end` on the full egress"
+    );
+    handle.signal_stop();
+    tokio::time::timeout(Duration::from_secs(3), join)
+        .await
+        .expect("the stop signal ends the waiting task")
+        .expect("the task did not panic");
+    assert!(!handle.is_live());
+    assert!(!handle.has_reported(), "a stopped task reports nothing");
+    let tail = collect(&mut rx, Duration::from_millis(500)).await;
+    assert!(
+        ended(&tail).is_none(),
+        "a process that is stopping is owed no result: {tail:#?}"
+    );
+}
+
+/// **`B-77`: a frame the world could not take is held and merged, never lost**
+/// (16b cut M.1).
+///
+/// The world stops reading across the `StartupComplete` pulse, a refusal, a
+/// drive and a release. When it reads again: one message carries `PowerOnline`
+/// and its frame reads `Online`; the refusal arrives once; no notice arrives
+/// twice; the delivered view is the latest; the released pilot is in nothing
+/// sent after the release — and that pilot had a refusal of their own **held**
+/// when the release came (a `fire` of BLUE's, staged into a frame the world
+/// could not take), so the proof fails if the task sends a held frame to a
+/// pilot the world has let go (the leak doc 16 §3.6's observer rule forbids).
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m1_frames_the_world_could_not_take_are_held_and_merged() {
+    let seed = SEEDS[8].0;
+    let match_cfg = MatchConfig {
+        startup_ms: 300,
+        ..MatchConfig::default()
+    };
+    let (handle, _join, mut rx) = start_with_egress(seed, &fast_arena(), &match_cfg, 1);
+    handle
+        .offer(order(RED, IntentKind::Startup, 1))
+        .expect("the inbox takes the startup");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle.offer(fire(RED, 2)).expect("the inbox takes a fire");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    handle
+        .offer(order(RED, IntentKind::Heading { mdeg: 90_000 }, 3))
+        .expect("the inbox takes a heading");
+    handle
+        .offer(order(RED, IntentKind::Speed { cms: 500 }, 4))
+        .expect("the inbox takes a speed");
+    // A notice for BLUE's pilot, staged while the world is not reading: it is
+    // held, and the release below must take it out of the hold.
+    handle.offer(fire(BLUE, 5)).expect("the inbox takes a fire");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    handle
+        .offer(ArenaMsg::Control(Control {
+            unit: BLUE,
+            channel: Channel::Helm,
+            epoch: 2,
+            state: ControlState::Released,
+            pilot: Some(BLUE_PILOT),
+        }))
+        .expect("the inbox takes a control");
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+
+    let messages = collect(&mut rx, Duration::from_millis(10_000)).await;
+    assert_eq!(ended(&messages), Some(EndReason::Abort), "{messages:#?}");
+
+    // `PowerOnline`, once, on a frame that reads `Online`.
+    let online: Vec<usize> = notices_for(&messages, RED_PILOT)
+        .into_iter()
+        .filter(|(_, notice)| *notice == FrameNotice::PowerOnline)
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(online.len(), 1, "power online is said once: {online:?}");
+    let carrying = online.first().and_then(|at| messages.get(*at));
+    let power = carrying.and_then(|message| match message {
+        ArenaOut::Frames { frames, .. } => frames
+            .iter()
+            .find(|(to, _)| *to == RED_PILOT)
+            .map(|(_, frame)| frame.power),
+        _ => None,
+    });
+    assert_eq!(
+        power,
+        Some(Power::Online),
+        "and the frame it rides reads online"
+    );
+
+    // The refusal, once.
+    assert_eq!(
+        refusals_for(&messages, RED_PILOT)
+            .iter()
+            .filter(|(word, _)| word == "fire")
+            .count(),
+        1,
+        "the refusal is said exactly once"
+    );
+    // No notice in two messages: every notice this match staged is distinct.
+    let said: Vec<FrameNotice> = notices_for(&messages, RED_PILOT)
+        .into_iter()
+        .map(|(_, notice)| notice)
+        .collect();
+    for (at, notice) in said.iter().enumerate() {
+        assert!(
+            !said.iter().skip(at + 1).any(|other| other == notice),
+            "{notice:?} was delivered twice: {said:?}"
+        );
+    }
+
+    // The delivered view is the latest: the last frame RED's pilot was sent
+    // stands where the arena returned the tank, and it moved.
+    let last_pose = frames_for(&messages, RED_PILOT)
+        .last()
+        .and_then(|at| messages.get(*at))
+        .and_then(|message| match message {
+            ArenaOut::Frames { frames, .. } => frames
+                .iter()
+                .find(|(to, _)| *to == RED_PILOT)
+                .map(|(_, frame)| (frame.pose.x_cm, frame.pose.y_cm)),
+            _ => None,
+        });
+    let returned_pose = messages.iter().find_map(|message| match message {
+        ArenaOut::Ended { units, .. } => units
+            .iter()
+            .find(|unit| unit.unit == RED)
+            .map(|unit| (unit.pose.x_cm, unit.pose.y_cm)),
+        _ => None,
+    });
+    assert_eq!(last_pose, returned_pose, "the delivered view is the newest");
+    assert!(
+        last_pose.is_some_and(|(x_cm, _)| x_cm > centre(1, 4).x_cm),
+        "the tank drove: {last_pose:?}"
+    );
+
+    // The released pilot: in the opening frame, and in nothing sent after —
+    // not even the refusal that was held for them when they left.
+    let blue = frames_for(&messages, BLUE_PILOT);
+    assert!(
+        blue.iter().all(|at| *at == 0),
+        "a released pilot was sent a held frame: {blue:?}"
+    );
+    assert_eq!(
+        refusals_for(&messages, BLUE_PILOT),
+        Vec::new(),
+        "a notice held for a released pilot was delivered"
+    );
+}
+
+/// The one frame for `pilot` in message `at`, if it carries one.
+fn frame_in(messages: &[ArenaOut], at: usize, pilot: ObjId) -> Option<&tacsim::arena::step::Frame> {
+    match messages.get(at) {
+        Some(ArenaOut::Frames { frames, .. }) => frames
+            .iter()
+            .find(|(to, _)| *to == pilot)
+            .map(|(_, frame)| frame),
+        _ => None,
+    }
+}
+
+/// **`B-77`: past sixty-four held notices a pilot, the oldest go** (16b cut M.1).
+///
+/// The rate raised to sixty-four; the world stops reading after the opening
+/// frame. Forty `LOCK`s in one pulse stage forty `no_contact` refusals, held;
+/// an arena second later forty `FIRE`s stage forty `no_weapon` refusals, and
+/// the merge makes eighty — past the bound only through the merge, since
+/// neither pulse alone reaches it. The delivered frame carries the newest
+/// sixty-four: the sixteen oldest locks went, the other twenty-four and all
+/// forty fires stand, in order. The once-a-match `warn` has no subscriber to be
+/// read by in this crate's tests; `Task::held_notice_drops` counts what went.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m1_a_pilot_is_held_at_most_sixty_four_notices() {
+    let seed = SEEDS[9].0;
+    let mut arena_cfg = fast_arena();
+    arena_cfg.intents.max_pending_per_unit = 64;
+    let (handle, _join, mut rx) = start_with_egress(seed, &arena_cfg, &MatchConfig::default(), 1);
+    // The opening frame takes the slot.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    for seq in 1..=40 {
+        handle
+            .offer(lock(RED, seq))
+            .expect("the inbox takes a lock");
+    }
+    // Past the next arena second, so the seat's rate has room for forty more.
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    for seq in 41..=80 {
+        handle
+            .offer(fire(RED, seq))
+            .expect("the inbox takes a fire");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let messages = collect(&mut rx, Duration::from_millis(10_000)).await;
+    assert_eq!(ended(&messages), Some(EndReason::Abort));
+    let delivered: Vec<usize> = frames_for(&messages, RED_PILOT);
+    assert_eq!(delivered.len(), 2, "the opening frame and the held one");
+    let at = delivered.last().copied().unwrap_or(0);
+    assert_eq!(
+        frame_in(&messages, at, RED_PILOT).map(|frame| frame.notices.len()),
+        Some(64),
+        "eighty refusals were held; sixty-four are kept"
+    );
+    let mut kept: Vec<(String, Refusal)> = vec![("lock".to_owned(), Refusal::NoContact); 24];
+    kept.extend(vec![("fire".to_owned(), Refusal::NoWeapon); 40]);
+    assert_eq!(
+        refusals_for(messages.get(at..=at).unwrap_or_default(), RED_PILOT),
+        kept,
+        "the oldest sixteen went, and the rest are in the order they were staged"
+    );
+}
+
+/// **`B-77`: a frame the world can take is never cut** (16b cut M.1).
+///
+/// The bound is on what a lagging world lets pile up, not on one pulse: with
+/// the egress keeping up, a burst that stages sixty-five refusals for one pilot
+/// in one pulse — the rate at sixty-four takes sixty-four `FIRE`s, each refused
+/// `no_weapon`, and says `queue_full` for the sixty-fifth — reaches the pilot
+/// whole, the oldest (`queue_full`, staged in phase 2) first.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m1_a_frame_the_world_can_take_is_never_cut() {
+    let seed = SEEDS[16].0;
+    let mut arena_cfg = fast_arena();
+    arena_cfg.intents.max_pending_per_unit = 64;
+    let (handle, _join, mut rx) = start_with_egress(seed, &arena_cfg, &MatchConfig::default(), 256);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    for seq in 1..=70 {
+        handle
+            .offer(fire(RED, seq))
+            .expect("the inbox takes a fire");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let messages = collect(&mut rx, Duration::from_millis(10_000)).await;
+    assert_eq!(ended(&messages), Some(EndReason::Abort));
+    let mut told = vec![("fire".to_owned(), Refusal::QueueFull)];
+    told.extend(vec![("fire".to_owned(), Refusal::NoWeapon); 64]);
+    assert_eq!(
+        refusals_for(&messages, RED_PILOT),
+        told,
+        "sixty-five notices in one pulse the world could take are sixty-five told"
+    );
+}
+
+/// **`B-50`: seventeen controls and a release in one window lose nothing**
+/// (16b cut M.1).
+///
+/// Before this cut the pre-pulse buffer dropped its **oldest** message when it
+/// held `max_pending_per_unit × units` (sixteen here), and a dropped control left
+/// the world's epoch above the arena's. So the `Released` goes in FIRST, at epoch
+/// 2, with the seventeen `Live`s at epochs 3 to 19 behind it: the old buffer
+/// dropped exactly the release (and the `Live` at 3), and RED's pilot went on
+/// being sent frames. Now the `Live`s collapse to the highest, the release they
+/// displaced is kept and runs first, an order at epoch 19 afterwards is taken
+/// (its `startup` is journalled), one at 18 is not, and the released pilot is
+/// sent nothing.
+///
+/// A `Live` stands on top, so the release's hand-over to the reflex controller
+/// is taken back in the same phase 1, before the machine ever ticks, and the one
+/// `startup` in the black box is the seat's.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m1_seventeen_controls_and_a_release_collapse_to_the_highest_epoch() {
+    let seed = SEEDS[10].0;
+    let (handle, _join, mut rx) =
+        start_with_egress(seed, &fast_arena(), &MatchConfig::default(), 256);
+    handle
+        .offer(ArenaMsg::Control(Control {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 2,
+            state: ControlState::Released,
+            pilot: Some(RED_PILOT),
+        }))
+        .expect("a control always fits");
+    for epoch in 3..=19 {
+        handle
+            .offer(ArenaMsg::Control(Control {
+                unit: RED,
+                channel: Channel::Helm,
+                epoch,
+                state: ControlState::Live,
+                pilot: None,
+            }))
+            .expect("a control always fits");
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let startup = |epoch: u64, seq: u64| {
+        ArenaMsg::Intent(Intent {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch,
+            kind: IntentKind::Startup,
+            seq,
+        })
+    };
+    // One below the highest: refused `epoch`, silently.
+    handle
+        .offer(startup(18, 1))
+        .expect("the inbox takes a startup");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle
+        .offer(startup(19, 2))
+        .expect("the inbox takes a startup");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let messages = collect(&mut rx, Duration::from_millis(5_000)).await;
+    assert_eq!(ended(&messages), Some(EndReason::Abort));
+    let startups: Vec<i64> = events(&messages)
+        .into_iter()
+        .filter(|event| matches!(event.kind, EventKind::Startup { unit } if unit == RED))
+        .map(|event| event.t_ms)
+        .collect();
+    assert_eq!(
+        startups.len(),
+        1,
+        "only the order at the highest epoch was taken: {startups:?}"
+    );
+    assert!(
+        startups.first().is_some_and(|t_ms| *t_ms >= 400),
+        "and it was the second one: {startups:?}"
+    );
+    assert!(
+        frames_for(&messages, RED_PILOT).is_empty(),
+        "the released pilot was sent a frame"
+    );
+    assert!(!frames_for(&messages, BLUE_PILOT).is_empty());
+}
+
+/// **`B-50`: a release displaced by the next pilot's control still runs**
+/// (16b cut M.1): `Released(RED's pilot)` then `Live(another)` at a higher epoch
+/// in one window, and RED's pilot is off the roster.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m1_a_release_displaced_in_one_window_still_takes_the_pilot_off_the_roster() {
+    let seed = SEEDS[11].0;
+    let mut arena_cfg = fast_arena();
+    arena_cfg.reflex.decide_ms = 600_000;
+    let (handle, _join, mut rx) = start_with_egress(seed, &arena_cfg, &MatchConfig::default(), 256);
+    handle
+        .offer(ArenaMsg::Control(Control {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 2,
+            state: ControlState::Released,
+            pilot: Some(RED_PILOT),
+        }))
+        .expect("a control always fits");
+    handle
+        .offer(ArenaMsg::Control(Control {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 3,
+            state: ControlState::Live,
+            pilot: Some(BLUE_PILOT),
+        }))
+        .expect("a control always fits");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let messages = collect(&mut rx, Duration::from_millis(5_000)).await;
+    assert_eq!(ended(&messages), Some(EndReason::Abort));
+    assert!(
+        frames_for(&messages, RED_PILOT).is_empty(),
+        "the displaced release did not run: RED's pilot was sent a frame"
+    );
+    assert!(
+        !frames_for(&messages, BLUE_PILOT).is_empty(),
+        "the other pilot is still sent frames"
+    );
+}
+
+/// **`T-11`: a burst is bounded per unit, the newest refused, and continuous
+/// orders coalesce** (16b cut M.1).
+///
+/// Twelve discrete orders for RED with one `LOCK` for BLUE in the middle, in one
+/// window. RED's pre-pulse buffer keeps its first nine (the rate plus one) and
+/// refuses the three newest; the arena takes eight and says `queue_full` for the
+/// ninth. So RED's pilot hears the eight earliest orders resolved — four locks
+/// and four fires, in order — and one `queue_full` for a `startup`, and no
+/// `startup` is journalled; BLUE's `LOCK` resolves untouched. Then two headings
+/// and two speeds to a cold tank in one window are one refusal of each, and the
+/// same to a warm one leave it on the last of each.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn m1_a_burst_is_bounded_per_unit_and_continuous_orders_coalesce() {
+    let seed = SEEDS[12].0;
+    let (handle, _join, mut rx) =
+        start_with_egress(seed, &fast_arena(), &MatchConfig::default(), 256);
+    let burst = [
+        lock(RED, 1),
+        fire(RED, 2),
+        lock(RED, 3),
+        fire(RED, 4),
+        lock(BLUE, 5),
+        lock(RED, 6),
+        fire(RED, 7),
+        lock(RED, 8),
+        fire(RED, 9),
+        order(RED, IntentKind::Startup, 10),
+        order(RED, IntentKind::Startup, 11),
+        order(RED, IntentKind::Startup, 12),
+        order(RED, IntentKind::Startup, 13),
+        order(BLUE, IntentKind::Startup, 14),
+    ];
+    for message in burst {
+        handle.offer(message).expect("the burst fits the inbox");
+    }
+    let mut messages = collect(&mut rx, Duration::from_millis(11_000)).await;
+    assert_eq!(
+        refusals_for(&messages, RED_PILOT),
+        vec![
+            ("startup".to_owned(), Refusal::QueueFull),
+            ("lock".to_owned(), Refusal::NoContact),
+            ("fire".to_owned(), Refusal::NoWeapon),
+            ("lock".to_owned(), Refusal::NoContact),
+            ("fire".to_owned(), Refusal::NoWeapon),
+            ("lock".to_owned(), Refusal::NoContact),
+            ("fire".to_owned(), Refusal::NoWeapon),
+            ("lock".to_owned(), Refusal::NoContact),
+            ("fire".to_owned(), Refusal::NoWeapon),
+        ],
+        "the eight earliest resolve, the ninth is refused by the arena, the rest never \
+         reach it"
+    );
+    assert_eq!(
+        refusals_for(&messages, BLUE_PILOT),
+        vec![("lock".to_owned(), Refusal::NoContact)],
+        "another pilot's order is untouched by RED's burst"
+    );
+
+    // Two headings and two speeds to the cold RED: one refusal of each.
+    let window = messages.len();
+    for message in [
+        order(RED, IntentKind::Heading { mdeg: 45_000 }, 20),
+        order(RED, IntentKind::Heading { mdeg: 90_000 }, 21),
+        order(RED, IntentKind::Speed { cms: 300 }, 22),
+        order(RED, IntentKind::Speed { cms: 600 }, 23),
+    ] {
+        handle.offer(message).expect("the inbox takes an order");
+    }
+    // And the same to BLUE, whose startup has come up by now: the last of each.
+    for message in [
+        order(BLUE, IntentKind::Heading { mdeg: 90_000 }, 24),
+        order(BLUE, IntentKind::Heading { mdeg: 0 }, 25),
+        order(BLUE, IntentKind::Speed { cms: 300 }, 26),
+        order(BLUE, IntentKind::Speed { cms: 600 }, 27),
+    ] {
+        handle.offer(message).expect("the inbox takes an order");
+    }
+    messages.extend(collect(&mut rx, Duration::from_millis(6_000)).await);
+    let later = messages.get(window..).unwrap_or_default();
+    assert_eq!(
+        refusals_for(later, RED_PILOT),
+        vec![
+            ("heading".to_owned(), Refusal::PowerNotOnline),
+            ("speed".to_owned(), Refusal::PowerNotOnline),
+        ],
+        "one window's two headings and two speeds are one of each"
+    );
+    let blue = frames_for(&messages, BLUE_PILOT)
+        .last()
+        .and_then(|at| messages.get(*at))
+        .and_then(|message| match message {
+            ArenaOut::Frames { frames, .. } => frames
+                .iter()
+                .find(|(to, _)| *to == BLUE_PILOT)
+                .map(|(_, frame)| (frame.pose.heading_mdeg, frame.speed_cms)),
+            _ => None,
+        });
+    assert_eq!(
+        blue,
+        Some((0, 600)),
+        "the last heading and the last speed stand"
+    );
+    // And the black box never saw RED start up.
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    messages.extend(collect(&mut rx, Duration::from_millis(5_000)).await);
+    assert!(
+        !events(&messages)
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::Startup { unit } if unit == RED)),
+        "a refused startup was journalled"
+    );
+}
+
+/// **The inbox reserve** (16b cut M.1, `B-50`): with the inbox full of intents,
+/// a control, a stop and an ack all still fit, and one more intent does not.
+///
+/// A current-thread runtime the test never yields on, so the task never drains
+/// its inbox.
+#[tokio::test(flavor = "current_thread")]
+async fn m1_an_inbox_full_of_orders_still_takes_a_control_a_stop_and_an_ack() {
+    let seed = SEEDS[13].0;
+    let (handle, _join, _rx) = start_with_egress(seed, &fast_arena(), &MatchConfig::default(), 256);
+    let mut taken = 0_u64;
+    while handle
+        .offer(order(RED, IntentKind::Startup, taken + 1))
+        .is_ok()
+    {
+        taken += 1;
+        assert!(taken < 1_000, "the inbox never refused an order");
+    }
+    // `max_pending_per_unit × units`: the reserve is not an intent's.
+    assert_eq!(taken, 16);
+    assert!(
+        handle
+            .offer(ArenaMsg::Control(Control {
+                unit: RED,
+                channel: Channel::Helm,
+                epoch: 2,
+                state: ControlState::Released,
+                pilot: Some(RED_PILOT),
+            }))
+            .is_ok(),
+        "a control fits behind a full inbox of orders"
+    );
+    assert!(handle.offer(ArenaMsg::Stop(StopReason::Abort)).is_ok());
+    assert!(
+        handle
+            .offer(ArenaMsg::LedgerAck { upto_chunk_seq: 0 })
+            .is_ok()
+    );
+    assert!(
+        handle.offer(order(RED, IntentKind::Startup, 99)).is_err(),
+        "and an order still does not"
+    );
+}
+
+/// **`B-49`: a stop that meets an `Ended` in flight is `Busy`, and one that meets
+/// a task that died without a result is `Gone`** (16b cut M.1), on
+/// [`ArenaTasks`] itself.
+///
+/// Before this cut both were `Gone`, and `match_::abort` then finished the match
+/// with no units — restoring every tank over the arena's real result, which the
+/// world threw away when it arrived.
+#[tokio::test(flavor = "multi_thread")]
+async fn m1_a_stop_meeting_an_ended_in_flight_is_busy_and_a_dead_task_is_gone() {
+    let tasks = ArenaTasks::new(256);
+    let mut egress = tasks.take_egress().expect("the egress, once");
+    let spawn = |seed: u64| {
+        spawn_arena(
+            &tokio::runtime::Handle::current(),
+            MatchId(seed),
+            custody(seed),
+            &fast_arena(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+            tasks.egress_sender().expect("the egress sender"),
+        )
+        .expect("the test check-out is accepted")
+    };
+
+    // The `Ended` in flight: stopped, reported, never drained.
+    let seed = SEEDS[14].0;
+    let (handle, join) = spawn(seed);
+    handle
+        .offer(ArenaMsg::Stop(StopReason::Abort))
+        .expect("the inbox takes a stop");
+    let join = {
+        let mut join = join;
+        tokio::time::timeout(Duration::from_secs(5), &mut join)
+            .await
+            .expect("the task ends")
+            .expect("the task did not panic");
+        join
+    };
+    assert!(!handle.is_live());
+    assert!(
+        handle.has_reported(),
+        "the task handed the world its result"
+    );
+    assert!(tasks.insert(MatchId(seed), handle, join).is_none());
+    assert_eq!(
+        tasks.send_stop(MatchId(seed), StopReason::Abort),
+        Err(ControlRefusal::Busy),
+        "the result is on its way: change nothing"
+    );
+    let mut ends = 0;
+    while let Ok(message) = egress.try_recv() {
+        if matches!(message, ArenaOut::Ended { match_id, .. } if match_id == MatchId(seed)) {
+            ends += 1;
+        }
+    }
+    assert_eq!(ends, 1, "exactly one result is in the egress");
+
+    // The task that died without one.
+    let seed = SEEDS[15].0;
+    let (handle, join) = spawn(seed);
+    handle.signal_stop();
+    let join = {
+        let mut join = join;
+        tokio::time::timeout(Duration::from_secs(5), &mut join)
+            .await
+            .expect("the task ends")
+            .expect("the task did not panic");
+        join
+    };
+    assert!(!handle.has_reported());
+    assert!(tasks.insert(MatchId(seed), handle, join).is_none());
+    assert_eq!(
+        tasks.send_stop(MatchId(seed), StopReason::Abort),
+        Err(ControlRefusal::Gone)
+    );
+    // And a match the table never held.
+    assert_eq!(
+        tasks.send_stop(MatchId(9_999), StopReason::Abort),
+        Err(ControlRefusal::NoMatch)
     );
 }

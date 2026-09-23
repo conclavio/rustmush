@@ -3049,7 +3049,11 @@ fn tacsim_harness_llm_cost_run() {
                             )),
                             seq: 0,
                         };
-                        let _ = tacsim::arena::intents::apply_intent(&mut arena, &intent);
+                        let _ = tacsim::arena::intents::apply_intent(
+                            &mut arena,
+                            &intent,
+                            tacsim::arena::intents::IntentSource::Seat,
+                        );
                     }
                 }
                 Err(_) => refused = refused.saturating_add(1),

@@ -178,10 +178,23 @@ fn the_spatial_moves_refuse_a_deployed_unit_by_name() {
     // Closing the window over it is refused for the same reason: retiring the
     // domain under a running match would leave the arena integrating a unit
     // whose world placement no longer exists.
+    //
+    // **16b cut M.1** (`T-42`): asserted by the sentence that refuses it, not by
+    // the verb merely existing. A domain an arena holds a unit of is excluded
+    // from every world-side reader (doc 16 §3.6; `deployed::excluded`), the
+    // verb's own resolver among them, so `@domain/retire` cannot name it at all.
+    // Behind that, the retire transition refuses any domain that still holds a
+    // placement, and a deployed unit's placement cannot be taken away
+    // (`@spatial/unplace` refuses it above, and a ground driver's window close
+    // refuses it by name before it unplaces anything).
     let out = texts(&tw.run(GOD, &format!("@domain/retire {}", domain.0)));
     assert!(
-        !out.contains("Huh?"),
-        "the retire verb exists on this composition: {out}"
+        out.contains(&format!("No domain #{}.", domain.0)),
+        "retiring the domain under a deployed unit is refused: {out}"
+    );
+    assert!(
+        !out.contains("retired;"),
+        "and the domain was not retired: {out}"
     );
 
     mush_sim::deployed::clear(tw.world_mut(), left);

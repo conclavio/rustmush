@@ -25,8 +25,9 @@
 //!   spins the wheel does not fill anything up, and a burst of ten headings is
 //!   the last heading.
 //! - **Discrete** actions ([`IntentKind::Startup`], [`IntentKind::Lock`],
-//!   [`IntentKind::Fire`]) are queued per unit, bounded at
-//!   `intents.max_pending_per_unit`, and resolved in phase 4 by the cut that owns
+//!   [`IntentKind::Fire`]) are queued per unit — a seat may give a unit at most
+//!   `intents.max_pending_per_unit` of them per arena second (16b cut M.1,
+//!   `T-82`; [`apply_intent`]) — and resolved in phase 4 by the cut that owns
 //!   them: `STARTUP` by [`resolve_startup`] here, and `LOCK` and `FIRE` by
 //!   [`crate::arena::state::Arena::resolve_lock`] and
 //!   [`crate::arena::state::Arena::resolve_fire`] (16b cut W.1).
@@ -149,6 +150,21 @@ impl IntentKind {
         )
     }
 
+    /// **Whether this order is an action that queues for phase 4** (16b cut
+    /// M.1): `STARTUP`, `LOCK` and `FIRE` — the complement of
+    /// [`IntentKind::is_continuous`], which counts a squad's
+    /// [`IntentKind::Order`] as continuous — and exactly the kinds the
+    /// per-seat rate in [`apply_intent`] counts and the arena task's pre-pulse
+    /// buffer bounds per unit. Spelt out rather than derived as
+    /// `!is_continuous()` so a new kind has to say which it is.
+    #[must_use]
+    pub const fn is_discrete(&self) -> bool {
+        matches!(
+            self,
+            IntentKind::Startup | IntentKind::Lock { .. } | IntentKind::Fire { .. }
+        )
+    }
+
     /// The channel this order must arrive on. An order on the wrong channel is
     /// refused [`Refusal::Channel`] whatever the epoch table says — a gunner's
     /// grant is not a driver's (the F3 rule).
@@ -189,9 +205,28 @@ pub struct Intent {
     pub epoch: u64,
     /// What was ordered.
     pub kind: IntentKind,
-    /// The world's monotonic sequence within the burst, so a queue's order is the
-    /// pilot's order and not the inbox's.
+    /// The world's monotonic stamp, read by the task's drain, which sorts a
+    /// burst into the pilot's order (16b cut M.1: the arena task's pre-pulse
+    /// buffer hands each unit's discrete orders to phase 2 sorted stably on it,
+    /// and coalesces a continuous order to the one with the highest).
     pub seq: u64,
+}
+
+/// **Whose order this is** (16b cut M.1, `T-82`): a person's, through the
+/// world's seam, or the reflex controller's own.
+///
+/// It decides one thing: whether the order counts against the per-seat rate
+/// [`apply_intent`] holds a discrete order to. Pulse phase 2 passes
+/// [`IntentSource::Seat`] for every order the world sent; the reflex machine
+/// passes [`IntentSource::Machine`] for the orders it gives inside a substep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntentSource {
+    /// A person at a seat, through the world's seam — counted against
+    /// `intents.max_pending_per_unit` per arena second on the unit it orders.
+    Seat,
+    /// The reflex controller's own order (`crate::arena::reflex`) — never
+    /// counted and never refused for the rate.
+    Machine,
 }
 
 /// What [`apply_intent`] did.
@@ -219,7 +254,12 @@ pub enum Refusal {
     /// Power is not online (doc 16 §3.3 "Startup").
     #[error("power is not online")]
     PowerNotOnline,
-    /// The unit already has `intents.max_pending_per_unit` actions queued.
+    /// **A seat has given this unit its `intents.max_pending_per_unit` discrete
+    /// orders for this arena second** (16b cut M.1, `T-82`). The setting is the
+    /// discrete orders one seat may give a unit per arena second; also the size,
+    /// per unit, of the world side's inbox and pre-pulse buffer. The word
+    /// (`queue_full`) and the cockpit's sentence are unchanged from when it was
+    /// a queue's bound.
     #[error("that unit already has as many actions queued as it may")]
     QueueFull,
     /// The unit is a wreck (doc 16 §3.3): no longer the subject of any order.
@@ -386,13 +426,36 @@ pub fn apply_control(arena: &mut Arena, c: &Control) {
 /// consequences).
 ///
 /// For a **discrete** action: the seat must not be linkdead
-/// ([`Refusal::Linkdead`]) and the unit's queue must have room
-/// ([`Refusal::QueueFull`]); the action is pushed to the back of that queue for
-/// phase 4. Power is deliberately **not** checked here: `STARTUP` is the order
-/// that turns power on, and `LOCK` and `FIRE` become legal in phase 4, which is
-/// where doc 16 §3.1 puts *resolve newly queued discrete actions that became
-/// legal this pulse*.
-pub fn apply_intent(arena: &mut Arena, i: &Intent) -> IntentOutcome {
+/// ([`Refusal::Linkdead`]) and, for an order from an [`IntentSource::Seat`], the
+/// seat must not have spent this arena second's rate ([`Refusal::QueueFull`]);
+/// the action is pushed to the back of the unit's queue for phase 4. Power is
+/// deliberately **not** checked here: `STARTUP` is the order that turns power
+/// on, and `LOCK` and `FIRE` become legal in phase 4, which is where doc 16 §3.1
+/// puts *resolve newly queued discrete actions that became legal this pulse*.
+///
+/// # The rate (16b cut M.1, `T-82`)
+///
+/// `intents.max_pending_per_unit` is **the discrete orders one seat may give a
+/// unit per arena second**, counted in
+/// [`crate::arena::state::UnitState::orders_window_s`] and
+/// [`crate::arena::state::UnitState::orders_in_window`]: the window is
+/// `now_ms.div_euclid(1_000)`, a new window resets the count, and an order that
+/// finds the count at the bound is refused. Before this cut the setting bounded a
+/// queue drained once a pulse, so the burst a pilot could send was a function of
+/// the tempo — eight per 5,000 ms pulse at `Quiet`, eight per 500 ms at
+/// `Engaged` — which is what doc 16 §3.1's rate independence forbids; an arena
+/// second is the same length at every tempo.
+///
+/// It is counted on the **source**, not on the unit's controller. The machine's
+/// own orders ([`IntentSource::Machine`]) are never counted and never refused
+/// here: a machine's tick is already bounded by `reflex.decide_ms`, and its
+/// order is taken straight back out of the queue it was pushed to, so a fixture
+/// with a fast `decide_ms` must not trip a rate meant for people. Keying the rate
+/// on the controller instead would leave a gunner still seated on a tank the
+/// reflex controller drives — after the driver's `EXIT` hands it over — with no
+/// bound at all. The `pending` queue itself has no bound inside a pulse: it is
+/// bounded by the caller's slice, which the arena task bounds per unit.
+pub fn apply_intent(arena: &mut Arena, i: &Intent, source: IntentSource) -> IntentOutcome {
     if arena.unit(i.unit).is_none() {
         return IntentOutcome::Refused(Refusal::Unknown);
     }
@@ -403,6 +466,7 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent) -> IntentOutcome {
         return IntentOutcome::Refused(Refusal::Channel);
     }
     let max_pending = arena.arena_cfg.intents.max_pending_per_unit;
+    let now_ms = arena.now_ms;
     let Some(unit) = arena.unit_mut(i.unit) else {
         return IntentOutcome::Refused(Refusal::Unknown);
     };
@@ -456,11 +520,24 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent) -> IntentOutcome {
     if unit.linkdead {
         return IntentOutcome::Refused(Refusal::Linkdead);
     }
-    let queue = arena.pending.entry(i.unit).or_default();
-    if u32::try_from(queue.len()).unwrap_or(u32::MAX) >= max_pending {
-        return IntentOutcome::Refused(Refusal::QueueFull);
+    // **16b cut M.1** (`T-82`): the rate, in arena seconds, on a seat's orders
+    // only — see this function's head for why the machine is not counted.
+    if source == IntentSource::Seat {
+        let window = now_ms.div_euclid(1_000);
+        if unit.orders_window_s != window {
+            unit.orders_window_s = window;
+            unit.orders_in_window = 0;
+        }
+        if unit.orders_in_window >= max_pending {
+            return IntentOutcome::Refused(Refusal::QueueFull);
+        }
+        unit.orders_in_window = unit.orders_in_window.saturating_add(1);
     }
-    queue.push_back(i.clone());
+    arena
+        .pending
+        .entry(i.unit)
+        .or_default()
+        .push_back(i.clone());
     IntentOutcome::Queued
 }
 
@@ -468,8 +545,7 @@ pub fn apply_intent(arena: &mut Arena, i: &Intent) -> IntentOutcome {
 /// A.2's phase 4 drains each unit in unit-id order and resolves what it finds.
 ///
 /// Draining is total: an action phase 4 cannot resolve this pulse is re-queued by
-/// its owner or refused by it, never left to rot in a queue whose bound another
-/// order needs.
+/// its owner or refused by it, never left to rot in a queue.
 pub fn drain_pending(arena: &mut Arena, unit: ObjId) -> Vec<Intent> {
     arena
         .pending
@@ -612,7 +688,8 @@ mod tests {
             assert_eq!(
                 apply_intent(
                     &mut arena,
-                    &intent(RED, 1, seq, IntentKind::Heading { mdeg })
+                    &intent(RED, 1, seq, IntentKind::Heading { mdeg }),
+                    IntentSource::Seat
                 ),
                 IntentOutcome::AppliedContinuous
             );
@@ -635,29 +712,38 @@ mod tests {
         apply_intent(
             &mut arena,
             &intent(RED, 1, 0, IntentKind::Speed { cms: 400 }),
+            IntentSource::Seat,
         );
         assert_eq!(speed(&arena), Some(400));
         apply_intent(
             &mut arena,
             &intent(RED, 1, 1, IntentKind::Speed { cms: 9_999 }),
+            IntentSource::Seat,
         );
         assert_eq!(speed(&arena), Some(1_000));
         apply_intent(
             &mut arena,
             &intent(RED, 1, 2, IntentKind::Speed { cms: -100 }),
+            IntentSource::Seat,
         );
         assert_eq!(speed(&arena), Some(-100));
         apply_intent(
             &mut arena,
             &intent(RED, 1, 3, IntentKind::Speed { cms: -9_999 }),
+            IntentSource::Seat,
         );
         assert_eq!(speed(&arena), Some(-400));
         apply_intent(
             &mut arena,
             &intent(RED, 1, 4, IntentKind::Speed { cms: i32::MIN }),
+            IntentSource::Seat,
         );
         assert_eq!(speed(&arena), Some(-400));
-        apply_intent(&mut arena, &intent(RED, 1, 5, IntentKind::Speed { cms: 0 }));
+        apply_intent(
+            &mut arena,
+            &intent(RED, 1, 5, IntentKind::Speed { cms: 0 }),
+            IntentSource::Seat,
+        );
         assert_eq!(speed(&arena), Some(0));
     }
 
@@ -668,14 +754,16 @@ mod tests {
         assert_eq!(
             apply_intent(
                 &mut arena,
-                &intent(RED, 1, 0, IntentKind::Heading { mdeg: 90_000 })
+                &intent(RED, 1, 0, IntentKind::Heading { mdeg: 90_000 }),
+                IntentSource::Seat
             ),
             IntentOutcome::Refused(Refusal::PowerNotOnline)
         );
         assert_eq!(
             apply_intent(
                 &mut arena,
-                &intent(RED, 1, 1, IntentKind::Speed { cms: 500 })
+                &intent(RED, 1, 1, IntentKind::Speed { cms: 500 }),
+                IntentSource::Seat
             ),
             IntentOutcome::Refused(Refusal::PowerNotOnline)
         );
@@ -686,7 +774,8 @@ mod tests {
         assert_eq!(
             apply_intent(
                 &mut arena,
-                &intent(RED, 1, 2, IntentKind::Speed { cms: 500 })
+                &intent(RED, 1, 2, IntentKind::Speed { cms: 500 }),
+                IntentSource::Seat
             ),
             IntentOutcome::Refused(Refusal::PowerNotOnline)
         );
@@ -704,7 +793,8 @@ mod tests {
         assert_eq!(
             apply_intent(
                 &mut arena,
-                &intent(RED, 1, 3, IntentKind::Speed { cms: 500 })
+                &intent(RED, 1, 3, IntentKind::Speed { cms: 500 }),
+                IntentSource::Seat
             ),
             IntentOutcome::AppliedContinuous
         );
@@ -724,7 +814,8 @@ mod tests {
         assert_eq!(
             apply_intent(
                 &mut arena,
-                &intent(RED, 1, 0, IntentKind::Speed { cms: 500 })
+                &intent(RED, 1, 0, IntentKind::Speed { cms: 500 }),
+                IntentSource::Seat
             ),
             IntentOutcome::Refused(Refusal::MotionDisabled)
         );
@@ -735,12 +826,17 @@ mod tests {
         assert_eq!(
             apply_intent(
                 &mut arena,
-                &intent(RED, 1, 1, IntentKind::Speed { cms: 500 })
+                &intent(RED, 1, 1, IntentKind::Speed { cms: 500 }),
+                IntentSource::Seat
             ),
             IntentOutcome::Refused(Refusal::Wreck)
         );
         assert_eq!(
-            apply_intent(&mut arena, &intent(RED, 1, 2, IntentKind::Startup)),
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 2, IntentKind::Startup),
+                IntentSource::Seat
+            ),
             IntentOutcome::Refused(Refusal::Wreck)
         );
     }
@@ -759,7 +855,8 @@ mod tests {
                     epoch: 0,
                     kind: IntentKind::Speed { cms: 100 },
                     seq: 0,
-                }
+                },
+                IntentSource::Seat
             ),
             IntentOutcome::Refused(Refusal::Epoch)
         );
@@ -772,7 +869,8 @@ mod tests {
                     epoch: 2,
                     kind: IntentKind::Speed { cms: 100 },
                     seq: 1,
-                }
+                },
+                IntentSource::Seat
             ),
             IntentOutcome::Refused(Refusal::Epoch)
         );
@@ -787,13 +885,18 @@ mod tests {
                     epoch: 1,
                     kind: IntentKind::Speed { cms: 100 },
                     seq: 2,
-                }
+                },
+                IntentSource::Seat
             ),
             IntentOutcome::Refused(Refusal::Channel)
         );
         // And an unknown unit, before either.
         assert_eq!(
-            apply_intent(&mut arena, &intent(ObjId(77), 1, 3, IntentKind::Startup)),
+            apply_intent(
+                &mut arena,
+                &intent(ObjId(77), 1, 3, IntentKind::Startup),
+                IntentSource::Seat
+            ),
             IntentOutcome::Refused(Refusal::Unknown)
         );
         assert_eq!(
@@ -818,19 +921,28 @@ mod tests {
                         IntentKind::Fire {
                             weapon: SmolStr::new("cannon")
                         }
-                    )
+                    ),
+                    IntentSource::Seat
                 ),
                 IntentOutcome::Queued,
                 "action {seq} of the bound"
             );
         }
         assert_eq!(
-            apply_intent(&mut arena, &intent(RED, 1, 99, IntentKind::Startup)),
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 99, IntentKind::Startup),
+                IntentSource::Seat
+            ),
             IntentOutcome::Refused(Refusal::QueueFull)
         );
         // The other unit's queue is its own.
         assert_eq!(
-            apply_intent(&mut arena, &intent(BLUE, 1, 0, IntentKind::Startup)),
+            apply_intent(
+                &mut arena,
+                &intent(BLUE, 1, 0, IntentKind::Startup),
+                IntentSource::Seat
+            ),
             IntentOutcome::Queued
         );
         // Draining answers the pilot's order and empties the queue.
@@ -851,6 +963,7 @@ mod tests {
         apply_intent(
             &mut arena,
             &intent(RED, 1, 0, IntentKind::Speed { cms: 700 }),
+            IntentSource::Seat,
         );
         apply_control(
             &mut arena,
@@ -870,7 +983,11 @@ mod tests {
         );
         // And every discrete action refuses.
         assert_eq!(
-            apply_intent(&mut arena, &intent(RED, 1, 1, IntentKind::Startup)),
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 1, IntentKind::Startup),
+                IntentSource::Seat
+            ),
             IntentOutcome::Refused(Refusal::Linkdead)
         );
         assert_eq!(
@@ -883,7 +1000,8 @@ mod tests {
                     IntentKind::Fire {
                         weapon: SmolStr::new("cannon")
                     }
-                )
+                ),
+                IntentSource::Seat
             ),
             IntentOutcome::Refused(Refusal::Linkdead)
         );
@@ -901,7 +1019,11 @@ mod tests {
         );
         assert_eq!(arena.unit(RED).map(|state| state.linkdead), Some(false));
         assert_eq!(
-            apply_intent(&mut arena, &intent(RED, 1, 3, IntentKind::Startup)),
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 3, IntentKind::Startup),
+                IntentSource::Seat
+            ),
             IntentOutcome::Queued
         );
     }
@@ -913,10 +1035,12 @@ mod tests {
         apply_intent(
             &mut arena,
             &intent(RED, 1, 0, IntentKind::Heading { mdeg: 90_000 }),
+            IntentSource::Seat,
         );
         apply_intent(
             &mut arena,
             &intent(RED, 1, 1, IntentKind::Speed { cms: 700 }),
+            IntentSource::Seat,
         );
         apply_control(
             &mut arena,
@@ -947,7 +1071,11 @@ mod tests {
         // follows is refused.
         let mut arena = two_tanks(1);
         assert_eq!(
-            apply_intent(&mut arena, &intent(RED, 1, 0, IntentKind::Startup)),
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 0, IntentKind::Startup),
+                IntentSource::Seat
+            ),
             IntentOutcome::Queued
         );
         assert_eq!(arena.pending.get(&RED).map(VecDeque::len), Some(1));
@@ -964,12 +1092,20 @@ mod tests {
         assert!(arena.pending.is_empty(), "the queued STARTUP is gone");
         assert_eq!(arena.epochs.current(RED, Channel::Helm), 2);
         assert_eq!(
-            apply_intent(&mut arena, &intent(RED, 1, 1, IntentKind::Startup)),
+            apply_intent(
+                &mut arena,
+                &intent(RED, 1, 1, IntentKind::Startup),
+                IntentSource::Seat
+            ),
             IntentOutcome::Refused(Refusal::Epoch)
         );
         // At the new epoch it queues again.
         assert_eq!(
-            apply_intent(&mut arena, &intent(RED, 2, 2, IntentKind::Startup)),
+            apply_intent(
+                &mut arena,
+                &intent(RED, 2, 2, IntentKind::Startup),
+                IntentSource::Seat
+            ),
             IntentOutcome::Queued
         );
     }
@@ -977,7 +1113,11 @@ mod tests {
     #[test]
     fn a_purge_is_per_channel_and_a_stale_control_purges_nothing() {
         let mut arena = two_tanks(1);
-        apply_intent(&mut arena, &intent(RED, 1, 0, IntentKind::Startup));
+        apply_intent(
+            &mut arena,
+            &intent(RED, 1, 0, IntentKind::Startup),
+            IntentSource::Seat,
+        );
         apply_intent(
             &mut arena,
             &intent(
@@ -988,6 +1128,7 @@ mod tests {
                     weapon: SmolStr::new("cannon"),
                 },
             ),
+            IntentSource::Seat,
         );
         assert_eq!(arena.pending.get(&RED).map(VecDeque::len), Some(2));
         // Raising `sensors` touches neither queued order.
